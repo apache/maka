@@ -113,6 +113,9 @@ describe('AiSdkBackend tool-result archive capability', () => {
 
     assert.equal(page.ok, true, 'the ref the placeholder carries must resolve');
     assert.equal(page.content, serializedResult);
+    // Kept from the built-in tool contract this replaced: the decoder is a read,
+    // which is what lets it travel to a read-only child.
+    assert.equal(archive.archiveReadTool.activityKind, 'read');
   });
 
   test('the decoder reads as the invoking session', async () => {

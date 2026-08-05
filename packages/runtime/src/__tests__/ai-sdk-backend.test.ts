@@ -77,6 +77,7 @@ import type {
 } from '../provider-request-telemetry.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
+import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
 import {
   createTestAiSdkBackend,
   testToolResultArchive,
@@ -7960,6 +7961,126 @@ describe('AiSdkBackend usage telemetry', () => {
 
     assert.equal(usageCheckpoints.length, 1);
     assert.equal(usageCheckpoints[0]?.costUsd, undefined);
+  });
+
+  test('a pruned tool result is readable again through the tool its placeholder names', async () => {
+    // The whole loop through real dispatch (#2026): the budget prunes an
+    // oversized result, the runtime mints a placeholder naming `ArchiveRead`,
+    // the model calls it with the ref that placeholder carried, and the body
+    // lands back in the conversation. Advertising the decoder is only half the
+    // invariant; the other half is that calling it works from inside the turn.
+    const durable = durableTurnHarness('turn-1', 'read the big file');
+    const largeBody = 'ARCHIVED_BODY_SENTINEL'.repeat(200);
+    const store = new Map<string, string>();
+    const prompts: unknown[] = [];
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        streamCalls += 1;
+        prompts.push(prompt);
+        const call = (toolCallId: string, toolName: string, input: unknown) =>
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) },
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+            },
+          ] as LanguageModelV4StreamPart[];
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? call('tool-1', 'Read', { path: 'big.md' })
+            : // The newest completed step is never pruned, so a second call is
+              // what makes the Read result stale enough to be archived.
+              streamCalls === 2
+              ? call('tool-2', 'Bash', { cmd: 'continue' })
+              : streamCalls === 3
+                ? call('tool-3', 'ArchiveRead', {
+                    // Read the ref out of the placeholder the runtime just
+                    // handed us, exactly as a model would.
+                    ref: /maka:\/\/archive\/[^"\\]+/.exec(JSON.stringify(prompt))?.[0] ?? 'missing',
+                    operation: 'read',
+                  })
+                : [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'stop', raw: 'stop' },
+                      usage: {
+                        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                        outputTokens: { total: 1, text: 1, reasoning: 0 },
+                      },
+                    },
+                  ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read description',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => ({ body: largeBody }),
+        },
+        {
+          name: 'Bash',
+          description: 'Bash description',
+          parameters: z.object({ cmd: z.string() }),
+          impl: async () => ({ body: 'small' }),
+        },
+      ],
+      contextBudget: {
+        activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+      },
+      // A real store, so the decoder has to reach what the writer actually wrote.
+      toolResultArchive: createToolResultArchiveCapability({
+        archiveToolResult: async (event) => {
+          const artifactId = `artifact-${store.size + 1}`;
+          store.set(artifactId, event.serializedResult);
+          return { artifactId };
+        },
+        readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+        readArchivedToolResultResource: async (event) => {
+          const serializedResult = store.get(event.artifactId);
+          return serializedResult === undefined
+            ? { ok: false, reason: 'not_found' }
+            : { ok: true, serializedResult };
+        },
+      }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send(durable.input())) durable.record(event);
+
+    assert.match(
+      store.get('artifact-1') ?? '',
+      /ARCHIVED_BODY_SENTINEL/,
+      'the oversized Read result must have been archived',
+    );
+    const thirdPrompt = JSON.stringify(prompts[2]);
+    assert.doesNotMatch(thirdPrompt, /ARCHIVED_BODY_SENTINEL/);
+    assert.match(thirdPrompt, /maka:\/\/archive\//);
+    assert.match(
+      JSON.stringify(prompts[3]),
+      /ARCHIVED_BODY_SENTINEL/,
+      'the ArchiveRead result must carry the archived body back into the conversation',
+    );
   });
 
   test('records active tool-result prune diagnostics in usage telemetry', async () => {
