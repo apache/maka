@@ -12555,7 +12555,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: socks-proxy-agent@8.0.5
+Package: socks-proxy-agent@10.1.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/TooTallNate/proxy-agents.git#packages/socks-proxy-agent
