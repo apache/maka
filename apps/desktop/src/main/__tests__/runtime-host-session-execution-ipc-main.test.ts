@@ -54,6 +54,7 @@ test("advances the Host read marker through the last visible message", async () 
       emitSessionsChanged() {},
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
+      beforeStop() {},
     },
     ipc,
   );
@@ -110,6 +111,7 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
         changes.push({ reason, sessionId, ...extra }),
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
+      beforeStop() {},
       newId: () => "turn-1",
     },
     ipc,
@@ -213,6 +215,7 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
       emitSessionsChanged() {},
       stat: async () => ({ size: 5 }),
       resizeImage: async (bytes) => bytes,
+      beforeStop() {},
       newId: () => "turn-1",
     },
     ipc,
@@ -257,6 +260,7 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
       emitSessionsChanged() {},
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
+      beforeStop() {},
       newId: () => "turn-skill",
     },
     ipc,
@@ -289,6 +293,7 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
+  const stopLifecycle: string[] = [];
   let sequence = 0;
   const client = executionClient({
     submitMessage: async (input) => {
@@ -296,6 +301,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       return { disposition: "steering", queueRevision: 2 };
     },
     interruptTurn: async (input) => {
+      stopLifecycle.push("interrupt");
       interrupts.push(input);
       return {
         queueRevision: 3,
@@ -321,6 +327,9 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       emitSessionsChanged() {},
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
+      beforeStop() {
+        stopLifecycle.push("teardown");
+      },
       newId: () => `id-${++sequence}`,
     },
     ipc,
@@ -333,6 +342,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     },
   );
   await ipc.invoke("sessions:stop", "session-1");
+  assert.deepEqual(stopLifecycle, ["teardown", "interrupt"]);
 
   assert.deepEqual(submits, [
     {

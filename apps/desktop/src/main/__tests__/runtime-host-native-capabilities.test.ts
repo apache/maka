@@ -134,6 +134,38 @@ test('validates before admission and invokes the exact offered tool with Host co
   });
 });
 
+test('watches Computer Use turns without widening Browser lifecycle', async () => {
+  const usedSessions: string[] = [];
+  const computerUseTurns: Array<[string, string]> = [];
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [tool('browser_snapshot', z.object({}), async () => 'snapshot')],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(async () => ({ text: 'observed' })),
+      releaseComputerUseSession() {},
+    },
+    {
+      onSessionUsed: (sessionId) => usedSessions.push(sessionId),
+      onComputerUseTurnUsed: (sessionId, turnId) =>
+        computerUseTurns.push([sessionId, turnId]),
+    },
+  );
+
+  await call(
+    provider,
+    capabilityFrame({ toolName: 'browser_snapshot', arguments: {} }),
+  );
+  assert.deepEqual(usedSessions, ['session-1']);
+  assert.deepEqual(computerUseTurns, []);
+
+  await call(
+    provider,
+    computerFrame({ sessionId: 'session-2', turnId: 'turn-2' }),
+  );
+  assert.deepEqual(usedSessions, ['session-1', 'session-2']);
+  assert.deepEqual(computerUseTurns, [['session-2', 'turn-2']]);
+});
+
 test('projects Computer Use screenshots and releases all native resources for a Session', async () => {
   const browserReleased: string[] = [];
   const computerReleased: string[] = [];

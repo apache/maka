@@ -134,6 +134,20 @@ const native = assembleDesktopNativeCapabilities({
   keepSystemAwake,
   mainWindow: mainWindowController,
 });
+const completeComputerUseTurn = (sessionId: string): void => {
+  native.computerUseOverlay.clearForSession(sessionId);
+  native.computerUsePip.complete(sessionId);
+  native.computerUseStatusItem.clearForSession(sessionId);
+  native.computerUseScreenLock.clearForSession(sessionId);
+  native.computerUseTools.clearSession(sessionId);
+};
+const releaseComputerUseSession = (sessionId: string): void => {
+  native.computerUseOverlay.clearForSession(sessionId);
+  native.computerUsePip.clearForSession(sessionId);
+  native.computerUseStatusItem.clearForSession(sessionId);
+  native.computerUseScreenLock.clearForSession(sessionId);
+  native.computerUseTools.clearSession(sessionId);
+};
 const permissionOverlay = createPermissionOverlayMain({
   resolveLocale: async () => {
     const settings = await settingsStore.get();
@@ -259,19 +273,14 @@ owner = await startRuntimeHostDesktopOwner(
             ];
       },
       oauthPresentation,
-      releaseComputerUseSession: (sessionId) => {
-        native.computerUseOverlay.clearForSession(sessionId);
-        native.computerUsePip.clearForSession(sessionId);
-        native.computerUseStatusItem.clearForSession(sessionId);
-        native.computerUseScreenLock.clearForSession(sessionId);
-        native.computerUseTools.clearSession(sessionId);
-      },
+      releaseComputerUseSession,
     },
     botRegistry,
     resolveBotCreateTarget: async () => ({ cwd: await projectRoot.current() }),
     emitSessionsChanged,
     emitModeChanged: (sessionId) =>
       emitSessionsChanged("mode-change", sessionId),
+    completeComputerUseTurn,
     sendToRenderer: (channel, payload) =>
       mainWindowController.send(channel, payload),
     onError: (error) =>
@@ -285,6 +294,13 @@ owner = await startRuntimeHostDesktopOwner(
     },
   },
 );
+const stopComputerUseSession = (sessionId: string): void => {
+  void owner
+    ?.stopSession(sessionId)
+    .catch((error) => console.error("[runtime-host] stop failed:", error));
+};
+native.computerUsePip.setStopHandler(stopComputerUseSession);
+native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
 
 await planReminders.refreshTimers();
 updateService.start();

@@ -208,6 +208,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       resolveBotCreateTarget: async () => ({ cwd: base }),
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       emitModeChanged() {},
+      completeComputerUseTurn() {},
       newId: () => 'session-ipc',
     });
     assert.equal(started.kind, 'ready');
@@ -307,6 +308,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),
         resizeImage: async (bytes) => bytes,
+        beforeStop() {},
         newId: () => 'turn-1',
       },
       ipc,

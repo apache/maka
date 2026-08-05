@@ -48,6 +48,9 @@ export interface DesktopRuntimeHostCandidateDeps {
     extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
   ) => void;
   readonly emitModeChanged: RuntimeHostSessionDomainsIpcDeps["emitModeChanged"];
+  readonly completeComputerUseTurn: (
+    sessionId: string,
+  ) => void | Promise<void>;
   readonly sendToRenderer?: RuntimeHostSessionDomainsIpcDeps["sendToRenderer"];
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly newId?: () => string;
@@ -83,6 +86,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
+  stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -97,6 +101,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly #closeNativeCapabilities: () => Promise<void>;
   readonly #disposeClientIpc: (() => void | Promise<void>) | undefined;
   readonly #hasRegisteredCapabilities: () => boolean;
+  readonly #stopSession: (sessionId: string) => Promise<void>;
   #closeTask: Promise<void> | undefined;
 
   constructor(input: {
@@ -108,6 +113,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     disposeClientIpc: (() => void | Promise<void>) | undefined;
     connectionClosed: Promise<void>;
     hasRegisteredCapabilities: () => boolean;
+    stopSession: (sessionId: string) => Promise<void>;
   }) {
     this.#client = input.client;
     this.client = input.client;
@@ -117,6 +123,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     this.#closeNativeCapabilities = input.closeNativeCapabilities;
     this.#disposeClientIpc = input.disposeClientIpc;
     this.#hasRegisteredCapabilities = input.hasRegisteredCapabilities;
+    this.#stopSession = input.stopSession;
     this.botIncoming = input.botIncoming;
     this.closed = input.connectionClosed.then(() => this.close());
   }
@@ -124,6 +131,10 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   close(): Promise<void> {
     this.#closeTask ??= this.#close();
     return this.#closeTask;
+  }
+
+  stopSession(sessionId: string): Promise<void> {
+    return this.#stopSession(sessionId);
   }
 
   async #close(): Promise<void> {
@@ -199,19 +210,6 @@ export async function createDesktopRuntimeHostCandidate(
   const ipc = new ScopedIpcMain(deps.ipcMain);
   const providers = new Set<DesktopNativeCapabilityProvider>();
   const nativeSessionIds = new Set<string>();
-  const createNativeProvider = (): DesktopNativeCapabilityProvider => {
-    let provider: DesktopNativeCapabilityProvider;
-    provider = createDesktopNativeCapabilityProvider(
-      deps.nativeCapabilities,
-      {
-        releaseResourcesOnClose: false,
-        onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
-        onClosed: () => providers.delete(provider),
-      },
-    );
-    providers.add(provider);
-    return provider;
-  };
   const releaseNativeResources = async (
     sessionIds: readonly string[],
   ): Promise<void> => {
@@ -265,6 +263,49 @@ export async function createDesktopRuntimeHostCandidate(
   let disposeClientIpc: (() => void | Promise<void>) | undefined;
   let capabilitiesRegistered = false;
   try {
+    const domains = registerRuntimeHostSessionDomainsIpc(
+      {
+        client,
+        emitModeChanged: deps.emitModeChanged,
+        ...(deps.sendToRenderer ? { sendToRenderer: deps.sendToRenderer } : {}),
+        ...(deps.onError ? { onError: deps.onError } : {}),
+        ...(deps.newId ? { newId: deps.newId } : {}),
+        ...(deps.now ? { now: deps.now } : {}),
+      },
+      ipc,
+    );
+    const sessionObserver = new RuntimeHostSessionObserver({
+      client,
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        deps.emitSessionsChanged(reason, sessionId, extra),
+      emitSessionDomainChanged: domains.sessionDomainChanged,
+      emitAgentGraphChanged: domains.agentGraphChanged,
+      onWatchedTurnFinished: (sessionId, outcome) =>
+        outcome === "completed"
+          ? deps.completeComputerUseTurn(sessionId)
+          : deps.nativeCapabilities.releaseComputerUseSession(sessionId),
+      ...(deps.now ? { now: deps.now } : {}),
+    });
+    observer = sessionObserver;
+    const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
+      void sessionObserver
+        .watchTurn(sessionId, turnId)
+        .catch((error) => deps.onError?.(error));
+    };
+    const createNativeProvider = (): DesktopNativeCapabilityProvider => {
+      let provider: DesktopNativeCapabilityProvider;
+      provider = createDesktopNativeCapabilityProvider(
+        deps.nativeCapabilities,
+        {
+          releaseResourcesOnClose: false,
+          onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
+          onComputerUseTurnUsed: watchComputerUseTurn,
+          onClosed: () => providers.delete(provider),
+        },
+      );
+      providers.add(provider);
+      return provider;
+    };
     const nativeCapabilities = createNativeProvider();
     if (
       nativeCapabilities.offers().length > 0 ||
@@ -289,25 +330,6 @@ export async function createDesktopRuntimeHostCandidate(
         });
       return capabilityRefresh;
     };
-    const domains = registerRuntimeHostSessionDomainsIpc(
-      {
-        client,
-        emitModeChanged: deps.emitModeChanged,
-        ...(deps.sendToRenderer ? { sendToRenderer: deps.sendToRenderer } : {}),
-        ...(deps.onError ? { onError: deps.onError } : {}),
-        ...(deps.newId ? { newId: deps.newId } : {}),
-        ...(deps.now ? { now: deps.now } : {}),
-      },
-      ipc,
-    );
-    observer = new RuntimeHostSessionObserver({
-      client,
-      emitSessionsChanged: (reason, sessionId, extra) =>
-        deps.emitSessionsChanged(reason, sessionId, extra),
-      emitSessionDomainChanged: domains.sessionDomainChanged,
-      emitAgentGraphChanged: domains.agentGraphChanged,
-      ...(deps.now ? { now: deps.now } : {}),
-    });
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
@@ -318,14 +340,15 @@ export async function createDesktopRuntimeHostCandidate(
       },
       ipc,
     );
-    registerRuntimeHostSessionExecutionIpc(
+    const stopSession = registerRuntimeHostSessionExecutionIpc(
       {
         client,
-        observer,
+        observer: sessionObserver,
         attachmentApprovals: deps.attachmentApprovals,
         emitSessionsChanged: deps.emitSessionsChanged,
         stat: deps.stat,
         resizeImage: deps.resizeImage,
+        beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
         ...(deps.newId ? { newId: deps.newId } : {}),
       },
       ipc,
@@ -348,13 +371,14 @@ export async function createDesktopRuntimeHostCandidate(
     });
     return new DesktopRuntimeHostCandidateImpl({
       client,
-      observer,
+      observer: sessionObserver,
       ipc,
       botIncoming,
       closeNativeCapabilities,
       disposeClientIpc,
       connectionClosed: connection.closed,
       hasRegisteredCapabilities: () => capabilitiesRegistered,
+      stopSession,
     });
   } catch (error) {
     ipc.close();

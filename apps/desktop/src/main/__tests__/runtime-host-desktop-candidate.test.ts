@@ -317,6 +317,7 @@ function deps(
     resolveBotCreateTarget: async () => ({ cwd: '/workspace' }),
     emitSessionsChanged() {},
     emitModeChanged() {},
+    completeComputerUseTurn() {},
     newId: () => 'candidate-id',
   };
 }

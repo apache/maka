@@ -15,6 +15,7 @@ import {
 test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
   const events = new AsyncFrameQueue();
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   let closeCount = 0;
   const handle: DesktopRuntimeHostSession = {
     snapshot: continuitySnapshot(),
@@ -28,10 +29,14 @@ test("joins an active Turn without losing or replaying assistant text", async ()
   const observer = new RuntimeHostSessionObserver({
     client: { openSession: async () => handle },
     emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
     now: () => 50,
   });
   const target = eventTarget(1);
 
+  const watching = observer.watchTurn("session-1", "turn-1");
   const observing = observer.observe("session-1", "observer-1", target);
   events.push(deltaFrame(1, 5, " world"));
   transcript.resolve([
@@ -44,7 +49,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
       modelId: "test-model",
     },
   ]);
-  await observing;
+  await Promise.all([watching, observing]);
   await waitFor(() => target.events.length === 2);
 
   assert.deepEqual(
@@ -91,9 +96,189 @@ test("joins an active Turn without losing or replaying assistant text", async ()
       },
     ],
   );
+  assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
 
   await observer.unobserve("observer-1");
   assert.equal(closeCount, 1);
+});
+
+test("keeps a native Turn watched without a renderer and releases it at terminal", async () => {
+  const events = new AsyncFrameQueue();
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  let closeCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          closeCount += 1;
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
+  });
+
+  await observer.watchTurn("session-1", "turn-1");
+  events.push({
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        runId: "run-1",
+        status: "completed",
+        terminalEventId: "terminal-1",
+      },
+    }),
+  });
+
+  await waitFor(() => closeCount === 1);
+  assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
+  await observer.close();
+});
+
+test("does not let an older terminal projection finish a newer watched Turn", async () => {
+  const transcript = deferred<StoredMessage[]>();
+  const events = new AsyncFrameQueue();
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: transcript.promise,
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
+  });
+
+  const first = observer.watchTurn("session-1", "turn-1");
+  events.push({
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        runId: "run-1",
+        status: "completed",
+        terminalEventId: "terminal-1",
+      },
+    }),
+  });
+  const second = observer.watchTurn("session-1", "turn-2");
+  events.push({
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 2,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: "session-1",
+        turnId: "turn-2",
+        runId: "run-2",
+        status: "running",
+      },
+    }),
+  });
+  transcript.resolve([]);
+  await Promise.all([first, second]);
+  assert.deepEqual(finishedTurns, []);
+
+  events.push({
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 3,
+    snapshot: continuitySnapshot({
+      rootTurn: {
+        sessionId: "session-1",
+        turnId: "turn-2",
+        runId: "run-2",
+        status: "completed",
+        terminalEventId: "terminal-2",
+      },
+    }),
+  });
+
+  await waitFor(() => finishedTurns.length === 1);
+  assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
+  await observer.close();
+});
+
+test("abandons a watched Turn when the initial Host subscription fails", async () => {
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        throw new Error("Host subscription unavailable");
+      },
+    },
+    emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
+  });
+
+  await assert.rejects(
+    observer.watchTurn("session-1", "turn-1"),
+    /subscription unavailable/u,
+  );
+  assert.deepEqual(finishedTurns, [["session-1", "abandoned"]]);
+  await observer.close();
+});
+
+test("abandons a watched Turn when the Session is removed", async () => {
+  const events = new AsyncFrameQueue();
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  let closeCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot(),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          closeCount += 1;
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
+  });
+
+  await observer.watchTurn("session-1", "turn-1");
+  events.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    reason: "session_removed",
+  });
+
+  await waitFor(() => closeCount === 1);
+  assert.deepEqual(finishedTurns, [["session-1", "abandoned"]]);
+  await observer.close();
 });
 
 test("shares one Host subscription and one delivery per renderer target", async () => {

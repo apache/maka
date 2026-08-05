@@ -64,6 +64,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   ) => void;
   stat(path: string): Promise<{ size: number }>;
   resizeImage(bytes: Uint8Array): Promise<Uint8Array>;
+  beforeStop(sessionId: string): void | Promise<void>;
   newId?: () => string;
 }
 
@@ -75,8 +76,9 @@ export interface RuntimeHostSessionExecutionIpcDeps {
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
   ipcMain: Pick<IpcMain, "handle">,
-): void {
+): (sessionId: string) => Promise<void> {
   const newId = deps.newId ?? randomUUID;
+  const stopSession = createRuntimeHostSessionStop(deps, newId);
 
   ipcMain.handle(
     "sessions:observe",
@@ -203,19 +205,9 @@ export function registerRuntimeHostSessionExecutionIpc(
       return { kind: "queued" as const };
     },
   );
-  ipcMain.handle("sessions:stop", async (_event, sessionId: string) => {
-    const turn = (await deps.observer.snapshot(sessionId)).rootTurn;
-    if (!turn || isTerminalStatus(turn.status)) return;
-    await deps.client.interruptTurn({
-      sessionId,
-      interruptId: newId(),
-      turnId: turn.turnId,
-      runId: turn.runId,
-    });
-    deps.emitSessionsChanged("turn-status-change", sessionId, {
-      turnId: turn.turnId,
-    });
-  });
+  ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
+    stopSession(sessionId),
+  );
 
   ipcMain.handle(
     "sessions:respondToSandboxBoundary",
@@ -338,6 +330,30 @@ export function registerRuntimeHostSessionExecutionIpc(
       return toDesktopHostSessionSummary(revision);
     },
   );
+  return stopSession;
+}
+
+function createRuntimeHostSessionStop(
+  deps: Pick<
+    RuntimeHostSessionExecutionIpcDeps,
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged"
+  >,
+  newId: () => string = randomUUID,
+): (sessionId: string) => Promise<void> {
+  return async (sessionId) => {
+    await deps.beforeStop(sessionId);
+    const turn = (await deps.observer.snapshot(sessionId)).rootTurn;
+    if (!turn || isTerminalStatus(turn.status)) return;
+    await deps.client.interruptTurn({
+      sessionId,
+      interruptId: newId(),
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
+    deps.emitSessionsChanged("turn-status-change", sessionId, {
+      turnId: turn.turnId,
+    });
+  };
 }
 
 function latestVisibleMessageId(

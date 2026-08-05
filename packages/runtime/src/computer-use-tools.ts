@@ -1204,19 +1204,31 @@ export function buildComputerUseTools(deps: {
   ): Promise<CuObservation | undefined> {
     const observationLease = state.beforeObservation();
     if (!observationLease.ok) return undefined;
-    const captured =
-      result.observation ??
-      (deps.backend.captureObservation && record.appId && record.windowId
-        ? await deps.backend.captureObservation(
-            {
-              app: record.appId,
-              windowId: record.windowId,
-              includeScreenshot: true,
-            },
-            signal,
-            context,
-          )
-        : undefined);
+    let captured = result.observation;
+    if (
+      (!captured || (!captured.screenshot && !result.screenshot)) &&
+      deps.backend.captureObservation &&
+      record.appId &&
+      record.windowId
+    ) {
+      try {
+        captured = await deps.backend.captureObservation(
+          {
+            app: record.appId,
+            windowId: record.windowId,
+            includeScreenshot: true,
+          },
+          signal,
+          context,
+        );
+      } catch (error) {
+        // A pictureless post-dispatch observation is still authoritative state
+        // for the model. The mirror is best-effort, so failing its richer
+        // recapture must not discard that state or turn a completed action into
+        // an unknown outcome.
+        if (!captured) throw error;
+      }
+    }
     const fresh =
       captured && result.screenshot && !captured.screenshot
         ? { ...captured, screenshot: result.screenshot }

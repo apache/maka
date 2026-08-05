@@ -59,6 +59,10 @@ export function createDesktopNativeCapabilityProvider(
   providerOptions: {
     readonly releaseResourcesOnClose?: boolean;
     readonly onSessionUsed?: (sessionId: string) => void;
+    readonly onComputerUseTurnUsed?: (
+      sessionId: string,
+      turnId: string,
+    ) => void;
     readonly onClosed?: () => void;
   } = {},
 ): DesktopNativeCapabilityProvider {
@@ -212,7 +216,13 @@ async function invokeNativeTool(
   binding: NativeToolBinding,
   frame: ClientCapabilityCallFrame,
   options: Parameters<NonNullable<ClientCapabilityProvider["call"]>>[1],
-  providerOptions: { readonly onSessionUsed?: (sessionId: string) => void },
+  providerOptions: {
+    readonly onSessionUsed?: (sessionId: string) => void;
+    readonly onComputerUseTurnUsed?: (
+      sessionId: string,
+      turnId: string,
+    ) => void;
+  },
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
@@ -225,6 +235,9 @@ async function invokeNativeTool(
   signal.throwIfAborted();
   usedSessionIds.add(frame.sessionId);
   providerOptions.onSessionUsed?.(frame.sessionId);
+  if (frame.offerId === COMPUTER_USE_OFFER_ID) {
+    providerOptions.onComputerUseTurnUsed?.(frame.sessionId, frame.turnId);
+  }
   const output = await binding.tool.impl(args, {
     sessionId: frame.sessionId,
     turnId: frame.turnId,

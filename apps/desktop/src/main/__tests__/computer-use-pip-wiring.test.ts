@@ -159,6 +159,28 @@ describe('picture-in-picture lifecycle wiring', () => {
     );
   });
 
+  it('the Runtime Host keeps natural completion separate from explicit Stop', async () => {
+    const source = await read('runtime-host-boot.ts');
+    const complete = /const completeComputerUseTurn = \(sessionId: string\): void => \{([\s\S]*?)\n\};/.exec(
+      source,
+    )?.[1];
+    assert.ok(complete, 'Runtime Host boot must define natural Turn completion');
+    assert.match(complete, /computerUsePip\.complete\(sessionId\)/);
+
+    const release = /const releaseComputerUseSession = \(sessionId: string\): void => \{([\s\S]*?)\n\};/.exec(
+      source,
+    )?.[1];
+    assert.ok(release, 'Runtime Host boot must define immediate Session teardown');
+    assert.match(release, /computerUsePip\.clearForSession\(sessionId\)/);
+
+    assert.match(source, /\n    completeComputerUseTurn,\n/);
+    assert.match(
+      source,
+      /computerUsePip\.setStopHandler\(stopComputerUseSession\);[\s\S]*computerUseStatusItem\.setStopHandler\(stopComputerUseSession\);/,
+      'PiP and status Stop must share the candidate Stop authority',
+    );
+  });
+
   it('a turn ending retires the mirror', async () => {
     // The real call, not the source text: this module has no Electron in it.
     // The mirror used to be cleared only on stop, archive and delete, so it

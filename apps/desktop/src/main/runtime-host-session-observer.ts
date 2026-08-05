@@ -41,6 +41,10 @@ export interface RuntimeHostSessionObserverDeps {
   ) => void;
   emitSessionDomainChanged?: (change: SessionDomainChange) => void;
   emitAgentGraphChanged?: (event: AgentGraphClientChangedEvent) => void;
+  onWatchedTurnFinished?: (
+    sessionId: string,
+    outcome: "completed" | "abandoned",
+  ) => void | Promise<void>;
   now?: () => number;
 }
 
@@ -68,6 +72,7 @@ interface ObservedSessionState {
   readonly targets: Map<number, ObserverTargetGroup>;
   readonly pendingFrames: SubscriptionFrame[];
   readonly accumulators: Map<string, AssistantAccumulator>;
+  readonly watchedTurnIds: Set<string>;
   openTask: Promise<void>;
   handle?: DesktopRuntimeHostSession;
   transcript?: StoredMessage[];
@@ -100,6 +105,10 @@ export class RuntimeHostSessionObserver {
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
+  readonly #onWatchedTurnFinished: (
+    sessionId: string,
+    outcome: "completed" | "abandoned",
+  ) => void | Promise<void>;
   readonly #now: () => number;
   #closed = false;
 
@@ -110,6 +119,8 @@ export class RuntimeHostSessionObserver {
       deps.emitSessionDomainChanged ?? (() => undefined);
     this.#emitAgentGraphChanged =
       deps.emitAgentGraphChanged ?? (() => undefined);
+    this.#onWatchedTurnFinished =
+      deps.onWatchedTurnFinished ?? (() => undefined);
     this.#now = deps.now ?? Date.now;
   }
 
@@ -192,6 +203,18 @@ export class RuntimeHostSessionObserver {
   async unobserve(observerId: string): Promise<void> {
     const state = this.#detachObserver(observerId);
     if (state) await this.#closeIfIdle(state);
+  }
+
+  async watchTurn(sessionId: string, turnId: string): Promise<void> {
+    this.#assertOpen();
+    const state = this.#state(sessionId);
+    state.watchedTurnIds.add(turnId);
+    await state.openTask;
+    const root = state.snapshot?.rootTurn;
+    if (root && root.turnId === turnId && isTerminalTurn(root)) {
+      this.#finishWatchedTurn(state, turnId, "completed");
+      void this.#closeIfIdle(state);
+    }
   }
 
   activeInteraction(
@@ -286,6 +309,7 @@ export class RuntimeHostSessionObserver {
       targets: new Map(),
       pendingFrames: [],
       accumulators: new Map(),
+      watchedTurnIds: new Set(),
       openTask: Promise.resolve(),
       transcriptConsumed: false,
       ready: false,
@@ -536,6 +560,8 @@ export class RuntimeHostSessionObserver {
     }
     if (root && isTerminalTurn(root) && !sameTerminalTurn(previousRoot, root)) {
       this.#publishTerminal(state, root);
+      this.#finishWatchedTurn(state, root.turnId, "completed");
+      void this.#closeIfIdle(state);
       this.#emitSessionsChanged("turn-status-change", state.sessionId, {
         turnId: root.turnId,
       });
@@ -669,14 +695,49 @@ export class RuntimeHostSessionObserver {
   }
 
   async #closeIfIdle(state: ObservedSessionState): Promise<void> {
-    if (state.targets.size > 0) return;
+    if (state.targets.size > 0 || state.watchedTurnIds.size > 0) return;
     await Promise.resolve();
-    if (state.targets.size === 0) await this.#closeState(state);
+    if (state.targets.size === 0 && state.watchedTurnIds.size === 0) {
+      await this.#closeState(state);
+    }
+  }
+
+  #finishWatchedTurn(
+    state: ObservedSessionState,
+    turnId: string,
+    outcome: "completed" | "abandoned",
+  ): void {
+    if (!state.watchedTurnIds.delete(turnId)) return;
+    if (state.watchedTurnIds.size > 0) return;
+    this.#notifyWatchedTurnFinished(state.sessionId, outcome);
+  }
+
+  #finishAllWatchedTurns(
+    state: ObservedSessionState,
+    outcome: "completed" | "abandoned",
+  ): void {
+    if (state.watchedTurnIds.size === 0) return;
+    state.watchedTurnIds.clear();
+    this.#notifyWatchedTurnFinished(state.sessionId, outcome);
+  }
+
+  #notifyWatchedTurnFinished(
+    sessionId: string,
+    outcome: "completed" | "abandoned",
+  ): void {
+    try {
+      void Promise.resolve(
+        this.#onWatchedTurnFinished(sessionId, outcome),
+      ).catch(() => undefined);
+    } catch {
+      // A watched-turn consumer cannot break Session projection or teardown.
+    }
   }
 
   async #closeState(state: ObservedSessionState): Promise<void> {
     if (!state.closing) {
       state.closing = true;
+      this.#finishAllWatchedTurns(state, "abandoned");
       if (this.#states.get(state.sessionId) === state)
         this.#states.delete(state.sessionId);
       for (const group of state.targets.values())

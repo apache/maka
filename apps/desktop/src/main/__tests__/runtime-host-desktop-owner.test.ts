@@ -25,9 +25,11 @@ test('replaces a disconnected generation without falling back to embedded Runtim
   first.disconnect();
   await eventually(() => starts === 2);
   await owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
+  await owner.stopSession('session-1');
 
   assert.equal(first.botMessages, 0);
   assert.equal(second.botMessages, 1);
+  assert.deepEqual(second.stoppedSessions, ['session-1']);
   await owner.close();
   assert.equal(second.closeCalls, 1);
 });
@@ -62,6 +64,7 @@ function candidateHarness() {
   });
   let closeCalls = 0;
   let botMessages = 0;
+  const stoppedSessions: string[] = [];
   const candidate = {
     closed,
     client: {},
@@ -74,6 +77,9 @@ function candidateHarness() {
       closeCalls += 1;
       resolveClosed?.();
     },
+    async stopSession(sessionId: string) {
+      stoppedSessions.push(sessionId);
+    },
   } as unknown as DesktopRuntimeHostCandidate;
   return {
     candidate,
@@ -83,6 +89,9 @@ function candidateHarness() {
     },
     get botMessages() {
       return botMessages;
+    },
+    get stoppedSessions() {
+      return stoppedSessions;
     },
   };
 }

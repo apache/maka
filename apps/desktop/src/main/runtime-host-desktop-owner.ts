@@ -11,6 +11,7 @@ const RECONNECT_DELAY_MS = 250;
 
 export interface RuntimeHostDesktopOwner {
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
+  stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -55,6 +56,12 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     const candidate = this.#candidate;
     if (!candidate || this.#closed) return;
     await candidate.botIncoming.handleBotIncomingMessage(message);
+  }
+
+  async stopSession(sessionId: string): Promise<void> {
+    const candidate = this.#candidate;
+    if (!candidate || this.#closed) return;
+    await candidate.stopSession(sessionId);
   }
 
   close(): Promise<void> {
