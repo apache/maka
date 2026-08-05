@@ -18,4 +18,3 @@ test('rejects unknown owner values instead of falling back', () => {
     /MAKA_DESKTOP_RUNTIME_OWNER must be "embedded" or "runtime-host"/,
   );
 });
-

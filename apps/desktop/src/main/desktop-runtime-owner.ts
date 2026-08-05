@@ -13,4 +13,3 @@ export function resolveDesktopRuntimeOwner(value: string | undefined): DesktopRu
     `${DESKTOP_RUNTIME_OWNER_ENV} must be "embedded" or "runtime-host"`,
   );
 }
-
