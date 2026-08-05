@@ -13,7 +13,6 @@ import {
 } from '@ai-sdk/provider';
 import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
-import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   thinkingOptionsForModel,
@@ -21,11 +20,13 @@ import {
   type ThinkingOptions,
 } from '@maka/core/model-thinking';
 import {
-  createKimiOpenAiTransport,
-  type KimiOpenAiTransportState,
-} from './kimi-openai-transport.js';
+  createOpenAiChatReasoningTransport,
+  createOpenAiChatReasoningTransportState,
+  type OpenAiChatReasoningTransportState,
+} from './openai-chat-reasoning-transport.js';
+import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
-import { resolveModelRuntime } from './model-runtime.js';
+import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 
 export interface ModelFactoryInput {
@@ -33,13 +34,24 @@ export interface ModelFactoryInput {
   apiKey: string;
   modelId: string;
   fetch?: typeof globalThis.fetch;
-  kimiOpenAiTransportState?: KimiOpenAiTransportState;
+  resolvedRuntime?: ResolvedModelRuntime;
+  openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState;
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
 }
 
 const ANTHROPIC_BETA = 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14';
 export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
-  const { connection, apiKey, modelId, fetch, kimiOpenAiTransportState } = input;
-  const { adapter, baseUrl: baseURL, apiProtocol } = resolveModelRuntime(connection, modelId);
+  const {
+    connection,
+    apiKey,
+    modelId,
+    fetch,
+    resolvedRuntime,
+    openAiChatReasoningTransportState,
+    openAiResponsesTransportState,
+  } = input;
+  const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
+  const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
     return createGoogle({ apiKey, baseURL, fetch }).chat(modelId);
@@ -66,15 +78,15 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createOpenAI({
         apiKey,
         baseURL,
-        fetch,
+        fetch: openAiResponsesTransportState?.wrapFetch(fetch ?? globalThis.fetch) ?? fetch,
         headers: openAiCodexHeaders(apiKey),
       }).responses(modelId);
 
     case 'github-copilot': {
-      if (apiProtocol === 'openai-responses') {
+      if (wire === 'openai-responses') {
         return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
       }
-      if (apiProtocol === 'anthropic-messages') {
+      if (wire === 'anthropic-messages') {
         return createAnthropic({
           authToken: apiKey,
           baseURL: anthropicV1BaseUrl(baseURL),
@@ -93,16 +105,12 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       throw new Error(`${connection.providerType} is experimental and not wired yet`);
 
     case 'openai': {
-      const openai = createOpenAI({ apiKey, baseURL, fetch });
-      // Routing is declaration-driven via the ModelInfo.apiProtocol seam: an
-      // account-declared protocol wins (mirrors the github-copilot case above);
-      // otherwise the model's declared OpenAI-adapter protocol decides. gpt-5*
-      // families are Responses-only; everything else uses Chat Completions.
-      const apiProtocol =
-        adapter.apiProtocol ??
-        connection.models?.find((model) => model.id === modelId)?.apiProtocol ??
-        openAiAdapterApiProtocol(modelId, connection.providerType);
-      return apiProtocol === 'openai-responses' ? openai.responses(modelId) : openai.chat(modelId);
+      const openai = createOpenAI({
+        apiKey,
+        baseURL,
+        fetch: openAiResponsesTransportState?.wrapFetch(fetch ?? globalThis.fetch) ?? fetch,
+      });
+      return wire === 'openai-responses' ? openai.responses(modelId) : openai.chat(modelId);
     }
 
     case 'google':
@@ -121,35 +129,31 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           `${connection.providerType} connection ${connection.slug} requires a base URL`,
         );
       }
-      const resolvedApiProtocol =
-        apiProtocol ?? openAiAdapterApiProtocol(modelId, connection.providerType);
-      if (adapter.supportsOpenAiResponses === true && resolvedApiProtocol === 'openai-responses') {
+      if (wire === 'openai-responses') {
         return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
       }
-      const kimiTransport =
-        connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
-          ? createKimiOpenAiTransport(fetch ?? globalThis.fetch, kimiOpenAiTransportState)
-          : undefined;
+      if (reasoningReplay.kind !== 'openai-chat-plaintext') {
+        throw new Error('OpenAI-compatible Chat wire requires plaintext reasoning replay');
+      }
+      const reasoningTransport = createOpenAiChatReasoningTransport(
+        fetch ?? globalThis.fetch,
+        openAiChatReasoningTransportState ??
+          createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
+        connection.providerType === 'kimi-coding-plan',
+      );
+      const transformRequestBody = adapter.replayAssistantReasoningDetails
+        ? composeRequestTransforms(
+            reasoningTransport.transformRequestBody,
+            replayAssistantReasoning('reasoning', true),
+          )
+        : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
         name: openAiCompatibleProviderOptionsName(adapter, connection),
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
-        ...(kimiTransport
-          ? { fetch: kimiTransport.fetch }
-          : adapter.passFetch || fetch
-            ? { fetch }
-            : {}),
-        ...(kimiTransport
-          ? { transformRequestBody: kimiTransport.transformRequestBody }
-          : adapter.replayAssistantReasoningAs
-            ? {
-                transformRequestBody: replayAssistantReasoning(
-                  adapter.replayAssistantReasoningAs,
-                  adapter.replayAssistantReasoningDetails === true,
-                ),
-              }
-            : {}),
+        fetch: reasoningTransport.fetch,
+        transformRequestBody,
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }
           : {}),
@@ -157,6 +161,13 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return adapter.replayAssistantReasoningDetails ? attachReasoningDetails(model) : model;
     }
   }
+}
+
+function composeRequestTransforms(
+  first: (body: Record<string, unknown>) => Record<string, unknown>,
+  second: (body: Record<string, unknown>) => Record<string, unknown>,
+) {
+  return (body: Record<string, unknown>) => second(first(body));
 }
 
 function replayAssistantReasoning(field: 'reasoning', replayDetails: boolean) {

@@ -4,6 +4,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   isMcpStdioConfig,
@@ -71,6 +72,7 @@ export class McpClientManager {
   private readonly now: () => number;
   private readonly clientName: string;
   private readonly clientVersion: string;
+  private toolSnapshotRevisionValue = 0;
 
   constructor(options: McpClientManagerOptions = {}) {
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
@@ -135,6 +137,24 @@ export class McpClientManager {
       .flatMap((status) => status.tools);
   }
 
+  /** Revision of the callable MCP tool bindings, excluding status-only changes. */
+  toolSnapshotRevision(): number {
+    return this.toolSnapshotRevisionValue;
+  }
+
+  bindTool(serverId: string, toolName: string) {
+    const entry = this.requireConnection(serverId);
+    const client = entry.client;
+    if (!client || entry.status.state !== 'connected') {
+      throw new McpToolCallError(serverId, toolName, 'connection generation is unavailable');
+    }
+    return (
+      args: Record<string, unknown>,
+      options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    ): Promise<McpCallResult> =>
+      this.callBoundTool(entry, client, serverId, toolName, args, options);
+  }
+
   async connect(serverId: string): Promise<McpServerStatus> {
     const entry = this.requireConnection(serverId);
     if (entry.config.enabled === false) return cloneStatus(entry.status);
@@ -164,6 +184,7 @@ export class McpClientManager {
   async disconnect(serverId: string, remove = false): Promise<void> {
     const entry = this.connections.get(serverId);
     if (!entry) return;
+    const hadCallableTools = entry.status.state === 'connected' && entry.status.tools.length > 0;
     entry.closing = true;
     entry.connectController?.abort(new Error(`MCP connection closed: ${serverId}`));
     await entry.connectPromise?.catch(() => {});
@@ -172,6 +193,7 @@ export class McpClientManager {
     entry.transport = undefined;
     entry.stdioTransport = undefined;
     entry.connectPromise = undefined;
+    if (hadCallableTools) this.toolSnapshotRevisionValue += 1;
     if (remove) {
       this.connections.delete(serverId);
       return;
@@ -196,6 +218,9 @@ export class McpClientManager {
     if (!entry.client || entry.status.state !== 'connected') await this.connect(serverId);
     if (!entry.client) throw new Error(`MCP server "${serverId}" is not connected`);
     const tools = await listAllTools(entry.client, serverId, this.timeouts.listToolsMs);
+    if (!isDeepStrictEqual(entry.status.tools, tools)) {
+      this.toolSnapshotRevisionValue += 1;
+    }
     this.update(entry, {
       ...entry.status,
       tools,
@@ -215,7 +240,30 @@ export class McpClientManager {
     const entry = this.requireConnection(serverId);
     if (!entry.client || entry.status.state !== 'connected') await this.connect(serverId);
     if (!entry.client) throw new Error(`MCP server "${serverId}" is not connected`);
-    const result = await entry.client.callTool({ name: toolName, arguments: args }, undefined, {
+    return this.callBoundTool(entry, entry.client, serverId, toolName, args, options);
+  }
+
+  private async callBoundTool(
+    entry: Connection,
+    client: Client,
+    serverId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    options: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<McpCallResult> {
+    if (
+      this.connections.get(serverId) !== entry ||
+      entry.closing ||
+      entry.client !== client ||
+      entry.status.state !== 'connected'
+    ) {
+      throw new McpToolCallError(
+        serverId,
+        toolName,
+        'connection generation is no longer available',
+      );
+    }
+    const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
       signal: options.signal,
       timeout: options.timeoutMs ?? this.timeouts.callToolMs,
     });
@@ -292,6 +340,7 @@ export class McpClientManager {
           });
         });
       });
+      if (tools.length > 0) this.toolSnapshotRevisionValue += 1;
       this.update(entry, {
         serverId,
         state: 'connected',
@@ -384,6 +433,9 @@ export class McpClientManager {
 
   private handleTransportClose(entry: Connection): void {
     if (entry.closing) return;
+    if (entry.status.state === 'connected' && entry.status.tools.length > 0) {
+      this.toolSnapshotRevisionValue += 1;
+    }
     entry.client = undefined;
     entry.transport = undefined;
     entry.stdioTransport = undefined;

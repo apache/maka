@@ -15,7 +15,14 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { resolveBootstrapConnections } from '../bootstrap-connections.js';
+import {
+  OPENCODE_FREE_BOOTSTRAP_VERSION,
+  OPENCODE_FREE_DEFAULT_MODEL,
+  OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
+  resolveBootstrapConnections,
+  resolveOpenCodeFreeBootstrapMigration,
+} from '../bootstrap-connections.js';
+import type { LlmConnection } from '../llm-connections.js';
 
 describe('resolveBootstrapConnections — zero-credential default seed', () => {
   it('selects one default while keeping the credential-free fallback', () => {
@@ -29,7 +36,10 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
     for (const [env, defaultSlug, excludesOpenAi] of cases) {
       const seeds = resolveBootstrapConnections(env);
       const free = seeds.find((seed) => seed.slug === 'opencode-free');
-      assert.equal(free?.defaultModel, 'big-pickle');
+      assert.equal(free?.defaultModel, OPENCODE_FREE_DEFAULT_MODEL);
+      assert.deepEqual(free?.extras, {
+        makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
+      });
       assert.deepEqual(
         seeds.filter((seed) => seed.isDefault).map((seed) => seed.slug),
         [defaultSlug],
@@ -38,6 +48,39 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
         seeds.some((seed) => seed.slug === 'env-openai'),
         !excludesOpenAi && 'OPENAI_API_KEY' in env,
       );
+    }
+  });
+
+  it('migrates only the untouched historical OpenCode Free seed', () => {
+    const legacy: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      defaultModel: OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
+      enabledModelIds: [OPENCODE_FREE_LEGACY_DEFAULT_MODEL],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const migration = resolveOpenCodeFreeBootstrapMigration(legacy);
+    assert.deepEqual(migration, {
+      defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
+      enabledModelIds: [OPENCODE_FREE_DEFAULT_MODEL],
+      extras: {
+        makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
+      },
+    });
+    assert.equal(resolveOpenCodeFreeBootstrapMigration({ ...legacy, ...migration }), undefined);
+
+    for (const customized of [
+      { ...legacy, name: 'My free connection' },
+      { ...legacy, baseUrl: 'https://custom.example/v1' },
+      { ...legacy, enabledModelIds: [OPENCODE_FREE_LEGACY_DEFAULT_MODEL, 'custom-free'] },
+      { ...legacy, models: [{ id: OPENCODE_FREE_LEGACY_DEFAULT_MODEL }] },
+      { ...legacy, extras: { owner: 'user' } },
+    ]) {
+      assert.equal(resolveOpenCodeFreeBootstrapMigration(customized), undefined);
     }
   });
 });

@@ -89,7 +89,7 @@ export const EmptyCatalog: Story = {
   ),
 };
 
-// Real path: quiet composer left footer — model + adjacent thinking Selector.
+// Real path: quiet composer left footer — model + adjacent thinking menu.
 export const ThinkingLevelSeparate: Story = {
   render: function ThinkingLevelSeparateRender() {
     const [value, setValue] = useState('anthropic-team:claude-sonnet-4');
@@ -113,8 +113,8 @@ export const ThinkingLevelSeparate: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const thinking = within(canvasElement).getByRole('combobox', { name: '思考级别' });
+    const thinking = within(canvasElement).getByRole('button', { name: /思考级别/ });
     await userEvent.click(thinking);
-    await within(document.body).findByRole('option', { name: '中' });
+    await within(document.body).findByRole('menuitem', { name: '中' });
   },
 };

@@ -1,0 +1,99 @@
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+
+import {
+  mergeOpenAiResponsesProviderOptions,
+  planOpenAiResponsesContinuation,
+} from '../openai-responses-continuation.js';
+import type { ModelMessage } from '../model-protocol.js';
+
+const user = (text: string): ModelMessage => ({ role: 'user', content: text });
+const assistant = (text: string): ModelMessage => ({
+  role: 'assistant',
+  content: [{ type: 'text', text, providerOptions: { openai: { itemId: `msg-${text}` } } }],
+});
+const tool = (toolCallId: string, value: string): ModelMessage => ({
+  role: 'tool',
+  content: [
+    {
+      type: 'tool-result',
+      toolCallId,
+      toolName: 'shell',
+      output: { type: 'text', value },
+    },
+  ],
+});
+
+describe('OpenAI Responses semantic continuation', () => {
+  test('sends only messages after the exact prior request and response', () => {
+    const priorRequest = [user('fix it')];
+    const priorResponse = [assistant('calling shell')];
+    const delta = [tool('call-1', 'ok')];
+
+    assert.deepEqual(
+      planOpenAiResponsesContinuation([...priorRequest, ...priorResponse, ...delta], {
+        requestMessages: priorRequest,
+        responseMessages: priorResponse,
+        responseId: 'resp-1',
+      }),
+      { messages: delta, previousResponseId: 'resp-1' },
+    );
+  });
+
+  test('uses a full request when any prior request message changed', () => {
+    const messages = [user('changed'), assistant('calling shell'), tool('call-1', 'ok')];
+    assert.deepEqual(
+      planOpenAiResponsesContinuation(messages, {
+        requestMessages: [user('fix it')],
+        responseMessages: [assistant('calling shell')],
+        responseId: 'resp-1',
+      }),
+      { messages },
+    );
+  });
+
+  test('uses a full request when the replayed response is not exact', () => {
+    const messages = [user('fix it'), assistant('different'), tool('call-1', 'ok')];
+    assert.deepEqual(
+      planOpenAiResponsesContinuation(messages, {
+        requestMessages: [user('fix it')],
+        responseMessages: [assistant('calling shell')],
+        responseId: 'resp-1',
+      }),
+      { messages },
+    );
+  });
+
+  test('does not create an empty continuation', () => {
+    const messages = [user('fix it'), assistant('done')];
+    assert.deepEqual(
+      planOpenAiResponsesContinuation(messages, {
+        requestMessages: [user('fix it')],
+        responseMessages: [assistant('done')],
+        responseId: 'resp-1',
+      }),
+      { messages },
+    );
+  });
+
+  test('adds a session-stable cache key while preserving explicit OpenAI options', () => {
+    assert.deepEqual(
+      mergeOpenAiResponsesProviderOptions(
+        { openai: { store: false, reasoningEffort: 'high' }, other: { keep: true } },
+        'session-1',
+      ),
+      {
+        openai: { store: false, reasoningEffort: 'high', promptCacheKey: 'maka:session-1' },
+        other: { keep: true },
+      },
+    );
+  });
+
+  test('never overwrites an explicit cache key or mutates caller options', () => {
+    const input = { openai: { store: false, promptCacheKey: 'caller-key' } };
+    const merged = mergeOpenAiResponsesProviderOptions(input, 'session-1');
+    assert.deepEqual(merged, input);
+    assert.notEqual(merged, input);
+    assert.notEqual(merged.openai, input.openai);
+  });
+});

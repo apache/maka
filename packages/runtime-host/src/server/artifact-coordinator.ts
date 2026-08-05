@@ -10,6 +10,7 @@ import {
 import {
   ARTIFACT_PAGE_MAX_ITEMS,
   ARTIFACT_PREVIEW_MAX_BYTES,
+  ARTIFACT_READ_CHUNK_MAX_BYTES,
   ARTIFACT_RESULT_MAX_BYTES,
   type ArtifactIngestInput,
   type ArtifactIngestResult,
@@ -318,6 +319,33 @@ export class HostArtifactCoordinator {
             sessionId: input.sessionId,
             artifactId: input.artifactId,
             preview,
+          }),
+        );
+      }
+
+      if (input.kind === 'read_chunk') {
+        const chunk = await this.#store.readChunkInSession(input.sessionId, input.artifactId, {
+          offset: input.offset,
+          maxBytes: ARTIFACT_READ_CHUNK_MAX_BYTES,
+        });
+        if (!chunk.ok) {
+          if (chunk.reason === 'not_found' || chunk.reason === 'deleted') {
+            return notFound('artifact.query', 'Artifact was not found');
+          }
+          if (chunk.reason === 'out_of_range') {
+            return invalidQuery('Artifact chunk offset is invalid');
+          }
+          return persistenceFailure('artifact.query', 'Artifact content is unavailable');
+        }
+        return querySuccess(
+          encodeArtifactQueryResult({
+            kind: 'chunk',
+            sessionId: input.sessionId,
+            artifactId: input.artifactId,
+            offset: chunk.offset,
+            totalBytes: chunk.totalBytes,
+            chunkBase64: Buffer.from(chunk.bytes).toString('base64'),
+            nextOffset: chunk.nextOffset,
           }),
         );
       }

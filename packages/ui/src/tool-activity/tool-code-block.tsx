@@ -21,7 +21,11 @@ export function ToolCodeBlock(props: {
       // size" here — it was a habit that happened to be a density knob.
       maxHeight={props.maxHeight ?? '208px'}
       width="100%"
-      size="sm"
+      // Astryx's `sm` is the supporting tier (12px); `md` is `--text-code-size`,
+      // which is the same 0.875rem the product's own `--maka-text-code` well
+      // resolves to. A tool detail that shows a diff beside a command surface
+      // was rendering the two at 12px and 14px with different leadings — the
+      // `sm` pin was the whole cause, so drop it rather than restyle either.
       isWrapped
     />
   );

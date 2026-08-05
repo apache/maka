@@ -37,6 +37,22 @@ function pipeOutput(stdout = '', stderr = '') {
   };
 }
 
+// Background Bash (`run_in_background: true`) settles as `shell_run`, not
+// `terminal`. It shares the command surface with the foreground and live paths,
+// so the three belong in one story to compare.
+const shellRunResult = {
+  kind: 'shell_run',
+  mode: 'pipes',
+  ref: 'shell-7f21',
+  cwd: '/Users/yuhan/workspace/oss/maka-agent',
+  cmd: 'npm run -w @maka/ui test -- --watch',
+  status: 'running',
+  startedAt: NOW - 1_400,
+  updatedAt: NOW,
+  revision: 3,
+  output: pipeOutput('watching packages/ui/src for changes\n341 passing\n'),
+} satisfies ToolResultContent;
+
 const fileDiffResult = {
   kind: 'file_diff',
   paths: ['packages/ui/src/tool-activity.tsx', 'packages/ui/stories/tool-activity.stories.tsx'],
@@ -310,6 +326,51 @@ export const terminalAndLiveOutputItems = [
     outputChunks: liveOutputChunks,
     outputTruncated: true,
     durationMs: 8_120,
+  }),
+] satisfies ToolActivityItem[];
+
+/** The same shell command in all three shapes it can reach the detail panel in. */
+export const shellCommandSurfaceItems = [
+  toolItem({
+    toolUseId: 'shell-surface-live',
+    toolName: 'Bash',
+    displayName: 'Live output',
+    intent: 'Stream interleaved stdout and stderr while the tool runs.',
+    status: 'running',
+    args: { command: 'npm run build' },
+    outputChunks: liveOutputChunks,
+    outputTruncated: true,
+    durationMs: 8_120,
+  }),
+  toolItem({
+    toolUseId: 'shell-surface-terminal',
+    toolName: 'Bash',
+    displayName: 'Storybook build',
+    intent: 'Foreground run that settled with long bounded output.',
+    status: 'completed',
+    args: { command: terminalResult.cmd },
+    result: terminalResult,
+    durationMs: 31_240,
+  }),
+  toolItem({
+    toolUseId: 'shell-surface-background',
+    toolName: 'Bash',
+    displayName: 'Background watcher',
+    intent: 'Background run tracked by ref instead of returning inline.',
+    status: 'running',
+    args: { command: shellRunResult.cmd, run_in_background: true },
+    result: shellRunResult,
+    durationMs: 1_400,
+  }),
+  toolItem({
+    toolUseId: 'shell-surface-failed',
+    toolName: 'Bash',
+    displayName: 'Failing test',
+    intent: 'Failure keeps the same surface and only re-tints its border.',
+    status: 'errored',
+    args: { command: terminalFailureResult.cmd },
+    result: terminalFailureResult,
+    durationMs: 2_480,
   }),
 ] satisfies ToolActivityItem[];
 

@@ -8,6 +8,7 @@
   "exports": {
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
+    "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js"
   },
   "scripts": {

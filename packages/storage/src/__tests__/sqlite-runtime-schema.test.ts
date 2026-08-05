@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import { migrateSqliteRuntimeDatabase } from '../sqlite-runtime-schema.js';
+import {
+  SQLITE_RUNTIME_SCHEMA_VERSION,
+  migrateSqliteRuntimeDatabase,
+} from '../sqlite-runtime-schema.js';
 
 describe('SQLite runtime schema migration', () => {
   it('uses the locked current version after an optimistic stale read', () => {
@@ -13,7 +16,9 @@ describe('SQLite runtime schema migration', () => {
         return {
           get() {
             versionReads += 1;
-            return { user_version: versionReads === 1 ? 4 : 9 };
+            return {
+              user_version: versionReads === 1 ? 4 : SQLITE_RUNTIME_SCHEMA_VERSION,
+            };
           },
         };
       },

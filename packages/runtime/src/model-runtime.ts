@@ -5,13 +5,31 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { lookupModelProviderOverride } from '@maka/core/model-metadata';
+import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+
+export type ModelRuntimeWire =
+  | 'anthropic-messages'
+  | 'openai-chat'
+  | 'openai-responses'
+  | 'google-generate'
+  | 'cohere-v2'
+  | 'unavailable';
+
+export type ReasoningReplayContract =
+  | { kind: 'none' }
+  | { kind: 'anthropic-signed' }
+  | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
+  | { kind: 'openai-responses-item' };
 
 export interface ResolvedModelRuntime {
   adapter: ProviderRuntimeAdapter;
   baseUrl: string;
   /** Account-advertised request wire for adapters that route per model. */
   apiProtocol?: ModelInfo['apiProtocol'];
+  /** Effective wire after account, adapter, and model defaults are resolved. */
+  wire: ModelRuntimeWire;
+  /** Durable reasoning replay semantics carried by that wire. */
+  reasoningReplay: ReasoningReplayContract;
 }
 
 export interface ModelRuntimeConnection {
@@ -51,7 +69,6 @@ export function resolveModelRuntime(
           kind: 'openai-compatible',
           name: 'provider',
           includeUsage: true,
-          passFetch: true,
         } as const)
       : override
         ? runtimeAdapterOverride(override.npm)
@@ -60,6 +77,7 @@ export function resolveModelRuntime(
   const resolvedBaseUrl = configuredBaseUrl
     ? effectiveBaseUrl(connection)
     : (override?.api ?? effectiveBaseUrl(connection));
+  const wire = resolveModelRuntimeWire(connection.providerType, modelId, adapter, apiProtocol);
   return {
     adapter,
     baseUrl:
@@ -67,7 +85,71 @@ export function resolveModelRuntime(
         ? kimiOpenAiBaseUrl(resolvedBaseUrl)
         : resolvedBaseUrl,
     ...(apiProtocol ? { apiProtocol } : {}),
+    wire,
+    reasoningReplay: reasoningReplayContract(adapter, wire),
   };
+}
+
+function resolveModelRuntimeWire(
+  providerType: ProviderType,
+  modelId: string,
+  adapter: ProviderRuntimeAdapter,
+  apiProtocol: ModelInfo['apiProtocol'] | undefined,
+): ModelRuntimeWire {
+  switch (adapter.kind) {
+    case 'anthropic':
+    case 'claude-subscription':
+      return 'anthropic-messages';
+    case 'openai-codex':
+      return 'openai-responses';
+    case 'github-copilot':
+      return apiProtocol === 'anthropic-messages'
+        ? 'anthropic-messages'
+        : apiProtocol === 'openai-responses'
+          ? 'openai-responses'
+          : 'openai-chat';
+    case 'openai':
+      return (adapter.apiProtocol ??
+        apiProtocol ??
+        openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
+        ? 'openai-responses'
+        : 'openai-chat';
+    case 'openai-compatible':
+      return adapter.supportsOpenAiResponses === true &&
+        (apiProtocol ?? openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
+        ? 'openai-responses'
+        : 'openai-chat';
+    case 'google':
+      return 'google-generate';
+    case 'cohere':
+      return 'cohere-v2';
+    case 'unavailable':
+      return 'unavailable';
+  }
+}
+
+function reasoningReplayContract(
+  adapter: ProviderRuntimeAdapter,
+  wire: ModelRuntimeWire,
+): ReasoningReplayContract {
+  switch (wire) {
+    case 'anthropic-messages':
+      return { kind: 'anthropic-signed' };
+    case 'openai-responses':
+      return { kind: 'openai-responses-item' };
+    case 'openai-chat':
+      return adapter.kind === 'openai-compatible'
+        ? {
+            kind: 'openai-chat-plaintext',
+            requestField:
+              adapter.replayAssistantReasoningAs === 'reasoning' ? 'reasoning' : 'observed',
+          }
+        : { kind: 'none' };
+    case 'google-generate':
+    case 'cohere-v2':
+    case 'unavailable':
+      return { kind: 'none' };
+  }
 }
 
 function kimiOpenAiBaseUrl(baseUrl: string): string {

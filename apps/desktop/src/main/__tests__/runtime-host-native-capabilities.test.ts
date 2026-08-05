@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ComputerUseToolSet, MakaTool, MakaToolContext } from '@maka/runtime';
+import {
+  buildComputerUseTools,
+  type ComputerUseToolSet,
+  type CuDispatchBackend,
+  type MakaTool,
+  type MakaToolContext,
+} from '@maka/runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   decodeClientCapabilityReplaceInput,
@@ -52,6 +58,27 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
       offers: provider.offers(),
     }),
   );
+});
+
+test('publishes the real Computer Use schema through the Client Capability protocol', () => {
+  const computerUseTools = buildComputerUseTools({ backend: computerBackend() });
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools,
+    releaseComputerUseSession: (sessionId) => computerUseTools.clearSession(sessionId),
+  });
+
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
+  const coordinateSchema = provider.offers()[0]?.tools[0]?.inputSchema.properties as
+    | Record<string, { items?: unknown }>
+    | undefined;
+  assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
 });
 
 test('validates before admission and invokes the exact offered tool with Host context', async () => {
@@ -210,6 +237,81 @@ test('does not advertise unavailable capability groups or dispatch unknown ident
   assert.equal(admitted, false);
 });
 
+test('dispatches through the same immutable tool snapshot it advertised', async () => {
+  let additionalGroups = [
+    {
+      offerId: 'desktop_mcp',
+      label: 'MCP',
+      description: 'MCP tools',
+      tools: [tool('old_tool', z.object({}), async () => 'old implementation')],
+    },
+  ];
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => additionalGroups,
+  });
+  additionalGroups = [
+    {
+      offerId: 'desktop_mcp',
+      label: 'MCP',
+      description: 'MCP tools',
+      tools: [tool('new_tool', z.object({}), async () => 'new implementation')],
+    },
+  ];
+
+  assert.deepEqual(provider.offers()[0]?.tools.map(({ name }) => name), [
+    'old_tool',
+  ]);
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp',
+        serverId: 'desktop_mcp',
+        toolName: 'old_tool',
+      }),
+    ),
+    { content: [{ type: 'text', text: 'old implementation' }] },
+  );
+  await assert.rejects(
+    () =>
+      call(
+        provider,
+        capabilityFrame({
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: 'new_tool',
+        }),
+      ),
+    /not offered/u,
+  );
+});
+
+test('reports provider retirement once after its registration is released', async () => {
+  let retirements = 0;
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [tool('snapshot', z.object({}), async () => 'snapshot')],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+    },
+    {
+      onClosed: () => {
+        retirements += 1;
+      },
+    },
+  );
+
+  await provider.close();
+  await provider.close();
+
+  assert.equal(retirements, 1);
+});
+
 test('settles every native Session cleanup before reporting a release failure', async () => {
   let resolveComputerRelease: (() => void) | undefined;
   const computerRelease = new Promise<void>((resolve) => {
@@ -322,6 +424,17 @@ function computerTools(
   tools.clearSession = clearSession;
   tools.sessionEvents = {} as ComputerUseToolSet['sessionEvents'];
   return tools;
+}
+
+function computerBackend(): CuDispatchBackend {
+  return {
+    async preflight() {
+      return { accessibility: true, screenRecording: true };
+    },
+    async run() {
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    },
+  };
 }
 
 function capabilityFrame(overrides: Partial<ClientCapabilityCallFrame> = {}): ClientCapabilityCallFrame {

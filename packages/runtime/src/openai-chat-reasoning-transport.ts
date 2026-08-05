@@ -1,65 +1,77 @@
-interface KimiOpenAiTransport {
+export interface OpenAiChatReasoningTransport {
   fetch: typeof globalThis.fetch;
   transformRequestBody: (body: Record<string, unknown>) => Record<string, unknown>;
 }
 
-export type KimiReasoningField = 'reasoning_content' | 'reasoning';
+export type OpenAiChatReasoningField = 'reasoning_content' | 'reasoning';
 
-const EMPTY_REASONING_MARKER = '\0MAKA_KIMI_EMPTY_REASONING\0';
+const EMPTY_REASONING_MARKER = '\0MAKA_OPENAI_CHAT_EMPTY_REASONING\0';
 
-export interface KimiOpenAiTransportState {
-  reasoningField: KimiReasoningField;
+export interface OpenAiChatReasoningTransportState {
+  reasoningField: OpenAiChatReasoningField;
+  requestField: 'observed' | 'reasoning';
 }
 
 const MAKA_PROVIDER_OPTIONS_NAMESPACE = 'maka';
 
-export function kimiReasoningFieldProviderOptions(
-  field: KimiReasoningField,
+export function openAiChatReasoningFieldProviderOptions(
+  field: OpenAiChatReasoningField,
 ): Record<string, Record<string, string>> {
-  return { [MAKA_PROVIDER_OPTIONS_NAMESPACE]: { kimiReasoningField: field } };
+  return { [MAKA_PROVIDER_OPTIONS_NAMESPACE]: { openAiChatReasoningField: field } };
 }
 
-export function kimiReasoningFieldFromProviderOptions(
+export function openAiChatReasoningFieldFromProviderOptions(
   providerOptions: Record<string, unknown> | undefined,
-): KimiReasoningField | undefined {
+): OpenAiChatReasoningField | undefined {
   const maka = providerOptions?.[MAKA_PROVIDER_OPTIONS_NAMESPACE];
   if (!isRecord(maka)) return undefined;
-  return maka.kimiReasoningField === 'reasoning' || maka.kimiReasoningField === 'reasoning_content'
-    ? maka.kimiReasoningField
-    : undefined;
+  const field = maka.openAiChatReasoningField ?? maka.kimiReasoningField;
+  return field === 'reasoning' || field === 'reasoning_content' ? field : undefined;
 }
 
-export function createKimiOpenAiTransportState(): KimiOpenAiTransportState {
-  return { reasoningField: 'reasoning_content' };
+export function createOpenAiChatReasoningTransportState(
+  requestField: OpenAiChatReasoningTransportState['requestField'] = 'observed',
+): OpenAiChatReasoningTransportState {
+  return { reasoningField: 'reasoning_content', requestField };
 }
 
-export function restoreKimiEmptyReasoning(text: string): string {
+export function restoreOpenAiChatEmptyReasoning(text: string): string {
   return text === EMPTY_REASONING_MARKER ? '' : text;
 }
 
-export function createKimiOpenAiTransport(
+export function createOpenAiChatReasoningTransport(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
-  state: KimiOpenAiTransportState = createKimiOpenAiTransportState(),
-): KimiOpenAiTransport {
+  state: OpenAiChatReasoningTransportState = createOpenAiChatReasoningTransportState(),
+  normalizeUsage = false,
+): OpenAiChatReasoningTransport {
   return {
     fetch: async (input, init) =>
-      normalizeKimiOpenAiResponse(await fetchImpl(input, init), (observed) => {
-        state.reasoningField = observed;
-      }),
-    transformRequestBody: (body) => replayAssistantReasoning(body, state.reasoningField),
+      normalizeOpenAiChatReasoningResponse(
+        await fetchImpl(input, init),
+        (observed) => {
+          state.reasoningField = observed;
+        },
+        normalizeUsage,
+      ),
+    transformRequestBody: (body) =>
+      replayAssistantReasoning(
+        body,
+        state.requestField === 'reasoning' ? 'reasoning' : state.reasoningField,
+      ),
   };
 }
 
-async function normalizeKimiOpenAiResponse(
+async function normalizeOpenAiChatReasoningResponse(
   response: Response,
-  observeReasoning: (field: KimiReasoningField) => void,
+  observeReasoning: (field: OpenAiChatReasoningField) => void,
+  normalizeUsage: boolean,
 ): Promise<Response> {
   if (!response.ok) return response;
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
   if (contentType.includes('text/event-stream') && response.body) {
     return responseWithBody(
       response,
-      response.body.pipeThrough(kimiSseNormalizer(observeReasoning)),
+      response.body.pipeThrough(openAiChatSseNormalizer(observeReasoning, normalizeUsage)),
     );
   }
   if (contentType.includes('application/json')) {
@@ -72,14 +84,15 @@ async function normalizeKimiOpenAiResponse(
     }
     return responseWithBody(
       response,
-      JSON.stringify(normalizeKimiPayload(parsed, observeReasoning)),
+      JSON.stringify(normalizeOpenAiChatPayload(parsed, observeReasoning, normalizeUsage)),
     );
   }
   return response;
 }
 
-function kimiSseNormalizer(
-  observeReasoning: (field: KimiReasoningField) => void,
+function openAiChatSseNormalizer(
+  observeReasoning: (field: OpenAiChatReasoningField) => void,
+  normalizeUsage: boolean,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -90,7 +103,9 @@ function kimiSseNormalizer(
       let newline = buffered.indexOf('\n');
       while (newline >= 0) {
         controller.enqueue(
-          encoder.encode(normalizeSseLine(buffered.slice(0, newline + 1), observeReasoning)),
+          encoder.encode(
+            normalizeSseLine(buffered.slice(0, newline + 1), observeReasoning, normalizeUsage),
+          ),
         );
         buffered = buffered.slice(newline + 1);
         newline = buffered.indexOf('\n');
@@ -99,7 +114,9 @@ function kimiSseNormalizer(
     flush(controller) {
       buffered += decoder.decode();
       if (buffered) {
-        controller.enqueue(encoder.encode(normalizeSseLine(buffered, observeReasoning)));
+        controller.enqueue(
+          encoder.encode(normalizeSseLine(buffered, observeReasoning, normalizeUsage)),
+        );
       }
     },
   });
@@ -107,25 +124,30 @@ function kimiSseNormalizer(
 
 function normalizeSseLine(
   line: string,
-  observeReasoning: (field: KimiReasoningField) => void,
+  observeReasoning: (field: OpenAiChatReasoningField) => void,
+  normalizeUsage: boolean,
 ): string {
   const newline = line.endsWith('\r\n') ? '\r\n' : line.endsWith('\n') ? '\n' : '';
   const body = newline ? line.slice(0, -newline.length) : line;
   const match = /^(\s*data:\s*)(.*)$/.exec(body);
   if (!match || match[2] === '[DONE]') return line;
   try {
-    return `${match[1]}${JSON.stringify(normalizeKimiPayload(JSON.parse(match[2]!), observeReasoning))}${newline}`;
+    return `${match[1]}${JSON.stringify(
+      normalizeOpenAiChatPayload(JSON.parse(match[2]!), observeReasoning, normalizeUsage),
+    )}${newline}`;
   } catch {
     return line;
   }
 }
 
-function normalizeKimiPayload(
+function normalizeOpenAiChatPayload(
   value: unknown,
-  observeReasoning: (field: KimiReasoningField) => void,
+  observeReasoning: (field: OpenAiChatReasoningField) => void,
+  normalizeUsage: boolean,
 ): unknown {
   if (!isRecord(value)) return value;
-  const normalizedValue = normalizeKimiReasoningFields(value, observeReasoning);
+  const normalizedValue = normalizeOpenAiChatReasoningFields(value, observeReasoning);
+  if (!normalizeUsage) return normalizedValue;
   const nestedUsage = Array.isArray(normalizedValue.choices)
     ? normalizedValue.choices.find((choice) => isRecord(choice) && isRecord(choice.usage))
     : undefined;
@@ -141,9 +163,9 @@ function normalizeKimiPayload(
     : { ...normalizedValue, usage: normalizedUsage };
 }
 
-function normalizeKimiReasoningFields(
+function normalizeOpenAiChatReasoningFields(
   payload: Record<string, unknown>,
-  observe: (field: KimiReasoningField) => void,
+  observe: (field: OpenAiChatReasoningField) => void,
 ): Record<string, unknown> {
   if (!Array.isArray(payload.choices)) return payload;
   let changed = false;
@@ -175,14 +197,14 @@ function normalizeKimiReasoningFields(
 
 function replayAssistantReasoning(
   body: Record<string, unknown>,
-  field: KimiReasoningField,
+  field: OpenAiChatReasoningField,
 ): Record<string, unknown> {
   if (!Array.isArray(body.messages)) return body;
   let changed = false;
   const messages = body.messages.map((value) => {
     if (!isRecord(value) || value.role !== 'assistant') return value;
     if (typeof value.reasoning_content !== 'string') return value;
-    const restoredReasoning = restoreKimiEmptyReasoning(value.reasoning_content);
+    const restoredReasoning = restoreOpenAiChatEmptyReasoning(value.reasoning_content);
     if (field === 'reasoning_content') {
       if (restoredReasoning === value.reasoning_content) return value;
       changed = true;

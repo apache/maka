@@ -17,12 +17,12 @@ test('Daily Review protocol exposes closed query and command operations', () => 
     decodeRequestFrame({
       requestId: 'request-1',
       operation: 'daily-review.query',
-      input: { kind: 'archives', beforeArchiveId: null, limit: 10 },
+      input: { kind: 'summary', daySpan: 14, offsetDays: -1 },
     }),
     {
       requestId: 'request-1',
       operation: 'daily-review.query',
-      input: { kind: 'archives', beforeArchiveId: null, limit: 10 },
+      input: { kind: 'summary', daySpan: 14, offsetDays: -1 },
     },
   );
   assert.deepEqual(

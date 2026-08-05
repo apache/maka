@@ -101,6 +101,12 @@ function hostInspectBackend(connection: RuntimeHostConnection): InspectCommandBa
               },
         ),
       );
+      if (result.kind !== 'session' && result.kind !== 'agent_run') {
+        throw new LiveInspectError('Runtime Host returned a paginated trace to a document query');
+      }
+      if (candidate.kind === 'session' ? result.kind !== 'session' : result.kind !== 'agent_run') {
+        throw new LiveInspectError('Runtime Host returned a different inspect document kind');
+      }
       return result.document;
     },
   };

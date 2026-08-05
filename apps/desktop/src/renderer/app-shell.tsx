@@ -42,6 +42,7 @@ import {
   SkillsPage,
   type SessionViewMode,
   type TurnFooterActionMeta,
+  type WorkspacePickerModel,
   useToast,
   activeInteractionFor,
   enqueueInteraction,
@@ -1285,8 +1286,6 @@ function AppShellContent({
     selectedProjectId,
     currentProjectId,
     currentProject,
-    branchList,
-    branchPending,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
@@ -1304,8 +1303,6 @@ function AppShellContent({
     openProjectFolder,
     openWorkspaceFolder,
     openSkillsFolder,
-    listGitBranches,
-    checkoutGitBranch,
   } = useAppShellProjectContext({
     uiLocale,
     rendererMountedRef,
@@ -1317,6 +1314,30 @@ function AppShellContent({
     },
     toastApi,
   });
+  // Where a NEW chat starts. Built unconditionally and handed to the composer,
+  // which renders it only while no session owns it — the project is fixed once
+  // the first message creates one, so there is nothing to pick after that.
+  const workspacePicker: WorkspacePickerModel = {
+    label:
+      currentProject?.name ??
+      (currentProjectId === null
+        ? getConversationCopy(uiLocale).workspace.noProject
+        : undefined),
+    branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
+    pending: projectPickerPending,
+    projects: projects.filter((project) => project.archivedAt === undefined),
+    selectedProjectId: currentProjectId,
+    onAdd: () => {
+      void addProject();
+    },
+    onSelectProject: (projectId: string) => {
+      void selectProject(projectId);
+    },
+    onRelink: (projectId: string) => {
+      void relinkProject(projectId, true);
+    },
+    onSelectNoProject: selectNoProject,
+  };
   const sessionProjectGroups = useMemo(
     () => deriveProjectGroups(visibleSessions, projects, uiLocale),
     [visibleSessions, projects, uiLocale],
@@ -2233,6 +2254,7 @@ function AppShellContent({
                     ) : null}
                     {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
                     <ChatComposerRegion
+                  workspacePicker={workspacePicker}
                   composerRef={composerRef}
                   active={navSelection.section === 'sessions'}
                   onboardingComposerHidden={
@@ -2324,42 +2346,6 @@ function AppShellContent({
                   onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
                   onOpenModelSettings={() => openSettingsSection('models')}
                   noModelConnection={connections.length === 0}
-                  workspacePicker={{
-                    label:
-                      currentProject?.name ??
-                      (currentProjectId === null
-                        ? getConversationCopy(uiLocale).workspace.noProject
-                        : undefined),
-                    branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
-                    pending: projectPickerPending,
-                    projects: projects.filter((project) => project.archivedAt === undefined),
-                    selectedProjectId: currentProjectId,
-                    onAdd: () => {
-                      void addProject();
-                    },
-                    onSelectProject: (projectId: string) => {
-                      void selectProject(projectId);
-                    },
-                    onRelink: (projectId: string) => {
-                      void relinkProject(projectId, true);
-                    },
-                    onSelectNoProject: selectNoProject,
-                  }}
-                  branchPicker={
-                    currentProjectId !== null && projectInfo?.projectGit.isGitRepo
-                      ? {
-                          branch: projectInfo.projectGit.branch ?? null,
-                          pending: branchPending,
-                          branches: branchList?.branches ?? [],
-                          onOpen: () => {
-                            void listGitBranches(activeId);
-                          },
-                          onSelect: (branch: string) => {
-                            void checkoutGitBranch(branch, activeId);
-                          },
-                        }
-                      : undefined
-                  }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
                   // Every "cannot change this mid-turn" gate reads `turnActive`,

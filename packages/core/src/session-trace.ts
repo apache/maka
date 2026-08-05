@@ -1,4 +1,19 @@
-import type { ModelCallAttemptStatus, ModelCallKind } from './model-call-attempt.js';
+import {
+  MODEL_CALL_ATTEMPT_STATUSES,
+  MODEL_CALL_COST_BASES,
+  MODEL_CALL_KINDS,
+  MODEL_CALL_USAGE_BASES,
+  type ModelCallAttemptStatus,
+  type ModelCallKind,
+} from './model-call-attempt.js';
+import {
+  defineObjectShape,
+  hasExactShape,
+  isFiniteNumber,
+  isOptionalString,
+  isRecord,
+  isStringArray,
+} from './record-schema.js';
 
 /**
  * Per-session causal trace: what happened inside a session's runs, in order,
@@ -250,6 +265,276 @@ export interface SessionTrace {
   turns: TurnTrace[];
   totals: TraceTotals;
   coverage: SessionTraceCoverage;
+}
+
+const SESSION_TRACE_SHAPE = defineObjectShape<SessionTrace>()(
+  ['schemaVersion', 'sessionId', 'turns', 'totals', 'coverage'],
+  [],
+);
+const TRACE_COVERAGE_SHAPE = defineObjectShape<SessionTraceCoverage>()(
+  [
+    'modelCalls',
+    'turnsMissingModelCalls',
+    'unreadableRecords',
+    'turnsWithFewerModelCallsThanSteps',
+  ],
+  [],
+);
+const TRACE_TOTALS_SHAPE = defineObjectShape<TraceTotals>()(
+  [
+    'durationMs',
+    'modelAttempts',
+    'retries',
+    'compactions',
+    'inputTokens',
+    'outputTokens',
+    'unpricedAttempts',
+  ],
+  ['costUsd'],
+);
+const TURN_TRACE_SHAPE = defineObjectShape<TurnTrace>()(
+  ['turnId', 'runId', 'startedAt', 'endedAt', 'durationMs', 'steps', 'totals'],
+  ['failure'],
+);
+const TRACE_FAILURE_SHAPE = defineObjectShape<TraceFailureAttribution>()(
+  ['code'],
+  ['message', 'attributedToStepId'],
+);
+const MODEL_CALL_STEP_SHAPE = defineObjectShape<TraceModelCallStep>()(
+  [
+    'kind',
+    'id',
+    'turnId',
+    'runId',
+    'startedAt',
+    'endedAt',
+    'durationMs',
+    'callKind',
+    'providerId',
+    'modelId',
+    'step',
+    'attempts',
+    'status',
+  ],
+  ['connectionSlug', 'costUsd'],
+);
+const MODEL_ATTEMPT_SHAPE = defineObjectShape<TraceModelAttempt>()(
+  [
+    'attemptId',
+    'attempt',
+    'status',
+    'startedAt',
+    'completedAt',
+    'latencyMs',
+    'costBasis',
+    'usageBasis',
+  ],
+  [
+    'timeToFirstTokenMs',
+    'finishReason',
+    'errorClass',
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'reasoningTokens',
+    'costUsd',
+  ],
+);
+const TOOL_STEP_SHAPE = defineObjectShape<TraceToolStep>()(
+  ['kind', 'id', 'turnId', 'runId', 'startedAt', 'toolName', 'status'],
+  ['endedAt', 'durationMs', 'toolCallId', 'operationId', 'recoveryPolicy', 'recovered'],
+);
+const TOOL_RECOVERY_SHAPE = defineObjectShape<TraceToolRecovery>()(
+  ['disposition', 'reasonCode'],
+  [],
+);
+const PERMISSION_STEP_SHAPE = defineObjectShape<TracePermissionStep>()(
+  ['kind', 'id', 'turnId', 'runId', 'startedAt', 'decision'],
+  ['toolName'],
+);
+const COMPACTION_STEP_SHAPE = defineObjectShape<TraceCompactionStep>()(
+  ['kind', 'id', 'turnId', 'runId', 'startedAt'],
+  ['checkpointId'],
+);
+const ERROR_STEP_SHAPE = defineObjectShape<TraceErrorStep>()(
+  ['kind', 'id', 'turnId', 'runId', 'startedAt', 'message'],
+  [],
+);
+
+export function isSessionTrace(value: unknown): value is SessionTrace {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SESSION_TRACE_SHAPE) &&
+    value.schemaVersion === SESSION_TRACE_SCHEMA_VERSION &&
+    typeof value.sessionId === 'string' &&
+    Array.isArray(value.turns) &&
+    value.turns.every(isTurnTrace) &&
+    isTraceTotals(value.totals) &&
+    isTraceCoverage(value.coverage)
+  );
+}
+
+function isTurnTrace(value: unknown): value is TurnTrace {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, TURN_TRACE_SHAPE) &&
+    typeof value.turnId === 'string' &&
+    typeof value.runId === 'string' &&
+    isNonnegativeNumber(value.startedAt) &&
+    isNonnegativeNumber(value.endedAt) &&
+    isNonnegativeNumber(value.durationMs) &&
+    Array.isArray(value.steps) &&
+    value.steps.every(isTraceStep) &&
+    isTraceTotals(value.totals) &&
+    (value.failure === undefined || isTraceFailure(value.failure))
+  );
+}
+
+function isTraceTotals(value: unknown): value is TraceTotals {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, TRACE_TOTALS_SHAPE) &&
+    [
+      value.durationMs,
+      value.modelAttempts,
+      value.retries,
+      value.compactions,
+      value.inputTokens,
+      value.outputTokens,
+      value.unpricedAttempts,
+    ].every(isNonnegativeNumber) &&
+    isOptionalNonnegativeNumber(value.costUsd)
+  );
+}
+
+function isTraceCoverage(value: unknown): value is SessionTraceCoverage {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, TRACE_COVERAGE_SHAPE) &&
+    (value.modelCalls === 'no_known_gap' ||
+      value.modelCalls === 'partial' ||
+      value.modelCalls === 'absent' ||
+      value.modelCalls === 'none') &&
+    isStringArray(value.turnsMissingModelCalls) &&
+    isStringArray(value.turnsWithFewerModelCallsThanSteps) &&
+    isNonnegativeInteger(value.unreadableRecords)
+  );
+}
+
+function isTraceFailure(value: unknown): value is TraceFailureAttribution {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, TRACE_FAILURE_SHAPE) &&
+    typeof value.code === 'string' &&
+    isOptionalString(value.message) &&
+    isOptionalString(value.attributedToStepId)
+  );
+}
+
+function isTraceStep(value: unknown): value is TraceStep {
+  if (!isRecord(value)) return false;
+  if (value.kind === 'model_call') return isModelCallStep(value);
+  if (value.kind === 'tool') return isToolStep(value);
+  const common =
+    typeof value.id === 'string' &&
+    typeof value.turnId === 'string' &&
+    typeof value.runId === 'string' &&
+    isNonnegativeNumber(value.startedAt);
+  if (value.kind === 'permission') {
+    return (
+      hasExactShape(value, PERMISSION_STEP_SHAPE) &&
+      common &&
+      isOptionalString(value.toolName) &&
+      typeof value.decision === 'string'
+    );
+  }
+  if (value.kind === 'compaction') {
+    return (
+      hasExactShape(value, COMPACTION_STEP_SHAPE) && common && isOptionalString(value.checkpointId)
+    );
+  }
+  return (
+    value.kind === 'error' &&
+    hasExactShape(value, ERROR_STEP_SHAPE) &&
+    common &&
+    typeof value.message === 'string'
+  );
+}
+
+function isModelCallStep(value: Record<string, unknown>): boolean {
+  return (
+    hasExactShape(value, MODEL_CALL_STEP_SHAPE) &&
+    [value.id, value.turnId, value.runId, value.providerId, value.modelId].every(
+      (item) => typeof item === 'string',
+    ) &&
+    [value.startedAt, value.endedAt, value.durationMs].every(isNonnegativeNumber) &&
+    MODEL_CALL_KINDS.includes(value.callKind as ModelCallKind) &&
+    isOptionalString(value.connectionSlug) &&
+    isNonnegativeInteger(value.step) &&
+    Array.isArray(value.attempts) &&
+    value.attempts.every(isModelAttempt) &&
+    MODEL_CALL_ATTEMPT_STATUSES.includes(value.status as ModelCallAttemptStatus) &&
+    isOptionalNonnegativeNumber(value.costUsd)
+  );
+}
+
+function isModelAttempt(value: unknown): value is TraceModelAttempt {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, MODEL_ATTEMPT_SHAPE) &&
+    typeof value.attemptId === 'string' &&
+    isNonnegativeInteger(value.attempt) &&
+    MODEL_CALL_ATTEMPT_STATUSES.includes(value.status as ModelCallAttemptStatus) &&
+    [value.startedAt, value.completedAt, value.latencyMs].every(isNonnegativeNumber) &&
+    [
+      value.timeToFirstTokenMs,
+      value.inputTokens,
+      value.outputTokens,
+      value.cacheReadInputTokens,
+      value.reasoningTokens,
+      value.costUsd,
+    ].every(isOptionalNonnegativeNumber) &&
+    isOptionalString(value.finishReason) &&
+    isOptionalString(value.errorClass) &&
+    MODEL_CALL_COST_BASES.includes(value.costBasis as TraceModelAttempt['costBasis']) &&
+    MODEL_CALL_USAGE_BASES.includes(value.usageBasis as TraceModelAttempt['usageBasis'])
+  );
+}
+
+function isToolStep(value: Record<string, unknown>): boolean {
+  return (
+    hasExactShape(value, TOOL_STEP_SHAPE) &&
+    [value.id, value.turnId, value.runId, value.toolName].every(
+      (item) => typeof item === 'string',
+    ) &&
+    isNonnegativeNumber(value.startedAt) &&
+    isOptionalNonnegativeNumber(value.endedAt) &&
+    isOptionalNonnegativeNumber(value.durationMs) &&
+    [value.toolCallId, value.operationId, value.recoveryPolicy].every(isOptionalString) &&
+    (value.status === 'completed' || value.status === 'failed' || value.status === 'in_flight') &&
+    (value.recovered === undefined || isToolRecovery(value.recovered))
+  );
+}
+
+function isToolRecovery(value: unknown): value is TraceToolRecovery {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, TOOL_RECOVERY_SHAPE) &&
+    (value.disposition === 'completed' || value.disposition === 'parked') &&
+    typeof value.reasonCode === 'string'
+  );
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isNonnegativeNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0;
+}
+
+function isOptionalNonnegativeNumber(value: unknown): boolean {
+  return value === undefined || isNonnegativeNumber(value);
 }
 
 /** Empty totals, so callers fold rather than special-case the first element. */

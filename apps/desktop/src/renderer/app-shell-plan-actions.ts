@@ -1,7 +1,12 @@
-import type { Dispatch, SetStateAction } from 'react';
-import type { PlanReminder, PlanReminderDeliveryTarget, PlanReminderRecurrence, UiLocale } from '@maka/core';
-import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import type { Dispatch, SetStateAction } from "react";
+import type {
+  PlanReminder,
+  PlanReminderDeliveryTarget,
+  PlanReminderRecurrence,
+  UiLocale,
+} from "@maka/core";
+import { getShellRemainingCopy } from "./locales/shell-remaining-copy.js";
+import { localizedShellErrorMessage } from "./locales/shell-copy.js";
 
 type ToastApi = {
   success(title: string, description?: string): void;
@@ -35,7 +40,9 @@ type PlanReminderPatch = {
 };
 
 export interface AppShellPlanActions {
-  refreshPlanReminders(options?: { shouldShowError?: () => boolean }): Promise<void>;
+  refreshPlanReminders(options?: {
+    shouldShowError?: () => boolean;
+  }): Promise<void>;
   createPlanReminder(input: PlanReminderCreateInput): Promise<boolean>;
   updatePlanReminder(id: string, patch: PlanReminderPatch): Promise<boolean>;
   togglePlanReminder(id: string, enabled: boolean): Promise<void>;
@@ -52,16 +59,27 @@ export function createAppShellPlanActions(deps: {
   setPlanReminders: Dispatch<SetStateAction<PlanReminder[]>>;
   toastApi: ToastApi;
 }): AppShellPlanActions {
-  const { uiLocale, getPlanReminders, isAutomationsSurfaceActive, setPlanReminders, toastApi } = deps;
+  const {
+    uiLocale,
+    getPlanReminders,
+    isAutomationsSurfaceActive,
+    setPlanReminders,
+    toastApi,
+  } = deps;
   const copy = getShellRemainingCopy(uiLocale).planActions;
 
-  async function refreshPlanReminders(options: { shouldShowError?: () => boolean } = {}) {
+  async function refreshPlanReminders(
+    options: { shouldShowError?: () => boolean } = {},
+  ) {
     try {
       const next = await window.maka.plans.list();
       setPlanReminders(next);
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
-        toastApi.error(copy.refreshFailed, localizedShellErrorMessage(error, copy.refreshFallback, uiLocale));
+        toastApi.error(
+          copy.refreshFailed,
+          localizedShellErrorMessage(error, copy.refreshFallback, uiLocale),
+        );
       }
     }
   }
@@ -72,17 +90,24 @@ export function createAppShellPlanActions(deps: {
     successDetail?: string;
     errorTitle: string;
     errorFallback: string;
+    errorMessage?: (error: unknown) => string | undefined;
   }): Promise<boolean> {
     try {
       await mutation.run();
-      await refreshPlanReminders({ shouldShowError: isAutomationsSurfaceActive });
+      await refreshPlanReminders({
+        shouldShowError: isAutomationsSurfaceActive,
+      });
       if (mutation.successTitle && isAutomationsSurfaceActive()) {
         toastApi.success(mutation.successTitle, mutation.successDetail);
       }
       return true;
     } catch (error) {
       if (isAutomationsSurfaceActive()) {
-        toastApi.error(mutation.errorTitle, localizedShellErrorMessage(error, mutation.errorFallback, uiLocale));
+        toastApi.error(
+          mutation.errorTitle,
+          mutation.errorMessage?.(error) ??
+            localizedShellErrorMessage(error, mutation.errorFallback, uiLocale),
+        );
       }
       return false;
     }
@@ -97,6 +122,10 @@ export function createAppShellPlanActions(deps: {
         successDetail: input.title,
         errorTitle: copy.createFailed,
         errorFallback: copy.createFallback,
+        errorMessage: (error) =>
+          errorMessage(error).includes("PLAN_REMINDER_INCOGNITO_ACTIVE")
+            ? copy.createIncognitoBlocked
+            : undefined,
       });
     },
     updatePlanReminder(id, patch) {
@@ -172,4 +201,8 @@ export function createAppShellPlanActions(deps: {
       });
     },
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "");
 }

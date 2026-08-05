@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 9;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 10;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -263,6 +263,21 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       protocol_version INTEGER NOT NULL CHECK (protocol_version = 1)
     );
   `,
+  ],
+  [
+    10,
+    `
+    CREATE TABLE runtime_partial_segments (
+      stream_key TEXT NOT NULL,
+      segment_seq INTEGER NOT NULL CHECK (segment_seq > 0),
+      text_content TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (stream_key, segment_seq),
+      FOREIGN KEY (stream_key)
+        REFERENCES runtime_partial_snapshots(stream_key)
+        ON DELETE CASCADE
+    );
+    `,
   ],
 ]);
 

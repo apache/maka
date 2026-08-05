@@ -1,0 +1,325 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import type { IpcMain } from 'electron';
+import type { AppSettings, LlmConnection, UpdateAppSettingsInput } from '@maka/core';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import type {
+  ConnectionCatalogEntry,
+  CredentialLocator,
+} from '@maka/core/runtime-policy';
+import {
+  applyConfigImport,
+  type ConfigTransferDeps,
+  type ExportedCredential,
+} from './config-transfer-service.js';
+import type { createMainWindowController } from './main-window.js';
+import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import {
+  projectHostConnections,
+} from './runtime-host-connections-ipc-main.js';
+import {
+  readRuntimeHostMemoryDocument,
+  replaceRuntimeHostMemoryDocument,
+} from './runtime-host-memory-ipc-main.js';
+import {
+  stripSettingsSecretsForExport,
+} from './settings-ipc-helpers.js';
+import {
+  buildConfigBundle,
+  isConfigCategory,
+  parseConfigBundle,
+  serializeConfigBundle,
+  type ConfigCategory,
+  type ConfigData,
+  type ConnectionConflictStrategy,
+} from '@maka/storage';
+
+interface RuntimeHostConfigIpcDeps {
+  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly client: DesktopRuntimeHostClient;
+  readonly mainWindowController: ReturnType<typeof createMainWindowController>;
+  readonly appVersion: string;
+  readonly getSettings: () => Promise<AppSettings>;
+  readonly updateSettings: (
+    patch: UpdateAppSettingsInput,
+  ) => Promise<AppSettings>;
+  readonly emitConnectionsChanged: () => void;
+}
+
+export function registerRuntimeHostConfigIpc(
+  deps: RuntimeHostConfigIpcDeps,
+): void {
+  deps.ipcMain.handle(
+    'config:export',
+    async (_event, input: { categories?: unknown } = {}) => {
+      const categories = sanitizeCategories(input?.categories);
+      if (categories.length === 0) {
+        return { ok: false as const, reason: 'no_categories' as const };
+      }
+      const bundle = await gatherRuntimeHostConfig(categories, deps);
+      const today = new Date().toISOString().slice(0, 10);
+      const result = await deps.mainWindowController.showSaveDialog({
+        title: '导出 Maka 配置',
+        defaultPath: `maka-config-${today}.json`,
+        filters: [{ name: 'Maka Config', extensions: ['json'] }],
+      });
+      if (result.canceled || !result.filePath) {
+        return { ok: false as const, reason: 'canceled' as const };
+      }
+      await writeFile(result.filePath, serializeConfigBundle(bundle), 'utf8');
+      return {
+        ok: true as const,
+        path: result.filePath,
+        includedData: bundle.includedData,
+      };
+    },
+  );
+
+  deps.ipcMain.handle(
+    'config:import',
+    async (_event, input: { strategy?: unknown } = {}) => {
+      const result = await deps.mainWindowController.showOpenDialog({
+        title: '导入 Maka 配置',
+        properties: ['openFile'],
+        filters: [{ name: 'Maka Config', extensions: ['json'] }],
+      });
+      const filePath = result.filePaths?.[0];
+      if (result.canceled || !filePath) {
+        return { ok: false as const, reason: 'canceled' as const };
+      }
+      const parsed = parseConfigBundle(await readFile(filePath, 'utf8'));
+      if (!parsed.ok) {
+        return {
+          ok: false as const,
+          reason: parsed.reason,
+          message: parsed.message,
+        };
+      }
+      const imported = await applyConfigImport(
+        parsed.bundle,
+        sanitizeStrategy(input?.strategy),
+        runtimeHostTransferDeps(deps),
+      );
+      deps.emitConnectionsChanged();
+      return {
+        ok: true as const,
+        includedData: parsed.bundle.includedData,
+        result: imported,
+      };
+    },
+  );
+}
+
+async function gatherRuntimeHostConfig(
+  categories: readonly ConfigCategory[],
+  deps: RuntimeHostConfigIpcDeps,
+) {
+  const selected = new Set(categories);
+  const data: ConfigData = {};
+  const catalog =
+    selected.has('connections') || selected.has('credentials')
+      ? await deps.client.loadConnectionCatalog()
+      : undefined;
+  const locators = selected.has('credentials')
+    ? exportLocators(catalog?.connections ?? [])
+    : [];
+  const exported =
+    locators.length > 0
+      ? await deps.client.exportConfigurationCredentials({ locators })
+      : { credentials: [] };
+  const secrets = new Map(
+    exported.credentials.map((entry) => [locatorKey(entry.locator), entry.secret]),
+  );
+
+  if (selected.has('connections') && catalog) {
+    data.connections = projectHostConnections(catalog);
+  }
+  if (selected.has('settings')) {
+    const settings = await deps.getSettings();
+    data.settings = selected.has('credentials')
+      ? restoreHostSettingsSecrets(settings, secrets)
+      : stripSettingsSecretsForExport(settings);
+  }
+  if (selected.has('credentials') && catalog) {
+    data.credentials = connectionCredentials(catalog.connections, secrets);
+  }
+  if (selected.has('memory')) {
+    data.memory = await readRuntimeHostMemoryDocument(deps.client, 'memory');
+  }
+  return buildConfigBundle({ appVersion: deps.appVersion, data });
+}
+
+function runtimeHostTransferDeps(
+  deps: RuntimeHostConfigIpcDeps,
+): ConfigTransferDeps {
+  return {
+    connectionStore: {
+      list: async () =>
+        projectHostConnections(await deps.client.loadConnectionCatalog()),
+      save: (connection) => saveConnection(deps.client, connection),
+    },
+    settingsStore: {
+      get: deps.getSettings,
+      update: deps.updateSettings,
+    },
+    credentialStore: {
+      getSecret: async () => null,
+      setSecret: (slug, kind, value) =>
+        saveConnectionCredential(deps.client, slug, kind, value),
+    },
+    readMemory: () => readRuntimeHostMemoryDocument(deps.client, 'memory'),
+    writeMemory: (content) =>
+      replaceRuntimeHostMemoryDocument(deps.client, content),
+    appVersion: deps.appVersion,
+  };
+}
+
+async function saveConnection(
+  client: DesktopRuntimeHostClient,
+  connection: LlmConnection,
+): Promise<LlmConnection> {
+  let catalog = await client.loadConnectionCatalog();
+  let existing = catalog.connections.find((item) => item.slug === connection.slug);
+  if (existing && existing.providerType !== connection.providerType) {
+    const removed = await client.removeConnection({
+      connectionId: existing.connectionId,
+      revision: existing.revision,
+    });
+    if (removed.kind !== 'committed') {
+      throw new Error(`Unable to replace imported Connection: ${removed.kind}`);
+    }
+    catalog = await client.loadConnectionCatalog();
+    existing = undefined;
+  }
+  if (existing) {
+    const updated = await client.updateConnection(
+      { connectionId: existing.connectionId, revision: existing.revision },
+      {
+        name: connection.name,
+        ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+        enabled: connection.enabled,
+        enabledModelIds: [...(connection.enabledModelIds ?? [])],
+      },
+    );
+    if (updated.kind !== 'committed') {
+      throw new Error(`Unable to update imported Connection: ${updated.kind}`);
+    }
+  } else {
+    const created = await client.createConnection(catalog.revision, {
+      slug: connection.slug,
+      name: connection.name,
+      providerType: connection.providerType,
+      ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+      enabled: connection.enabled,
+      enabledModelIds: [...(connection.enabledModelIds ?? [])],
+    });
+    if (created.kind !== 'committed') {
+      throw new Error(`Unable to create imported Connection: ${created.kind}`);
+    }
+  }
+  const projected = projectHostConnections(await client.loadConnectionCatalog()).find(
+    (item) => item.slug === connection.slug,
+  );
+  if (!projected) throw new Error('Imported Connection disappeared');
+  return projected;
+}
+
+async function saveConnectionCredential(
+  client: DesktopRuntimeHostClient,
+  slug: string,
+  kind: string,
+  value: string,
+): Promise<void> {
+  const catalog = await client.loadConnectionCatalog();
+  const connection = catalog.connections.find((item) => item.slug === slug);
+  if (!connection) throw new Error(`Imported Connection not found: ${slug}`);
+  const locator = connectionCredentialLocator(connection);
+  if (!locator || locator.kind !== kind) return;
+  const current = await client.queryCredential(locator);
+  const saved = await client.setCredential({
+    locator,
+    expected: current?.configured
+      ? { credentialId: current.credentialId, revision: current.revision }
+      : null,
+    secret: value,
+  });
+  if (saved.kind !== 'committed') {
+    throw new Error(`Unable to save imported Connection credential: ${saved.kind}`);
+  }
+}
+
+function exportLocators(
+  connections: readonly ConnectionCatalogEntry[],
+): CredentialLocator[] {
+  return [
+    ...connections.flatMap((connection) => {
+      const locator = connectionCredentialLocator(connection);
+      return locator ? [locator] : [];
+    }),
+    { scope: 'network_proxy', kind: 'password' },
+    { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
+  ];
+}
+
+function connectionCredentials(
+  connections: readonly ConnectionCatalogEntry[],
+  secrets: ReadonlyMap<string, string>,
+): ExportedCredential[] {
+  return connections.flatMap((connection) => {
+    const locator = connectionCredentialLocator(connection);
+    const secret = locator ? secrets.get(locatorKey(locator)) : undefined;
+    return locator && secret
+      ? [{ slug: connection.slug, kind: locator.kind, value: secret }]
+      : [];
+  });
+}
+
+function restoreHostSettingsSecrets(
+  settings: AppSettings,
+  secrets: ReadonlyMap<string, string>,
+): AppSettings {
+  const proxy = secrets.get(locatorKey({ scope: 'network_proxy', kind: 'password' })) ?? '';
+  const webSearch =
+    secrets.get(
+      locatorKey({ scope: 'web_search', provider: 'tavily', kind: 'api_key' }),
+    ) ?? '';
+  return {
+    ...settings,
+    network: {
+      proxy: { ...settings.network.proxy, password: proxy },
+    },
+    webSearch: {
+      ...settings.webSearch,
+      providers: {
+        tavily: {
+          ...settings.webSearch.providers.tavily,
+          apiKey: webSearch,
+        },
+      },
+    },
+  };
+}
+
+function connectionCredentialLocator(
+  connection: ConnectionCatalogEntry,
+): Extract<CredentialLocator, { scope: 'connection' }> | null {
+  const kind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  if (kind === 'none') return null;
+  return {
+    scope: 'connection',
+    connectionId: connection.connectionId,
+    kind: kind === 'oauth_token' ? 'oauth_token' : 'api_key',
+  };
+}
+
+function locatorKey(locator: CredentialLocator): string {
+  return JSON.stringify(locator);
+}
+
+function sanitizeCategories(value: unknown): ConfigCategory[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter(isConfigCategory))];
+}
+
+function sanitizeStrategy(value: unknown): ConnectionConflictStrategy {
+  return value === 'overwrite' ? 'overwrite' : 'skip';
+}

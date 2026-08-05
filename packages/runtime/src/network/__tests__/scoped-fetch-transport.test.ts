@@ -169,6 +169,31 @@ describe('connection effect network transport', () => {
     }
   });
 
+  test('production proxied fetch keeps the deadline active while reading the body', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': '1000',
+      });
+      response.write('{"data":[');
+    });
+    const port = await listen(server);
+
+    try {
+      const response = await fetchForConnectionEffect(
+        undefined,
+        `http://127.0.0.1:${port}/models`,
+        { timeoutMs: 50 },
+      );
+      await assert.rejects(
+        response.readJson(),
+        (error: unknown) => error instanceof ConnectionEffectFetchError && error.kind === 'timeout',
+      );
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   test('oversized provider JSON and error bodies fail without escaping their bounds', async () => {
     const server = createServer((request, response) => {
       if (request.url?.startsWith('/models/')) {

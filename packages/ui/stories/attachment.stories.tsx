@@ -87,15 +87,6 @@ const baseComposer: ComposerProps = {
   modelChoices,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
-  workspacePicker: {
-    label: 'maka-agent',
-    branch: 'main',
-    projects: [],
-    onAdd: noop,
-    onSelectProject: noop,
-    onRelink: noop,
-    onSelectNoProject: noop,
-  },
   onPickAttachments: noop,
   onAttachFilePaths: noop,
 };

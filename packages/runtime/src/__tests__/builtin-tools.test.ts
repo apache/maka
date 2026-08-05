@@ -1295,6 +1295,34 @@ describe('builtin Bash streaming output', () => {
     ]);
   });
 
+  test('Read routes opaque attachment refs through the Session-bound attachment reader', async () => {
+    const calls: unknown[] = [];
+    const read = buildBuiltinTools({
+      attachmentResources: {
+        async readAttachmentResource(sessionId, artifactId) {
+          calls.push({ sessionId, artifactId });
+          return { kind: 'text', text: 'attachment marker' };
+        },
+      },
+    }).find((tool) => tool.name === 'Read');
+    if (!read) throw new Error('Read tool missing');
+    const context = {
+      sessionId: 'session-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      cwd: '/workspace',
+      toolCallId: 'tool-1',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    };
+
+    assert.deepEqual(await read.impl({ ref: 'maka://runtime/attachments/attachment-1' }, context), {
+      kind: 'text',
+      text: 'attachment marker',
+    });
+    assert.deepEqual(calls, [{ sessionId: 'session-1', artifactId: 'attachment-1' }]);
+  });
+
   test('Read normalizes a blank ref to "no ref" before validating the file-or-resource union', async () => {
     const read = buildBuiltinTools({
       runtimeResources: {

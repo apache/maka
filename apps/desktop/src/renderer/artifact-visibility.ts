@@ -1,4 +1,4 @@
-import type { ArtifactRecord, ArtifactSource } from '@maka/core';
+import type { ArtifactDescriptor, ArtifactSource } from '@maka/core';
 
 const USER_VISIBLE_ARTIFACT_SOURCES = {
   tool_result: true,
@@ -16,7 +16,9 @@ const USER_VISIBLE_ARTIFACT_SOURCES = {
   fixture: true,
 } satisfies Record<ArtifactSource, boolean>;
 
-export function filterUserVisibleArtifacts(records: readonly ArtifactRecord[]): ArtifactRecord[] {
+export function filterUserVisibleArtifacts(
+  records: readonly ArtifactDescriptor[],
+): ArtifactDescriptor[] {
   return records.filter(
     (record) => record.source === undefined || USER_VISIBLE_ARTIFACT_SOURCES[record.source],
   );

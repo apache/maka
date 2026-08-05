@@ -41,12 +41,19 @@ export interface ComposerDraftApi {
   activeDraftKey(): string | undefined;
 }
 
+export interface ComposerDraftPersistence {
+  read(key: string | undefined): string | undefined;
+  write(key: string | undefined, value: string): void;
+}
+
 export function useComposerDraft(input: {
   text: ComposerTextPort;
   /** Runtime-only key used to keep unsent drafts isolated per session. */
   draftKey: string | undefined;
   /** Fired after the active key swaps so sibling state machines can reset. */
   onDraftKeyChange(): void;
+  /** Optional host persistence for drafts that must survive renderer replacement. */
+  persistence?: ComposerDraftPersistence;
 }): ComposerDraftApi {
   const draftStoreRef = useRef<Map<string, string>>(new Map());
   const activeDraftKeyRef = useRef<string | undefined>(input.draftKey);
@@ -54,14 +61,17 @@ export function useComposerDraft(input: {
   function saveCurrentDraft(value?: string) {
     const nextValue = value ?? input.text.getValue();
     rememberComposerDraft(draftStoreRef.current, activeDraftKeyRef.current, nextValue);
+    input.persistence?.write(activeDraftKeyRef.current, nextValue);
   }
 
   function clearDraft(key: string | undefined) {
     rememberComposerDraft(draftStoreRef.current, key, '');
+    input.persistence?.write(key, '');
   }
 
   function setDraft(key: string | undefined, value: string) {
     rememberComposerDraft(draftStoreRef.current, key, value);
+    input.persistence?.write(key, value);
   }
 
   function appendDraft(key: string | undefined, value: string) {
@@ -89,6 +99,14 @@ export function useComposerDraft(input: {
     const nextDraft = readComposerDraft(draftStoreRef.current, nextKey);
     input.text.setValue(nextDraft);
   }, [input.draftKey]);
+
+  useEffect(() => {
+    const key = activeDraftKeyRef.current;
+    const persisted = input.persistence?.read(key);
+    if (!persisted) return;
+    rememberComposerDraft(draftStoreRef.current, key, persisted);
+    input.text.setValue(persisted);
+  }, []);
 
   return {
     saveCurrentDraft,

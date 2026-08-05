@@ -5,6 +5,14 @@ import {
   type SessionInspectDocument,
 } from '@maka/core/execution-inspect';
 import {
+  isSessionTrace,
+  SESSION_TRACE_SCHEMA_VERSION,
+  type SessionTraceCoverage,
+  type TraceTotals,
+  type TurnTrace,
+} from '@maka/core/session-trace';
+import {
+  requireCount,
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
@@ -15,6 +23,7 @@ import { defineOperation } from './operation-spec.js';
 
 export const EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS = 32;
 export const EXECUTION_INSPECT_SESSION_MAX_RUNS = 64;
+export const EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS = 16;
 export const EXECUTION_INSPECT_RESULT_MAX_BYTES = 48 * 1024;
 export const EXECUTION_INSPECT_EVIDENCE_MAX_RECORDS = 4096;
 export const EXECUTION_INSPECT_EVIDENCE_MAX_BYTES = 512 * 1024;
@@ -53,11 +62,34 @@ export type ExecutionInspectQueryInput =
       readonly kind: 'agent_run';
       readonly sessionId: string;
       readonly agentRunId: string;
+    }
+  | { readonly kind: 'session_trace_start'; readonly sessionId: string }
+  | {
+      readonly kind: 'session_trace_continue';
+      readonly sessionId: string;
+      readonly revision: `sha256:${string}`;
+      readonly offset: number;
     };
 
 export type ExecutionInspectQueryResult =
   | { readonly kind: 'session'; readonly document: SessionInspectDocument }
-  | { readonly kind: 'agent_run'; readonly document: AgentRunInspectDocument };
+  | { readonly kind: 'agent_run'; readonly document: AgentRunInspectDocument }
+  | {
+      readonly kind: 'session_trace_page';
+      readonly schemaVersion: typeof SESSION_TRACE_SCHEMA_VERSION;
+      readonly sessionId: string;
+      readonly revision: `sha256:${string}`;
+      readonly offset: number;
+      readonly turns: readonly TurnTrace[];
+      readonly totals: TraceTotals;
+      readonly coverage: SessionTraceCoverage;
+      readonly nextOffset: number | null;
+    }
+  | {
+      readonly kind: 'session_trace_revision_changed';
+      readonly expectedRevision: `sha256:${string}`;
+      readonly actualRevision: `sha256:${string}`;
+    };
 
 export const EXECUTION_INSPECT_OPERATION_SPECS = {
   'execution.inspect.resolve': defineOperation<
@@ -150,9 +182,27 @@ export function decodeExecutionInspectQueryInput(value: unknown): ExecutionInspe
     value,
     'execution.inspect.query input',
     ['kind', 'sessionId'],
-    ['agentRunId'],
+    ['agentRunId', 'revision', 'offset'],
   );
   const sessionId = requireEntityId(record.sessionId, 'inspect Session id');
+  if (record.kind === 'session_trace_start') {
+    requireExactRecord(record, 'Session trace start query', ['kind', 'sessionId']);
+    return { kind: 'session_trace_start', sessionId };
+  }
+  if (record.kind === 'session_trace_continue') {
+    const exact = requireExactRecord(record, 'Session trace continuation query', [
+      'kind',
+      'sessionId',
+      'revision',
+      'offset',
+    ]);
+    return {
+      kind: 'session_trace_continue',
+      sessionId,
+      revision: requireTraceRevision(exact.revision),
+      offset: requireCount(exact.offset, 'Session trace offset'),
+    };
+  }
   if (record.kind === 'session') {
     requireExactRecord(record, 'Session inspect query', ['kind', 'sessionId']);
     return { kind: 'session', sessionId };
@@ -174,7 +224,87 @@ export function decodeExecutionInspectQueryResult(value: unknown): ExecutionInsp
     'execution.inspect.query result',
     EXECUTION_INSPECT_RESULT_MAX_BYTES,
   );
-  const record = requireExactRecord(value, 'execution.inspect.query result', ['kind', 'document']);
+  const shaped = requireShapedRecord(
+    value,
+    'execution.inspect.query result',
+    ['kind'],
+    [
+      'document',
+      'schemaVersion',
+      'sessionId',
+      'revision',
+      'offset',
+      'turns',
+      'totals',
+      'coverage',
+      'nextOffset',
+      'expectedRevision',
+      'actualRevision',
+    ],
+  );
+  if (shaped.kind === 'session_trace_revision_changed') {
+    const record = requireExactRecord(shaped, 'Session trace revision changed result', [
+      'kind',
+      'expectedRevision',
+      'actualRevision',
+    ]);
+    return {
+      kind: 'session_trace_revision_changed',
+      expectedRevision: requireTraceRevision(record.expectedRevision),
+      actualRevision: requireTraceRevision(record.actualRevision),
+    };
+  }
+  if (shaped.kind === 'session_trace_page') {
+    const record = requireExactRecord(shaped, 'Session trace page result', [
+      'kind',
+      'schemaVersion',
+      'sessionId',
+      'revision',
+      'offset',
+      'turns',
+      'totals',
+      'coverage',
+      'nextOffset',
+    ]);
+    const sessionId = requireEntityId(record.sessionId, 'trace Session id');
+    const offset = requireCount(record.offset, 'Session trace offset');
+    const decodedTrace = {
+      schemaVersion: record.schemaVersion,
+      sessionId,
+      turns: record.turns,
+      totals: record.totals,
+      coverage: record.coverage,
+    };
+    if (
+      !Array.isArray(record.turns) ||
+      record.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||
+      !isSessionTrace(decodedTrace)
+    ) {
+      throw invalidProtocolFrame('Invalid Session trace page');
+    }
+    const nextOffset =
+      record.nextOffset === null
+        ? null
+        : requireCount(record.nextOffset, 'Session trace next offset');
+    if (
+      (record.turns.length === 0 && (offset !== 0 || nextOffset !== null)) ||
+      (nextOffset !== null && nextOffset !== offset + record.turns.length)
+    ) {
+      throw invalidProtocolFrame('Invalid Session trace continuation');
+    }
+    return {
+      kind: 'session_trace_page',
+      schemaVersion: SESSION_TRACE_SCHEMA_VERSION,
+      sessionId,
+      revision: requireTraceRevision(record.revision),
+      offset,
+      turns: decodedTrace.turns,
+      totals: decodedTrace.totals,
+      coverage: decodedTrace.coverage,
+      nextOffset,
+    };
+  }
+  const record = requireExactRecord(shaped, 'execution.inspect.query result', ['kind', 'document']);
   if (record.kind === 'session') {
     if (
       !isSessionInspectDocument(record.document) ||
@@ -240,6 +370,23 @@ function assertQueryOutputForInput(
   input: ExecutionInspectQueryInput,
   output: ExecutionInspectQueryResult,
 ): void {
+  if (input.kind === 'session_trace_start' || input.kind === 'session_trace_continue') {
+    if (output.kind === 'session_trace_revision_changed') {
+      if (input.kind !== 'session_trace_continue' || output.expectedRevision !== input.revision) {
+        throw invalidProtocolFrame('Session trace revision response changed request identity');
+      }
+      return;
+    }
+    if (
+      output.kind !== 'session_trace_page' ||
+      output.sessionId !== input.sessionId ||
+      output.offset !== (input.kind === 'session_trace_start' ? 0 : input.offset) ||
+      (input.kind === 'session_trace_continue' && output.revision !== input.revision)
+    ) {
+      throw invalidProtocolFrame('Session trace result changed request identity');
+    }
+    return;
+  }
   if (input.kind === 'session') {
     if (output.kind !== 'session' || output.document.session.sessionId !== input.sessionId) {
       throw invalidProtocolFrame('Session inspect result changed request identity');
@@ -253,6 +400,13 @@ function assertQueryOutputForInput(
   ) {
     throw invalidProtocolFrame('AgentRun inspect result changed request identity');
   }
+}
+
+function requireTraceRevision(value: unknown): `sha256:${string}` {
+  if (typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value)) {
+    throw invalidProtocolFrame('Invalid Session trace revision');
+  }
+  return value as `sha256:${string}`;
 }
 
 function requireExecutionInspectEntityKind(value: unknown): ExecutionInspectEntityKind {

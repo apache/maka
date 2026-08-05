@@ -10,6 +10,14 @@ import { getConversationCopy } from './conversation-copy.js';
  */
 const SCROLL_END_EPSILON_PX = 2;
 
+/**
+ * How far the dock-style hover falloff reaches, in ticks. The hovered tick is
+ * at 0 and grows most; each neighbour out to this distance grows less. Ticks
+ * beyond it — and every tick while the pointer is away — sit at rest width,
+ * which is why this doubles as the resting proximity.
+ */
+const HOVER_FALLOFF_TICKS = 3;
+
 export interface PromptAnchorRailTurn {
   turnId: string;
   /** The user prompt text for this turn; used as the hover preview + a11y label. */
@@ -22,6 +30,18 @@ export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   /** The scroll container that holds the `[data-turn-id]` turn sections. */
   scrollRef: RefObject<HTMLElement | null>;
+  /**
+   * #2052: called when a clicked turn has no `[data-turn-id]` element yet.
+   * The progressive mount keeps early turns out of the DOM until the idle
+   * fill reaches them, so the owner mounts the turn and finishes the scroll.
+   */
+  onNavigateFallback?: (turnId: string) => void;
+  /**
+   * #2052: bumped whenever turn DOM membership changes without `turns`
+   * changing, i.e. each idle fill step. The observer effect below re-snapshots
+   * on it so newly mounted turns are observed too.
+   */
+  mountedTurnsRevision?: number;
 }
 
 /**
@@ -38,7 +58,7 @@ export interface PromptAnchorRailProps {
  * against a box as tall as the conversation and scrolls away with it. See
  * `styles/prompt-rail.css` for the geometry the anchor establishes.
  */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, mountedTurnsRevision }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   // The scrollport height and the height of Astryx's sticky composer dock.
@@ -49,12 +69,19 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   // the panels docked above it.
   const [safeArea, setSafeArea] = useState<{ scrollport: number; dock: number } | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  // Which tick the pointer is on, so its neighbours can grow with it. Sibling
+  // selectors cannot express this: Astryx's HoverCard wraps each tick in its
+  // own `display: contents` element, so the ticks are not DOM siblings.
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   // Rebuilding this observer costs one querySelector + observe per turn over
   // the whole transcript, so it must not run per streamed token (#2030). What
   // keeps it from running is the caller: ChatView hands back the same array
   // while no rail-visible field moved. Keying the effect on that array is
   // therefore both the cheap check and the thing that fails loudly if the
-  // caller ever stops reusing it.
+  // caller ever stops reusing it. The progressive mount (#2052) changes turn
+  // DOM membership WITHOUT changing the array, so the caller also bumps
+  // `mountedTurnsRevision` per fill step; a bounded handful of re-snapshots
+  // per session switch, never per token.
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || turns.length === 0) return;
@@ -116,7 +143,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       root.removeEventListener('scroll', onScroll);
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, [scrollRef, turns]);
+  }, [scrollRef, turns, mountedTurnsRevision]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -167,6 +194,8 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     const el = scrollRef.current?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
     if (el && 'scrollIntoView' in el) {
       (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (!el) {
+      onNavigateFallback?.(turnId);
     }
     setActiveTurnId(turnId);
   }
@@ -186,11 +215,20 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
           : undefined
       }
     >
-      <nav className="maka-prompt-rail" aria-label={copy.promptRailAriaLabel} ref={railRef}>
-        {turns.map((turn) => {
+      <nav
+        className="maka-prompt-rail"
+        aria-label={copy.promptRailAriaLabel}
+        ref={railRef}
+        onPointerLeave={() => setHoveredIndex(null)}
+      >
+        {turns.map((turn, index) => {
           const isActive = turn.turnId === activeTurnId;
           const preview = turn.label.trim() || copy.emptyPrompt;
           const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+          const proximity =
+            hoveredIndex === null
+              ? HOVER_FALLOFF_TICKS
+              : Math.min(Math.abs(index - hoveredIndex), HOVER_FALLOFF_TICKS);
           return (
             // HoverCard, not a hand-positioned popover: it is portalled, so the
             // topmost and bottommost ticks no longer push their preview off the
@@ -216,10 +254,29 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                 aria-current={isActive ? 'true' : undefined}
                 aria-label={copy.jumpToPrompt(preview)}
                 onClick={() => jumpTo(turn.turnId)}
-              />
+                onPointerEnter={() => setHoveredIndex(index)}
+                style={
+                  {
+                    '--maka-prompt-rail-index': index,
+                    '--maka-prompt-rail-proximity': proximity,
+                  } as CSSProperties
+                }
+              >
+                {/* The bar is its own element, not a `::after`, because the
+                    travelling highlight anchors to it — and a pseudo-element
+                    cannot be an anchor. It cannot anchor to the button either:
+                    the HoverCard puts its own `anchor-name` there, inline,
+                    which wins over any rule of ours. */}
+                <span className="maka-prompt-rail-tick-bar" />
+              </button>
             </HoverCard>
           );
         })}
+        {/* The travelling highlight. It is one element anchored to whichever
+            tick is active rather than a state on the tick itself, so changing
+            the active prompt moves a bar the reader can follow instead of
+            swapping two static ones. */}
+        <span className="maka-prompt-rail-indicator" aria-hidden="true" />
       </nav>
     </div>
   );

@@ -13,6 +13,14 @@ import type { Page } from '@playwright/test';
  *
  * A static CSS read cannot see any of that. Only a real scroller with a real
  * transcript can, which is what these fixtures give us.
+ *
+ * One boundary worth knowing before adding to this file: e2e-fixture renders
+ * carry `data-maka-e2e-fixture`, and `base.css` gives that `animation: none`
+ * and a 0.01ms transition cap so a fixture's rendered state never depends on
+ * the millisecond it settles. So the tests below assert the *end states* the
+ * motion resolves to — where the highlight lands, how wide each bar computes —
+ * and cannot assert that anything animated on the way there. The tick entrance
+ * has no end state to check and therefore no coverage here at all.
  */
 
 const RAIL_PROBE = `(() => {
@@ -334,4 +342,120 @@ test('the active tick stays visible once the rail overflows', async ({ overflowi
   // as exactly 0: bringing the first tick flush leaves the rail's own top
   // padding scrolled through.
   expect(atStart.railScrollTop, back).toBeLessThan(atEnd.railScrollTop);
+});
+
+/**
+ * The highlight for the prompt being read is one bar that travels, anchored to
+ * the active tick with CSS anchor positioning. That fails silently — an
+ * unresolved anchor still renders the bar, just parked at a fixed offset — and
+ * it broke exactly that way first time round, because Astryx's HoverCard sets
+ * its own inline `anchor-name` on the trigger it wraps (hence the anchor
+ * living on the tick's inner bar). Only a live window can tell a tracking
+ * highlight from a stuck one.
+ */
+test('the highlight travels with the prompt being read', async ({ longTranscriptWindow: page }) => {
+  await settled(page, 24);
+
+  const readHighlight = () =>
+    page.evaluate(() => {
+      const indicator = document.querySelector<HTMLElement>('.maka-prompt-rail-indicator');
+      const active = document.querySelector<HTMLElement>('.maka-prompt-rail-tick[data-active="true"]');
+      if (!indicator || !active) return null;
+      const i = indicator.getBoundingClientRect();
+      const a = active.getBoundingClientRect();
+      return {
+        centreDrift: Math.round(Math.abs(i.top + i.height / 2 - (a.top + a.height / 2))),
+        rightDrift: Math.round(Math.abs(i.right - a.right)),
+        activeIndex: [...document.querySelectorAll('.maka-prompt-rail-tick')].indexOf(active),
+      };
+    });
+
+  const seen: number[] = [];
+  for (const ratio of [0, 0.35, 0.7]) {
+    await scrollToRatio(page, ratio);
+    // The glide is a transition on `top`; wait for it to land before reading.
+    await page.waitForTimeout(600);
+    const highlight = await readHighlight();
+    const where = `at scroll ratio ${ratio}: ${JSON.stringify(highlight)}`;
+    expect(highlight, where).not.toBeNull();
+    expect(highlight!.centreDrift, where).toBeLessThanOrEqual(1);
+    expect(highlight!.rightDrift, where).toBeLessThanOrEqual(1);
+    seen.push(highlight!.activeIndex);
+  }
+  // And it actually moved, rather than agreeing with a highlight that never
+  // left the first tick.
+  expect(new Set(seen).size, JSON.stringify(seen)).toBe(seen.length);
+});
+
+/**
+ * The rail scrolls itself once it is past its cap, and the highlight is
+ * anchored to a tick inside that scroller. Anchor positioning resolves against
+ * the anchor's actual box, so the two must stay together through the rail's own
+ * scrolling — the case the 24-turn fixture never reaches.
+ */
+test('the highlight stays on the active tick while the rail scrolls itself', async ({ overflowingRailWindow: page }) => {
+  await settled(page, 90);
+  await scrollToRatio(page, 1);
+  await expect(page.locator('.maka-prompt-rail-tick').last()).toHaveAttribute('aria-current', 'true');
+  await page.waitForTimeout(600);
+
+  const reading = await page.evaluate(() => {
+    const rail = document.querySelector<HTMLElement>('.maka-prompt-rail')!;
+    const indicator = document.querySelector<HTMLElement>('.maka-prompt-rail-indicator')!;
+    const active = rail.querySelector<HTMLElement>('.maka-prompt-rail-tick[data-active="true"]')!;
+    const i = indicator.getBoundingClientRect();
+    const a = active.getBoundingClientRect();
+    const railBox = rail.getBoundingClientRect();
+    return {
+      railScrollTop: Math.round(rail.scrollTop),
+      centreDrift: Math.round(Math.abs(i.top + i.height / 2 - (a.top + a.height / 2))),
+      indicatorInsideRail: i.top >= railBox.top - 1 && i.bottom <= railBox.bottom + 1,
+    };
+  });
+  const where = JSON.stringify(reading);
+  // The rail really did scroll, so the highlight had something to keep up with.
+  expect(reading.railScrollTop, where).toBeGreaterThan(0);
+  expect(reading.centreDrift, where).toBeLessThanOrEqual(1);
+  expect(reading.indicatorInsideRail, where).toBe(true);
+});
+
+test('hovering a tick swells its neighbours and settles back', async ({ longTranscriptWindow: page }) => {
+  await settled(page, 24);
+
+  const barWidths = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('.maka-prompt-rail-tick-bar')].map((bar) =>
+        Math.round(Number.parseFloat(getComputedStyle(bar).width)),
+      ),
+    );
+
+  const rest = await barWidths();
+  expect(new Set(rest).size, JSON.stringify(rest)).toBe(1);
+
+  // A real mouse move never lands on a fixture window (no OS hit-testing), but
+  // React synthesises the enter/leave pair this reads from bubbling
+  // pointerover/pointerout, which do.
+  const hovered = 12;
+  await page.locator('.maka-prompt-rail-tick').nth(hovered).dispatchEvent('pointerover');
+  await page.waitForTimeout(500);
+
+  const swollen = await barWidths();
+  const note = JSON.stringify(swollen);
+  // A falloff, not a single fat tick: widest under the pointer, then stepping
+  // down on both sides until it meets the resting width.
+  expect(swollen[hovered], note).toBeGreaterThan(swollen[hovered - 1]!);
+  expect(swollen[hovered - 1], note).toBeGreaterThan(swollen[hovered - 2]!);
+  expect(swollen[hovered], note).toBeGreaterThan(swollen[hovered + 1]!);
+  expect(swollen[hovered + 1], note).toBeGreaterThan(swollen[hovered + 2]!);
+  expect(swollen[hovered - 3], note).toBe(rest[0]);
+  expect(swollen[hovered + 3], note).toBe(rest[0]);
+
+  await page.evaluate((index) => {
+    const tick = document.querySelectorAll('.maka-prompt-rail-tick')[index]!;
+    tick.dispatchEvent(
+      new PointerEvent('pointerout', { bubbles: true, composed: true, relatedTarget: document.body }),
+    );
+  }, hovered);
+  await page.waitForTimeout(500);
+  expect(await barWidths()).toEqual(rest);
 });

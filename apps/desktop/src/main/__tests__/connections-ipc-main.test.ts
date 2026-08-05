@@ -455,4 +455,66 @@ describe('connection IPC credential boundary', () => {
       });
     }
   });
+
+  test('test records the healthy fallback without changing a customized default model', async () => {
+    const updates: UpdateConnectionInput[] = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string };
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify(
+            body.model === 'custom-broken-free'
+              ? { error: { type: 'server_error' } }
+              : { choices: [{ message: { role: 'assistant', content: 'ok' } }] },
+          ),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const connection: LlmConnection = {
+      slug: 'my-opencode-free',
+      name: 'My free connection',
+      providerType: 'opencode-free',
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      defaultModel: 'custom-broken-free',
+      enabledModelIds: ['custom-broken-free'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const handlers = registerHandlers({
+      connectionStore: {
+        get: async () => connection,
+        update: async (_slug: string, patch: UpdateConnectionInput) => {
+          updates.push(patch);
+          return connection;
+        },
+      },
+    });
+
+    try {
+      const testConnection = handlers.get('connections:test');
+      assert.ok(testConnection);
+      const result = (await testConnection({}, connection.slug)) as {
+        ok: boolean;
+        modelTested?: string;
+      };
+
+      assert.equal(result.ok, true);
+      assert.equal(result.modelTested, 'nemotron-3-ultra-free');
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0]?.lastTestStatus, 'verified');
+      assert.equal('defaultModel' in updates[0]!, false);
+      assert.equal('enabledModelIds' in updates[0]!, false);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
 });

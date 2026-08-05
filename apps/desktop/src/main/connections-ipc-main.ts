@@ -2,7 +2,6 @@ import type { IpcMain } from 'electron';
 import {
   buildConnectionModelCatalogEntries,
   generalizedErrorMessageChinese,
-  normalizeConnectionBaseUrl,
 } from '@maka/core';
 import type {
   CreateConnectionInput,
@@ -21,6 +20,12 @@ import { createFileCredentialStore } from './credential-store.js';
 import { createConnectionWithCredential } from './create-connection-with-credential.js';
 import { deleteConnectionWithCredential } from './delete-connection-with-credential.js';
 import { connectionTestStatusPatch } from './connection-test-status.js';
+import {
+  normalizeConnectionBaseUrlValueForIpc,
+  normalizeConnectionPatchSecretsForIpc,
+  normalizeConnectionSlugForIpc,
+  normalizeCreateConnectionInputForIpc,
+} from './connections-ipc-validation.js';
 
 type ConnectionStore = ReturnType<typeof createConnectionStore>;
 type CredentialStore = ReturnType<typeof createFileCredentialStore>;
@@ -44,74 +49,6 @@ interface ConnectionsIpcDeps extends ConnectionInputNormalizerDeps {
   fetchModels?: ConnectionModelDiscoveryDeps['fetchModels'];
 }
 
-const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
-const IPC_CONNECTION_SECRET_MAX_LENGTH = 4096;
-const IPC_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/;
-const IPC_CONNECTION_SLUG_PATTERN = /^[A-Za-z0-9._-]+$/;
-
-function hasTraversalLookingSlugSegment(value: string): boolean {
-  return value.split('.').some((segment) => segment.length === 0);
-}
-
-function normalizeConnectionSlugForIpc(value: unknown, label: string): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  if (value.length === 0) {
-    throw new Error(`${label} is required`);
-  }
-  if (value.length > IPC_CONNECTION_SLUG_MAX_LENGTH) {
-    throw new Error(`${label} must be ${IPC_CONNECTION_SLUG_MAX_LENGTH} characters or fewer`);
-  }
-  if (!IPC_CONNECTION_SLUG_PATTERN.test(value) || IPC_CONTROL_CHARACTER_PATTERN.test(value)) {
-    throw new Error(`${label} contains invalid characters`);
-  }
-  if (hasTraversalLookingSlugSegment(value)) {
-    throw new Error(`${label} contains invalid path traversal segments`);
-  }
-  return value;
-}
-
-function normalizeConnectionApiKeyForIpc(value: unknown, label: string): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  if (value.length > IPC_CONNECTION_SECRET_MAX_LENGTH) {
-    throw new Error(`${label} must be ${IPC_CONNECTION_SECRET_MAX_LENGTH} characters or fewer`);
-  }
-  if (IPC_CONTROL_CHARACTER_PATTERN.test(value)) {
-    throw new Error(`${label} contains invalid characters`);
-  }
-  return value;
-}
-
-function normalizeCreateConnectionInput(input: CreateConnectionInput): CreateConnectionInput {
-  const apiKey = input.apiKey === undefined
-    ? undefined
-    : normalizeConnectionApiKeyForIpc(input.apiKey, 'apiKey');
-  const slug = normalizeConnectionSlugForIpc(input.slug, 'connection slug');
-  const normalizedInput = { ...input, slug, ...(apiKey !== undefined ? { apiKey } : {}) };
-  const defaults = PROVIDER_DEFAULTS[normalizedInput.providerType];
-  if (defaults.authKind === 'oauth_token') {
-    return { ...normalizedInput, baseUrl: defaults.baseUrl };
-  }
-  if (normalizedInput.baseUrl === undefined) return normalizedInput;
-  const result = normalizeConnectionBaseUrl(normalizedInput.baseUrl);
-  if (!result.ok) {
-    throw new Error(result.error);
-  }
-  return { ...normalizedInput, baseUrl: result.value };
-}
-
-function normalizeConnectionPatchSecretsForIpc(patch: UpdateConnectionInput): UpdateConnectionInput {
-  if (!Object.prototype.hasOwnProperty.call(patch, 'apiKey')) return patch;
-  if (patch.apiKey === undefined) return patch;
-  return {
-    ...patch,
-    apiKey: normalizeConnectionApiKeyForIpc(patch.apiKey, 'apiKey'),
-  };
-}
-
 async function normalizeUpdateConnectionInput(
   deps: ConnectionInputNormalizerDeps,
   slug: string,
@@ -129,11 +66,11 @@ async function normalizeUpdateConnectionInput(
     return { ...normalizedPatch, baseUrl: existing?.baseUrl ?? defaults.baseUrl };
   }
   if (normalizedPatch.baseUrl === undefined) return normalizedPatch;
-  const result = normalizeConnectionBaseUrl(normalizedPatch.baseUrl);
-  if (!result.ok) {
-    throw new Error(result.error);
-  }
-  return { ...normalizedPatch, baseUrl: result.value };
+  if (!providerType) throw new Error(`No such connection: ${slug}`);
+  return {
+    ...normalizedPatch,
+    baseUrl: normalizeConnectionBaseUrlValueForIpc(providerType, normalizedPatch.baseUrl),
+  };
 }
 
 export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
@@ -192,7 +129,7 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
     // baseUrl is a credentials-exfiltration boundary. Normalize before any
     // store or credential write; OAuth-token providers must keep their
     // canonical provider endpoint.
-    const normalizedInput = normalizeCreateConnectionInput(input);
+    const normalizedInput = normalizeCreateConnectionInputForIpc(input);
     const connection = await createConnectionWithCredential({ connectionStore, credentialStore }, normalizedInput);
     emitConnectionListChanged();
     return connection;

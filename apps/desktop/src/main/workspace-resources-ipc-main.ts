@@ -62,6 +62,7 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
     'app:openArtifactPath',
     async (
       _event,
+      sessionId: string,
       artifactId: string,
     ): Promise<
       | { ok: true; opened: string }
@@ -71,7 +72,7 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
         }
     > => {
       const record = await deps.artifactStore.get(artifactId);
-      if (!record) return { ok: false, reason: 'missing' };
+      if (!record || record.sessionId !== sessionId) return { ok: false, reason: 'missing' };
       if (record.status === 'deleted') return { ok: false, reason: 'missing' };
       const artifactRoot = join(deps.workspaceRoot, 'artifacts');
       const resolved = await resolveArtifactPath({
@@ -87,9 +88,13 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
     },
   );
 
-  ipcMain.handle('app:saveArtifactAs', async (_event, artifactId: string): Promise<ArtifactSaveResult> => {
+  ipcMain.handle('app:saveArtifactAs', async (
+    _event,
+    sessionId: string,
+    artifactId: string,
+  ): Promise<ArtifactSaveResult> => {
     const record = await deps.artifactStore.get(artifactId);
-    if (!record) return { ok: false, reason: 'not_found' };
+    if (!record || record.sessionId !== sessionId) return { ok: false, reason: 'not_found' };
     if (record.status === 'deleted') return { ok: false, reason: 'deleted' };
     const resolved = await resolveArtifactPath({
       artifactRoot: join(deps.workspaceRoot, 'artifacts'),
@@ -115,11 +120,25 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
   ipcMain.handle('artifacts:list', (_event, sessionId: string, opts?: { includeDeleted?: boolean }) =>
     deps.artifactStore.list(sessionId, opts),
   );
-  ipcMain.handle('artifacts:get', (_event, artifactId: string) => deps.artifactStore.get(artifactId));
-  ipcMain.handle('artifacts:readText', (_event, artifactId: string) => deps.artifactStore.readText(artifactId));
-  ipcMain.handle('artifacts:readBinary', (_event, artifactId: string) => deps.artifactStore.readBinary(artifactId));
-  ipcMain.handle('artifacts:delete', async (_event, artifactId: string) => {
+  ipcMain.handle('artifacts:get', async (_event, sessionId: string, artifactId: string) => {
     const artifact = await deps.artifactStore.get(artifactId);
+    return artifact?.sessionId === sessionId ? artifact : null;
+  });
+  ipcMain.handle('artifacts:readText', async (_event, sessionId: string, artifactId: string) => {
+    const artifact = await deps.artifactStore.get(artifactId);
+    return artifact?.sessionId === sessionId
+      ? deps.artifactStore.readText(artifactId)
+      : { ok: false as const, reason: 'not_found' as const };
+  });
+  ipcMain.handle('artifacts:readBinary', async (_event, sessionId: string, artifactId: string) => {
+    const artifact = await deps.artifactStore.get(artifactId);
+    return artifact?.sessionId === sessionId
+      ? deps.artifactStore.readBinary(artifactId)
+      : { ok: false as const, reason: 'not_found' as const };
+  });
+  ipcMain.handle('artifacts:delete', async (_event, sessionId: string, artifactId: string) => {
+    const artifact = await deps.artifactStore.get(artifactId);
+    if (!artifact || artifact.sessionId !== sessionId) return;
     if (artifact?.source === 'deep_research') {
       throw new Error('Deep Research artifacts are protected by the durable research ledger');
     }

@@ -45,7 +45,7 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
   // Quiet composer stages quotes as drawer Tokens (Astryx Token + remove).
   const quoteTokens = panel.locator('.maka-composer-context-drawer .astryx-token');
   await expect(quoteTokens).toHaveCount(2);
-  await quoteTokens.first().getByRole('button', { name: /^Remove / }).click();
+  await quoteTokens.first().getByRole('button', { name: /^移除/ }).click();
   await expect(quoteTokens).toHaveCount(1);
 
   // Full text authority is the companion panel list, not truncated token labels.

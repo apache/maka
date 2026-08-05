@@ -222,6 +222,18 @@
 .maka-tool-output-command {
   font: var(--maka-text-code);
  display: block; min-width: 0; color: var(--foreground); font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
+/* The command reads as the surface's header, not as the first line of the
+   output: it keeps the foreground colour the body gives up, and a hairline
+   separates the two. The rule is on the row rather than the panel so a
+   command with nothing under it (a failed launch) does not end in a stray
+   line — the panel's own 8px gap supplies the space below. */
+.maka-tool-output-command-row { display: flex; min-width: 0; align-items: flex-start; gap: 8px; }
+.maka-tool-output-command-row:not(:last-child) { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.maka-tool-output-command-row .maka-tool-output-command { flex: 1 1 auto; }
+.maka-tool-output-command-copy { flex: 0 0 auto; }
+.maka-tool-output-command-copy[data-copy-feedback="pending"] { cursor: progress; }
+.maka-tool-output-command-copy[data-copy-feedback="copied"] { color: var(--link); }
+.maka-tool-output-command-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 .maka-tool-output-body {
   font: var(--maka-text-code);
  max-height: 256px; margin: 0; overflow-y: auto; color: var(--muted-foreground); font-variant-ligatures: none; scroll-behavior: auto; white-space: pre-wrap; word-break: break-word; }
@@ -270,6 +282,27 @@
 .maka-web-result-error-message { color: var(--destructive); }
 .maka-web-result-repair { color: var(--muted-foreground); }
 .maka-tool-call-detail { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+/* A CodeBlock title (a file path, a result headline) sits at the same tier as
+   the command header beside it. Astryx hard-codes that title to the supporting
+   tier, which is 12px against the block's own 14px code — rebinding the role
+   token reaches it through inheritance, the same move chat-message.css makes
+   on the tool and reasoning rows. Only the size: `medium` on a header is
+   Astryx's intent and the surface command's foreground colour carries the same
+   weight of emphasis without it. */
+.maka-tool-call-detail .astryx-codeblock {
+  /* Geist Mono ligates `--`, `!==` and friends into single glyphs that sit
+     outside the cell they started in, so a `---` line looked like it had
+     escaped the block's left edge — measured, its box starts on the same x as
+     every other line. The product's own wells all disable this; Astryx's
+     CodeBlock does not, and tool output is transcript text where the literal
+     characters are the point. */
+  font-variant-ligatures: none;
+  --text-supporting-size: var(--text-code-size);
+  /* Unitless, so it has to move with the size: left at the supporting leading
+     it would multiply the larger size into a 23px line box and give the header
+     a rhythm no other row in the panel has. */
+  --text-supporting-leading: var(--text-code-leading);
+}
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
@@ -461,6 +494,15 @@
   font-variant-ligatures: none;
   white-space: pre;
   word-break: normal;
+}
+/* Only the chat consumer moved into `.maka-tool-output-panel`, where the diff
+   sits beside a command on the code tier and a 12px body next to 14px reads as
+   a different kind of text. `apps/desktop`'s artifact pane still draws this as
+   a standalone card at the supporting tier its container asks for, so the tier
+   belongs to the panel, not to the shared class. */
+.maka-tool-output-panel .maka-tool-diff-body {
+  font: var(--maka-text-code);
+  padding-block: 0;
 }
 .maka-tool-diff-line { display: block; padding-inline: var(--space-2); white-space: pre; }
 .maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }

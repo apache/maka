@@ -32,8 +32,6 @@ test('relink adopts the surviving project when the selected duplicate is merged'
       setAppInfo: () => {},
       setSessionProjectInfo: () => {},
       setProjectPickerPending: () => {},
-      setBranchPending: () => {},
-      setBranchList: () => {},
       setProjects: () => {},
       setSelectedProjectId: (value) => {
         selectedProjectIds.push(
@@ -94,8 +92,6 @@ test('preparing a default task preserves an explicit no-project selection', asyn
       setAppInfo: () => {},
       setSessionProjectInfo: () => {},
       setProjectPickerPending: () => {},
-      setBranchPending: () => {},
-      setBranchList: () => {},
       setProjects: () => {},
       setSelectedProjectId: () => {},
       selectedProjectId: null,
@@ -140,8 +136,6 @@ test('selecting no project updates the main-owned selection', async () => {
       setAppInfo: () => {},
       setSessionProjectInfo: () => {},
       setProjectPickerPending: () => {},
-      setBranchPending: () => {},
-      setBranchList: () => {},
       setProjects: () => {},
       setSelectedProjectId: (value) => {
         renderedSelections.push(

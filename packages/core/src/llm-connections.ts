@@ -506,6 +506,7 @@ export interface CreateConnectionInput {
   baseUrl?: string;
   defaultModel?: string;
   apiKey?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface UpdateConnectionInput {
@@ -521,6 +522,7 @@ export interface UpdateConnectionInput {
   lastTestStatus?: ConnectionLastTestStatus;
   lastTestAt?: string;
   lastTestMessage?: string;
+  extras?: Record<string, unknown>;
 }
 
 export function migrateConnectionV1ToV2(old: unknown): LlmConnection {

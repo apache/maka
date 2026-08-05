@@ -1,6 +1,15 @@
+import { createHash } from 'node:crypto';
+import {
+  decodeModelCallAttempt,
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SessionTrace } from '@maka/core/session-trace';
 import {
   inspectAgentRunDocument,
   inspectSessionDocument,
+  projectSessionTrace,
   type AgentRunInspectDocument,
   type SessionInspectDocument,
 } from '@maka/runtime';
@@ -18,6 +27,7 @@ import {
   EXECUTION_INSPECT_EVIDENCE_MAX_RECORDS,
   EXECUTION_INSPECT_RESULT_MAX_BYTES,
   EXECUTION_INSPECT_SESSION_MAX_RUNS,
+  EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
   type ExecutionInspectCandidate,
   type ExecutionInspectQueryInput,
   type ExecutionInspectQueryResult,
@@ -99,7 +109,9 @@ export class HostExecutionInspectCoordinator {
       const result =
         input.kind === 'agent_run'
           ? await this.#inspectAgentRun(input.sessionId, input.agentRunId)
-          : await this.#inspectSession(input.sessionId);
+          : input.kind === 'session'
+            ? await this.#inspectSession(input.sessionId)
+            : await this.#inspectSessionTracePage(input);
       if (result === undefined) {
         return failure('execution.inspect.query', 'not_found', 'Execution evidence was not found');
       }
@@ -115,6 +127,9 @@ export class HostExecutionInspectCoordinator {
       return { ok: true, result };
     } catch (error) {
       if (error instanceof InspectQueryTooLargeError) {
+        return failure('execution.inspect.query', 'invalid_request', error.message);
+      }
+      if (error instanceof InspectQueryInvalidError) {
         return failure('execution.inspect.query', 'invalid_request', error.message);
       }
       return failure(
@@ -203,6 +218,82 @@ export class HostExecutionInspectCoordinator {
     return { kind: 'session', document };
   }
 
+  async #inspectSessionTracePage(
+    input: Extract<
+      ExecutionInspectQueryInput,
+      { kind: 'session_trace_start' | 'session_trace_continue' }
+    >,
+  ): Promise<ExecutionInspectQueryResult | undefined> {
+    const trace = await this.#readSessionTrace(input.sessionId);
+    if (!trace) return undefined;
+    const revision = traceRevision(trace);
+    if (input.kind === 'session_trace_continue' && input.revision !== revision) {
+      return {
+        kind: 'session_trace_revision_changed',
+        expectedRevision: input.revision,
+        actualRevision: revision,
+      };
+    }
+    const offset = input.kind === 'session_trace_start' ? 0 : input.offset;
+    if (
+      offset > trace.turns.length ||
+      (input.kind === 'session_trace_continue' && (offset === 0 || offset >= trace.turns.length))
+    ) {
+      throw new InspectQueryInvalidError('Session trace continuation is out of range');
+    }
+    return createTracePage(trace, revision, offset);
+  }
+
+  async #readSessionTrace(sessionId: string): Promise<SessionTrace | undefined> {
+    try {
+      await this.#stores.sessionStore.readHeaderSnapshot(sessionId);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const runPage = await this.#stores.agentRunStore.listSessionRunsBounded(
+      sessionId,
+      EXECUTION_INSPECT_SESSION_MAX_RUNS,
+    );
+    if (runPage.truncated) {
+      throw new InspectQueryTooLargeError('Session trace exceeds the live Host run limit');
+    }
+    const budget = new InspectEvidenceBudget('Session');
+    const runtimeEvents: RuntimeEvent[] = [];
+    const modelCallAttempts: ModelCallAttempt[] = [];
+    let unreadableRecords = 0;
+    for (const run of runPage.runs) {
+      const runEvents = await budget
+        .read((remaining) =>
+          this.#stores.agentRunStore.readEventsBounded(sessionId, run.runId, remaining),
+        )
+        .catch((error) => {
+          if (isInspectQueryTooLargeError(error)) throw error;
+          unreadableRecords += 1;
+          return [];
+        });
+      for (const event of runEvents) {
+        if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
+        try {
+          modelCallAttempts.push(decodeModelCallAttempt(event.data));
+        } catch {
+          unreadableRecords += 1;
+        }
+      }
+      runtimeEvents.push(
+        ...(await budget.read((remaining) =>
+          this.#stores.runtimeEventStore.readRuntimeEventsBounded(sessionId, run.runId, remaining),
+        )),
+      );
+    }
+    return projectSessionTrace({
+      sessionId,
+      runtimeEvents,
+      modelCallAttempts,
+      ...(unreadableRecords > 0 ? { unreadableRecords } : {}),
+    });
+  }
+
   #budgetedReaders(label: 'AgentRun' | 'Session') {
     const budget = new InspectEvidenceBudget(label);
     return [
@@ -226,6 +317,10 @@ export class HostExecutionInspectCoordinator {
 
 class InspectQueryTooLargeError extends Error {
   readonly name = 'InspectQueryTooLargeError';
+}
+
+class InspectQueryInvalidError extends Error {
+  readonly name = 'InspectQueryInvalidError';
 }
 
 class InspectEvidenceBudget {
@@ -256,6 +351,58 @@ class InspectEvidenceBudget {
 
 function encodedBytes(result: ExecutionInspectQueryResult): number {
   return Buffer.byteLength(JSON.stringify(result), 'utf8');
+}
+
+function createTracePage(
+  trace: SessionTrace,
+  revision: `sha256:${string}`,
+  offset: number,
+): ExecutionInspectQueryResult {
+  const turns = [];
+  for (
+    let index = offset;
+    index < trace.turns.length && turns.length < EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS;
+    index += 1
+  ) {
+    const candidateTurns = [...turns, trace.turns[index]!];
+    const nextOffset = offset + candidateTurns.length;
+    const candidate: ExecutionInspectQueryResult = {
+      kind: 'session_trace_page',
+      schemaVersion: trace.schemaVersion,
+      sessionId: trace.sessionId,
+      revision,
+      offset,
+      turns: candidateTurns,
+      totals: trace.totals,
+      coverage: trace.coverage,
+      nextOffset: nextOffset < trace.turns.length ? nextOffset : null,
+    };
+    if (encodedBytes(candidate) > EXECUTION_INSPECT_RESULT_MAX_BYTES) {
+      if (turns.length === 0) {
+        throw new InspectQueryTooLargeError(
+          'One Session trace turn exceeds the live Host result limit',
+        );
+      }
+      break;
+    }
+    turns.push(trace.turns[index]!);
+  }
+  const nextOffset = offset + turns.length;
+  return {
+    kind: 'session_trace_page',
+    schemaVersion: trace.schemaVersion,
+    sessionId: trace.sessionId,
+    revision,
+    offset,
+    turns,
+    totals: trace.totals,
+    coverage: trace.coverage,
+    nextOffset: nextOffset < trace.turns.length ? nextOffset : null,
+  };
+}
+
+function traceRevision(trace: SessionTrace): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(JSON.stringify(trace)).digest('hex')}`;
 }
 
 function compareCandidates(

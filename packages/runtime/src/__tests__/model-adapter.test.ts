@@ -108,6 +108,37 @@ describe('ModelAdapter stream and error normalization', () => {
     });
   });
 
+  test('shares one resolved OpenAI Chat reasoning contract with the model factory', () => {
+    let observedWire: string | undefined;
+    let observedReplayKind: string | undefined;
+    let observedRequestField: string | undefined;
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-pro',
+        models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-pro',
+      modelFactory: (input) => {
+        observedWire = input.resolvedRuntime?.wire;
+        observedReplayKind = input.resolvedRuntime?.reasoningReplay.kind;
+        observedRequestField = input.openAiChatReasoningTransportState?.requestField;
+        return {};
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    adapter.resolveModel();
+
+    assert.equal(observedWire, 'openai-chat');
+    assert.equal(observedReplayKind, 'openai-chat-plaintext');
+    assert.equal(observedRequestField, 'observed');
+    assert.equal(adapter.runtimeEventReplaySupport().unsignedThinking, true);
+  });
+
   test('supports Responses reasoning replay for Volcengine Agent Plan', () => {
     const adapter = new ModelAdapter({
       connection: {

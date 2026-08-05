@@ -469,6 +469,16 @@ describe('maka-cu backend', () => {
     assert.deepEqual(received(records, 'permissions.check')[0], { prompt: false });
   });
 
+  it('keeps routine preflight quiet and exposes an explicit Accessibility prompt request', async () => {
+    const { backend, logPath } = makeBackend();
+
+    await backend.preflight(signal());
+    await backend.requestAccessibilityPermission(signal());
+
+    const checks = received(await readRecords(logPath), 'permissions.check');
+    assert.deepEqual(checks, [{ prompt: false }, { prompt: true }]);
+  });
+
   it('fails loudly on a protocol version mismatch and does not retry', async () => {
     const { backend, logPath } = makeBackend({ protocol: 'maka.cu/99' });
     await assert.rejects(backend.preflight(signal()), /service_mismatch/);

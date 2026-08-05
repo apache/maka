@@ -300,9 +300,13 @@ export async function assertPackagedResources(
   const required = [
     'app.asar',
     'bundled-tools.json',
+    'bundled-git.json',
+    join('licenses', 'git', 'LICENSE.txt'),
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
+    join('licenses', 'dugite', 'LICENSE'),
+    join('licenses', 'git', 'NOTICE.txt'),
     join('licenses', 'electron', 'LICENSE'),
     join('licenses', 'electron', 'LICENSES.chromium.html'),
     join('licenses', 'npm', 'THIRD_PARTY_NOTICES.txt'),

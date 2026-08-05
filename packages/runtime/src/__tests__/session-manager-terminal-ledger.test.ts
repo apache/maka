@@ -39,6 +39,152 @@ import { RuntimeKernel } from '../runtime-kernel.js';
 import type { RuntimeInteractionAuthority } from '../interaction-authority.js';
 
 describe('SessionManager terminal ledger invariants', () => {
+  test('coalesces one partial stream and flushes it before the final model event', async () => {
+    const store = new TinySessionStore();
+    const session = await store.create(makeInput());
+    const runtimeEventStore = new BatchingRuntimeEventStore();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runtimeEventStore,
+      newId: nextId(),
+      now: nextNow(10_000),
+      hooks: inertAgentRunHooks(store),
+    });
+    const acceptDelta = async (id: string, ts: number, text: string): Promise<void> => {
+      await run.acceptMappedEvent(
+        { type: 'text_delta', id, turnId: 'turn-1', ts, messageId: 'message-1', text },
+        runtimeEvent({
+          id: `runtime-${id}`,
+          sessionId: session.id,
+          invocationId: run.invocationId,
+          runId: run.runId,
+          turnId: run.turnId,
+          ts,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text },
+          refs: { providerEventId: 'message-1' },
+        }),
+      );
+    };
+
+    await acceptDelta('delta-1', 1, 'a');
+    await acceptDelta('delta-2', 2, 'b');
+    await acceptDelta('delta-3', 3, 'c');
+    expect(runtimeEventStore.order).toEqual(['append:runtime-delta-1']);
+
+    await run.acceptMappedEvent(
+      {
+        type: 'text_complete',
+        id: 'complete-1',
+        turnId: 'turn-1',
+        ts: 4,
+        messageId: 'message-1',
+        text: 'abc',
+      },
+      runtimeEvent({
+        id: 'runtime-complete-1',
+        sessionId: session.id,
+        invocationId: run.invocationId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 4,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'abc' },
+        refs: { providerEventId: 'message-1' },
+      }),
+    );
+
+    expect(runtimeEventStore.order).toEqual([
+      'append:runtime-delta-1',
+      'batch:runtime-delta-2,runtime-delta-3',
+      'append:runtime-complete-1',
+    ]);
+  });
+
+  test('fails a model boundary closed when its pending partial batch cannot be stored', async () => {
+    const store = new TinySessionStore();
+    const session = await store.create(makeInput());
+    const runtimeEventStore = new BatchingRuntimeEventStore(true);
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runtimeEventStore,
+      newId: nextId(),
+      now: nextNow(10_100),
+      hooks: inertAgentRunHooks(store),
+    });
+    const partial = (id: string, ts: number, text: string): RuntimeEvent =>
+      runtimeEvent({
+        id,
+        sessionId: session.id,
+        invocationId: run.invocationId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts,
+        partial: true,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text },
+        refs: { providerEventId: 'message-1' },
+      });
+    await run.acceptMappedEvent(
+      {
+        type: 'text_delta',
+        id: 'delta-1',
+        turnId: 'turn-1',
+        ts: 1,
+        messageId: 'message-1',
+        text: 'a',
+      },
+      partial('runtime-delta-1', 1, 'a'),
+    );
+    await run.acceptMappedEvent(
+      {
+        type: 'text_delta',
+        id: 'delta-2',
+        turnId: 'turn-1',
+        ts: 2,
+        messageId: 'message-1',
+        text: 'b',
+      },
+      partial('runtime-delta-2', 2, 'b'),
+    );
+
+    await assert.rejects(
+      run.acceptMappedEvent(
+        {
+          type: 'text_complete',
+          id: 'complete-1',
+          turnId: 'turn-1',
+          ts: 3,
+          messageId: 'message-1',
+          text: 'ab',
+        },
+        runtimeEvent({
+          id: 'runtime-complete-1',
+          sessionId: session.id,
+          invocationId: run.invocationId,
+          runId: run.runId,
+          turnId: run.turnId,
+          ts: 3,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'ab' },
+        }),
+      ),
+      /partial batch failed/,
+    );
+    expect(runtimeEventStore.order).toEqual(['append:runtime-delta-1', 'batch:runtime-delta-2']);
+  });
+
   test('error streams persist a failed terminal fact without non-terminal error ledger rows', async () => {
     const { manager, runStore, session } = await makeHarness([
       { type: 'error', recoverable: false, reason: 'tool_failed', message: 'Tool failed' },
@@ -1934,6 +2080,47 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
         a.event.id.localeCompare(b.event.id),
     );
     return ordered.map((item) => item.event);
+  }
+}
+
+class BatchingRuntimeEventStore implements RuntimeEventStore {
+  readonly durability = 'canonical' as const;
+  readonly order: string[] = [];
+  private readonly events: RuntimeEvent[] = [];
+
+  constructor(private readonly failPartialBatch = false) {}
+
+  async appendRuntimeEvent(_sessionId: string, _runId: string, event: RuntimeEvent): Promise<void> {
+    this.order.push(`append:${event.id}`);
+    this.events.push(clone(event));
+  }
+
+  async appendRuntimePartialBatch(
+    _sessionId: string,
+    _runId: string,
+    events: readonly RuntimeEvent[],
+  ): Promise<void> {
+    this.order.push(`batch:${events.map((event) => event.id).join(',')}`);
+    if (this.failPartialBatch) throw new Error('partial batch failed');
+    this.events.push(...clone(events));
+  }
+
+  async ensureTerminalRuntimeEventDurable(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+  ): Promise<void> {
+    if (!this.events.some((candidate) => candidate.id === event.id)) {
+      await this.appendRuntimeEvent(sessionId, runId, event);
+    }
+  }
+
+  async readRuntimeEvents(): Promise<RuntimeEvent[]> {
+    return clone(this.events);
+  }
+
+  async readSessionRuntimeEvents(): Promise<RuntimeEvent[]> {
+    return clone(this.events);
   }
 }
 

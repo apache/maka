@@ -25,6 +25,18 @@ describe('execution inspect protocol', () => {
       },
     );
     assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-trace',
+        operation: 'execution.inspect.query',
+        input: { kind: 'session_trace_start', sessionId: 'session-1' },
+      }),
+      {
+        requestId: 'request-trace',
+        operation: 'execution.inspect.query',
+        input: { kind: 'session_trace_start', sessionId: 'session-1' },
+      },
+    );
+    assert.deepEqual(
       decodeHostFrame({
         requestId: 'request-query',
         operation: 'execution.inspect.query',
@@ -47,6 +59,19 @@ describe('execution inspect protocol', () => {
           requestId: 'request-open',
           operation: 'execution.inspect.query',
           input: { kind: 'session', sessionId: 'session-1', rawStore: true },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-trace-page',
+          operation: 'execution.inspect.query',
+          ok: true,
+          result: {
+            ...tracePage(),
+            nextOffset: 2,
+          },
         }),
       isProtocolError,
     );
@@ -152,6 +177,33 @@ describe('execution inspect protocol', () => {
     );
   });
 });
+
+function tracePage() {
+  return {
+    kind: 'session_trace_page' as const,
+    schemaVersion: 1 as const,
+    sessionId: 'session-1',
+    revision: `sha256:${'a'.repeat(64)}` as const,
+    offset: 0,
+    turns: [],
+    totals: {
+      durationMs: 0,
+      modelAttempts: 0,
+      retries: 0,
+      compactions: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      unpricedAttempts: 0,
+    },
+    coverage: {
+      modelCalls: 'none' as const,
+      turnsMissingModelCalls: [],
+      unreadableRecords: 0,
+      turnsWithFewerModelCallsThanSteps: [],
+    },
+    nextOffset: null,
+  };
+}
 
 function agentRunDocument(sessionId = 'session-1', agentRunId = 'run-1'): AgentRunInspectDocument {
   return {

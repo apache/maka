@@ -10,6 +10,7 @@ import {
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
 interface NotificationsIpcDeps {
+  ipcMain?: Pick<typeof ipcMain, 'handle'>;
   settingsStore: { get(): Promise<AppSettings> };
   mainWindowController: MainWindowController;
   e2e: boolean;
@@ -27,7 +28,8 @@ interface NotificationsIpcDeps {
  * the chat UI — a missed banner must never break a completed turn.
  */
 export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
-  ipcMain.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
+  const target = deps.ipcMain ?? ipcMain;
+  target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
     const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
     if (!isRunNotificationKind(raw.kind)) return;
 

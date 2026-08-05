@@ -209,13 +209,12 @@ export function projectPtyOutputForModel(
 
   const scrollback = takeTailText(output.scrollback, remaining);
   truncated ||= scrollback.truncated;
+  const { lastAlternateScreen: _lastAlternateScreen, ...base } = output;
   return {
-    ...output,
+    ...base,
     screen: screen.text,
     scrollback: scrollback.text,
-    ...(alternate?.text
-      ? { lastAlternateScreen: alternate.text }
-      : { lastAlternateScreen: undefined }),
+    ...(alternate?.text ? { lastAlternateScreen: alternate.text } : {}),
     truncated,
   };
 }

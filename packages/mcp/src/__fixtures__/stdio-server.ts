@@ -80,3 +80,7 @@ function tool(name: string, description: string, readOnlyHint: boolean) {
 }
 
 await server.connect(new StdioServerTransport());
+
+if (process.argv.includes('--runtime-stderr')) {
+  setTimeout(() => process.stderr.write('runtime diagnostic\n'), 500);
+}

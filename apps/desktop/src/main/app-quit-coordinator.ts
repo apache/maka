@@ -36,8 +36,15 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
       phase = 'cleaning';
       windowCreationAbort.abort();
       const finishCleanup = () => {
-        phase = 'ready-to-exit';
-        deps.resumeQuit();
+        // `before-quit` was cancelled inside Electron's native quit transaction.
+        // Resuming from the cleanup Promise's microtask re-enters that transaction:
+        // Electron closes the windows but emits `window-all-closed` instead of
+        // `will-quit`, leaving the macOS process alive. Start a fresh transaction
+        // only after the current event-loop turn has unwound.
+        setImmediate(() => {
+          phase = 'ready-to-exit';
+          deps.resumeQuit();
+        });
       };
       void deps.cleanup().then(finishCleanup, (error) => {
         deps.onCleanupError(error);

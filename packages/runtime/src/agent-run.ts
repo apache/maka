@@ -8,6 +8,7 @@ import type {
   ToolBoundaryProtocol,
 } from '@maka/core';
 import { DurableStoreWriteError, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
+import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
 import {
@@ -182,6 +183,9 @@ export interface AgentRunContinuationBeginResult {
   continuationStartAdmission: RuntimeContinuationStartAdmissionProof;
 }
 
+const RUNTIME_PARTIAL_FLUSH_INTERVAL_MS = 80;
+const RUNTIME_PARTIAL_BATCH_MAX_BYTES = 8 * 1024;
+
 export class AgentRun {
   readonly runId: string;
   readonly invocationId: string;
@@ -200,6 +204,10 @@ export class AgentRun {
   private runStoreAvailable = true;
   private runtimeEventStoreAvailable = true;
   private runtimeEventStoreFailure: unknown;
+  private runtimePartialStreamKey: string | undefined;
+  private runtimePartialBuffer: RuntimeEvent[] = [];
+  private runtimePartialBufferBytes = 0;
+  private runtimePartialFlushTimer: ReturnType<typeof setTimeout> | undefined;
   private traceWriteError: string | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
@@ -305,6 +313,7 @@ export class AgentRun {
     // reports success while the run stays non-terminal is the silent loss this
     // method exists to prevent.
     if (!this.input.runtimeEventStore || !this.input.runStore) return;
+    await this.flushRuntimePartialBuffer(true);
     // The claim only fences writers inside this Run. Another owner — a Host
     // recovery, a resumed continuation — may have sealed the ledger already,
     // and a sealed run rejects further appends. Nothing to land in that case:
@@ -476,6 +485,7 @@ export class AgentRun {
     if (!this.input.runtimeEventStore || !this.runtimeEventStoreAvailable) {
       throw new Error('RuntimeEvent store is unavailable for turn runtime events');
     }
+    await this.flushRuntimePartialBuffer(false);
     await this.runtimeEventQueue.catch(() => {});
     // A write may have failed while we waited; a snapshot from a store that
     // just went unavailable must not be treated as a complete durable read.
@@ -581,6 +591,8 @@ export class AgentRun {
     runtimeEvent: RuntimeEvent,
     options: { requireTerminalWrite?: boolean; allowInteractionResume?: boolean } = {},
   ): Promise<void> {
+    const partialStreamKey = runtimePartialCoalescingKey(runtimeEvent);
+    if (!partialStreamKey) await this.flushRuntimePartialBuffer(true);
     if (isTerminalRuntimeEvent(runtimeEvent)) {
       await this.recordRuntimeEvents([runtimeEvent], {
         requireTerminalWrite: options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
@@ -598,6 +610,10 @@ export class AgentRun {
     }
     await this.recordSessionEvent(sessionEvent, options);
     if (sessionEvent.type === 'provider_retry') return;
+    if (partialStreamKey) {
+      await this.recordRuntimePartial(runtimeEvent, partialStreamKey);
+      return;
+    }
     // ToolRuntime already persisted protocol-tagged tool calls/results through
     // the atomic RuntimeCommitSink. Re-appending the mapped UI event through
     // the generic lane would duplicate the fact and violate that boundary.
@@ -1022,6 +1038,7 @@ export class AgentRun {
   async finalize(): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
+    await this.flushRuntimePartialBuffer(true);
     const lastTs = this.lastTs || this.input.now();
     if (this.stopped) this.finalStatus = { status: 'aborted' };
     if (!this.finalStatus) {
@@ -1590,6 +1607,90 @@ export class AgentRun {
     return next;
   }
 
+  private async recordRuntimePartial(event: RuntimeEvent, streamKey: string): Promise<void> {
+    const store = this.input.runtimeEventStore;
+    if (!store?.appendRuntimePartialBatch) {
+      await this.recordRuntimeEvents([event]);
+      return;
+    }
+    if (!this.runtimeEventStoreAvailable) {
+      await this.recordRuntimeEvents([event]);
+      return;
+    }
+    if (this.runtimePartialStreamKey !== streamKey) {
+      await this.flushRuntimePartialBuffer(true);
+      // Persist the first chunk synchronously. Besides bounding crash loss, this
+      // captures the immutable anchor before an upstream tool boundary can
+      // commit while later chunks are waiting in the coalescer.
+      await this.recordRuntimeEvents([event]);
+      this.runtimePartialStreamKey = streamKey;
+      return;
+    }
+    this.runtimePartialBuffer.push(event);
+    this.runtimePartialBufferBytes += runtimePartialTextBytes(event);
+    if (this.runtimePartialBufferBytes >= RUNTIME_PARTIAL_BATCH_MAX_BYTES) {
+      await this.flushRuntimePartialBuffer(false);
+      return;
+    }
+    this.scheduleRuntimePartialFlush();
+  }
+
+  private scheduleRuntimePartialFlush(): void {
+    if (this.runtimePartialFlushTimer) return;
+    this.runtimePartialFlushTimer = setTimeout(() => {
+      this.runtimePartialFlushTimer = undefined;
+      void this.flushRuntimePartialBuffer(false).catch(() => {
+        // enqueueRuntimeEventStore latches and reports the failure. The next
+        // event or execution boundary observes that latch and fails closed.
+      });
+    }, RUNTIME_PARTIAL_FLUSH_INTERVAL_MS);
+  }
+
+  private async flushRuntimePartialBuffer(closeStream: boolean): Promise<void> {
+    const ownedPartialWork =
+      this.runtimePartialStreamKey !== undefined ||
+      this.runtimePartialBuffer.length > 0 ||
+      this.runtimePartialFlushTimer !== undefined;
+    if (this.runtimePartialFlushTimer) {
+      clearTimeout(this.runtimePartialFlushTimer);
+      this.runtimePartialFlushTimer = undefined;
+    }
+    const events = this.runtimePartialBuffer;
+    this.runtimePartialBuffer = [];
+    this.runtimePartialBufferBytes = 0;
+    if (closeStream) this.runtimePartialStreamKey = undefined;
+    if (events.length === 0) {
+      // A timer flush may already be queued. Waiting here preserves the rule
+      // that an immutable boundary never overtakes prior presentation text.
+      if (closeStream) {
+        await this.runtimeEventQueue;
+        if (
+          ownedPartialWork &&
+          !this.runtimeEventStoreAvailable &&
+          this.input.runtimeEventStore?.durability === 'canonical'
+        ) {
+          throw (
+            this.runtimeEventStoreFailure ??
+            new Error('canonical RuntimeEvent store is unavailable')
+          );
+        }
+      }
+      return;
+    }
+    const store = this.input.runtimeEventStore;
+    if (!store?.appendRuntimePartialBatch) {
+      await this.recordRuntimeEvents(events);
+      return;
+    }
+    await this.enqueueRuntimeEventStore(
+      'append runtime partial batch',
+      async () => {
+        await store.appendRuntimePartialBatch?.(this.sessionId, this.runId, events);
+      },
+      { rethrow: store.durability === 'canonical' },
+    );
+  }
+
   private async enqueueTraceWriteFailure(
     error: unknown,
     label = 'agent run store write',
@@ -1618,6 +1719,36 @@ export class AgentRun {
       // Diagnostic persistence is best effort; never perturb model/tool execution.
     }
   }
+}
+
+function runtimePartialCoalescingKey(event: RuntimeEvent): string | undefined {
+  if (!event.partial || event.status !== undefined || event.actions) return undefined;
+  const content = event.content;
+  if (content?.kind !== 'text' && content?.kind !== 'thinking') return undefined;
+  if (content.kind === 'text' && content.attachments !== undefined) return undefined;
+  if (content.kind === 'thinking' && content.signature !== undefined) return undefined;
+  const providerEventId = event.refs?.providerEventId;
+  if (!providerEventId || Object.keys(event.refs ?? {}).some((key) => key !== 'providerEventId')) {
+    return undefined;
+  }
+  return JSON.stringify([
+    content.kind,
+    providerEventId,
+    event.sessionId,
+    event.invocationId,
+    event.runId,
+    event.turnId,
+    event.branch ?? null,
+    event.role,
+    event.author,
+  ]);
+}
+
+function runtimePartialTextBytes(event: RuntimeEvent): number {
+  const content = event.content;
+  return content?.kind === 'text' || content?.kind === 'thinking'
+    ? Buffer.byteLength(content.text, 'utf8')
+    : 0;
 }
 
 function traceToRunEvent(event: RunTraceEvent, runId: string): EmittedAgentRunEvent {

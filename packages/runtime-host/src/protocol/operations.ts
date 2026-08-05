@@ -3,6 +3,7 @@ import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
 import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
+import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
 import { DEEP_RESEARCH_OPERATION_SPECS } from './deep-research.js';
 import { DAILY_REVIEW_OPERATION_SPECS } from './daily-review.js';
 import { CONTEXT_OPERATION_SPECS } from './context.js';
@@ -14,6 +15,7 @@ import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
+import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import {
@@ -34,6 +36,8 @@ import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
+import { VOICE_OPERATION_SPECS } from './voice.js';
+import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
 
 export type {
   HostLifecycleState,
@@ -52,6 +56,7 @@ export {
   ARTIFACT_NAME_MAX_BYTES,
   ARTIFACT_PAGE_MAX_ITEMS,
   ARTIFACT_PREVIEW_MAX_BYTES,
+  ARTIFACT_READ_CHUNK_MAX_BYTES,
   ARTIFACT_RESULT_MAX_BYTES,
   ARTIFACT_SUMMARY_MAX_BYTES,
   decodeArtifactDeleteInput,
@@ -109,6 +114,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './configuration.js';
 export * from './deep-research.js';
 export * from './daily-review.js';
 export * from './context.js';
@@ -117,6 +123,7 @@ export * from './execution-inspect.js';
 export * from './client-capability.js';
 export * from './goal.js';
 export * from './memory.js';
+export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
 export * from './runtime-policy.js';
@@ -128,6 +135,8 @@ export * from './session-transcript.js';
 export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
+export * from './voice.js';
+export * from './web-search.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_STATUS_OPERATION_SPECS,
@@ -158,6 +167,10 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   MEMORY_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
   CLIENT_CAPABILITY_OPERATION_SPECS,
+  WEB_SEARCH_OPERATION_SPECS,
+  NETWORK_PROXY_OPERATION_SPECS,
+  CONFIGURATION_OPERATION_SPECS,
+  VOICE_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

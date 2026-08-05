@@ -145,7 +145,7 @@ export class HostDailyReviewCoordinator {
         case 'summary':
           return querySuccess({
             kind: 'summary',
-            summary: await this.#buildSummary(input.offsetDays, input.range),
+            summary: await this.#buildSummary(input.offsetDays, input.daySpan),
           });
         case 'archives': {
           const beforeArchiveId = input.beforeArchiveId;

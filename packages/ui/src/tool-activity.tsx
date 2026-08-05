@@ -45,6 +45,7 @@ import {
 import {
   TOOL_OUTPUT_BODY_CLASS,
   TOOL_OUTPUT_NOTE_CLASS,
+  ToolOutputSurface,
   ToolResultPreview,
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
@@ -191,13 +192,14 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
     && quietJson.headline !== invocationLine
     ? quietJson.headline
     : undefined;
+  // Live streaming has its own surface below, so this covers only the settled
+  // stack.
   const hasSharedPanelContent =
-    !ownsPanel && (
+    !ownsPanel && !showLiveStream && (
       showInvocation
       || !!resultHeadline
-      || showLiveStream
       || showResult
-      || (!!item.args && !permissionDenied && !invocationLine && !showResult && !showLiveStream)
+      || (!!item.args && !permissionDenied && !invocationLine)
     );
 
   return (
@@ -219,21 +221,25 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
           />
         )
       )}
+      {/* Streaming uses the same surface the settled result will land in, so a
+          command does not change shape the moment it finishes. It used to be a
+          CodeBlock card for the command with the stream as loose text beside
+          it. */}
+      {showLiveStream && (
+        <ToolOutputSurface
+          kind="live_stream"
+          heading={showInvocation ? invocationLine : undefined}
+        >
+          <ToolOutputStream
+            chunks={item.outputChunks!}
+            live={running}
+            truncated={item.outputTruncated === true}
+          />
+        </ToolOutputSurface>
+      )}
       {hasSharedPanelContent && (
         <div data-slot="tool-output" className="maka-tool-output-stack">
-          {showLiveStream && (
-            <>
-              {showInvocation && invocationLine ? (
-                <ToolCodeBlock code={invocationLine} />
-              ) : null}
-              <ToolOutputStream
-                chunks={item.outputChunks!}
-                live={running}
-                truncated={item.outputTruncated === true}
-              />
-            </>
-          )}
-          {!showLiveStream && (() => {
+          {(() => {
             const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
               && !permissionDenied && !showResult
               ? formatQuietJsonValue(item.args, locale).body
@@ -296,23 +302,11 @@ export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
     ),
   }));
 
-  // Only reaches a group of two or more: Astryx renders a lone call as a bare
-  // row that owns its own expansion. A group opens while anything inside is
-  // still in flight, because the collapsed header projects the last call alone
-  // — with parallel calls the last one can settle first, and a collapsed green
-  // check would report the whole group done while a sibling still runs.
-  //
-  // This seeds Astryx's initial state only; the group does not re-collapse when
-  // its tools settle, since the timeline key is deliberately stable so a
-  // disclosure survives mid-turn inserts (see timelineEntryKey). So a group
-  // watched live stays open, while the same turn reloaded renders collapsed —
-  // work in progress stays visible, history starts tidy.
-  return (
-    <ChatToolCalls
-      calls={calls}
-      defaultIsExpanded={items.some((item) => isInFlightToolStatus(item.status))}
-    />
-  );
+  // No defaultIsExpanded: opening a group is the reader's move. Seeding it open
+  // from in-flight status latches, since the prop is uncontrolled and the
+  // timeline key is stable (see timelineEntryKey). Cost: the collapsed header
+  // projects the last call, which can settle before a parallel sibling.
+  return <ChatToolCalls calls={calls} />;
 }
 
 function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {

@@ -223,6 +223,15 @@ async function exportFilteredDatabase(
       .run();
     database
       .prepare(`
+      DELETE FROM runtime_partial_segments
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runtime_partial_snapshots
+        WHERE runtime_partial_snapshots.stream_key = runtime_partial_segments.stream_key
+      )
+    `)
+      .run();
+    database
+      .prepare(`
       DELETE FROM tool_operations
       WHERE NOT EXISTS (
         SELECT 1 FROM runtime_events
@@ -276,6 +285,7 @@ const PORTABLE_GLOBAL_TABLES = new Set([
 const PORTABLE_DERIVED_TABLES = new Set([
   'tool_journal_events',
   'tool_operations',
+  'runtime_partial_segments',
   'core_interaction_outcomes',
   'core_message_host_epochs',
 ]);

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import {
   isShellOutput,
   normalizeSearchUrl,
@@ -7,10 +7,13 @@ import {
   type ShellOutput,
   type ToolResultContent,
 } from '@maka/core';
-import { AlertCircle, Ban, Check, Clock, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
+import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
+import { previewVariants } from '../primitives/chat.js';
 import { AgentSwarmPreview, ExploreAgentPreview, SubagentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
@@ -34,6 +37,89 @@ export const TOOL_OUTPUT_BODY_CLASS =
 
 export const TOOL_OUTPUT_NOTE_CLASS =
   'maka-tool-output-note';
+
+/**
+ * The one surface a tool result and the line naming it share.
+ *
+ * A single Bash call used to render three different ways depending on which
+ * branch it landed in: streaming put the command in an Astryx `CodeBlock` card
+ * with the output as loose text beside it, a settled foreground run passed the
+ * command as that CodeBlock's `title` (comment-coloured mono, no rule, tucked
+ * against the body — it read as a commented-out first line rather than a
+ * header), and a settled background run used this panel. So the same call
+ * changed shape as it finished.
+ *
+ * One panel now owns all three, and the file-diff preview besides: the heading
+ * on top in foreground mono, a hairline, then the body.
+ *
+ * The one action copies both. Astryx's CodeBlock copy button reached only the
+ * code, leaving the command it carried as `title` unreachable; a button that
+ * reached only the heading would have traded that for the reverse, and losing
+ * one-click copy of an error's output is the worse half of the trade. `body` is
+ * the plain text of `children` — the same capped, redacted string the body
+ * renders — so callers that have it pass it, and the rest copy the heading
+ * alone.
+ */
+export function ToolOutputSurface(props: {
+  kind: string;
+  heading?: string;
+  body?: string;
+  attention?: 'error' | 'warning';
+  children: ReactNode;
+}) {
+  const copyText = getToolActivityCopy(useUiLocale()).copy;
+  const feedback = useClipboardCopyFeedback();
+  const command = props.heading?.trim() ? props.heading : undefined;
+  const copyPayload = [command, props.body].filter(Boolean).join('\n');
+  // Each surface owns its own feedback hook, so the key never has to
+  // distinguish one surface from another — it only has to be stable across
+  // this surface's renders.
+  const copyKey = `tool-output:${props.kind}`;
+  const phase = feedback.phaseFor(copyKey);
+  const label = phase === 'pending'
+    ? copyText.pending
+    : phase === 'copied'
+      ? copyText.copied
+      : phase === 'failed'
+        ? copyText.failed
+        : copyText.idle;
+
+  return (
+    <div
+      data-slot="tool-output"
+      data-kind={props.kind}
+      className={cn(
+        TOOL_OUTPUT_PANEL_CLASS,
+        props.attention === 'error' && 'maka-tool-output-destructive-border',
+        props.attention === 'warning' && 'maka-tool-output-warning-border',
+      )}
+    >
+      {command && (
+        <div className="maka-tool-output-command-row">
+          <code className={TOOL_OUTPUT_COMMAND_CLASS}>{command}</code>
+          <UiButton
+            variant="ghost"
+            size="sm"
+            className="maka-tool-output-command-copy"
+            data-copy-feedback={phase ?? undefined}
+            // Icon-only: the heading already fills the row, and a word beside
+            // it would compete with the thing being copied. `label` is the
+            // accessible name in this mode.
+            isIconOnly
+            label={label}
+            aria-busy={phase === 'pending' ? 'true' : undefined}
+            isDisabled={phase === 'pending'}
+            onClick={() => void feedback.copy(copyKey, copyPayload)}
+            icon={phase === 'copied'
+              ? <Check size={14} aria-hidden="true" />
+              : <Copy size={14} aria-hidden="true" />}
+          />
+        </div>
+      )}
+      {props.children}
+    </div>
+  );
+}
 
 /** Routes persisted tool results to bounded, kind-specific preview cards. */
 export function ToolResultPreview(props: {
@@ -175,10 +261,39 @@ function PtyControlPreview(props: {
 }
 
 /**
- * Line-level diff coloring. Splits the unified-diff text on newlines and
- * tags each line with `data-line="add" | "del" | "hunk" | "meta" | "ctx"`
- * for CSS to color. Doesn't try to parse the hunk semantics — we leave
- * that to a future inline editor view; this is just a readable preview.
+ * Which tint a unified-diff line takes. Deliberately shallow: it reads the
+ * line's first character, not the hunk semantics, which is all the colouring
+ * needs and all a preview should promise.
+ *
+ * `+++`/`---` are file markers, not an addition and a deletion — they have to
+ * be tested before the single-character cases or every diff opens with one
+ * green and one red line that mean nothing.
+ */
+export function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
+  // The trailing space is what separates a file marker from content: unified
+  // diff writes `--- a/path`, never a bare `---`. Without it, deleting a YAML
+  // document separator or an SQL `--` comment paints the removal as a header —
+  // the one line the reader most needs to see as red.
+  if (line.startsWith('--- ') || line.startsWith('+++ ')) return 'meta';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
+  return 'ctx';
+}
+
+/**
+ * Line-level diff colouring — green additions, red deletions, a tinted hunk
+ * header — in the same surface a command uses, with the changed paths as its
+ * heading.
+ *
+ * This was passing `language="diff"` to Astryx's CodeBlock, which does not
+ * know that language: `buildLanguagePatterns` has no `diff` case and returns
+ * null, so every line fell through to `--color-syntax-variable` and the whole
+ * hunk painted one colour. Astryx ships no diff component, so the product owns
+ * this. The `.maka-tool-diff-*` classes it renders through are the ones
+ * `previewVariants` has always declared for exactly this — the call site was
+ * what went missing.
  */
 function FileDiffPreview(props: { diff: string; paths: string[] }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
@@ -187,15 +302,35 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
   // into a diff (commit body, .env file diff, etc.), and never let a
   // 10k-line diff create 10k React elements.
   const { body, capped } = capLines(redactSecrets(props.diff));
-  const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
+  // A diff arrives newline-terminated, and splitting one leaves a trailing
+  // empty field. As flat text that was invisible; as one element per line it is
+  // a blank tinted row at the end of every diff.
+  const lines = body.split('\n');
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
   return (
-    <div data-kind="file_diff">
-      <ToolCodeBlock
-        code={code}
-        language="diff"
-        title={props.paths.length > 0 ? props.paths.join(', ') : undefined}
-      />
-    </div>
+    <ToolOutputSurface
+      kind="file_diff"
+      heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
+      body={body}
+    >
+      <pre className={previewVariants({ part: 'diff-body' })}>
+        {lines.map((line, index) => (
+          <span
+            // Index keys: the list is a re-split of one immutable string, so a
+            // line's position is its identity.
+            key={index}
+            className={previewVariants({ part: 'diff-line' })}
+            data-line={diffLineKind(line)}
+          >
+            {line}
+            {'\n'}
+          </span>
+        ))}
+      </pre>
+      {capped > 0 && (
+        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.hiddenLines(capped)}</p>
+      )}
+    </ToolOutputSurface>
   );
 }
 
@@ -216,22 +351,16 @@ function TerminalPreview(props: {
   const safeCmd = redactSecrets(props.cmd);
 
   return (
-    <div
-      data-slot="tool-output"
-      data-kind="terminal"
-      className="maka-tool-output-stack"
+    <ToolOutputSurface
+      kind="terminal"
+      heading={safeCmd}
+      body={props.output ? shellOutputText(props.output, copy) : undefined}
+      attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
     >
       {props.output ? (
-        <ShellOutputBody
-          output={props.output}
-          failed={!succeeded}
-          title={safeCmd.length > 0 ? safeCmd : undefined}
-        />
+        <ShellOutputBody output={props.output} failed={!succeeded} />
       ) : (
-        <>
-          {safeCmd.length > 0 ? <ToolCodeBlock code={safeCmd} /> : null}
-          <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalUnavailable}</p>
-        </>
+        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalUnavailable}</p>
       )}
       {props.failureMessage && (
         <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'maka-tool-output-warning' : 'maka-tool-output-destructive')}>
@@ -255,7 +384,7 @@ function TerminalPreview(props: {
             : activityCopy.status.sandboxBlocked}
         </p>
       )}
-    </div>
+    </ToolOutputSurface>
   );
 }
 
@@ -272,9 +401,6 @@ function ShellRunPreview(props: {
   const safeCmd = redactSecrets(result.cmd);
   const output = isShellOutput(result.output) ? result.output : undefined;
   const attention = result.status === 'failed' || result.status === 'orphaned' || (result.exitCode !== undefined && result.exitCode !== 0);
-  const attentionBorder = sandboxBlocked
-    ? 'maka-tool-output-warning-border'
-    : 'maka-tool-output-destructive-border';
 
   if (result.mode === 'pty') {
     return (
@@ -299,14 +425,12 @@ function ShellRunPreview(props: {
   const pipeOutput = output?.mode === 'pipes' ? output : undefined;
 
   return (
-    <div
-      data-slot="tool-output"
-      data-kind="shell_run"
-      className={cn(TOOL_OUTPUT_PANEL_CLASS, attention && attentionBorder)}
+    <ToolOutputSurface
+      kind="shell_run"
+      heading={safeCmd}
+      body={pipeOutput ? shellOutputText(pipeOutput, copy) : undefined}
+      attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
     >
-      {safeCmd.length > 0 && (
-        <code className={TOOL_OUTPUT_COMMAND_CLASS}>{safeCmd}</code>
-      )}
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
         {statusLabel}
         {result.exitCode !== undefined ? ` · ${copy.exitCode(result.exitCode)}` : ''}
@@ -325,7 +449,7 @@ function ShellRunPreview(props: {
       ) : (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutputYet}</p>
       )}
-    </div>
+    </ToolOutputSurface>
   );
 }
 
@@ -423,14 +547,50 @@ function ShellRunStatus(props: {
   }
 }
 
+/**
+ * The output half of a `ToolOutputSurface` — never the command. The command is
+ * the surface's header now, so this renders the same `<pre>` well the live
+ * stream uses instead of its own bordered CodeBlock card, which used to nest a
+ * second border inside the panel and put the command in its title slot.
+ */
+/**
+ * The plain text a shell body renders, so the surface's copy action can offer
+ * the same string the reader is looking at — capped and redacted, with the
+ * per-stream "hidden lines" markers the body shows.
+ *
+ * The body used to be an Astryx CodeBlock, whose own copy button carried this
+ * text; the panel replaced that chrome, so the text has to reach the panel's
+ * button instead. One function owns it, and the body renders from the same
+ * call — a copy that quietly diverged from the pixels would be worse than none.
+ */
+function shellOutputText(
+  output: ShellOutput,
+  copy: ReturnType<typeof getToolActivityCopy>['result'],
+): string {
+  if (output.mode === 'pty') return redactSecrets(ptyHumanTerminalText(output));
+  const stdout = capLines(redactSecrets(output.stdout));
+  const stderr = capLines(redactSecrets(output.stderr));
+  const parts: string[] = [];
+  if (stdout.body) {
+    parts.push(stdout.capped > 0
+      ? `${stdout.body}\n\n${copy.streamHidden('stdout', stdout.capped)}`
+      : stdout.body);
+  }
+  if (stderr.body) {
+    parts.push(stderr.capped > 0
+      ? `${stderr.body}\n\n${copy.streamHidden('stderr', stderr.capped)}`
+      : stderr.body);
+  }
+  return parts.join('\n');
+}
+
 function ShellOutputBody(props: {
   output: ShellOutput;
   failed: boolean;
-  title?: string;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   if (props.output.mode === 'pty') {
-    const text = redactSecrets(ptyHumanTerminalText(props.output));
+    const text = shellOutputText(props.output, copy);
     return (
       <>
         {text ? <PtyTerminalSurface text={text} /> : (
@@ -448,31 +608,12 @@ function ShellOutputBody(props: {
   const hiddenLines = stdout.capped + stderr.capped;
   const runtimeTruncated = props.output.stdoutTruncated || props.output.stderrTruncated;
   const hasOutput = props.output.stdout.length > 0 || props.output.stderr.length > 0;
-  const parts: string[] = [];
-  if (stdout.body) {
-    parts.push(stdout.capped > 0
-      ? `${stdout.body}\n\n${copy.streamHidden('stdout', stdout.capped)}`
-      : stdout.body);
-  }
-  if (stderr.body) {
-    parts.push(stderr.capped > 0
-      ? `${stderr.body}\n\n${copy.streamHidden('stderr', stderr.capped)}`
-      : stderr.body);
-  }
-  const code = parts.join('\n');
+  const code = shellOutputText(props.output, copy);
   return (
     <>
-      {!hasOutput && !props.title && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
-      {(hasOutput || props.title) && (
-        <ToolCodeBlock
-          // No language: shell streams stay contiguous under the tokenizer.
-          code={code || props.title || ''}
-          title={code && props.title ? props.title : undefined}
-        />
-      )}
-      {!hasOutput && props.title && (
-        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>
-      )}
+      {hasOutput
+        ? <pre className={TOOL_OUTPUT_BODY_CLASS}>{code}</pre>
+        : <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
       {(runtimeTruncated || hiddenLines > 0) && (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>
           {hiddenLines > 0 ? copy.streamsTruncated(TOOL_LINE_CAP) : copy.outputTruncated}

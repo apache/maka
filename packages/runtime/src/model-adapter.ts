@@ -5,7 +5,7 @@ import {
   providerAuthRequiresSecret,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
-import { lookupModelMetadata, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
@@ -34,7 +34,7 @@ export type {
   ModelToolSet,
 } from './model-protocol.js';
 
-import { resolveModelRuntime } from './model-runtime.js';
+import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
   classifyError,
   errorPresentationFromClass,
@@ -45,11 +45,21 @@ import {
   type ProviderRequestTracker,
 } from './provider-request-telemetry.js';
 import {
-  createKimiOpenAiTransportState,
-  kimiReasoningFieldProviderOptions,
-  restoreKimiEmptyReasoning,
-  type KimiOpenAiTransportState,
-} from './kimi-openai-transport.js';
+  createOpenAiChatReasoningTransportState,
+  openAiChatReasoningFieldProviderOptions,
+  restoreOpenAiChatEmptyReasoning,
+  type OpenAiChatReasoningTransportState,
+} from './openai-chat-reasoning-transport.js';
+import type { ModelFactoryInput } from './model-factory.js';
+import {
+  mergeOpenAiResponsesProviderOptions,
+  planOpenAiResponsesContinuation,
+} from './openai-responses-continuation.js';
+import {
+  createOpenAiResponsesTransportState,
+  OPENAI_RESPONSES_LANE_HEADER,
+  type OpenAiResponsesTransportState,
+} from './openai-responses-websocket.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -59,12 +69,7 @@ import {
  * We type-erase the return as `unknown` here to avoid pulling ai-sdk's
  * `LanguageModelV2` type into core's dependency graph.
  */
-export interface ModelFactoryInput {
-  connection: RuntimeExecutionConnection;
-  apiKey: string;
-  modelId: string;
-  kimiOpenAiTransportState?: KimiOpenAiTransportState;
-}
+export type { ModelFactoryInput };
 export type ModelFactory = (input: ModelFactoryInput) => unknown;
 
 export interface RepairableAiSdkToolCall {
@@ -76,6 +81,7 @@ export interface RepairableAiSdkToolCall {
 }
 
 export interface ModelAdapterInput {
+  sessionId?: string;
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
@@ -121,6 +127,8 @@ export interface ModelAdapterStreamInput {
   }) => RepairableAiSdkToolCall | null | Promise<RepairableAiSdkToolCall | null>;
   /** Main-agent provider-call tracker. Auxiliary calls track their own generates. */
   providerRequestTracker?: ProviderRequestTracker;
+  /** Turn-scoped continuation lane. Omitted callers keep the full-request path. */
+  continuationKey?: string;
 }
 
 interface ProviderMiddlewareStreamInput {
@@ -134,17 +142,26 @@ interface ProviderMiddlewareStreamInput {
 }
 
 export class ModelAdapter {
-  private readonly kimiOpenAiTransportState = createKimiOpenAiTransportState();
+  private readonly runtime: ResolvedModelRuntime;
+  private readonly openAiChatReasoningTransportState: OpenAiChatReasoningTransportState;
+  private readonly openAiResponsesTransportState = createOpenAiResponsesTransportState();
 
-  constructor(private readonly input: ModelAdapterInput) {}
+  constructor(private readonly input: ModelAdapterInput) {
+    this.runtime = resolveModelRuntime(input.connection, input.modelId);
+    this.openAiChatReasoningTransportState = createOpenAiChatReasoningTransportState(
+      this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
+        ? this.runtime.reasoningReplay.requestField
+        : 'observed',
+    );
+  }
 
   runtimeEventReplaySupport(): ModelAdapterRuntimeEventReplaySupport {
     return {
       toolCalls: true,
       toolResults: true,
-      signedThinking: usesAnthropicMessages(this.input.connection, this.input.modelId),
-      unsignedThinking: usesKimiOpenAiChat(this.input.connection, this.input.modelId),
-      openAiResponsesThinking: usesOpenAiResponses(this.input.connection, this.input.modelId),
+      signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
+      unsignedThinking: this.runtime.reasoningReplay.kind === 'openai-chat-plaintext',
+      openAiResponsesThinking: this.runtime.reasoningReplay.kind === 'openai-responses-item',
     };
   }
 
@@ -156,8 +173,12 @@ export class ModelAdapter {
       connection: this.input.connection,
       apiKey: this.input.apiKey,
       modelId: this.input.modelId,
-      ...(usesKimiOpenAiChat(this.input.connection, this.input.modelId)
-        ? { kimiOpenAiTransportState: this.kimiOpenAiTransportState }
+      resolvedRuntime: this.runtime,
+      ...(this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
+        ? { openAiChatReasoningTransportState: this.openAiChatReasoningTransportState }
+        : {}),
+      ...(usesNativeOpenAiResponses(this.input.connection, this.runtime)
+        ? { openAiResponsesTransportState: this.openAiResponsesTransportState }
         : {}),
     });
   }
@@ -177,6 +198,7 @@ export class ModelAdapter {
       this.input.connection,
       this.input.modelId,
       this.input.providerOptions,
+      this.runtime,
     );
     const trackedModel = input.providerRequestTracker
       ? wrapLanguageModel({
@@ -206,9 +228,27 @@ export class ModelAdapter {
             },
       ]),
     );
+    const fullMessages = lowerNativeAudioMessages(input.messages);
+    const responsesLane =
+      input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
+        ? input.continuationKey
+        : undefined;
+    const continuation = responsesLane
+      ? planOpenAiResponsesContinuation(
+          fullMessages,
+          this.openAiResponsesTransportState.semanticBaseline(responsesLane),
+        )
+      : { messages: fullMessages };
+    const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
+      ? mergeOpenAiResponsesProviderOptions(
+          this.input.providerOptions,
+          this.input.sessionId ?? this.input.connection.slug,
+          continuation.previousResponseId,
+        )
+      : this.input.providerOptions;
     const sdkResult = streamText({
       model: trackedModel,
-      messages: lowerNativeAudioMessages(input.messages),
+      messages: continuation.messages,
       tools: sdkTools,
       activeTools: input.activeTools,
       // An empty active set is an authoritative tool-free request (not merely
@@ -221,7 +261,8 @@ export class ModelAdapter {
       repairToolCall: input.repairToolCall,
       ...(input.system ? { instructions: input.system } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      providerOptions: this.input.providerOptions,
+      providerOptions,
+      ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
       // Preserve the final request's Maka-owned message projection without
       // retaining the provider request body. ProviderRequestTracker owns body
@@ -236,7 +277,10 @@ export class ModelAdapter {
       // `error` event → ErrorEvent path, so silence the default.
       onError: () => {},
     }) as unknown as SdkStreamResult;
-    return this.toModelStreamResult(sdkResult, input.onStreamActivity);
+    return this.toModelStreamResult(sdkResult, input.onStreamActivity, {
+      ...(responsesLane ? { lane: responsesLane } : {}),
+      requestMessages: fullMessages,
+    });
   }
 
   /**
@@ -248,19 +292,46 @@ export class ModelAdapter {
   private toModelStreamResult(
     sdk: SdkStreamResult,
     onStreamActivity: () => void,
+    continuation: { lane?: string; requestMessages: ModelMessage[] },
   ): ModelStreamResult {
-    const kimiOpenAiTransportState = usesKimiOpenAiChat(this.input.connection, this.input.modelId)
-      ? this.kimiOpenAiTransportState
-      : undefined;
+    const openAiChatReasoningTransportState =
+      this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
+        ? this.openAiChatReasoningTransportState
+        : undefined;
+    const openAiResponsesTransportState = this.openAiResponsesTransportState;
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
+        let succeeded = true;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
-            for (const event of translateChunk(chunk, kimiOpenAiTransportState)) yield event;
+            for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
+              if (event.kind === 'error') succeeded = false;
+              yield event;
+            }
           }
         } catch (error) {
+          succeeded = false;
           yield { kind: 'error', failure: normalizeModelFailure(error) };
+        } finally {
+          if (!continuation.lane) return;
+          if (!succeeded) {
+            openAiResponsesTransportState.clearSemantic(continuation.lane);
+            return;
+          }
+          const response = await Promise.resolve(sdk.response).catch(() => undefined);
+          if (
+            response?.id &&
+            openAiResponsesTransportState.canRecordSemantic(continuation.lane, response.id)
+          ) {
+            openAiResponsesTransportState.recordSemantic(continuation.lane, {
+              requestMessages: structuredClone(continuation.requestMessages),
+              responseMessages: structuredClone(response.messages ?? []),
+              responseId: response.id,
+            });
+          } else {
+            openAiResponsesTransportState.clearSemantic(continuation.lane);
+          }
         }
       },
     };
@@ -273,10 +344,20 @@ export class ModelAdapter {
     })();
     const finishReason = (async () =>
       rawFinishReasonString(await sdk.finishReason.catch(() => undefined)))();
-    const request = Promise.resolve(sdk.request)
-      .then(normalizeRequestMetadata)
-      .catch(() => undefined);
+    // The SDK request contains only the wire delta during continuation. Keep
+    // Maka's public request metadata anchored to the complete durable
+    // projection so diagnostics and recovery never mistake an optimization for
+    // lost history.
+    const request = Promise.resolve({ messages: continuation.requestMessages });
     return { events, usage, finishReason, request };
+  }
+
+  endContinuation(lane: string): void {
+    this.openAiResponsesTransportState.endLane(lane);
+  }
+
+  dispose(): void {
+    this.openAiResponsesTransportState.close();
   }
 
   async generateCompactSummary(input: CompactSummaryRequest): Promise<CompactSummaryResult> {
@@ -337,8 +418,8 @@ export class ModelAdapter {
   translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
     return translateChunk(
       chunk,
-      usesKimiOpenAiChat(this.input.connection, this.input.modelId)
-        ? this.kimiOpenAiTransportState
+      this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
+        ? this.openAiChatReasoningTransportState
         : undefined,
     );
   }
@@ -413,9 +494,11 @@ function selectedModelMaxOutputTokens(
   connection: RuntimeExecutionConnection,
   modelId: string,
   providerOptions: Record<string, unknown> | undefined,
+  runtime: ResolvedModelRuntime,
 ): number | undefined {
-  const anthropicMessages = usesAnthropicMessages(connection, modelId);
-  const kimiOpenAiChat = usesKimiOpenAiChat(connection, modelId);
+  const anthropicMessages = runtime.wire === 'anthropic-messages';
+  const kimiOpenAiChat =
+    connection.providerType === 'kimi-coding-plan' && runtime.wire === 'openai-chat';
   if (!anthropicMessages && !kimiOpenAiChat) return undefined;
   const wireOutputLimit =
     connection.models?.find((model) => model.id === modelId)?.maxOutputTokens ??
@@ -426,30 +509,11 @@ function selectedModelMaxOutputTokens(
     : wireOutputLimit;
 }
 
-function usesAnthropicMessages(connection: RuntimeExecutionConnection, modelId: string): boolean {
-  const { adapter, apiProtocol } = resolveModelRuntime(connection, modelId);
-  return (
-    adapter.kind === 'anthropic' ||
-    adapter.kind === 'claude-subscription' ||
-    (adapter.kind === 'github-copilot' && apiProtocol === 'anthropic-messages')
-  );
-}
-
-function usesKimiOpenAiChat(connection: RuntimeExecutionConnection, modelId: string): boolean {
-  return (
-    connection.providerType === 'kimi-coding-plan' &&
-    resolveModelRuntime(connection, modelId).apiProtocol === 'openai-chat'
-  );
-}
-
-function usesOpenAiResponses(connection: RuntimeExecutionConnection, modelId: string): boolean {
-  const runtime = resolveModelRuntime(connection, modelId);
-  if (runtime.adapter.kind !== 'openai') return false;
-  return (
-    runtime.adapter.apiProtocol === 'openai-responses' ||
-    runtime.apiProtocol === 'openai-responses' ||
-    openAiAdapterApiProtocol(modelId, connection.providerType) === 'openai-responses'
-  );
+function usesNativeOpenAiResponses(
+  connection: RuntimeExecutionConnection,
+  runtime: ResolvedModelRuntime,
+): boolean {
+  return connection.providerType === 'openai' && runtime.wire === 'openai-responses';
 }
 
 function fixedAnthropicThinkingBudget(
@@ -509,6 +573,10 @@ interface SdkStreamResult {
   request: PromiseLike<{
     messages?: ModelMessage[];
   }>;
+  response: PromiseLike<{
+    id: string;
+    messages?: ModelMessage[];
+  }>;
 }
 
 /**
@@ -554,7 +622,7 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
  */
 function translateChunk(
   chunk: AiSdkStreamChunk,
-  kimiOpenAiTransportState?: KimiOpenAiTransportState,
+  openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'text-start':
@@ -592,13 +660,13 @@ function translateChunk(
       if (text !== undefined && (text.length > 0 || signature === undefined)) {
         events.push({
           kind: 'thinking',
-          text: restoreKimiEmptyReasoning(text),
+          text: restoreOpenAiChatEmptyReasoning(text),
           ...(responsesProviderOptions
             ? { providerOptions: responsesProviderOptions }
-            : kimiOpenAiTransportState
+            : openAiChatReasoningTransportState
               ? {
-                  providerOptions: kimiReasoningFieldProviderOptions(
-                    kimiOpenAiTransportState.reasoningField,
+                  providerOptions: openAiChatReasoningFieldProviderOptions(
+                    openAiChatReasoningTransportState.reasoningField,
                   ),
                 }
               : {}),

@@ -4,8 +4,66 @@ import {
   READ_IMAGE_TOO_LARGE_MESSAGE,
   type AttachmentByteReader,
   type StorageRef,
+  type ToolResultContent,
 } from '@maka/core';
-import type { ArtifactStore, DurableArtifactAttachmentReader } from './artifact-store.js';
+import type {
+  ArtifactAuthorityStore,
+  ArtifactStore,
+  DurableArtifactAttachmentReader,
+} from './artifact-store.js';
+
+export interface ArtifactAttachmentResourceReader {
+  readAttachmentResource(
+    sessionId: string,
+    artifactId: string,
+    abortSignal: AbortSignal,
+  ): Promise<ToolResultContent>;
+}
+
+/** Read a user-uploaded Artifact without exposing its storage path. */
+export function createArtifactAttachmentResourceReader(input: {
+  artifactStore:
+    | Pick<ArtifactAuthorityStore, 'getInSession' | 'readTextInSession'>
+    | Pick<ArtifactStore, 'get' | 'readText'>;
+}): ArtifactAttachmentResourceReader {
+  return Object.freeze({
+    async readAttachmentResource(
+      sessionId: string,
+      artifactId: string,
+      abortSignal: AbortSignal,
+    ): Promise<ToolResultContent> {
+      abortSignal.throwIfAborted();
+      const record =
+        'getInSession' in input.artifactStore
+          ? (await input.artifactStore.getInSession(sessionId, artifactId)).record
+          : await input.artifactStore.get(artifactId);
+      if (!record || record.status !== 'live' || record.source !== 'user_upload') {
+        throw new Error('Attachment was not found in this Session');
+      }
+      if (record.sessionId !== sessionId) {
+        throw new Error('Attachment was not found in this Session');
+      }
+      if (record.kind === 'image') {
+        if (!record.mimeType) throw new Error('Attachment image has no media type');
+        return {
+          kind: 'image',
+          mimeType: record.mimeType,
+          ref: { kind: 'session_file', sessionId, relativePath: artifactId },
+        };
+      }
+      if (record.kind === 'pdf') {
+        throw new Error('PDF attachments cannot be decoded by Read');
+      }
+      const read =
+        'readTextInSession' in input.artifactStore
+          ? await input.artifactStore.readTextInSession(sessionId, artifactId)
+          : await input.artifactStore.readText(artifactId);
+      abortSignal.throwIfAborted();
+      if (!read.ok) throw new Error(`Attachment could not be read: ${read.reason}`);
+      return { kind: 'text', text: read.text };
+    },
+  });
+}
 
 export function createAttachmentByteReader(input: {
   artifactStore: DurableArtifactAttachmentReader;
@@ -47,6 +105,10 @@ export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'c
       mimeType: input.mimeType,
       source: 'tool_result',
     });
-    return { kind: 'session_file', sessionId: input.sessionId, relativePath: artifact.id };
+    return {
+      kind: 'session_file',
+      sessionId: input.sessionId,
+      relativePath: artifact.id,
+    };
   };
 }

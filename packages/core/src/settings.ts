@@ -320,8 +320,18 @@ export interface UsageSummary {
 export interface UsageStats {
   summary: UsageSummary;
   logs: UsageRequestLog[];
-  byProvider: Array<{ provider: string; requests: number; tokens: number; costUsd: number }>;
-  byModel: Array<{ model: string; requests: number; tokens: number; costUsd: number }>;
+  byProvider: Array<{
+    provider: string;
+    requests: number;
+    tokens: number;
+    costUsd: number;
+  }>;
+  byModel: Array<{
+    model: string;
+    requests: number;
+    tokens: number;
+    costUsd: number;
+  }>;
   byTool: Array<{
     tool: string;
     calls: number;
@@ -339,10 +349,24 @@ export interface UsageStats {
 
 export interface SettingsTestResult {
   ok: boolean;
+  code?: SettingsTestResultCode;
   message: string;
   latencyMs?: number;
   details?: Record<string, unknown>;
 }
+
+export type SettingsTestResultCode =
+  | 'proxy_reachable'
+  | 'proxy_disabled'
+  | 'proxy_configuration_missing'
+  | 'proxy_timeout'
+  | 'proxy_http_error'
+  | 'proxy_unreachable'
+  | 'bot_credentials_valid'
+  | 'bot_token_missing'
+  | 'bot_token_invalid'
+  | 'bot_app_credentials_missing'
+  | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{
   network: Partial<{
@@ -476,7 +500,10 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       // Keep the existing list intact when callers patch other sections.
     },
     localMemory: patch.localMemory
-      ? normalizeLocalMemorySettings({ ...current.localMemory, ...patch.localMemory })
+      ? normalizeLocalMemorySettings({
+          ...current.localMemory,
+          ...patch.localMemory,
+        })
       : current.localMemory,
     workspaceInstructions: patch.workspaceInstructions
       ? normalizeWorkspaceInstructionsSettings({
@@ -488,7 +515,10 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ? normalizePrivacySettings({ ...current.privacy, ...patch.privacy })
       : current.privacy,
     chatDefaults: patch.chatDefaults
-      ? normalizeChatDefaultsSettings({ ...current.chatDefaults, ...patch.chatDefaults })
+      ? normalizeChatDefaultsSettings({
+          ...current.chatDefaults,
+          ...patch.chatDefaults,
+        })
       : current.chatDefaults,
     notifications: {
       ...current.notifications,

@@ -31,6 +31,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   electionDeadlineMs?: number;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
+  candidateEntrypoint?: string | URL;
 }
 
 interface ConnectOrSpawnRuntimeHostDependencies {
@@ -106,6 +107,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         const launch = dependencies.launchCandidate({
           rootPath: capability.canonicalPath,
           expectedRootId: capability.rootId,
+          ...(input.candidateEntrypoint === undefined
+            ? {}
+            : { entrypoint: input.candidateEntrypoint }),
         });
         await settleBeforeDeadline(launch.spawned, deadline);
       } catch {

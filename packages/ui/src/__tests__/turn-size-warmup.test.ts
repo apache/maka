@@ -2,10 +2,12 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createTurnSizeWarmup, type WarmupScheduler } from '../turn-size-warmup.js';
 
-function fakeTurn(overrides: { live?: boolean; connected?: boolean } = {}) {
+function fakeTurn(overrides: { live?: boolean; connected?: boolean; seeded?: boolean } = {}) {
   return {
     isConnected: overrides.connected ?? true,
-    hasAttribute: (name: string) => name === 'data-live-streaming' && (overrides.live ?? false),
+    hasAttribute: (name: string) =>
+      (name === 'data-live-streaming' && (overrides.live ?? false)) ||
+      (name === 'data-size-seeded' && (overrides.seeded ?? false)),
     style: { contentVisibility: '', contain: '' },
   };
 }
@@ -193,6 +195,17 @@ describe('createTurnSizeWarmup', () => {
 
     flushIdle();
     assert.deepEqual(forced(turns), [0, 2]);
+  });
+
+  it('skips turns whose size was seeded from a previous visit', () => {
+    // #2224: a seeded placeholder already equals the real height, so the
+    // walk has nothing to learn from it.
+    const turns = [fakeTurn({ seeded: true }), fakeTurn(), fakeTurn({ seeded: true })];
+    const { scheduler, flushIdle } = fakeScheduler();
+    createTurnSizeWarmup({ turns: () => turns, chunkSize: 4, scheduler });
+
+    flushIdle();
+    assert.deepEqual(forced(turns), [1]);
   });
 
   it('cancel releases the in-flight chunk and stops the walk', () => {

@@ -59,7 +59,7 @@ describe('composer quiet chrome', () => {
     )?.[0] ?? '';
     assert.match(
       leftControls,
-      /maka-composer-model-chip|maka-model-switcher|maka-new-chat-model-selector|maka-model-picker-root/,
+      /maka-composer-model-chip|maka-model-switcher-trigger|maka-new-chat-model-selector/,
       'model control must render in left-controls after permission',
     );
     // Thinking stays out of the model menu; without levels it does not mount.
@@ -102,6 +102,72 @@ describe('composer quiet chrome', () => {
       /maka-thinking-level-selector/,
       'thinking must not sit next to send',
     );
+  });
+
+  it('keeps the model + thinking pair mounted mid-turn, locked with the reason', () => {
+    // A turn in flight locks the model and thinking parameters; it does not
+    // remove their meaning. The pair must stay in the footer — unmounting it
+    // reflowed the whole row on turn start/end — and the lock must explain
+    // itself: Astryx Button keeps a tooltipped trigger focusable via
+    // aria-disabled, so the reason copy is discoverable by pointer, keyboard,
+    // and screen reader alike.
+    //
+    // The fixture must make streaming the ONLY lock source: an activeSession
+    // already at rest ('done') and a catalog that contains the current model,
+    // so the assertions below attribute the lock to `streaming` alone — and a
+    // deletion of the streaming branch in composer.tsx turns this red.
+    const session = {
+      id: 'session-1',
+      name: 'Test',
+      isFlagged: false,
+      isArchived: false,
+      labels: [],
+      hasUnread: false,
+      status: 'done' as const,
+      backend: 'fake' as const,
+      llmConnectionSlug: 'fake',
+      connectionLocked: false,
+      model: 'fake',
+      permissionMode: 'ask' as const,
+    };
+    const choices = [
+      { connectionSlug: 'fake', providerType: 'anthropic' as const, model: 'fake', label: 'fake' },
+    ];
+    const thinkingProps = {
+      activeThinkingLevels: ['off', 'high'] as ('off' | 'high')[],
+      activeThinkingLevel: 'high' as const,
+      onThinkingLevelChange: () => {},
+    };
+    const renderComposer = (streaming: boolean) => render(
+      <Composer
+        onSend={() => true}
+        onStop={() => {}}
+        streaming={streaming}
+        activeSession={session}
+        modelLabel="demo-model"
+        modelChoices={choices}
+        onModelChange={() => {}}
+        {...thinkingProps}
+      />,
+    );
+
+    // The lock trigger is any element carrying the class — the component
+    // family behind it (ghost button today) is its own business.
+    const tagCarrying = (markup: string, className: string): string =>
+      new RegExp(`<[a-z]+[^>]*${className}[^>]*>`).exec(markup)?.[0] ?? '';
+
+    const midTurn = renderComposer(true);
+    assert.match(midTurn, /maka-model-selection-controls/, 'the pair must not unmount mid-turn');
+    assert.match(tagCarrying(midTurn, 'maka-model-switcher-trigger'), /aria-disabled="true"/, 'mid-turn the model menu is locked, not gone');
+    assert.match(tagCarrying(midTurn, 'maka-thinking-level-selector'), /aria-disabled="true"/, 'mid-turn the thinking menu is locked, not gone');
+    // The contract is the reason, not the attribute: each locked control
+    // explains the lock in its own words (tooltip markup renders in SSR).
+    assert.match(midTurn, /等结束后再切换模型/, 'the model lock names its reason');
+    assert.match(midTurn, /等结束后再切换思考级别/, 'the thinking lock names its reason');
+
+    const atRest = renderComposer(false);
+    assert.doesNotMatch(tagCarrying(atRest, 'maka-model-switcher-trigger'), /aria-disabled/, 'at rest the model menu is enabled');
+    assert.doesNotMatch(tagCarrying(atRest, 'maka-thinking-level-selector'), /aria-disabled/, 'at rest the thinking menu is enabled');
   });
 
   it('reads active modes off the footer toolbar, after the model pair', () => {
@@ -201,85 +267,5 @@ describe('composer quiet chrome', () => {
     );
     assert.match(markup, /maka-composer-voice-button/);
     assert.doesNotMatch(markup, /maka-composer-realtime-voice-button/);
-  });
-
-  /**
-   * The picker used to sit on a bar of its own above the card, which is what
-   * made it read as a leftover rather than a control: same kind of thing as
-   * the model chip, different address. It now shares the footer row with the
-   * other send-context controls, so the assertion is containment — inside the
-   * left controls, not merely somewhere in the markup.
-   */
-  it('puts the workspace picker in the footer controls beside the model', () => {
-    const markup = render(
-      <Composer
-        onSend={() => true}
-        onStop={() => {}}
-        modelLabel="demo"
-        modelChoices={[]}
-        workspacePicker={{
-          projects: [],
-          onAdd: () => {},
-          onSelectProject: () => {},
-          onRelink: () => {},
-          onSelectNoProject: () => {},
-        }}
-      />,
-    );
-    assert.doesNotMatch(markup, /maka-composer-workspace-dock/, 'the lone bar is gone');
-    const leftControls = markup.match(
-      /maka-composer-left-controls[\s\S]*?maka-composer-right-controls/,
-    )?.[0] ?? '';
-    assert.match(leftControls, /maka-composer-workspace-picker/, 'picker rides the footer row');
-    // Beside the model, and ahead of it is the model's own slot — so the
-    // picker joins the send-context group instead of trailing the modes.
-    const modelIdx = leftControls.indexOf('maka-model-selection-controls');
-    const pickerIdx = leftControls.indexOf('maka-composer-workspace-picker');
-    assert.ok(modelIdx >= 0 && pickerIdx > modelIdx, 'picker follows the model pair');
-  });
-
-  /**
-   * The project and branch decide where a NEW chat starts; once a session
-   * exists they no longer move it. Leaving them on screen in an open chat
-   * reads as "you can still change this session's context here", which is
-   * false — so the same wired picker must render nothing.
-   *
-   * Asserts on the picker's own class, not on the container it happens to sit
-   * in. The previous version named the dock that used to wrap it, and once
-   * that dock was deleted the assertion would have passed against any markup
-   * at all — including markup that wrongly kept rendering the picker.
-   */
-  it('drops the workspace picker once a session is active', () => {
-    const workspacePicker = {
-      projects: [],
-      onAdd: () => {},
-      onSelectProject: () => {},
-      onRelink: () => {},
-      onSelectNoProject: () => {},
-    };
-    const markup = render(
-      <Composer
-        onSend={() => true}
-        onStop={() => {}}
-        modelLabel="demo"
-        workspacePicker={workspacePicker}
-        activeSession={{
-          id: 'session-1',
-          name: 'Test',
-          isFlagged: false,
-          isArchived: false,
-          labels: [],
-          hasUnread: false,
-          status: 'done',
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
-          connectionLocked: false,
-          model: 'fake',
-          permissionMode: 'ask',
-        }}
-      />,
-    );
-    assert.doesNotMatch(markup, /maka-composer-workspace-picker/);
-    assert.doesNotMatch(markup, /maka-composer-branch-picker/);
   });
 });

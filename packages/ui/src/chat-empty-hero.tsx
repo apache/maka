@@ -55,7 +55,10 @@ export function detectDayPeriod(nowMs: number = Date.now()): DayPeriod {
   return 'evening';
 }
 
-export function EmptyChatHero(props: { onPromptSuggestion?(prompt: string): void; userLabel?: string }) {
+export function EmptyChatHero(props: {
+  onPromptSuggestion?(prompt: string): void;
+  userLabel?: string;
+}) {
   // Greet the user by name when they've set one in Personalization Settings.
   // Falls back to a neutral title so first-run users don't see "Hi 你, …".
   //

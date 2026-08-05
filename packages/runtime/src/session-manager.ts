@@ -1148,7 +1148,11 @@ export class SessionManager {
 
   async relocateSessionWorkspace(
     sessionId: string,
-    input: { readonly expectedRevision: number; readonly cwd: string },
+    input: {
+      readonly expectedRevision: number;
+      readonly cwd: string;
+      readonly projectId?: string | null;
+    },
   ): Promise<VersionedSessionHeader> {
     const updateHeaderVersioned = this.deps.store.updateHeaderVersioned?.bind(this.deps.store);
     const readHeaderRecordSnapshot = this.deps.store.readHeaderRecordSnapshot?.bind(
@@ -1192,7 +1196,17 @@ export class SessionManager {
           'Session has a pending Interaction',
         );
       }
-      if (current.header.cwd === input.cwd) return current;
+      const projectIdChanged =
+        input.projectId !== undefined && current.header.projectId !== input.projectId;
+      if (current.header.cwd === input.cwd && !projectIdChanged) return current;
+
+      if (current.header.cwd === input.cwd) {
+        return updateHeaderVersioned(
+          sessionId,
+          { projectId: input.projectId },
+          input.expectedRevision,
+        );
+      }
 
       const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
       let committed: VersionedSessionHeader;
@@ -1200,7 +1214,10 @@ export class SessionManager {
         await this.runtimeKernel.disposeBackend(sessionId);
         committed = await updateHeaderVersioned(
           sessionId,
-          { cwd: input.cwd },
+          {
+            cwd: input.cwd,
+            ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+          },
           input.expectedRevision,
         );
       } catch (error) {
@@ -4611,7 +4628,6 @@ export class SessionManager {
     admittedAt: number;
     execution: Exclude<
       RootExecutionDescriptor,
-      | { kind: 'external_message' }
       | { kind: 'regenerate' }
       | { kind: 'context_compact' }
       | { kind: 'automation' }
@@ -4626,7 +4642,13 @@ export class SessionManager {
     let recoveryReason: string;
     let diagnostic: Record<string, unknown>;
     let workspaceIdentity: string | undefined;
-    if (input.execution.kind === 'goal') {
+    if (input.execution.kind === 'external_message' && input.execution.ephemeralInput === 'voice') {
+      recoveryReason = 'ephemeral_voice_admission_without_run';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        ephemeralInput: input.execution.ephemeralInput,
+      };
+    } else if (input.execution.kind === 'goal') {
       headerExtras.goalId = input.execution.goalId;
       recoveryReason = 'goal_internal_admission_without_run';
       diagnostic = {
@@ -4646,7 +4668,7 @@ export class SessionManager {
         wakeId: input.execution.wakeId,
         attemptId: input.execution.attemptId,
       };
-    } else {
+    } else if (input.execution.kind !== 'external_message') {
       if (
         session.subagentParent?.kind !== 'subagent' ||
         session.subagentRuntime?.agentId !== input.execution.agentId ||
@@ -4667,7 +4689,15 @@ export class SessionManager {
             candidate.claim.target.turnId === input.turnId,
         );
         if (claimState) {
-          assertClaimOwnsHostedLinkedChildAdmission(input, claimState.claim);
+          assertClaimOwnsHostedLinkedChildAdmission(
+            {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              runId: input.runId,
+              execution: input.execution,
+            },
+            claimState.claim,
+          );
           // The continuation claim is the durable owner of this target identity.
           // SessionManager's claim-repair saga must materialize its exact header;
           // the generic hosted-admission repair must not steal the same Run ID.
@@ -4708,6 +4738,8 @@ export class SessionManager {
           ? { sourceRunId: input.execution.sourceRunId }
           : {}),
       };
+    } else {
+      throw new Error('External message recovery closure requires ephemeral Voice input');
     }
 
     const run: AgentRunHeader = {

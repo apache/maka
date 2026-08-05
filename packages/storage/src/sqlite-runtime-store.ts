@@ -295,6 +295,22 @@ export class SqliteRuntimeStore
     await this.importRuntimeEvent(sessionId, runId, canonicalEvent);
   }
 
+  async appendRuntimePartialBatch(
+    sessionId: string,
+    runId: string,
+    events: readonly RuntimeEvent[],
+  ): Promise<void> {
+    if (events.length === 0) return;
+    const canonicalEvents = events.map(canonicalizeRuntimeEventForStorage);
+    for (const event of canonicalEvents) {
+      assertNoReservedToolLedgerFact(event);
+      if (sessionId !== event.sessionId || runId !== event.runId) {
+        throw new Error(`RuntimeEvent store identity does not match event ${event.id}`);
+      }
+    }
+    this.transaction(() => this.importRuntimePartialBatchSync(canonicalEvents));
+  }
+
   async ensureTerminalRuntimeEventDurable(
     sessionId: string,
     runId: string,
@@ -450,6 +466,11 @@ export class SqliteRuntimeStore
           SELECT
             length(CAST(payload_json AS BLOB)) +
             length(CAST(text_content AS BLOB)) +
+            coalesce((
+              SELECT sum(length(CAST(segment.text_content AS BLOB)))
+              FROM runtime_partial_segments AS segment
+              WHERE segment.stream_key = runtime_partial_snapshots.stream_key
+            ), 0) +
             coalesce(length(CAST(after_event_id AS BLOB)), 0) AS stored_bytes
           FROM runtime_partial_snapshots
           WHERE session_id = ? AND run_id = ?
@@ -481,15 +502,34 @@ export class SqliteRuntimeStore
       FROM runtime_partial_snapshots
       WHERE session_id = ? AND run_id = ?
       ORDER BY updated_at ASC, stream_key ASC
-    `)
+      `)
       .all(sessionId, runId) as unknown as RuntimePartialStorageRow[];
+    const segmentText = new Map<string, string[]>();
+    const segments = this.db
+      .prepare(`
+      SELECT segment.stream_key, segment.text_content
+      FROM runtime_partial_segments AS segment
+      INNER JOIN runtime_partial_snapshots AS snapshot
+        ON snapshot.stream_key = segment.stream_key
+      WHERE snapshot.session_id = ? AND snapshot.run_id = ?
+      ORDER BY segment.stream_key ASC, segment.segment_seq ASC
+    `)
+      .all(sessionId, runId) as Array<{ stream_key: string; text_content: string }>;
+    for (const segment of segments) {
+      const text = segmentText.get(segment.stream_key) ?? [];
+      text.push(segment.text_content);
+      segmentText.set(segment.stream_key, text);
+    }
     return mergeRuntimePartialSnapshots(
       immutable,
       partials.flatMap((row) => {
         try {
           const event = decodeRuntimePartialStorageRow(row);
           if (event.content?.kind === 'text' || event.content?.kind === 'thinking') {
-            event.content = { ...event.content, text: row.text_content };
+            event.content = {
+              ...event.content,
+              text: row.text_content + (segmentText.get(row.stream_key)?.join('') ?? ''),
+            };
           }
           return [
             {
@@ -2356,6 +2396,39 @@ export class SqliteRuntimeStore
     return !existing;
   }
 
+  private importRuntimePartialBatchSync(events: readonly RuntimeEvent[]): void {
+    const first = events[0];
+    if (!first) return;
+    const partials = events.map((event) => partialRuntimeStream(event));
+    const firstPartial = partials[0];
+    if (!firstPartial) {
+      throw new Error('Runtime partial batch contains a non-partial event');
+    }
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]!;
+      const partial = partials[index];
+      if (!partial) throw new Error('Runtime partial batch contains a non-partial event');
+      if (
+        partial.key !== firstPartial.key ||
+        event.sessionId !== first.sessionId ||
+        event.invocationId !== first.invocationId ||
+        event.runId !== first.runId ||
+        event.turnId !== first.turnId
+      ) {
+        throw new Error('Runtime partial batch must contain exactly one presentation stream');
+      }
+    }
+    this.assertInvocationIdentity(events);
+    this.assertContinuationAuthorityAllowsEvent(first);
+    this.assertRunNotSealed(first);
+    const last = events.at(-1)!;
+    this.upsertRuntimePartial(first, {
+      ...firstPartial,
+      text: partials.map((partial) => partial!.text).join(''),
+      updatedAt: last.ts,
+    });
+  }
+
   private assertImmutableSteeringMessageIdentity(event: RuntimeEvent): void {
     const messageId = immutableSteeringMessageId(event);
     if (!messageId) return;
@@ -2444,7 +2517,7 @@ export class SqliteRuntimeStore
 
   private upsertRuntimePartial(
     event: RuntimeEvent,
-    partial: { key: string; snapshot: RuntimeEvent; text: string },
+    partial: { key: string; snapshot: RuntimeEvent; text: string; updatedAt?: number },
   ): boolean {
     const existing = this.db
       .prepare(`
@@ -2463,27 +2536,40 @@ export class SqliteRuntimeStore
       ORDER BY event_seq DESC LIMIT 1
     `)
           .get(event.sessionId, event.runId) as { event_id: string } | undefined);
-    this.db
-      .prepare(`
+    if (!existing) {
+      this.db
+        .prepare(`
       INSERT INTO runtime_partial_snapshots (
         stream_key, session_id, invocation_id, run_id, turn_id,
         after_event_id, payload_json, text_content, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(stream_key) DO UPDATE SET
-        text_content = runtime_partial_snapshots.text_content || excluded.text_content,
-        updated_at = excluded.updated_at
     `)
-      .run(
-        partial.key,
-        event.sessionId,
-        event.invocationId,
-        event.runId,
-        event.turnId,
-        anchor?.event_id ?? null,
-        JSON.stringify(partial.snapshot),
-        partial.text,
-        event.ts,
-      );
+        .run(
+          partial.key,
+          event.sessionId,
+          event.invocationId,
+          event.runId,
+          event.turnId,
+          anchor?.event_id ?? null,
+          JSON.stringify(partial.snapshot),
+          '',
+          partial.updatedAt ?? event.ts,
+        );
+    } else {
+      this.db
+        .prepare('UPDATE runtime_partial_snapshots SET updated_at = ? WHERE stream_key = ?')
+        .run(partial.updatedAt ?? event.ts, partial.key);
+    }
+    if (partial.text.length > 0) {
+      this.db
+        .prepare(`
+        INSERT INTO runtime_partial_segments(stream_key, segment_seq, text_content, updated_at)
+        SELECT ?, coalesce(max(segment_seq), 0) + 1, ?, ?
+        FROM runtime_partial_segments
+        WHERE stream_key = ?
+      `)
+        .run(partial.key, partial.text, partial.updatedAt ?? event.ts, partial.key);
+    }
     return !existing;
   }
 

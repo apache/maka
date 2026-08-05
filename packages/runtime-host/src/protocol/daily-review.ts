@@ -44,7 +44,7 @@ export type DailyReviewQueryInput =
   | { readonly kind: 'config' }
   | {
       readonly kind: 'summary';
-      readonly range: DailyReviewRange;
+      readonly daySpan: number;
       readonly offsetDays: number;
     }
   | {
@@ -136,12 +136,16 @@ export function decodeDailyReviewQueryInput(value: unknown): DailyReviewQueryInp
     case 'summary': {
       const input = requireExactRecord(record, 'Daily Review summary query input', [
         'kind',
-        'range',
+        'daySpan',
         'offsetDays',
       ]);
+      const daySpan = requireCount(input.daySpan, 'Daily Review day span');
+      if (daySpan === 0 || daySpan > 30) {
+        throw invalidProtocolFrame('Daily Review day span is out of range');
+      }
       return {
         kind: 'summary',
-        range: requireRange(input.range),
+        daySpan,
         offsetDays: requireOffsetDays(input.offsetDays),
       };
     }

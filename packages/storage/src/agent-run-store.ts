@@ -1369,11 +1369,21 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    if (hasExactKeys(value, ['kind'])) return Object.freeze({ kind: 'external_message' });
-    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+    const allowedKeys = ['kind', 'inputDigest', 'ephemeralInput'];
+    if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'external_message', inputDigest: value.inputDigest });
+    if (value.inputDigest !== undefined && !isSha256Digest(value.inputDigest)) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    if (value.ephemeralInput !== undefined && value.ephemeralInput !== 'voice') {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: 'external_message',
+      ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
+      ...(value.ephemeralInput !== undefined ? { ephemeralInput: value.ephemeralInput } : {}),
+    });
   }
   if (value.kind === 'regenerate') {
     if (

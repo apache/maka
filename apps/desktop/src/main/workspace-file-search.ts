@@ -5,7 +5,8 @@ import { resolveProjectGitInfo } from '@maka/runtime';
 
 /**
  * workspace-file-search.ts — local-only workspace file listing for the composer
- * `@` mention popup. Mirrors git-branch.ts: we shell out to `git ls-files` when
+ * `@` mention popup. Like the project git probe, we shell out to `git ls-files`
+ * when
  * the project root is a git repo (so .gitignore + untracked files are honored
  * exactly as the user expects) and fall back to a bounded recursive readdir
  * walk otherwise. `execFileImpl` is injectable so unit tests can fake git.

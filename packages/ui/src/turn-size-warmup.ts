@@ -80,9 +80,15 @@ export function createTurnSizeWarmup(options: {
   if (!scheduler) return () => {};
   const chunkSize = options.chunkSize ?? 16;
   // Bottom-up queue. The live-streaming tail is already forced visible by CSS
-  // and grows every frame — leave it alone.
+  // and grows every frame, so leave it alone. Seeded turns (#2224) carry a
+  // measured intrinsic size from a previous visit, so their placeholder is
+  // already the real height and there is nothing left for the walk to learn.
+  // If a turn's content changed between visits (a late image, an edit), its
+  // seed is stale until the turn scrolls into view and renders; that error is
+  // bounded to the changed turns and self-heals, which is the trade taken for
+  // skipping their forced render here.
   const queue = Array.from(options.turns())
-    .filter((turn) => !turn.hasAttribute('data-live-streaming'))
+    .filter((turn) => !turn.hasAttribute('data-live-streaming') && !turn.hasAttribute('data-size-seeded'))
     .reverse();
   let forcedChunk: WarmupTurnElement[] = [];
   let cancelScheduled: (() => void) | undefined;

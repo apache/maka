@@ -105,6 +105,9 @@
   --text-supporting-leading: var(--maka-line-body);
 }
 
+/* These boxes need no !important to beat Astryx: its StyleX atoms live in the
+   earlier astryx-components layer, so product CSS in `components` wins on
+   cascade order alone, whatever the specificity — measured, not assumed. */
 .maka-turn .astryx-chat-reasoning [role="button"] > span:last-child,
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child {
   width: 14px;
@@ -112,50 +115,20 @@
   margin-inline-start: auto;
 }
 
-.maka-turn .astryx-chat-reasoning [role="button"] > span:last-child svg,
-.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child svg,
-.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child > * {
+/* Both chevrons are the same registry icon, which wraps its svg in a span —
+   so the wrapper (`> *`) needs sizing too, not just the svg. */
+.maka-turn :is(.astryx-chat-reasoning, .astryx-chat-tool-calls) [role="button"] > span:last-child svg,
+.maka-turn :is(.astryx-chat-reasoning, .astryx-chat-tool-calls) [role="button"] > span:last-child > * {
   width: 10px;
   height: 10px;
 }
 
 @media (hover: hover) {
   .maka-turn .astryx-chat-tool-calls [role="button"]:hover,
-  .maka-turn .astryx-chat-reasoning [role="button"]:hover,
-  .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
+  .maka-turn .astryx-chat-reasoning [role="button"]:hover {
     background-color: var(--color-overlay-hover);
     border-radius: var(--radius-element);
   }
-}
-
-/* Product trow (permission / sandbox / interrupted): Collapsible defaults large.
-
-   Nothing in this file declares !important any more, including the icon-box
-   sizes above. Astryx's StyleX atoms live in the earlier astryx-components
-   layer, so product CSS in `components` already wins on cascade order alone,
-   whatever their specificity — verified by deleting all eight of them and
-   re-measuring: the disclosure chevrons still render 14x14 with a 10x10 svg.
-   Everything here that is not running prose snaps to --maka-line-body, which
-   is declared with the type tiers in maka-tokens.css, so a turn reads as one
-   rhythm rather than a stack of differently-spaced blocks. */
-.maka-turn [data-trow] .astryx-collapsible-trigger {
-  font: var(--maka-text-label);
-  min-height: 24px;
-  gap: var(--spacing-1-5, 6px);
-  padding-block: 2px;
-  border-radius: var(--radius-element);
-  color: var(--color-text-secondary);
-}
-
-.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child {
-  width: 14px;
-  height: 14px;
-}
-
-.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child svg,
-.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child > * {
-  width: 10px;
-  height: 10px;
 }
 
 /* Row detail open: same 0fr→1fr medium motion as group/reasoning.

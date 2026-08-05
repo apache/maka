@@ -86,7 +86,7 @@ test('the packaged app is checked for every unsigned helper that could still be 
   );
   for (const helper of ['cua-driver', 'maka-cu', 'officecli']) {
     assert.ok(
-      forbidden.some((path) => path.endsWith(`/${helper}`)),
+      forbidden.some((path) => path.replaceAll('\\', '/').endsWith(`/${helper}`)),
       `${helper} is not among the paths the packaged app is checked against`,
     );
   }

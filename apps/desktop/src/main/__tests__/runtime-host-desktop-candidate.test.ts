@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
   createDesktopRuntimeHostCandidate,
+  type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
 } from '../runtime-host-desktop-candidate.js';
 
@@ -65,6 +66,23 @@ test('tears down the whole candidate when the Host connection closes', async () 
   assert.equal(host.closeCalls, 1);
 });
 
+test('disposes candidate-scoped product IPC state on reconnect teardown', async () => {
+  const ipc = ipcHarness();
+  const host = connectionHarness('client-ipc');
+  let disposeCalls = 0;
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc),
+    registerClientIpc: () => () => {
+      disposeCalls += 1;
+    },
+  });
+
+  await candidate.close();
+  await candidate.close();
+
+  assert.equal(disposeCalls, 1);
+});
+
 test('starts without registering an empty native capability set', async () => {
   const ipc = ipcHarness();
   const host = connectionHarness('no-capabilities');
@@ -81,6 +99,59 @@ test('starts without registering an empty native capability set', async () => {
   assert.equal(host.capabilityRegistrations, 0);
   await candidate.close();
   assert.equal(host.capabilityUnregistrations, 0);
+});
+
+test('refreshes native capabilities with a new immutable provider snapshot', async () => {
+  const ipc = ipcHarness();
+  const host = connectionHarness('capability-refresh');
+  let controls: DesktopRuntimeHostCandidateControls | undefined;
+  let implementation = 'old';
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc, {
+      browserTools: [],
+      releaseBrowserSession() {},
+      computerUseTools: emptyComputerUseTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => {
+        const value = implementation;
+        return [
+          {
+            offerId: 'desktop_mcp',
+            label: 'MCP',
+            description: 'MCP tools',
+            tools: [
+              {
+                ...nativeTool(),
+                name: 'mcp_snapshot',
+                impl: async () => value,
+              },
+            ],
+          },
+        ];
+      },
+    }),
+    registerClientIpc: (_client, _ipc, nextControls) => {
+      controls = nextControls;
+    },
+  });
+  const frame = {
+    ...capabilityFrame('session-refresh'),
+    offerId: 'desktop_mcp',
+    serverId: 'desktop_mcp',
+    toolName: 'mcp_snapshot',
+  };
+
+  assert.deepEqual(await host.invokeCapability(frame), {
+    content: [{ type: 'text', text: 'old' }],
+  });
+  implementation = 'new';
+  await controls?.refreshClientCapabilities();
+  assert.equal(host.capabilityRegistrations, 2);
+  assert.deepEqual(await host.invokeCapability(frame), {
+    content: [{ type: 'text', text: 'new' }],
+  });
+
+  await candidate.close();
 });
 
 test('releases all native Session resources on retirement and generation close', async () => {
