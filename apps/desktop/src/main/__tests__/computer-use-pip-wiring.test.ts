@@ -32,7 +32,7 @@ function read(relative: string): Promise<string> {
 
 describe('picture-in-picture lifecycle wiring', () => {
   it('assembleDesktopTools hands the mirror back to its caller', async () => {
-    const source = await read('tool-assembly.ts');
+    const source = await read('desktop-native-capability-assembly.ts');
     const returned = /\n  return \{\n([\s\S]*?)\n  \};\n\}/.exec(source)?.[1];
     assert.ok(returned, 'assembleDesktopTools must end in a return literal');
     assert.match(
@@ -61,7 +61,7 @@ describe('picture-in-picture lifecycle wiring', () => {
     // The correct resolution nests the wrappers rather than choosing between
     // them; whichever order they end up in, `withComputerUsePip` has to be one
     // of them.
-    const source = await read('tool-assembly.ts');
+    const source = await read('desktop-native-capability-assembly.ts');
     const overlay = /\n    overlay: ([\s\S]*?),\n  \}\);/.exec(source)?.[1];
     assert.ok(overlay, 'createComputerUseHost must be given an overlay hook');
     assert.match(

@@ -144,7 +144,7 @@ test('a turn that dies releases it too', async () => {
  */
 describe('Computer Use presence is reachable from production', () => {
   it('hands the status item and the lock guard out of tool assembly', async () => {
-    const text = await source('tool-assembly.ts');
+    const text = await source('desktop-native-capability-assembly.ts');
     const returned = text.slice(text.lastIndexOf('return {'));
     assert.match(
       returned,
@@ -159,7 +159,7 @@ describe('Computer Use presence is reachable from production', () => {
   });
 
   it('gives the dispatch path a lock probe', async () => {
-    const text = await source('tool-assembly.ts');
+    const text = await source('desktop-native-capability-assembly.ts');
     assert.match(
       text,
       /screenLocked:\s*\(\{\s*sessionId\s*\}\)\s*=>/,
@@ -191,7 +191,7 @@ describe('Computer Use presence is reachable from production', () => {
     // So this asserts the production expression. The correct resolution nests
     // the wrappers rather than choosing between them; whichever order they end
     // up in, both of these have to be present.
-    const text = await source('tool-assembly.ts');
+    const text = await source('desktop-native-capability-assembly.ts');
     const overlay = /\n    overlay: ([\s\S]*?),\n  \}\);/.exec(text)?.[1];
     assert.ok(overlay, 'createComputerUseHost must be given an overlay hook');
     assert.match(

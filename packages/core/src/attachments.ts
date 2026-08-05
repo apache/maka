@@ -1,9 +1,47 @@
 import type { AttachmentRef, StorageRef } from './events.js';
+import { isCanonicalArtifactEntityId } from './artifacts.js';
 
 /** Lives in core so @maka/runtime and @maka/storage share one type without a package cycle. */
 export type AttachmentByteReader = (
   ref: StorageRef,
 ) => Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string }>;
+
+export const ATTACHMENT_RESOURCE_PREFIX = 'maka://runtime/attachments';
+
+/**
+ * Convert a durable Session attachment into the opaque ref accepted by Read.
+ * The Session remains implicit in the tool invocation so a ref cannot grant
+ * access across Session boundaries.
+ */
+export function formatAttachmentResourceRef(ref: StorageRef): string | null {
+  if (ref.kind !== 'session_file' || !isCanonicalArtifactEntityId(ref.relativePath)) return null;
+  return `${ATTACHMENT_RESOURCE_PREFIX}/${ref.relativePath}`;
+}
+
+export function parseAttachmentResourceRef(value: string): { artifactId: string } | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== 'maka:' ||
+    url.hostname !== 'runtime' ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.search ||
+    url.hash
+  ) {
+    return null;
+  }
+  const prefix = '/attachments/';
+  if (!url.pathname.startsWith(prefix)) return null;
+  const artifactId = url.pathname.slice(prefix.length);
+  if (!isCanonicalArtifactEntityId(artifactId)) return null;
+  return value === `${ATTACHMENT_RESOURCE_PREFIX}/${artifactId}` ? { artifactId } : null;
+}
 
 /** Per-send cap on attachment count, shared by renderer preflight and main resolve. */
 export const MAX_ATTACHMENT_COUNT = 8;

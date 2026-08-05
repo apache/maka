@@ -23,7 +23,7 @@ import {
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import { reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
   codecError,
@@ -124,6 +124,7 @@ export class ConnectionCatalogDocumentOwner {
         `Connection catalog cannot exceed ${CONNECTION_CATALOG_MAX_CONNECTIONS} entries`,
       );
     }
+    const fallbackModels = fallbackInventory(input.connection.providerType);
     const next: ConnectionCatalogDocument = {
       ...current,
       revision: nextRevision(current.revision),
@@ -133,7 +134,10 @@ export class ConnectionCatalogDocumentOwner {
           ...input.connection,
           connectionId: randomUUID(),
           revision: 1,
-          models: [],
+          models: fallbackModels,
+          ...(fallbackModels.length > 0
+            ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
+            : {}),
         },
       ],
     };
@@ -386,6 +390,15 @@ export class ConnectionCatalogDocumentOwner {
     }
     await writeJsonDocument(root, FILE, document, CATALOG_DOCUMENT_MAX_BYTES);
   }
+}
+
+function fallbackInventory(
+  providerType: ConnectionCatalogEntry['providerType'],
+): ConnectionCatalogEntry['models'] {
+  const provider = PROVIDER_DEFAULTS[providerType];
+  return provider.modelDiscovery.kind === 'fallback'
+    ? provider.fallbackModels.map((id) => ({ id }))
+    : [];
 }
 
 export function catalogSnapshot(document: ConnectionCatalogDocument): ConnectionCatalogSnapshot {

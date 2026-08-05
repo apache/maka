@@ -1,22 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from "react";
 import type {
   AppSettings,
   BotOnboardingProvider,
   BotProvider,
   UpdateAppSettingsResult,
-} from '@maka/core';
-import type { BotStatus } from '@maka/runtime';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { settingsActionErrorMessage } from './settings-error-copy';
+} from "@maka/core";
+import type { BotStatus } from "@maka/runtime";
+import { useMountedRef, useToast, useUiLocale } from "@maka/ui";
+import { settingsActionErrorMessage } from "./settings-error-copy";
 import {
   BOT_LABELS,
   botStatusDetail,
   type BotPendingAction,
   type BotPendingActionName,
-} from './bot-chat-shared';
-import { BotChatOverview } from './bot-chat-overview';
-import { BotChatChannelDetail } from './bot-chat-detail';
-import { getBotSettingsCopy } from '../locales/settings-bot-copy';
+} from "./bot-chat-shared";
+import { BotChatOverview } from "./bot-chat-overview";
+import { BotChatChannelDetail } from "./bot-chat-detail";
+import { getBotSettingsCopy } from "../locales/settings-bot-copy";
+import { settingsTestResultMessage } from "../locales/settings-test-result-copy";
 
 /**
  * Remote-access settings container: owns overview/detail routing, bot status
@@ -27,17 +28,24 @@ import { getBotSettingsCopy } from '../locales/settings-bot-copy';
  */
 export function BotChatSettingsPage(props: {
   settings: AppSettings;
-  onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
+  onUpdate(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+  ): Promise<UpdateAppSettingsResult>;
   onReload(): Promise<void>;
 }) {
-  const [selected, setSelected] = useState<BotProvider>('telegram');
+  const [selected, setSelected] = useState<BotProvider>("telegram");
   const [detailOpen, setDetailOpen] = useState(false);
   // #1233 deferral: the `settings-bots-onboarding` e2e-fixture fixture opens a
   // provider's scan-login modal deterministically. `e2eFixture.getState()`
   // resolves null for real users, so this only fires under the dev fixture.
-  const [autoOpenScanProvider, setAutoOpenScanProvider] = useState<BotOnboardingProvider | null>(null);
-  const [pendingBotAction, setPendingBotAction] = useState<BotPendingAction | null>(null);
-  const [statuses, setStatuses] = useState<Record<BotProvider, BotStatus> | null>(null);
+  const [autoOpenScanProvider, setAutoOpenScanProvider] =
+    useState<BotOnboardingProvider | null>(null);
+  const [pendingBotAction, setPendingBotAction] =
+    useState<BotPendingAction | null>(null);
+  const [statuses, setStatuses] = useState<Record<
+    BotProvider,
+    BotStatus
+  > | null>(null);
   const [statusLoadError, setStatusLoadError] = useState<string | null>(null);
   const channel = props.settings.botChat.channels[selected];
   const toast = useToast();
@@ -48,8 +56,9 @@ export function BotChatSettingsPage(props: {
   const pendingBotActionRef = useRef<BotPendingAction | null>(null);
   const botPageMountedRef = useMountedRef();
   const botActionBusy = pendingBotAction !== null;
-  const selectedBotActionPending = pendingBotAction?.provider === selected ? pendingBotAction.action : null;
-  const restarting = selectedBotActionPending === 'restart';
+  const selectedBotActionPending =
+    pendingBotAction?.provider === selected ? pendingBotAction.action : null;
+  const restarting = selectedBotActionPending === "restart";
 
   useEffect(() => {
     return () => {
@@ -62,18 +71,24 @@ export function BotChatSettingsPage(props: {
   // modal to auto-open so the QR waiting state renders deterministically.
   useEffect(() => {
     let active = true;
-    void window.maka.e2eFixture.getState().then((fixtureState) => {
-      if (!active || !fixtureState?.botOnboardingProvider) return;
-      setSelected(fixtureState.botOnboardingProvider);
-      setDetailOpen(true);
-      setAutoOpenScanProvider(fixtureState.botOnboardingProvider);
-    }).catch(() => undefined);
+    void window.maka.e2eFixture
+      .getState()
+      .then((fixtureState) => {
+        if (!active || !fixtureState?.botOnboardingProvider) return;
+        setSelected(fixtureState.botOnboardingProvider);
+        setDetailOpen(true);
+        setAutoOpenScanProvider(fixtureState.botOnboardingProvider);
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
     };
   }, []);
 
-  function beginBotAction(provider: BotProvider, action: BotPendingActionName): boolean {
+  function beginBotAction(
+    provider: BotProvider,
+    action: BotPendingActionName,
+  ): boolean {
     if (pendingBotActionRef.current !== null) return false;
     const next = { provider, action };
     pendingBotActionRef.current = next;
@@ -81,52 +96,69 @@ export function BotChatSettingsPage(props: {
     return true;
   }
 
-  function finishBotAction(provider: BotProvider, action: BotPendingActionName) {
+  function finishBotAction(
+    provider: BotProvider,
+    action: BotPendingActionName,
+  ) {
     const current = pendingBotActionRef.current;
-    if (!current || current.provider !== provider || current.action !== action) return;
+    if (!current || current.provider !== provider || current.action !== action)
+      return;
     pendingBotActionRef.current = null;
     if (botPageMountedRef.current) {
       setPendingBotAction(null);
     }
   }
 
-  async function updateChannelFor(provider: BotProvider, patch: Partial<typeof channel>): Promise<boolean> {
+  async function updateChannelFor(
+    provider: BotProvider,
+    patch: Partial<typeof channel>,
+  ): Promise<boolean> {
     try {
       await props.onUpdate({ botChat: { channels: { [provider]: patch } } });
       if (!botPageMountedRef.current) return false;
       return true;
     } catch (error) {
       if (botPageMountedRef.current) {
-        toast.error(copy.saveFailed(botCopy.providers[provider].label), settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveFailed(botCopy.providers[provider].label),
+          settingsActionErrorMessage(error, locale),
+        );
       }
       return false;
     }
   }
 
-  async function updateChannel(patch: Partial<typeof channel>): Promise<boolean> {
+  async function updateChannel(
+    patch: Partial<typeof channel>,
+  ): Promise<boolean> {
     return updateChannelFor(selected, patch);
   }
 
   useEffect(() => {
     let active = true;
-    void window.maka.settings.bots.listStatuses().then((next) => {
-      if (!active) return;
-      setStatuses(next);
-      setStatusLoadError(null);
-    }).catch((error) => {
-      if (!active) return;
-      const message = settingsActionErrorMessage(error, locale);
-      setStatusLoadError(message);
-      toast.error(copy.loadFailed, message);
-    });
-    const unsubscribe = window.maka.settings.bots.subscribeStatusChanges((status) => {
-      if (!botPageMountedRef.current) return;
-      setStatusLoadError(null);
-      setStatuses((current) => ({
-        ...(current ?? ({} as Record<BotProvider, BotStatus>)),
-        [status.platform]: status,
-      }));
-    });
+    void window.maka.settings.bots
+      .listStatuses()
+      .then((next) => {
+        if (!active) return;
+        setStatuses(next);
+        setStatusLoadError(null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        const message = settingsActionErrorMessage(error, locale);
+        setStatusLoadError(message);
+        toast.error(copy.loadFailed, message);
+      });
+    const unsubscribe = window.maka.settings.bots.subscribeStatusChanges(
+      (status) => {
+        if (!botPageMountedRef.current) return;
+        setStatusLoadError(null);
+        setStatuses((current) => ({
+          ...(current ?? ({} as Record<BotProvider, BotStatus>)),
+          [status.platform]: status,
+        }));
+      },
+    );
     return () => {
       active = false;
       unsubscribe();
@@ -135,28 +167,32 @@ export function BotChatSettingsPage(props: {
 
   async function testChannel() {
     const provider = selected;
-    if (!beginBotAction(provider, 'test')) return;
+    if (!beginBotAction(provider, "test")) return;
     try {
       const result = await window.maka.settings.testBotChannel(provider);
       if (!botPageMountedRef.current) return;
       const platform = botCopy.providers[provider].label;
+      const message = settingsTestResultMessage(result, locale);
       if (result.ok) {
         // PR-BOT-CHAT-POLISH-0: title now matches kenji boundary 2's
         // 5-state readiness chain — a successful test PROVES
         // `credentials_valid`, NOT `operational`. The detail copy
         // still carries the IPC-side message so the user can see
         // latency / identity etc.
-        toast.success(copy.credentialVerified(platform), locale === 'zh' ? result.message : copy.credentialVerifiedDetail);
+        toast.success(copy.credentialVerified(platform), message);
       } else {
-        toast.error(copy.credentialTestFailed(platform), locale === 'zh' ? result.message : copy.credentialTestFailedDetail);
+        toast.error(copy.credentialTestFailed(platform), message);
       }
       await refreshBotStatuses();
     } catch (error) {
       if (botPageMountedRef.current) {
-        toast.error(copy.testError(botCopy.providers[provider].label), settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.testError(botCopy.providers[provider].label),
+          settingsActionErrorMessage(error, locale),
+        );
       }
     } finally {
-      finishBotAction(provider, 'test');
+      finishBotAction(provider, "test");
     }
   }
 
@@ -171,29 +207,33 @@ export function BotChatSettingsPage(props: {
     const provider = selected;
     const providerChannel = props.settings.botChat.channels[provider];
     const providerSupport = BOT_LABELS[provider].support;
-    if (!beginBotAction(provider, 'connect')) return;
+    if (!beginBotAction(provider, "connect")) return;
     let testOk = false;
     try {
       const result = await window.maka.settings.testBotChannel(provider);
       if (!botPageMountedRef.current) return;
       const platform = botCopy.providers[provider].label;
+      const message = settingsTestResultMessage(result, locale);
       testOk = result.ok;
       if (result.ok) {
-        toast.success(copy.credentialVerified(platform), locale === 'zh' ? result.message : copy.credentialVerifiedDetail);
+        toast.success(copy.credentialVerified(platform), message);
       } else {
-        toast.error(copy.credentialTestFailed(platform), locale === 'zh' ? result.message : copy.credentialTestFailedDetail);
+        toast.error(copy.credentialTestFailed(platform), message);
       }
       await refreshBotStatuses();
     } catch (error) {
       if (botPageMountedRef.current) {
-        toast.error(copy.testError(botCopy.providers[provider].label), settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.testError(botCopy.providers[provider].label),
+          settingsActionErrorMessage(error, locale),
+        );
       }
-      finishBotAction(provider, 'connect');
+      finishBotAction(provider, "connect");
       return;
     }
     try {
       if (!botPageMountedRef.current) return;
-      if (!testOk || providerSupport !== 'runtime') return;
+      if (!testOk || providerSupport !== "runtime") return;
       if (!providerChannel.enabled) {
         const saved = await updateChannelFor(provider, { enabled: true });
         if (!saved) return;
@@ -201,7 +241,7 @@ export function BotChatSettingsPage(props: {
       if (!botPageMountedRef.current) return;
       await restartBotProvider(provider);
     } finally {
-      finishBotAction(provider, 'connect');
+      finishBotAction(provider, "connect");
     }
   }
 
@@ -220,9 +260,15 @@ export function BotChatSettingsPage(props: {
       // down) was previously surfaced as a green success toast.
       const platform = botCopy.providers[provider].label;
       if (status.running) {
-        toast.success(copy.listening(platform), botStatusDetail(status, locale));
+        toast.success(
+          copy.listening(platform),
+          botStatusDetail(status, locale),
+        );
       } else {
-        toast.error(copy.notListening(platform), botStatusDetail(status, locale));
+        toast.error(
+          copy.notListening(platform),
+          botStatusDetail(status, locale),
+        );
       }
       return status.running;
     } catch (error) {
@@ -235,11 +281,11 @@ export function BotChatSettingsPage(props: {
 
   async function restartChannel() {
     const provider = selected;
-    if (!beginBotAction(provider, 'restart')) return;
+    if (!beginBotAction(provider, "restart")) return;
     try {
       await restartBotProvider(provider);
     } finally {
-      finishBotAction(provider, 'restart');
+      finishBotAction(provider, "restart");
     }
   }
 
@@ -265,8 +311,8 @@ export function BotChatSettingsPage(props: {
   async function disconnectLinkedSession() {
     const provider = selected;
     const providerChannel = props.settings.botChat.channels[provider];
-    if (provider !== 'wechat') return;
-    if (!beginBotAction(provider, 'disconnect')) return;
+    if (provider !== "wechat") return;
+    if (!beginBotAction(provider, "disconnect")) return;
     try {
       const ok = await toast.confirm({
         title: copy.disconnectTitle,
@@ -276,20 +322,20 @@ export function BotChatSettingsPage(props: {
         destructive: true,
       });
       if (!ok) return;
-      const isIlink = providerChannel.webhookUrl?.trim().startsWith('https://ilinkai.weixin.qq.com') ?? false;
-      const saved = await updateChannelFor(
-        provider,
-        {
-          token: '',
-          ...(isIlink ? { webhookUrl: '' } : {}),
-          botUserId: undefined,
-          connected: false,
-          readiness: 'scaffolded',
-          readinessReason: undefined,
-          readinessUpdatedAt: Date.now(),
-          lastError: undefined,
-        },
-      );
+      const isIlink =
+        providerChannel.webhookUrl
+          ?.trim()
+          .startsWith("https://ilinkai.weixin.qq.com") ?? false;
+      const saved = await updateChannelFor(provider, {
+        token: "",
+        ...(isIlink ? { webhookUrl: "" } : {}),
+        botUserId: undefined,
+        connected: false,
+        readiness: "scaffolded",
+        readinessReason: undefined,
+        readinessUpdatedAt: Date.now(),
+        lastError: undefined,
+      });
       if (!saved) return;
       if (!botPageMountedRef.current) return;
       await refreshBotStatuses();
@@ -297,7 +343,7 @@ export function BotChatSettingsPage(props: {
         toast.success(copy.disconnected, copy.credentialsCleared);
       }
     } finally {
-      finishBotAction(provider, 'disconnect');
+      finishBotAction(provider, "disconnect");
     }
   }
 

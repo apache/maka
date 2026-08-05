@@ -141,6 +141,7 @@ export interface SessionMetadataPatch {
   readonly name?: string;
   readonly labels?: readonly string[];
   readonly isFlagged?: boolean;
+  readonly projectId?: string | null;
 }
 
 export interface SessionMetadataUpdateInput {
@@ -167,6 +168,7 @@ export interface SessionCwdRelocateInput {
   readonly sessionId: string;
   readonly expectedRevision: number;
   readonly cwd: string;
+  readonly projectId?: string | null;
 }
 
 export interface SessionReadMarkerSetInput {
@@ -472,7 +474,7 @@ export function decodeSessionMetadataUpdateInput(value: unknown): SessionMetadat
     input.patch,
     'Session metadata patch',
     [],
-    ['name', 'labels', 'isFlagged'],
+    ['name', 'labels', 'isFlagged', 'projectId'],
   );
   if (Object.keys(patch).length === 0) {
     throw invalidProtocolFrame('Session metadata patch is empty');
@@ -485,6 +487,18 @@ export function decodeSessionMetadataUpdateInput(value: unknown): SessionMetadat
       ...(Object.hasOwn(patch, 'labels') ? { labels: labels(patch.labels) } : {}),
       ...(Object.hasOwn(patch, 'isFlagged')
         ? { isFlagged: boolean(patch.isFlagged, 'Session flagged state') }
+        : {}),
+      ...(Object.hasOwn(patch, 'projectId')
+        ? {
+            projectId:
+              patch.projectId === null
+                ? null
+                : boundedText(
+                    patch.projectId,
+                    'Session project id',
+                    SESSION_CATALOG_PROJECT_ID_MAX_BYTES,
+                  ),
+          }
         : {}),
     },
   };
@@ -520,15 +534,28 @@ export function decodeSessionConfigurationUpdateInput(
 }
 
 export function decodeSessionCwdRelocateInput(value: unknown): SessionCwdRelocateInput {
-  const input = requireExactRecord(value, 'Session cwd relocate input', [
-    'sessionId',
-    'expectedRevision',
-    'cwd',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'Session cwd relocate input',
+    ['sessionId', 'expectedRevision', 'cwd'],
+    ['projectId'],
+  );
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     expectedRevision: positiveRevision(input.expectedRevision, 'expected Session revision'),
     cwd: requireUtf8String(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
+    ...(Object.hasOwn(input, 'projectId')
+      ? {
+          projectId:
+            input.projectId === null
+              ? null
+              : boundedText(
+                  input.projectId,
+                  'Session project id',
+                  SESSION_CATALOG_PROJECT_ID_MAX_BYTES,
+                ),
+        }
+      : {}),
   };
 }
 

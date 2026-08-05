@@ -42,7 +42,11 @@ import {
   type RuntimeEventContent,
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
-import { normalizeShellToolResultContent, normalizeToolResultContentForRead } from '@maka/core';
+import {
+  formatAttachmentResourceRef,
+  normalizeShellToolResultContent,
+  normalizeToolResultContentForRead,
+} from '@maka/core';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';
@@ -549,7 +553,11 @@ export function buildRuntimeEventModelReplayPlan(
           eventId: event.id,
           ts: event.ts,
         };
-        callsById.set(event.content.id, { name: event.content.name, eventId: event.id, item });
+        callsById.set(event.content.id, {
+          name: event.content.name,
+          eventId: event.id,
+          item,
+        });
         items.push(item);
         break;
       }
@@ -792,7 +800,9 @@ const STEERING_PROVIDER_OPTIONS_NAMESPACE = 'maka';
 export function steeringProviderOptions(
   eventId: string,
 ): NonNullable<ModelMessage['providerOptions']> {
-  return { [STEERING_PROVIDER_OPTIONS_NAMESPACE]: { steeringEventId: eventId } };
+  return {
+    [STEERING_PROVIDER_OPTIONS_NAMESPACE]: { steeringEventId: eventId },
+  };
 }
 
 /** Add structured steering identity to already-canonical provider content. */
@@ -875,10 +885,11 @@ function isLegacySubagentToolResultCandidate(toolName: string, value: unknown): 
 
 /**
  * Fold a user turn's inline references into its model-facing text. Attachments
- * render as a name/type marker (their bytes, when the model can see them, are
- * appended separately as image parts); quotes carry their excerpt inline, since
- * a quote has no backing storage — the text IS the reference. Presentation
- * layers render both as chips and never show this folded form.
+ * render as a name/type block with exact Read instructions when the reference
+ * is safely addressable (their bytes, when the model can see them, are appended
+ * separately as image parts); quotes carry their excerpt inline, since a quote
+ * has no backing storage — the text IS the reference. Presentation layers
+ * render both as chips and never show this folded form.
  */
 export function formatTextWithInlineRefs(
   textOrContent: string | RuntimeEventTextContent,
@@ -896,7 +907,33 @@ export function formatTextWithInlineRefs(
 }
 
 function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
-  return attachments.map((a) => `[attachment: ${a.name} (${a.mimeType})]`).join(' ');
+  return attachments
+    .map((attachment) => {
+      const resourceRef = formatAttachmentResourceRef(attachment.ref);
+      const readArgument = resourceRef
+        ? { ref: resourceRef }
+        : attachment.ref.kind === 'workspace_file'
+          ? { path: attachment.ref.relativePath }
+          : attachment.ref.kind === 'external_file'
+            ? { path: attachment.ref.absolutePath }
+            : null;
+      const access = readArgument
+        ? resourceRef
+          ? [
+              `Read argument: ${JSON.stringify(readArgument)}`,
+              'This is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.',
+            ].join('\n')
+          : `Read argument: ${JSON.stringify(readArgument)}`
+        : 'The attachment content is unavailable to Read.';
+      return [
+        '<attachment>',
+        access,
+        `name: ${JSON.stringify(attachment.name)}`,
+        `mime_type: ${JSON.stringify(attachment.mimeType)}`,
+        '</attachment>',
+      ].join('\n');
+    })
+    .join('\n');
 }
 
 function formatQuoteRefs(quotes: readonly QuoteRef[]): string {

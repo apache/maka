@@ -5,6 +5,7 @@ import {
   createProxiedFetchTransport,
   exchangeCodexDeviceAuthorizationCode,
   exchangeOAuthAuthorizationCode,
+  fetchClaudeSubscriptionUsage,
   OAuthDeviceAuthorizationExpiredError,
   OAuthTokenEndpointError,
   pollCodexDeviceAuthorization,
@@ -31,6 +32,10 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import {
+  HostOAuthExecutionAuthority,
+  OAuthExecutionCredentialError,
+} from './oauth-execution-authority.js';
+import {
   ClientCapabilityInvocationError,
   type HostClientCapabilityCoordinator,
 } from './client-capability-coordinator.js';
@@ -55,6 +60,7 @@ export class HostOAuthFatalError extends Error {
 
 export interface HostOAuthCoordinatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly oauthCredentials?: HostOAuthExecutionAuthority;
   readonly activation: RuntimePolicyActivationGate;
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly isProviderEnabled: (provider: OAuthLoginProvider) => boolean;
@@ -68,6 +74,8 @@ export interface HostOAuthCoordinatorInput {
   readonly startCodexAuthorization?: typeof startCodexDeviceAuthorization;
   readonly pollCodexAuthorization?: typeof pollCodexDeviceAuthorization;
   readonly exchangeCodexCode?: typeof exchangeCodexDeviceAuthorizationCode;
+  readonly fetchAccountUsage?: typeof fetchClaudeSubscriptionUsage;
+  readonly createFetchTransport?: typeof createProxiedFetchTransport;
   readonly authorizationTimeoutMs?: number;
 }
 
@@ -105,9 +113,11 @@ export class HostOAuthCoordinator {
     'oauth.login.start': (input, context) => this.#start(input, context.connectionId),
     'oauth.login.query': (input) => this.#query(input.attemptId),
     'oauth.login.cancel': (input) => this.#cancel(input.attemptId),
+    'oauth.account.usage.fetch': (input) => this.#fetchAccountUsage(input.connectionId),
   };
 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
+  readonly #oauthCredentials: HostOAuthExecutionAuthority;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #clientCapabilities: HostClientCapabilityCoordinator;
   readonly #isProviderEnabled: (provider: OAuthLoginProvider) => boolean;
@@ -121,6 +131,8 @@ export class HostOAuthCoordinator {
   readonly #startCodexAuthorization: typeof startCodexDeviceAuthorization;
   readonly #pollCodexAuthorization: typeof pollCodexDeviceAuthorization;
   readonly #exchangeCodexCode: typeof exchangeCodexDeviceAuthorizationCode;
+  readonly #fetchUsageSnapshot: typeof fetchClaudeSubscriptionUsage;
+  readonly #createFetchTransport: typeof createProxiedFetchTransport;
   readonly #authorizationTimeoutMs: number;
   readonly #attempts = new Map<string, LoginAttemptRecord>();
   #activeAttempt: ActiveLoginAttempt | undefined;
@@ -136,6 +148,8 @@ export class HostOAuthCoordinator {
 
   constructor(input: HostOAuthCoordinatorInput) {
     this.#runtimePolicy = input.runtimePolicy;
+    this.#oauthCredentials =
+      input.oauthCredentials ?? new HostOAuthExecutionAuthority(input.runtimePolicy);
     this.#activation = input.activation;
     this.#clientCapabilities = input.clientCapabilities;
     this.#isProviderEnabled = input.isProviderEnabled;
@@ -149,6 +163,8 @@ export class HostOAuthCoordinator {
     this.#startCodexAuthorization = input.startCodexAuthorization ?? startCodexDeviceAuthorization;
     this.#pollCodexAuthorization = input.pollCodexAuthorization ?? pollCodexDeviceAuthorization;
     this.#exchangeCodexCode = input.exchangeCodexCode ?? exchangeCodexDeviceAuthorizationCode;
+    this.#fetchUsageSnapshot = input.fetchAccountUsage ?? fetchClaudeSubscriptionUsage;
+    this.#createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
     this.#authorizationTimeoutMs = authorizationTimeout(input.authorizationTimeoutMs);
   }
 
@@ -166,6 +182,87 @@ export class HostOAuthCoordinator {
   close(): Promise<void> {
     this.#closeTask ??= this.#closeOnce();
     return this.#closeTask;
+  }
+
+  async #fetchAccountUsage(
+    connectionId: string,
+  ): Promise<OperationOutcome<'oauth.account.usage.fetch'>> {
+    const residency = this.#acquireResidency();
+    let transport: ReturnType<typeof createProxiedFetchTransport> | undefined;
+    try {
+      const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+      const connection = catalog.connections.find(
+        (candidate) => candidate.connectionId === connectionId,
+      );
+      if (!connection) return notFound('OAuth account Connection was not found');
+      if (connection.providerType !== 'claude-subscription') {
+        return {
+          ok: true,
+          result: { kind: 'unavailable', reason: 'unsupported_provider' },
+        };
+      }
+      const resolved = await this.#runtimePolicy.operations.resolveExecutionConnection(
+        connection.slug,
+      );
+      if (resolved.kind !== 'ready' || resolved.connection.connectionId !== connectionId) {
+        return {
+          ok: true,
+          result: { kind: 'unavailable', reason: 'credential_unavailable' },
+        };
+      }
+      const material = resolved.secretMaterial.connection;
+      if (!material) {
+        return {
+          ok: true,
+          result: { kind: 'unavailable', reason: 'credential_unavailable' },
+        };
+      }
+      const proxy = toRuntimePolicyProxy(
+        resolved.networkProxy,
+        resolved.secretMaterial.networkProxy?.secret,
+      );
+      const binding = this.#oauthCredentials.bind({
+        providerType: connection.providerType,
+        connectionSlug: connection.slug,
+        material,
+        createRefreshTransport: () => this.#createFetchTransport(proxy),
+      });
+      const tokens = await binding.resolve();
+      transport = this.#createFetchTransport(proxy);
+      const quota = await this.#fetchUsageSnapshot({
+        accessToken: tokens.access_token,
+        fetchFn: transport.fetch,
+        now: this.#now,
+      });
+      return {
+        ok: true,
+        result: { kind: 'available', provider: connection.providerType, quota },
+      };
+    } catch (error) {
+      if (error instanceof RuntimePolicyStoreError) {
+        return persistenceFailure('OAuth account usage could not read Runtime Policy');
+      }
+      if (error instanceof OAuthExecutionCredentialError) {
+        return {
+          ok: true,
+          result: { kind: 'unavailable', reason: 'credential_unavailable' },
+        };
+      }
+      if (error instanceof OAuthTokenEndpointError) {
+        const reason =
+          error.category === 'invalid_response' || error.category === 'response_too_large'
+            ? 'invalid_response'
+            : 'provider_unavailable';
+        return { ok: true, result: { kind: 'unavailable', reason } };
+      }
+      return {
+        ok: true,
+        result: { kind: 'unavailable', reason: 'provider_unavailable' },
+      };
+    } finally {
+      await transport?.close().catch(() => undefined);
+      residency.release();
+    }
   }
 
   async #start(

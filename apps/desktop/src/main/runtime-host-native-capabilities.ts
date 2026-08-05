@@ -1,19 +1,23 @@
-import { Buffer } from 'node:buffer';
-import type { ComputerUseToolSet, MakaTool } from '@maka/runtime';
-import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
+import { Buffer } from "node:buffer";
+import type { ComputerUseToolSet, MakaTool } from "@maka/runtime";
+import {
+  createOAuthPresentationClientProvider,
+  type ClientCapabilityProvider,
+  type OAuthPresentationBackend,
+} from "@maka/runtime-host/client";
 import type {
   ClientCapabilityCallFrame,
   ClientCapabilityCallResult,
   ClientCapabilityContentBlock,
   ClientCapabilityOffer,
-} from '@maka/runtime-host/protocol';
-import { toJSONSchema, z } from 'zod';
+} from "@maka/runtime-host/protocol";
+import { toJSONSchema, z } from "zod";
 
-const CAPABILITY_VERSION = '0';
-const BROWSER_OFFER_ID = 'desktop_browser';
-const COMPUTER_USE_OFFER_ID = 'desktop_computer_use';
+const CAPABILITY_VERSION = "0";
+const BROWSER_OFFER_ID = "desktop_browser";
+const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
 
-interface NativeCapabilityGroup {
+export interface DesktopCapabilityGroup {
   readonly offerId: string;
   readonly label: string;
   readonly description: string;
@@ -24,14 +28,23 @@ interface NativeToolBinding {
   readonly tool: MakaTool;
 }
 
-type DesktopToolModelOutput = Awaited<ReturnType<NonNullable<MakaTool['toModelOutput']>>>;
-type DesktopToolContentPart = Extract<DesktopToolModelOutput, { type: 'content' }>['value'][number];
+type DesktopToolModelOutput = Awaited<
+  ReturnType<NonNullable<MakaTool["toModelOutput"]>>
+>;
+type DesktopToolContentPart = Extract<
+  DesktopToolModelOutput,
+  { type: "content" }
+>["value"][number];
 
 export interface DesktopNativeCapabilityProviderInput {
   readonly browserTools: readonly MakaTool[];
   readonly releaseBrowserSession: (sessionId: string) => void | Promise<void>;
   readonly computerUseTools: ComputerUseToolSet;
-  readonly releaseComputerUseSession: (sessionId: string) => void | Promise<void>;
+  readonly releaseComputerUseSession: (
+    sessionId: string,
+  ) => void | Promise<void>;
+  readonly oauthPresentation?: OAuthPresentationBackend;
+  readonly additionalGroups?: () => readonly DesktopCapabilityGroup[];
 }
 
 export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvider {
@@ -43,9 +56,9 @@ export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvide
 export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
 ): DesktopNativeCapabilityProvider {
-  const groups = capabilityGroups(input);
-  const offers = Object.freeze(groups.map(capabilityOffer));
-  const bindings = indexBindings(groups);
+  const oauthPresentation = input.oauthPresentation
+    ? createOAuthPresentationClientProvider(input.oauthPresentation)
+    : undefined;
   const releaseSessionResources = [
     input.releaseBrowserSession,
     input.releaseComputerUseSession,
@@ -61,26 +74,51 @@ export function createDesktopNativeCapabilityProvider(
   function close(): Promise<void> {
     if (closeTask) return closeTask;
     closed = true;
-    closeTask = closeProvider(activeInvocations, usedSessionIds, releaseSessionResources);
+    closeTask = closeProvider(
+      activeInvocations,
+      usedSessionIds,
+      releaseSessionResources,
+    );
     return closeTask;
   }
 
   return {
-    offers: () => offers,
+    offers: () => Object.freeze(capabilityGroups(input).map(capabilityOffer)),
+    services: () => oauthPresentation?.services?.() ?? [],
     call: (frame, options) => {
-      if (closed) throw new Error('Desktop native capability provider is closed');
-      const binding = bindings.get(bindingKey(frame));
-      if (!binding) throw new Error('Desktop native capability is not offered');
+      if (closed)
+        throw new Error("Desktop native capability provider is closed");
+      const binding = indexBindings(capabilityGroups(input)).get(
+        bindingKey(frame),
+      );
+      if (!binding) throw new Error("Desktop native capability is not offered");
 
       const invocation = new AbortController();
-      const task = invokeNativeTool(binding, frame, options, invocation, usedSessionIds);
+      const task = invokeNativeTool(
+        binding,
+        frame,
+        options,
+        invocation,
+        usedSessionIds,
+      );
       const settled = task.then(
         () => undefined,
         () => undefined,
       );
-      activeInvocations.set(invocation, { sessionId: frame.sessionId, settled });
+      activeInvocations.set(invocation, {
+        sessionId: frame.sessionId,
+        settled,
+      });
       void settled.finally(() => activeInvocations.delete(invocation));
       return task;
+    },
+    callService: (frame, options) => {
+      if (closed)
+        throw new Error("Desktop native capability provider is closed");
+      if (!oauthPresentation?.callService) {
+        throw new Error("Desktop native capability service is not offered");
+      }
+      return oauthPresentation.callService(frame, options);
     },
     releaseSession: async (sessionId) => {
       const settling = abortInvocations(activeInvocations, sessionId);
@@ -102,7 +140,7 @@ async function closeProvider(
 ): Promise<void> {
   const settling: Promise<void>[] = [];
   for (const [invocation, active] of activeInvocations) {
-    invocation.abort(new Error('Desktop native capability provider closed'));
+    invocation.abort(new Error("Desktop native capability provider closed"));
     settling.push(active.settled);
   }
   await Promise.all(settling);
@@ -120,18 +158,23 @@ async function settleSessionReleases(
       releases.map(async (release) => release(sessionId)),
     ),
   );
-  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
   if (failed) throw failed.reason;
 }
 
-function capabilityGroups(input: DesktopNativeCapabilityProviderInput): NativeCapabilityGroup[] {
+function capabilityGroups(
+  input: DesktopNativeCapabilityProviderInput,
+): DesktopCapabilityGroup[] {
   return [
     ...(input.browserTools.length > 0
       ? [
           {
             offerId: BROWSER_OFFER_ID,
-            label: 'Browser',
-            description: 'Operate the embedded browser owned by this Desktop client.',
+            label: "Browser",
+            description:
+              "Operate the embedded browser owned by this Desktop client.",
             tools: input.browserTools,
           },
         ]
@@ -140,19 +183,21 @@ function capabilityGroups(input: DesktopNativeCapabilityProviderInput): NativeCa
       ? [
           {
             offerId: COMPUTER_USE_OFFER_ID,
-            label: 'Computer Use',
-            description: 'Observe and operate the desktop through this Desktop client.',
+            label: "Computer Use",
+            description:
+              "Observe and operate the desktop through this Desktop client.",
             tools: input.computerUseTools,
           },
         ]
       : []),
+    ...(input.additionalGroups?.() ?? []),
   ];
 }
 
 async function invokeNativeTool(
   binding: NativeToolBinding,
   frame: ClientCapabilityCallFrame,
-  options: Parameters<NonNullable<ClientCapabilityProvider['call']>>[1],
+  options: Parameters<NonNullable<ClientCapabilityProvider["call"]>>[1],
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
@@ -185,17 +230,17 @@ function abortInvocations(
   const settling: Promise<void>[] = [];
   for (const [invocation, active] of activeInvocations) {
     if (active.sessionId !== sessionId) continue;
-    invocation.abort(new Error('Desktop native capability Session released'));
+    invocation.abort(new Error("Desktop native capability Session released"));
     settling.push(active.settled);
   }
   return settling;
 }
 
-function capabilityOffer(group: NativeCapabilityGroup): ClientCapabilityOffer {
+function capabilityOffer(group: DesktopCapabilityGroup): ClientCapabilityOffer {
   return Object.freeze({
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
-    affinity: 'session',
+    affinity: "session",
     label: group.label,
     description: group.description,
     tools: Object.freeze(
@@ -205,7 +250,9 @@ function capabilityOffer(group: NativeCapabilityGroup): ClientCapabilityOffer {
           name: tool.name,
           description: tool.description,
           inputSchema: toolInputSchema(tool),
-          ...(tool.displayName ? { annotations: Object.freeze({ title: tool.displayName }) } : {}),
+          ...(tool.displayName
+            ? { annotations: Object.freeze({ title: tool.displayName }) }
+            : {}),
         }),
       ),
     ),
@@ -214,27 +261,33 @@ function capabilityOffer(group: NativeCapabilityGroup): ClientCapabilityOffer {
 
 function toolInputSchema(tool: MakaTool): Record<string, unknown> {
   const schema = toJSONSchema(requireZodSchema(tool), {
-    io: 'input',
-    target: 'draft-07',
-    unrepresentable: 'any',
-    cycles: 'ref',
-    reused: 'inline',
+    io: "input",
+    target: "draft-07",
+    unrepresentable: "any",
+    cycles: "ref",
+    reused: "inline",
   });
   delete schema.$schema;
-  if (schema.type !== 'object') {
-    throw new Error(`Desktop native capability tool schema must be an object: ${tool.name}`);
+  if (schema.type !== "object") {
+    throw new Error(
+      `Desktop native capability tool schema must be an object: ${tool.name}`,
+    );
   }
   return Object.freeze(schema);
 }
 
 function requireZodSchema(tool: MakaTool): z.ZodType {
   if (!(tool.parameters instanceof z.ZodType)) {
-    throw new Error(`Desktop native capability tool has an invalid schema: ${tool.name}`);
+    throw new Error(
+      `Desktop native capability tool has an invalid schema: ${tool.name}`,
+    );
   }
   return tool.parameters;
 }
 
-function indexBindings(groups: readonly NativeCapabilityGroup[]): Map<string, NativeToolBinding> {
+function indexBindings(
+  groups: readonly DesktopCapabilityGroup[],
+): Map<string, NativeToolBinding> {
   const bindings = new Map<string, NativeToolBinding>();
   for (const group of groups) {
     for (const tool of group.tools) {
@@ -244,7 +297,9 @@ function indexBindings(groups: readonly NativeCapabilityGroup[]): Map<string, Na
         toolName: tool.name,
       });
       if (bindings.has(key)) {
-        throw new Error(`Duplicate Desktop native capability tool: ${group.offerId}/${tool.name}`);
+        throw new Error(
+          `Duplicate Desktop native capability tool: ${group.offerId}/${tool.name}`,
+        );
       }
       bindings.set(key, { tool });
     }
@@ -252,7 +307,9 @@ function indexBindings(groups: readonly NativeCapabilityGroup[]): Map<string, Na
   return bindings;
 }
 
-function bindingKey(frame: Pick<ClientCapabilityCallFrame, 'offerId' | 'serverId' | 'toolName'>): string {
+function bindingKey(
+  frame: Pick<ClientCapabilityCallFrame, "offerId" | "serverId" | "toolName">,
+): string {
   return `${frame.offerId}\0${frame.serverId}\0${frame.toolName}`;
 }
 
@@ -270,40 +327,48 @@ async function projectToolResult(
       })
     : undefined;
   if (!modelOutput) {
-    return typeof output === 'string'
-      ? { content: [{ type: 'text', text: output }] }
+    return typeof output === "string"
+      ? { content: [{ type: "text", text: output }] }
       : { content: [], structuredContent: output };
   }
   switch (modelOutput.type) {
-    case 'text':
-    case 'error-text':
-      return { content: [{ type: 'text', text: modelOutput.value }] };
-    case 'json':
-    case 'error-json':
+    case "text":
+    case "error-text":
+      return { content: [{ type: "text", text: modelOutput.value }] };
+    case "json":
+    case "error-json":
       return { content: [], structuredContent: modelOutput.value };
-    case 'execution-denied':
+    case "execution-denied":
       return {
-        content: [{ type: 'text', text: modelOutput.reason ?? 'Execution denied' }],
+        content: [
+          { type: "text", text: modelOutput.reason ?? "Execution denied" },
+        ],
       };
-    case 'content':
+    case "content":
       return { content: modelOutput.value.map(projectContentPart) };
   }
 }
 
-function projectContentPart(part: DesktopToolContentPart): ClientCapabilityContentBlock {
+function projectContentPart(
+  part: DesktopToolContentPart,
+): ClientCapabilityContentBlock {
   switch (part.type) {
-    case 'text':
-      return { type: 'text', text: part.text };
-    case 'file':
-      if (part.data.type !== 'data') {
-        throw new Error('Desktop native capability cannot return referenced or URL files');
+    case "text":
+      return { type: "text", text: part.text };
+    case "file":
+      if (part.data.type !== "data") {
+        throw new Error(
+          "Desktop native capability cannot return referenced or URL files",
+        );
       }
       return projectBinaryContent(part.data.data, part.mediaType);
-    case 'file-data':
-    case 'image-data':
+    case "file-data":
+    case "image-data":
       return projectBinaryContent(part.data, part.mediaType);
     default:
-      throw new Error(`Desktop native capability cannot return ${part.type} content`);
+      throw new Error(
+        `Desktop native capability cannot return ${part.type} content`,
+      );
   }
 }
 
@@ -312,10 +377,16 @@ function projectBinaryContent(
   mimeType: string,
 ): ClientCapabilityContentBlock {
   const encoded =
-    typeof data === 'string'
+    typeof data === "string"
       ? data
-      : Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data).toString('base64');
-  if (mimeType.startsWith('image/')) return { type: 'image', data: encoded, mimeType };
-  if (mimeType.startsWith('audio/')) return { type: 'audio', data: encoded, mimeType };
-  throw new Error(`Desktop native capability cannot return file type ${mimeType}`);
+      : Buffer.from(
+          data instanceof ArrayBuffer ? new Uint8Array(data) : data,
+        ).toString("base64");
+  if (mimeType.startsWith("image/"))
+    return { type: "image", data: encoded, mimeType };
+  if (mimeType.startsWith("audio/"))
+    return { type: "audio", data: encoded, mimeType };
+  throw new Error(
+    `Desktop native capability cannot return file type ${mimeType}`,
+  );
 }

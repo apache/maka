@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef } from "react";
 import type {
   DailyReviewSummary,
   LlmConnection,
@@ -9,15 +9,22 @@ import type {
   StoredMessage,
   ThemePreference,
   UiLocale,
-} from '@maka/core';
-import { formatDailyReviewMarkdown } from '@maka/ui';
-import type { DailyReviewMarkdownActionInput, NavSelection } from '@maka/ui';
-import { buildCommandList, buildSessionCommands } from './command-palette-commands.js';
-import type { Command } from './command-palette-types.js';
-import { renderConversationMarkdown } from './conversation-markdown.js';
-import { dailyReviewActionErrorMessage } from './daily-review-actions.js';
-import { commandPaletteActionErrorMessage, commandPaletteConnectionTestFailureMessage } from './app-shell-copy.js';
-import { getShellCopy } from './locales/shell-copy.js';
+} from "@maka/core";
+import { formatDailyReviewMarkdown } from "@maka/ui";
+import type { DailyReviewMarkdownActionInput, NavSelection } from "@maka/ui";
+import {
+  buildCommandList,
+  buildSessionCommands,
+} from "./command-palette-commands.js";
+import type { Command } from "./command-palette-types.js";
+import { renderConversationMarkdown } from "./conversation-markdown.js";
+import { dailyReviewActionErrorMessage } from "./daily-review-actions.js";
+import {
+  commandPaletteActionErrorMessage,
+  commandPaletteConnectionTestFailureMessage,
+} from "./app-shell-copy.js";
+import { getShellCopy } from "./locales/shell-copy.js";
+import { settingsTestResultMessage } from "./locales/settings-test-result-copy.js";
 
 type ToastApi = {
   success(title: string, description?: string): void;
@@ -27,7 +34,7 @@ type ToastApi = {
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
-  navSection: NavSelection['section'];
+  navSection: NavSelection["section"];
 };
 
 type RefBox<T> = { current: T };
@@ -66,7 +73,9 @@ export interface AppShellCommandListOptions {
   openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
-  saveDailyReviewMarkdown: (input: DailyReviewMarkdownActionInput) => Promise<void>;
+  saveDailyReviewMarkdown: (
+    input: DailyReviewMarkdownActionInput,
+  ) => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setThemePref: (themePref: ThemePreference) => void;
@@ -94,11 +103,12 @@ export function buildAppShellCommandList(
     onNewChat: () => optionsRef.current.createSession(),
     onStartDeepResearch: async () => {
       const { startModeSession } = optionsRef.current;
-      await startModeSession('deep_research');
+      await startModeSession("deep_research");
     },
     onStartPlanReminder: () => optionsRef.current.openPlanReminderForm(),
     onOpenSettings: () => optionsRef.current.openSettings(),
-    onOpenSettingsSection: (section) => optionsRef.current.openSettingsSection(section),
+    onOpenSettingsSection: (section) =>
+      optionsRef.current.openSettingsSection(section),
     // PR-UX-POLISH-1 commit 4 (WAWQAQ `e0dbad11` + kenji `2844f64f`):
     // use the openHelp callback returned by useKeyboardHelp directly,
     // instead of dispatching a synthetic KeyboardEvent. Same effect,
@@ -115,19 +125,26 @@ export function buildAppShellCommandList(
         if (result.ok) {
           toastApi.success(
             copy.connectionVerified(name),
-            copy.connectionLatency(result.latencyMs ?? '?', result.modelTested),
+            copy.connectionLatency(result.latencyMs ?? "?", result.modelTested),
           );
         } else {
           toastApi.error(
             copy.connectionTestFailed(name),
-            commandPaletteConnectionTestFailureMessage(result, options.uiLocale),
+            commandPaletteConnectionTestFailureMessage(
+              result,
+              options.uiLocale,
+            ),
           );
         }
         await refreshConnections();
       } catch (err) {
         toastApi.error(
           copy.testErrorTitle,
-          commandPaletteActionErrorMessage(err, copy.connectionUnavailable, options.uiLocale),
+          commandPaletteActionErrorMessage(
+            err,
+            copy.connectionUnavailable,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -141,7 +158,11 @@ export function buildAppShellCommandList(
       } catch (err) {
         toastApi.error(
           copy.setDefaultFailedTitle,
-          commandPaletteActionErrorMessage(err, copy.setDefaultFallback, options.uiLocale),
+          commandPaletteActionErrorMessage(
+            err,
+            copy.setDefaultFallback,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -157,10 +178,17 @@ export function buildAppShellCommandList(
       const { activeId, messages, sessions, toastApi } = optionsRef.current;
       if (!activeId) return;
       const session = sessions.find((s) => s.id === activeId);
-      const markdown = renderConversationMarkdown(session?.name ?? copy.newConversation, messages, options.uiLocale);
+      const markdown = renderConversationMarkdown(
+        session?.name ?? copy.newConversation,
+        messages,
+        options.uiLocale,
+      );
       try {
         await navigator.clipboard.writeText(markdown);
-        toastApi.success(copy.conversationCopiedTitle, copy.lineCount(markdown.split('\n').length));
+        toastApi.success(
+          copy.conversationCopiedTitle,
+          copy.lineCount(markdown.split("\n").length),
+        );
       } catch {
         toastApi.error(copy.copyFailedTitle, copy.clipboardUnavailable);
       }
@@ -170,16 +198,20 @@ export function buildAppShellCommandList(
       if (!activeId) return;
       const session = sessions.find((s) => s.id === activeId);
       const sessionName = session?.name ?? copy.newConversation;
-      const markdown = renderConversationMarkdown(sessionName, messages, options.uiLocale);
+      const markdown = renderConversationMarkdown(
+        sessionName,
+        messages,
+        options.uiLocale,
+      );
       const now = new Date();
       const yyyy = now.getFullYear();
-      const mm = String(now.getMonth() + 1).padStart(2, '0');
-      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
       // Make the filename mostly portable: collapse whitespace
       // and quote chars that some file pickers don't like.
       const sanitizedSession = sessionName
-        .replace(/[\s ]+/g, '-')
-        .replace(/["<>:|?*]/g, '')
+        .replace(/[\s ]+/g, "-")
+        .replace(/["<>:|?*]/g, "")
         .slice(0, 80);
       const defaultName = `maka-${sanitizedSession}-${yyyy}-${mm}-${dd}.md`;
       try {
@@ -188,10 +220,13 @@ export function buildAppShellCommandList(
           defaultName,
         });
         if (result.ok) {
-          toastApi.success(copy.conversationSavedTitle, copy.saveSummary(markdown.split('\n').length, defaultName));
-        } else if (result.reason === 'canceled') {
+          toastApi.success(
+            copy.conversationSavedTitle,
+            copy.saveSummary(markdown.split("\n").length, defaultName),
+          );
+        } else if (result.reason === "canceled") {
           // User dismissed the dialog — no toast.
-        } else if (result.reason === 'invalid_input') {
+        } else if (result.reason === "invalid_input") {
           toastApi.error(copy.saveFailedTitle, copy.invalidExport);
         } else {
           toastApi.error(copy.saveFailedTitle, copy.writeFailed);
@@ -199,7 +234,11 @@ export function buildAppShellCommandList(
       } catch (err) {
         toastApi.error(
           copy.saveFailedTitle,
-          commandPaletteActionErrorMessage(err, copy.exportFallback, options.uiLocale),
+          commandPaletteActionErrorMessage(
+            err,
+            copy.exportFallback,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -213,7 +252,11 @@ export function buildAppShellCommandList(
       } catch (err) {
         toastApi.error(
           copy.openFailedTitle,
-          commandPaletteActionErrorMessage(err, copy.memoryOpenFallback, options.uiLocale),
+          commandPaletteActionErrorMessage(
+            err,
+            copy.memoryOpenFallback,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -225,47 +268,79 @@ export function buildAppShellCommandList(
       const { dailyReviewBridge, toastApi } = optionsRef.current;
       try {
         const summary = await dailyReviewBridge.fetchDay(0, 1);
-        const markdown = formatDailyReviewMarkdown(summary, copy.today, options.uiLocale);
+        const markdown = formatDailyReviewMarkdown(
+          summary,
+          copy.today,
+          options.uiLocale,
+        );
         await navigator.clipboard.writeText(markdown);
         toastApi.success(
           copy.reviewCopiedTitle,
-          copy.reviewSummary(summary.totals.sessionCount, summary.totals.requestCount),
+          copy.reviewSummary(
+            summary.totals.sessionCount,
+            summary.totals.requestCount,
+          ),
         );
       } catch (err) {
         toastApi.error(
           copy.copyFailedTitle,
-          dailyReviewActionErrorMessage(err, copy.reviewCopyFallback, options.uiLocale),
+          dailyReviewActionErrorMessage(
+            err,
+            copy.reviewCopyFallback,
+            options.uiLocale,
+          ),
         );
       }
     },
     onPasteTodayDailyReviewIntoComposer: async () => {
-      const { captureComposerImportOwner, composerRef, dailyReviewBridge, isComposerImportOwnerActive, toastApi } =
-        optionsRef.current;
+      const {
+        captureComposerImportOwner,
+        composerRef,
+        dailyReviewBridge,
+        isComposerImportOwnerActive,
+        toastApi,
+      } = optionsRef.current;
       const owner = captureComposerImportOwner();
       if (!owner.sessionId) return;
       try {
         const summary = await dailyReviewBridge.fetchDay(0, 1);
-        const markdown = formatDailyReviewMarkdown(summary, copy.today, options.uiLocale);
+        const markdown = formatDailyReviewMarkdown(
+          summary,
+          copy.today,
+          options.uiLocale,
+        );
         if (!isComposerImportOwnerActive(owner)) return;
         composerRef.current?.appendText(markdown);
         toastApi.success(
           copy.reviewPastedTitle,
-          copy.reviewSummary(summary.totals.sessionCount, summary.totals.requestCount),
+          copy.reviewSummary(
+            summary.totals.sessionCount,
+            summary.totals.requestCount,
+          ),
         );
       } catch (err) {
         if (isComposerImportOwnerActive(owner)) {
           toastApi.error(
             copy.pasteFailedTitle,
-            dailyReviewActionErrorMessage(err, copy.reviewUnavailable, options.uiLocale),
+            dailyReviewActionErrorMessage(
+              err,
+              copy.reviewUnavailable,
+              options.uiLocale,
+            ),
           );
         }
       }
     },
     onSaveTodayDailyReviewToFile: async () => {
-      const { dailyReviewBridge, saveDailyReviewMarkdown, toastApi } = optionsRef.current;
+      const { dailyReviewBridge, saveDailyReviewMarkdown, toastApi } =
+        optionsRef.current;
       try {
         const summary = await dailyReviewBridge.fetchDay(0, 1);
-        const markdown = formatDailyReviewMarkdown(summary, copy.today, options.uiLocale);
+        const markdown = formatDailyReviewMarkdown(
+          summary,
+          copy.today,
+          options.uiLocale,
+        );
         await saveDailyReviewMarkdown({
           day: summary.day,
           range: 1,
@@ -276,7 +351,11 @@ export function buildAppShellCommandList(
       } catch (err) {
         toastApi.error(
           copy.saveFailedTitle,
-          dailyReviewActionErrorMessage(err, copy.reviewUnavailable, options.uiLocale),
+          dailyReviewActionErrorMessage(
+            err,
+            copy.reviewUnavailable,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -285,17 +364,17 @@ export function buildAppShellCommandList(
       try {
         const info = await window.maka.app.info();
         const platformPretty =
-          info.platform === 'darwin'
-            ? 'macOS'
-            : info.platform === 'win32'
-              ? 'Windows'
-              : info.platform === 'linux'
-                ? 'Linux'
+          info.platform === "darwin"
+            ? "macOS"
+            : info.platform === "win32"
+              ? "Windows"
+              : info.platform === "linux"
+                ? "Linux"
                 : info.platform;
         const buildLine =
-          info.buildMode === 'dev'
-            ? `- Build: dev${info.buildCommit ? ` @ ${info.buildCommit}` : ''}`
-            : '- Build: packaged';
+          info.buildMode === "dev"
+            ? `- Build: dev${info.buildCommit ? ` @ ${info.buildCommit}` : ""}`
+            : "- Build: packaged";
         const summary = [
           `**Maka** v${info.appVersion}`,
           ``,
@@ -305,13 +384,20 @@ export function buildAppShellCommandList(
           `- Platform: ${platformPretty} ${info.osRelease}`,
           `- Arch: ${info.arch}`,
           buildLine,
-        ].join('\n');
+        ].join("\n");
         await navigator.clipboard.writeText(summary);
-        toastApi.success(copy.environmentCopiedTitle, `Maka v${info.appVersion} · ${platformPretty} · ${info.arch}`);
+        toastApi.success(
+          copy.environmentCopiedTitle,
+          `Maka v${info.appVersion} · ${platformPretty} · ${info.arch}`,
+        );
       } catch (err) {
         toastApi.error(
           copy.copyFailedTitle,
-          commandPaletteActionErrorMessage(err, copy.clipboardDenied, options.uiLocale),
+          commandPaletteActionErrorMessage(
+            err,
+            copy.clipboardDenied,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -324,16 +410,21 @@ export function buildAppShellCommandList(
         // 网络. `testNetworkProxy(undefined)` uses the
         // current persisted proxy config.
         const result = await window.maka.settings.testNetworkProxy(undefined);
+        const message = settingsTestResultMessage(result, options.uiLocale);
         if (result.ok) {
-          const latency = result.latencyMs ? ` · ${result.latencyMs}ms` : '';
-          toastApi.success(copy.networkPassedTitle, `${result.message}${latency}`);
+          const latency = result.latencyMs ? ` · ${result.latencyMs}ms` : "";
+          toastApi.success(copy.networkPassedTitle, `${message}${latency}`);
         } else {
-          toastApi.error(copy.networkFailedTitle, result.message);
+          toastApi.error(copy.networkFailedTitle, message);
         }
       } catch (err) {
         toastApi.error(
           copy.genericTestFailedTitle,
-          commandPaletteActionErrorMessage(err, copy.networkTestFallback, options.uiLocale),
+          commandPaletteActionErrorMessage(
+            err,
+            copy.networkTestFallback,
+            options.uiLocale,
+          ),
         );
       }
     },
@@ -365,14 +456,23 @@ export function buildAppShellSessionCommands(
  * reintroducing per-tick rebuilds (visibleSessions is itself memoized in
  * app-shell, so rows rebuild only on real catalog changes).
  */
-export function useAppShellCommands(paletteOpen: boolean, commandOptions: AppShellCommandListOptions): Command[] {
+export function useAppShellCommands(
+  paletteOpen: boolean,
+  commandOptions: AppShellCommandListOptions,
+): Command[] {
   const optionsRef = useRef(commandOptions);
   optionsRef.current = commandOptions;
   const { activeId, uiLocale, visibleSessions } = commandOptions;
-  const baseCommands = useMemo(() => buildAppShellCommandList(optionsRef), [paletteOpen, uiLocale]);
+  const baseCommands = useMemo(
+    () => buildAppShellCommandList(optionsRef),
+    [paletteOpen, uiLocale],
+  );
   const sessionCommands = useMemo(
     () => buildAppShellSessionCommands(optionsRef),
     [paletteOpen, visibleSessions, activeId, uiLocale],
   );
-  return useMemo(() => [...baseCommands, ...sessionCommands], [baseCommands, sessionCommands]);
+  return useMemo(
+    () => [...baseCommands, ...sessionCommands],
+    [baseCommands, sessionCommands],
+  );
 }

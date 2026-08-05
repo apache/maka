@@ -768,6 +768,7 @@ export type {
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
   ArtifactChangedReason,
+  ArtifactDescriptor,
   ArtifactKind,
   ArtifactReadFailureReason,
   ArtifactSaveFailureReason,
@@ -1355,6 +1356,7 @@ export {
   VOICE_MAX_SAMPLE_RATE,
   VOICE_MAX_TRANSCRIPT_CHARS,
   VOICE_TTS_MAX_TEXT_CHARS,
+  VOICE_INPUT_MARKER,
   defaultVoiceCapabilitySnapshot,
   defaultVoiceCaptureCaps,
   defaultVoicePrivacyFlags,
@@ -1583,6 +1585,7 @@ export type {
   ProxyProtocol,
   SettingsSection,
   SettingsTestResult,
+  SettingsTestResultCode,
   PersonalizationSettings,
   PersonalizationSettingsWarning,
   ThemePalette,
@@ -1599,7 +1602,11 @@ export type {
   UsageTab,
 } from './settings.js';
 
-export type { SubagentPreset, SubagentProfile, SubagentSettings } from './subagent-settings.js';
+export type {
+  SubagentPreset,
+  SubagentProfile,
+  SubagentSettings,
+} from './subagent-settings.js';
 export {
   MAX_SUBAGENT_PRESETS,
   SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS,
@@ -1659,11 +1666,7 @@ export type {
 } from './bot-onboarding.js';
 
 // ui-locale.ts
-export type {
-  UiCatalog,
-  UiLocale,
-  UiLocalePreference,
-} from './ui-locale.js';
+export type { UiCatalog, UiLocale, UiLocalePreference } from './ui-locale.js';
 export {
   UI_LOCALES,
   UI_LOCALE_PREFERENCES,
@@ -1830,7 +1833,10 @@ export {
 } from './web-search.js';
 
 // explore-agent.ts — read-only deep research session profile.
-export type { SessionStartMode, SessionStartModeSpec } from './explore-agent.js';
+export type {
+  SessionStartMode,
+  SessionStartModeSpec,
+} from './explore-agent.js';
 export {
   SESSION_START_MODES,
   SESSION_START_MODE_LABELS,
@@ -1872,7 +1878,9 @@ export {
 
 // attachments.ts
 export {
+  ATTACHMENT_RESOURCE_PREFIX,
   attachmentKindFromMimeType,
+  formatAttachmentResourceRef,
   guessMimeFromName,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
@@ -1880,6 +1888,7 @@ export {
   MAX_MODEL_IMAGE_EDGE,
   READ_IMAGE_TOO_LARGE_MESSAGE,
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
+  parseAttachmentResourceRef,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
 } from './attachments.js';
 export type { AttachmentByteReader } from './attachments.js';

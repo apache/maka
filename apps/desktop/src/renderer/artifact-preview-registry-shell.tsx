@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { ArtifactRecord } from '@maka/core';
+import type { ArtifactDescriptor } from '@maka/core';
 import { Button, useUiLocale } from '@maka/ui';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
@@ -44,7 +44,7 @@ import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
  * record.kind; other kinds keep using the legacy preview switch.
  */
 export function RegistryArtifactPreview(props: {
-  record: ArtifactRecord;
+  record: ArtifactDescriptor;
   /** Optional: shows a real button when provided. Hidden otherwise. */
   onShowInFolder?: () => void;
 }) {
@@ -159,12 +159,12 @@ export function UnsupportedArtifactPreview(props: {
  *     hook state — it never sees the raw `ArtifactBinaryReadResult`.
  */
 function ImageArtifactPreview(props: {
-  record: ArtifactRecord;
+  record: ArtifactDescriptor;
   input: ArtifactPreviewInput;
   onShowInFolder?: () => void;
 }) {
   const copy = getArtifactCopy(useUiLocale());
-  const result = useImagePreviewLoad(props.record.id);
+  const result = useImagePreviewLoad(props.record.sessionId, props.record.id);
   if (result.state === 'loading') {
     return (
       <div className="maka-artifact-preview-loading" role="status" aria-live="polite">
@@ -198,7 +198,7 @@ function ImageArtifactPreview(props: {
   );
 }
 
-function toPreviewInput(record: ArtifactRecord): ArtifactPreviewInput {
+function toPreviewInput(record: ArtifactDescriptor): ArtifactPreviewInput {
   return {
     name: record.name,
     kind: record.kind,
@@ -234,14 +234,17 @@ type ImagePreviewLoadState =
       reason: Extract<PreviewResolution, { kind: 'unsupported' }>['reason'];
     };
 
-function useImagePreviewLoad(artifactId: string): ImagePreviewLoadState {
+function useImagePreviewLoad(
+  sessionId: string,
+  artifactId: string,
+): ImagePreviewLoadState {
   const [state, setState] = useState<ImagePreviewLoadState>({ state: 'loading' });
   useEffect(() => {
     let cancelled = false;
     setState({ state: 'loading' });
     void (async () => {
       try {
-        const raw = await window.maka.artifacts.readBinary(artifactId);
+        const raw = await window.maka.artifacts.readBinary(sessionId, artifactId);
         if (cancelled) return;
         // L2 decision happens HERE, before `setState`. The pure helper
         // returns `{ kind: 'image', safeMime, base64 }` only when both
@@ -263,6 +266,6 @@ function useImagePreviewLoad(artifactId: string): ImagePreviewLoadState {
     return () => {
       cancelled = true;
     };
-  }, [artifactId]);
+  }, [artifactId, sessionId]);
   return state;
 }

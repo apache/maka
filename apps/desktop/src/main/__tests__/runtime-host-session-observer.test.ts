@@ -1,18 +1,18 @@
-import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import test from 'node:test';
-import type { SessionEvent, StoredMessage } from '@maka/core';
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import test from "node:test";
+import type { SessionEvent, StoredMessage } from "@maka/core";
 import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
-} from '@maka/runtime-host/protocol';
-import type { DesktopRuntimeHostSession } from '../runtime-host-client.js';
+} from "@maka/runtime-host/protocol";
+import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
-} from '../runtime-host-session-observer.js';
+} from "../runtime-host-session-observer.js";
 
-test('joins an active Turn without losing or replaying assistant text', async () => {
+test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
   const events = new AsyncFrameQueue();
   let closeCount = 0;
@@ -32,68 +32,71 @@ test('joins an active Turn without losing or replaying assistant text', async ()
   });
   const target = eventTarget(1);
 
-  const observing = observer.observe('session-1', 'observer-1', target);
-  events.push(deltaFrame(1, 5, ' world'));
+  const observing = observer.observe("session-1", "observer-1", target);
+  events.push(deltaFrame(1, 5, " world"));
   transcript.resolve([
     {
-      type: 'assistant',
-      id: 'message-1',
-      turnId: 'turn-1',
+      type: "assistant",
+      id: "message-1",
+      turnId: "turn-1",
       ts: 10,
-      text: 'Hello',
-      modelId: 'test-model',
+      text: "Hello",
+      modelId: "test-model",
     },
   ]);
   await observing;
   await waitFor(() => target.events.length === 2);
 
   assert.deepEqual(
-    target.events.map((event) => [event.type, 'text' in event ? event.text : undefined]),
+    target.events.map((event) => [
+      event.type,
+      "text" in event ? event.text : undefined,
+    ]),
     [
-      ['text_delta', 'Hello'],
-      ['text_delta', ' world'],
+      ["text_delta", "Hello"],
+      ["text_delta", " world"],
     ],
   );
 
   events.push({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence: 2,
     snapshot: continuitySnapshot({
       rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runId: 'run-1',
-        status: 'completed',
-        terminalEventId: 'terminal-1',
+        sessionId: "session-1",
+        turnId: "turn-1",
+        runId: "run-1",
+        status: "completed",
+        terminalEventId: "terminal-1",
       },
     }),
   });
-  await waitFor(() => target.events.some((event) => event.type === 'complete'));
+  await waitFor(() => target.events.some((event) => event.type === "complete"));
 
   assert.deepEqual(
     target.events.filter(
-      (event): event is Extract<SessionEvent, { type: 'text_complete' }> =>
-        event.type === 'text_complete',
+      (event): event is Extract<SessionEvent, { type: "text_complete" }> =>
+        event.type === "text_complete",
     ),
     [
       {
-        type: 'text_complete',
-        id: 'terminal-1:text:message-1',
-        turnId: 'turn-1',
-        messageId: 'message-1',
+        type: "text_complete",
+        id: "terminal-1:text:message-1",
+        turnId: "turn-1",
+        messageId: "message-1",
         ts: 50,
-        text: 'Hello world',
+        text: "Hello world",
       },
     ],
   );
 
-  await observer.unobserve('observer-1');
+  await observer.unobserve("observer-1");
   assert.equal(closeCount, 1);
 });
 
-test('shares one Host subscription and one delivery per renderer target', async () => {
+test("shares one Host subscription and one delivery per renderer target", async () => {
   const events = new AsyncFrameQueue();
   let openCount = 0;
   let closeCount = 0;
@@ -117,21 +120,21 @@ test('shares one Host subscription and one delivery per renderer target', async 
   const target = eventTarget(7);
 
   await Promise.all([
-    observer.observe('session-1', 'observer-1', target),
-    observer.observe('session-1', 'observer-2', target),
+    observer.observe("session-1", "observer-1", target),
+    observer.observe("session-1", "observer-2", target),
   ]);
-  events.push(deltaFrame(1, 0, 'one'));
+  events.push(deltaFrame(1, 0, "one"));
   await waitFor(() => target.events.length === 1);
 
   assert.equal(openCount, 1);
   assert.equal(target.events.length, 1);
-  await observer.unobserve('observer-1');
+  await observer.unobserve("observer-1");
   assert.equal(closeCount, 0);
-  await observer.unobserve('observer-2');
+  await observer.unobserve("observer-2");
   assert.equal(closeCount, 1);
 });
 
-test('releases the renderer destroyed listener when its last observer leaves', async () => {
+test("releases the renderer destroyed listener when its last observer leaves", async () => {
   const events = new AsyncFrameQueue();
   const destroyed = new EventEmitter();
   const observer = new RuntimeHostSessionObserver({
@@ -154,20 +157,20 @@ test('releases the renderer destroyed listener when its last observer leaves', a
     off: (event, listener) => destroyed.off(event, listener),
   };
 
-  await observer.observe('session-1', 'observer-1', target);
-  assert.equal(destroyed.listenerCount('destroyed'), 1);
-  await observer.unobserve('observer-1');
-  assert.equal(destroyed.listenerCount('destroyed'), 0);
+  await observer.observe("session-1", "observer-1", target);
+  assert.equal(destroyed.listenerCount("destroyed"), 1);
+  await observer.unobserve("observer-1");
+  assert.equal(destroyed.listenerCount("destroyed"), 0);
 });
 
-test('closes a Host handle that arrives after the observer is closed', async () => {
+test("closes a Host handle that arrives after the observer is closed", async () => {
   const opened = deferred<DesktopRuntimeHostSession>();
   let closeCount = 0;
   const observer = new RuntimeHostSessionObserver({
     client: { openSession: () => opened.promise },
     emitSessionsChanged() {},
   });
-  const observing = observer.observe('session-1', 'observer-1', eventTarget(8));
+  const observing = observer.observe("session-1", "observer-1", eventTarget(8));
 
   await observer.close();
   opened.resolve({
@@ -183,7 +186,7 @@ test('closes a Host handle that arrives after the observer is closed', async () 
   assert.equal(closeCount, 1);
 });
 
-test('drains live frames while refreshing the canonical transcript', async () => {
+test("drains live frames while refreshing the canonical transcript", async () => {
   const initialEvents = new AsyncFrameQueue();
   const refreshEvents = new AsyncFrameQueue();
   const refreshTranscript = deferred<StoredMessage[]>();
@@ -214,34 +217,39 @@ test('drains live frames while refreshing the canonical transcript', async () =>
     },
     emitSessionsChanged() {},
   });
-  await observer.observe('session-1', 'observer-1', eventTarget(9));
-  await observer.readMessages('session-1');
+  await observer.observe("session-1", "observer-1", eventTarget(9));
+  await observer.readMessages("session-1");
 
-  const refreshing = observer.readMessages('session-1');
+  const refreshing = observer.readMessages("session-1");
+  const concurrentRefresh = observer.readMessages("session-1");
   await waitFor(() => refreshEvents.nextCount > 0);
   refreshTranscript.resolve([]);
 
-  assert.deepEqual(await refreshing, []);
+  assert.deepEqual(await Promise.all([refreshing, concurrentRefresh]), [
+    [],
+    [],
+  ]);
+  assert.equal(openCount, 2);
   await observer.close();
 });
 
-test('rehydrates pending interactions and publishes answer acknowledgements', async () => {
+test("rehydrates pending interactions and publishes answer acknowledgements", async () => {
   const pending = {
     schemaVersion: 1 as const,
-    interactionId: 'interaction-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    runId: 'run-1',
+    interactionId: "interaction-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    runId: "run-1",
     revision: 1 as const,
-    status: 'pending' as const,
+    status: "pending" as const,
     outcome: null,
     request: {
-      kind: 'question' as const,
-      toolUseId: 'tool-1',
+      kind: "question" as const,
+      toolUseId: "tool-1",
       questions: [
         {
-          question: 'Proceed?',
-          options: [{ label: 'Yes', description: 'Continue.' }],
+          question: "Proceed?",
+          options: [{ label: "Yes", description: "Continue." }],
         },
       ],
     },
@@ -262,24 +270,27 @@ test('rehydrates pending interactions and publishes answer acknowledgements', as
     now: () => 75,
   });
   const target = eventTarget(2);
-  await observer.observe('session-1', 'observer-1', target);
+  await observer.observe("session-1", "observer-1", target);
 
-  assert.deepEqual(await observer.readActiveInteractions('session-1'), target.events);
+  assert.deepEqual(
+    await observer.readActiveInteractions("session-1"),
+    target.events,
+  );
   observer.publishInteractionAnswer(
     {
       ...pending,
       revision: 2,
-      status: 'answered',
-      outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
+      status: "answered",
+      outcome: { kind: "question_answer", answers: ["Yes"], committedAt: 75 },
     },
     pending,
   );
 
-  assert.equal(target.events.at(-1)?.type, 'user_question_answer_ack');
+  assert.equal(target.events.at(-1)?.type, "user_question_answer_ack");
   await observer.close();
 });
 
-test('projects Host queue revisions and newly delivered steering messages', async () => {
+test("projects Host queue revisions and newly delivered steering messages", async () => {
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -296,24 +307,24 @@ test('projects Host queue revisions and newly delivered steering messages', asyn
     now: () => 90,
   });
   const target = eventTarget(3);
-  await observer.observe('session-1', 'observer-1', target);
+  await observer.observe("session-1", "observer-1", target);
   const queued = {
-    entryId: 'entry-1',
-    messageId: 'message-steer',
-    content: { text: 'Change direction' },
-    placement: 'current_turn' as const,
-    state: 'queued' as const,
+    entryId: "entry-1",
+    messageId: "message-steer",
+    content: { text: "Change direction" },
+    placement: "current_turn" as const,
+    state: "queued" as const,
   };
 
   events.push({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence: 1,
     snapshot: continuitySnapshot({
       projectionRevision: 2,
       queue: {
-        hostEpoch: 'host-1',
+        hostEpoch: "host-1",
         queueRevision: 1,
         steering: [queued],
         followup: [],
@@ -322,16 +333,16 @@ test('projects Host queue revisions and newly delivered steering messages', asyn
   });
   await waitFor(() => target.events.length === 1);
   events.push({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence: 2,
     snapshot: continuitySnapshot({
       projectionRevision: 3,
       queue: {
-        hostEpoch: 'host-1',
+        hostEpoch: "host-1",
         queueRevision: 2,
-        steering: [{ ...queued, state: 'in_flight' }],
+        steering: [{ ...queued, state: "in_flight" }],
         followup: [],
       },
     }),
@@ -340,20 +351,20 @@ test('projects Host queue revisions and newly delivered steering messages', asyn
 
   assert.deepEqual(
     target.events.map((event) => event.type),
-    ['queue_update', 'steering_message', 'queue_update'],
+    ["queue_update", "steering_message", "queue_update"],
   );
   assert.deepEqual(target.events[1], {
-    type: 'steering_message',
-    id: 'host-queue:host-1:2:entry-1',
-    turnId: 'turn-1',
-    messageId: 'message-steer',
+    type: "steering_message",
+    id: "host-queue:host-1:2:entry-1",
+    turnId: "turn-1",
+    messageId: "message-steer",
     ts: 90,
-    content: { text: 'Change direction' },
+    content: { text: "Change direction" },
   });
   await observer.close();
 });
 
-test('publishes Host sidecar and graph invalidations without inventing Session status changes', async () => {
+test("publishes Host sidecar and graph invalidations without inventing Session status changes", async () => {
   const events = new AsyncFrameQueue();
   const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
   const domainChanges: Array<{ sessionId: string; domain: string }> = [];
@@ -369,25 +380,26 @@ test('publishes Host sidecar and graph invalidations without inventing Session s
         },
       }),
     },
-    emitSessionsChanged: (reason, sessionId) => sessionChanges.push({ reason, sessionId }),
+    emitSessionsChanged: (reason, sessionId) =>
+      sessionChanges.push({ reason, sessionId }),
     emitSessionDomainChanged: (change) => domainChanges.push(change),
     emitAgentGraphChanged: (event) => graphChanges.push(event),
   });
-  await observer.observe('session-1', 'observer-1', eventTarget(11));
+  await observer.observe("session-1", "observer-1", eventTarget(11));
 
   events.push({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence: 1,
     snapshot: continuitySnapshot({
       projectionRevision: 2,
       goal: {
-        goalId: 'goal-1',
+        goalId: "goal-1",
         revision: 1,
-        sessionId: 'session-1',
-        condition: 'Finish the adapter',
-        status: 'active',
+        sessionId: "session-1",
+        condition: "Finish the adapter",
+        status: "active",
         setAt: 1,
         iterations: 0,
         maxIterations: 20,
@@ -402,36 +414,37 @@ test('publishes Host sidecar and graph invalidations without inventing Session s
     }),
   });
   events.push({
-    kind: 'subscription.session_domain_changed',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.session_domain_changed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence: 2,
-    sessionId: 'session-1',
-    domain: 'plan',
+    sessionId: "session-1",
+    domain: "plan",
   });
   events.push({
-    kind: 'subscription.agent_graph_changed',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.agent_graph_changed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence: 3,
-    rootSessionId: 'session-1',
-    graphId: 'graph-1',
-    reason: 'runtime_activity',
+    rootSessionId: "session-1",
+    graphId: "graph-1",
+    reason: "runtime_activity",
   });
   await waitFor(() => graphChanges.length === 1);
 
-  assert.deepEqual(domainChanges, [{ sessionId: 'session-1', domain: 'plan' }]);
+  assert.deepEqual(domainChanges, [{ sessionId: "session-1", domain: "plan" }]);
   assert.ok(
     sessionChanges.some(
-      (change) => change.reason === 'goal-change' && change.sessionId === 'session-1',
+      (change) =>
+        change.reason === "goal-change" && change.sessionId === "session-1",
     ),
   );
   assert.deepEqual(graphChanges, [
     {
       schemaVersion: 1,
-      rootSessionId: 'session-1',
-      graphId: 'graph-1',
-      reason: 'runtime_activity',
+      rootSessionId: "session-1",
+      graphId: "graph-1",
+      reason: "runtime_activity",
     },
   ]);
   await observer.close();
@@ -443,46 +456,57 @@ function continuitySnapshot(
   return {
     schemaVersion: 3,
     session: {
-      sessionId: 'session-1',
+      sessionId: "session-1",
       metadataRevision: 1,
-      status: 'running',
+      status: "running",
       createdAt: 1,
       lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,
     rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
+      sessionId: "session-1",
+      turnId: "turn-1",
+      runId: "run-1",
+      status: "running",
     },
     goal: null,
-    queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+    queue: {
+      hostEpoch: "host-1",
+      queueRevision: 0,
+      steering: [],
+      followup: [],
+    },
     interactions: { pending: [] },
     ...overrides,
   };
 }
 
-function deltaFrame(sequence: number, startOffset: number, text: string): SubscriptionFrame {
+function deltaFrame(
+  sequence: number,
+  startOffset: number,
+  text: string,
+): SubscriptionFrame {
   return {
-    kind: 'subscription.session_delta',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
+    kind: "subscription.session_delta",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
     sequence,
-    sessionId: 'session-1',
+    sessionId: "session-1",
     delta: {
-      kind: 'text',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      messageId: 'message-1',
+      kind: "text",
+      turnId: "turn-1",
+      runId: "run-1",
+      messageId: "message-1",
       startOffset,
       text,
     },
   };
 }
 
-function eventTarget(id: number): RuntimeHostSessionObserverTarget & { events: SessionEvent[] } {
+function eventTarget(
+  id: number,
+): RuntimeHostSessionObserverTarget & { events: SessionEvent[] } {
   const events: SessionEvent[] = [];
   return {
     id,
@@ -497,7 +521,9 @@ function eventTarget(id: number): RuntimeHostSessionObserverTarget & { events: S
 
 class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
   readonly #frames: SubscriptionFrame[] = [];
-  readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
+  readonly #waiters: Array<
+    (result: IteratorResult<SubscriptionFrame>) => void
+  > = [];
   nextCount = 0;
   #ended = false;
 
@@ -509,7 +535,8 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 
   end(): void {
     this.#ended = true;
-    for (const waiter of this.#waiters.splice(0)) waiter({ value: undefined, done: true });
+    for (const waiter of this.#waiters.splice(0))
+      waiter({ value: undefined, done: true });
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
@@ -518,7 +545,8 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
         this.nextCount += 1;
         const frame = this.#frames.shift();
         if (frame) return Promise.resolve({ value: frame, done: false });
-        if (this.#ended) return Promise.resolve({ value: undefined, done: true });
+        if (this.#ended)
+          return Promise.resolve({ value: undefined, done: true });
         return new Promise((resolve) => this.#waiters.push(resolve));
       },
     };
@@ -541,5 +569,5 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     if (predicate()) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
-  assert.fail('Timed out waiting for observer state');
+  assert.fail("Timed out waiting for observer state");
 }

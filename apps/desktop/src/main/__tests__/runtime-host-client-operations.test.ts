@@ -397,6 +397,127 @@ test('accepts an idempotently committed Attachment upload at begin', async () =>
   assert.equal(requests.length, 1);
 });
 
+test('streams Artifact content without mixing chunk offsets or totals', async () => {
+  const first = Buffer.alloc(32 * 1024, 3);
+  const second = Buffer.from('tail');
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'chunk',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+      offset: 0,
+      totalBytes: first.byteLength + second.byteLength,
+      chunkBase64: first.toString('base64'),
+      nextOffset: first.byteLength,
+    },
+    {
+      kind: 'chunk',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+      offset: first.byteLength,
+      totalBytes: first.byteLength + second.byteLength,
+      chunkBase64: second.toString('base64'),
+      nextOffset: null,
+    },
+  ]);
+  const chunks: Buffer[] = [];
+
+  assert.equal(
+    await client.streamArtifact('session-1', 'artifact-1', async (chunk) => {
+      chunks.push(Buffer.from(chunk));
+    }),
+    first.byteLength + second.byteLength,
+  );
+  assert.deepEqual(Buffer.concat(chunks), Buffer.concat([first, second]));
+  assert.deepEqual(
+    requests.map(({ input }) => input),
+    [
+      {
+        kind: 'read_chunk',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+        offset: 0,
+      },
+      {
+        kind: 'read_chunk',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+        offset: first.byteLength,
+      },
+    ],
+  );
+});
+
+test('restarts paginated Session traces instead of mixing revisions', async () => {
+  const firstRevision = catalogRevision('a');
+  const secondRevision = catalogRevision('b');
+  const totals = {
+    durationMs: 0,
+    modelAttempts: 0,
+    retries: 0,
+    compactions: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    unpricedAttempts: 0,
+  };
+  const coverage = {
+    modelCalls: 'none' as const,
+    turnsMissingModelCalls: [],
+    unreadableRecords: 0,
+    turnsWithFewerModelCallsThanSteps: [],
+  };
+  const turn = {
+    turnId: 'turn-1',
+    runId: 'run-1',
+    startedAt: 1,
+    endedAt: 1,
+    durationMs: 0,
+    steps: [],
+    totals,
+  };
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'session_trace_page',
+      schemaVersion: 1,
+      sessionId: 'session-1',
+      revision: firstRevision,
+      offset: 0,
+      turns: [turn],
+      totals,
+      coverage,
+      nextOffset: 1,
+    },
+    {
+      kind: 'session_trace_revision_changed',
+      expectedRevision: firstRevision,
+      actualRevision: secondRevision,
+    },
+    {
+      kind: 'session_trace_page',
+      schemaVersion: 1,
+      sessionId: 'session-1',
+      revision: secondRevision,
+      offset: 0,
+      turns: [turn],
+      totals,
+      coverage,
+      nextOffset: null,
+    },
+  ]);
+
+  assert.deepEqual(await client.loadSessionTrace('session-1'), {
+    schemaVersion: 1,
+    sessionId: 'session-1',
+    turns: [turn],
+    totals,
+    coverage,
+  });
+  assert.deepEqual(
+    requests.map(({ input }) => (input as { kind: string }).kind),
+    ['session_trace_start', 'session_trace_continue', 'session_trace_start'],
+  );
+});
+
 test('fails explicitly when the Host cannot represent a legacy Session', async () => {
   const { client } = clientWithResponses([
     {

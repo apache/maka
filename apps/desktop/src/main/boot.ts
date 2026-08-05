@@ -725,6 +725,7 @@ const {
   settingsStore,
   updateAgentSettings,
   shellRuns,
+  artifactStore,
   snapshotReadImage,
   readArchivedToolResultResource,
   getWorkspacePrivacyContext,
@@ -1261,7 +1262,7 @@ function registerIpc(): void {
       );
     },
   });
-  registerPermissionOverlayIpc({ controller: permissionOverlay });
+  registerPermissionOverlayIpc({ controller: permissionOverlay, ipcMain });
   // A screen-saver-level panel pinned to every Space is visible to the
   // user if it outlives a slow quit; close it explicitly rather than
   // relying on process teardown to race it away.

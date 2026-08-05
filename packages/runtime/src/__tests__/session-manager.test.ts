@@ -4778,9 +4778,11 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const committed = await manager.relocateSessionWorkspace(session.id, {
       expectedRevision: 1,
       cwd: '/workspace/new',
+      projectId: 'project-2',
     });
     assert.equal(committed.revision, 2);
     assert.equal(committed.header.cwd, '/workspace/new');
+    assert.equal(committed.header.projectId, 'project-2');
     assert.deepEqual(kernel.disposed, [session.id]);
     assert.deepEqual(resourceCalls, [`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
 

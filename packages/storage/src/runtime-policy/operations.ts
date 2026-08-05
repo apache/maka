@@ -50,6 +50,25 @@ export type ResolveWebSearchExecutionResult =
       readonly networkProxy: RuntimePolicy['networkProxy'];
     };
 
+export interface ResolveWebSearchExecutionInput {
+  readonly provider?: 'tavily';
+  readonly secretOverride?: string;
+  readonly bypassFeatureGate?: boolean;
+}
+
+export interface ResolveNetworkProxyExecutionInput {
+  readonly networkProxy?: RuntimePolicy['networkProxy'];
+  readonly secretOverride?: string;
+}
+
+export type ResolveNetworkProxyExecutionResult =
+  | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
+  | {
+      readonly kind: 'ready';
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+      readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
+    };
+
 export type OAuthCredentialLocator = Omit<
   Extract<CredentialLocator, { scope: 'connection' }>,
   'kind'
@@ -173,8 +192,16 @@ export type ResolveExecutionConnectionResult =
     };
 
 export interface RuntimePolicyOperationCoordinator {
+  exportCredentialMaterial(
+    locator: CredentialLocator,
+  ): Promise<RuntimePolicyCredentialMaterial | null>;
   resolveExecutionConnection(connectionSlug: string): Promise<ResolveExecutionConnectionResult>;
-  resolveWebSearchExecution(): Promise<ResolveWebSearchExecutionResult>;
+  resolveWebSearchExecution(
+    input?: ResolveWebSearchExecutionInput,
+  ): Promise<ResolveWebSearchExecutionResult>;
+  resolveNetworkProxyExecution(
+    input?: ResolveNetworkProxyExecutionInput,
+  ): Promise<ResolveNetworkProxyExecutionResult>;
   compareAndSetOAuthCredential(
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;

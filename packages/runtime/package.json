@@ -49,6 +49,7 @@
     "./model-history": "./dist/model-history.js",
     "./invocation-context": "./dist/invocation-context.js",
     "./agent-flow": "./dist/agent-flow.js",
+    "./voice-service": "./dist/voice-service.js",
     "./ai-sdk-flow": "./dist/ai-sdk-flow.js",
     "./stream-graph-projection": "./dist/stream-graph-projection.js",
     "./stream-graph-trace": "./dist/stream-graph-trace.js",

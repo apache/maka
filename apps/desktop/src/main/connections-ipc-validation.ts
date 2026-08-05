@@ -1,0 +1,94 @@
+import {
+  normalizeConnectionBaseUrl,
+  type CreateConnectionInput,
+  type UpdateConnectionInput,
+} from '@maka/core';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+
+const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
+const IPC_CONNECTION_SECRET_MAX_LENGTH = 4096;
+const IPC_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/;
+const IPC_CONNECTION_SLUG_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export function normalizeConnectionSlugForIpc(value: unknown, label: string): string {
+  if (typeof value !== 'string') throw new Error(`${label} must be a string`);
+  if (value.length === 0) throw new Error(`${label} is required`);
+  if (value.length > IPC_CONNECTION_SLUG_MAX_LENGTH) {
+    throw new Error(`${label} must be ${IPC_CONNECTION_SLUG_MAX_LENGTH} characters or fewer`);
+  }
+  if (!IPC_CONNECTION_SLUG_PATTERN.test(value) || IPC_CONTROL_CHARACTER_PATTERN.test(value)) {
+    throw new Error(`${label} contains invalid characters`);
+  }
+  if (value.split('.').some((segment) => segment.length === 0)) {
+    throw new Error(`${label} contains invalid path traversal segments`);
+  }
+  return value;
+}
+
+export function normalizeConnectionApiKeyForIpc(value: unknown, label: string): string {
+  if (typeof value !== 'string') throw new Error(`${label} must be a string`);
+  if (value.length > IPC_CONNECTION_SECRET_MAX_LENGTH) {
+    throw new Error(`${label} must be ${IPC_CONNECTION_SECRET_MAX_LENGTH} characters or fewer`);
+  }
+  if (IPC_CONTROL_CHARACTER_PATTERN.test(value)) {
+    throw new Error(`${label} contains invalid characters`);
+  }
+  return value;
+}
+
+export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConnectionInput {
+  if (typeof value !== 'object' || value === null) throw new Error('Invalid Connection input');
+  const input = value as Partial<CreateConnectionInput>;
+  if (
+    typeof input.name !== 'string' ||
+    input.name.length === 0 ||
+    typeof input.providerType !== 'string' ||
+    !(input.providerType in PROVIDER_DEFAULTS)
+  ) {
+    throw new Error('Invalid Connection input');
+  }
+  const apiKey = input.apiKey === undefined
+    ? undefined
+    : normalizeConnectionApiKeyForIpc(input.apiKey, 'apiKey');
+  const slug = normalizeConnectionSlugForIpc(input.slug, 'connection slug');
+  const normalized = {
+    ...input,
+    slug,
+    ...(apiKey === undefined ? {} : { apiKey }),
+  } as CreateConnectionInput;
+  return normalizeConnectionBaseUrlForIpc(normalized);
+}
+
+export function normalizeConnectionPatchSecretsForIpc(value: unknown): UpdateConnectionInput {
+  if (typeof value !== 'object' || value === null) throw new Error('Invalid Connection update');
+  const patch = value as UpdateConnectionInput;
+  if (!Object.prototype.hasOwnProperty.call(patch, 'apiKey') || patch.apiKey === undefined) {
+    return patch;
+  }
+  return {
+    ...patch,
+    apiKey: normalizeConnectionApiKeyForIpc(patch.apiKey, 'apiKey'),
+  };
+}
+
+export function normalizeConnectionBaseUrlForIpc<T extends CreateConnectionInput>(input: T): T {
+  if (PROVIDER_DEFAULTS[input.providerType].authKind === 'oauth_token') {
+    return { ...input, baseUrl: PROVIDER_DEFAULTS[input.providerType].baseUrl };
+  }
+  if (input.baseUrl === undefined) return input;
+  return {
+    ...input,
+    baseUrl: normalizeConnectionBaseUrlValueForIpc(input.providerType, input.baseUrl),
+  };
+}
+
+export function normalizeConnectionBaseUrlValueForIpc(
+  providerType: CreateConnectionInput['providerType'],
+  value: string,
+): string {
+  const defaults = PROVIDER_DEFAULTS[providerType];
+  if (defaults.authKind === 'oauth_token') return defaults.baseUrl;
+  const result = normalizeConnectionBaseUrl(value);
+  if (!result.ok) throw new Error(result.error);
+  return result.value;
+}

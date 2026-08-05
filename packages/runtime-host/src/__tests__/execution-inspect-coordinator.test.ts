@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
@@ -75,6 +76,39 @@ describe('HostExecutionInspectCoordinator', () => {
         session.result.document.agentRuns.map((document) => document.agentRun.agentRunId),
         ['shared-run'],
       );
+
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        first.id,
+        'shared-run',
+        runtimeEvent(first.id, 'shared-run', 4),
+      );
+      const trace = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: first.id },
+        connectionContext(),
+      );
+      assert.equal(trace.ok, true);
+      if (!trace.ok || trace.result.kind !== 'session_trace_page') return;
+      assert.equal(trace.result.turns.length, 1);
+      assert.equal(trace.result.turns[0]?.steps[0]?.kind, 'error');
+
+      await stores.agentRunStore.createRun(runHeader(first.id, 'new-run', 5));
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        first.id,
+        'new-run',
+        runtimeEvent(first.id, 'new-run', 5),
+      );
+      const changed = await coordinator.handlers['execution.inspect.query'](
+        {
+          kind: 'session_trace_continue',
+          sessionId: first.id,
+          revision: trace.result.revision,
+          offset: 1,
+        },
+        connectionContext(),
+      );
+      assert.equal(changed.ok, true);
+      if (!changed.ok) return;
+      assert.equal(changed.result.kind, 'session_trace_revision_changed');
     });
   });
 
@@ -243,6 +277,21 @@ function runHeader(sessionId: string, runId: string, createdAt: number): AgentRu
     createdAt,
     updatedAt: createdAt,
     completedAt: createdAt,
+  };
+}
+
+function runtimeEvent(sessionId: string, runId: string, ts: number): RuntimeEvent {
+  return {
+    id: `event-${runId}`,
+    invocationId: runId,
+    sessionId,
+    turnId: `turn-${runId}`,
+    runId,
+    ts,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    content: { kind: 'error', message: 'fixture failure' },
   };
 }
 

@@ -18,17 +18,18 @@ import {
 } from '@maka/runtime';
 import type { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
 import type { XaiOAuthService } from './oauth/xai-oauth-service.js';
+import {
+  CLAUDE_SUBSCRIPTION_CONNECTION_SLUG,
+  CODEX_SUBSCRIPTION_CONNECTION_SLUG,
+  XAI_OAUTH_CONNECTION_SLUG,
+} from './oauth-connection-identities.js';
 
-export const CLAUDE_SUBSCRIPTION_CONNECTION_SLUG = 'claude-subscription';
-// Persisted connection slug: stable across the providerType rename from
-// `codex-subscription` to `openai-codex`. The credential store key in
-// `openai-codex-service.ts` and this connection slug must stay in sync so the
-// CLI (which reads OAuth tokens via `connection.slug`) can find tokens written
-// by the desktop service. Do not rename this value without a persisted-state
-// migration.
-export const CODEX_SUBSCRIPTION_CONNECTION_SLUG = 'codex-subscription';
+export {
+  CLAUDE_SUBSCRIPTION_CONNECTION_SLUG,
+  CODEX_SUBSCRIPTION_CONNECTION_SLUG,
+  XAI_OAUTH_CONNECTION_SLUG,
+} from './oauth-connection-identities.js';
 export const GITHUB_COPILOT_CONNECTION_SLUG = 'github-copilot';
-export const XAI_OAUTH_CONNECTION_SLUG = 'xai-oauth';
 
 interface OAuthModelConnectionsDeps {
   connectionStore: ConnectionStore;
@@ -651,4 +652,3 @@ function syncedSelection(
     models,
   );
 }
-

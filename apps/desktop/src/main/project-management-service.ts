@@ -1,4 +1,4 @@
-import type { ProjectCatalog, ProjectRecord, SessionStore } from '@maka/storage';
+import type { ProjectCatalog, ProjectRecord } from '@maka/storage';
 import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =
@@ -21,9 +21,19 @@ export interface ProjectManagementService {
   restore(projectId: unknown): Promise<ProjectRecord>;
 }
 
+export interface ProjectSessionCatalog {
+  listHeaders(): Promise<
+    Array<{ readonly id: string; readonly cwd: string; readonly projectId?: string | null }>
+  >;
+  updateHeader(
+    sessionId: string,
+    patch: { readonly cwd?: string; readonly projectId?: string | null },
+  ): Promise<unknown>;
+}
+
 export function createProjectManagementService(deps: {
   catalog: ProjectCatalog;
-  sessions: Pick<SessionStore, 'listHeaders' | 'updateHeader'>;
+  sessions: ProjectSessionCatalog;
   chooseDirectory(): Promise<string | undefined>;
   selection: {
     currentSelection(): Promise<CurrentProjectSelection>;

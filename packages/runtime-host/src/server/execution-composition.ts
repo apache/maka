@@ -25,6 +25,7 @@ import {
 } from '@maka/runtime';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
+  createArtifactAttachmentResourceReader,
   createReadImageSnapshotter,
   openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
@@ -65,6 +66,7 @@ import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
+import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
@@ -82,6 +84,7 @@ import { HostGoalCoordinator } from './goal-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
+import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import { HostOAuthCoordinator } from './oauth-coordinator.js';
@@ -104,7 +107,12 @@ import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
-import { createHostWebSearchTool } from './web-search-tool.js';
+import { HostWebSearchCoordinator } from './web-search-coordinator.js';
+import { HostVoiceCoordinator } from './voice-coordinator.js';
+import {
+  createHostWebSearchService,
+  createHostWebSearchToolFromService,
+} from './web-search-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 import {
   createRuntimeHostWorkspaceExecutionComposition,
@@ -118,6 +126,12 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
+}
+
+export function runtimeHostFilesystemWorkerRuntime(versions: {
+  readonly electron?: string;
+}): 'electron' | 'node' {
+  return versions.electron ? 'electron' : 'node';
 }
 
 export async function createExecutionRuntimeHostComposition(
@@ -199,7 +213,9 @@ export async function createExecutionRuntimeHostComposition(
     const filesystemWorkerLaunchSpecProvider =
       sandboxManager && isBuiltinFilesystemWorkerSandboxAvailable()
         ? createFilesystemWorkerLaunchSpecProvider({
-            runtime: 'node',
+            runtime: runtimeHostFilesystemWorkerRuntime({
+              electron: process.versions.electron,
+            }),
             platform: process.platform,
             resourceLocation: { kind: 'runtime' },
           })
@@ -258,6 +274,9 @@ export async function createExecutionRuntimeHostComposition(
     const builtinTools = {
       shellRuns: runtimeResources,
       runtimeResources,
+      attachmentResources: createArtifactAttachmentResourceReader({
+        artifactStore: openedArtifactStore,
+      }),
       archiveResources: executionArtifacts,
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
@@ -265,11 +284,10 @@ export async function createExecutionRuntimeHostComposition(
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
-    const hostTools = [
-      createHostWebSearchTool({
-        policy: runtimePolicyStores.operations,
-      }),
-    ];
+    const webSearchService = createHostWebSearchService({
+      policy: runtimePolicyStores.operations,
+    });
+    const hostTools = [createHostWebSearchToolFromService(webSearchService)];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
@@ -660,6 +678,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
       activation: runtimePolicyActivation,
       clientCapabilities,
       isProviderEnabled: isOAuthEnrollmentProviderEnabled,
@@ -682,6 +701,13 @@ export async function createExecutionRuntimeHostComposition(
       // The authority read behind Usage read-model repair (#1679).
       (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
     );
+    const webSearch = new HostWebSearchCoordinator(webSearchService);
+    const networkProxy = new HostNetworkProxyCoordinator(runtimePolicyStores.operations);
+    const configuration = new HostConfigurationCoordinator(runtimePolicyStores.operations);
+    const voice = new HostVoiceCoordinator({
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+    });
     const artifacts = new HostArtifactCoordinator(
       openedArtifactStore,
       context.requestDrain,
@@ -715,6 +741,7 @@ export async function createExecutionRuntimeHostComposition(
           host: buildHostCapabilitiesFromBinding(toolNames),
         });
       },
+      voice,
     );
     const coordinator = rootCoordinator;
     graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
@@ -899,6 +926,10 @@ export async function createExecutionRuntimeHostComposition(
       ...plans.handlers,
       ...requireDeepResearch(deepResearch).handlers,
       ...requireDailyReview(dailyReview).handlers,
+      ...webSearch.handlers,
+      ...networkProxy.handlers,
+      ...configuration.handlers,
+      ...voice.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {

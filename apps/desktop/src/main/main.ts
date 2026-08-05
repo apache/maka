@@ -1,5 +1,6 @@
 import { app, dialog } from 'electron';
 import { isIsolatedE2e } from './startup-context.js';
+import { resolveDesktopRuntimeOwner } from './desktop-runtime-owner.js';
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.
@@ -32,7 +33,10 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(() => {
       console.log('[startup] app ready');
-      return import('./boot.js');
+      const owner = resolveDesktopRuntimeOwner(process.env.MAKA_DESKTOP_RUNTIME_OWNER);
+      return owner === 'runtime-host'
+        ? import('./runtime-host-boot.js')
+        : import('./boot.js');
     })
     .catch((error: unknown) => {
       console.error('[startup] fatal:', error);

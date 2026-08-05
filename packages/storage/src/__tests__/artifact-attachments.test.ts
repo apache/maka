@@ -4,12 +4,82 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, type StorageRef } from '@maka/core';
-import { createAttachmentByteReader, createReadImageSnapshotter } from '../artifact-attachments.js';
+import {
+  createArtifactAttachmentResourceReader,
+  createAttachmentByteReader,
+  createReadImageSnapshotter,
+} from '../artifact-attachments.js';
 import { createSqliteArtifactStore as createArtifactStore } from '../artifact-store.js';
 
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 describe('artifact attachment authority', () => {
+  test('reads only live user-uploaded text within the invoking Session', async () => {
+    await withStore(async (store) => {
+      await store.create({
+        id: 'notes-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'notes.txt',
+        kind: 'file',
+        content: 'attachment marker',
+        mimeType: 'text/plain',
+        source: 'user_upload',
+        now: 1,
+      });
+      const reader = createArtifactAttachmentResourceReader({ artifactStore: store });
+      const signal = new AbortController().signal;
+
+      assert.deepEqual(await reader.readAttachmentResource('session-1', 'notes-1', signal), {
+        kind: 'text',
+        text: 'attachment marker',
+      });
+      await assert.rejects(
+        reader.readAttachmentResource('session-2', 'notes-1', signal),
+        /not found in this Session/,
+      );
+      await store.delete('notes-1');
+      await assert.rejects(
+        reader.readAttachmentResource('session-1', 'notes-1', signal),
+        /not found in this Session/,
+      );
+    });
+  });
+
+  test('returns image attachments as provider-materializable image results', async () => {
+    await withStore(async (store) => {
+      await store.create({
+        id: 'image-upload',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'image.png',
+        kind: 'image',
+        content: png,
+        mimeType: 'image/png',
+        source: 'user_upload',
+        now: 1,
+      });
+      const reader = createArtifactAttachmentResourceReader({ artifactStore: store });
+
+      assert.deepEqual(
+        await reader.readAttachmentResource(
+          'session-1',
+          'image-upload',
+          new AbortController().signal,
+        ),
+        {
+          kind: 'image',
+          mimeType: 'image/png',
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session-1',
+            relativePath: 'image-upload',
+          },
+        },
+      );
+    });
+  });
+
   test('resolves a live session ref and never forwards tombstoned bytes', async () => {
     await withStore(async (store) => {
       await store.create({

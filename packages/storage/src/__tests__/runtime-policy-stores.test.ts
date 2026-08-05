@@ -25,6 +25,7 @@ import type {
   MutateRuntimePolicyInput,
   RuntimePolicy,
 } from '@maka/core/runtime-policy';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
   createHeadlessRootLease,
   resolveStorageRoot,
@@ -44,6 +45,22 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
+  test('seeds the canonical inventory for fallback-only providers', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('opencode-free', 'opencode-free', 'OpenCode Free'),
+        enabledModelIds: ['big-pickle'],
+      });
+
+      assert.deepEqual(
+        connection.models,
+        PROVIDER_DEFAULTS['opencode-free'].fallbackModels.map((id) => ({ id })),
+      );
+      assert.equal(connection.modelSource, 'fallback');
+      assert.equal(connection.modelsFetchedAt, 0);
+    });
+  });
+
   test('commits closed policy mutations, canonicalizes proxy hosts, and preserves connection identity', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const policy = await stores.runtimePolicy.mutate(personalizationMutation(0));

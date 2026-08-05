@@ -36,13 +36,30 @@ describe('inline quote refs are folded into model-facing text', () => {
           name: 'notes.txt',
           mimeType: 'text/plain',
           bytes: 12,
-          ref: { kind: 'session_file', sessionId: 's1', relativePath: 'notes.txt' },
+          ref: { kind: 'session_file', sessionId: 's1', relativePath: 'notes-1' },
         },
       ],
     });
 
     assert.ok(out.indexOf('first') < out.indexOf('second'));
-    assert.ok(out.indexOf('second') < out.indexOf('[attachment: notes.txt'));
+    assert.ok(out.indexOf('second') < out.indexOf('<attachment>'));
+    assert.match(out, /"ref":"maka:\/\/runtime\/attachments\/notes-1"/);
+  });
+
+  it('gives Read an actionable path for workspace attachments', () => {
+    const out = formatTextWithInlineRefs('inspect', {
+      attachments: [
+        {
+          kind: 'other',
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          bytes: 12,
+          ref: { kind: 'workspace_file', relativePath: 'docs/notes.txt' },
+        },
+      ],
+    });
+
+    assert.match(out, /"path":"docs\/notes.txt"/);
   });
 
   it('reads quotes off a RuntimeEventTextContent without explicit refs', () => {

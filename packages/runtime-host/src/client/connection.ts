@@ -423,36 +423,41 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   openSessionSubscription(
     input: SubscriptionOpenInput,
-    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    timeoutMs?: number,
   ): Promise<RuntimeHostSessionSubscription> {
     const expectedSessionId = input.sessionId;
-    return this.#requestOperation('subscription.open', input, timeoutMs, (result) => {
-      if (result.hostEpoch !== this.hostEpoch) {
-        throw new RuntimeHostSubscriptionError(
-          'host_epoch_changed',
-          'Session subscription opened for a different Host Epoch',
+    return this.#requestOperation(
+      'subscription.open',
+      input,
+      timeoutMs ?? defaultRequestTimeoutMs('subscription.open'),
+      (result) => {
+        if (result.hostEpoch !== this.hostEpoch) {
+          throw new RuntimeHostSubscriptionError(
+            'host_epoch_changed',
+            'Session subscription opened for a different Host Epoch',
+          );
+        }
+        if (result.snapshot.session.sessionId !== expectedSessionId) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Runtime Host opened a subscription for a different Session',
+          );
+        }
+        if (this.#subscriptions.has(result.subscriptionId)) {
+          throw new RuntimeHostSubscriptionError(
+            'correlation_changed',
+            'Runtime Host returned a duplicate subscription identity',
+          );
+        }
+        const subscription = new ClientSessionSubscription(
+          result,
+          () => this.#closeSessionSubscription(result.subscriptionId),
+          (query) => this.request('session.transcript.query', query, timeoutMs),
         );
-      }
-      if (result.snapshot.session.sessionId !== expectedSessionId) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Runtime Host opened a subscription for a different Session',
-        );
-      }
-      if (this.#subscriptions.has(result.subscriptionId)) {
-        throw new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Runtime Host returned a duplicate subscription identity',
-        );
-      }
-      const subscription = new ClientSessionSubscription(
-        result,
-        () => this.#closeSessionSubscription(result.subscriptionId),
-        (query) => this.request('session.transcript.query', query, timeoutMs),
-      );
-      this.#subscriptions.set(result.subscriptionId, subscription);
-      return subscription;
-    });
+        this.#subscriptions.set(result.subscriptionId, subscription);
+        return subscription;
+      },
+    );
   }
 
   async close(): Promise<void> {
@@ -862,13 +867,18 @@ function requireTimeout(value: number, label: string): number {
   return value;
 }
 
-function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number | undefined {
+export function defaultRequestTimeoutMs(
+  operation: DirectRequestOperationKey | 'subscription.open',
+): number | undefined {
   switch (operation) {
     case 'agent.graph.stop':
     case 'connection.models.fetch':
     case 'connection.test.run':
     case 'daily-review.mutate':
     case 'session.recap.generate':
+    case 'session.transcript.query':
+    case 'subscription.open':
+    case 'web-search.execute':
       // Completion effects own their deadlines and may wait for admitted work to settle.
       return undefined;
     default:

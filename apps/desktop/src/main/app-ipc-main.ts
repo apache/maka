@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { arch as osArch, release as osRelease } from 'node:os';
-import { app, ipcMain, shell } from 'electron';
+import { app, ipcMain, shell, type IpcMain } from 'electron';
 import { resolveProjectGitInfo } from '@maka/runtime';
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
@@ -30,30 +30,33 @@ export interface AppIpcDeps {
   updateService: AppUpdateService;
 }
 
-export function registerAppIpc(deps: AppIpcDeps): void {
+export function registerAppIpc(
+  deps: AppIpcDeps,
+  targetIpc: Pick<IpcMain, 'handle'> = ipcMain,
+): void {
   const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture, updateService } = deps;
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
 
-  ipcMain.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
+  targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });
   // PR-SHOW-AFTER-FIRST-COMMIT: the renderer signals its first React commit so
   // the hidden window (main-window.ts show: false) is revealed only once real
   // content can paint. Idempotent + e2e-fixture-safe inside the controller.
-  ipcMain.handle('window:notifyRendererReady', (): void => {
+  targetIpc.handle('window:notifyRendererReady', (): void => {
     mainWindowController.notifyRendererReady();
   });
-  ipcMain.handle('window:setThemeSource', (event, themePref: unknown): void => {
+  targetIpc.handle('window:setThemeSource', (event, themePref: unknown): void => {
     mainWindowController.setThemeSource(event.sender, themePref);
   });
   // PR-WINDOW-TITLEBAR-0: re-sync the native titleBarOverlay color when the
   // renderer resolves a new light/dark mode or palette. No-op outside Windows.
-  ipcMain.handle('window:setTitleBarOverlayTheme', (event, theme: unknown): void => {
+  targetIpc.handle('window:setTitleBarOverlayTheme', (event, theme: unknown): void => {
     mainWindowController.setTitleBarOverlayTheme(event.sender, theme);
   });
-  ipcMain.handle('app:info', async () => {
+  targetIpc.handle('app:info', async () => {
     const selection = await deps.projectManagement.current();
     const projectPath = selection.path;
     return {
@@ -75,26 +78,26 @@ export function registerAppIpc(deps: AppIpcDeps): void {
       buildCommit: buildInfo.commit,
     };
   });
-  ipcMain.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
-  ipcMain.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
-  ipcMain.handle('app:installUpdate', (_event, input: unknown) => {
+  targetIpc.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  targetIpc.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
+  targetIpc.handle('app:installUpdate', (_event, input: unknown) => {
     if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');
     return updateService.installUpdate(input);
   });
-  ipcMain.handle('app:openUpdateDownload', () => updateService.openUpdateDownload());
-  ipcMain.handle('projects:list', () => deps.projectManagement.list());
-  ipcMain.handle('projects:add', () => deps.projectManagement.add());
-  ipcMain.handle('projects:select', (_event, projectId: unknown) =>
+  targetIpc.handle('app:openUpdateDownload', () => updateService.openUpdateDownload());
+  targetIpc.handle('projects:list', () => deps.projectManagement.list());
+  targetIpc.handle('projects:add', () => deps.projectManagement.add());
+  targetIpc.handle('projects:select', (_event, projectId: unknown) =>
     deps.projectManagement.select(projectId));
-  ipcMain.handle('projects:relink', (_event, projectId: unknown) =>
+  targetIpc.handle('projects:relink', (_event, projectId: unknown) =>
     deps.projectManagement.relink(projectId));
-  ipcMain.handle('projects:rename', (_event, projectId: unknown, name: unknown) =>
+  targetIpc.handle('projects:rename', (_event, projectId: unknown, name: unknown) =>
     deps.projectManagement.rename(projectId, name));
-  ipcMain.handle('projects:archive', (_event, projectId: unknown) =>
+  targetIpc.handle('projects:archive', (_event, projectId: unknown) =>
     deps.projectManagement.archive(projectId));
-  ipcMain.handle('projects:restore', (_event, projectId: unknown) =>
+  targetIpc.handle('projects:restore', (_event, projectId: unknown) =>
     deps.projectManagement.restore(projectId));
-  ipcMain.handle('app:sessionProjectInfo', async (_event, sessionId: unknown) => {
+  targetIpc.handle('app:sessionProjectInfo', async (_event, sessionId: unknown) => {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new Error('Invalid project-context session id.');
     }
@@ -104,7 +107,7 @@ export function registerAppIpc(deps: AppIpcDeps): void {
       projectGit: await resolveProjectGitInfo(projectPath),
     };
   });
-  ipcMain.handle('app:openPath', async (_event, key: string, sessionId: unknown): Promise<OpenPathResult> => {
+  targetIpc.handle('app:openPath', async (_event, key: string, sessionId: unknown): Promise<OpenPathResult> => {
     const projectPath = key === 'project'
       ? await deps.getProjectRoot(sessionId)
       : await currentProjectRoot();
@@ -114,7 +117,7 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     if (error) return { ok: false, reason: 'open-failed' };
     return { ok: true, opened: resolved.key };
   });
-  ipcMain.handle(
+  targetIpc.handle(
     'app:resolveProjectGitInfo',
     async (
       _event,
@@ -133,7 +136,7 @@ export function registerAppIpc(deps: AppIpcDeps): void {
       return { ok: true, projectPath: resolved, projectGit: await resolveProjectGitInfo(resolved) };
     },
   );
-  ipcMain.handle('e2eFixture:getState', () => getE2eFixtureState(e2eFixture));
+  targetIpc.handle('e2eFixture:getState', () => getE2eFixtureState(e2eFixture));
 }
 
 function isAppUpdateInstallRequest(input: unknown): input is AppUpdateInstallRequest {

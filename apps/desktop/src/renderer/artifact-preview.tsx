@@ -33,7 +33,7 @@
 import { useEffect, useState } from 'react';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactRecord,
+  ArtifactDescriptor,
   ArtifactTextReadResult,
 } from '@maka/core';
 import { cn, previewVariants, useUiLocale } from '@maka/ui';
@@ -41,7 +41,7 @@ import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
 import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
 
-export function ArtifactPreview(props: { record: ArtifactRecord; onShowInFolder?: () => void }) {
+export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFolder?: () => void }) {
   const { record, onShowInFolder } = props;
   const copy = getArtifactCopy(useUiLocale());
   switch (record.kind) {
@@ -66,8 +66,8 @@ export function ArtifactPreview(props: { record: ArtifactRecord; onShowInFolder?
 
 // ---- text-backed previews --------------------------------------------------
 
-function FilePreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
-  const result = useTextRead(props.record.id);
+function FilePreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {
+  const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingFile} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
   const text =
@@ -85,8 +85,8 @@ function prettyArchiveJson(text: string): string {
   }
 }
 
-function DiffPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
-  const result = useTextRead(props.record.id);
+function DiffPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {
+  const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingDiff} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
   const lines = result.value.text.split('\n');
@@ -116,8 +116,8 @@ function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
   return 'ctx';
 }
 
-function HtmlPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
-  const result = useTextRead(props.record.id);
+function HtmlPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {
+  const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingHtml} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
   const srcdoc = result.value.text;
@@ -159,8 +159,8 @@ function HtmlPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
 // mime_disallowed / no_mime_no_ext), the L2 base64 cap, and the
 // Unsupported card with conditional "在 Finder 中打开" CTA.
 
-function PdfPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
-  const result = useBinaryRead(props.record.id);
+function PdfPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {
+  const result = useBinaryRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingPdf} />;
   if (!result.value.ok) return <BinaryFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
   return (
@@ -194,12 +194,12 @@ function PreviewLoading(props: { label: string }) {
   );
 }
 
-function TextFailureCard(props: { record: ArtifactRecord; reason: TextFailureReason; copy: ArtifactCopy }) {
+function TextFailureCard(props: { record: ArtifactDescriptor; reason: TextFailureReason; copy: ArtifactCopy }) {
   const { tone, title, description } = failureCopyText(props.record, props.reason, props.copy);
   return <FailureCard tone={tone} title={title} description={description} />;
 }
 
-function BinaryFailureCard(props: { record: ArtifactRecord; reason: BinaryFailureReason; copy: ArtifactCopy }) {
+function BinaryFailureCard(props: { record: ArtifactDescriptor; reason: BinaryFailureReason; copy: ArtifactCopy }) {
   const { tone, title, description } = failureCopyBinary(props.record, props.reason, props.copy);
   return <FailureCard tone={tone} title={title} description={description} />;
 }
@@ -228,7 +228,7 @@ interface FailureCopy {
   description: string;
 }
 
-function failureCopyText(record: ArtifactRecord, reason: TextFailureReason, copy: ArtifactCopy): FailureCopy {
+function failureCopyText(record: ArtifactDescriptor, reason: TextFailureReason, copy: ArtifactCopy): FailureCopy {
   switch (reason) {
     case 'not_found':
     case 'read_failed':
@@ -254,7 +254,7 @@ function failureCopyText(record: ArtifactRecord, reason: TextFailureReason, copy
   }
 }
 
-function failureCopyBinary(record: ArtifactRecord, reason: BinaryFailureReason, copy: ArtifactCopy): FailureCopy {
+function failureCopyBinary(record: ArtifactDescriptor, reason: BinaryFailureReason, copy: ArtifactCopy): FailureCopy {
   if (reason === 'unsupported_mime') {
     return {
       tone: 'info',
@@ -268,7 +268,10 @@ function failureCopyBinary(record: ArtifactRecord, reason: BinaryFailureReason, 
 
 type AsyncReadState<T> = { state: 'loading' } | { state: 'ready'; value: T };
 
-function useTextRead(artifactId: string): AsyncReadState<ArtifactTextReadResult> {
+function useTextRead(
+  sessionId: string,
+  artifactId: string,
+): AsyncReadState<ArtifactTextReadResult> {
   const [state, setState] = useState<AsyncReadState<ArtifactTextReadResult>>({
     state: 'loading',
   });
@@ -276,7 +279,7 @@ function useTextRead(artifactId: string): AsyncReadState<ArtifactTextReadResult>
     let disposed = false;
     setState({ state: 'loading' });
     window.maka.artifacts
-      .readText(artifactId)
+      .readText(sessionId, artifactId)
       .then((value) => {
         if (!disposed) setState({ state: 'ready', value });
       })
@@ -294,11 +297,14 @@ function useTextRead(artifactId: string): AsyncReadState<ArtifactTextReadResult>
     return () => {
       disposed = true;
     };
-  }, [artifactId]);
+  }, [artifactId, sessionId]);
   return state;
 }
 
-function useBinaryRead(artifactId: string): AsyncReadState<ArtifactBinaryReadResult> {
+function useBinaryRead(
+  sessionId: string,
+  artifactId: string,
+): AsyncReadState<ArtifactBinaryReadResult> {
   const [state, setState] = useState<AsyncReadState<ArtifactBinaryReadResult>>({
     state: 'loading',
   });
@@ -306,7 +312,7 @@ function useBinaryRead(artifactId: string): AsyncReadState<ArtifactBinaryReadRes
     let disposed = false;
     setState({ state: 'loading' });
     window.maka.artifacts
-      .readBinary(artifactId)
+      .readBinary(sessionId, artifactId)
       .then((value) => {
         if (!disposed) setState({ state: 'ready', value });
       })
@@ -321,6 +327,6 @@ function useBinaryRead(artifactId: string): AsyncReadState<ArtifactBinaryReadRes
     return () => {
       disposed = true;
     };
-  }, [artifactId]);
+  }, [artifactId, sessionId]);
   return state;
 }

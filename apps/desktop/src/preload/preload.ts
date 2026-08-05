@@ -52,7 +52,7 @@ import type {
   E2eFixtureState,
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
-  ArtifactRecord,
+  ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
   BranchFromTurnInput,
@@ -1059,6 +1059,7 @@ const makaBridge = {
       return ipcRenderer.invoke('app:resolveProjectGitInfo', projectPath);
     },
     openArtifactPath(
+      sessionId: string,
       artifactId: string,
     ): Promise<
       | { ok: true; opened: string }
@@ -1067,10 +1068,10 @@ const makaBridge = {
           reason: 'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed';
         }
     > {
-      return ipcRenderer.invoke('app:openArtifactPath', artifactId);
+      return ipcRenderer.invoke('app:openArtifactPath', sessionId, artifactId);
     },
-    saveArtifactAs(artifactId: string): Promise<ArtifactSaveResult> {
-      return ipcRenderer.invoke('app:saveArtifactAs', artifactId);
+    saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult> {
+      return ipcRenderer.invoke('app:saveArtifactAs', sessionId, artifactId);
     },
   },
   workspace: {
@@ -1091,20 +1092,20 @@ const makaBridge = {
     },
   },
   artifacts: {
-    list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactRecord[]> {
+    list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactDescriptor[]> {
       return ipcRenderer.invoke('artifacts:list', sessionId, opts);
     },
-    get(artifactId: string): Promise<ArtifactRecord | null> {
-      return ipcRenderer.invoke('artifacts:get', artifactId);
+    get(sessionId: string, artifactId: string): Promise<ArtifactDescriptor | null> {
+      return ipcRenderer.invoke('artifacts:get', sessionId, artifactId);
     },
-    readText(artifactId: string): Promise<ArtifactTextReadResult> {
-      return ipcRenderer.invoke('artifacts:readText', artifactId);
+    readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult> {
+      return ipcRenderer.invoke('artifacts:readText', sessionId, artifactId);
     },
-    readBinary(artifactId: string): Promise<ArtifactBinaryReadResult> {
-      return ipcRenderer.invoke('artifacts:readBinary', artifactId);
+    readBinary(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult> {
+      return ipcRenderer.invoke('artifacts:readBinary', sessionId, artifactId);
     },
-    delete(artifactId: string): Promise<void> {
-      return ipcRenderer.invoke('artifacts:delete', artifactId);
+    delete(sessionId: string, artifactId: string): Promise<void> {
+      return ipcRenderer.invoke('artifacts:delete', sessionId, artifactId);
     },
     subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: ArtifactChangedEvent) => handler(payload);

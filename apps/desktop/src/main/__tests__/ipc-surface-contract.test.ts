@@ -48,7 +48,7 @@ describe('IPC surface contract', () => {
     ]);
     const mainChannels = extractChannels(
       mainSources.join('\n'),
-      /ipcMain\.handle\(\s*['"]([^'"]+)['"]/g,
+      /(?:\bipcMain|\b[A-Za-z_$][\w$]*\.ipcMain|\btargetIpc|\btarget)\.handle\(\s*['"]([^'"]+)['"]/g,
     );
     const preloadChannels = extractChannels(
       preloadSource,

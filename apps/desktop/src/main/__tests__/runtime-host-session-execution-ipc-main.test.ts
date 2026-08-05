@@ -1,29 +1,88 @@
-import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import test from 'node:test';
-import type { IpcMain } from 'electron';
-import type { AttachmentRef } from '@maka/core';
-import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
-import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
-import type { DesktopRuntimeHostSession } from '../runtime-host-client.js';
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import type { IpcMain } from "electron";
+import type { AttachmentRef } from "@maka/core";
+import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
+import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
+import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
   registerRuntimeHostSessionExecutionIpc,
   type RuntimeHostSessionExecutionIpcDeps,
-} from '../runtime-host-session-execution-ipc-main.js';
-import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';
+} from "../runtime-host-session-execution-ipc-main.js";
+import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
 
-test('sends canonical content and uploads owned Attachment bytes through the Host', async () => {
+test("advances the Host read marker through the last visible message", async () => {
+  const readMarkers: unknown[] = [];
+  const observer = observerWithTranscript([
+    {
+      type: "user",
+      id: "user-1",
+      turnId: "turn-1",
+      ts: 1,
+      text: "Hello",
+    },
+    {
+      type: "assistant",
+      id: "assistant-1",
+      turnId: "turn-1",
+      ts: 2,
+      text: "Hi",
+      modelId: "test-model",
+    },
+    {
+      type: "system_note",
+      id: "internal-tail",
+      turnId: "turn-1",
+      ts: 3,
+      kind: "session_resume",
+    },
+  ]);
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        setSessionReadMarker: async (sessionId, readThroughMessageId) => {
+          readMarkers.push({ sessionId, readThroughMessageId });
+          return session();
+        },
+      }),
+      observer,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+    },
+    ipc,
+  );
+
+  assert.equal(
+    ((await ipc.invoke("sessions:readMessages", "session-1")) as unknown[])
+      .length,
+    3,
+  );
+  assert.deepEqual(readMarkers, [
+    { sessionId: "session-1", readThroughMessageId: "assistant-1" },
+  ]);
+  await observer.close();
+});
+
+test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
   const starts: unknown[] = [];
   const uploads: unknown[] = [];
   const changes: unknown[] = [];
   const attachment: AttachmentRef = {
-    kind: 'other',
-    name: 'notes.txt',
-    mimeType: 'text/plain',
+    kind: "other",
+    name: "notes.txt",
+    mimeType: "text/plain",
     bytes: 5,
-    ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
+    ref: {
+      kind: "session_file",
+      sessionId: "session-1",
+      relativePath: "artifact-1",
+    },
   };
   const client = executionClient({
     getSession: async () => session(),
@@ -36,8 +95,8 @@ test('sends canonical content and uploads owned Attachment bytes through the Hos
       return {
         sessionId: input.sessionId,
         turnId: input.turnId,
-        runId: 'run-1',
-        status: 'running',
+        runId: "run-1",
+        status: "running",
       };
     },
   });
@@ -51,38 +110,38 @@ test('sends canonical content and uploads owned Attachment bytes through the Hos
         changes.push({ reason, sessionId, ...extra }),
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
-      newId: () => 'turn-1',
+      newId: () => "turn-1",
     },
     ipc,
   );
 
-  const result = await ipc.invoke('sessions:send', 'session-1', {
-    type: 'send',
-    text: 'Read @notes.txt',
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "Read @notes.txt",
     attachmentItems: [
       {
-        name: 'notes.txt',
-        mimeType: 'text/plain',
-        base64: Buffer.from('hello').toString('base64'),
+        name: "notes.txt",
+        mimeType: "text/plain",
+        base64: Buffer.from("hello").toString("base64"),
       },
     ],
-    workspaceFileReferences: [{ value: '@notes.txt', start: 5 }],
+    workspaceFileReferences: [{ value: "@notes.txt", start: 5 }],
   });
 
   assert.equal((uploads[0] as { content: Uint8Array }).content.byteLength, 5);
   assert.deepEqual(starts, [
     {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
+      sessionId: "session-1",
+      turnId: "turn-1",
       content: {
-        text: 'Read @notes.txt',
+        text: "Read @notes.txt",
         attachments: [attachment],
         inlineReferences: [
           {
-            kind: 'workspace_file',
-            value: '@notes.txt',
+            kind: "workspace_file",
+            value: "@notes.txt",
             start: 5,
-            label: 'notes.txt',
+            label: "notes.txt",
           },
         ],
       },
@@ -90,41 +149,45 @@ test('sends canonical content and uploads owned Attachment bytes through the Hos
   ]);
   assert.deepEqual(result, {
     ok: true,
-    turnId: 'turn-1',
+    turnId: "turn-1",
     attachments: [attachment],
     inlineReferences: [
       {
-        kind: 'workspace_file',
-        value: '@notes.txt',
+        kind: "workspace_file",
+        value: "@notes.txt",
         start: 5,
-        label: 'notes.txt',
+        label: "notes.txt",
       },
     ],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
   });
   assert.deepEqual(changes, [
-    { reason: 'status-change', sessionId: 'session-1', turnId: 'turn-1' },
+    { reason: "status-change", sessionId: "session-1", turnId: "turn-1" },
   ]);
 });
 
-test('uploads a selected workspace file as a Host-owned Session Artifact', async (t) => {
-  const cwd = await mkdtemp(join(tmpdir(), 'maka-host-attachment-'));
+test("uploads a selected workspace file as a Host-owned Session Artifact", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "maka-host-attachment-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
-  const path = join(cwd, 'notes.txt');
-  await writeFile(path, 'hello');
+  const path = join(cwd, "notes.txt");
+  await writeFile(path, "hello");
   const approvals = createAttachmentApprovalRegistry();
   const [approved] = approvals.issueApprovals(9, [
-    { path, name: 'notes.txt', mimeType: 'text/plain', size: 5 },
+    { path, name: "notes.txt", mimeType: "text/plain", size: 5 },
   ]);
   assert.ok(approved);
   const uploads: Array<{ content: Uint8Array }> = [];
   const starts: unknown[] = [];
   const attachment: AttachmentRef = {
-    kind: 'other',
-    name: 'notes.txt',
-    mimeType: 'text/plain',
+    kind: "other",
+    name: "notes.txt",
+    mimeType: "text/plain",
     bytes: 5,
-    ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
+    ref: {
+      kind: "session_file",
+      sessionId: "session-1",
+      relativePath: "artifact-1",
+    },
   };
   const ipc = ipcHarness();
   registerRuntimeHostSessionExecutionIpc(
@@ -140,8 +203,8 @@ test('uploads a selected workspace file as a Host-owned Session Artifact', async
           return {
             sessionId: input.sessionId,
             turnId: input.turnId,
-            runId: 'run-1',
-            status: 'running',
+            runId: "run-1",
+            status: "running",
           };
         },
       }),
@@ -150,63 +213,87 @@ test('uploads a selected workspace file as a Host-owned Session Artifact', async
       emitSessionsChanged() {},
       stat: async () => ({ size: 5 }),
       resizeImage: async (bytes) => bytes,
-      newId: () => 'turn-1',
+      newId: () => "turn-1",
     },
     ipc,
   );
 
-  await ipc.invoke('sessions:send', 'session-1', {
-    type: 'send',
-    text: 'Read the attachment',
+  await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "Read the attachment",
     attachmentItems: [approved],
   });
 
-  assert.equal(Buffer.from(uploads[0]?.content ?? []).toString('utf8'), 'hello');
+  assert.equal(
+    Buffer.from(uploads[0]?.content ?? []).toString("utf8"),
+    "hello",
+  );
   assert.deepEqual(
-    (starts[0] as { content: { attachments: AttachmentRef[] } }).content.attachments,
+    (starts[0] as { content: { attachments: AttachmentRef[] } }).content
+      .attachments,
     [attachment],
   );
 });
 
-test('rejects Skill invocation until the Host Runtime-domain adapter owns its feedback contract', async () => {
+test("forwards explicit Skill invocation to the Host-owned Turn admission", async () => {
+  const starts: unknown[] = [];
   const ipc = ipcHarness();
   registerRuntimeHostSessionExecutionIpc(
     {
-      client: executionClient({}),
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async (input) => {
+          starts.push(input);
+          return {
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            runId: "run-1",
+            status: "running",
+          };
+        },
+      }),
       observer: unusedObserver(),
       attachmentApprovals: createAttachmentApprovalRegistry(),
       emitSessionsChanged() {},
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
+      newId: () => "turn-skill",
     },
     ipc,
   );
 
-  await assert.rejects(
-    ipc.invoke('sessions:send', 'session-1', {
-      type: 'send',
-      text: '/skill:review',
-    }),
-    /Skill invocation is not available/,
-  );
-  await assert.rejects(
-    ipc.invoke('sessions:send', 'session-1', {
-      type: 'send',
-      text: '',
-      skillIds: ['review'],
-    }),
-    /Skill invocation is not available/,
-  );
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "",
+    displayText: "/skill:review",
+    skillIds: ["review"],
+  });
+
+  assert.deepEqual(starts, [
+    {
+      sessionId: "session-1",
+      turnId: "turn-skill",
+      content: { text: "", displayText: "/skill:review", inlineReferences: [] },
+      skillIds: ["review"],
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    turnId: "turn-skill",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
 });
 
-test('binds steer and stop to Host-owned queue and active Turn identities', async () => {
+test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
   let sequence = 0;
   const client = executionClient({
     submitMessage: async (input) => {
       submits.push(input);
-      return { disposition: 'steering', queueRevision: 2 };
+      return { disposition: "steering", queueRevision: 2 };
     },
     interruptTurn: async (input) => {
       interrupts.push(input);
@@ -217,9 +304,9 @@ test('binds steer and stop to Host-owned queue and active Turn identities', asyn
           sessionId: input.sessionId,
           turnId: input.turnId,
           runId: input.runId,
-          status: 'cancelled',
-          terminalEventId: 'terminal-1',
-          abortSource: 'user',
+          status: "cancelled",
+          terminalEventId: "terminal-1",
+          abortSource: "user",
         },
       };
     },
@@ -239,35 +326,38 @@ test('binds steer and stop to Host-owned queue and active Turn identities', asyn
     ipc,
   );
 
-  assert.deepEqual(await ipc.invoke('sessions:steer', 'session-1', '  Continue  '), {
-    kind: 'queued',
-  });
-  await ipc.invoke('sessions:stop', 'session-1');
+  assert.deepEqual(
+    await ipc.invoke("sessions:steer", "session-1", "  Continue  "),
+    {
+      kind: "queued",
+    },
+  );
+  await ipc.invoke("sessions:stop", "session-1");
 
   assert.deepEqual(submits, [
     {
-      sessionId: 'session-1',
-      messageId: 'id-1',
-      content: { text: 'Continue' },
-      placement: 'current_turn',
+      sessionId: "session-1",
+      messageId: "id-1",
+      content: { text: "Continue" },
+      placement: "current_turn",
     },
   ]);
   assert.deepEqual(interrupts, [
     {
-      sessionId: 'session-1',
-      interruptId: 'id-2',
-      turnId: 'turn-1',
-      runId: 'run-1',
+      sessionId: "session-1",
+      interruptId: "id-2",
+      turnId: "turn-1",
+      runId: "run-1",
     },
   ]);
   await observer.close();
 });
 
-type ExecutionClient = RuntimeHostSessionExecutionIpcDeps['client'];
+type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
   const unavailable = async (): Promise<never> => {
-    throw new Error('Unexpected Runtime Host Session execution operation');
+    throw new Error("Unexpected Runtime Host Session execution operation");
   };
   return {
     answerInteraction: unavailable,
@@ -292,7 +382,7 @@ function unusedObserver(): RuntimeHostSessionObserver {
   return new RuntimeHostSessionObserver({
     client: {
       openSession: async (): Promise<DesktopRuntimeHostSession> => {
-        throw new Error('Unexpected Runtime Host Session subscription');
+        throw new Error("Unexpected Runtime Host Session subscription");
       },
     },
     emitSessionsChanged() {},
@@ -300,33 +390,50 @@ function unusedObserver(): RuntimeHostSessionObserver {
 }
 
 function observerWithSnapshot(): RuntimeHostSessionObserver {
+  return observerWithTranscript([]);
+}
+
+function observerWithTranscript(
+  transcript: readonly import("@maka/core").StoredMessage[],
+): RuntimeHostSessionObserver {
+  let finishEvents!: () => void;
+  const eventsFinished = new Promise<void>((resolve) => {
+    finishEvents = resolve;
+  });
   return new RuntimeHostSessionObserver({
     client: {
       openSession: async () => ({
         snapshot: {
           schemaVersion: 3,
           session: {
-            sessionId: 'session-1',
+            sessionId: "session-1",
             metadataRevision: 1,
-            status: 'running',
+            status: "running",
             createdAt: 1,
             lastUsedAt: 1,
             isArchived: false,
           },
           projectionRevision: 1,
           rootTurn: {
-            sessionId: 'session-1',
-            turnId: 'turn-1',
-            runId: 'run-1',
-            status: 'running',
+            sessionId: "session-1",
+            turnId: "turn-1",
+            runId: "run-1",
+            status: "running",
           },
           goal: null,
-          queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+          queue: {
+            hostEpoch: "host-1",
+            queueRevision: 0,
+            steering: [],
+            followup: [],
+          },
           interactions: { pending: [] },
         },
-        transcript: Promise.resolve([]),
-        events: emptyEvents(),
-        async close() {},
+        transcript: Promise.resolve([...transcript]),
+        events: waitForEnd(eventsFinished),
+        async close() {
+          finishEvents();
+        },
       }),
     },
     emitSessionsChanged() {},
@@ -335,13 +442,21 @@ function observerWithSnapshot(): RuntimeHostSessionObserver {
 
 async function* emptyEvents(): AsyncIterable<never> {}
 
-type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+async function* waitForEnd(done: Promise<void>): AsyncIterable<never> {
+  await done;
+}
+
+type IpcHandler = Parameters<Pick<IpcMain, "handle">["handle"]>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
   return {
     handle(channel: string, handler: IpcHandler) {
-      assert.equal(handlers.has(channel), false, `duplicate handler: ${channel}`);
+      assert.equal(
+        handlers.has(channel),
+        false,
+        `duplicate handler: ${channel}`,
+      );
       handlers.set(channel, handler);
     },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -352,26 +467,26 @@ function ipcHarness() {
   };
 }
 
-function session(cwd = '/workspace'): SessionCatalogProjection {
+function session(cwd = "/workspace"): SessionCatalogProjection {
   return {
-    id: 'session-1',
+    id: "session-1",
     revision: 1,
     cwd,
     createdAt: 1,
     lastUsedAt: 1,
-    name: 'Session',
+    name: "Session",
     isFlagged: false,
     isArchived: false,
     labels: [],
     labelsTruncated: false,
     hasUnread: false,
-    status: 'active',
-    backend: 'ai-sdk',
-    llmConnectionSlug: 'test-connection',
+    status: "active",
+    backend: "ai-sdk",
+    llmConnectionSlug: "test-connection",
     connectionLocked: true,
-    model: 'test-model',
-    permissionMode: 'ask',
-    collaborationMode: 'agent',
-    orchestrationMode: 'default',
+    model: "test-model",
+    permissionMode: "ask",
+    collaborationMode: "agent",
+    orchestrationMode: "default",
   };
 }
