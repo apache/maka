@@ -17,17 +17,6 @@ import type { ModelFactory } from './model-adapter.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
 
-export type ToolResultArchiveRecorderInput = (
-  | StaleToolResultArchiveCandidate
-  | (ActiveToolResultArchiveCandidate & { runtimeEventId: string })
-) & {
-  sessionId: string;
-  bodySha256: string;
-};
-export type ToolResultArchiveRecorder = (
-  input: ToolResultArchiveRecorderInput,
-) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
-
 export interface SynthesisCacheLoadInput {
   sessionId: string;
   maxBlocks?: number;

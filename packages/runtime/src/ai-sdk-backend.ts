@@ -201,7 +201,6 @@ import {
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
   type ContextBudgetPolicy,
-  type ToolResultArchiveReader,
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
@@ -454,8 +453,6 @@ export type {
   SynthesisCacheWriter,
   SynthesisCacheWriteInput,
   SynthesisCacheWriteResult,
-  ToolResultArchiveRecorder,
-  ToolResultArchiveRecorderInput,
 } from './ai-sdk-compaction-contract.js';
 
 export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
