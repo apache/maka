@@ -43,6 +43,10 @@ export default {
       to: 'licenses/git/NOTICE.txt',
     },
     {
+      from: 'resources/licenses/git/LICENSE.txt',
+      to: 'licenses/git/LICENSE.txt',
+    },
+    {
       from: '../../NOTICE',
       to: 'licenses/maka/NOTICE',
     },

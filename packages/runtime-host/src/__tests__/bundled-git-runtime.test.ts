@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -8,6 +8,7 @@ import { resolveBundledGitRuntime } from '../server/bundled-git-runtime.js';
 test('resolves the packaged Git executable from a strict platform manifest', async () => {
   const fixture = await createFixture();
   try {
+    const canonicalRoot = await realpath(fixture.root);
     assert.deepEqual(
       await resolveBundledGitRuntime({
         resourcesRoot: fixture.root,
@@ -15,13 +16,13 @@ test('resolves the packaged Git executable from a strict platform manifest', asy
         arch: 'x64',
       }),
       {
-        executablePath: fixture.executablePath,
+        executablePath: await realpath(fixture.executablePath),
         expectedSha256: 'sha256:f391158ea86e1e56b2b0c13583821c2b752c2abccd91496d91e025d54ac616e5',
         runtimeIdentitySha256:
           'sha256:926a45a8cd95c8ae25683905dc9171c54a9e31ffe362875c8f8b7f6e67ed522f',
         distribution: {
           kind: 'dugite_native_v1',
-          rootPath: join(fixture.root, 'git'),
+          rootPath: join(canonicalRoot, 'git'),
         },
       },
     );

@@ -13,6 +13,7 @@ const sha256Pattern = /^[a-f0-9]{64}$/u;
 
 export async function prepareBundledGit({
   dugiteRoot = join(repoRoot, 'node_modules', 'dugite'),
+  gitLicensePath = join(repoRoot, 'apps', 'desktop', 'resources', 'licenses', 'git', 'LICENSE.txt'),
   outputPath = join(repoRoot, 'apps', 'desktop', 'bundled-git.json'),
   platform = process.platform,
   arch = process.arch,
@@ -23,6 +24,7 @@ export async function prepareBundledGit({
     throw new Error(`Bundled Git preparation requires dugite ${expectedDugiteVersion}.`);
   }
   await requireRegularFile(join(dugiteRoot, 'LICENSE'), 'dugite license');
+  await requireRegularFile(gitLicensePath, 'packaged Git license');
 
   const embeddedGit = JSON.parse(
     await readFile(join(dugiteRoot, 'script', 'embedded-git.json'), 'utf8'),
@@ -45,7 +47,6 @@ export async function prepareBundledGit({
   const executablePath = resolve(dugiteRoot, ...executableRelativePath.split('/'));
   assertWithin(dugiteRoot, executablePath);
   await requireRegularFile(executablePath, 'bundled Git executable');
-  await requireRegularFile(join(dugiteRoot, 'git', 'LICENSE.txt'), 'bundled Git license');
 
   const reportedVersion = await runGit(executablePath);
   if (

@@ -148,10 +148,12 @@ publication PR before that fact has a production writer and consumer.
 
 ## 7. Licensing and size policy
 
-The full `dugite-native` directory is packaged, including its component license directories, Git's
-`LICENSE.txt`, and Maka's Git/dugite notices. A generated component inventory is useful release
-hardening, but it is not represented as a runtime-authority guarantee in v1 and should be implemented as
-a dedicated supply-chain slice.
+The full `dugite-native` directory is packaged, including whatever component license directories its
+platform archive supplies. Because those archives do not expose Git's license at one uniform path, Maka
+also tracks the Git GPLv2 text and packages it consistently as `resources/licenses/git/LICENSE.txt`
+alongside the Git/dugite notices. Prepare and final-package verification both require that stable asset.
+A generated component inventory is useful release hardening, but it is not represented as a
+runtime-authority guarantee in v1 and should be implemented as a dedicated supply-chain slice.
 
 The first release keeps the full upstream distribution. Pruning shells, Perl, GUI programs, docs, or
 helpers is deferred until Maka has an exact command/helper allowlist and the pruned artifact passes the

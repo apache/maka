@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { prepareBundledGit } from './prepare-bundled-git.mjs';
 
-test('prepares a strict manifest from dugite embedded-git provenance', async () => {
+test('prepares from dugite provenance without assuming an archive-internal license path', async () => {
   const fixture = await createDugiteFixture();
   try {
     const manifest = await prepareBundledGit({
       dugiteRoot: fixture.dugiteRoot,
+      gitLicensePath: fixture.gitLicensePath,
       outputPath: fixture.outputPath,
       platform: 'win32',
       arch: 'x64',
@@ -44,6 +45,7 @@ test('fails closed when dugite reports an unexpected Git version', async () => {
     await assert.rejects(
       prepareBundledGit({
         dugiteRoot: fixture.dugiteRoot,
+        gitLicensePath: fixture.gitLicensePath,
         outputPath: fixture.outputPath,
         platform: 'win32',
         arch: 'x64',
@@ -62,6 +64,7 @@ test('fails closed when the platform archive is not pinned by dugite', async () 
     await assert.rejects(
       prepareBundledGit({
         dugiteRoot: fixture.dugiteRoot,
+        gitLicensePath: fixture.gitLicensePath,
         outputPath: fixture.outputPath,
         platform: 'freebsd',
         arch: 'x64',
@@ -78,12 +81,13 @@ async function createDugiteFixture() {
   const root = await mkdtemp(join(tmpdir(), 'maka-prepare-dugite-'));
   const dugiteRoot = join(root, 'dugite');
   const executablePath = join(dugiteRoot, 'git', 'cmd', 'git.exe');
+  const gitLicensePath = join(root, 'Git-LICENSE.txt');
   const outputPath = join(root, 'bundled-git.json');
   await mkdir(join(dugiteRoot, 'script'), { recursive: true });
   await mkdir(join(dugiteRoot, 'git', 'cmd'), { recursive: true });
   await writeFile(join(dugiteRoot, 'package.json'), '{"name":"dugite","version":"3.2.2"}\n');
   await writeFile(join(dugiteRoot, 'LICENSE'), 'MIT fixture license\n');
-  await writeFile(join(dugiteRoot, 'git', 'LICENSE.txt'), 'GPL fixture license\n');
+  await writeFile(gitLicensePath, 'GPLv2 fixture license\n');
   await writeFile(executablePath, 'fake bundled git\n');
   await writeFile(
     join(dugiteRoot, 'script', 'embedded-git.json'),
@@ -98,6 +102,7 @@ async function createDugiteFixture() {
   return {
     dugiteRoot,
     executablePath,
+    gitLicensePath,
     outputPath,
     remove: () => rm(root, { recursive: true, force: true }),
   };
