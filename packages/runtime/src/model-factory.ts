@@ -132,39 +132,28 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       if (wire === 'openai-responses') {
         return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
       }
-      const reasoningTransport =
-        reasoningReplay.kind === 'openai-chat-plaintext'
-          ? createOpenAiChatReasoningTransport(
-              fetch ?? globalThis.fetch,
-              openAiChatReasoningTransportState ??
-                createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
-              connection.providerType === 'kimi-coding-plan',
-            )
-          : undefined;
-      const transformRequestBody = reasoningTransport
-        ? adapter.replayAssistantReasoningDetails
-          ? composeRequestTransforms(
-              reasoningTransport.transformRequestBody,
-              replayAssistantReasoning('reasoning', true),
-            )
-          : reasoningTransport.transformRequestBody
-        : adapter.replayAssistantReasoningAs
-          ? replayAssistantReasoning(
-              adapter.replayAssistantReasoningAs,
-              adapter.replayAssistantReasoningDetails === true,
-            )
-          : undefined;
+      if (reasoningReplay.kind !== 'openai-chat-plaintext') {
+        throw new Error('OpenAI-compatible Chat wire requires plaintext reasoning replay');
+      }
+      const reasoningTransport = createOpenAiChatReasoningTransport(
+        fetch ?? globalThis.fetch,
+        openAiChatReasoningTransportState ??
+          createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
+        connection.providerType === 'kimi-coding-plan',
+      );
+      const transformRequestBody = adapter.replayAssistantReasoningDetails
+        ? composeRequestTransforms(
+            reasoningTransport.transformRequestBody,
+            replayAssistantReasoning('reasoning', true),
+          )
+        : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
         name: openAiCompatibleProviderOptionsName(adapter, connection),
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
-        ...(reasoningTransport
-          ? { fetch: reasoningTransport.fetch }
-          : adapter.passFetch || fetch
-            ? { fetch }
-            : {}),
-        ...(transformRequestBody ? { transformRequestBody } : {}),
+        fetch: reasoningTransport.fetch,
+        transformRequestBody,
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }
           : {}),

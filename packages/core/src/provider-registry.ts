@@ -21,7 +21,6 @@ export type ProviderRuntimeAdapter =
       kind: 'openai-compatible';
       name: 'provider' | 'connection';
       includeUsage?: boolean;
-      passFetch?: boolean;
       requireBaseUrl?: boolean;
       supportsOpenAiResponses?: true;
       replayAssistantReasoningAs?: 'reasoning';
@@ -918,7 +917,7 @@ const providerRegistry = {
     fallbackModels: siliconflowModelIds,
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider', passFetch: true },
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol', query: { sub_type: 'chat' } },
     category: 'domestic',
     catalogGroup: 'aggregators',

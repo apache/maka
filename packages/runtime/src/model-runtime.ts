@@ -69,7 +69,6 @@ export function resolveModelRuntime(
           kind: 'openai-compatible',
           name: 'provider',
           includeUsage: true,
-          passFetch: true,
         } as const)
       : override
         ? runtimeAdapterOverride(override.npm)
