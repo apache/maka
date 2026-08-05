@@ -5,7 +5,6 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders } from './subscription-auth.js';
@@ -188,24 +187,22 @@ async function testConnectionModel(
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
-  const { adapter, baseUrl, apiProtocol } = resolveModelRuntime(connection, testModel);
+  const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
 
   switch (adapter.kind) {
     case 'anthropic':
     case 'claude-subscription':
       return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
-    case 'openai': {
-      const resolvedApiProtocol =
-        adapter.apiProtocol ??
-        apiProtocol ??
-        openAiAdapterApiProtocol(testModel, connection.providerType);
-      return resolvedApiProtocol === 'openai-responses'
+    case 'openai':
+      return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
         : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
-    }
     case 'openai-codex':
-    case 'openai-compatible':
       return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
+    case 'openai-compatible':
+      return wire === 'openai-responses'
+        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
+        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     case 'github-copilot':
       return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':

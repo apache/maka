@@ -139,7 +139,7 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
-import { kimiReasoningFieldFromProviderOptions } from './kimi-openai-transport.js';
+import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import {
   toSandboxRunTraceProjection,
@@ -2952,11 +2952,11 @@ export class AiSdkBackend implements AgentBackend {
         }
       }
       if (!replaySupport.unsignedThinking) return undefined;
-      const kimiReasoningField = kimiReasoningFieldFromProviderOptions(item.providerOptions);
-      if (!kimiReasoningField) return undefined;
+      const reasoningField = openAiChatReasoningFieldFromProviderOptions(item.providerOptions);
+      if (!reasoningField) return undefined;
       return {
         providerOptions: {
-          openaiCompatible: { [kimiReasoningField]: item.text },
+          openaiCompatible: { [reasoningField]: item.text },
         } as NonNullable<ModelMessage['providerOptions']>,
       };
     };

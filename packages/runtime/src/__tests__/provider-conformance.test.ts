@@ -930,6 +930,31 @@ describe('models.dev provider conformance', () => {
     assert.equal(body?.store, false);
   });
 
+  test('DeepSeek connection probes use the same account-declared Responses wire as execution', async () => {
+    let body: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/responses');
+      body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek',
+      name: 'DeepSeek',
+      providerType: 'deepseek',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'deepseek-v4-pro',
+      models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-responses' }],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.equal((await testConnection(connection, 'deepseek-token')).ok, true);
+    assert.equal(body?.model, 'deepseek-v4-pro');
+    assert.equal(body?.store, false);
+  });
+
   test('Ollama Cloud requests usage in streamed chat completions', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {
