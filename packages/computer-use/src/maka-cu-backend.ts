@@ -454,8 +454,9 @@ export interface MakaCuLaunchedApp {
  */
 export type MakaCuBackend = Omit<
   CuDispatchBackend,
-  'runSemantic' | 'observeApp' | 'captureObservation'
+  'runSemantic' | 'observeApp' | 'captureObservation' | 'requestAccessibilityPermission'
 > & {
+  requestAccessibilityPermission(signal: AbortSignal): Promise<void>;
   observeApp(
     input: {
       app?: string;
@@ -2248,6 +2249,12 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
           // so the host no longer has to guess which it got.
           screenRecording: envelope.screenRecording === true,
         };
+      });
+    },
+
+    async requestAccessibilityPermission(signal) {
+      await withOperationQueue(signal, async () => {
+        await service.call('permissions.check', { prompt: true }, signal);
       });
     },
 

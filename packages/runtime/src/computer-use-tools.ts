@@ -649,6 +649,7 @@ export function buildComputerUseTools(deps: {
   const presentationGenerations = new Map<string, number>();
   const pendingInvocationTurns = new Map<string, Set<string>>();
   let presentationQueue = Promise.resolve();
+  let accessibilityPermissionRequested = false;
   interface SessionObservationRecord {
     turnId: string;
     state: CuaFrameState;
@@ -1624,6 +1625,16 @@ export function buildComputerUseTools(deps: {
           // S12: re-check TCC at action-start; cached "granted" is insufficient.
           const tcc = await deps.backend.preflight(abortSignal);
           if (!tcc.accessibility) {
+            if (!accessibilityPermissionRequested && deps.backend.requestAccessibilityPermission) {
+              accessibilityPermissionRequested = true;
+              try {
+                await deps.backend.requestAccessibilityPermission(abortSignal);
+              } catch {
+                // Prompting is best-effort presentation. The live preflight
+                // result remains the authority and still fails this action
+                // closed with the stable permission guidance below.
+              }
+            }
             return {
               text: 'maka_computer failed: permission_missing — Accessibility not granted (System Settings → Privacy & Security → Accessibility)',
             };

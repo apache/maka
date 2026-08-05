@@ -340,6 +340,15 @@ export interface CuDispatchBackend {
   /** Live macOS TCC status. Called at EVERY action-start — cached "granted" is
    *  insufficient because the user can revoke at any time (S12). */
   preflight(signal: AbortSignal): Promise<{ accessibility: boolean; screenRecording: boolean }>;
+  /**
+   * Ask the native executor to show the Accessibility consent prompt.
+   *
+   * This is separate from `preflight`: the latter runs before every action and
+   * must stay free of presentation side effects. The tool layer invokes this
+   * seam at most once, when an explicit Computer Use call first finds the grant
+   * missing.
+   */
+  requestAccessibilityPermission?(signal: AbortSignal): Promise<void>;
   listApps?(signal: AbortSignal): Promise<CuAppSummary[]>;
   /**
    * Start an app in the background. The launched app must not take focus —

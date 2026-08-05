@@ -1791,6 +1791,28 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.match(r.text, /Accessibility/);
   });
 
+  test('requests Accessibility once on first use while every action still preflights', async () => {
+    let preflights = 0;
+    let requests = 0;
+    const backend = fakeBackend({ accessibility: false });
+    backend.preflight = async () => {
+      preflights += 1;
+      return { accessibility: false, screenRecording: true };
+    };
+    backend.requestAccessibilityPermission = async () => {
+      requests += 1;
+    };
+    const [tool] = buildComputerUseTools({ backend });
+
+    const first = (await tool.impl({ action: 'wait' } as never, ctx())) as { text: string };
+    const second = (await tool.impl({ action: 'wait' } as never, ctx())) as { text: string };
+
+    assert.match(first.text, /permission_missing/);
+    assert.match(second.text, /permission_missing/);
+    assert.equal(preflights, 2);
+    assert.equal(requests, 1);
+  });
+
   test('S12: a capture action fails closed when Screen Recording is not granted', async () => {
     const backend = fakeBackend({ screenRecording: false });
     backend.observeApp = async () => observation();

@@ -4,13 +4,90 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
+import {
+  createGenesisExecutionBoundary,
+  type LlmConnection,
+  type SessionEvent,
+  type SessionHeader,
+} from '@maka/core';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
+  it('persists a boundary-blocked Client Capability without an orphan response', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-client-capability-reject-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      let implementationCalls = 0;
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: store,
+      });
+      const published: SessionEvent[] = [];
+      const result = await runtime.settleToolCall({
+        tool: {
+          name: 'mcp__desktop_computer_use__maka_computer',
+          description: 'Client-owned Computer Use',
+          parameters: {},
+          categoryHint: 'client_capability',
+          impl: async () => {
+            implementationCalls += 1;
+            return { ok: true };
+          },
+        },
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-computer-use',
+        input: { action: 'list_apps' },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
+        },
+      });
+
+      assert.equal(implementationCalls, 0);
+      assert.match(JSON.stringify(result.result), /require the Bypass execution boundary/u);
+      const toolEvents = published.filter(
+        (event) => event.type === 'tool_start' || event.type === 'tool_result',
+      );
+      assert.equal(toolEvents.length, 2);
+      assert.equal(
+        toolEvents.some((event) => event.operationId !== undefined),
+        false,
+      );
+
+      const memory = createSessionEventMapMemory();
+      for (const event of toolEvents) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          mapSessionEventToRuntimeEvent(event, invocationContext(), memory),
+        );
+      }
+      assert.deepEqual(
+        (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.content?.kind),
+        ['function_call', 'function_response'],
+      );
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists a preflight-rejected sibling beside an exclusive tool without an orphan response', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-exclusive-reject-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));

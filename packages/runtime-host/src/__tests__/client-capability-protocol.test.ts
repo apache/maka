@@ -281,6 +281,51 @@ describe('Client Capability protocol', () => {
         ]),
       ),
     );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('tuple_schema', 'move'),
+            tools: [
+              {
+                ...offer('tuple_schema', 'move').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    coordinate: {
+                      type: 'array',
+                      items: [{ type: 'integer' }, { type: 'integer' }],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    for (const items of [[], [{ type: 'integer' }, 'not-a-schema']]) {
+      assert.throws(
+        () =>
+          decodeClientFrame(
+            replaceFrame([
+              {
+                ...offer('invalid_tuple_schema', 'move'),
+                tools: [
+                  {
+                    ...offer('invalid_tuple_schema', 'move').tools[0],
+                    inputSchema: {
+                      type: 'object',
+                      properties: { coordinate: { type: 'array', items } },
+                    },
+                  },
+                ],
+              },
+            ]),
+          ),
+        (error: unknown) => error instanceof RuntimeHostProtocolError,
+      );
+    }
     assert.throws(
       () =>
         decodeClientFrame({
