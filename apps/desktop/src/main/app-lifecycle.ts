@@ -2,11 +2,7 @@ import { app, nativeImage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setActiveProxy } from '@maka/runtime';
-import {
-  OPENCODE_FREE_DEFAULT_MODEL,
-  isHistoricalOpenCodeFreeSeed,
-  resolveBootstrapConnections,
-} from '@maka/core';
+import { resolveBootstrapConnections } from '@maka/core';
 import type {
   AgentGraphCoordinator,
   AgentGraphSupervisorWakeCoordinator,
@@ -214,16 +210,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
 
   async function ensureBootstrapConnection(): Promise<void> {
     await mkdir(workspaceRoot, { recursive: true });
-    const connections = await connectionStore.list();
-    const historicalFreeSeed = connections.find(isHistoricalOpenCodeFreeSeed);
-    if (historicalFreeSeed) {
-      await connectionStore.update(historicalFreeSeed.slug, {
-        defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
-        enabledModelIds: [OPENCODE_FREE_DEFAULT_MODEL],
-      });
-      emitConnectionListChanged();
-    }
-    if (connections.length > 0) return;
+    if ((await connectionStore.list()).length > 0) return;
 
     // opencode-free is seeded unconditionally so a fresh install is usable with
     // zero credentials; env-keyed providers layer on top and take the default

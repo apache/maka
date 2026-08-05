@@ -30,6 +30,10 @@ import {
 
 const CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
+export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
+  readonly timeoutMs?: number;
+}
+
 /**
  * Prefer an explicit model, then a still-live configured model. Legacy
  * connections without a discovered inventory keep the historical
@@ -66,11 +70,18 @@ export async function testConnection(
   connection: LlmConnection,
   apiKey: string,
   model?: string,
-  options: ConnectionEffectFetchOptions = {},
+  options: ConnectionTestOptions = {},
 ): Promise<ConnectionTestResult> {
   const t0 = Date.now();
+  const configuredTimeoutMs = options.timeoutMs;
+  const timeoutMs =
+    typeof configuredTimeoutMs === 'number' &&
+    Number.isFinite(configuredTimeoutMs) &&
+    configuredTimeoutMs > 0
+      ? Math.floor(configuredTimeoutMs)
+      : CONNECTION_TEST_TIMEOUT_MS;
   try {
-    return await testConnectionStrict(connection, apiKey, model, options.fetch, t0);
+    return await testConnectionStrict(connection, apiKey, model, options.fetch, t0, timeoutMs);
   } catch (error) {
     return connectionTestFailure(error, t0, true);
   }
@@ -115,6 +126,7 @@ async function testConnectionStrict(
   model: string | undefined,
   fetchFn: ConnectionEffectFetch | undefined,
   t0: number,
+  timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
@@ -136,7 +148,7 @@ async function testConnectionStrict(
     let lastFailure: ConnectionTestResult | undefined;
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
-      const remainingMs = CONNECTION_TEST_TIMEOUT_MS - (Date.now() - t0);
+      const remainingMs = timeoutMs - (Date.now() - t0);
       if (remainingMs <= 0) break;
       const remainingCandidates = candidates.length - index;
       const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
@@ -165,7 +177,7 @@ async function testConnectionStrict(
     );
   }
 
-  return await testConnectionModel(connection, secret, testModel, fetchFn, t0);
+  return await testConnectionModel(connection, secret, testModel, fetchFn, t0, timeoutMs);
 }
 
 async function testConnectionModel(
@@ -380,7 +392,15 @@ async function probeOpenAI(
 function isOpenAIChatCompletion(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const choices = (value as { choices?: unknown }).choices;
-  return Array.isArray(choices) && choices.length > 0;
+  return (
+    Array.isArray(choices) &&
+    choices.some((choice) => {
+      if (!choice || typeof choice !== 'object') return false;
+      const message = (choice as { message?: unknown }).message;
+      if (!message || typeof message !== 'object') return false;
+      return typeof (message as { content?: unknown }).content === 'string';
+    })
+  );
 }
 
 async function probeGoogle(

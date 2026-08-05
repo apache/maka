@@ -13,10 +13,9 @@
  * prior env-bootstrap precedence (Anthropic before OpenAI).
  */
 
-import type { LlmConnection, ProviderType } from './llm-connections.js';
+import type { ProviderType } from './llm-connections.js';
 
 export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-const HISTORICAL_OPENCODE_FREE_DEFAULT_MODEL = 'big-pickle';
 
 export interface BootstrapConnectionSeed {
   readonly slug: string;
@@ -37,42 +36,6 @@ const OPENCODE_FREE_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   providerType: 'opencode-free',
   defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
 };
-
-/**
- * Recognize the exact connection shape written by the historical bootstrap.
- * Anything the user customized (including its name or model inventory) is
- * deliberately excluded from this one-time repair.
- */
-export function isHistoricalOpenCodeFreeSeed(
-  connection: Pick<
-    LlmConnection,
-    'slug' | 'name' | 'providerType' | 'baseUrl' | 'defaultModel' | 'enabledModelIds' | 'models'
-  >,
-): boolean {
-  return (
-    connection.slug === 'opencode-free' &&
-    connection.name === 'OpenCode Free' &&
-    connection.providerType === 'opencode-free' &&
-    !connection.baseUrl &&
-    connection.defaultModel === HISTORICAL_OPENCODE_FREE_DEFAULT_MODEL &&
-    connection.enabledModelIds?.length === 1 &&
-    connection.enabledModelIds[0] === HISTORICAL_OPENCODE_FREE_DEFAULT_MODEL &&
-    connection.models === undefined
-  );
-}
-
-/** Whether a connection still represents Maka's single-model managed seed. */
-export function isManagedOpenCodeFreeSeed(connection: LlmConnection): boolean {
-  return (
-    connection.slug === 'opencode-free' &&
-    connection.name === 'OpenCode Free' &&
-    connection.providerType === 'opencode-free' &&
-    !connection.baseUrl &&
-    connection.models === undefined &&
-    connection.enabledModelIds?.length === 1 &&
-    connection.enabledModelIds[0] === connection.defaultModel
-  );
-}
 
 const ANTHROPIC_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   slug: 'env-anthropic',
