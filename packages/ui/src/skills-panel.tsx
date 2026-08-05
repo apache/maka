@@ -509,7 +509,7 @@ export function SkillsModuleMain(props: {
             updatePreview={updatePreview && updatePreview.skill.id === selectedSkill.id ? updatePreview : null}
             onUse={props.onUseSkill ? () => props.onUseSkill?.(selectedSkill.id, selectedSkill.name) : undefined}
             onSetEnabled={props.onSetSkillEnabled
-              ? (enabled) => void runSkillAction(`runtime:set:${selectedSkill.id}`, () => props.onSetSkillEnabled?.(selectedSkill.id, enabled))
+              ? (enabled) => void runSkillAction(`runtime:set:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillEnabled?.(selectedSkill.ref ?? selectedSkill.id, enabled))
               : undefined}
             onTogglePinned={props.onSetSkillPinned
               ? () => void runSkillAction(`runtime:pin:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillPinned?.(selectedSkill.ref ?? selectedSkill.id, !selectedSkill.pinned))

@@ -605,6 +605,7 @@ function ModuleSurface(props: {
 function ExtensionsSkillsSurface(props: {
   skills?: SkillEntry[];
   bundledSkillCatalog?: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']>;
+  onSetSkillEnabled?: ComponentProps<typeof SkillsPage>['onSetSkillEnabled'];
   onUpdateManagedSkill?: ComponentProps<typeof SkillsPage>['onUpdateManagedSkill'];
 }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.extensions;
@@ -630,7 +631,7 @@ function ExtensionsSkillsSurface(props: {
           skillId === UPDATE_AVAILABLE_PREVIEW.skill.id ? UPDATE_AVAILABLE_PREVIEW : null
         )}
         onUpdateManagedSkill={props.onUpdateManagedSkill ?? (async () => true)}
-        onSetSkillEnabled={noop}
+        onSetSkillEnabled={props.onSetSkillEnabled ?? noop}
         onSetSkillPinned={noop}
         onDeleteSkill={noop}
       />
@@ -816,7 +817,20 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
 // inspector where every per-skill control now lives. Wide only: below 1024px
 // the page trades the panel for a dialog.
 export const ExtensionsSkillsInspector: Story = {
-  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  render: function Render() {
+    const [enabledInput, setEnabledInput] = useState<unknown>(null);
+    return (
+      <>
+        <ExtensionsSkillsSurface
+          skills={INSTALLED_SKILLS}
+          onSetSkillEnabled={(skillId, enabled) => setEnabledInput({ skillId, enabled })}
+        />
+        <output data-testid="skills-enabled-input" hidden>
+          {enabledInput ? JSON.stringify(enabledInput) : ''}
+        </output>
+      </>
+    );
+  },
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(
       canvasElement,
@@ -825,6 +839,24 @@ export const ExtensionsSkillsInspector: Story = {
     row.click();
     await waitForStoryText(canvasElement, '固定到技能上下文');
     await waitForStoryText(canvasElement, '声明工具');
+
+    // The enable toggle must address the skill by its scope-qualified ref —
+    // the same addressing pin/open/delete use — because an id can name more
+    // than one skill across user/project/workspace scopes.
+    const enableSwitch = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[role="switch"]',
+    );
+    enableSwitch.click();
+    const enabledOutput = await waitForStorySelector<HTMLOutputElement>(
+      canvasElement,
+      '[data-testid="skills-enabled-input"]',
+    );
+    await waitForStoryText(enabledOutput, 'workspace:maka:skill-git-flow');
+    await expect(JSON.parse(enabledOutput.textContent ?? '')).toEqual({
+      skillId: 'workspace:maka:skill-git-flow',
+      enabled: false,
+    });
 
     // The inspector's resize handle carries an absolutely positioned hit
     // strip; a vendor translate bug once shifted it half its height upward,
