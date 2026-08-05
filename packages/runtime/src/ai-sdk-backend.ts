@@ -68,6 +68,10 @@ import {
 } from '@maka/core/orchestration';
 import type { PlanToolResult } from './plan-tools.js';
 import {
+  bindToolResultArchiveDecoder,
+  type ToolResultArchiveCapability,
+} from './tool-result-archive-capability.js';
+import {
   YIELD_AGENT_GRAPH_TOOL_NAME,
   type YieldAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';
@@ -602,6 +606,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * the current model request only.
    */
   readToolResultArchive?: ToolResultArchiveReader;
+  /**
+   * The whole tool-result archive authority (#2026): writer, replay reader,
+   * ref reader, and the `ArchiveRead` decoder the pruned placeholder names.
+   * Absent means this session archives nothing, which is a valid state.
+   */
+  toolResultArchive?: ToolResultArchiveCapability;
 }
 
 export interface SystemPromptContext {
@@ -799,7 +809,9 @@ export class AiSdkBackend implements AgentBackend {
         this.appendTurnTailPrompt(content, turnTailPrompt),
     });
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
-      input.tools,
+      // The archive decoder is a runtime protocol tool, not a host binding:
+      // this session's placeholders name it, so this session advertises it.
+      bindToolResultArchiveDecoder(input.tools, input.toolResultArchive),
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
