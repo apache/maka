@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry, SessionManager } from '@maka/runtime';
-import type { SessionEvent } from '@maka/core';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -31,17 +30,7 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
   });
   let typingAttempts = 0;
   const replies: string[] = [];
-  const runtime = {
-    async createSession() {
-      return { id: 'bot-session' };
-    },
-    sendMessage() {
-      return (async function* (): AsyncIterable<SessionEvent> {})();
-    },
-  } as unknown as SessionManager;
   const service = createBotIncomingMainService({
-    runtime,
-    createSession: (input) => runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
     botRegistry: {
       async sendMessage(_platform: string, _chatId: string, text: string) {
         replies.push(text);
@@ -52,22 +41,17 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
         throw new Error('typing unavailable');
       },
     } as unknown as BotRegistry,
-    getDefaultConnectionSlug: async () => 'provider',
-    getReadyConnection: async () => ({ connection: { slug: 'provider' }, model: 'model' }),
-    readSessionHeader: async () => ({ permissionMode: 'explore', isArchived: false, status: 'active' }),
-    ensureSessionCanSend: async () => {},
-    emitSessionsChanged() {},
-    runAgentTurn: async ({ turnId, onEvent }) => {
-      await turnReleased;
-      onEvent({
-        type: 'text_complete',
-        id: 'text',
-        turnId,
-        ts: Date.now(),
-        messageId: 'assistant',
-        text: 'Bot reply',
-      });
-      return { outcome: { kind: 'completed', turnId } } as never;
+    sessions: {
+      async createSession() {
+        return 'bot-session';
+      },
+      async prepareSession() {
+        return 'ready';
+      },
+      async runTurn() {
+        await turnReleased;
+        return { kind: 'completed', text: 'Bot reply' };
+      },
     },
   });
 

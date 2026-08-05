@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { BotIncomingMessage, BotRegistry, SessionManager } from '@maka/runtime';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { createEmbeddedBotSessionAdapter } from '../embedded-bot-session-adapter.js';
 
 describe('bot incoming new-session cwd', () => {
   it('leaves the cwd to the shared desktop session resolver', async () => {
@@ -11,14 +12,6 @@ describe('bot incoming new-session cwd', () => {
       resolveCreated = resolve;
     });
     const service = createBotIncomingMainService({
-      // createSession captures the cwd it was given, signals the test, then
-      // throws to short-circuit before the streaming / typing path runs.
-      runtime: {} as SessionManager,
-      async createSession(input) {
-        capturedCwd = input.cwd;
-        resolveCreated();
-        throw new Error('__short_circuit_after_create__');
-      },
       botRegistry: {
         async sendMessage() {},
         async sendTypingIndicator() {
@@ -28,14 +21,28 @@ describe('bot incoming new-session cwd', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      getDefaultConnectionSlug: async () => 'slug',
-      getReadyConnection: async () => ({ connection: { slug: 'slug' }, model: 'm' }),
-      readSessionHeader: async () => ({ permissionMode: 'ask', isArchived: false, status: 'active' }),
-      ensureSessionCanSend: async () => {},
-      emitSessionsChanged() {},
-      async runAgentTurn() {
-        throw new Error('runAgentTurn must not be reached');
-      },
+      sessions: createEmbeddedBotSessionAdapter({
+        runtime: {} as SessionManager,
+        // createSession captures the cwd it was given, signals the test, then
+        // throws to short-circuit before the streaming / typing path runs.
+        async createSession(input) {
+          capturedCwd = input.cwd;
+          resolveCreated();
+          throw new Error('__short_circuit_after_create__');
+        },
+        getDefaultConnectionSlug: async () => 'slug',
+        getReadyConnection: async () => ({ connection: { slug: 'slug' }, model: 'm' }),
+        readSessionHeader: async () => ({
+          permissionMode: 'ask',
+          isArchived: false,
+          status: 'active',
+        }),
+        ensureSessionCanSend: async () => {},
+        emitSessionsChanged() {},
+        async runAgentTurn() {
+          throw new Error('runAgentTurn must not be reached');
+        },
+      }),
     });
 
     await service.handleBotIncomingMessage({
@@ -53,7 +60,9 @@ describe('bot incoming new-session cwd', () => {
     // for createSession to actually be invoked (or time out).
     await Promise.race([
       created,
-      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('createSession was not called')), 1000)),
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('createSession was not called')), 1000),
+      ),
     ]);
 
     assert.equal(capturedCwd, undefined);

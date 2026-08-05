@@ -104,6 +104,7 @@ import { createMainWindowController } from './main-window.js';
 import { createDailyReviewMainService } from './daily-review-main.js';
 import { createPlanReminderMainService } from './plan-reminders-main.js';
 import { createBotIncomingMainService } from './bot-incoming-main.js';
+import { createEmbeddedBotSessionAdapter } from './embedded-bot-session-adapter.js';
 import { createSubscriptionModelFetch } from './subscription-model-fetch.js';
 import { createSystemPromptMainService } from './system-prompt-main.js';
 import { createMainTaskLedgerWiring } from './task-ledger-wiring.js';
@@ -1070,24 +1071,27 @@ const dailyReview = createDailyReviewMainService({
   buildSubscriptionModelFetch,
 });
 botIncoming = createBotIncomingMainService({
-  runtime,
-  createSession: createDesktopSession,
   botRegistry,
-  getDefaultConnectionSlug: () => connectionStore.getDefault(),
-  getReadyConnection,
-  readSessionHeader: async (sessionId) => {
-    try {
-      return await store.readHeader(sessionId);
-    } catch (error) {
-      throw sessionLifecycleErrorFromReadFailure(error) ?? error;
-    }
-  },
-  ensureSessionCanSend,
-  emitSessionsChanged,
-  runAgentTurn: ({ sessionId, iterator, turnId, onEvent }) => streamEvents(sessionId, iterator, {
-    turnId,
-    goalBoundary: 'external',
-    observeEvent: onEvent,
+  sessions: createEmbeddedBotSessionAdapter({
+    runtime,
+    createSession: createDesktopSession,
+    getDefaultConnectionSlug: () => connectionStore.getDefault(),
+    getReadyConnection,
+    readSessionHeader: async (sessionId) => {
+      try {
+        return await store.readHeader(sessionId);
+      } catch (error) {
+        throw sessionLifecycleErrorFromReadFailure(error) ?? error;
+      }
+    },
+    ensureSessionCanSend,
+    emitSessionsChanged,
+    runAgentTurn: ({ sessionId, iterator, turnId, onEvent }) =>
+      streamEvents(sessionId, iterator, {
+        turnId,
+        goalBoundary: 'external',
+        observeEvent: onEvent,
+      }),
   }),
 });
 
