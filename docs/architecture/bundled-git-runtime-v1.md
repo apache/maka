@@ -62,6 +62,15 @@ shell environment into this map. On Windows, the MinGit DLL/helper directories a
 the current working directory is the Maka-owned home rather than the source checkout or application
 directory.
 
+The execution profile is also injected at command priority and persisted on Maka-owned repositories:
+`core.hooksPath` points at the owned empty hooks directory, credential helpers and interactive prompts
+are disabled, `core.sshCommand` is empty, and `protocol.allow=never` prevents transport activation in
+the current local-only workspace protocol. Operation-scoped environment values are merged before the
+hermetic profile, so they cannot override its HOME, PATH, config, or prompt fences. Source repository
+configuration is never copied into the independent managed repository; unsupported indirection such as
+includes, alternates, replace refs, partial-clone state, and executable fsmonitor configuration is
+rejected before baseline import.
+
 Production never resolves Git through `node_modules`. Dugite is the build-time supplier; Electron copies
 the complete extracted distribution to `resources/git`, and Runtime Host resolves only that signed
 application resource root. Storage receives a narrow verified-runtime input and has no dependency on the
@@ -95,6 +104,16 @@ A future post-sign runtime-tree/Merkle manifest must be generated and verified i
 pipeline, not added as an ordinary prepare-time hash. Until then, Maka does not claim per-file integrity
 for every helper in the extracted tree.
 
+That limitation is deliberate but security-relevant: v1 detects entry-binary replacement before every
+Git process, while helper integrity relies on the authenticated upstream archive plus the packaged
+application boundary. Closing it requires a dedicated publication slice that observes the final signed
+helper bytes at the correct signing phase, binds that inventory into the outer application signature,
+and verifies the inventory at managed-operation admission. Hashing the pre-sign extraction here would
+be incorrect. The remaining verify-to-spawn window cannot be eliminated portably by a path-based handle;
+the current threat model relies on packaged resources not being writable by the managed workspace and
+on platform publisher authenticity. macOS supplies that authenticity today; Windows Authenticode is a
+separate release-security prerequisite and is not synthesized by `bundled-git.json`.
+
 ## 4. Failure states and rollback
 
 Stable runtime failure classes are:
@@ -124,6 +143,7 @@ managed-workspace artifact protocol and its crash tests.
 - strict manifest happy path;
 - platform/architecture mismatch;
 - executable tampering;
+- source-repository config and environment poisoning cannot override the managed execution profile;
 - missing manifest with a system Git present (must still fail);
 - path escape and symlink rejection;
 - build preparation from the exact dugite platform record;

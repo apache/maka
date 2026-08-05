@@ -1253,8 +1253,10 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       ['core.autocrlf', 'false'],
       ['core.safecrlf', 'true'],
       ['core.hooksPath', normalize(hooksPath)],
+      ['core.sshCommand', ''],
       ['credential.helper', ''],
       ['credential.interactive', 'never'],
+      ['protocol.allow', 'never'],
       ['gc.auto', '0'],
     ];
     for (const [key, value] of entries) {
@@ -1659,7 +1661,9 @@ class VerifiedGitRuntime {
         [...fixedGitArguments(hooksPath), ...args],
         {
           cwd: homePath ?? dirname(runtime.executablePath),
-          env: { ...env, ...extraEnv },
+          // Operation-scoped values (currently only deterministic commit
+          // identity) cannot override the hermetic Git execution profile.
+          env: { ...extraEnv, ...env },
           encoding: 'utf8',
           maxBuffer: GIT_MAX_BUFFER_BYTES,
           timeout: GIT_TIMEOUT_MS,
@@ -1690,7 +1694,7 @@ class VerifiedGitRuntime {
       [...fixedGitArguments(hooksPath), ...args],
       {
         cwd: homePath ?? dirname(runtime.executablePath),
-        env: { ...env, ...extraEnv },
+        env: { ...extraEnv, ...env },
         encoding: 'buffer',
         maxBuffer: GIT_MAX_BUFFER_BYTES,
         timeout: GIT_TIMEOUT_MS,
@@ -2869,6 +2873,10 @@ function fixedGitArguments(hooksPath: string): string[] {
     'credential.helper=',
     '-c',
     'credential.interactive=never',
+    '-c',
+    'core.sshCommand=',
+    '-c',
+    'protocol.allow=never',
     '-c',
     'gc.auto=0',
     '-c',
