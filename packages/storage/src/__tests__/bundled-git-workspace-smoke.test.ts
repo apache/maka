@@ -51,6 +51,7 @@ test('opens a managed workspace using only the installed dugite-native runtime',
       gitRuntime: {
         executablePath,
         expectedSha256: await sha256File(executablePath),
+        runtimeIdentitySha256: `sha256:${'1'.repeat(64)}`,
         distribution: { kind: 'dugite_native_v1', rootPath: gitRoot },
       },
     });
@@ -66,6 +67,7 @@ test('opens a managed workspace using only the installed dugite-native runtime',
       await readFile(join(binding.worktreePath, 'README.md'), 'utf8'),
       'bundled Git runtime\n',
     );
+    assert.equal(binding.gitRuntimeSha256, `sha256:${'1'.repeat(64)}`);
   } finally {
     await Promise.all(
       [sourceRoot, storageRoot, homePath].map((path) => rm(path, { recursive: true, force: true })),

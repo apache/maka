@@ -17,6 +17,8 @@ test('resolves the packaged Git executable from a strict platform manifest', asy
       {
         executablePath: fixture.executablePath,
         expectedSha256: 'sha256:f391158ea86e1e56b2b0c13583821c2b752c2abccd91496d91e025d54ac616e5',
+        runtimeIdentitySha256:
+          'sha256:926a45a8cd95c8ae25683905dc9171c54a9e31ffe362875c8f8b7f6e67ed522f',
         distribution: {
           kind: 'dugite_native_v1',
           rootPath: join(fixture.root, 'git'),
@@ -41,6 +43,29 @@ test('fails closed when the bundled Git platform does not match the host', async
     );
   } finally {
     await fixture.remove();
+  }
+});
+
+test('binds runtime identity to the complete source archive provenance', async () => {
+  const first = await createFixture();
+  const second = await createFixture({
+    sourceArchiveSha256: `sha256:${'2'.repeat(64)}`,
+  });
+  try {
+    const firstRuntime = await resolveBundledGitRuntime({
+      resourcesRoot: first.root,
+      platform: 'win32',
+      arch: 'x64',
+    });
+    const secondRuntime = await resolveBundledGitRuntime({
+      resourcesRoot: second.root,
+      platform: 'win32',
+      arch: 'x64',
+    });
+    assert.equal(firstRuntime.expectedSha256, secondRuntime.expectedSha256);
+    assert.notEqual(firstRuntime.runtimeIdentitySha256, secondRuntime.runtimeIdentitySha256);
+  } finally {
+    await Promise.all([first.remove(), second.remove()]);
   }
 });
 

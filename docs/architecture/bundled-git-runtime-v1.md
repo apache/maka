@@ -21,6 +21,16 @@ Ownership is split deliberately:
 - storage re-hashes the exact executable before every Git process and constructs the `dugite-native`
   helper environment without inheriting a system-Git `PATH`.
 
+Two digests intentionally serve different purposes:
+
+- `executableSha256` is rechecked immediately before every Git invocation. It proves which entry binary
+  storage is about to execute;
+- `runtimeIdentitySha256` is a canonical digest of the declared distribution identity: manifest
+  protocol, provider, Git version, platform, architecture, executable location and digest, and the
+  upstream archive digest. Managed repository, epoch, and worktree-binding artifacts persist this value
+  as `gitRuntimeSha256`, so changing any of that provenance creates an explicit epoch incompatibility
+  instead of silently reinterpreting an existing workspace.
+
 The manifest is evidence about one packaged distribution, not a mutable preference and not a system Git
 probe result.
 
@@ -35,6 +45,16 @@ The packaged runtime includes the complete `dugite-native` directory rather than
 Git subprograms, templates, MinGit libraries, certificates, and platform support files remain relative to
 the same root. Runtime environment variables (`GIT_EXEC_PATH`, templates, Linux `PREFIX`/CA bundle, and
 Windows MinGit paths) are derived only from that declared root.
+
+Production never resolves Git through `node_modules`. Dugite is the build-time supplier; Electron copies
+the complete extracted distribution to `resources/git`, and Runtime Host resolves only that signed
+application resource root. Storage receives a narrow verified-runtime input and has no dependency on the
+dugite npm package or its manifest format.
+
+`VerifiedGitRuntime` is currently the Maka-owned adapter boundary between managed-workspace operations
+and the distribution. A broader public `MakaGitRuntime` interface is intentionally deferred until a
+second production implementation exists; introducing a swappable system-Git or libgit2 abstraction now
+would create an unsupported execution mode rather than strengthen the present invariant.
 
 ## 3. Ordering and atomic boundary
 
@@ -51,6 +71,13 @@ Publication ordering is:
 There is no cross-filesystem transaction spanning npm download and application packaging. A partially
 prepared or mixed artifact is therefore not repaired in place: no `distributionReady: true` manifest is
 accepted unless all build checks have completed, and runtime fails closed on any mismatch.
+
+The v1 identity binds the SHA-256-verified upstream archive rather than hashing every extracted file at
+startup. This avoids an important signing ambiguity: macOS code signing may legitimately rewrite Mach-O
+bytes after the prepare step, so a pre-sign tree digest could make the signed application reject itself.
+A future post-sign runtime-tree/Merkle manifest must be generated and verified inside the release-signing
+pipeline, not added as an ordinary prepare-time hash. Until then, Maka does not claim per-file integrity
+for every helper in the extracted tree.
 
 ## 4. Failure states and rollback
 
@@ -88,5 +115,23 @@ managed-workspace artifact protocol and its crash tests.
 - packaged app contains the Git runtime, manifest, and license notices;
 - production-shaped managed workspace open using the packaged runtime (required before broad enablement).
 
+The production-shaped smoke exercises the real commands required by the current owner, including
+repository creation, ref updates, tree/index operations, and worktree lifecycle. This is the capability
+gate. Startup `--help` probes are deliberately not used: they are weaker than executing the actual
+workflow, can invoke pagers or platform-specific help behavior, and would duplicate checks before every
+application launch. Individual Git failures remain fail-closed at the operation boundary.
+
 The last item is deliberately a release gate rather than evidence that managed execution is already the
 default. Desktop/CLI activation remains a later, explicit product decision.
+
+## 7. Licensing and size policy
+
+The full `dugite-native` directory is packaged, including its component license directories, Git's
+`LICENSE.txt`, and Maka's Git/dugite notices. A generated component inventory is useful release
+hardening, but it is not represented as a runtime-authority guarantee in v1 and should be implemented as
+a dedicated supply-chain slice.
+
+The first release keeps the full upstream distribution. Pruning shells, Perl, GUI programs, docs, or
+helpers is deferred until Maka has an exact command/helper allowlist and the pruned artifact passes the
+same production-shaped release smoke on Windows, macOS, and Linux. Package size alone is not sufficient
+evidence that a helper is safe to remove.

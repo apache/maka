@@ -88,6 +88,7 @@ export async function resolveBundledGitRuntime(
     return {
       executablePath: canonicalExecutable,
       expectedSha256: manifest.executableSha256,
+      runtimeIdentitySha256: bundledGitRuntimeIdentity(manifest),
       distribution: {
         kind: 'dugite_native_v1',
         rootPath: normalize(await realpath(join(resourcesRoot, 'git'))),
@@ -101,6 +102,21 @@ export async function resolveBundledGitRuntime(
       { cause: error },
     );
   }
+}
+
+function bundledGitRuntimeIdentity(manifest: BundledGitManifestV1): `sha256:${string}` {
+  const identity = JSON.stringify({
+    protocol: 'maka_git_runtime_identity_v1',
+    manifestProtocol: manifest.protocol,
+    provider: manifest.provider,
+    gitVersion: manifest.gitVersion,
+    platform: manifest.platform,
+    arch: manifest.arch,
+    executableRelativePath: manifest.executableRelativePath,
+    executableSha256: manifest.executableSha256,
+    sourceArchiveSha256: manifest.sourceArchiveSha256,
+  });
+  return `sha256:${createHash('sha256').update(identity).digest('hex')}`;
 }
 
 interface BundledGitManifestV1 {

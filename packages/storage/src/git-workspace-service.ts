@@ -141,14 +141,26 @@ export class GitWorkspaceServiceError extends Error {
   }
 }
 
-export interface VerifiedGitRuntimeInput {
+interface GitRuntimeExecutableIdentity {
   readonly executablePath: string;
   readonly expectedSha256: `sha256:${string}`;
-  readonly distribution?: {
-    readonly kind: 'dugite_native_v1';
-    readonly rootPath: string;
-  };
 }
+
+export type VerifiedGitRuntimeInput = GitRuntimeExecutableIdentity &
+  (
+    | {
+        readonly distribution?: undefined;
+        readonly runtimeIdentitySha256?: undefined;
+      }
+    | {
+        readonly distribution: {
+          readonly kind: 'dugite_native_v1';
+          readonly rootPath: string;
+        };
+        /** Stable identity of the complete declared distribution. */
+        readonly runtimeIdentitySha256: `sha256:${string}`;
+      }
+  );
 
 export interface CreateGitWorkspaceServiceInput {
   readonly storageRoot: string;
@@ -1596,7 +1608,11 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
 
 class VerifiedGitRuntime {
   constructor(private readonly input: VerifiedGitRuntimeInput) {
-    if (!isAbsolute(input.executablePath) || !SHA256_PATTERN.test(input.expectedSha256)) {
+    if (
+      !isAbsolute(input.executablePath) ||
+      !SHA256_PATTERN.test(input.expectedSha256) ||
+      (input.distribution !== undefined && !SHA256_PATTERN.test(input.runtimeIdentitySha256 ?? ''))
+    ) {
       throw new GitWorkspaceServiceError(
         'git_runtime_unavailable',
         'Managed workspace requires an absolute Git executable and SHA-256 digest',
@@ -1781,14 +1797,17 @@ class VerifiedGitRuntime {
       const executablePath = normalize(await realpath(this.input.executablePath));
       const info = await stat(executablePath);
       if (!info.isFile()) throw new Error('not a regular file');
-      const digest = await sha256File(executablePath);
-      if (digest !== this.input.expectedSha256) {
+      const executableDigest = await sha256File(executablePath);
+      if (executableDigest !== this.input.expectedSha256) {
         throw new GitWorkspaceServiceError(
           'git_runtime_integrity_mismatch',
-          `Git runtime digest mismatch: ${executablePath}`,
+          `Git executable digest mismatch: ${executablePath}`,
         );
       }
-      return { executablePath, digest };
+      return {
+        executablePath,
+        digest: this.input.runtimeIdentitySha256 ?? executableDigest,
+      };
     } catch (error) {
       if (error instanceof GitWorkspaceServiceError) throw error;
       throw new GitWorkspaceServiceError(
