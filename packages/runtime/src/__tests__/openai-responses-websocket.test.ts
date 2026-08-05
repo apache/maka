@@ -94,6 +94,122 @@ describe('OpenAI Responses WebSocket transport', () => {
     assert.equal(state.canRecordSemantic('turn-1', 'resp-any'), false);
   });
 
+  test('skips WebSocket setup across turns during the failure cooldown and retries after it', async () => {
+    let now = 1_000;
+    let upgrades = 0;
+    const server = createServer();
+    server.on('upgrade', (_request, socket) => {
+      upgrades += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    disposers.push(
+      async () =>
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+    );
+
+    const httpBodies: Record<string, unknown>[] = [];
+    const state = createOpenAiResponsesTransportState({
+      webSocketUrl: `ws://127.0.0.1:${address.port}/v1/responses`,
+      failureCooldownMs: 1_000,
+      now: () => now,
+    });
+    disposers.push(async () => state.close());
+    const fetch = state.wrapFetch(async (_input, init) => {
+      httpBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response('http', { status: 200 });
+    });
+
+    const fullBody = { model: 'gpt-test', input: [{ role: 'user' }] };
+    assert.equal(
+      await (
+        await fetch('https://api.openai.com/v1/responses', request('turn-1', fullBody))
+      ).text(),
+      'http',
+    );
+    state.endLane('turn-1');
+    assert.equal(
+      await (
+        await fetch('https://api.openai.com/v1/responses', request('turn-2', fullBody))
+      ).text(),
+      'http',
+    );
+    assert.equal(upgrades, 1);
+
+    state.endLane('turn-2');
+    now += 1_001;
+    assert.equal(
+      await (
+        await fetch('https://api.openai.com/v1/responses', request('turn-3', fullBody))
+      ).text(),
+      'http',
+    );
+    assert.equal(upgrades, 2);
+    assert.equal(httpBodies.length, 3);
+  });
+
+  test('keeps a healthy lane socket active while the cooldown suppresses new connections', async () => {
+    let connectionIndex = 0;
+    let healthyLaneRequests = 0;
+    const server = await websocketServer((socket) => {
+      connectionIndex += 1;
+      const currentConnection = connectionIndex;
+      socket.on('message', () => {
+        if (currentConnection === 2) {
+          socket.terminate();
+          return;
+        }
+        healthyLaneRequests += 1;
+        socket.send(
+          JSON.stringify({
+            type: 'response.completed',
+            response: { id: `resp-${healthyLaneRequests}`, output: [] },
+          }),
+        );
+      });
+    });
+    const httpBodies: Record<string, unknown>[] = [];
+    const state = createOpenAiResponsesTransportState();
+    disposers.push(async () => state.close());
+    const fetch = state.wrapFetch(async (_input, init) => {
+      httpBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response('http', { status: 200 });
+    });
+
+    await consume(
+      await fetch(server.url, request('turn-1', { model: 'gpt-test', input: [{ role: 'user' }] })),
+    );
+    const failed = await fetch(
+      server.url,
+      request('turn-2', { model: 'gpt-test', input: [{ role: 'user' }] }),
+    );
+    await assert.rejects(() => consume(failed), /closed before completion/);
+
+    assert.equal(
+      await (
+        await fetch(server.url, request('turn-3', { model: 'gpt-test', input: [{ role: 'user' }] }))
+      ).text(),
+      'http',
+    );
+    await consume(
+      await fetch(
+        server.url,
+        request('turn-1', {
+          model: 'gpt-test',
+          input: [{ type: 'function_call_output', call_id: 'call-1', output: 'ok' }],
+          previous_response_id: 'resp-1',
+        }),
+      ),
+    );
+
+    assert.equal(server.connections(), 2);
+    assert.equal(healthyLaneRequests, 2);
+    assert.equal(httpBodies.length, 1);
+  });
+
   test('uses the HTTP/SOCKS proxy snapshot and honors the same bypass list', () => {
     const httpTransport = createProxiedFetchTransport({
       enabled: true,

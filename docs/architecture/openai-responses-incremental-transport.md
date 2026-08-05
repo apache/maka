@@ -30,8 +30,8 @@ Otherwise the adapter sends the complete request and starts a new continuation c
 | First request or message-prefix mismatch | Full request over WebSocket |
 | Request options/model/tools changed | Full request; replace the chain baseline |
 | Missing/stale response id | Clear the chain; Runtime retry starts from durable full history |
-| WebSocket connect failure | Full HTTP request; disable continuation for that turn |
-| Socket closes or stream fails | Clear the chain; normal Runtime retry starts from full history |
+| WebSocket connect failure | Full HTTP request; suppress new socket attempts for five minutes across turns |
+| Socket closes or stream fails | Clear the chain, start the retry cooldown, and let Runtime retry from full history |
 | Same turn attempts concurrent requests | Full HTTP request for the contender |
 | Abort/cancel | Close the socket and clear the chain |
 | Configured network proxy | WebSocket uses the same immutable proxy snapshot and bypass list |
@@ -44,6 +44,8 @@ Otherwise the adapter sends the complete request and starts a new continuation c
 - Exercise a local WebSocket server to verify connection reuse, `previous_response_id`, delta-only
   input, and SSE translation.
 - Verify WebSocket setup failure reconstructs and sends a complete HTTP request.
+- Verify the failure cooldown survives turn cleanup, expires deterministically, and does not evict
+  an already healthy concurrent lane.
 - Run Runtime typecheck and focused tests, then the repository validation appropriate to the diff.
 
 ## 5. Observability and rollout

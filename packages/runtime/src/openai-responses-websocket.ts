@@ -12,6 +12,7 @@ import type { OpenAiResponsesSemanticBaseline } from './openai-responses-continu
 export const OPENAI_RESPONSES_LANE_HEADER = 'x-maka-openai-responses-lane';
 const RESPONSES_WEBSOCKET_PROTOCOL = 'responses_websockets=2026-02-06';
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
 interface WireBaseline {
   fullBody: Record<string, unknown>;
@@ -30,10 +31,15 @@ interface LaneState {
 export interface OpenAiResponsesTransportOptions {
   webSocketUrl?: string;
   connectTimeoutMs?: number;
+  /** Suppress new socket attempts after a transport failure. Defaults to five minutes. */
+  failureCooldownMs?: number;
+  /** Injectable clock for deterministic cooldown tests. */
+  now?: () => number;
 }
 
 export class OpenAiResponsesTransportState {
   private readonly lanes = new Map<string, LaneState>();
+  private webSocketUnavailableUntil = 0;
 
   constructor(private readonly options: OpenAiResponsesTransportOptions = {}) {}
 
@@ -95,8 +101,13 @@ export class OpenAiResponsesTransportState {
       return failedStream('OpenAI Responses continuation state is unavailable');
     }
 
-    if (state.httpFallback || state.busy) {
+    // A failure on one concurrent lane should prevent new connection attempts,
+    // not evict another lane's already healthy socket.
+    const failureCooldownActive =
+      state.socket?.readyState !== WebSocket.OPEN && this.failureCooldownActive();
+    if (state.httpFallback || failureCooldownActive || state.busy) {
       state.semantic = undefined;
+      if (failureCooldownActive) state.httpFallback = true;
       return await httpFetch(input, withJsonBody(cleanInit, prepared.fullBody));
     }
 
@@ -118,6 +129,7 @@ export class OpenAiResponsesTransportState {
       terminate(state.socket);
       state.socket = undefined;
       if (isAbort(error, init?.signal)) throw error;
+      this.deferWebSocketRetry();
       return await httpFetch(input, withJsonBody(cleanInit, prepared.fullBody));
     }
 
@@ -143,11 +155,23 @@ export class OpenAiResponsesTransportState {
         state.busy = false;
         state.semantic = undefined;
         state.wire = undefined;
-        if (fallback) state.httpFallback = true;
+        if (fallback) {
+          state.httpFallback = true;
+          this.deferWebSocketRetry();
+        }
         terminate(state.socket);
         state.socket = undefined;
       },
     });
+  }
+
+  private failureCooldownActive(): boolean {
+    return this.webSocketUnavailableUntil > (this.options.now ?? Date.now)();
+  }
+
+  private deferWebSocketRetry(): void {
+    const cooldownMs = this.options.failureCooldownMs ?? DEFAULT_FAILURE_COOLDOWN_MS;
+    this.webSocketUnavailableUntil = (this.options.now ?? Date.now)() + Math.max(0, cooldownMs);
   }
 
   private async openSocketIfNeeded(
