@@ -77,11 +77,6 @@ export function buildMcpTools(
       categoryHint: options.categoryHint ?? 'network_send',
       ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
       parameters: jsonSchema(descriptor.inputSchema),
-      permissionArgs: (args) => ({
-        serverId: descriptor.serverId,
-        toolName: descriptor.name,
-        arguments: args,
-      }),
       impl: async (args: unknown, context) =>
         callTool(asArguments(args), {
           signal: context.abortSignal,

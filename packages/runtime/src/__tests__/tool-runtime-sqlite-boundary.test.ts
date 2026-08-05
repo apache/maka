@@ -12,6 +12,8 @@ import {
 } from '@maka/core';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { buildMcpTools } from '../mcp-tools.js';
 import type { InvocationContext } from '../invocation-context.js';
 import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
@@ -21,6 +23,29 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
       let implementationCalls = 0;
+      const [clientTool] = buildMcpTools(
+        {
+          tools: () => [
+            {
+              serverId: 'desktop_computer_use',
+              name: 'maka_computer',
+              description: 'Client-owned Computer Use',
+              inputSchema: {
+                type: 'object',
+                properties: { action: { const: 'list_apps' } },
+                required: ['action'],
+                additionalProperties: false,
+              },
+            },
+          ],
+          callTool: async () => {
+            implementationCalls += 1;
+            return { content: [{ type: 'text', text: 'ok' }] };
+          },
+        },
+        { categoryHint: 'client_capability', recoveryMode: 'outcome_unknown' },
+      );
+      assert.ok(clientTool);
       const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
@@ -37,16 +62,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
       });
       const published: SessionEvent[] = [];
       const result = await runtime.settleToolCall({
-        tool: {
-          name: 'mcp__desktop_computer_use__maka_computer',
-          description: 'Client-owned Computer Use',
-          parameters: {},
-          categoryHint: 'client_capability',
-          impl: async () => {
-            implementationCalls += 1;
-            return { ok: true };
-          },
-        },
+        tool: clientTool,
         turnId: 'turn-1',
         toolCallId: 'provider-call-computer-use',
         input: { action: 'list_apps' },
@@ -78,10 +94,17 @@ describe('ToolRuntime with real SQLite boundary', () => {
           mapSessionEventToRuntimeEvent(event, invocationContext(), memory),
         );
       }
+      const runtimeEvents = await store.readRuntimeEvents('session-1', 'run-1');
       assert.deepEqual(
-        (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.content?.kind),
+        runtimeEvents.map((event) => event.content?.kind),
         ['function_call', 'function_response'],
       );
+      const replayCall = buildRuntimeEventModelReplayPlan(runtimeEvents).items.find(
+        (item) => item.kind === 'tool_call',
+      );
+      assert.deepEqual(replayCall?.kind === 'tool_call' ? replayCall.input : undefined, {
+        action: 'list_apps',
+      });
     } finally {
       store.close();
       await rm(root, { recursive: true, force: true });
