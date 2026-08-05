@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import {
   RuntimeHostOperationError,
   type RuntimeHostConnection,
@@ -173,6 +174,63 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
           permissionMode: 'execute',
           collaborationMode: 'plan',
           orchestrationMode: 'default',
+        },
+      },
+    ],
+  );
+});
+
+test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
+  const initial = createDefaultRuntimePolicy();
+  const concurrent = {
+    ...initial,
+    personalization: {
+      ...initial.personalization,
+      assistantTone: 'Changed by another Client',
+    },
+  };
+  const { client, requests } = clientWithResponses([
+    { revision: 1, policy: initial },
+    { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 2 },
+    { revision: 2, policy: concurrent },
+    { kind: 'committed', revision: 3 },
+    {
+      revision: 3,
+      policy: {
+        ...concurrent,
+        personalization: {
+          ...concurrent.personalization,
+          displayName: 'Alice',
+        },
+      },
+    },
+  ]);
+
+  await client.updateRuntimePolicy((policy) => ({
+    kind: 'set_personalization',
+    value: { ...policy.personalization, displayName: 'Alice' },
+  }));
+
+  assert.deepEqual(
+    requests
+      .filter(({ operation }) => operation === 'runtime.policy.mutate')
+      .map(({ input }) => input),
+    [
+      {
+        expectedRevision: 1,
+        operation: {
+          kind: 'set_personalization',
+          value: { ...initial.personalization, displayName: 'Alice' },
+        },
+      },
+      {
+        expectedRevision: 2,
+        operation: {
+          kind: 'set_personalization',
+          value: {
+            ...concurrent.personalization,
+            displayName: 'Alice',
+          },
         },
       },
     ],

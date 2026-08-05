@@ -41,6 +41,7 @@ test('the opt-in Desktop boot cannot load an embedded Interactive owner', async 
   ];
   assert.deepEqual(forbidden.filter((path) => reached.has(normalize(path))), []);
   for (const required of [
+    'apps/desktop/src/main/desktop-shell-presentation.ts',
     'apps/desktop/src/main/runtime-host-account-connection.ts',
     'apps/desktop/src/main/runtime-host-github-copilot-ipc-main.ts',
     'apps/desktop/src/main/runtime-host-oauth-ipc-main.ts',

@@ -211,12 +211,11 @@ async function applyHostPatch(
   patch: UpdateAppSettingsInput,
 ): Promise<void> {
   if (patch.network?.proxy) {
-    const current = await client.queryRuntimePolicy();
     const proxy = patch.network.proxy;
-    await client.updateRuntimePolicy({
+    await client.updateRuntimePolicy((policy) => ({
       kind: "set_network_proxy",
-      value: { ...current.policy.networkProxy, ...withoutSecret(proxy) },
-    });
+      value: { ...policy.networkProxy, ...withoutSecret(proxy) },
+    }));
     if (proxy.authEnabled === false)
       await deleteCredential(client, PROXY_CREDENTIAL);
     else if (
@@ -232,19 +231,19 @@ async function applyHostPatch(
     patch.personalization?.displayName !== undefined ||
     patch.personalization?.assistantTone !== undefined
   ) {
-    const current = await client.queryRuntimePolicy();
-    await client.updateRuntimePolicy({
+    const personalization = patch.personalization;
+    await client.updateRuntimePolicy((policy) => ({
       kind: "set_personalization",
       value: {
-        ...current.policy.personalization,
-        ...(patch.personalization.displayName === undefined
+        ...policy.personalization,
+        ...(personalization.displayName === undefined
           ? {}
-          : { displayName: patch.personalization.displayName }),
-        ...(patch.personalization.assistantTone === undefined
+          : { displayName: personalization.displayName }),
+        ...(personalization.assistantTone === undefined
           ? {}
-          : { assistantTone: patch.personalization.assistantTone }),
+          : { assistantTone: personalization.assistantTone }),
       },
-    });
+    }));
   }
   if (patch.localMemory) {
     await mergePolicy(client, "memory", patch.localMemory, "set_memory");
@@ -268,20 +267,20 @@ async function applyHostPatch(
     );
   }
   if (patch.webSearch) {
-    const current = await client.queryRuntimePolicy();
-    await client.updateRuntimePolicy({
+    const webSearch = patch.webSearch;
+    await client.updateRuntimePolicy((policy) => ({
       kind: "set_web_search",
       value: {
-        ...current.policy.webSearch,
-        ...(patch.webSearch.enabled === undefined
+        ...policy.webSearch,
+        ...(webSearch.enabled === undefined
           ? {}
-          : { enabled: patch.webSearch.enabled }),
-        ...(patch.webSearch.defaultProvider === undefined
+          : { enabled: webSearch.enabled }),
+        ...(webSearch.defaultProvider === undefined
           ? {}
-          : { defaultProvider: patch.webSearch.defaultProvider }),
+          : { defaultProvider: webSearch.defaultProvider }),
       },
-    });
-    const apiKey = patch.webSearch.providers?.tavily?.apiKey;
+    }));
+    const apiKey = webSearch.providers?.tavily?.apiKey;
     if (apiKey !== undefined && apiKey !== SENSITIVE_PLACEHOLDER) {
       if (apiKey.length === 0)
         await deleteCredential(client, WEB_SEARCH_CREDENTIAL);
@@ -302,11 +301,12 @@ async function mergePolicy<
     | "set_privacy"
     | "set_chat_defaults",
 ): Promise<void> {
-  const current = await client.queryRuntimePolicy();
-  await client.updateRuntimePolicy({
-    kind,
-    value: { ...current.policy[key], ...patch },
-  } as Parameters<DesktopRuntimeHostClient["updateRuntimePolicy"]>[0]);
+  await client.updateRuntimePolicy(
+    ((policy) => ({
+      kind,
+      value: { ...policy[key], ...patch },
+    })) as Parameters<DesktopRuntimeHostClient["updateRuntimePolicy"]>[0],
+  );
 }
 
 async function setCredential(

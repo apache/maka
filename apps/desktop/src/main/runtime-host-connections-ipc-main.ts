@@ -58,7 +58,10 @@ export function registerRuntimeHostConnectionsIpc(
     const catalog = await snapshot();
     const connection = requireConnection(catalog, slug);
     if (!providerAuthRequiresSecret(connection.providerType)) return true;
-    return Boolean(await deps.client.queryCredential(connectionCredential(connection)));
+    return (
+      (await deps.client.queryCredential(connectionCredential(connection)))
+        ?.configured === true
+    );
   });
   deps.ipcMain.handle('connections:setDefault', async (_event, slug: unknown) => {
     const catalog = await snapshot();

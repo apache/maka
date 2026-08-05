@@ -4,7 +4,36 @@ import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   projectHostConnections,
   projectHostConnectionTest,
+  registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
+
+test('reports an existing but unconfigured credential as missing', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async () => catalog(),
+      queryCredential: async () => ({
+        configured: false,
+        locator: {
+          scope: 'connection',
+          connectionId: 'connection-1',
+          kind: 'api_key',
+        },
+      }),
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  assert.equal(
+    await handlers.get('connections:hasSecret')?.({}, 'openrouter'),
+    false,
+  );
+});
 
 test('projects the Host default target without inventing a second Connection authority', () => {
   const connections = projectHostConnections(catalog());

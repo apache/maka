@@ -142,6 +142,41 @@ test('a trusted composition can apply the Client Capability permission floor and
   });
 });
 
+test('binds each projected tool to the provider generation that advertised it', async () => {
+  let generation = 'old';
+  let dynamicCalls = 0;
+  const provider: McpToolProvider = {
+    tools: () => [descriptor('server', 'snapshot')],
+    bindTool: () => {
+      const boundGeneration = generation;
+      return async () => ({
+        content: [{ type: 'text', text: boundGeneration }],
+      });
+    },
+    callTool: async () => {
+      dynamicCalls += 1;
+      return { content: [{ type: 'text', text: generation }] };
+    },
+  };
+  const [tool] = buildMcpTools(provider);
+  generation = 'new';
+
+  const result = await tool?.impl(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    },
+  );
+
+  assert.deepEqual(result, { content: [{ type: 'text', text: 'old' }] });
+  assert.equal(dynamicCalls, 0);
+});
+
 test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () => {
   const first = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
   const second = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));

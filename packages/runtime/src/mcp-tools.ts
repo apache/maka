@@ -16,16 +16,22 @@ const TRUNCATION_MARKER = '\n…[truncated by Maka]';
 
 export interface McpToolProvider {
   tools(): readonly McpToolDescriptor[];
+  bindTool?(
+    serverId: string,
+    toolName: string,
+  ): (args: Record<string, unknown>, options: McpToolCallOptions) => Promise<McpCallResult>;
   callTool(
     serverId: string,
     toolName: string,
     args: Record<string, unknown>,
-    options: {
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      context: McpToolInvocationContext;
-    },
+    options: McpToolCallOptions,
   ): Promise<McpCallResult>;
+}
+
+export interface McpToolCallOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly context: McpToolInvocationContext;
 }
 
 export interface McpToolInvocationContext {
@@ -54,6 +60,10 @@ export function buildMcpTools(
       throw new Error(`MCP proxy tool name collision: ${name}`);
     }
     names.set(name, identity);
+    const callTool =
+      provider.bindTool?.(descriptor.serverId, descriptor.name) ??
+      ((args: Record<string, unknown>, callOptions: McpToolCallOptions) =>
+        provider.callTool(descriptor.serverId, descriptor.name, args, callOptions));
     return {
       name,
       description:
@@ -73,7 +83,7 @@ export function buildMcpTools(
         arguments: args,
       }),
       impl: async (args: unknown, context) =>
-        provider.callTool(descriptor.serverId, descriptor.name, asArguments(args), {
+        callTool(asArguments(args), {
           signal: context.abortSignal,
           timeoutMs: options.callTimeoutMs,
           context: {

@@ -1,6 +1,5 @@
-import { app, nativeImage } from 'electron';
+import { app } from 'electron';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { setActiveProxy } from '@maka/runtime';
 import {
   resolveBootstrapConnections,
@@ -42,8 +41,7 @@ import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import type { AppUpdateService } from './app-update-service.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
-import { installApplicationMenu } from './application-menu.js';
-import { resolveDockPresentation } from './dock-presentation.js';
+import { installDesktopShellPresentation } from './desktop-shell-presentation.js';
 import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 import { retireCursorSubscriptionCredentials } from './oauth/cursor-subscription-retirement.js';
 
@@ -260,21 +258,6 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   }
 
   app.whenReady().then(async () => {
-    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20) and
-    // PR-VISUAL-SMOKE-HEADLESS: see resolveDockPresentation for the rule.
-    const dockPresentation = resolveDockPresentation(process.platform, startHidden);
-    if (app.dock) {
-      if (dockPresentation === 'hide') {
-        app.dock.hide();
-      } else if (dockPresentation === 'icon') {
-        try {
-          const iconPath = join(import.meta.dirname, '..', '..', 'assets', 'icon.png');
-          app.dock.setIcon(nativeImage.createFromPath(iconPath));
-        } catch (error) {
-          console.error('[icon] failed to set dock icon:', error);
-        }
-      }
-    }
     updateService.start();
 
     // The renderer's first IPC calls (session enumeration, settings read,
@@ -297,19 +280,12 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // Menu commands route to the renderer through one typed channel when a
     // window exists, or re-create the window when there is none (quit-phase
     // no-op via the coordinator).
-    installApplicationMenu({
-      platform: process.platform,
-      isPackaged: app.isPackaged,
-      dispatch: (command) => {
-        if (mainWindowController.hasOpenWindows()) {
-          mainWindowController.send('window:command', { id: command });
-        } else {
-          // Deliberately drop the command: re-creating the window is what the
-          // user asked for by acting on the menu, and replaying stale commands
-          // after startup would be surprising (accepted trade-off, #2088).
-          quitCoordinator.focusOrCreateWindow();
-        }
-      },
+    installDesktopShellPresentation({
+      startHidden,
+      mainWindowController,
+      focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
+      onIconError: (error) =>
+        console.error('[icon] failed to set dock icon:', error),
     });
     app.on('second-instance', quitCoordinator.focusOrCreateWindow);
     app.on('activate', quitCoordinator.focusOrCreateWindow);

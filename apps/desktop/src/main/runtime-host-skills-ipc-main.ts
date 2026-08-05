@@ -1,4 +1,4 @@
-import { shell, type ipcMain as electronIpcMain } from "electron";
+import type { ipcMain as electronIpcMain } from "electron";
 import {
   resolveSkillDiscoveryPaths,
   scanSkillsWithDiagnostics,
@@ -40,9 +40,11 @@ interface RuntimeHostSkillsIpcDeps {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly getCurrentProjectRoot: () => Promise<string>;
+  readonly openPath: (path: string) => Promise<string>;
 }
 
 interface GovernanceProjection {
+  readonly projectRoot: string;
   readonly snapshot: DesktopSkillCatalogSnapshot;
   readonly items: readonly SkillCatalogGovernanceItem[];
   readonly paths: ReadonlyMap<string, string>;
@@ -53,11 +55,19 @@ type StableSkillMutationResult = Exclude<
   { readonly kind: 'revision_conflict' }
 >;
 
+interface StableSkillMutation {
+  readonly result: StableSkillMutationResult;
+  readonly projectRoot: string;
+}
+
 export function registerRuntimeHostSkillsIpc(
   deps: RuntimeHostSkillsIpcDeps,
 ): void {
   deps.ipcMain.handle("skills:list", async () => {
-    const projection = await loadGovernance(deps);
+    const projection = await loadGovernance(
+      deps,
+      await deps.getCurrentProjectRoot(),
+    );
     return projection.items.map((item) =>
       toSkillEntry(item, projection.paths.get(item.ref) ?? ""),
     );
@@ -165,7 +175,10 @@ export function registerRuntimeHostSkillsIpc(
   );
 
   deps.ipcMain.handle("skills:details", async (_event, idOrRef: string) => {
-    const projection = await loadGovernance(deps);
+    const projection = await loadGovernance(
+      deps,
+      await deps.getCurrentProjectRoot(),
+    );
     const resolved = resolveGovernanceItem(projection.items, idOrRef);
     if (!resolved.ok) return resolved;
     return {
@@ -180,12 +193,13 @@ export function registerRuntimeHostSkillsIpc(
   deps.ipcMain.handle(
     "skills:previewUpdate",
     async (_event, idOrRef: string) => {
+      const projectRoot = await deps.getCurrentProjectRoot();
       for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
-        const projection = await loadGovernance(deps);
+        const projection = await loadGovernance(deps, projectRoot);
         const resolved = resolveGovernanceItem(projection.items, idOrRef);
         if (!resolved.ok) return resolved;
         const result = await deps.client.previewSkillUpdate({
-          context: { projectRoot: await deps.getCurrentProjectRoot() },
+          context: { projectRoot: projection.projectRoot },
           expectedRevision: projection.snapshot.revision,
           ref: resolved.item.ref,
         });
@@ -266,14 +280,13 @@ export function registerRuntimeHostSkillsIpc(
   );
 
   deps.ipcMain.handle("skills:createStarter", async () => {
-    const result = await mutateSkill(deps, "governance", {
+    const { result, projectRoot } = await mutateSkill(deps, "governance", {
       kind: "create_starter",
     });
     if (result.kind === "rejected")
       return { ok: false as const, reason: mapMutationReason(result.reason) };
     if (!result.entry)
       throw new Error("Runtime Host did not project the starter Skill");
-    const projectRoot = await deps.getCurrentProjectRoot();
     const path = await resolveProjectedPath(
       deps.workspaceRoot,
       projectRoot,
@@ -288,10 +301,14 @@ export function registerRuntimeHostSkillsIpc(
   });
 
   deps.ipcMain.handle("skills:delete", async (_event, idOrRef: string) => {
-    const result = await mutateResolvedSkillRaw(deps, idOrRef, (ref) => ({
-      kind: "delete",
-      ref,
-    }));
+    const { result } = await mutateResolvedSkillRaw(
+      deps,
+      idOrRef,
+      (ref) => ({
+        kind: "delete",
+        ref,
+      }),
+    );
     if (result.kind === "rejected") {
       return { ok: false as const, reason: mapMutationReason(result.reason) };
     }
@@ -311,7 +328,7 @@ export function registerRuntimeHostSkillsIpc(
         },
       );
       if (!resolved.ok) return resolved;
-      const error = await shell.openPath(resolved.path);
+      const error = await deps.openPath(resolved.path);
       return error
         ? { ok: false as const, reason: "open_failed" as const }
         : { ok: true as const, target: resolved.target };
@@ -321,13 +338,14 @@ export function registerRuntimeHostSkillsIpc(
 
 async function loadGovernance(
   deps: RuntimeHostSkillsIpcDeps,
+  projectRoot: string,
 ): Promise<GovernanceProjection> {
-  const projectRoot = await deps.getCurrentProjectRoot();
   const snapshot = await deps.client.loadSkillCatalog(
     { projectRoot },
     "governance",
   );
   return {
+    projectRoot,
     snapshot,
     items: snapshot.items.filter(isGovernanceItem),
     paths: await loadSkillPaths(deps.workspaceRoot, projectRoot),
@@ -398,7 +416,7 @@ async function installSkill(
   sourceType: "bundled" | "managed",
   sourceId: string,
 ) {
-  const result = await mutateSkill(
+  const { result, projectRoot } = await mutateSkill(
     deps,
     sourceType === "bundled" ? "bundled" : "managed_sources",
     {
@@ -411,7 +429,6 @@ async function installSkill(
     return { ok: false as const, reason: mapMutationReason(result.reason) };
   if (!result.entry)
     throw new Error("Runtime Host did not project the installed Skill");
-  const projectRoot = await deps.getCurrentProjectRoot();
   return {
     ok: true as const,
     skill: toSkillEntry(
@@ -430,12 +447,15 @@ async function mutateResolvedSkill(
   idOrRef: string,
   mutation: (ref: string) => SkillCatalogMutation,
 ) {
-  const result = await mutateResolvedSkillRaw(deps, idOrRef, mutation);
+  const { result, projectRoot } = await mutateResolvedSkillRaw(
+    deps,
+    idOrRef,
+    mutation,
+  );
   if (result.kind === "rejected")
     return { ok: false as const, reason: mapMutationReason(result.reason) };
   if (!result.entry)
     throw new Error("Runtime Host did not project the mutated Skill");
-  const projectRoot = await deps.getCurrentProjectRoot();
   return {
     ok: true as const,
     skill: toSkillEntry(
@@ -453,17 +473,25 @@ async function mutateResolvedSkillRaw(
   deps: RuntimeHostSkillsIpcDeps,
   idOrRef: string,
   mutation: (ref: string) => SkillCatalogMutation,
-): Promise<StableSkillMutationResult> {
+): Promise<StableSkillMutation> {
+  const projectRoot = await deps.getCurrentProjectRoot();
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
-    const projection = await loadGovernance(deps);
+    const projection = await loadGovernance(deps, projectRoot);
     const resolved = resolveGovernanceItem(projection.items, idOrRef);
-    if (!resolved.ok) return { kind: "rejected", reason: "not_found" };
+    if (!resolved.ok) {
+      return {
+        result: { kind: "rejected", reason: "not_found" },
+        projectRoot: projection.projectRoot,
+      };
+    }
     const result = await deps.client.mutateSkillCatalog({
-      context: { projectRoot: await deps.getCurrentProjectRoot() },
+      context: { projectRoot: projection.projectRoot },
       expectedRevision: projection.snapshot.revision,
       mutation: mutation(resolved.item.ref),
     });
-    if (result.kind !== "revision_conflict") return result;
+    if (result.kind !== "revision_conflict") {
+      return { result, projectRoot: projection.projectRoot };
+    }
   }
   throw new Error(
     "Skill catalog kept changing while Desktop applied a mutation",
@@ -474,7 +502,7 @@ async function mutateSkill(
   deps: RuntimeHostSkillsIpcDeps,
   view: "governance" | "bundled" | "managed_sources",
   mutation: SkillCatalogMutation,
-): Promise<StableSkillMutationResult> {
+): Promise<StableSkillMutation> {
   const projectRoot = await deps.getCurrentProjectRoot();
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const snapshot = await deps.client.loadSkillCatalog({ projectRoot }, view);
@@ -483,7 +511,7 @@ async function mutateSkill(
       expectedRevision: snapshot.revision,
       mutation,
     });
-    if (result.kind !== "revision_conflict") return result;
+    if (result.kind !== "revision_conflict") return { result, projectRoot };
   }
   throw new Error(
     "Skill catalog kept changing while Desktop applied a mutation",

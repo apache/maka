@@ -33,6 +33,7 @@ import { releaseBrowserSession } from "./browser/session.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
+import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
 import { createMainWindowController } from "./main-window.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
@@ -53,6 +54,7 @@ import {
   registerRuntimeHostConnectionsIpc,
 } from "./runtime-host-connections-ipc-main.js";
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
+import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { registerRuntimeHostDailyReviewIpc } from "./runtime-host-daily-review-ipc-main.js";
@@ -155,7 +157,9 @@ const oauthPresentation = new RuntimeHostOAuthPresentation((url) =>
 );
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
-let refreshClientCapabilities = (): Promise<void> => Promise.resolve();
+const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
+  mcpManager.toolSnapshotRevision(),
+);
 let settingsBotsIpc: SettingsBotsIpcHandle | undefined;
 const botRegistry = new BotRegistry({
   onIncomingMessage: (message: BotIncomingMessage) => {
@@ -211,7 +215,7 @@ const planReminders = createPlanReminderMainService({
 });
 mcpManager.onChange(() => {
   mainWindowController.send("mcp:changed", mcpManager.statuses());
-  void refreshClientCapabilities().catch((error) =>
+  void mcpCapabilityPublisher.refreshIfChanged().catch((error) =>
     console.error("[runtime-host] MCP capability refresh failed:", error),
   );
 });
@@ -284,7 +288,7 @@ owner = await startRuntimeHostDesktopOwner(
 await planReminders.refreshTimers();
 updateService.start();
 void ensureMcpReady()
-  .then(() => refreshClientCapabilities())
+  .then(() => mcpCapabilityPublisher.refreshIfChanged())
   .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
 
 void settingsStore
@@ -303,15 +307,20 @@ function registerHostClientIpc(
   client: DesktopRuntimeHostClient,
   scopedIpc: Pick<typeof ipcMain, "handle">,
   controls: DesktopRuntimeHostCandidateControls,
-): void {
+): () => Promise<void> {
+  const capabilityBinding = mcpCapabilityPublisher.bind(
+    controls.refreshClientCapabilities,
+  );
+  void capabilityBinding.aligned.catch((error) =>
+    console.error("[runtime-host] MCP capability alignment failed:", error),
+  );
   runtimePolicyClient = client;
-  refreshClientCapabilities = controls.refreshClientCapabilities;
   registerMcpIpcMain({
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
     ensureReady: ensureMcpReady,
-    refreshIdleBackends: controls.refreshClientCapabilities,
+    refreshIdleBackends: mcpCapabilityPublisher.refreshIfChanged,
     emitChanged: (statuses) =>
       mainWindowController.send("mcp:changed", statuses),
   });
@@ -349,6 +358,7 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     workspaceRoot,
+    openPath: (path) => shell.openPath(path),
   });
   const settingsIpcDeps = {
     ipcMain: scopedIpc,
@@ -372,7 +382,7 @@ function registerHostClientIpc(
       updateRuntimeHostSettings(settingsIpcDeps, patch),
     emitConnectionsChanged: emitConnectionListChanged,
   });
-  settingsBotsIpc = registerSettingsBotsIpc({
+  const candidateSettingsBotsIpc = registerSettingsBotsIpc({
     ipcMain: scopedIpc,
     settingsStore,
     botRegistry,
@@ -382,6 +392,7 @@ function registerHostClientIpc(
     productVersion: app.getVersion(),
     openExternal: (url) => shell.openExternal(url),
   });
+  settingsBotsIpc = candidateSettingsBotsIpc;
   registerRuntimeHostPermissionsIpc({
     ipcMain: scopedIpc,
     client,
@@ -410,6 +421,7 @@ function registerHostClientIpc(
     workspaceRoot,
     mainWindowController,
     getCurrentProjectRoot: () => projectRoot.current(),
+    openPath: (path) => shell.openPath(path),
   });
   registerRuntimeHostSearchIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostUsageIpc({
@@ -504,6 +516,15 @@ function registerHostClientIpc(
     },
   });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
+  return async () => {
+    candidateSettingsBotsIpc.dispose();
+    if (settingsBotsIpc === candidateSettingsBotsIpc) {
+      settingsBotsIpc = undefined;
+    }
+    if (runtimePolicyClient === client) runtimePolicyClient = undefined;
+    capabilityBinding.dispose();
+    await capabilityBinding.aligned.catch(() => undefined);
+  };
 }
 
 function registerPersistentClientIpc(): void {
@@ -562,6 +583,13 @@ function wireLifecycle(): void {
     if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
     else void mainWindowController.createWindow(new AbortController().signal);
   };
+  installDesktopShellPresentation({
+    startHidden: false,
+    mainWindowController,
+    focusOrCreateWindow,
+    onIconError: (error) =>
+      console.error("[icon] failed to set dock icon:", error),
+  });
   app.on("second-instance", focusOrCreateWindow);
   app.on("activate", focusOrCreateWindow);
   app.on("window-all-closed", () => {

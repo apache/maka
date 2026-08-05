@@ -6,7 +6,7 @@ import { buildMcpTools } from '@maka/runtime/mcp-tools';
 
 const fixturePath = fileURLToPath(new URL('../../../../../packages/mcp/dist/__fixtures__/stdio-server.js', import.meta.url));
 
-test('MCP config connects through stdio and executes through MakaTool', async () => {
+test('MCP tools stay bound to the connection generation that advertised them', async () => {
   const manager = new McpClientManager({
     timeouts: { stdioConnectMs: 5_000, listToolsMs: 5_000, callToolMs: 5_000 },
   });
@@ -29,6 +29,47 @@ test('MCP config connects through stdio and executes through MakaTool', async ()
       content: [{ type: 'text', text: 'runtime-e2e' }],
       structuredContent: { echoed: 'runtime-e2e' },
     });
+
+    const firstRevision = manager.toolSnapshotRevision();
+    await manager.reconnect('fixture');
+    assert.ok(manager.toolSnapshotRevision() > firstRevision);
+    await assert.rejects(
+      async () =>
+        echo.impl(
+          { value: 'stale-generation' },
+          {
+            sessionId: 'session',
+            turnId: 'turn',
+            cwd: process.cwd(),
+            toolCallId: 'stale-call',
+            abortSignal: new AbortController().signal,
+            emitOutput() {},
+          },
+        ),
+      /connection generation is no longer available/u,
+    );
+
+    const replacement = buildMcpTools(manager).find(
+      (tool) => tool.name === 'mcp__fixture__echo',
+    );
+    assert.ok(replacement);
+    assert.deepEqual(
+      await replacement.impl(
+        { value: 'replacement-generation' },
+        {
+          sessionId: 'session',
+          turnId: 'turn',
+          cwd: process.cwd(),
+          toolCallId: 'replacement-call',
+          abortSignal: new AbortController().signal,
+          emitOutput() {},
+        },
+      ),
+      {
+        content: [{ type: 'text', text: 'replacement-generation' }],
+        structuredContent: { echoed: 'replacement-generation' },
+      },
+    );
   } finally {
     await manager.close();
   }

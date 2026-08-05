@@ -12,6 +12,7 @@ import type {
   ConnectionVersionBasis,
   CredentialLocator,
   CredentialStatus,
+  RuntimePolicy,
   RuntimePolicyMutation,
 } from "@maka/core/runtime-policy";
 import {
@@ -200,13 +201,13 @@ export class DesktopRuntimeHostClient {
   }
 
   async updateRuntimePolicy(
-    operation: RuntimePolicyMutation,
+    buildOperation: (policy: RuntimePolicy) => RuntimePolicyMutation,
   ): Promise<OperationOutput<"runtime.policy.query">> {
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       const current = await this.queryRuntimePolicy();
       const result = await this.#request("runtime.policy.mutate", {
         expectedRevision: current.revision,
-        operation,
+        operation: buildOperation(current.policy),
       });
       if (result.kind === "committed") return this.queryRuntimePolicy();
     }

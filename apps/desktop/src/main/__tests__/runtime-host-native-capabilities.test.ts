@@ -210,6 +210,81 @@ test('does not advertise unavailable capability groups or dispatch unknown ident
   assert.equal(admitted, false);
 });
 
+test('dispatches through the same immutable tool snapshot it advertised', async () => {
+  let additionalGroups = [
+    {
+      offerId: 'desktop_mcp',
+      label: 'MCP',
+      description: 'MCP tools',
+      tools: [tool('old_tool', z.object({}), async () => 'old implementation')],
+    },
+  ];
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => additionalGroups,
+  });
+  additionalGroups = [
+    {
+      offerId: 'desktop_mcp',
+      label: 'MCP',
+      description: 'MCP tools',
+      tools: [tool('new_tool', z.object({}), async () => 'new implementation')],
+    },
+  ];
+
+  assert.deepEqual(provider.offers()[0]?.tools.map(({ name }) => name), [
+    'old_tool',
+  ]);
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp',
+        serverId: 'desktop_mcp',
+        toolName: 'old_tool',
+      }),
+    ),
+    { content: [{ type: 'text', text: 'old implementation' }] },
+  );
+  await assert.rejects(
+    () =>
+      call(
+        provider,
+        capabilityFrame({
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: 'new_tool',
+        }),
+      ),
+    /not offered/u,
+  );
+});
+
+test('reports provider retirement once after its registration is released', async () => {
+  let retirements = 0;
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [tool('snapshot', z.object({}), async () => 'snapshot')],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+    },
+    {
+      onClosed: () => {
+        retirements += 1;
+      },
+    },
+  );
+
+  await provider.close();
+  await provider.close();
+
+  assert.equal(retirements, 1);
+});
+
 test('settles every native Session cleanup before reporting a release failure', async () => {
   let resolveComputerRelease: (() => void) | undefined;
   const computerRelease = new Promise<void>((resolve) => {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { shell, type ipcMain as electronIpcMain } from "electron";
+import type { ipcMain as electronIpcMain } from "electron";
 import type {
   LocalMemoryBackupInfo,
   LocalMemoryEntryPreview,
@@ -35,6 +35,7 @@ interface RuntimeHostMemoryIpcDeps {
   readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
   readonly client: DesktopRuntimeHostClient;
   readonly workspaceRoot: string;
+  readonly openPath: (path: string) => Promise<string>;
 }
 
 export function registerRuntimeHostMemoryIpc(
@@ -175,39 +176,37 @@ export function registerRuntimeHostMemoryIpc(
     return restoreBackup(deps, kind);
   });
   deps.ipcMain.handle("memory:setEnabled", async (_event, enabled: unknown) => {
-    const current = await deps.client.queryRuntimePolicy();
-    await deps.client.updateRuntimePolicy({
+    await deps.client.updateRuntimePolicy((policy) => ({
       kind: "set_memory",
-      value: { ...current.policy.memory, enabled: enabled === true },
-    });
+      value: { ...policy.memory, enabled: enabled === true },
+    }));
     return getMemoryState(deps);
   });
   deps.ipcMain.handle(
     "memory:setAgentReadEnabled",
     async (_event, enabled: unknown) => {
-      const current = await deps.client.queryRuntimePolicy();
-      await deps.client.updateRuntimePolicy({
+      await deps.client.updateRuntimePolicy((policy) => ({
         kind: "set_memory",
-        value: { ...current.policy.memory, agentReadEnabled: enabled === true },
-      });
+        value: { ...policy.memory, agentReadEnabled: enabled === true },
+      }));
       return getMemoryState(deps);
     },
   );
   deps.ipcMain.handle("memory:openFile", () =>
-    openMemoryPath(deps.workspaceRoot, MEMORY_FILE),
+    openMemoryPath(deps, MEMORY_FILE),
   );
   deps.ipcMain.handle("memory:openLatestBackup", async () => {
     const state = await getMemoryState(deps);
     return state.latestBackup
       ? openMemoryPath(
-          deps.workspaceRoot,
+          deps,
           BACKUP_FILES[state.latestBackup.kind],
         )
       : { ok: false as const, message: "No Memory backup is available" };
   });
   deps.ipcMain.handle("memory:openBackup", async (_event, kind: unknown) => {
     return isBackupKind(kind)
-      ? openMemoryPath(deps.workspaceRoot, BACKUP_FILES[kind])
+      ? openMemoryPath(deps, BACKUP_FILES[kind])
       : { ok: false as const, message: "Invalid Memory backup kind" };
   });
 }
@@ -217,55 +216,94 @@ async function getMemoryState(
 ): Promise<LocalMemoryState> {
   const policy = await deps.client.queryRuntimePolicy();
   const path = join(deps.workspaceRoot, MEMORY_DIRECTORY, MEMORY_FILE);
-  const result = await deps.client.queryMemory({ kind: "state" });
-  if (result.kind === "blocked") {
-    return emptyMemoryState({
+  for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
+    const result = await deps.client.queryMemory({ kind: "state" });
+    if (result.kind === "blocked") {
+      return emptyMemoryState({
+        path,
+        enabled: policy.policy.memory.enabled,
+        agentReadEnabled: policy.policy.memory.agentReadEnabled,
+        status:
+          result.reason === "disabled" ? "disabled" : "incognito_blocked",
+        reason: result.reason,
+      });
+    }
+    if (result.kind !== "state") {
+      return emptyMemoryState({
+        path,
+        enabled: policy.policy.memory.enabled,
+        agentReadEnabled: policy.policy.memory.agentReadEnabled,
+        status: "error",
+        reason: "Runtime Host returned an invalid Memory state projection",
+      });
+    }
+    const backups = result.backups
+      .map((backup) => projectBackup(deps.workspaceRoot, backup))
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    if (result.status === "missing") {
+      return {
+        ...emptyMemoryState({
+          path,
+          enabled: policy.policy.memory.enabled,
+          agentReadEnabled: policy.policy.memory.agentReadEnabled,
+          status: "ok",
+        }),
+        entryCount: result.entryCount,
+        activeEntryCount: result.activeEntryCount,
+        archivedEntryCount: result.archivedEntryCount,
+        backups,
+        ...(backups[0] ? { latestBackup: backups[0] } : {}),
+      };
+    }
+    if (result.status === "safe_mode") {
+      return {
+        ...emptyMemoryState({
+          path,
+          enabled: policy.policy.memory.enabled,
+          agentReadEnabled: policy.policy.memory.agentReadEnabled,
+          status: "safe_mode",
+          reason: "Memory is in safe mode",
+        }),
+        entryCount: result.entryCount,
+        activeEntryCount: result.activeEntryCount,
+        archivedEntryCount: result.archivedEntryCount,
+        backups,
+        ...(backups[0] ? { latestBackup: backups[0] } : {}),
+      };
+    }
+    const [document, active, archived] = await Promise.all([
+      readRuntimeHostMemoryDocumentSnapshot(deps.client, "memory"),
+      readMemoryEntriesSnapshot(deps.client, "active"),
+      readMemoryEntriesSnapshot(deps.client, "archived"),
+    ]);
+    if (
+      document.revision !== result.memoryRevision ||
+      active.revision !== result.revision ||
+      archived.revision !== result.revision
+    ) {
+      continue;
+    }
+    const entries = [...active.entries, ...archived.entries].sort(
+      compareMemoryEntries,
+    );
+    return {
       path,
       enabled: policy.policy.memory.enabled,
       agentReadEnabled: policy.policy.memory.agentReadEnabled,
-      status: result.reason === "disabled" ? "disabled" : "incognito_blocked",
-      reason: result.reason,
-    });
+      status: "ok",
+      content: document.content,
+      entryCount: result.entryCount,
+      activeEntryCount: result.activeEntryCount,
+      archivedEntryCount: result.archivedEntryCount,
+      entries,
+      activeEntries: active.entries,
+      archivedEntries: archived.entries,
+      ...(entries[0] ? { latestEntry: entries[0] } : {}),
+      ...(backups[0] ? { latestBackup: backups[0] } : {}),
+      backups,
+    };
   }
-  if (result.kind !== "state") {
-    return emptyMemoryState({
-      path,
-      enabled: policy.policy.memory.enabled,
-      agentReadEnabled: policy.policy.memory.agentReadEnabled,
-      status: "error",
-      reason: "Runtime Host returned an invalid Memory state projection",
-    });
-  }
-  const [content, activeEntries, archivedEntries] = await Promise.all([
-    readRuntimeHostMemoryDocument(deps.client, "memory"),
-    listMemoryEntries(deps.client, "active"),
-    listMemoryEntries(deps.client, "archived"),
-  ]);
-  const entries = [...activeEntries, ...archivedEntries].sort(
-    compareMemoryEntries,
-  );
-  const backups = result.backups
-    .map((backup) => projectBackup(deps.workspaceRoot, backup))
-    .sort((left, right) => right.updatedAt - left.updatedAt);
-  return {
-    path,
-    enabled: policy.policy.memory.enabled,
-    agentReadEnabled: policy.policy.memory.agentReadEnabled,
-    status: result.status === "safe_mode" ? "safe_mode" : "ok",
-    content,
-    entryCount: result.entryCount,
-    activeEntryCount: result.activeEntryCount,
-    archivedEntryCount: result.archivedEntryCount,
-    entries,
-    activeEntries,
-    archivedEntries,
-    ...(entries[0] ? { latestEntry: entries[0] } : {}),
-    ...(backups[0] ? { latestBackup: backups[0] } : {}),
-    backups,
-    ...(result.status === "safe_mode"
-      ? { reason: "Memory is in safe mode" }
-      : {}),
-  };
+  throw new Error("Memory kept changing while Desktop assembled its state");
 }
 
 function emptyMemoryState(
@@ -291,9 +329,21 @@ async function listMemoryEntries(
   client: DesktopRuntimeHostClient,
   view: MemoryEntriesView,
 ): Promise<LocalMemoryEntryPreview[]> {
+  return (await readMemoryEntriesSnapshot(client, view)).entries;
+}
+
+async function readMemoryEntriesSnapshot(
+  client: DesktopRuntimeHostClient,
+  view: MemoryEntriesView,
+): Promise<{
+  readonly entries: LocalMemoryEntryPreview[];
+  readonly revision: MemoryRevision | null;
+}> {
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const first = await client.queryMemory({ kind: "entries_start", view });
-    if (first.kind === "blocked" || first.kind === "missing") return [];
+    if (first.kind === "blocked" || first.kind === "missing") {
+      return { entries: [], revision: null };
+    }
     if (first.kind !== "entries_page" || first.view !== view) {
       if (first.kind === "revision_changed") continue;
       throw new Error("Runtime Host returned an invalid Memory entries page");
@@ -324,8 +374,12 @@ async function listMemoryEntries(
       entries.push(...next.items);
       page = next;
     }
-    if (!changed)
-      return entries.map(projectMemoryEntry).sort(compareMemoryEntries);
+    if (!changed) {
+      return {
+        entries: entries.map(projectMemoryEntry).sort(compareMemoryEntries),
+        revision: first.revision,
+      };
+    }
   }
   throw new Error("Memory entries kept changing while Desktop read them");
 }
@@ -334,13 +388,25 @@ export async function readRuntimeHostMemoryDocument(
   client: DesktopRuntimeHostClient,
   document: MemoryDocumentName,
 ): Promise<string> {
+  return (await readRuntimeHostMemoryDocumentSnapshot(client, document))
+    .content;
+}
+
+async function readRuntimeHostMemoryDocumentSnapshot(
+  client: DesktopRuntimeHostClient,
+  document: MemoryDocumentName,
+): Promise<{ readonly content: string; readonly revision: MemoryRevision | null }> {
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const first = await client.queryMemory({
       kind: "document_start",
       document,
     });
-    if (first.kind === "missing" || first.kind === "blocked") return "";
-    if (first.kind === "safe_mode") return "";
+    if (first.kind === "missing" || first.kind === "blocked") {
+      return { content: "", revision: null };
+    }
+    if (first.kind === "safe_mode") {
+      return { content: "", revision: first.revision };
+    }
     if (
       first.kind !== "document_page" ||
       first.document !== document ||
@@ -375,7 +441,12 @@ export async function readRuntimeHostMemoryDocument(
       chunks.push(Buffer.from(next.chunkBase64, "base64"));
       page = next;
     }
-    if (!changed) return Buffer.concat(chunks).toString("utf8");
+    if (!changed) {
+      return {
+        content: Buffer.concat(chunks).toString("utf8"),
+        revision: first.revision,
+      };
+    }
   }
   throw new Error("Memory document kept changing while Desktop read it");
 }
@@ -505,11 +576,13 @@ async function restoreBackup(
 }
 
 async function openMemoryPath(
-  workspaceRoot: string,
+  deps: Pick<RuntimeHostMemoryIpcDeps, "workspaceRoot" | "openPath">,
   fileName: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   try {
-    const directory = await realpath(join(workspaceRoot, MEMORY_DIRECTORY));
+    const directory = await realpath(
+      join(deps.workspaceRoot, MEMORY_DIRECTORY),
+    );
     const path = await realpath(join(directory, fileName));
     if (!isPathInside(directory, path) || !(await lstat(path)).isFile()) {
       return {
@@ -517,7 +590,7 @@ async function openMemoryPath(
         message: "Memory path is not an allowed regular file",
       };
     }
-    const error = await shell.openPath(path);
+    const error = await deps.openPath(path);
     return error
       ? { ok: false, message: "The system could not open the Memory file" }
       : { ok: true };

@@ -48,6 +48,7 @@ export interface DesktopNativeCapabilityProviderInput {
 }
 
 export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvider {
+  abortSession(sessionId: string): Promise<void>;
   releaseSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -55,7 +56,15 @@ export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvide
 /** Adapt Desktop-owned Maka tools to the open Client Capability protocol. */
 export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
+  providerOptions: {
+    readonly releaseResourcesOnClose?: boolean;
+    readonly onSessionUsed?: (sessionId: string) => void;
+    readonly onClosed?: () => void;
+  } = {},
 ): DesktopNativeCapabilityProvider {
+  const groups = capabilityGroups(input);
+  const offers = Object.freeze(groups.map(capabilityOffer));
+  const bindings = indexBindings(groups);
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
     : undefined;
@@ -78,19 +87,18 @@ export function createDesktopNativeCapabilityProvider(
       activeInvocations,
       usedSessionIds,
       releaseSessionResources,
-    );
+      providerOptions.releaseResourcesOnClose !== false,
+    ).finally(() => providerOptions.onClosed?.());
     return closeTask;
   }
 
   return {
-    offers: () => Object.freeze(capabilityGroups(input).map(capabilityOffer)),
+    offers: () => offers,
     services: () => oauthPresentation?.services?.() ?? [],
     call: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
-      const binding = indexBindings(capabilityGroups(input)).get(
-        bindingKey(frame),
-      );
+      const binding = bindings.get(bindingKey(frame));
       if (!binding) throw new Error("Desktop native capability is not offered");
 
       const invocation = new AbortController();
@@ -98,6 +106,7 @@ export function createDesktopNativeCapabilityProvider(
         binding,
         frame,
         options,
+        providerOptions,
         invocation,
         usedSessionIds,
       );
@@ -120,6 +129,10 @@ export function createDesktopNativeCapabilityProvider(
       }
       return oauthPresentation.callService(frame, options);
     },
+    abortSession: async (sessionId) => {
+      const settling = abortInvocations(activeInvocations, sessionId);
+      await Promise.all(settling);
+    },
     releaseSession: async (sessionId) => {
       const settling = abortInvocations(activeInvocations, sessionId);
       await Promise.all(settling);
@@ -137,6 +150,7 @@ async function closeProvider(
   >,
   usedSessionIds: Set<string>,
   releases: readonly ((sessionId: string) => void | Promise<void>)[],
+  releaseResources: boolean,
 ): Promise<void> {
   const settling: Promise<void>[] = [];
   for (const [invocation, active] of activeInvocations) {
@@ -146,7 +160,7 @@ async function closeProvider(
   await Promise.all(settling);
   const sessionIds = [...usedSessionIds];
   usedSessionIds.clear();
-  await settleSessionReleases(releases, sessionIds);
+  if (releaseResources) await settleSessionReleases(releases, sessionIds);
 }
 
 async function settleSessionReleases(
@@ -198,6 +212,7 @@ async function invokeNativeTool(
   binding: NativeToolBinding,
   frame: ClientCapabilityCallFrame,
   options: Parameters<NonNullable<ClientCapabilityProvider["call"]>>[1],
+  providerOptions: { readonly onSessionUsed?: (sessionId: string) => void },
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
@@ -209,6 +224,7 @@ async function invokeNativeTool(
   await options.accept();
   signal.throwIfAborted();
   usedSessionIds.add(frame.sessionId);
+  providerOptions.onSessionUsed?.(frame.sessionId);
   const output = await binding.tool.impl(args, {
     sessionId: frame.sessionId,
     turnId: frame.turnId,
