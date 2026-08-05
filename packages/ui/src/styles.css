@@ -282,6 +282,20 @@
 .maka-web-result-error-message { color: var(--destructive); }
 .maka-web-result-repair { color: var(--muted-foreground); }
 .maka-tool-call-detail { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+/* A CodeBlock title (a file path, a result headline) sits at the same tier as
+   the command header beside it. Astryx hard-codes that title to the supporting
+   tier, which is 12px against the block's own 14px code — rebinding the role
+   token reaches it through inheritance, the same move chat-message.css makes
+   on the tool and reasoning rows. Only the size: `medium` on a header is
+   Astryx's intent and the surface command's foreground colour carries the same
+   weight of emphasis without it. */
+.maka-tool-call-detail .astryx-codeblock {
+  --text-supporting-size: var(--text-code-size);
+  /* Unitless, so it has to move with the size: left at the supporting leading
+     it would multiply the larger size into a 23px line box and give the header
+     a rhythm no other row in the panel has. */
+  --text-supporting-leading: var(--text-code-leading);
+}
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
