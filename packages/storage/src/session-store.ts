@@ -13,6 +13,7 @@ import {
   type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
 import { isDiscardableConversationCopy } from './session-conversation-copy.js';
+import { importLegacySessionsOnce } from './legacy-session-import.js';
 import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
@@ -272,6 +273,7 @@ export function createSessionStoreWithTestDependencies(
 class SqliteSessionStore implements SessionAuthorityStore {
   private readonly metadata: SqliteSessionMetadataStore;
   private readonly workspaceRoot: string;
+  private legacyImportPromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(workspaceRoot: string, _dependencies: SessionAuthorityStoreTestDependencies) {
@@ -281,6 +283,28 @@ class SqliteSessionStore implements SessionAuthorityStore {
       join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
       { databaseLease },
     );
+  }
+
+  /**
+   * One-time legacy JSONL session import, awaited before any read that feeds
+   * the session list so upgraded installs see their pre-cutover sessions.
+   *
+   * The import itself is best-effort (per-file errors are reported, never
+   * thrown), so this promise never rejects; it exists only to serialize the
+   * first list against the import.
+   */
+  private ensureLegacyImported(): Promise<void> {
+    this.legacyImportPromise ??= importLegacySessionsOnce(this, this.workspaceRoot).then(
+      (result) => {
+        if (result.imported > 0 || result.failed > 0) {
+          console.error(
+            `[storage] legacy session import: ${result.imported} imported, ${result.skipped} skipped, ${result.failed} failed`,
+            result.failures.length > 0 ? result.failures : undefined,
+          );
+        }
+      },
+    );
+    return this.legacyImportPromise;
   }
 
   async create(
@@ -454,6 +478,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
+    await this.ensureLegacyImported();
     const records = (await this.metadata.list(filter)).filter(
       (record) => record.header.conversationCopy?.state !== 'preparing',
     );
@@ -497,6 +522,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     limit: number,
     expectedRevision?: `sha256:${string}`,
   ): Promise<SessionCatalogPageResult> {
+    await this.ensureLegacyImported();
     await this.ensureCatalogProjectionReadable();
     const page = await this.metadata.listCatalogPage(filter ?? {}, cursor, limit);
     const revision = projectCatalogRevision(page.revision);
@@ -529,6 +555,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async listHeaders(): Promise<SessionHeader[]> {
     await this.ensureReady();
+    await this.ensureLegacyImported();
     return (await this.metadata.list())
       .map((record) => record.header)
       .sort((a, b) => a.id.localeCompare(b.id));
