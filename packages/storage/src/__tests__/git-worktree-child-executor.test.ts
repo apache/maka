@@ -26,6 +26,7 @@ describe('Git worktree child executor', () => {
 
     assert.equal(await executor.isAvailable({ sourceCwd: repository }), true);
     assert.equal(await executor.isAvailable({ sourceCwd: folder }), false);
+    assert.equal(await executor.isAvailable({ sourceCwd: join(root, 'missing') }), false);
   });
 
   test('provisions deterministic isolated worktrees for concurrent child leases', async () => {

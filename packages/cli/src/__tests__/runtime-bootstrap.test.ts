@@ -722,7 +722,12 @@ describe('Maka CLI runtime bootstrap', () => {
         assert.deepEqual(
           childAgents.definitions.find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)
             ?.availability,
-          { status: 'available' },
+          {
+            status: 'unavailable',
+            reason: 'workspace_isolation_unavailable',
+            workspace: 'worktree',
+            requiredRuntime: 'worktree_child_executor',
+          },
         );
         assert.deepEqual(
           childAgents.definitions.find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)
