@@ -227,31 +227,31 @@ it('localizes Astryx Markdown accessibility copy in Chinese', () => {
 // reaches Lightbox through useLightbox, which a JSX-tag scan misses. A ban
 // list keyed to "what we render today" goes stale silently, so it is gone;
 // the tests below pin the surfaces we know are live instead.
-it('localizes the Astryx chat chrome adopted in #1795', () => {
+function assertChineseAstryxOverrides(keys: readonly string[]) {
   const messages = astryxMessageOverrides('zh')?.zh ?? {};
-  assert.equal(messages['@astryx.chatLayout.newMessages'], '跳到最新消息');
-  assert.equal(messages['@astryx.chatLayoutScrollButton.scrollToBottom'], '滚动到底部');
-  for (const key of ['@astryx.chatSendButton.send', '@astryx.chat.status.sent']) {
+  for (const key of keys) {
     // Assert presence first: a deleted key would coalesce to '', which holds no
     // Latin letters and would satisfy the translation check on its own.
     const value = messages[key];
     assert.ok(value, `missing override: ${key}`);
     assert.doesNotMatch(value, /[A-Za-z]/, `untranslated: ${key}`);
   }
+}
+
+it('localizes the Astryx chat chrome adopted in #1795', () => {
+  const messages = astryxMessageOverrides('zh')?.zh ?? {};
+  assert.equal(messages['@astryx.chatLayout.newMessages'], '跳到最新消息');
+  assert.equal(messages['@astryx.chatLayoutScrollButton.scrollToBottom'], '滚动到底部');
+  assertChineseAstryxOverrides(['@astryx.chatSendButton.send', '@astryx.chat.status.sent']);
 });
 
 it('localizes the Lightbox reached via useLightbox in chat-turn', () => {
-  const messages = astryxMessageOverrides('zh')?.zh ?? {};
-  for (const key of [
+  assertChineseAstryxOverrides([
     '@astryx.lightbox.mediaViewer',
     '@astryx.lightbox.close',
     '@astryx.lightbox.previous',
     '@astryx.lightbox.next',
-  ]) {
-    const value = messages[key];
-    assert.ok(value, `missing override: ${key}`);
-    assert.doesNotMatch(value, /[A-Za-z]/, `untranslated: ${key}`);
-  }
+  ]);
 });
 
 it('uses the localized Astryx code block and syntax tokenizer', () => {

@@ -43,7 +43,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
 
-function LocalizedChatMessage({
+export function LocalizedChatMessage({
   accessibleLabel,
   ...props
 }: Omit<ComponentPropsWithoutRef<typeof ChatMessage>, 'aria-label'> & {
