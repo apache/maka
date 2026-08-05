@@ -22,12 +22,6 @@ import {
 } from './permission.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode } from './orchestration.js';
-import type {
-  CacheMissInputSource,
-  ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-} from './usage-stats/types.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -36,7 +30,7 @@ import {
   isRecord,
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
-import { isTokenUsageFields } from './usage-record-schema.js';
+import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
 import {
   decodePersistedToolResultContentForRecovery,
   normalizeToolResultContentForRead,
@@ -805,36 +799,11 @@ export interface PermissionDecisionMessage {
   hint?: string;
 }
 
-export interface TokenUsageMessage {
+export interface TokenUsageMessage extends TokenUsageFields {
   type: 'token_usage';
   id: string;
   turnId: string;
   ts: number;
-  input: number;
-  output: number;
-  cacheHitInput?: number;
-  cacheMissInput?: number;
-  cacheWriteInput?: number;
-  cacheMissInputSource?: CacheMissInputSource;
-  reasoning?: number;
-  total?: number;
-  rawFinishReason?: string;
-  /** Number of provider runtime/tool-loop steps represented by this usage. */
-  runtimeSteps?: number;
-  /** Backward-compatible alias for cacheHitInput. */
-  cacheRead?: number;
-  /** Backward-compatible alias for cacheWriteInput. */
-  cacheCreation?: number;
-  costUsd?: number;
-  systemPromptHash?: string;
-  contextRemaining?: number;
-  prefixHash?: string;
-  prefixChangeReason?: PrefixChangeReason;
-  requestShapeHash?: string;
-  requestShapeChangeReason?: PrefixChangeReason;
-  promptSegments?: PromptSegmentEstimate[];
-  contextBudget?: ContextBudgetDiagnostic;
-  providerRequestTraceId?: string;
 }
 
 export interface TurnStateMessage {

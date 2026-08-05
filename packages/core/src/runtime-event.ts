@@ -24,12 +24,6 @@ import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './int
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import type { TurnOrigin } from './runtime-inputs.js';
 import type { UserQuestionRequest } from './user-question.js';
-import type {
-  CacheMissInputSource,
-  ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-} from './usage-stats/types.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -43,7 +37,7 @@ import {
   isPermissionRequestPayload,
   isUserQuestionRequest,
 } from './interaction-record-schema.js';
-import { isTokenUsageFields } from './usage-record-schema.js';
+import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
 import { isToolRecoveryFactEnvelope, type ToolRecoveryFactEnvelope } from './tool-recovery-fact.js';
 import {
   isRuntimeEventWorkspaceFactEnvelope,
@@ -207,32 +201,7 @@ export type RuntimeEventContentKind = (typeof RUNTIME_EVENT_CONTENT_KINDS)[numbe
  * Token usage carried as a runtime action rather than a content payload.
  * Mirrors TokenUsageEvent / TokenUsageMessage so projections can map 1:1.
  */
-export interface RuntimeEventTokenUsage {
-  input: number;
-  output: number;
-  cacheHitInput?: number;
-  cacheMissInput?: number;
-  cacheWriteInput?: number;
-  cacheMissInputSource?: CacheMissInputSource;
-  reasoning?: number;
-  total?: number;
-  rawFinishReason?: string;
-  /** Number of provider runtime/tool-loop steps represented by this usage. */
-  runtimeSteps?: number;
-  /** Backward-compatible alias for cacheHitInput. */
-  cacheRead?: number;
-  /** Backward-compatible alias for cacheWriteInput. */
-  cacheCreation?: number;
-  costUsd?: number;
-  systemPromptHash?: string;
-  contextRemaining?: number;
-  prefixHash?: string;
-  prefixChangeReason?: PrefixChangeReason;
-  requestShapeHash?: string;
-  requestShapeChangeReason?: PrefixChangeReason;
-  promptSegments?: PromptSegmentEstimate[];
-  contextBudget?: ContextBudgetDiagnostic;
-}
+export interface RuntimeEventTokenUsage extends TokenUsageFields {}
 
 /**
  * Permission decision attached to an event. Runtime history may retain the
@@ -543,6 +512,7 @@ const RUNTIME_TOKEN_USAGE_SHAPE = defineObjectShape<RuntimeEventTokenUsage>()(
     'requestShapeChangeReason',
     'promptSegments',
     'contextBudget',
+    'providerRequestTraceId',
   ],
 );
 const RUNTIME_REFS_SHAPE = defineObjectShape<RuntimeEventRefs>()(

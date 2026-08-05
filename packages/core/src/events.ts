@@ -25,12 +25,7 @@ import type {
   ShellRunTerminalStatus,
 } from './shell-run.js';
 export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
-import type {
-  CacheMissInputSource,
-  ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-} from './usage-stats/types.js';
+import { type TokenUsageFields } from './usage-record-schema.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 export const TOOL_OUTPUT_STREAMS = ['stdout', 'stderr'] as const;
@@ -929,34 +924,8 @@ export interface PlanStep {
   complexity?: 'low' | 'medium' | 'high';
 }
 
-export interface TokenUsageEvent extends BaseEvent {
+export interface TokenUsageEvent extends BaseEvent, TokenUsageFields {
   type: 'token_usage';
-  input: number;
-  output: number;
-  cacheHitInput?: number;
-  cacheMissInput?: number;
-  cacheWriteInput?: number;
-  cacheMissInputSource?: CacheMissInputSource;
-  reasoning?: number;
-  total?: number;
-  rawFinishReason?: string;
-  /** Number of provider runtime/tool-loop steps represented by this usage. */
-  runtimeSteps?: number;
-  /** Backward-compatible alias for cacheHitInput. */
-  cacheRead?: number;
-  /** Backward-compatible alias for cacheWriteInput. */
-  cacheCreation?: number;
-  costUsd?: number;
-  systemPromptHash?: string;
-  contextRemaining?: number;
-  prefixHash?: string;
-  prefixChangeReason?: PrefixChangeReason;
-  requestShapeHash?: string;
-  requestShapeChangeReason?: PrefixChangeReason;
-  promptSegments?: PromptSegmentEstimate[];
-  contextBudget?: ContextBudgetDiagnostic;
-  /** Links this aggregate to per-physical-request AgentRun trace rows. */
-  providerRequestTraceId?: string;
 }
 
 /**

@@ -1,6 +1,8 @@
 import type {
+  CacheMissInputSource,
   CompactionDecisionDiagnostic,
   ContextBudgetDiagnostic,
+  PrefixChangeReason,
   PromptSegmentEstimate,
 } from './usage-stats/types.js';
 import {
@@ -263,7 +265,42 @@ const CONTEXT_REASON_COUNTS = [
   'historyCompactWriteSkippedReasonCounts',
 ] as const;
 
-export function isTokenUsageFields(value: Record<string, unknown>): boolean {
+/**
+ * Token-usage field bundle shared by the runtime-event, message, and event
+ * projections (RuntimeEventTokenUsage / TokenUsageMessage / TokenUsageEvent).
+ * Single source of truth — `isTokenUsageFields` validates exactly this shape.
+ */
+export interface TokenUsageFields {
+  input: number;
+  output: number;
+  cacheHitInput?: number;
+  cacheMissInput?: number;
+  cacheWriteInput?: number;
+  cacheMissInputSource?: CacheMissInputSource;
+  reasoning?: number;
+  total?: number;
+  rawFinishReason?: string;
+  /** Number of provider runtime/tool-loop steps represented by this usage. */
+  runtimeSteps?: number;
+  /** Backward-compatible alias for cacheHitInput. */
+  cacheRead?: number;
+  /** Backward-compatible alias for cacheWriteInput. */
+  cacheCreation?: number;
+  costUsd?: number;
+  systemPromptHash?: string;
+  contextRemaining?: number;
+  prefixHash?: string;
+  prefixChangeReason?: PrefixChangeReason;
+  requestShapeHash?: string;
+  requestShapeChangeReason?: PrefixChangeReason;
+  promptSegments?: PromptSegmentEstimate[];
+  contextBudget?: ContextBudgetDiagnostic;
+  /** Links this aggregate to per-physical-request AgentRun trace rows. */
+  providerRequestTraceId?: string;
+}
+
+export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
+  if (!isRecord(value)) return false;
   if (!isFiniteNumber(value.input) || !isFiniteNumber(value.output)) return false;
   if (OPTIONAL_TOKEN_NUMBERS.some((key) => !isOptionalFiniteNumber(value[key]))) return false;
   return (
@@ -276,6 +313,7 @@ export function isTokenUsageFields(value: Record<string, unknown>): boolean {
     isOptionalPrefixChangeReason(value.prefixChangeReason) &&
     isOptionalString(value.requestShapeHash) &&
     isOptionalPrefixChangeReason(value.requestShapeChangeReason) &&
+    isOptionalString(value.providerRequestTraceId) &&
     (value.promptSegments === undefined ||
       (Array.isArray(value.promptSegments) &&
         value.promptSegments.every(isPromptSegmentEstimate))) &&
