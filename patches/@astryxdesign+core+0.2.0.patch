@@ -20,6 +20,26 @@ index b5a8d9e..89a72cd 100644
  
    // A group label (e.g. for a radiogroup) must not be a literal `<label>`
    // element: a `<label>` semantically names a single form control and can't be
+diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
+index 7a4083d..2b93545 100644
+--- a/node_modules/@astryxdesign/core/dist/List/List.js
++++ b/node_modules/@astryxdesign/core/dist/List/List.js
+@@ -89,6 +89,7 @@ export function List({
+   className,
+   style,
+   'data-testid': testId,
++  'aria-label': ariaLabel,
+   ref
+ }) {
+   const headerId = useId();
+@@ -102,6 +103,7 @@ export function List({
+   const listElement = /*#__PURE__*/_jsx(Tag, {
+     ref: ref,
+     "data-testid": testId,
++    "aria-label": ariaLabel,
+     "aria-labelledby": header != null ? headerId : undefined,
+     ...(isOrdered && start != null && start !== 1 ? {
+       start
 diff --git a/node_modules/@astryxdesign/core/locales/en.json b/node_modules/@astryxdesign/core/locales/en.json
 index fa4644c..505d815 100644
 --- a/node_modules/@astryxdesign/core/locales/en.json
