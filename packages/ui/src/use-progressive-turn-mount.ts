@@ -9,26 +9,7 @@ import {
   type ViewportMetrics,
 } from './progressive-turn-mount.js';
 import { prefixHeightFor, type TurnGeometryRecord } from './turn-size-index.js';
-import type { WarmupScheduler } from './turn-size-warmup.js';
-
-function defaultScheduler(): WarmupScheduler | undefined {
-  if (typeof requestAnimationFrame !== 'function') return undefined;
-  return {
-    requestIdle: typeof requestIdleCallback === 'function'
-      ? (callback) => {
-        const id = requestIdleCallback(callback);
-        return () => cancelIdleCallback(id);
-      }
-      : (callback) => {
-        const id = setTimeout(callback, 1);
-        return () => clearTimeout(id);
-      },
-    requestFrame: (callback) => {
-      const id = requestAnimationFrame(callback);
-      return () => cancelAnimationFrame(id);
-    },
-  };
-}
+import { createBrowserWarmupScheduler, type WarmupScheduler } from './turn-size-warmup.js';
 
 /**
  * React adapter for the #2052 progressive transcript mount.
@@ -93,7 +74,7 @@ export function useProgressiveTurnMount(input: {
   const beforeFillRef = useRef<ViewportMetrics | undefined>(undefined);
   const schedulerRef = useRef<WarmupScheduler | undefined>(undefined);
   if (schedulerRef.current === undefined) {
-    schedulerRef.current = input.scheduler ?? defaultScheduler();
+    schedulerRef.current = input.scheduler ?? createBrowserWarmupScheduler();
   }
 
   useEffect(() => {

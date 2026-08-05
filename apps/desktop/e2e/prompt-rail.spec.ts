@@ -143,8 +143,13 @@ async function scrollToRatio(page: Page, ratio: number): Promise<void> {
 }
 
 async function settled(page: Page, turns: number): Promise<void> {
+  // Progressive mount publishes data-progressive-fill; wait on that end state
+  // instead of racing idle fill steps against Playwright's default 10s count
+  // timeout (a 90-turn overflowing rail needs ~20 fill chunks).
+  const scroller = page.locator('[data-chat-scroll-container="true"]');
+  await expect(scroller).toHaveAttribute('data-progressive-fill', 'complete', { timeout: 45_000 });
   await expect(page.locator('.maka-turn')).toHaveCount(turns);
-  await expect(page.locator('[data-chat-scroll-container="true"][data-turn-warmup="settled"]')).toBeAttached({ timeout: 15_000 });
+  await expect(scroller).toHaveAttribute('data-turn-warmup', 'settled', { timeout: 15_000 });
 }
 
 test('the prompt rail stays inside the scrollport at every scroll position', async ({ longTranscriptWindow: page }) => {
