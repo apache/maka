@@ -215,9 +215,11 @@ async function withStore(
   run: (store: ReturnType<typeof createArtifactStore>) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-attachment-'));
+  const store = createArtifactStore(root);
   try {
-    await run(createArtifactStore(root));
+    await run(store);
   } finally {
+    store.close?.();
     await rm(root, { recursive: true, force: true });
   }
 }

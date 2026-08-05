@@ -22,15 +22,44 @@ import {
 } from '@maka/core/artifacts';
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
+  type ArtifactStore,
+  type ArtifactStoreWriteAuthority,
   type CreateArtifactInput,
-  createSqliteArtifactStore as createArtifactStore,
-  createSqliteArtifactStoreWriteAuthority as createArtifactStoreWriteAuthority,
+  createSqliteArtifactStore,
+  createSqliteArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
   sanitizeArtifactName,
 } from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import { createSqliteArtifactMetadataRepository } from '../sqlite-artifact-metadata.js';
+
+const artifactStoreClosersByRoot = new Map<string, Set<() => void>>();
+
+function trackArtifactStoreCloser(root: string, close: () => void): void {
+  const closers = artifactStoreClosersByRoot.get(root) ?? new Set<() => void>();
+  closers.add(close);
+  artifactStoreClosersByRoot.set(root, closers);
+}
+
+function createArtifactStore(root: string): ArtifactStore {
+  const store = createSqliteArtifactStore(root);
+  trackArtifactStoreCloser(root, () => store.close?.());
+  return store;
+}
+
+function createArtifactStoreWriteAuthority(root: string): ArtifactStoreWriteAuthority {
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
+  trackArtifactStoreCloser(root, () => authority.close());
+  return authority;
+}
+
+function closeArtifactStores(root: string): void {
+  const closers = artifactStoreClosersByRoot.get(root);
+  artifactStoreClosersByRoot.delete(root);
+  if (!closers) return;
+  for (const close of [...closers].reverse()) close();
+}
 
 describe('SQLite Artifact store', () => {
   test('creates a missing workspace root before acquiring the writer lock', async () => {
@@ -48,6 +77,7 @@ describe('SQLite Artifact store', () => {
         ['missing-root'],
       );
     } finally {
+      closeArtifactStores(root);
       await rm(parent, { recursive: true, force: true });
     }
   });
@@ -1519,6 +1549,7 @@ async function withWorkspace(run: (root: string) => Promise<void>): Promise<void
   try {
     await run(root);
   } finally {
+    closeArtifactStores(root);
     await rm(root, { recursive: true, force: true });
   }
 }

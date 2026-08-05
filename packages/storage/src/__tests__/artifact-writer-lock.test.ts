@@ -13,12 +13,16 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { openHeadlessArtifactStoreForWrite } from '../artifact-stores.js';
-import { createSqliteArtifactStore, type CreateArtifactInput } from '../artifact-store.js';
+import {
+  type ArtifactStore,
+  type CreateArtifactInput,
+  createSqliteArtifactStore,
+} from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import { createHeadlessRootLease, resolveStorageRoot } from '../root-authority.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
@@ -27,7 +31,23 @@ import { createSessionStore } from '../session-store.js';
 const TEST_TIMEOUT_MS = 15_000;
 const OPERATION_TIMEOUT_MS = 5_000;
 const COMPETING_PAYLOAD_BYTES = 4 * 1024 * 1024;
-const createArtifactStore = createSqliteArtifactStore;
+const artifactStoreClosersByRoot = new Map<string, Set<() => void>>();
+
+function createArtifactStore(root: string): ArtifactStore {
+  const store = createSqliteArtifactStore(root);
+  const closers = artifactStoreClosersByRoot.get(root) ?? new Set<() => void>();
+  closers.add(() => store.close?.());
+  artifactStoreClosersByRoot.set(root, closers);
+  return store;
+}
+
+function closeArtifactStoresUnder(root: string): void {
+  for (const [storeRoot, closers] of artifactStoreClosersByRoot) {
+    if (storeRoot !== root && !storeRoot.startsWith(`${root}${sep}`)) continue;
+    artifactStoreClosersByRoot.delete(storeRoot);
+    for (const close of [...closers].reverse()) close();
+  }
+}
 
 test('public Store mutation waits for a child-held writer lock and preserves metadata', {
   timeout: TEST_TIMEOUT_MS,
@@ -633,6 +653,7 @@ async function withTemporaryDirectory(run: (root: string) => Promise<void>): Pro
   try {
     await run(root);
   } finally {
+    closeArtifactStoresUnder(root);
     await rm(root, { recursive: true, force: true });
   }
 }
