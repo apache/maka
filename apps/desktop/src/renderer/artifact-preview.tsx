@@ -36,7 +36,7 @@ import type {
   ArtifactDescriptor,
   ArtifactTextReadResult,
 } from '@maka/core';
-import { cn, previewVariants, useUiLocale } from '@maka/ui';
+import { cn, diffLineKind, previewVariants, useUiLocale } from '@maka/ui';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
 import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
@@ -106,14 +106,6 @@ function DiffPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
       </pre>
     </div>
   );
-}
-
-function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  return 'ctx';
 }
 
 function HtmlPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {

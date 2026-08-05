@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
-import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
+import { diffLineKind, ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -454,6 +454,33 @@ describe('tool activity presentation', () => {
     assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
     assert.match(markup, /class="maka-tool-output-command"[^>]*>packages\/ui\/src\/tool-activity\.tsx</);
     assert.doesNotMatch(markup, /astryx-codeblock/);
+  });
+
+  // `---`/`+++` only mark a file when the marker is followed by a path. Testing
+  // the bare prefix reads the removal of a YAML document separator or an SQL
+  // `--` comment as a header — the line the reader most needs to see as red.
+  it('reads a removed `---` line as a deletion, not as a file marker', () => {
+    assert.equal(diffLineKind('--- a/x.ts'), 'meta');
+    assert.equal(diffLineKind('+++ b/x.ts'), 'meta');
+    assert.equal(diffLineKind('----'), 'del');
+    assert.equal(diffLineKind('---'), 'del');
+    assert.equal(diffLineKind('+++'), 'add');
+  });
+
+  // A diff arrives newline-terminated; splitting one leaves a trailing empty
+  // field. Flat text hid it, one element per line does not.
+  it('does not draw a blank row after a newline-terminated diff', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: {
+        kind: 'file_diff',
+        paths: ['x.ts'],
+        diff: '@@ -1 +1 @@\n-old\n+new\n',
+      },
+    }));
+    assert.deepEqual(
+      Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]),
+      ['hunk', 'del', 'add'],
+    );
   });
 
   // The row-level counterpart of the sweep below, one level down: the detail

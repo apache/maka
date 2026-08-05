@@ -485,24 +485,26 @@
 }
 .maka-tool-terminal-head { align-items: center; font-variant-ligatures: none; }
 .maka-tool-diff-paths code { color: var(--foreground-secondary); background: transparent; }
-/* Lives inside `.maka-tool-output-panel` now, so it takes the panel's code
-   tier rather than the supporting one it used as a standalone card, and its
-   line tints bleed to the panel edge instead of stopping at a padding gap. */
 .maka-tool-diff-body {
-  font: var(--maka-text-code);
+  font: var(--maka-text-supporting);
   max-height: 320px;
   margin: 0;
+  padding-block: var(--space-1);
   overflow: auto;
   font-variant-ligatures: none;
   white-space: pre;
   word-break: normal;
 }
-.maka-tool-diff-line {
-  display: block;
-  padding-inline: var(--space-3);
-  margin-inline: calc(-1 * var(--space-3));
-  white-space: pre;
+/* Only the chat consumer moved into `.maka-tool-output-panel`, where the diff
+   sits beside a command on the code tier and a 12px body next to 14px reads as
+   a different kind of text. `apps/desktop`'s artifact pane still draws this as
+   a standalone card at the supporting tier its container asks for, so the tier
+   belongs to the panel, not to the shared class. */
+.maka-tool-output-panel .maka-tool-diff-body {
+  font: var(--maka-text-code);
+  padding-block: 0;
 }
+.maka-tool-diff-line { display: block; padding-inline: var(--space-2); white-space: pre; }
 .maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
 .maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {

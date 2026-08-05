@@ -269,8 +269,12 @@ function PtyControlPreview(props: {
  * be tested before the single-character cases or every diff opens with one
  * green and one red line that mean nothing.
  */
-function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
+export function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
+  // The trailing space is what separates a file marker from content: unified
+  // diff writes `--- a/path`, never a bare `---`. Without it, deleting a YAML
+  // document separator or an SQL `--` comment paints the removal as a header —
+  // the one line the reader most needs to see as red.
+  if (line.startsWith('--- ') || line.startsWith('+++ ')) return 'meta';
   if (line.startsWith('@@')) return 'hunk';
   if (line.startsWith('+')) return 'add';
   if (line.startsWith('-')) return 'del';
@@ -298,11 +302,16 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
   // into a diff (commit body, .env file diff, etc.), and never let a
   // 10k-line diff create 10k React elements.
   const { body, capped } = capLines(redactSecrets(props.diff));
+  // A diff arrives newline-terminated, and splitting one leaves a trailing
+  // empty field. As flat text that was invisible; as one element per line it is
+  // a blank tinted row at the end of every diff.
   const lines = body.split('\n');
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
   return (
     <ToolOutputSurface
       kind="file_diff"
       heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
+      body={body}
     >
       <pre className={previewVariants({ part: 'diff-body' })}>
         {lines.map((line, index) => (
