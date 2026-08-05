@@ -27,3 +27,4 @@ apps/desktop/bundled-git.json
 # Generated desktop release inputs and outputs.
 apps/desktop/resources/tools/
 apps/desktop/release/
+apps/desktop/release-sources/

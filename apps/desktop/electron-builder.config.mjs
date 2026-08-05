@@ -47,6 +47,10 @@ export default {
       to: 'licenses/git/LICENSE.txt',
     },
     {
+      from: 'resources/licenses/git/SOURCE_OFFER.txt',
+      to: 'licenses/git/SOURCE_OFFER.txt',
+    },
+    {
       from: '../../NOTICE',
       to: 'licenses/maka/NOTICE',
     },

@@ -10,9 +10,9 @@ Git is licensed under the GNU General Public License version 2. Maka packages a
 stable copy of that license at resources/licenses/git/LICENSE.txt because the
 upstream platform archives do not expose one uniform internal path. Component
 notices that are present in the upstream distribution remain inside resources/git.
-Corresponding source for the exact bundled release is available from:
-
-https://github.com/desktop/dugite-native/releases/tag/v2.53.0-3
+Each Maka GitHub Release carries a source-materials archive for the pinned
+upstream revisions. The written offer and request procedure for complete
+corresponding source are packaged beside this notice in SOURCE_OFFER.txt.
 
 The dugite JavaScript wrapper is licensed under the MIT License; its license is
 packaged at resources/licenses/dugite/LICENSE.

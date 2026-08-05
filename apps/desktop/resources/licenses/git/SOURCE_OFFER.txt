@@ -1,0 +1,21 @@
+Written offer for bundled Git source code
+=========================================
+
+Maka distributes separate Git command-line programs under the GNU General
+Public License version 2. For at least three years after a Maka release is
+distributed, Maka offers any third party the complete corresponding
+machine-readable source code for those GPL-covered programs, including the
+scripts used to control their compilation and installation, for no more than
+the physical cost of providing that source.
+
+Each Maka GitHub Release includes an immediately downloadable source-materials
+archive and manifest for the pinned upstream revisions. To request the complete
+corresponding source for a particular Maka version, open a licensing request at:
+
+https://github.com/maka-agent/maka-agent/issues/new?labels=licensing
+
+Include the Maka version, operating system, CPU architecture, and a reference
+to this written offer. This offer applies to everyone who receives it.
+
+Maka's own source code remains licensed under Apache-2.0. The bundled Git
+programs and their source remain under their respective upstream licenses.
