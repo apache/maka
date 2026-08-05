@@ -80,7 +80,7 @@
     "@maka/core": "0.1.0",
     "@maka/code-mode": "0.1.0",
     "@slack/socket-mode": "^2.0.7",
-    "@slack/web-api": "^7.19.0",
+    "@slack/web-api": "^8.0.0",
     "@wecom/aibot-node-sdk": "1.0.7",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/headless": "^6.0.0",
