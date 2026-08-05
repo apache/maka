@@ -96,8 +96,6 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.chatComposerDrawer.expand': astryx.chat.drawerExpand,
       '@astryx.chatLayout.newMessages': astryx.chat.newMessages,
       '@astryx.chatLayoutScrollButton.scrollToBottom': astryx.chat.scrollToBottom,
-      '@astryx.chatSendButton.send': astryx.chat.send,
-      '@astryx.chatSendButton.stop': astryx.chat.stop,
       '@astryx.chatToolCalls.error': astryx.chat.toolCallsError,
       '@astryx.chatToolCalls.groupLabel': astryx.chat.toolCallsGroupLabel,
       '@astryx.chatTriggerMenu.suggestions': astryx.chat.triggerSuggestions,
@@ -154,7 +152,6 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.lightbox.next': astryx.lightbox.next,
 
       // Shell chrome: side nav, tabs, banners, breadcrumbs, resize handles.
-      '@astryx.appShell.mobileNavigation': astryx.appShell.mobileNavigation,
       '@astryx.banner.collapse': astryx.banner.collapse,
       '@astryx.banner.expand': astryx.banner.expand,
       '@astryx.banner.dismiss': shared.primitives.close,
@@ -169,11 +166,6 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
 
       // Table (usage settings) and the chat transcript's attachment chrome.
       '@astryx.table.label': astryx.table.label,
-      '@astryx.table.noData': astryx.table.noData,
-      '@astryx.table.filter.allPlaceholder': astryx.table.filterAll,
-      '@astryx.table.filter.apply': astryx.table.filterApply,
-      '@astryx.table.filter.reset': astryx.table.filterReset,
-      '@astryx.tableFiltering.filterByColumn': astryx.table.filterByColumn,
       '@astryx.thumbnail.fallbackName': astryx.thumbnail.fallbackName,
       '@astryx.thumbnail.open': astryx.thumbnail.open,
       '@astryx.thumbnail.remove': astryx.thumbnail.remove,

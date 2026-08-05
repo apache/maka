@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { createRequire } from 'node:module';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
@@ -230,11 +231,18 @@ it('localizes Astryx Markdown accessibility copy in Chinese', () => {
 function assertChineseAstryxOverrides(keys: readonly string[]) {
   const messages = astryxMessageOverrides('zh')?.zh ?? {};
   for (const key of keys) {
-    // Assert presence first: a deleted key would coalesce to '', which holds no
-    // Latin letters and would satisfy the translation check on its own.
+    // Assert presence first: this reads the override map directly (no catalog
+    // resolution), so a deleted entry yields undefined → '' — which holds no
+    // Latin letters and would satisfy the translation check on its own. (At
+    // runtime the same missing entry falls back to Astryx's shipped en
+    // catalog, i.e. English in the UI.)
     const value = messages[key];
     assert.ok(value, `missing override: ${key}`);
-    assert.doesNotMatch(value, /[A-Za-z]/, `untranslated: ${key}`);
+    assert.doesNotMatch(
+      value.replace(/\{[^}]*\}/g, ''),
+      /[A-Za-z]/,
+      `untranslated: ${key}`,
+    );
   }
 }
 
@@ -242,7 +250,55 @@ it('localizes the Astryx chat chrome adopted in #1795', () => {
   const messages = astryxMessageOverrides('zh')?.zh ?? {};
   assert.equal(messages['@astryx.chatLayout.newMessages'], '跳到最新消息');
   assert.equal(messages['@astryx.chatLayoutScrollButton.scrollToBottom'], '滚动到底部');
-  assertChineseAstryxOverrides(['@astryx.chatSendButton.send', '@astryx.chat.status.sent']);
+  assertChineseAstryxOverrides(['@astryx.chatToolCalls.error', '@astryx.chat.status.sent']);
+});
+
+// Whole-map sweep: every override must target a key Astryx actually ships,
+// carry the same ICU arguments as the en default (a renamed placeholder
+// throws at format time), and hold no Latin outside {…} segments. The pinned
+// tests above cover specific regressions; this keeps the other ~70 entries
+// honest without naming them one by one.
+it('every zh override is a real Astryx key, translated, with matching ICU args', () => {
+  const require = createRequire(import.meta.url);
+  const catalog: Record<string, { defaultMessage: string }> = require(
+    '@astryxdesign/core/locales/en.json',
+  );
+  // Top-level ICU argument names only: inside `{count, plural, one {result}}`
+  // the `{result}` is branch text, not an argument — a naive regex would
+  // report it and flag every zh string that drops an inapplicable plural.
+  const icuArgs = (message: string) => {
+    const args = new Set<string>();
+    let depth = 0;
+    for (let i = 0; i < message.length; i++) {
+      if (message[i] === '{') {
+        if (depth === 0) {
+          const m = /^\{\s*([a-zA-Z0-9_]+)/.exec(message.slice(i));
+          if (m?.[1]) args.add(m[1]);
+        }
+        depth++;
+      } else if (message[i] === '}') {
+        depth = Math.max(0, depth - 1);
+      }
+    }
+    return args;
+  };
+  const messages = astryxMessageOverrides('zh')?.zh ?? {};
+  assert.ok(Object.keys(messages).length > 0);
+  for (const [key, value] of Object.entries(messages)) {
+    const shipped = catalog[key];
+    assert.ok(shipped, `override targets a key Astryx does not ship: ${key}`);
+    assert.ok(value, `empty override: ${key}`);
+    assert.doesNotMatch(
+      value.replace(/\{[^}]*\}/g, ''),
+      /[A-Za-z]/,
+      `untranslated: ${key} = ${value}`,
+    );
+    assert.deepEqual(
+      icuArgs(value),
+      icuArgs(shipped.defaultMessage),
+      `ICU argument mismatch for ${key}: zh "${value}" vs en "${shipped.defaultMessage}"`,
+    );
+  }
 });
 
 it('localizes the Lightbox reached via useLightbox in chat-turn', () => {

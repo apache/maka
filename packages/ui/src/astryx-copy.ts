@@ -16,7 +16,6 @@
  * config drifting against upstream.
  */
 export interface AstryxCopy {
-  appShell: { mobileNavigation: string };
   banner: { collapse: string; expand: string };
   breadcrumbs: { label: string };
   calendar: {
@@ -45,8 +44,6 @@ export interface AstryxCopy {
     drawerExpand: string;
     newMessages: string;
     scrollToBottom: string;
-    send: string;
-    stop: string;
     toolCallsError: string;
     toolCallsGroupLabel: string;
     triggerSuggestions: string;
@@ -82,20 +79,12 @@ export interface AstryxCopy {
     itemExpand: string;
   };
   tabList: { label: string };
-  table: {
-    label: string;
-    noData: string;
-    filterAll: string;
-    filterApply: string;
-    filterReset: string;
-    filterByColumn: string;
-  };
+  table: { label: string };
   thumbnail: { fallbackName: string; open: string; remove: string };
   token: { remove: string };
 }
 
 export const ASTRYX_COPY_ZH: AstryxCopy = {
-  appShell: { mobileNavigation: '移动端导航' },
   banner: { collapse: '收起', expand: '展开' },
   breadcrumbs: { label: '面包屑导航' },
   calendar: {
@@ -124,8 +113,6 @@ export const ASTRYX_COPY_ZH: AstryxCopy = {
     drawerExpand: '展开{label}',
     newMessages: '跳到最新消息',
     scrollToBottom: '滚动到底部',
-    send: '发送',
-    stop: '停止',
     toolCallsError: '错误：{message}',
     toolCallsGroupLabel: '{count} 次工具调用',
     triggerSuggestions: '建议',
@@ -160,14 +147,7 @@ export const ASTRYX_COPY_ZH: AstryxCopy = {
     itemExpand: '展开{label}',
   },
   tabList: { label: '标签页' },
-  table: {
-    label: '表格',
-    noData: '暂无数据',
-    filterAll: '全部',
-    filterApply: '应用',
-    filterReset: '重置',
-    filterByColumn: '筛选{header}',
-  },
+  table: { label: '表格' },
   thumbnail: { fallbackName: '缩略图', open: '打开{accessibleName}', remove: '移除{accessibleName}' },
   token: { remove: '移除{label}' },
 };
