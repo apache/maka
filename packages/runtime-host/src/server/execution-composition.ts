@@ -835,6 +835,7 @@ export async function createExecutionRuntimeHostComposition(
     const connectionEffects = new HostConnectionEffectCoordinator({
       stores: runtimePolicyStores,
       activation: runtimePolicyActivation,
+      oauthCredentials,
       onCommittedMutation: registerBackendInvalidation,
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
