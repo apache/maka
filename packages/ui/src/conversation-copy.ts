@@ -160,13 +160,11 @@ export interface ConversationCopy {
     loading: string;
   };
   workspace: {
-    choose: string;
     current: string;
     addProject: string;
     noProject: string;
     relink: string;
-    currentProject: string;
-    chooseTitle: (branch?: string) => string;
+    searchPlaceholder: string;
     chooseAriaLabel: (label: string, branch?: string) => string;
   };
   messages: {
@@ -367,8 +365,7 @@ const CONVERSATION_COPY = {
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
     workspace: {
-      choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', currentProject: '当前项目',
-      chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
+      current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', searchPlaceholder: '搜索项目…',
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
     messages: {
@@ -508,8 +505,7 @@ const CONVERSATION_COPY = {
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
     workspace: {
-      choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', currentProject: 'Current project',
-      chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
+      current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', searchPlaceholder: 'Search projects…',
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
     messages: {
