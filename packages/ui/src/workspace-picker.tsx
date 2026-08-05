@@ -67,12 +67,13 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
     [wp.projects],
   );
 
-  // Catalogue first, then the two actions after a divider. The DropdownMenu
-  // this replaced pinned them below a scrolling catalogue so they stayed on
-  // screen; Selector scrolls as one list, so a long catalogue now pushes them
-  // under the fold. That is the right trade: switching projects is the common
-  // act and stays at the top, adding one is rare, and search reaches any row —
-  // including these — faster than scrolling did.
+  // Catalogue first, then the two actions after a divider — and the actions
+  // stay pinned to the menu's bottom edge while only the catalogue scrolls, so
+  // "add a project" never falls under the fold on a long list. Selector scrolls
+  // its whole list as one region and has no footer slot, so the pinning is done
+  // in CSS: these two rows are marked here and `hero.css` sticks them. See the
+  // sticky block there for why the backdrop is painted by the list rather than
+  // by the rows.
   //
   // Both actions carry an icon so every row shares one text axis. Without them
   // the two labels started at the icon column while the projects' text started
@@ -83,12 +84,13 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
         value: project.id,
         label: project.name,
       })),
-      // A divider separates the catalogue from the actions, so on first run —
-      // no projects yet — it would open the menu with a rule above its first
-      // row, dividing nothing.
+      // A divider separates the catalogue from the pinned actions, so on first
+      // run — no projects yet — it would open the menu with a rule above its
+      // first row, dividing nothing. The two actions carry no rule between
+      // them: pinned together against the scrolling catalogue they already read
+      // as one footer, and a second rule inside a two-row block is noise.
       ...(wp.projects.length > 0 ? [{ type: 'divider' } as const] : []),
       { value: ADD_PROJECT_VALUE, label: copy.addProject },
-      { type: 'divider' },
       // Codex names this row "work without a project", which says the act
       // rather than the empty value. Not adopted: Selector paints the trigger
       // from the selected option's own label, with no slot to shorten it, so
@@ -140,7 +142,11 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       }}
       renderOption={(option: SelectorOptionData) => (
         <SelectorOption
-          className="maka-workspace-picker-option"
+          className={
+            option.value === ADD_PROJECT_VALUE || option.value === NO_PROJECT_VALUE
+              ? 'maka-workspace-picker-option maka-workspace-picker-option-pinned'
+              : 'maka-workspace-picker-option'
+          }
           icon={
             option.value === ADD_PROJECT_VALUE
               ? <Plus size={13} aria-hidden="true" />
