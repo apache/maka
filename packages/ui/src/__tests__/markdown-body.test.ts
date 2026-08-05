@@ -219,22 +219,14 @@ it('localizes Astryx Markdown accessibility copy in Chinese', () => {
   assert.doesNotMatch(markup, />Checkbox</);
 });
 
-// `chat` used to be listed here too: Maka rendered its own transcript chrome,
-// so an Astryx chat override was dead config. #1795 moved the chat surfaces
-// onto Astryx ChatLayout without bringing the copy across, which is how the
-// scroll-to-bottom pill ended up reading "New messages" in a Chinese UI.
-// Lightbox is still ours to guard — nothing renders it.
-it('ships overrides only for Astryx surfaces Maka renders', () => {
-  const messages = astryxMessageOverrides('zh')?.zh ?? {};
-  for (const key of Object.keys(messages)) {
-    assert.doesNotMatch(
-      key,
-      /^@astryx\.lightbox/,
-      `dead Astryx locale override: ${key}`,
-    );
-  }
-});
-
+// A dead-config guard used to sit here, banning override keys for Astryx
+// surfaces Maka supposedly never rendered. Both of its entries rotted the
+// same way: `chat` stopped being true at #1795 (ChatLayout took over the
+// transcript, and the guard then blocked the fix for the English
+// scroll-to-bottom pill), and `lightbox` was never true — chat-turn.tsx
+// reaches Lightbox through useLightbox, which a JSX-tag scan misses. A ban
+// list keyed to "what we render today" goes stale silently, so it is gone;
+// the tests below pin the surfaces we know are live instead.
 it('localizes the Astryx chat chrome adopted in #1795', () => {
   const messages = astryxMessageOverrides('zh')?.zh ?? {};
   assert.equal(messages['@astryx.chatLayout.newMessages'], '跳到最新消息');
@@ -242,6 +234,20 @@ it('localizes the Astryx chat chrome adopted in #1795', () => {
   for (const key of ['@astryx.chatSendButton.send', '@astryx.chat.status.sent']) {
     // Assert presence first: a deleted key would coalesce to '', which holds no
     // Latin letters and would satisfy the translation check on its own.
+    const value = messages[key];
+    assert.ok(value, `missing override: ${key}`);
+    assert.doesNotMatch(value, /[A-Za-z]/, `untranslated: ${key}`);
+  }
+});
+
+it('localizes the Lightbox reached via useLightbox in chat-turn', () => {
+  const messages = astryxMessageOverrides('zh')?.zh ?? {};
+  for (const key of [
+    '@astryx.lightbox.mediaViewer',
+    '@astryx.lightbox.close',
+    '@astryx.lightbox.previous',
+    '@astryx.lightbox.next',
+  ]) {
     const value = messages[key];
     assert.ok(value, `missing override: ${key}`);
     assert.doesNotMatch(value, /[A-Za-z]/, `untranslated: ${key}`);

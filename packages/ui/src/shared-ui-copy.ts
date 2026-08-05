@@ -162,6 +162,7 @@ export interface SharedUiCopy {
       timeSuffix: string;
     };
     inputStatus: { error: string; success: string; warning: string };
+    lightbox: { mediaViewer: string; previous: string; next: string };
     menus: { dropdown: string; more: string };
     multiSelector: { clearAll: string; selectAll: string };
     /** Selector and MultiSelector render the same two search affordances. */
@@ -329,6 +330,7 @@ const SHARED_UI_COPY = {
         timeSuffix: '{label}时间',
       },
       inputStatus: { error: '错误详情', success: '成功详情', warning: '警告详情' },
+      lightbox: { mediaViewer: '媒体查看器', previous: '上一张', next: '下一张' },
       menus: { dropdown: '菜单', more: '更多选项' },
       multiSelector: { clearAll: '清除全部{label}', selectAll: '全选' },
       search: { options: '搜索选项', placeholder: '搜索…' },
@@ -496,6 +498,7 @@ const SHARED_UI_COPY = {
         timeSuffix: '{label} time',
       },
       inputStatus: { error: 'Error details', success: 'Success details', warning: 'Warning details' },
+      lightbox: { mediaViewer: 'Media viewer', previous: 'Previous', next: 'Next' },
       menus: { dropdown: 'Menu', more: 'More options' },
       multiSelector: { clearAll: 'Clear all {label}', selectAll: 'Select all' },
       search: { options: 'Search options', placeholder: 'Search…' },

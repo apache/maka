@@ -143,6 +143,13 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.input.statusButton.success': a.inputStatus.success,
       '@astryx.input.statusButton.warning': a.inputStatus.warning,
 
+      // Lightbox — reached through useLightbox in chat-turn.tsx (image
+      // preview), not a <Lightbox> element; JSX-tag scans miss it.
+      '@astryx.lightbox.mediaViewer': a.lightbox.mediaViewer,
+      '@astryx.lightbox.close': shared.primitives.close,
+      '@astryx.lightbox.previous': a.lightbox.previous,
+      '@astryx.lightbox.next': a.lightbox.next,
+
       // Shell chrome: side nav, tabs, banners, breadcrumbs, resize handles.
       '@astryx.appShell.mobileNavigation': a.appShell.mobileNavigation,
       '@astryx.banner.collapse': a.banner.collapse,
