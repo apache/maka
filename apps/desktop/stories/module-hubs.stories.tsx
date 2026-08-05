@@ -898,6 +898,7 @@ export const ExtensionsSkillsInspector: Story = {
   },
 };
 
+// Real path: sidebar → 扩展 → 技能, scrolling a long installed list.
 // Regression contract for #2236: the view switch rides the fixed header, so
 // scrolling the list must not move it. Rows scroll; the switch stays put.
 export const ExtensionsSkillsScrollContainment: Story = {
