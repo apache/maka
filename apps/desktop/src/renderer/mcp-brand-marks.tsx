@@ -5,9 +5,13 @@
 // icon sources, unified behind one `BrandMark` model that carries each source's
 // NATIVE viewBox so no path is rescaled or redrawn:
 //   - `simple-icons` (CC0) — the de-facto brand set; 24×24 viewBox, single path.
-//     Covers Slack, LINE, Google Calendar, Figma, Vercel, Supabase, Notion and
+//     Covers LINE, Google Calendar, Figma, Vercel, Supabase, Notion and
 //     Apple (macOS 应用). Per-icon *named* ESM imports so the bundler tree-shakes
 //     the multi-thousand icon catalog down to only the marks we render.
+//   - Slack: vendored from the repo's bot-channel logo asset (Simple Icons,
+//     CC0-1.0 — see packages/ui/src/bot-brand-logo.tsx). simple-icons dropped
+//     Slack in v16, so the four glyph paths are pinned here instead; the
+//     mark stays library-sourced geometry, never hand-drawn art.
 //   - `@ant-design/icons-svg` (MIT, Ant Group) — ships DingTalk's mark, since
 //     DingTalk is an Alibaba product. Its AST uses a "64 64 896 896" viewBox; we
 //     deep-import only the one `DingtalkOutlined` asn module (sideEffects:false)
@@ -35,7 +39,7 @@ import type { AbstractNode } from '@ant-design/icons-svg/es/types.js';
 import DingtalkOutlined from '@ant-design/icons-svg/es/asn/DingtalkOutlined.js';
 import type { CSSProperties, ReactElement } from 'react';
 import type { SimpleIcon } from 'simple-icons';
-import { siApple, siFigma, siGooglecalendar, siLine, siNotion, siSlack, siSupabase, siVercel } from 'simple-icons';
+import { siApple, siFigma, siGooglecalendar, siLine, siNotion, siSupabase, siVercel } from 'simple-icons';
 import { shouldUseCurrentColorOnDark } from './mcp-brand-contrast.js';
 import type { McpCatalogEntry } from './mcp-catalog';
 
@@ -88,11 +92,29 @@ const FEISHU_MARK: BrandMark = {
   ],
 };
 
+// Slack — vendored from the bot-channel logo asset (Simple Icons, CC0-1.0,
+// see packages/ui/src/bot-brand-logo.tsx SlackLogo). The four glyph paths sit
+// in a 0..16 coordinate space there (translate(4 4) inside the 24×24 badge);
+// BrandMark renders a bare glyph on the neutral plate, so the badge rect is
+// dropped and the viewBox is the glyphs' own 16×16 space. Filled with the
+// official Slack brand plum (#4A154B); the luminance gate keeps it readable in
+// dark.
+const SLACK_MARK: BrandMark = {
+  viewBox: '0 0 16 16',
+  hex: '#4A154B',
+  paths: [
+    'M3.38 9.64a1.69 1.69 0 1 1-1.69-1.69h1.69zM4.23 9.64a1.69 1.69 0 0 1 3.38 0v4.23a1.69 1.69 0 0 1-3.38 0z',
+    'M6.36 3.38a1.69 1.69 0 1 1 1.69-1.69v1.69zM6.36 4.23a1.69 1.69 0 0 1 0 3.38H2.13a1.69 1.69 0 0 1 0-3.38z',
+    'M12.62 6.36a1.69 1.69 0 1 1 1.69 1.69h-1.69zM11.77 6.36a1.69 1.69 0 0 1-3.38 0V2.13a1.69 1.69 0 0 1 3.38 0z',
+    'M9.64 12.62a1.69 1.69 0 1 1-1.69 1.69v-1.69zM9.64 11.77a1.69 1.69 0 0 1 0-3.38h4.23a1.69 1.69 0 0 1 0 3.38z',
+  ],
+};
+
 // Catalog id → brand mark. Only ids present here render a real library mark (and
 // drive the neutral `data-logo` plate in mcp-page.tsx); every other entry falls
 // back to its text mark.
 const MCP_BRAND_MARKS: Record<string, BrandMark> = {
-  slack: fromSimpleIcon(siSlack),
+  slack: SLACK_MARK,
   line: fromSimpleIcon(siLine),
   'google-calendar': fromSimpleIcon(siGooglecalendar),
   figma: fromSimpleIcon(siFigma),
