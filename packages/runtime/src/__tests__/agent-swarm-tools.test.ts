@@ -145,6 +145,27 @@ describe('AgentSwarm adapter', () => {
     );
   });
 
+  test('rejects a missing per-item selector at the shared runtime boundary', async () => {
+    let starts = 0;
+    const runtime = buildRuntime(async () => {
+      starts += 1;
+      return childResult(starts);
+    });
+
+    const result = await executeTool(
+      runtime,
+      buildAgentSwarmTool(),
+      { items: [{ item_id: 'missing-selector', task: 'Inspect runtime validation.' }] },
+      new AbortController(),
+    );
+
+    assert.equal(starts, 0);
+    assert.match(
+      String((result as { error?: unknown }).error),
+      /Provide exactly one of subagent_id or legacy profile/,
+    );
+  });
+
   test('accepts prompt_template with string items and rejects ambiguous template input', () => {
     const tool = buildAgentSwarmTool();
     const schema = tool.parameters as {
@@ -1218,7 +1239,7 @@ describe('AgentSwarm adapter', () => {
     await Promise.all(pending.slice(0, -1));
   });
 
-  test('persists partial as settled and cancellation as interrupted', async () => {
+  test('persists partial as settled, all-failed as errored, and cancellation as interrupted', async () => {
     const events: SessionEvent[] = [];
     const telemetry: ToolInvocationRecord[] = [];
     const runtime = buildRuntime(
@@ -1245,6 +1266,24 @@ describe('AgentSwarm adapter', () => {
       'tool-partial',
     );
 
+    const failedResult = await executeTool(
+      buildRuntime(
+        async (input) => {
+          const index = Number(input.prompt.slice('task-'.length));
+          return childResult(index, 'failed');
+        },
+        { recordToolInvocation: (record) => telemetry.push(record) },
+      ),
+      swarmTool,
+      {
+        items: [swarmItem(2), swarmItem(3)],
+        max_concurrency: 2,
+      },
+      new AbortController(),
+      events,
+      'tool-failed',
+    );
+
     const cancelledController = new AbortController();
     cancelledController.abort(new Error('stop before start'));
     await executeTool(
@@ -1262,6 +1301,14 @@ describe('AgentSwarm adapter', () => {
           event.type === 'tool_result' && event.toolUseId === 'tool-partial',
       )?.isError,
       false,
+    );
+    assert.equal((failedResult as AgentSwarmToolResult).status, 'failed');
+    assert.equal(
+      events.find(
+        (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
+          event.type === 'tool_result' && event.toolUseId === 'tool-failed',
+      )?.isError,
+      true,
     );
     assert.equal(
       events.find(
@@ -1286,6 +1333,11 @@ describe('AgentSwarm adapter', () => {
     assert.equal(
       telemetry.find((record) => record.toolCallId === 'tool-cancelled')?.resultSummary?.status,
       'cancelled',
+    );
+    assert.equal(telemetry.find((record) => record.toolCallId === 'tool-failed')?.status, 'error');
+    assert.equal(
+      telemetry.find((record) => record.toolCallId === 'tool-failed')?.resultSummary?.status,
+      'failed',
     );
   });
 

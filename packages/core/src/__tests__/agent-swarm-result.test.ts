@@ -30,17 +30,23 @@ describe('agent swarm result contract', () => {
       () =>
         decodeCanonicalToolResultContent({
           ...agentSwarmResult(),
-          status: 'failed',
+          status: 'unknown',
         }),
       /Invalid tool result content/,
     );
   });
 
-  test('keeps partial batches settled and classifies cancellation as interrupted', () => {
+  test('keeps partial batches settled and classifies failed and cancelled batches', () => {
     const partial = { ...agentSwarmResult(), status: 'partial' as const };
+    const failed = decodeCanonicalToolResultContent({
+      ...agentSwarmResult(),
+      status: 'failed',
+      items: [{ ...agentSwarmResult().items[0], status: 'failed' }],
+    });
     const cancelled = { ...agentSwarmResult(), status: 'cancelled' as const };
 
     assert.equal(toolResultActivityStatus(false, partial), 'completed');
+    assert.equal(toolResultActivityStatus(true, failed), 'errored');
     assert.equal(isCancelledToolResultContent(cancelled), true);
     assert.equal(toolResultActivityStatus(true, cancelled), 'interrupted');
   });

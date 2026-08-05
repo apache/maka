@@ -726,7 +726,7 @@ export type ToolResultContent =
     }
   | {
       kind: 'agent_swarm';
-      status: 'completed' | 'partial' | 'cancelled';
+      status: 'completed' | 'partial' | 'failed' | 'cancelled';
       items: ReadonlyArray<{
         itemId: string;
         index: number;

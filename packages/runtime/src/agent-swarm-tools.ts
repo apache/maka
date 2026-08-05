@@ -438,10 +438,15 @@ export function buildAgentSwarmTool(
         completedAt,
         durationMs: Math.max(0, completedAt - startedAt),
       };
-      traceAgentSwarm(ctx, 'tool_completed', 'batch_completed', {
-        ...projectAgentSwarmResult(result),
-        resumedItemCount: prepared.items.filter((item) => item.mode === 'resume').length,
-      });
+      traceAgentSwarm(
+        ctx,
+        status === 'failed' ? 'tool_failed' : 'tool_completed',
+        'batch_completed',
+        {
+          ...projectAgentSwarmResult(result),
+          resumedItemCount: prepared.items.filter((item) => item.mode === 'resume').length,
+        },
+      );
       return result;
     },
   };
@@ -1116,6 +1121,7 @@ function mapChildResult(
 function aggregateAgentSwarmStatus(
   items: AgentSwarmToolResult['items'],
 ): AgentSwarmToolResult['status'] {
+  if (items.every((item) => item.status === 'failed')) return 'failed';
   if (items.some((item) => item.status === 'cancelled')) return 'cancelled';
   if (items.every((item) => item.status === 'completed')) return 'completed';
   return 'partial';
