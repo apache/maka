@@ -304,7 +304,7 @@ const SHARED_UI_COPY = {
         statusSent: '已发送',
         drawerCollapse: '收起{label}',
         drawerExpand: '展开{label}',
-        newMessages: '有新消息',
+        newMessages: '跳到最新消息',
         scrollToBottom: '滚动到底部',
         send: '发送',
         stop: '停止',

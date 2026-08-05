@@ -237,7 +237,7 @@ it('ships overrides only for Astryx surfaces Maka renders', () => {
 
 it('localizes the Astryx chat chrome adopted in #1795', () => {
   const messages = astryxMessageOverrides('zh')?.zh ?? {};
-  assert.equal(messages['@astryx.chatLayout.newMessages'], '有新消息');
+  assert.equal(messages['@astryx.chatLayout.newMessages'], '跳到最新消息');
   assert.equal(messages['@astryx.chatLayoutScrollButton.scrollToBottom'], '滚动到底部');
   for (const key of ['@astryx.chatSendButton.send', '@astryx.chat.status.sent']) {
     assert.doesNotMatch(messages[key] ?? '', /[A-Za-z]/, `untranslated: ${key}`);
