@@ -22,16 +22,23 @@ export interface InspectorIpcDeps {
     sessionId: string,
     runId: string,
   ) => Promise<readonly { readonly type: string; readonly data?: unknown }[]>;
+  /**
+   * The on-disk record file both ledgers live in — the file the trace is
+   * projected from. A path computed at boot, not a read, so it has no failure
+   * mode of its own: the channel returns it bare rather than in a Result.
+   */
+  traceRecordFilePath: string;
 }
 
 export function registerInspectorIpc(deps: InspectorIpcDeps): void {
   deps.ipcMain.handle('inspector:trace', (_event, sessionId: string) =>
     tryResult(async () => await readSessionTrace(deps, sessionId), 'INSPECTOR_TRACE_FAILED'),
   );
+  deps.ipcMain.handle('inspector:traceFile', () => deps.traceRecordFilePath);
 }
 
 export async function readSessionTrace(
-  deps: Omit<InspectorIpcDeps, 'ipcMain'>,
+  deps: Omit<InspectorIpcDeps, 'ipcMain' | 'traceRecordFilePath'>,
   sessionId: string,
 ): Promise<SessionTrace> {
   const [runtimeEvents, runs] = await Promise.all([

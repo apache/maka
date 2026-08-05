@@ -972,6 +972,10 @@ const makaBridge = {
     trace(sessionId: string): Promise<Result<SessionTrace>> {
       return ipcRenderer.invoke('inspector:trace', sessionId);
     },
+    /** The record file the trace is projected from; static for a workspace. */
+    traceFile(): Promise<string> {
+      return ipcRenderer.invoke('inspector:traceFile');
+    },
   },
   dailyReview: {
     day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>> {

@@ -161,6 +161,7 @@ describe('inspector trace read', () => {
       },
       listSessionRuns: async () => [],
       readRunEvents: async () => [],
+      traceRecordFilePath: '/data/runtime.sqlite',
     });
 
     const handler = handlers.get('inspector:trace');
@@ -171,6 +172,30 @@ describe('inspector trace read', () => {
     };
     assert.equal(result.ok, false);
     assert.equal(result.error?.code, 'INSPECTOR_TRACE_FAILED');
+  });
+
+  it('answers the record file path bare, without a Result wrapper', async () => {
+    // The path is computed at boot, not read: it has no failure mode, so
+    // wrapping it in a Result would invent one. It is returned as the string
+    // the panel copies.
+    type InvokeHandler = Parameters<IpcMain['handle']>[1];
+    const handlers = new Map<string, InvokeHandler>();
+    registerInspectorIpc({
+      ipcMain: {
+        handle: (channel, handler) => {
+          handlers.set(channel, handler);
+        },
+      },
+      readSessionRuntimeEvents: async () => [],
+      listSessionRuns: async () => [],
+      readRunEvents: async () => [],
+      traceRecordFilePath: 'C:\\data\\runtime.sqlite',
+    });
+
+    const handler = handlers.get('inspector:traceFile');
+    assert.ok(handler, 'the channel is registered');
+    const path = await handler(undefined as never);
+    assert.equal(path, 'C:\\data\\runtime.sqlite');
   });
 
   it('counts a run it cannot read at all, instead of failing the whole trace', async () => {
