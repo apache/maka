@@ -5,8 +5,9 @@ import { useAppShellSessionList } from './use-app-shell-session-list';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease';
 import {
   clearNewTaskReloadIntent,
-  hasNewTaskReloadIntent,
   markNewTaskReloadIntent,
+  readNewTaskReloadIntent,
+  sessionCreatedSinceNewTaskIntent,
 } from './new-task-reload-intent';
 
 type ToastApi = {
@@ -20,6 +21,8 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const activeIdRef = useRef<string | undefined>(undefined);
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
+  const reloadAwareSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
+  const newTaskReloadIntentRef = useRef(readNewTaskReloadIntent());
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [messageLoadPending, setMessageLoadPending] = useState(false);
   const messageRetryPendingRef = useRef<Set<string>>(new Set());
@@ -46,11 +49,36 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
       readSelectionRevision: () => selectionRevisionRef.current,
       select: setActiveId,
     });
-    if (hasNewTaskReloadIntent()) bootstrapSelectionLeaseRef.current.release();
+  }
+  if (!reloadAwareSelectionLeaseRef.current) {
+    reloadAwareSelectionLeaseRef.current = {
+      reconcile(nextSessions): boolean {
+        const intent = newTaskReloadIntentRef.current;
+        if (!intent) return bootstrapSelectionLeaseRef.current!.reconcile(nextSessions);
+
+        const created = sessionCreatedSinceNewTaskIntent(intent, nextSessions);
+        if (!created) return false;
+
+        // The persisted Session catalog is the authority that survives renderer
+        // replacement. Once it contains a Session created after this explicit
+        // new-task surface began, take the user to it and retire the lease.
+        newTaskReloadIntentRef.current = undefined;
+        clearNewTaskReloadIntent();
+        bootstrapSelectionLeaseRef.current!.release();
+        setActiveId(created.id);
+        return true;
+      },
+      release(): void {
+        // While a reload intent is unresolved, later bootstrap snapshots may be
+        // the first to contain an in-flight Session creation.
+        if (!newTaskReloadIntentRef.current) bootstrapSelectionLeaseRef.current!.release();
+      },
+    };
   }
 
   function startNewSession(): void {
-    markNewTaskReloadIntent();
+    markNewTaskReloadIntent(sessionList.sessionsRef.current.map(({ id }) => id));
+    newTaskReloadIntentRef.current = readNewTaskReloadIntent();
     setActiveId(undefined);
     setMessages([]);
   }
@@ -65,7 +93,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     ...sessionList,
     activeId,
     activeIdRef,
-    bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
+    bootstrapSelectionLease: reloadAwareSelectionLeaseRef.current,
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
