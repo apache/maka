@@ -930,6 +930,47 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(event.actions?.stateDelta?.activityKind, 'command');
   });
 
+  test('tool activity mapping retains nested CodeMode replay and parent identity', () => {
+    const memory = createSessionEventMapMemory();
+    const start = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'tool_start',
+        toolUseId: 'nested-1',
+        toolName: 'Read',
+        operationId: 'nested-op-1',
+        args: {},
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        parentToolCallId: 'exec-1',
+        parentOperationId: 'exec-op-1',
+      }),
+      ctx,
+      memory,
+    );
+    const result = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'tool_result',
+        toolUseId: 'nested-1',
+        operationId: 'nested-op-1',
+        isError: false,
+        content: { kind: 'text', text: 'ok' },
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        parentToolCallId: 'exec-1',
+        parentOperationId: 'exec-op-1',
+      }),
+      ctx,
+      memory,
+    );
+
+    for (const event of [start, result]) {
+      assert.equal(event.origin, 'code_mode');
+      assert.equal(event.modelVisibility, 'hidden');
+      assert.equal(event.refs?.parentToolCallId, 'exec-1');
+      assert.equal(event.refs?.parentOperationId, 'exec-op-1');
+    }
+  });
+
   test('owns independent tool args across SessionEvent to RuntimeEvent mappings', () => {
     const sourceArgs = { content: 'approved', layout: { cols: 120 } };
     const sourceEvent = ev({

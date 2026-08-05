@@ -771,6 +771,11 @@ export interface ToolCallMessage {
    * to re-pair tools with their step after a restart.
    */
   stepId?: string;
+  /** Execution surface and replay policy retained for missing-ledger recovery. */
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentToolCallId?: string;
+  parentOperationId?: string;
 }
 
 export interface ToolResultMessage {
@@ -787,6 +792,11 @@ export interface ToolResultMessage {
   /** Raw provider result retained only for provider-native replay. */
   providerOutput?: unknown;
   durationMs?: number;
+  /** Execution surface and replay policy retained for missing-ledger recovery. */
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentToolCallId?: string;
+  parentOperationId?: string;
 }
 
 export interface PermissionDecisionMessage {
@@ -908,11 +918,30 @@ const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
-  ['activityKind', 'displayName', 'intent', 'providerOptions', 'providerExecuted', 'stepId'],
+  [
+    'activityKind',
+    'displayName',
+    'intent',
+    'providerOptions',
+    'providerExecuted',
+    'stepId',
+    'origin',
+    'modelVisibility',
+    'parentToolCallId',
+    'parentOperationId',
+  ],
 );
 const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'isError', 'content'],
-  ['durationMs', 'providerExecuted', 'providerOutput'],
+  [
+    'durationMs',
+    'providerExecuted',
+    'providerOutput',
+    'origin',
+    'modelVisibility',
+    'parentToolCallId',
+    'parentOperationId',
+  ],
 );
 const PERMISSION_DECISION_MESSAGE_SHAPE = defineObjectShape<PermissionDecisionMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'toolName', 'decision'],
@@ -1058,7 +1087,8 @@ function decodeStoredMessage(
         isOptionalString(message.intent) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
-        isOptionalString(message.stepId)
+        isOptionalString(message.stepId) &&
+        isToolActivityIdentity(message)
       )
         return message as unknown as ToolCallMessage;
       break;
@@ -1069,7 +1099,8 @@ function decodeStoredMessage(
         typeof message.toolUseId === 'string' &&
         typeof message.isError === 'boolean' &&
         (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
-        isOptionalFiniteDuration(message.durationMs)
+        isOptionalFiniteDuration(message.durationMs) &&
+        isToolActivityIdentity(message)
       )
         return message as unknown as ToolResultMessage;
       break;
@@ -1200,6 +1231,17 @@ function isMessageOrigin(value: unknown): value is MessageOrigin {
 
 function isOptionalFiniteDuration(value: unknown): boolean {
   return value === undefined || isFiniteNumber(value);
+}
+
+function isToolActivityIdentity(value: Record<string, unknown>): boolean {
+  return (
+    (value.origin === undefined || value.origin === 'provider' || value.origin === 'code_mode') &&
+    (value.modelVisibility === undefined ||
+      value.modelVisibility === 'visible' ||
+      value.modelVisibility === 'hidden') &&
+    isOptionalString(value.parentToolCallId) &&
+    isOptionalString(value.parentOperationId)
+  );
 }
 
 export const STEP_LIMIT_NOTICE_TEXT =

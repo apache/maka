@@ -763,6 +763,28 @@ describe('isPartialRuntimeEvent', () => {
 });
 
 describe('runtimeEventHasModelVisibleContent', () => {
+  test('retains nested CodeMode identity while excluding its content from model replay', () => {
+    const event = decodeRuntimeEvent(
+      baseEvent({
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        content: { kind: 'function_call', id: 'nested-1', name: 'Read', args: { path: 'a.ts' } },
+        refs: {
+          toolCallId: 'nested-1',
+          operationId: 'nested-op-1',
+          parentToolCallId: 'exec-1',
+          parentOperationId: 'exec-op-1',
+        },
+      }),
+    );
+
+    assert.equal(event.origin, 'code_mode');
+    assert.equal(event.modelVisibility, 'hidden');
+    assert.equal(event.refs?.parentToolCallId, 'exec-1');
+    assert.equal(event.refs?.parentOperationId, 'exec-op-1');
+    assert.equal(runtimeEventHasModelVisibleContent(event), false);
+  });
+
   test('classifies model-visible content by semantic kind', () => {
     const visible = [
       baseEvent({ role: 'user', content: { kind: 'text', text: 'hi' } }),

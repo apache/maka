@@ -144,10 +144,12 @@ export interface RuntimeContinuationRunOptions {
 export interface RuntimeContinuationAdmissionOptions {
   context?: InvocationRequest['context'];
   orchestration?: InvocationRequest['orchestration'];
+  toolMode?: InvocationRequest['toolMode'];
 }
 
 interface LegacyProviderRetryRunOptions extends RuntimeContinuationRunOptions {
   orchestration?: InvocationRequest['orchestration'];
+  toolMode?: InvocationRequest['toolMode'];
 }
 
 type AdmittedContinuationDispatcher = (request: InvocationRequest) => Promise<InvocationResult>;
@@ -490,6 +492,7 @@ export function runLegacyProviderRetry(
       continuation: invocationContinuationMetadata(continuation),
       source: options.source,
       ...(options.orchestration ? { orchestration: options.orchestration } : {}),
+      ...(options.toolMode ? { toolMode: options.toolMode } : {}),
       ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
     }),
   );
@@ -562,6 +565,7 @@ export function issueRuntimeContinuationAdmissionReceipt(
     continuation: invocationContinuationMetadata(continuation),
     source: 'test',
     ...(options.orchestration ? { orchestration: options.orchestration } : {}),
+    ...(options.toolMode ? { toolMode: options.toolMode } : {}),
   });
   const receipt = Object.freeze(Object.create(null)) as RuntimeContinuationAdmissionReceipt;
   pendingContinuationAdmissions.set(receipt as object, { runner, request });
@@ -586,6 +590,7 @@ function snapshotInvocationRequest(
     ...(request.orchestration !== undefined
       ? { orchestration: cloneAndFreezeSnapshotValue(request.orchestration) }
       : {}),
+    ...(request.toolMode !== undefined ? { toolMode: request.toolMode } : {}),
     ...(request.attachments !== undefined
       ? { attachments: cloneAndFreezeSnapshotValue(request.attachments) }
       : {}),
@@ -787,6 +792,7 @@ function buildFlowInput(request: InvocationRequest): FlowInput {
   return {
     ...(request.lineage?.parentRunId ? { parentRunId: request.lineage.parentRunId } : {}),
     ...(request.orchestration !== undefined ? { orchestration: request.orchestration } : {}),
+    ...(request.toolMode !== undefined ? { toolMode: request.toolMode } : {}),
     text: request.text,
     ...(request.voiceAudio !== undefined ? { voiceAudio: request.voiceAudio } : {}),
     context: request.context ?? [],

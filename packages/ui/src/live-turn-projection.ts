@@ -50,6 +50,23 @@ export interface LiveTurnProjection {
   steps: LiveTurnStepProjection[];
 }
 
+function projectToolActivityIdentity(event: {
+  origin?: ToolActivityItem['origin'];
+  modelVisibility?: ToolActivityItem['modelVisibility'];
+  parentToolCallId?: string;
+  parentOperationId?: string;
+}): Pick<
+  ToolActivityItem,
+  'origin' | 'modelVisibility' | 'parentToolCallId' | 'parentOperationId'
+> {
+  return {
+    ...(event.origin !== undefined ? { origin: event.origin } : {}),
+    ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
+    ...(event.parentToolCallId !== undefined ? { parentToolCallId: event.parentToolCallId } : {}),
+    ...(event.parentOperationId !== undefined ? { parentOperationId: event.parentOperationId } : {}),
+  };
+}
+
 function terminalizeLiveSteps(steps: readonly LiveTurnStepProjection[]): LiveTurnStepProjection[] {
   return steps.map((step) => ({
     ...step,
@@ -218,6 +235,7 @@ export function applyLiveTurnEvent(
       ...(event.activityKind !== undefined ? { activityKind: event.activityKind } : {}),
       ...(event.displayName !== undefined ? { displayName: event.displayName } : {}),
       ...(event.intent !== undefined ? { intent: event.intent } : {}),
+      ...projectToolActivityIdentity(event),
       ...(event.stepId !== undefined ? { stepId: event.stepId } : {}),
       status: 'pending',
       args: projectToolActivityArgs(event.toolName, event.args),
@@ -247,6 +265,7 @@ export function applyLiveTurnEvent(
     }, { locale });
     const tool: ToolActivityItem = {
       ...base,
+      ...projectToolActivityIdentity(event),
       status: base.status === 'pending' ? 'running' : base.status,
       outputChunks: applied.chunks,
       outputTruncated: base.outputTruncated || applied.truncated,
@@ -264,6 +283,7 @@ export function applyLiveTurnEvent(
       : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'pending', args: undefined };
     const tool: ToolActivityItem = {
       ...base,
+      ...projectToolActivityIdentity(event),
       status: toolResultActivityStatus(event.isError, event.content),
       result: event.content,
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),

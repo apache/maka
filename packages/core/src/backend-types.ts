@@ -24,6 +24,7 @@ import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
 import type { EphemeralVoiceAudio } from './voice.js';
+import type { ToolMode } from './tool-mode.js';
 
 export interface RuntimeContinuationMetadata {
   sourceInvocationId: string;
@@ -41,6 +42,8 @@ export interface BackendSendInput {
   turnId: string;
   /** Trusted effective orchestration snapshot for this run. */
   orchestration?: EffectiveOrchestration;
+  /** Trusted per-run tool protocol override. Direct remains the default. */
+  toolMode?: ToolMode;
   /**
    * The persisted initial user RuntimeEvent for this turn (the head anchor).
    * Mid-turn capacity compaction keeps this event verbatim in every projection

@@ -781,6 +781,41 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     ]);
   });
 
+  test('runtime replay skips hidden nested tool activity without blocking fallback', () => {
+    const events: RuntimeEvent[] = [
+      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'inspect' } }),
+      ev({
+        role: 'model',
+        author: 'agent',
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        content: { kind: 'function_call', id: 'nested-1', name: 'Read', args: {} },
+        refs: { parentToolCallId: 'exec-1', parentOperationId: 'exec-op-1' },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        content: {
+          kind: 'function_response',
+          id: 'nested-1',
+          name: 'Read',
+          result: 'ok',
+        },
+        refs: { parentToolCallId: 'exec-1', parentOperationId: 'exec-op-1' },
+      }),
+    ];
+
+    const plan = buildRuntimeEventModelReplayPlan(events);
+    const codes = plan.diagnostics.map((diagnostic) => diagnostic.code);
+
+    expect(plan.items.map((item) => item.kind)).toEqual(['text']);
+    expect(codes).toEqual(['model_hidden_skipped', 'model_hidden_skipped']);
+    expect(codes).not.toContain('unsupported_content');
+    expect(collectToolActivityTurnIds(events).size).toBe(0);
+  });
+
   test('runtime replay plan normalizes a legacy Bash result without changing durable input', () => {
     const events: RuntimeEvent[] = [
       ev({

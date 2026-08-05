@@ -356,6 +356,10 @@ export interface RuntimeEventRefs {
   artifactId?: string;
   /** Runtime-owned durable identity for one tool side-effect boundary. */
   operationId?: string;
+  /** Provider tool-call id of the enclosing exec operation. */
+  parentToolCallId?: string;
+  /** Runtime-owned durable identity of the enclosing exec operation. */
+  parentOperationId?: string;
   /**
    * Assistant step id for a function_call event: the id of the step's
    * text/thinking messages (their `providerEventId`). Model replay pairs a
@@ -418,6 +422,10 @@ export interface RuntimeEvent {
 
   role: RuntimeEventRole;
   author: RuntimeEventAuthor;
+  /** Execution surface that produced this fact; absent on legacy ledgers. */
+  origin?: 'provider' | 'code_mode';
+  /** Explicit provider-history policy; absent means visible for legacy compatibility. */
+  modelVisibility?: 'visible' | 'hidden';
   /** Lifecycle assertion; omitted on ordinary in-flight content events. */
   status?: RuntimeEventStatus;
 
@@ -428,7 +436,7 @@ export interface RuntimeEvent {
 
 const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
   ['id', 'invocationId', 'runId', 'sessionId', 'turnId', 'ts', 'partial', 'role', 'author'],
-  ['branch', 'status', 'content', 'actions', 'refs'],
+  ['branch', 'origin', 'modelVisibility', 'status', 'content', 'actions', 'refs'],
 );
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
@@ -555,6 +563,8 @@ const RUNTIME_REFS_SHAPE = defineObjectShape<RuntimeEventRefs>()(
     'providerRequestTraceId',
     'artifactId',
     'operationId',
+    'parentToolCallId',
+    'parentOperationId',
     'stepId',
     'sourceInvocationId',
     'sourceRunId',
@@ -582,6 +592,10 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     typeof value.partial !== 'boolean' ||
     !isRuntimeEventRole(value.role) ||
     !isRuntimeEventAuthor(value.author) ||
+    (value.origin !== undefined && value.origin !== 'provider' && value.origin !== 'code_mode') ||
+    (value.modelVisibility !== undefined &&
+      value.modelVisibility !== 'visible' &&
+      value.modelVisibility !== 'hidden') ||
     (value.status !== undefined && !isRuntimeEventStatus(value.status)) ||
     (value.content !== undefined && !isRuntimeEventContent(value.content)) ||
     (value.actions !== undefined && !isRuntimeEventActions(value.actions)) ||
@@ -861,6 +875,8 @@ function isRuntimeEventRefs(value: unknown): value is RuntimeEventRefs {
       value.providerRequestTraceId,
       value.artifactId,
       value.operationId,
+      value.parentToolCallId,
+      value.parentOperationId,
       value.stepId,
       value.sourceInvocationId,
       value.sourceRunId,
@@ -901,6 +917,7 @@ export function isPartialRuntimeEvent(event: RuntimeEvent): boolean {
  * filtering (partial chunks are never replayed into the next model call).
  */
 export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean {
+  if (event.modelVisibility === 'hidden') return false;
   const content = event.content;
   if (!content) return false;
   switch (content.kind) {

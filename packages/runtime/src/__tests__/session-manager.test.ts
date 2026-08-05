@@ -6,6 +6,7 @@ import {
   applySandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
   createWorkspaceWritePermissionProfile,
+  canonicalToolArgsHash,
   DEEP_RESEARCH_SESSION_LABEL,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
   buildImmutableRuntimePrefix,
@@ -79,6 +80,7 @@ import type { AgentBackend } from '@maka/core/backend-types';
 import type { MakaTool } from '../tool-runtime.js';
 import type { ShellRunProcessManager } from '../shell-run-manager.js';
 import type { InvocationResult } from '../invocation-context.js';
+import type { RuntimeCommitSink } from '../runtime-commit-sink.js';
 import type { ActiveFullCompactBlock } from '../active-full-compact.js';
 import {
   buildHistoryCompactCheckpoint,
@@ -5626,6 +5628,40 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readHeader(session.id)).orchestrationMode).toBe('swarm');
   });
 
+  test('snapshots the per-run tool mode into the run ledger and backend send', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let backend: TestBackend | undefined;
+    backends.register('fake', (ctx) => {
+      backend = new TestBackend(ctx);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(4_700),
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput());
+
+    await drain(
+      manager.sendMessage(session.id, {
+        turnId: 'code-mode-turn',
+        text: 'inspect with code',
+        toolMode: 'code_mode',
+      }),
+    );
+
+    expect((await runStore.listSessionRuns(session.id))[0]).toMatchObject({
+      toolMode: 'code_mode',
+    });
+    expect(backend?.sendInputs[0]?.toolMode).toBe('code_mode');
+  });
+
   test('leaving explore clears the deep research label so visible read-only copy stays truthful', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
@@ -6212,6 +6248,7 @@ describe('SessionManager permission mode updates', () => {
       orchestrationMode: 'swarm',
       orchestrationSource: 'turn_override',
       agentSwarmAuthorization: 'turn_override',
+      toolMode: 'code_mode',
       createdAt: 1,
       updatedAt: 2,
       completedAt: 2,
@@ -6276,7 +6313,9 @@ describe('SessionManager permission mode updates', () => {
       orchestrationMode: 'swarm',
       orchestrationSource: 'turn_override',
       agentSwarmAuthorization: 'turn_override',
+      toolMode: 'code_mode',
     });
+    expect(backend?.sendInputs[0]?.toolMode).toBe('code_mode');
     const continuationEvents = await runStore.readRuntimeEvents(
       session.id,
       plan.continuation.runId,
@@ -17334,6 +17373,139 @@ describe('SessionManager permission mode updates', () => {
     expect(turn?.partialOutputRetained).toBe(true);
     const [run] = await runStore.listSessionRuns(session.id);
     expect(run?.status).toBe('failed');
+  });
+
+  test('startup recovery derives the interrupted outcome sink from the runtime store', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new TestBackend(ctx));
+    let sessionId = '';
+    let outcomeCommitFailuresRemaining = 3;
+    let outcomeCommitAttempts = 0;
+    const runtimeCommitSink: RuntimeCommitSink = {
+      commitToolPrepared: async () => {
+        throw new Error('not used during recovery');
+      },
+      commitToolOutcome: async (input) => {
+        outcomeCommitAttempts += 1;
+        if (outcomeCommitFailuresRemaining > 0) {
+          outcomeCommitFailuresRemaining -= 1;
+          throw new Error('transient outcome commit failure');
+        }
+        await runStore.appendRuntimeEvent(sessionId, 'run-1', input.runtimeEvent);
+        return { created: true, runtimeEventSeq: 4 };
+      },
+    };
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: Object.assign(runStore, runtimeCommitSink),
+      backends,
+      newId: nextId(),
+      now: nextNow(12_825),
+    });
+    const session = await manager.createSession(makeInput({ status: 'running' }));
+    sessionId = session.id;
+    await seedRunningTurn(store, session.id, 'turn-1');
+    await seedRun(
+      runStore,
+      makeRunHeader({
+        sessionId: session.id,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        status: 'running',
+        toolMode: 'code_mode',
+      }),
+      [
+        makeRunEvent({
+          sessionId: session.id,
+          runId: 'run-1',
+          turnId: 'turn-1',
+          type: 'tool_started',
+          ts: 12,
+        }),
+      ],
+    );
+    const code = { code: 'return await tools.Read({ path: "a.ts" })' };
+    await runStore.appendRuntimeEvent(
+      session.id,
+      'run-1',
+      runtimeEvent({
+        id: 'initial',
+        sessionId: session.id,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'inspect' },
+        actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+      }),
+    );
+    await runStore.appendRuntimeEvent(
+      session.id,
+      'run-1',
+      runtimeEvent({
+        id: 'outer-call',
+        sessionId: session.id,
+        role: 'model',
+        author: 'agent',
+        origin: 'provider',
+        modelVisibility: 'visible',
+        content: { kind: 'function_call', id: 'exec-1', name: 'exec', args: code },
+        refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
+      }),
+    );
+    await runStore.appendRuntimeEvent(
+      session.id,
+      'run-1',
+      runtimeEvent({
+        id: 'outer-dispatch',
+        sessionId: session.id,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'outer-op',
+            providerToolCallId: 'exec-1',
+            toolName: 'exec',
+            canonicalArgsHash: canonicalToolArgsHash('exec', code),
+            recoveryMode: 'never_auto_retry',
+          },
+        },
+        refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
+      }),
+    );
+
+    await manager.recoverInterruptedSessions();
+
+    assert.equal((await runStore.readRun(session.id, 'run-1')).status, 'running');
+    assert.equal(outcomeCommitAttempts, 2);
+    assert.equal(
+      (await runStore.readRuntimeEvents(session.id, 'run-1')).some(
+        (event) => event.content?.kind === 'function_response',
+      ),
+      false,
+    );
+
+    await manager.recoverInterruptedSessions();
+
+    assert.equal(outcomeCommitAttempts, 4);
+    const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
+    const response = runtimeEvents.find(
+      (event) => event.content?.kind === 'function_response' && event.content.id === 'exec-1',
+    );
+    assert.equal(response?.content?.kind, 'function_response');
+    assert.equal(response?.content?.kind === 'function_response' && response.content.isError, true);
+    assert.deepEqual(
+      response?.content?.kind === 'function_response' ? response.content.result : undefined,
+      {
+        kind: 'json',
+        value: {
+          kind: 'code_mode',
+          status: 'interrupted',
+          message: 'Code Mode execution was interrupted by runtime recovery.',
+        },
+      },
+    );
+    assert.equal((await runStore.readRun(session.id, 'run-1')).status, 'failed');
   });
 
   test('startup recovery does not leave stale permission waits stuck', async () => {

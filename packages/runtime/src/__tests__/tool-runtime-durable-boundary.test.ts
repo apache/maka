@@ -176,6 +176,199 @@ describe('ToolRuntime durable boundary', () => {
     assert.equal(outcomes[0]?.runtimeEvent.refs?.operationId, prepared[0]?.operationId);
   });
 
+  it('rejects an oversized nested result before durable publication', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const oversized = { text: 'x'.repeat(128) };
+
+    const result = await harness.executeNested(
+      tool(() => oversized),
+      32,
+    );
+
+    assert.equal((result as { error?: unknown }).error, 'Tool result byte limit exceeded');
+    assert.equal(JSON.stringify(harness.events).includes(oversized.text), false);
+    const durableResult = outcomes[0]?.runtimeEvent.content;
+    assert.equal(
+      durableResult?.kind === 'function_response'
+        ? JSON.stringify(durableResult.result).includes(oversized.text)
+        : false,
+      false,
+    );
+  });
+
+  it('uses serialized bytes before publishing a nested string result', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+
+    const result = await harness.executeNested(
+      tool(() => '\0'.repeat(10)),
+      32,
+    );
+
+    assert.equal((result as { error?: unknown }).error, 'Tool result byte limit exceeded');
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0]?.runtimeEvent.content?.kind, 'function_response');
+    assert.equal(
+      outcomes[0]?.runtimeEvent.content?.kind === 'function_response' &&
+        outcomes[0].runtimeEvent.content.isError,
+      true,
+    );
+    assert.equal(JSON.stringify(outcomes).includes('\\u0000'), false);
+    assert.equal(JSON.stringify(harness.events).includes('\\u0000'), false);
+  });
+
+  it('rejects an array whose toJSON expands beyond the nested result limit', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const resultArray: unknown[] = [];
+    Object.defineProperty(resultArray, 'toJSON', {
+      value: () => 'x'.repeat(128),
+    });
+
+    const result = await harness.executeNested(
+      tool(() => resultArray),
+      32,
+    );
+
+    assert.equal((result as { error?: unknown }).error, 'Tool result byte limit exceeded');
+    assert.equal(JSON.stringify(outcomes).includes('x'.repeat(128)), false);
+    assert.equal(JSON.stringify(harness.events).includes('x'.repeat(128)), false);
+  });
+
+  it('rejects a non-JSON nested result before coercion can expand it', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const callable = () => null;
+    callable.toString = () => 'NON_JSON_RESULT'.repeat(32);
+
+    const result = await harness.executeNested(
+      tool(() => callable),
+      32,
+    );
+
+    assert.equal((result as { error?: unknown }).error, 'Tool result byte limit exceeded');
+    assert.equal(JSON.stringify(outcomes).includes('NON_JSON_RESULT'), false);
+    assert.equal(JSON.stringify(harness.events).includes('NON_JSON_RESULT'), false);
+  });
+
+  it('persists nested CodeMode identity across durable and legacy tool activity', async () => {
+    const prepared: ToolPreparedCommit[] = [];
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async (input) => {
+        prepared.push(input);
+        return { created: true, runtimeEventSeq: 1 };
+      },
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+
+    await harness.executeNested(tool(() => ({ ok: true })));
+
+    for (const event of [
+      prepared[0]?.runtimeEvent,
+      prepared[0]?.dispatchRuntimeEvent,
+      outcomes[0]?.runtimeEvent,
+    ]) {
+      assert.equal(event?.origin, 'code_mode');
+      assert.equal(event?.modelVisibility, 'hidden');
+      assert.equal(event?.refs?.parentToolCallId, 'exec-1');
+      assert.equal(event?.refs?.parentOperationId, 'exec-op-1');
+    }
+    for (const event of harness.events) {
+      if (event.type !== 'tool_start' && event.type !== 'tool_result') continue;
+      assert.equal(event.origin, 'code_mode');
+      assert.equal(event.modelVisibility, 'hidden');
+      assert.equal(event.parentToolCallId, 'exec-1');
+      assert.equal(event.parentOperationId, 'exec-op-1');
+    }
+    for (const message of harness.messages) {
+      if (message.type !== 'tool_call' && message.type !== 'tool_result') continue;
+      assert.equal(message.origin, 'code_mode');
+      assert.equal(message.modelVisibility, 'hidden');
+      assert.equal(message.parentToolCallId, 'exec-1');
+      assert.equal(message.parentOperationId, 'exec-op-1');
+    }
+  });
+
+  it('links nested live output to the outer exec activity', async () => {
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+    });
+
+    await harness.executeNested(
+      tool((_input, context) => {
+        context.emitOutput('stdout', 'working\n');
+        return { ok: true };
+      }),
+    );
+
+    const output = harness.events.find((event) => event.type === 'tool_output_delta');
+    assert.ok(output);
+    assert.equal(output.origin, 'code_mode');
+    assert.equal(output.modelVisibility, 'hidden');
+    assert.equal(output.parentToolCallId, 'exec-1');
+    assert.equal(output.parentOperationId, 'exec-op-1');
+  });
+
+  it('retains nested identity when the tool settles with an error', async () => {
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+    });
+
+    await harness.executeNested(
+      tool(() => {
+        throw new Error('nested failure');
+      }),
+    );
+
+    const result = harness.events.find(
+      (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
+        event.type === 'tool_result' && event.toolUseId === 'nested-call-1',
+    );
+    assert.ok(result);
+    assert.equal(result.isError, true);
+    assert.equal(result.origin, 'code_mode');
+    assert.equal(result.modelVisibility, 'hidden');
+    assert.equal(result.parentToolCallId, 'exec-1');
+    assert.equal(result.parentOperationId, 'exec-op-1');
+    const stored = harness.messages.find(
+      (message): message is Extract<StoredMessage, { type: 'tool_result' }> =>
+        message.type === 'tool_result' && message.toolUseId === 'nested-call-1',
+    );
+    assert.equal(stored?.origin, 'code_mode');
+    assert.equal(stored?.modelVisibility, 'hidden');
+  });
+
   it('wraps business-domain kind values as canonical JSON tool results', async () => {
     const outcomes: ToolOutcomeCommit[] = [];
     const harness = makeHarness({
@@ -341,6 +534,26 @@ function makeHarness(sink: RuntimeCommitSink, order?: string[], runId: string | 
               if (event.type === 'tool_result') order?.push('published-result');
             },
           },
+        })
+      ).result,
+    executeNested: async (target: MakaTool, maxResultBytes?: number) =>
+      (
+        await runtime.settleToolCall({
+          tool: target,
+          turnId: 'turn-1',
+          toolCallId: 'nested-call-1',
+          input: {},
+          abortSignal: new AbortController().signal,
+          eventSink: {
+            push: (event) => events.push(event),
+            pushAndWaitUntilConsumed: async (event) => {
+              events.push(event);
+            },
+          },
+          origin: 'code_mode',
+          parentToolCallId: 'exec-1',
+          parentOperationId: 'exec-op-1',
+          ...(maxResultBytes !== undefined ? { maxResultBytes } : {}),
         })
       ).result,
   };

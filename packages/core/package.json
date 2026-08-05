@@ -27,6 +27,7 @@
     "./session-revisions": "./dist/session-revisions.js",
     "./collaboration": "./dist/collaboration.js",
     "./orchestration": "./dist/orchestration.js",
+    "./tool-mode": "./dist/tool-mode.js",
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
     "./subagent-workspace": "./dist/subagent-workspace.js",

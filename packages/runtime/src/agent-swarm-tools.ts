@@ -181,6 +181,7 @@ export function buildAgentSwarmTool(
     parameters: agentSwarmInputSchema(definitions, profiles),
     executionSemantics: 'exclusive_step',
     categoryHint: 'subagent',
+    nesting: 'direct_only',
     impl: async (input, ctx) => {
       const prepared = await prepareAgentSwarmInput(input, ctx, definitions);
       if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildSession) {

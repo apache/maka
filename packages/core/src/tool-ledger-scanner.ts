@@ -443,7 +443,13 @@ function matchesLaneEnvelope(
         event.role === 'system' &&
         event.author === 'system' &&
         hasOnlyKeys(event.actions, ['toolDispatch']) &&
-        hasOnlyKeys(event.refs, ['operationId', 'toolCallId'])
+        (hasOnlyKeys(event.refs, ['operationId', 'toolCallId']) ||
+          hasOnlyKeys(event.refs, [
+            'operationId',
+            'toolCallId',
+            'parentToolCallId',
+            'parentOperationId',
+          ]))
       );
     case 'reconcile_result':
     case 'recovery_decision':

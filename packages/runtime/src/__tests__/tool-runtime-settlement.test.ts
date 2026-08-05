@@ -358,6 +358,87 @@ describe('ToolRuntime settlement', () => {
 
     await pending;
   });
+
+  it('rejects direct-only nested tools before permission argument projection or implementation', async () => {
+    let permissionProjectionCalls = 0;
+    let implementationCalls = 0;
+    const runtime = makeRuntime();
+
+    const settlement = await runtime.settleToolCall({
+      tool: {
+        ...tool(() => {
+          implementationCalls += 1;
+          return { ok: true };
+        }),
+        nesting: 'direct_only',
+        permissionArgs: (input) => {
+          permissionProjectionCalls += 1;
+          return input;
+        },
+      },
+      turnId: 'turn-1',
+      toolCallId: 'nested-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+      origin: 'code_mode',
+      parentToolCallId: 'exec-1',
+    });
+
+    assert.equal(permissionProjectionCalls, 0);
+    assert.equal(implementationCalls, 0);
+    assert.deepEqual(settlement.modelOutput, {
+      type: 'error-text',
+      value: 'Error: Tool Read is direct-only and cannot run inside exec.',
+    });
+  });
+
+  it('keeps permission projections for ordinary step-admission failures', async () => {
+    const runtime = makeRuntime();
+    const events: Array<{ type: string; args?: unknown }> = [];
+    await runtime.settleToolCall({
+      tool: {
+        ...tool(() => ({ ok: true })),
+        name: 'exclusive',
+        executionSemantics: 'exclusive_step',
+      },
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'exclusive-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: { push: () => {}, pushAndWaitUntilConsumed: async () => {} },
+    });
+
+    const settlement = await runtime.settleToolCall({
+      tool: {
+        ...tool(() => ({ ok: true })),
+        permissionArgs: () => ({ safe: true }),
+      },
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'rejected-1',
+      input: { secret: 'must-not-persist' },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => {
+          events.push(event);
+        },
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    assert.deepEqual(settlement.result, {
+      error:
+        'Tool Read did not run: exclusive cannot share an assistant step with other tool calls. Send Read again in a later step.',
+    });
+    assert.deepEqual(events[0]?.args, { safe: true });
+  });
 });
 
 function makeRuntime(

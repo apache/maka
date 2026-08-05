@@ -956,6 +956,56 @@ describe('SessionManager terminal ledger invariants', () => {
     ).toEqual(['hello', 'completed']);
   });
 
+  test('direct AgentRun execute forwards the effective tool mode to the Flow', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const session = await store.create(makeInput());
+    let observedToolMode: BackendSendInput['toolMode'];
+    const backend = new ScriptBackend(
+      { sessionId: session.id } as BackendFactoryContext,
+      [{ type: 'complete', stopReason: 'end_turn' }],
+      (input) => {
+        observedToolMode = input.toolMode;
+      },
+    );
+    const activeRuns = new Map<string, AgentRun>();
+    const turnToRunId = new Map<string, string>();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-code-mode', text: 'hello', toolMode: 'code_mode' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(40_750),
+      hooks: {
+        reserveRun: async (_sessionId, _header, activeRun) => {
+          activeRuns.set(activeRun.runId, activeRun);
+          turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
+        },
+        unregisterRun: (_active, activeRun) => {
+          activeRuns.delete(activeRun.runId);
+          turnToRunId.delete(activeRun.turnId);
+        },
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+
+    await drain(run.execute());
+
+    expect(observedToolMode).toBe('code_mode');
+  });
+
   test('direct AgentRun finalize synthesizes a failed terminal fact when no terminal event was recorded', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
@@ -1759,11 +1809,13 @@ class ScriptBackend implements AgentBackend {
   constructor(
     ctx: BackendFactoryContext,
     private readonly events: readonly ScriptEvent[],
+    private readonly onInput?: (input: BackendSendInput) => void,
   ) {
     this.sessionId = ctx.sessionId;
   }
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.onInput?.(input);
     let index = 0;
     for (const event of this.events) {
       index += 1;

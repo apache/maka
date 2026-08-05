@@ -62,6 +62,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { EphemeralVoiceAudio } from '@maka/core/voice';
+import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
@@ -83,6 +84,7 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
+import { DEFAULT_CODE_MODE_LIMITS, executeCodeCell } from '@maka/code-mode';
 import type {
   AudioPart,
   JSONValue,
@@ -96,6 +98,9 @@ import type {
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
+import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
+import Ajv2019 from 'ajv/dist/2019.js';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
@@ -107,8 +112,10 @@ import {
   ToolRuntime,
   formatSyntheticToolErrorText,
   formatToolArgsViolationText,
+  isRuntimeCommitBoundaryError,
   type MakaTool,
   type MakaToolContext,
+  type DurableSessionEventSink,
   type ToolRuntimeInput,
 } from './tool-runtime.js';
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
@@ -175,7 +182,11 @@ import {
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
-import { ToolAvailabilityRuntime, type ToolAvailabilityConfig } from './tool-availability.js';
+import {
+  ToolAvailabilityRuntime,
+  type ToolAvailabilityConfig,
+  type ToolAvailabilityPlan,
+} from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
 import {
@@ -412,6 +423,165 @@ export type {
 } from '@maka/core/backend-types';
 
 export const INVALID_TOOL_NAME = 'invalid';
+
+function projectToolModePlan(
+  plan: ToolAvailabilityPlan,
+  toolMode: ToolMode,
+  execTool: MakaTool,
+): ToolAvailabilityPlan {
+  if (toolMode === 'direct') return plan;
+  const withExec = (names: readonly string[]): string[] =>
+    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
+  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
+  const visible = [
+    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
+    execTool,
+  ].sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    ...plan,
+    providerTools: [...visible, ...invalid],
+    activeTools: withExec(plan.activeTools),
+    ...(plan.projectActiveTools
+      ? {
+          projectActiveTools: (options) => ({
+            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
+          }),
+        }
+      : {}),
+    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
+    diagnostics: (activeTools, visibleToolSchemaChars) => {
+      const baseActive = activeTools.filter((name) => name !== execTool.name);
+      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
+      const diagnostic = plan.diagnostics(baseActive, baseChars);
+      if (!diagnostic) return undefined;
+      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
+      return {
+        ...diagnostic,
+        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
+        fullToolCount:
+          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
+        visibleToolSchemaChars,
+        fullToolSchemaChars:
+          (diagnostic.fullToolSchemaChars ??
+            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
+      };
+    },
+  };
+}
+
+function nestableToolSnapshot(
+  providerTools: readonly MakaTool[],
+  activeToolNames: readonly string[],
+): ReadonlyMap<string, MakaTool> {
+  const active = new Set(activeToolNames);
+  return new Map(
+    providerTools
+      .filter(
+        (tool) =>
+          active.has(tool.name) &&
+          tool.name !== INVALID_TOOL_NAME &&
+          tool.name !== 'exec' &&
+          tool.nesting !== 'direct_only',
+      )
+      .map((tool) => [tool.name, tool] as const),
+  );
+}
+
+const codeModeJsonSchemaOptions = {
+  allErrors: true,
+  strict: false,
+  validateFormats: false,
+} as const;
+const codeModeDraft7Validator = new Ajv(codeModeJsonSchemaOptions);
+const codeModeDraft2019Validator = new Ajv2019(codeModeJsonSchemaOptions);
+const codeModeDraft2020Validator = new Ajv2020(codeModeJsonSchemaOptions);
+const codeModeCompiledSchemas = new WeakMap<object, ValidateFunction>();
+
+async function validateCodeModeToolInput(tool: MakaTool, input: unknown): Promise<unknown> {
+  const parameters = tool.parameters as {
+    safeParseAsync?: (
+      value: unknown,
+    ) => Promise<{ success: true; data: unknown } | { success: false; error: unknown }>;
+    safeParse?: (
+      value: unknown,
+    ) => { success: true; data: unknown } | { success: false; error: unknown };
+    validate?: (
+      value: unknown,
+    ) =>
+      | { success: true; value: unknown }
+      | { success: false; error: unknown }
+      | Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
+    jsonSchema?: unknown;
+  };
+  const parserResult = parameters.safeParseAsync
+    ? await parameters.safeParseAsync(input)
+    : parameters.safeParse?.(input);
+  if (parserResult) {
+    if (parserResult.success) return parserResult.data;
+    throw invalidCodeModeToolArguments(tool.name, parserResult.error);
+  }
+
+  if (parameters.validate) {
+    const validationResult = await parameters.validate(input);
+    if (validationResult.success) return validationResult.value;
+    throw invalidCodeModeToolArguments(tool.name, validationResult.error);
+  }
+
+  const schema = await parameters.jsonSchema;
+  const validator = compileCodeModeJsonSchema(schema ?? tool.parameters);
+  if (!validator || validator(input)) return input;
+  throw invalidCodeModeToolArguments(tool.name, validator.errors);
+}
+
+function compileCodeModeJsonSchema(schema: unknown): ValidateFunction | undefined {
+  if (typeof schema === 'boolean') return codeModeDraft2020Validator.compile(schema);
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return undefined;
+  const cached = codeModeCompiledSchemas.get(schema);
+  if (cached) return cached;
+  const declaredDialect = (schema as { readonly $schema?: unknown }).$schema;
+  const dialect = typeof declaredDialect === 'string' ? declaredDialect : '';
+  const validator = dialect.includes('draft-07')
+    ? codeModeDraft7Validator
+    : dialect.includes('2019-09')
+      ? codeModeDraft2019Validator
+      : codeModeDraft2020Validator;
+  const schemaForCompile = dialect.startsWith('https://json-schema.org/draft-07/schema')
+    ? { ...schema, $schema: dialect.replace('https://', 'http://') }
+    : schema;
+  const compiled = validator.compile(schemaForCompile as AnySchema);
+  codeModeCompiledSchemas.set(schema, compiled);
+  return compiled;
+}
+
+function invalidCodeModeToolArguments(toolName: string, error: unknown): Error {
+  return new Error(`Invalid arguments for tool "${toolName}": ${schemaErrorSummary(error)}`);
+}
+
+function schemaErrorSummary(error: unknown): string {
+  if (error && typeof error === 'object' && Array.isArray((error as { issues?: unknown }).issues)) {
+    const issues = (error as { issues: Array<{ path?: unknown; message?: unknown }> }).issues;
+    return issues
+      .slice(0, 5)
+      .map((issue) => {
+        const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
+        const message = typeof issue.message === 'string' ? issue.message : 'invalid value';
+        return path ? `${path}: ${message}` : message;
+      })
+      .join('; ')
+      .slice(0, 1000);
+  }
+  if (Array.isArray(error)) {
+    return (error as ErrorObject[])
+      .slice(0, 5)
+      .map((issue) => {
+        const path = issue.instancePath || issue.schemaPath;
+        return `${path || 'input'} ${issue.message ?? 'is invalid'}`;
+      })
+      .join('; ')
+      .slice(0, 1000);
+  }
+  return 'input does not match the declared schema';
+}
 
 function joinPromptFragments(fragments: readonly (string | undefined)[]): string | undefined {
   const joined = fragments
@@ -722,6 +892,7 @@ class TurnScope {
    * so a provider request never carries an unpersisted steering directive.
    */
   injectedSteeringMessages: ModelMessage[] = [];
+  codeModeTools: ReadonlyMap<string, MakaTool> | undefined;
 
   constructor(
     readonly turnId: string,
@@ -850,6 +1021,26 @@ export class AiSdkBackend implements AgentBackend {
     });
   }
 
+  private createCodeModeExecTool(
+    scope: TurnScope,
+    eventSink: DurableSessionEventSink,
+  ): MakaTool<{ code: string }> {
+    return {
+      name: 'exec',
+      description: [
+        'Execute a bounded orchestration cell over the active tools.',
+        'Use tools.<name>(args), await dependent calls, and Promise.all for independent calls.',
+        'There is no console, process, filesystem, network, timer, eval, import, or cross-cell state.',
+        'Terminate by returning a plain-data value. Unsupported syntax returns a structured diagnostic.',
+      ].join(' '),
+      parameters: z.object({ code: z.string().max(DEFAULT_CODE_MODE_LIMITS.maxSourceBytes) }),
+      executionSemantics: 'exclusive_step',
+      nesting: 'direct_only',
+      recoveryMode: 'never_auto_retry',
+      impl: (args, context) => this.executeCodeModeCell(scope, eventSink, args.code, context),
+    };
+  }
+
   // --------------------------------------------------------------------------
   // manual history compaction
   // --------------------------------------------------------------------------
@@ -915,6 +1106,7 @@ export class AiSdkBackend implements AgentBackend {
 
     const midTurnState = this.compaction.buildMidTurnCapacityCompactState(input);
     const queue = new AsyncEventQueue<SessionEvent>();
+    const codeModeExecTool = this.createCodeModeExecTool(scope, queue);
 
     // One AssistantMessage is flushed per provider step (not per turn), so the
     // ledger records the text↔tool timeline at step granularity and each step's
@@ -1122,9 +1314,22 @@ export class AiSdkBackend implements AgentBackend {
         : scope.orchestration.mode === 'graph'
           ? new Set(['view_agent_graph', 'update_agent_graph', 'yield_agent_graph', 'agent_output'])
           : new Set<string>();
-    const plan = this.toolAvailabilityRuntime.prepare(
-      (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
-      requiredOrchestrationTools,
+    const requestedToolMode: unknown =
+      input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;
+    if (!isToolMode(requestedToolMode)) {
+      throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
+    }
+    const toolMode = requestedToolMode;
+    if (toolMode === 'code_mode' && this.input.tools.some((tool) => tool.name === 'exec')) {
+      throw new Error('Tool name "exec" is reserved for Code Mode.');
+    }
+    const plan = projectToolModePlan(
+      this.toolAvailabilityRuntime.prepare(
+        (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
+        requiredOrchestrationTools,
+      ),
+      toolMode,
+      codeModeExecTool,
     );
     const providerTools = plan.providerTools;
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
@@ -1561,6 +1766,10 @@ export class AiSdkBackend implements AgentBackend {
             stepThinking.length === 0 &&
             stepSignature === undefined;
           for (;;) {
+            scope.codeModeTools =
+              toolMode === 'code_mode'
+                ? nestableToolSnapshot(providerTools, activeToolsForRequest)
+                : undefined;
             result = await this.modelAdapter.startStream({
               model,
               messages: attemptMessages,
@@ -2261,6 +2470,66 @@ export class AiSdkBackend implements AgentBackend {
       if (!drainedNormally) turnAbortController.abort();
       await pumpDone.catch(() => {});
     }
+  }
+
+  private async executeCodeModeCell(
+    scope: TurnScope,
+    eventSink: DurableSessionEventSink,
+    code: string,
+    context: MakaToolContext,
+  ): Promise<unknown> {
+    const snapshot = new Map(scope.codeModeTools);
+    let nestedOutputBytes = 0;
+    let nestedOutputLimitExceeded = false;
+    const nestedEventSink: DurableSessionEventSink = {
+      push: (event) => {
+        if (event.type === 'tool_output_delta') {
+          const nextBytes = new TextEncoder().encode(event.chunk).byteLength;
+          if (
+            nestedOutputLimitExceeded ||
+            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_LIMITS.maxOutputBytes
+          ) {
+            nestedOutputLimitExceeded = true;
+            return;
+          }
+          nestedOutputBytes += nextBytes;
+        }
+        eventSink.push(event);
+      },
+      pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
+    };
+    return executeCodeCell({
+      code,
+      signal: context.abortSignal,
+      tools: [...snapshot.values()].map((tool) => ({
+        name: tool.name,
+      })),
+      isFatalToolError: isRuntimeCommitBoundaryError,
+      callTool: async (name, input, signal) => {
+        const tool = snapshot.get(name);
+        if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
+        const parsedInput = await validateCodeModeToolInput(tool, input);
+        const settlement = await scope.toolRuntime.settleToolCallRaw({
+          tool,
+          turnId: context.turnId,
+          toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
+          input: parsedInput,
+          abortSignal: signal,
+          eventSink: nestedEventSink,
+          origin: 'code_mode',
+          parentToolCallId: context.toolCallId,
+          ...(context.operationId ? { parentOperationId: context.operationId } : {}),
+          maxResultBytes: DEFAULT_CODE_MODE_LIMITS.maxResultBytes,
+        });
+        if (settlement.providerError !== undefined) {
+          throw new Error(settlement.providerError);
+        }
+        if (nestedOutputLimitExceeded) {
+          throw new Error('Code Mode nested output byte limit exceeded');
+        }
+        return settlement.result;
+      },
+    });
   }
 
   private handlePlanToolResult(

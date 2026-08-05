@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import type { AttachmentRef, StoredMessage } from "@maka/core";
 import {
   materializeChat,
+  materializeTools,
   materializeTurns,
   overlayLiveTurn,
   type TurnTimelineItem,
@@ -188,6 +189,37 @@ describe("materializeChat attachments", () => {
 function userMsg(turnId: string, ts: number, text: string): StoredMessage {
   return { type: "user", id: `u-${turnId}`, turnId, ts, text };
 }
+
+test('retains persisted nested tool activity identity', () => {
+  const [tool] = materializeTools([{
+    type: 'tool_call',
+    id: 'nested-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolName: 'Read',
+    args: { path: 'README.md' },
+    origin: 'code_mode',
+    modelVisibility: 'hidden',
+    parentToolCallId: 'exec-1',
+    parentOperationId: 'exec-operation-1',
+  }]);
+
+  assert.deepEqual(tool, {
+    toolUseId: 'nested-1',
+    toolName: 'Read',
+    activityKind: undefined,
+    displayName: undefined,
+    intent: undefined,
+    status: 'interrupted',
+    args: { path: 'README.md' },
+    result: undefined,
+    durationMs: undefined,
+    origin: 'code_mode',
+    modelVisibility: 'hidden',
+    parentToolCallId: 'exec-1',
+    parentOperationId: 'exec-operation-1',
+  });
+});
 
 function shellRunResult(revision: number) {
   return {

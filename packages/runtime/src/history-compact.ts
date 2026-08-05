@@ -982,7 +982,7 @@ function historyCompactArchiveRefMatches(
 
 /** True when the event carries model-visible content the compact projection counts. */
 export function isHistoryCompactContentEvent(event: RuntimeEvent): boolean {
-  return estimateRuntimeEventChars(event) > 0;
+  return event.modelVisibility !== 'hidden' && estimateRuntimeEventChars(event) > 0;
 }
 
 export function replaceHistoryCompactReplayBlocks(

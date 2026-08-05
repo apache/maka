@@ -96,6 +96,9 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (input.toolMode === 'code_mode') {
+      throw new Error('Pi-agent backend does not support code_mode tool mode');
+    }
     const turnId = input.turnId;
     let messageId = this.newId();
     let currentProviderMessageId: string | undefined;

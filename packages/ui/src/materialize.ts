@@ -67,6 +67,10 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentToolCallId?: string;
+  parentOperationId?: string;
   /**
    * Assistant step this tool belongs to (equals the step's AssistantMessage
    * id). Populated from the persisted `tool_call.stepId`, or from the live
@@ -193,6 +197,10 @@ export function materializeTools(
         activityKind: call.activityKind,
         displayName: call.displayName,
         intent: call.intent,
+        ...(call.origin !== undefined ? { origin: call.origin } : {}),
+        ...(call.modelVisibility !== undefined ? { modelVisibility: call.modelVisibility } : {}),
+        ...(call.parentToolCallId !== undefined ? { parentToolCallId: call.parentToolCallId } : {}),
+        ...(call.parentOperationId !== undefined ? { parentOperationId: call.parentOperationId } : {}),
         ...(call.stepId !== undefined ? { stepId: call.stepId } : {}),
         status: result
           ? materializeToolResultStatus(result)

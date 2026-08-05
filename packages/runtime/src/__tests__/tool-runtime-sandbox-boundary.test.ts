@@ -670,6 +670,144 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
   });
 
+  test('cancels a suspended nested boundary wait when its cell aborts', async () => {
+    const events: SessionEvent[] = [];
+    const settlements: string[] = [];
+    const runtime = new ToolRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      createSandboxBoundaryRequest: async (input) => ({
+        ...input,
+        status: 'pending',
+        baseRevision: 0,
+        createdAt: 1,
+      }),
+      settleSandboxBoundaryRequest: async (input) => {
+        settlements.push(input.decision);
+        return {
+          request: {
+            sessionId: 'session-1',
+            requestId: input.requestId,
+            expansion: { network: { enabled: true } },
+            justification: 'Use the network.',
+            status: 'denied',
+            baseRevision: 0,
+            createdAt: 1,
+            settledAt: 2,
+          },
+          boundary: {
+            kind: 'managed',
+            profile: createWorkspaceWritePermissionProfile(),
+            revision: 0,
+          },
+          changed: false,
+        };
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const controller = new AbortController();
+    const pending = runtime.settleToolCall({
+      tool: {
+        name: 'network_task',
+        description: 'Request network authority',
+        parameters: {},
+        impl: async (_input, context) =>
+          context.requestSandboxBoundary!({ network: { enabled: true } }, 'Use the network.'),
+      },
+      turnId: 'turn-1',
+      toolCallId: 'network-1',
+      input: {},
+      abortSignal: controller.signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    while (!events.some((event) => event.type === 'sandbox_boundary_request')) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    controller.abort(new Error('cell aborted'));
+    const outcome = await Promise.race([
+      pending.then(() => 'settled' as const),
+      new Promise<'timed_out'>((resolve) => setTimeout(() => resolve('timed_out'), 50)),
+    ]);
+    if (outcome === 'timed_out') await runtime.endTurn('aborted');
+    await pending;
+    assert.equal(outcome, 'settled');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(settlements, ['deny']);
+  });
+
+  test('keeps a durable deny failure attached to the aborted nested call', async () => {
+    const events: SessionEvent[] = [];
+    const runtime = new ToolRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      createSandboxBoundaryRequest: async (input) => ({
+        ...input,
+        status: 'pending',
+        baseRevision: 0,
+        createdAt: 1,
+      }),
+      settleSandboxBoundaryRequest: async () => {
+        throw new Error('durable deny failed');
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const controller = new AbortController();
+    const pending = runtime.settleToolCall({
+      tool: {
+        name: 'network_task',
+        description: 'Request network authority',
+        parameters: {},
+        impl: async (_input, context) =>
+          await context.requestSandboxBoundary!({ network: { enabled: true } }, 'Use the network.'),
+      },
+      turnId: 'turn-1',
+      toolCallId: 'network-failing-deny',
+      input: {},
+      abortSignal: controller.signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    while (!events.some((event) => event.type === 'sandbox_boundary_request')) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    controller.abort(new Error('cell aborted'));
+    const outcome = await pending;
+    assert.match(String((outcome.result as { error?: unknown }).error), /durable deny failed/);
+  });
+
   test('returns structured requires_bypass without opening an interaction', async () => {
     const events: SessionEvent[] = [];
     const runtime = new ToolRuntime({

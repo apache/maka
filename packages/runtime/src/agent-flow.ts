@@ -36,6 +36,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
+import type { ToolMode } from '@maka/core/tool-mode';
 import type { InvocationContext } from './invocation-context.js';
 import type { EphemeralVoiceAudio } from '@maka/core/voice';
 
@@ -60,6 +61,8 @@ export interface FlowInput {
   parentRunId?: string;
   /** Trusted effective orchestration snapshot for this invocation. */
   orchestration?: EffectiveOrchestration;
+  /** Trusted effective tool protocol snapshot for this invocation. */
+  toolMode?: ToolMode;
   /** User turn text. */
   text: string;
   /** Operation-owned raw audio, valid only for this live flow. */

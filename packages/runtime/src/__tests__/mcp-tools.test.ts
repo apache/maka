@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createManagedExecutionBoundary, createWorkspaceWritePermissionProfile } from '@maka/core';
 import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
 import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '../mcp-tools.js';
 
@@ -59,6 +60,50 @@ test('buildMcpTools projects discovery, permissions, abort, and rich model outpu
     },
   ]);
   assert.match(model?.value[2]?.type === 'text' ? model.value[2].text : '', /structuredContent/u);
+});
+
+test('Direct-mode MCP calls request managed network expansion before provider dispatch', async () => {
+  const sequence: string[] = [];
+  const boundary = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+  const [tool] = buildMcpTools(
+    fakeProvider([descriptor('server', 'mutate')], async () => {
+      sequence.push('provider');
+      return { content: [{ type: 'text', text: 'ok' }] };
+    }),
+  );
+
+  await tool?.impl(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'direct-call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      executionBoundary: boundary,
+      requestSandboxBoundary: async (expansion, justification) => {
+        sequence.push('boundary');
+        assert.deepEqual(expansion, { network: { enabled: true } });
+        assert.equal(justification, 'Call MCP tool server/mutate.');
+        return {
+          request: {
+            sessionId: 'session',
+            requestId: 'request-1',
+            status: 'approved',
+            baseRevision: 0,
+            expansion,
+            justification,
+            createdAt: 1,
+          },
+          boundary,
+          changed: true,
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(sequence, ['boundary', 'provider']);
 });
 
 test('MCP annotations cannot lower permissions and model output has aggregate bounds', async () => {

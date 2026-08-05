@@ -44,6 +44,7 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
+import { serializedByteLength } from '@maka/code-mode';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
@@ -85,6 +86,10 @@ export interface ResolvedMakaToolCall {
   providerOptions?: Record<string, unknown>;
   abortSignal: AbortSignal;
   eventSink: DurableSessionEventSink;
+  origin?: 'provider' | 'code_mode';
+  parentToolCallId?: string;
+  parentOperationId?: string;
+  maxResultBytes?: number;
 }
 
 export interface DurableSessionEventSink {
@@ -95,6 +100,11 @@ export interface DurableSessionEventSink {
 export interface ToolSettlement {
   result: unknown;
   modelOutput: ToolResultOutput;
+}
+
+export interface RawToolSettlement {
+  result: unknown;
+  providerError?: string;
 }
 
 export interface MakaTool<P = any, R = unknown> {
@@ -125,12 +135,18 @@ export interface MakaTool<P = any, R = unknown> {
   recoveryMode?: ToolRecoveryMode;
   /** Step-level admission contract. Exclusive tools cannot share an assistant step. */
   executionSemantics?: 'parallel' | 'exclusive_step';
+  /** Nested CodeMode admission. Ordinary tools are nestable by default. */
+  nesting?: 'nestable' | 'direct_only';
   /** Optional permission/persistence projection derived from isolated execution args. */
   permissionArgs?: (
     args: P,
     context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'toolCallId'>,
   ) => unknown;
-  /** Real tool implementation. */
+  /**
+   * Real tool implementation. Implementations must observe `ctx.abortSignal` and
+   * settle promptly after it aborts. Runtime-owned nested calls await this
+   * settlement instead of detaching, so late side effects cannot outlive `exec`.
+   */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
   /** Optional provider-visible content mapping, used for screenshot image parts. */
   toModelOutput?: (options: {
@@ -150,6 +166,8 @@ export interface MakaToolContext {
   executionBoundary?: ExecutionBoundary;
   permissionMode?: PermissionMode;
   toolCallId: string;
+  /** Runtime-owned durable identity of this tool operation, when enabled. */
+  operationId?: string;
   abortSignal: AbortSignal;
   emitOutput: (stream: ToolOutputStream, chunk: string) => void;
   /** Diagnostic-only trace projection. It must never affect tool execution. */
@@ -434,6 +452,17 @@ class RuntimeCommitBoundaryError extends Error {
   }
 }
 
+class ToolResultLimitError extends Error {
+  constructor() {
+    super('Tool result byte limit exceeded');
+    this.name = 'ToolResultLimitError';
+  }
+}
+
+export function isRuntimeCommitBoundaryError(error: unknown): boolean {
+  return error instanceof RuntimeCommitBoundaryError;
+}
+
 export class ToolRuntime {
   private readonly sandboxBoundaryRequests = new AwaitRegistry<
     SandboxBoundarySettlement,
@@ -644,6 +673,33 @@ export class ToolRuntime {
    * provider-facing error output; durable runtime commit failures still reject.
    */
   async settleToolCall(call: ResolvedMakaToolCall): Promise<ToolSettlement> {
+    const settlement = await this.settleToolCallRaw(call);
+    const modelOutput = settlement.providerError
+      ? { type: 'error-text' as const, value: new Error(settlement.providerError).toString() }
+      : call.tool.toModelOutput
+        ? await call.tool.toModelOutput({
+            toolCallId: call.toolCallId,
+            input: call.input,
+            output: settlement.result,
+          })
+        : this.input.materializeDefaultToolResultOutput
+          ? await this.input.materializeDefaultToolResultOutput({
+              toolCallId: call.toolCallId,
+              output: settlement.result,
+            })
+          : typeof settlement.result === 'string'
+            ? { type: 'text' as const, value: settlement.result }
+            : { type: 'json' as const, value: jsonValue(settlement.result) };
+    return { result: settlement.result, modelOutput };
+  }
+
+  /**
+   * Settle a tool without producing provider-visible output. Runtime-owned
+   * nested calls use this path because their result is consumed by Code Mode,
+   * not sent as a provider tool-result part; materializing it could spend
+   * turn-scoped provider resources such as the image budget.
+   */
+  async settleToolCallRaw(call: ResolvedMakaToolCall): Promise<RawToolSettlement> {
     const result = await this.executeTool(
       call.tool,
       call.turnId,
@@ -652,28 +708,16 @@ export class ToolRuntime {
       {
         toolCallId: call.toolCallId,
         abortSignal: call.abortSignal,
+        origin: call.origin ?? 'provider',
+        ...(call.parentToolCallId ? { parentToolCallId: call.parentToolCallId } : {}),
+        ...(call.parentOperationId ? { parentOperationId: call.parentOperationId } : {}),
+        ...(call.maxResultBytes !== undefined ? { maxResultBytes: call.maxResultBytes } : {}),
         ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
       },
       call.stepId,
     );
     const providerError = providerToolErrorMessage(result);
-    const modelOutput = providerError
-      ? { type: 'error-text' as const, value: new Error(providerError).toString() }
-      : call.tool.toModelOutput
-        ? await call.tool.toModelOutput({
-            toolCallId: call.toolCallId,
-            input: call.input,
-            output: result,
-          })
-        : this.input.materializeDefaultToolResultOutput
-          ? await this.input.materializeDefaultToolResultOutput({
-              toolCallId: call.toolCallId,
-              output: result,
-            })
-          : typeof result === 'string'
-            ? { type: 'text' as const, value: result }
-            : { type: 'json' as const, value: jsonValue(result) };
-    return { result, modelOutput };
+    return { result, ...(providerError ? { providerError } : {}) };
   }
 
   /**
@@ -733,6 +777,12 @@ export class ToolRuntime {
     sandboxDenial?: SandboxDenialSignal,
     sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
     uncertainOutcome?: ToolUncertainOutcomeSignal,
+    activityIdentity: {
+      origin?: 'provider' | 'code_mode';
+      modelVisibility?: 'visible' | 'hidden';
+      parentToolCallId?: string;
+      parentOperationId?: string;
+    } = {},
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
@@ -751,6 +801,7 @@ export class ToolRuntime {
       toolUseId,
       isError: true,
       content,
+      ...activityIdentity,
     };
     await this.input.appendMessage(msg);
     queue.push({
@@ -762,6 +813,7 @@ export class ToolRuntime {
       ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
       isError: true,
       content,
+      ...activityIdentity,
     } satisfies ToolResultEvent);
   }
 
@@ -774,6 +826,10 @@ export class ToolRuntime {
       toolCallId: string;
       abortSignal: AbortSignal;
       providerOptions?: Record<string, unknown>;
+      origin: 'provider' | 'code_mode';
+      parentToolCallId?: string;
+      parentOperationId?: string;
+      maxResultBytes?: number;
     },
     stepId?: string,
   ): Promise<unknown> {
@@ -781,32 +837,38 @@ export class ToolRuntime {
     const toolUseId = ctx.toolCallId;
     // Registration is synchronous and happens before the first await, so
     // parallel Runtime settlements cannot race past exclusive admission.
-    const admissionFailure = this.admitToolForStep(tool, stepId);
+    const directOnlyFailure =
+      ctx.origin === 'code_mode' && tool.nesting === 'direct_only'
+        ? `Tool ${tool.name} is direct-only and cannot run inside exec.`
+        : undefined;
+    const admissionFailure = directOnlyFailure ?? this.admitToolForStep(tool, stepId);
     const executionArgs = rawExecutionArgs;
-    let permissionArgs = rawExecutionArgs;
+    let permissionArgs = executionArgs;
     let permissionArgsError: unknown;
-    try {
-      // A surface that cannot carry a sandbox-boundary request rejects the
-      // operation before it interprets the requested expansion. Preserve that
-      // availability contract even when an older caller sends a legacy shape.
-      const sandboxBoundaryUnavailable =
-        tool.name === 'request_sandbox_boundary' &&
-        !this.interactionRun() &&
-        (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
-      if (!sandboxBoundaryUnavailable) {
-        await validateDeclaredToolArgs(tool.parameters, rawExecutionArgs);
+    if (directOnlyFailure === undefined) {
+      try {
+        // A surface that cannot carry a sandbox-boundary request rejects the
+        // operation before it interprets the requested expansion. Preserve that
+        // availability contract even when an older caller sends a legacy shape.
+        const sandboxBoundaryUnavailable =
+          tool.name === 'request_sandbox_boundary' &&
+          !this.interactionRun() &&
+          (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
+        if (!sandboxBoundaryUnavailable) {
+          await validateDeclaredToolArgs(tool.parameters, rawExecutionArgs);
+        }
+        permissionArgs = tool.permissionArgs
+          ? snapshotToolArgs(
+              tool.permissionArgs(structuredClone(executionArgs) as never, {
+                sessionId: this.input.sessionId,
+                turnId,
+                toolCallId: toolUseId,
+              }),
+            )
+          : executionArgs;
+      } catch (error) {
+        permissionArgsError = error;
       }
-      permissionArgs = tool.permissionArgs
-        ? snapshotToolArgs(
-            tool.permissionArgs(structuredClone(executionArgs) as never, {
-              sessionId: this.input.sessionId,
-              turnId,
-              toolCallId: toolUseId,
-            }),
-          )
-        : executionArgs;
-    } catch (error) {
-      permissionArgsError = error;
     }
     // The args written into the `tool_start` event, the persisted `tool_call`
     // message and the durable ledger — that is, the record of the call the
@@ -855,7 +917,7 @@ export class ToolRuntime {
         new Error('Durable tool execution requires a run id'),
       );
     }
-    const callSignature = `${tool.name} ${loopGateArgsKey(executionArgs, toolUseId)}`;
+    const callSignature = `${ctx.origin}:${tool.name} ${loopGateArgsKey(executionArgs, toolUseId)}`;
     const computerSemanticSignature =
       tool.categoryHint === 'computer_use'
         ? computerUseSemanticSignature(permissionArgs)
@@ -907,6 +969,12 @@ export class ToolRuntime {
       this.input.runtimeCommitSink && invocationId && !preflightRejected
         ? buildToolOperationId({ invocationId, providerToolCallId: toolUseId })
         : undefined;
+    const activityIdentity = {
+      origin: ctx.origin,
+      modelVisibility: ctx.origin === 'code_mode' ? ('hidden' as const) : ('visible' as const),
+      ...(ctx.parentToolCallId ? { parentToolCallId: ctx.parentToolCallId } : {}),
+      ...(ctx.parentOperationId ? { parentOperationId: ctx.parentOperationId } : {}),
+    };
     const startEv: ToolStartEvent = {
       type: 'tool_start',
       id: operationId ? `${operationId}_call` : this.input.newId(),
@@ -915,6 +983,7 @@ export class ToolRuntime {
       toolUseId,
       toolName: tool.name,
       ...(operationId ? { operationId } : {}),
+      ...activityIdentity,
       ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
       args: structuredClone(persistedArgs),
       ...(ctx.providerOptions !== undefined
@@ -930,6 +999,7 @@ export class ToolRuntime {
       turnId,
       ts: now,
       toolName: tool.name,
+      ...activityIdentity,
       ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
       ...(tool.displayName ? { displayName: tool.displayName } : {}),
       ...(toolIntent ? { intent: toolIntent } : {}),
@@ -954,7 +1024,16 @@ export class ToolRuntime {
       throw error;
     }
     if (admissionFailure) {
-      await this.writeSyntheticToolResult(toolUseId, turnId, admissionFailure, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        admissionFailure,
+        queue,
+        undefined,
+        undefined,
+        undefined,
+        activityIdentity,
+      );
       trace?.emit('tool', 'tool_failed', 'Tool rejected by exclusive-step admission', {
         toolUseId,
         toolName: tool.name,
@@ -989,7 +1068,16 @@ export class ToolRuntime {
               args: executionArgs,
               error: permissionArgsError,
             });
-      await this.writeSyntheticToolResult(toolUseId, turnId, msg, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        msg,
+        queue,
+        undefined,
+        undefined,
+        undefined,
+        activityIdentity,
+      );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
         turnId,
@@ -1041,7 +1129,16 @@ export class ToolRuntime {
     // streak stays parked and every further identical repeat stays blocked.
     if (repeatedAmbiguousComputerTarget) {
       const reason = formatAmbiguousComputerLoopGateText();
-      await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        reason,
+        queue,
+        undefined,
+        undefined,
+        undefined,
+        activityIdentity,
+      );
       trace?.emit('tool', 'tool_failed', 'Blocked repeated ambiguous Computer Use target', {
         toolUseId,
         toolName: tool.name,
@@ -1059,7 +1156,16 @@ export class ToolRuntime {
     }
     if (repeatedFailedCall) {
       const reason = formatLoopGateText(tool.name);
-      await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        reason,
+        queue,
+        undefined,
+        undefined,
+        undefined,
+        activityIdentity,
+      );
       trace?.emit('tool', 'tool_failed', 'Loop-gate blocked a repeated identical failing call', {
         toolUseId,
         toolName: tool.name,
@@ -1078,7 +1184,16 @@ export class ToolRuntime {
     // model loads via `load_tools`, then retries next step.
     if (deferredToolNotLoaded) {
       const reason = formatDeferredNotLoadedText(tool.name);
-      await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        reason,
+        queue,
+        undefined,
+        undefined,
+        undefined,
+        activityIdentity,
+      );
       trace?.emit('tool', 'tool_failed', 'Deferred tool used before load', {
         toolUseId,
         toolName: tool.name,
@@ -1092,7 +1207,16 @@ export class ToolRuntime {
     if (tool.categoryHint === 'client_capability') {
       if (clientCapabilityBoundaryReadFailed) {
         const reason = formatSyntheticToolErrorText(clientCapabilityBoundaryReadError);
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+        await this.writeSyntheticToolResult(
+          toolUseId,
+          turnId,
+          reason,
+          queue,
+          undefined,
+          undefined,
+          undefined,
+          activityIdentity,
+        );
         trace?.emit('tool', 'tool_failed', 'Client Capability boundary read failed', {
           toolUseId,
           toolName: tool.name,
@@ -1108,6 +1232,10 @@ export class ToolRuntime {
           turnId,
           CLIENT_CAPABILITY_BOUNDARY_MESSAGE,
           queue,
+          undefined,
+          undefined,
+          undefined,
+          activityIdentity,
         );
         trace?.emit('tool', 'tool_failed', 'Client Capability blocked by execution boundary', {
           toolUseId,
@@ -1127,7 +1255,16 @@ export class ToolRuntime {
         errorClass: 'RuntimeLimit',
         boundary: 'subagent_tool_admission',
       });
-      await this.writeSyntheticToolResult(toolUseId, turnId, SUBAGENT_TOOL_LIMIT_MESSAGE, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        SUBAGENT_TOOL_LIMIT_MESSAGE,
+        queue,
+        undefined,
+        undefined,
+        undefined,
+        activityIdentity,
+      );
       this.recordLoopGateOutcome(callSignature, true);
       return this.errorReturn(SUBAGENT_TOOL_LIMIT_MESSAGE);
     }
@@ -1158,6 +1295,7 @@ export class ToolRuntime {
       newId: this.input.newId,
       now: this.input.now,
       push: (event) => queue.push(event),
+      ...activityIdentity,
     });
     // Loop-gate outcome for the real impl. Default failed; the success path below
     // overwrites it from the derived result status, and the finally records it
@@ -1186,6 +1324,7 @@ export class ToolRuntime {
           executionBoundary,
           permissionMode: this.input.header.permissionMode,
           toolCallId: toolUseId,
+          ...(operationId ? { operationId } : {}),
           abortSignal: ctx.abortSignal,
           emitOutput: output.emit,
           ...(trace
@@ -1219,10 +1358,24 @@ export class ToolRuntime {
             toolUseId,
             toolName: tool.name,
           }),
-          askUserQuestion: (questions) => this.askUserQuestion(turnId, toolUseId, questions, queue),
+          askUserQuestion: (questions) =>
+            this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
           requestSandboxBoundary: (expansion, justification) =>
-            this.requestSandboxBoundary(turnId, toolUseId, expansion, justification, queue),
+            this.requestSandboxBoundary(
+              turnId,
+              toolUseId,
+              expansion,
+              justification,
+              ctx.abortSignal,
+              queue,
+            ),
         });
+        if (
+          ctx.maxResultBytes !== undefined &&
+          serializedByteLength(result, ctx.maxResultBytes) > ctx.maxResultBytes
+        ) {
+          throw new ToolResultLimitError();
+        }
         output.flush();
         const durationMs = this.input.now() - startedAt;
 
@@ -1263,6 +1416,7 @@ export class ToolRuntime {
           isError: toolResultStatus !== 'success',
           content,
           durationMs,
+          ...activityIdentity,
         };
         await this.input.appendMessage(resultMsg);
         queue.push({
@@ -1275,6 +1429,7 @@ export class ToolRuntime {
           isError: toolResultStatus !== 'success',
           content,
           durationMs,
+          ...activityIdentity,
         } satisfies ToolResultEvent);
 
         this.input.recordToolInvocation?.({
@@ -1322,6 +1477,7 @@ export class ToolRuntime {
               ts: this.input.now(),
               toolUseId,
               chunk: message,
+              ...activityIdentity,
             });
           },
         );
@@ -1379,6 +1535,7 @@ export class ToolRuntime {
           isError: true,
           content: terminalFailure.content,
           durationMs,
+          ...activityIdentity,
         };
         await this.input.appendMessage(resultMsg);
         queue.push({
@@ -1391,6 +1548,7 @@ export class ToolRuntime {
           isError: true,
           content: terminalFailure.content,
           durationMs,
+          ...activityIdentity,
         } satisfies ToolResultEvent);
         this.input.recordToolInvocation?.({
           sessionId: this.input.sessionId,
@@ -1422,11 +1580,13 @@ export class ToolRuntime {
         return this.errorReturn(terminalFailure.message);
       }
       const msg =
-        tool.categoryHint === 'computer_use'
-          ? `Computer Use failed: ${errorClass}`
-          : uncertainOutcome
-            ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
-            : formatSyntheticToolErrorText(err);
+        err instanceof ToolResultLimitError
+          ? err.message
+          : tool.categoryHint === 'computer_use'
+            ? `Computer Use failed: ${errorClass}`
+            : uncertainOutcome
+              ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
+              : formatSyntheticToolErrorText(err);
       await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
@@ -1435,6 +1595,7 @@ export class ToolRuntime {
         sandboxDenialSignalFromError(err),
         sandboxBoundaryFailureSignal(sandboxError),
         uncertainOutcome,
+        activityIdentity,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1514,6 +1675,8 @@ export class ToolRuntime {
       partial: false,
       role: 'model',
       author: 'agent',
+      origin: input.startEvent.origin ?? 'provider',
+      modelVisibility: input.startEvent.modelVisibility ?? 'visible',
       content: {
         kind: 'function_call',
         id: input.startEvent.toolUseId,
@@ -1526,6 +1689,12 @@ export class ToolRuntime {
       refs: {
         operationId,
         toolCallId: input.startEvent.toolUseId,
+        ...(input.startEvent.parentToolCallId
+          ? { parentToolCallId: input.startEvent.parentToolCallId }
+          : {}),
+        ...(input.startEvent.parentOperationId
+          ? { parentOperationId: input.startEvent.parentOperationId }
+          : {}),
         ...(input.startEvent.stepId ? { stepId: input.startEvent.stepId } : {}),
       },
       ...(Object.keys(stateDelta).length > 0 ? { actions: { stateDelta } } : {}),
@@ -1542,6 +1711,8 @@ export class ToolRuntime {
       partial: false,
       role: 'system',
       author: 'system',
+      origin: input.startEvent.origin ?? 'provider',
+      modelVisibility: input.startEvent.modelVisibility ?? 'visible',
       actions: {
         toolDispatch: {
           protocol: TOOL_BOUNDARY_PROTOCOL_V1,
@@ -1552,7 +1723,16 @@ export class ToolRuntime {
           recoveryMode,
         },
       },
-      refs: { operationId, toolCallId: input.startEvent.toolUseId },
+      refs: {
+        operationId,
+        toolCallId: input.startEvent.toolUseId,
+        ...(input.startEvent.parentToolCallId
+          ? { parentToolCallId: input.startEvent.parentToolCallId }
+          : {}),
+        ...(input.startEvent.parentOperationId
+          ? { parentOperationId: input.startEvent.parentOperationId }
+          : {}),
+      },
     };
     try {
       this.assertDurableDispatchNotAborted(input.tool.name, input.abortSignal);
@@ -1589,6 +1769,8 @@ export class ToolRuntime {
           partial: false,
           role: 'tool',
           author: 'tool',
+          origin: input.startEvent.origin ?? 'provider',
+          modelVisibility: input.startEvent.modelVisibility ?? 'visible',
           content: {
             kind: 'function_response',
             id: input.startEvent.toolUseId,
@@ -1599,6 +1781,12 @@ export class ToolRuntime {
           refs: {
             operationId,
             toolCallId: input.startEvent.toolUseId,
+            ...(input.startEvent.parentToolCallId
+              ? { parentToolCallId: input.startEvent.parentToolCallId }
+              : {}),
+            ...(input.startEvent.parentOperationId
+              ? { parentOperationId: input.startEvent.parentOperationId }
+              : {}),
           },
           ...(durationMs !== undefined ? { actions: { stateDelta: { durationMs } } } : {}),
         };
@@ -1880,8 +2068,10 @@ export class ToolRuntime {
     turnId: string,
     toolUseId: string,
     questions: UserQuestion[],
+    abortSignal: AbortSignal,
     queue: DurableSessionEventSink,
   ): Promise<UserQuestionResult> {
+    throwIfAborted(abortSignal);
     const hostedRun = this.interactionRun();
     const requestId = this.input.newId();
     const parked = this.userQuestions.park(requestId, {
@@ -1889,59 +2079,84 @@ export class ToolRuntime {
       questions,
       hosted: hostedRun !== undefined,
     });
+    const onAbort = (): void => {
+      if (hostedRun) return;
+      this.userQuestions.reject(requestId, abortErrorFromSignal(abortSignal));
+      this.finishDeferredQuestionTurnClosure();
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
     if (hostedRun) void parked.catch(() => undefined);
-    const request: UserQuestionRequestEvent = {
-      type: 'user_question_request',
-      id: this.input.newId(),
-      turnId,
-      ts: this.input.now(),
-      requestId,
-      toolUseId,
-      questions,
-    };
-    if (hostedRun) {
-      const settlement = this.createUserQuestionSettlement(turnId, requestId);
-      try {
-        await hostedRun.admitUserQuestionRequest({
-          request,
-          settlement,
-        });
-      } catch (error) {
-        this.userQuestions.reject(
-          requestId,
-          error instanceof Error
-            ? error
-            : new RuntimeInteractionFailStopError(
-                `Could not confirm admission for question ${requestId}`,
-                error,
-              ),
-        );
-        this.finishDeferredQuestionTurnClosure();
-        await parked.catch(() => undefined);
-        throw interactionAuthorityError(
-          `Could not confirm admission for question ${requestId}`,
-          error,
-        );
+    try {
+      const request: UserQuestionRequestEvent = {
+        type: 'user_question_request',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+        questions,
+      };
+      if (hostedRun) {
+        const settlement = this.createUserQuestionSettlement(turnId, requestId);
+        const admission = hostedRun.admitUserQuestionRequest({ request, settlement });
+        try {
+          await racePromiseWithAbort(admission, abortSignal);
+        } catch (error) {
+          if (abortSignal.aborted) {
+            void admission.catch((admissionError) => {
+              this.userQuestions.reject(
+                requestId,
+                admissionError instanceof Error
+                  ? admissionError
+                  : new RuntimeInteractionFailStopError(
+                      `Could not confirm admission for question ${requestId}`,
+                      admissionError,
+                    ),
+              );
+              this.finishDeferredQuestionTurnClosure();
+            });
+            throw abortErrorFromSignal(abortSignal);
+          }
+          this.userQuestions.reject(
+            requestId,
+            error instanceof Error
+              ? error
+              : new RuntimeInteractionFailStopError(
+                  `Could not confirm admission for question ${requestId}`,
+                  error,
+                ),
+          );
+          this.finishDeferredQuestionTurnClosure();
+          await parked.catch(() => undefined);
+          throw interactionAuthorityError(
+            `Could not confirm admission for question ${requestId}`,
+            error,
+          );
+        }
       }
+      throwIfAborted(abortSignal);
+      queue.push(request);
+      const response = await racePromiseWithAbort(parked, abortSignal);
+      throwIfAborted(abortSignal);
+      const answerAck = {
+        type: 'user_question_answer_ack',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+      } as const;
+      if (hostedRun) await this.publishHostedSettlementAck(queue, answerAck);
+      else queue.push(answerAck);
+      return {
+        answers: questions.map((question, index) => ({
+          question: question.question,
+          answer: response.answers[index] ?? null,
+        })),
+      };
+    } finally {
+      abortSignal.removeEventListener('abort', onAbort);
     }
-    queue.push(request);
-    const response = await parked;
-    const answerAck = {
-      type: 'user_question_answer_ack',
-      id: this.input.newId(),
-      turnId,
-      ts: this.input.now(),
-      requestId,
-      toolUseId,
-    } as const;
-    if (hostedRun) await this.publishHostedSettlementAck(queue, answerAck);
-    else queue.push(answerAck);
-    return {
-      answers: questions.map((question, index) => ({
-        question: question.question,
-        answer: response.answers[index] ?? null,
-      })),
-    };
   }
 
   private async requestSandboxBoundary(
@@ -1949,8 +2164,10 @@ export class ToolRuntime {
     toolUseId: string,
     expansion: SandboxBoundaryExpansion,
     justification: string,
+    abortSignal: AbortSignal,
     queue: DurableSessionEventSink,
   ): Promise<SandboxBoundarySettlement> {
+    throwIfAborted(abortSignal);
     const hostedRun = this.interactionRun();
     if (
       !hostedRun &&
@@ -1967,8 +2184,11 @@ export class ToolRuntime {
       // non-TUI CLI surface reaches here for any call that is not a hosted run.
       throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
-    const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
-    const normalizedJustification = justification.trim();
+    const normalized = await racePromiseWithAbort(
+      normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd),
+      abortSignal,
+    );
+    const normalizedJustification = typeof justification === 'string' ? justification.trim() : '';
     if (typeof justification !== 'string' || normalizedJustification.length === 0) {
       throw new Error('Sandbox boundary justification must not be empty');
     }
@@ -2004,63 +2224,103 @@ export class ToolRuntime {
       hosted: hostedRun !== undefined,
     });
     void parked.catch(() => undefined);
-    if (creation) {
-      try {
-        await creation;
-      } catch (error) {
-        this.sandboxBoundaryRequests.reject(
-          requestId,
-          error instanceof Error ? error : new Error(String(error)),
+    let abortDeny: Promise<void> | undefined;
+    const onAbort = (): void => {
+      if (hostedRun) return;
+      const wasPending = this.sandboxBoundaryRequests.has(requestId);
+      this.sandboxBoundaryRequests.reject(requestId, abortErrorFromSignal(abortSignal));
+      if (wasPending && creation) {
+        // Embedded execution owns both the local wait and its durable row.
+        abortDeny = creation.then(() =>
+          this.input.settleSandboxBoundaryRequest!({
+            sessionId: this.input.sessionId,
+            requestId,
+            decision: 'deny',
+          }).then(() => undefined),
         );
-        throw error;
       }
-    }
-    if (hostedRun) {
-      const settlement = this.createSandboxBoundarySettlement(turnId, requestId);
-      try {
-        await hostedRun.admitSandboxBoundaryRequest({
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    try {
+      if (creation) {
+        try {
+          await racePromiseWithAbort(creation, abortSignal);
+        } catch (error) {
+          this.sandboxBoundaryRequests.reject(
+            requestId,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          throw error;
+        }
+      }
+      if (hostedRun) {
+        const settlement = this.createSandboxBoundarySettlement(turnId, requestId);
+        const admission = hostedRun.admitSandboxBoundaryRequest({
           request: requestEvent,
           settlement,
         });
-      } catch (error) {
-        this.sandboxBoundaryRequests.reject(
-          requestId,
-          error instanceof Error
-            ? error
-            : new RuntimeInteractionFailStopError(
-                `Could not confirm admission for sandbox boundary ${requestId}`,
-                error,
-              ),
-        );
-        this.finishDeferredSandboxBoundaryTurnClosure();
-        await parked.catch(() => undefined);
-        throw interactionAuthorityError(
-          `Could not confirm admission for sandbox boundary ${requestId}`,
-          error,
-        );
+        try {
+          await racePromiseWithAbort(admission, abortSignal);
+        } catch (error) {
+          if (abortSignal.aborted) {
+            void admission.catch((admissionError) => {
+              this.sandboxBoundaryRequests.reject(
+                requestId,
+                admissionError instanceof Error
+                  ? admissionError
+                  : new RuntimeInteractionFailStopError(
+                      `Could not confirm admission for sandbox boundary ${requestId}`,
+                      admissionError,
+                    ),
+              );
+              this.finishDeferredSandboxBoundaryTurnClosure();
+            });
+            throw abortErrorFromSignal(abortSignal);
+          }
+          this.sandboxBoundaryRequests.reject(
+            requestId,
+            error instanceof Error
+              ? error
+              : new RuntimeInteractionFailStopError(
+                  `Could not confirm admission for sandbox boundary ${requestId}`,
+                  error,
+                ),
+          );
+          this.finishDeferredSandboxBoundaryTurnClosure();
+          await parked.catch(() => undefined);
+          throw interactionAuthorityError(
+            `Could not confirm admission for sandbox boundary ${requestId}`,
+            error,
+          );
+        }
       }
+      throwIfAborted(abortSignal);
+      queue.push(requestEvent);
+      const settlement = await racePromiseWithAbort(parked, abortSignal);
+      throwIfAborted(abortSignal);
+      const decisionAck: SandboxBoundaryDecisionAckEvent = {
+        type: 'sandbox_boundary_decision_ack',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId,
+        decision: settlement.request.status === 'denied' ? 'deny' : 'allow',
+        status:
+          settlement.request.status === 'pending'
+            ? (() => {
+                throw new Error(`Sandbox boundary request ${requestId} is still pending`);
+              })()
+            : settlement.request.status,
+        revision: settlement.boundary.revision,
+      };
+      if (hostedRun) await this.publishHostedSettlementAck(queue, decisionAck);
+      else queue.push(decisionAck);
+      return settlement;
+    } finally {
+      abortSignal.removeEventListener('abort', onAbort);
+      if (abortDeny) await abortDeny;
     }
-    queue.push(requestEvent);
-    const settlement = await parked;
-    const decisionAck: SandboxBoundaryDecisionAckEvent = {
-      type: 'sandbox_boundary_decision_ack',
-      id: this.input.newId(),
-      turnId,
-      ts: this.input.now(),
-      requestId,
-      toolUseId,
-      decision: settlement.request.status === 'denied' ? 'deny' : 'allow',
-      status:
-        settlement.request.status === 'pending'
-          ? (() => {
-              throw new Error(`Sandbox boundary request ${requestId} is still pending`);
-            })()
-          : settlement.request.status,
-      revision: settlement.boundary.revision,
-    };
-    if (hostedRun) await this.publishHostedSettlementAck(queue, decisionAck);
-    else queue.push(decisionAck);
-    return settlement;
   }
 
   private interactionRun(): HostedInteractionBridge | undefined {
@@ -2246,6 +2506,48 @@ function interactionAuthorityError(message: string, error: unknown): Error {
   return isInteractionControlError(error)
     ? (error as Error)
     : new RuntimeInteractionFailStopError(message, error);
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortErrorFromSignal(signal);
+}
+
+function abortErrorFromSignal(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error && reason.name === 'AbortError') return reason;
+  const error =
+    reason instanceof Error
+      ? new Error(reason.message, { cause: reason })
+      : new Error(typeof reason === 'string' ? reason : 'Operation aborted', {
+          ...(reason !== undefined ? { cause: reason } : {}),
+        });
+  error.name = 'AbortError';
+  return error;
+}
+
+function racePromiseWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void promise.catch(() => undefined);
+    return Promise.reject(abortErrorFromSignal(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      reject(abortErrorFromSignal(signal));
+    };
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

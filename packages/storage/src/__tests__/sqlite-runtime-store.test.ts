@@ -270,6 +270,44 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('commits nested T1 events with parent operation linkage', async () => {
+    await withStore(async (store) => {
+      const parentRefs = {
+        parentToolCallId: 'exec-call-1',
+        parentOperationId: 'exec-operation-1',
+      } as const;
+      const call = functionCallEvent({
+        refs: {
+          operationId: 'operation-1',
+          toolCallId: 'provider-call-1',
+          ...parentRefs,
+        },
+      });
+      const dispatch = toolDispatchEvent({
+        refs: {
+          operationId: 'operation-1',
+          toolCallId: 'provider-call-1',
+          ...parentRefs,
+        },
+      });
+
+      const result = await store.commitToolPrepared({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_prepared',
+        runtimeEvent: call,
+        dispatchRuntimeEvent: dispatch,
+        providerToolCallId: 'provider-call-1',
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 10,
+      });
+
+      assert.equal(result.created, true);
+      assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), [call, dispatch]);
+    });
+  });
+
   it('claims an exact function_call that was committed while permission was pending', async () => {
     await withStore(async (store) => {
       const call = functionCallEvent();

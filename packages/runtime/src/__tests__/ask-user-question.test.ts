@@ -164,4 +164,58 @@ describe('AskUserQuestion runtime round trip', () => {
       false,
     );
   });
+
+  test('cell abort releases a parked question without waiting for turn teardown', async () => {
+    const events: SessionEvent[] = [];
+    let id = 0;
+    const runtime = createTestToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'c' } as never,
+      modelId: 'm',
+      appendMessage: async () => {},
+      newId: () => `id-${++id}`,
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const controller = new AbortController();
+    const pending = runtime.settleToolCall({
+      tool: buildAskUserQuestionTool(),
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      input: {
+        questions: [{ question: 'Continue?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+      },
+      abortSignal: controller.signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    while (!events.some((event) => event.type === 'user_question_request')) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const request = events.find((event) => event.type === 'user_question_request');
+    assert.ok(request);
+    controller.abort(new Error('cell aborted'));
+
+    const settlement = await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('question did not release after cell abort')), 50),
+      ),
+    ]);
+    assert.match(String((settlement.result as { error: string }).error), /cell aborted/i);
+    assert.equal(runtime.pendingUserQuestionCount(), 0);
+    assert.equal(
+      runtime.respondToUserQuestion({
+        requestId: request.requestId,
+        answers: ['Yes'],
+      }),
+      false,
+    );
+  });
 });
