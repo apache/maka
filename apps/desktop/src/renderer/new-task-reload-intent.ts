@@ -3,16 +3,7 @@ const NEW_TASK_RELOAD_INTENT_KEY = 'maka-new-task-reload-intent-v1';
 type SessionStorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export interface NewTaskReloadIntent {
-  baselineSessionIds: readonly string[];
   draft: string;
-}
-
-export function sessionCreatedSinceNewTaskIntent<T extends { id: string }>(
-  intent: NewTaskReloadIntent,
-  sessions: readonly T[],
-): T | undefined {
-  const baseline = new Set(intent.baselineSessionIds);
-  return sessions.find((session) => !baseline.has(session.id));
 }
 
 function rendererSessionStorage(): SessionStorageLike | undefined {
@@ -39,15 +30,14 @@ export function hasNewTaskReloadIntent(
 }
 
 export function markNewTaskReloadIntent(
-  baselineSessionIds: readonly string[] = [],
   storage: SessionStorageLike | undefined = rendererSessionStorage(),
 ): void {
   try {
     const existing = readNewTaskReloadIntent(storage);
-    storage?.setItem(NEW_TASK_RELOAD_INTENT_KEY, JSON.stringify({
-      baselineSessionIds: [...baselineSessionIds],
-      draft: existing?.draft ?? '',
-    } satisfies NewTaskReloadIntent));
+    storage?.setItem(
+      NEW_TASK_RELOAD_INTENT_KEY,
+      JSON.stringify({ draft: existing?.draft ?? '' } satisfies NewTaskReloadIntent),
+    );
   } catch {
     // Restricted renderer contexts may not expose web storage.
   }
@@ -59,19 +49,12 @@ export function readNewTaskReloadIntent(
   try {
     const raw = storage?.getItem(NEW_TASK_RELOAD_INTENT_KEY);
     if (!raw) return undefined;
-    // The original marker shipped as the literal `1`. Treat it as an empty
-    // baseline so a reload made by that version remains fail-soft.
-    if (raw === '1') return { baselineSessionIds: [], draft: '' };
+    // The original marker shipped as the literal `1`. Keep reloads made by
+    // that version fail-soft while treating the marker as surface state only.
+    if (raw === '1') return { draft: '' };
     const parsed = JSON.parse(raw) as Partial<NewTaskReloadIntent>;
-    if (!Array.isArray(parsed.baselineSessionIds) || typeof parsed.draft !== 'string') {
-      return undefined;
-    }
-    return {
-      baselineSessionIds: parsed.baselineSessionIds.filter(
-        (value): value is string => typeof value === 'string',
-      ),
-      draft: parsed.draft,
-    };
+    if (typeof parsed.draft !== 'string') return undefined;
+    return { draft: parsed.draft };
   } catch {
     return undefined;
   }

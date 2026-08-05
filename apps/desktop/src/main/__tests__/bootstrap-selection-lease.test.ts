@@ -6,7 +6,6 @@ import {
   hasNewTaskReloadIntent,
   markNewTaskReloadIntent,
   readNewTaskReloadIntent,
-  sessionCreatedSinceNewTaskIntent,
   writeNewTaskReloadDraft,
 } from '../../renderer/new-task-reload-intent.js';
 
@@ -82,12 +81,15 @@ describe('bootstrap selection lease', () => {
       setItem: (key: string, value: string) => void values.set(key, value),
       removeItem: (key: string) => void values.delete(key),
     };
-    markNewTaskReloadIntent([], storage);
+    markNewTaskReloadIntent(storage);
     assert.equal(hasNewTaskReloadIntent(storage), true);
 
     const reloaded = harness();
     if (hasNewTaskReloadIntent(storage)) reloaded.lease.release();
-    assert.equal(reloaded.lease.reconcile([session('history', 1)]), false);
+    assert.equal(
+      reloaded.lease.reconcile([session('unrelated-new-session'), session('history', 1)]),
+      false,
+    );
     assert.equal(reloaded.activeId(), undefined);
 
     clearNewTaskReloadIntent(storage);
@@ -97,15 +99,6 @@ describe('bootstrap selection lease', () => {
     assert.equal(coldStart.activeId(), 'history');
   });
 
-  it('distinguishes persisted history from a Session created during renderer replacement', () => {
-    const intent = { baselineSessionIds: ['history'], draft: 'keep this' };
-    assert.equal(sessionCreatedSinceNewTaskIntent(intent, [session('history', 1)]), undefined);
-    assert.equal(
-      sessionCreatedSinceNewTaskIntent(intent, [session('created'), session('history', 1)])?.id,
-      'created',
-    );
-  });
-
   it('keeps a scoped draft with the reload intent', () => {
     const values = new Map<string, string>();
     const storage = {
@@ -113,10 +106,9 @@ describe('bootstrap selection lease', () => {
       setItem: (key: string, value: string) => void values.set(key, value),
       removeItem: (key: string) => void values.delete(key),
     };
-    markNewTaskReloadIntent(['history'], storage);
+    markNewTaskReloadIntent(storage);
     writeNewTaskReloadDraft('unfinished prompt', storage);
     assert.deepEqual(readNewTaskReloadIntent(storage), {
-      baselineSessionIds: ['history'],
       draft: 'unfinished prompt',
     });
   });
