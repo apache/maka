@@ -68,6 +68,9 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
+  // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the
+  // repo root; the per-package tarball ships no license file.
+  ['proxy-agent-negotiate@1.1.0', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
 ]);
 
