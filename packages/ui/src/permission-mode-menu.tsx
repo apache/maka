@@ -115,7 +115,7 @@ export function PermissionModeSelect(props: {
         >
           <DropdownMenuRadioGroup
             value={selectedValue}
-            aria-label={ariaLabel}
+            label={ariaLabel}
             onChange={(value) => {
               void props.onSelect(value as ChatDefaultPermissionMode);
             }}

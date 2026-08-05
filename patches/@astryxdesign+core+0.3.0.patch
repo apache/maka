@@ -1,8 +1,8 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-index 37f2c82..16bf2fc 100644
+index ff34874..06c600a 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-@@ -62,6 +62,14 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+@@ -69,6 +69,14 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
       * @default 'balanced'
       */
      density?: Density;
@@ -18,19 +18,19 @@ index 37f2c82..16bf2fc 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index 8ef54c7..153ae52 100644
+index ea27cd5..6daf0d8 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-@@ -21,7 +21,7 @@
+@@ -28,7 +28,7 @@
   * - /apps/storybook/stories/ChatLayout.stories.tsx
-  * - /packages/cli/templates/blocks/components/ChatLayout/ (block examples)
+  * - /packages/cli/assets/templates/blocks/components/ChatLayout/ (block examples)
   */
 -import { useMemo, useRef } from 'react';
 +import { useEffect, useMemo, useRef } from 'react';
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
  import { spacingVars } from "../theme/tokens.stylex.js";
-@@ -184,6 +184,7 @@ export function ChatLayout({
+@@ -195,6 +195,7 @@ export function ChatLayout({
    className,
    style,
    'data-testid': testId,
@@ -38,7 +38,7 @@ index 8ef54c7..153ae52 100644
    ref,
    ...rest
  }) {
-@@ -200,6 +201,31 @@ export function ChatLayout({
+@@ -211,6 +212,31 @@ export function ChatLayout({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked
    });
@@ -109,30 +109,8 @@ index 8c509bc..f108f3b 100644
    };
  }
 \ No newline at end of file
-diff --git a/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js b/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
-index b5a8d9e..89a72cd 100644
---- a/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
-+++ b/node_modules/@astryxdesign/core/dist/Field/FieldLabel.js
-@@ -19,6 +19,7 @@ import { colorVars, fontWeightVars, spacingVars, typographyVars, typeScaleVars }
- import { Icon, renderIconSlot } from "../Icon/index.js";
- import { Tooltip } from "../Tooltip/index.js";
- import { themeProps } from "../utils/themeProps.js";
-+import { useTranslator } from "../i18n/index.js";
- import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
- const styles = {
-   label: {
-@@ -87,7 +88,8 @@ export function FieldLabel({
-   ref,
-   ...rest
- }) {
--  const statusText = isOptional ? 'Optional' : isRequired ? 'Required' : null;
-+  const t = useTranslator();
-+  const statusText = isOptional ? t('@astryx.field.optional') : isRequired ? t('@astryx.field.required') : null;
- 
-   // A group label (e.g. for a radiogroup) must not be a literal `<label>`
-   // element: a `<label>` semantically names a single form control and can't be
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
-index 7a4083d..2b93545 100644
+index 08b5f7d..94c623b 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
 +++ b/node_modules/@astryxdesign/core/dist/List/List.js
 @@ -89,6 +89,7 @@ export function List({
@@ -151,22 +129,3 @@ index 7a4083d..2b93545 100644
      "aria-labelledby": header != null ? headerId : undefined,
      ...(isOrdered && start != null && start !== 1 ? {
        start
-diff --git a/node_modules/@astryxdesign/core/locales/en.json b/node_modules/@astryxdesign/core/locales/en.json
-index fa4644c..505d815 100644
---- a/node_modules/@astryxdesign/core/locales/en.json
-+++ b/node_modules/@astryxdesign/core/locales/en.json
-@@ -747,6 +747,14 @@
-     "defaultMessage": "Code",
-     "description": "Screen-reader-only fallback name for a code-snippet scroll container when the code's language is unknown. \"Code\" = source code, not secret code or code of conduct."
-   },
-+  "@astryx.field.required": {
-+    "defaultMessage": "Required",
-+    "description": "Visible marker after a field label indicating the field must be filled in. Rendered after an aria-hidden separator, so it reads on its own. Pairs with `field.optional`."
-+  },
-+  "@astryx.field.optional": {
-+    "defaultMessage": "Optional",
-+    "description": "Visible marker after a field label indicating the field may be left empty. Rendered after an aria-hidden separator, so it reads on its own. Pairs with `field.required`."
-+  },
-   "@astryx.fileInput.clearLabel": {
-     "defaultMessage": "Clear {label}",
-     "description": "Screen-reader-only label on the X that removes the selected file from a FileInput. Example: `Clear Attachment`, `Clear Résumé`."

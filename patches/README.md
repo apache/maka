@@ -74,27 +74,9 @@ Two `typeValidation` branches sit untouched inside a patched hunk and neither ca
 
 **Delete it when the guard still holds without it.** Remove the patch, reinstall, and run `packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts`. Read the result by property, not by count. The patch is unnecessary once, on both the `openai` and `openai-compatible` paths, no case merges two calls' arguments into one input, drops a call, emits a duplicate or empty tool call id, emits a `tool-input-start`/`-delta`/`-end` sequence that does not match the `tool-call` it precedes, or crashes. `assertInputsSelfContained`, `assertToolCallIdsUsable`, and `assertEventLifecycle` are those properties. Two caveats when reading a red result. First, three cases — `fails loudly rather than merging when a reused index delays its name` and the two `refuses an id/an index that disagrees with the only open call` — assert that an *undecidable* shape fails, and an upstream that genuinely fixed the layers below would make them succeed, turning the guard red for a better implementation. Each carries a `Known boundary, deliberately locked in` comment naming the fix that would flip it, so the classification is recoverable from the test file alone; do not restate the count here, since it drifts. Every other failure-asserting case is one any correct implementation should fail — a delta that names no tool, or one whose aliases contradict each other — and stays red for a reason, not as a trap. Second, self-containment is a property of the shapes the guard covers, not of any implementation: the `shapes that cannot be demultiplexed` suite exists because a shared alias makes it unachievable, and it deliberately does not assert it. Related upstream work: [vercel/ai#18333](https://github.com/vercel/ai/issues/18333) and its fix [#18382](https://github.com/vercel/ai/pull/18382), landed in 5.0.21 and no longer carried here; [vercel/ai#14277](https://github.com/vercel/ai/pull/14277) and [vercel/ai#15879](https://github.com/vercel/ai/pull/15879), for context only.
 
-## `@astryxdesign/core`: a field's required/optional marker is copy, so it belongs in the catalog
+## `@astryxdesign/core`: a field's required/optional marker is copy, so it belongs in the catalog — resolved upstream
 
-`FieldLabel` renders the marker beside a label as the literal words `'Optional'` / `'Required'` — no message id, so `AstryxLocaleProvider` cannot reach them. Every Astryx field the app marks with `isRequired` or `isOptional` therefore prints an English word inside a Chinese-first UI: the provider add form, the MCP server editor, the WeChat bot login, the plan-reminder dialog.
-
-The patch is two lines of behaviour: `FieldLabel` takes `useTranslator()` and resolves `@astryx.field.required` / `@astryx.field.optional`, and `locales/en.json` gains those two keys so `en` still resolves to `Required` / `Optional` through the shipped catalog rather than through a hard-coded string. `packages/ui/src/astryx-i18n.tsx` supplies the `zh` values from `getSharedUiCopy(...).formControls`, the same place every other Astryx override reads from.
-
-### Why not the two workarounds
-
-**Put the marker in the `label` string.** That is what `settings-provider-copy.ts` used to do (`API Key（必填）`), and it is why those fields rendered `API Key（必填） ∙ Required` — two markers, one of them untranslated. It also forces every copy catalog to re-derive a component-level convention, and it folds the marker into the field's accessible name, where it reads as part of the name rather than as a state.
-
-**Hide the marker with CSS and keep the prop.** `isRequired` is the only way to get `aria-required` onto the input — Astryx writes that attribute *after* spreading `...rest`, so passing it through is silently overwritten — so dropping the prop drops the semantics, and hiding the marker is the only alternative. That was the scoped stopgap in `apps/desktop/src/renderer/styles/astryx-field.css` on the plan-reminder form (PR #2155). It keys on the marker's DOM shape (a label's one element child wrapping an `aria-hidden` separator), which is not a contract; and unscoped it removes the visible required affordance from every form in the app. The patch keeps `aria-required` untouched *and* keeps the marker visible, so that file has nothing left to do.
-
-### Known boundaries
-
-Only `dist/Field/FieldLabel.js` is patched — `package.json` `exports` resolves there, and nothing in this repo compiles `src/`, so patching the `.tsx` would double the conflict surface for no runtime effect. `dist/astryx.umd.js` carries its own minified copy of the same logic and is left alone; nothing here loads the UMD bundle. `dist/Field/FieldLabel.js.map` is now stale for these two lines.
-
-`FieldLabel` gains a hook call. It is rendered by `Field`, `InputGroup`, `CheckboxInput`, and `Switch`, all of which already render under React; `useTranslator` reads a context with a default value, so a subtree with no `InternationalizationProvider` still resolves through the shipped `en` catalog exactly as before.
-
-### Lifecycle
-
-Upstreamable, unlike the `@ai-sdk` patch: the key naming follows `@astryx.fileInput.required`, which upstream already ships for the screen-reader mirror of this same marker. **Delete it when `packages/ui/src/__tests__/astryx-form-controls-localization.test.tsx` passes without it** — `localizes the required marker while keeping aria-required` asserts both halves, the localized marker and the surviving `aria-required`, and `keeps Astryx's English markers when the locale is en` asserts the `en` path did not regress into a raw key. Reinstall without the patch and run `npm --workspace @maka/ui run test`.
+Upstream shipped the same fix in 0.3.0 (`FieldLabel` resolves `@astryx.field.required` / `@astryx.field.optional` through the i18n catalog, astryx #4508), so the patch was dropped on the 0.2.0 → 0.3.0 upgrade. `packages/ui/src/__tests__/astryx-form-controls-localization.test.tsx` still guards the behavior without the patch.
 
 ## `@astryxdesign/core`: the "New messages" indicator must clear when the user is back at the bottom, and on a fresh transcript
 
@@ -113,7 +95,7 @@ Two fixes, one behavioural and one opt-in prop, all in `dist/`:
 
 ## `@astryxdesign/core`: `List` must render the accessible name its interface accepts
 
-Fixes [#2189](https://github.com/maka-agent/maka-agent/issues/2189). `ListProps` extends Astryx `BaseProps`, whose interface includes `aria-label`, but `List` 0.2.0 destructures a fixed prop set and never forwards that name to its root `<ul>` or `<ol>`. Six Maka lists pass localized accessible names that therefore disappear at runtime.
+Fixes [#2189](https://github.com/maka-agent/maka-agent/issues/2189). `ListProps` extends Astryx `BaseProps`, whose interface includes `aria-label`, but `List` (still in 0.3.0) destructures a fixed prop set and never forwards that name to its root `<ul>` or `<ol>`. Six Maka lists pass localized accessible names that therefore disappear at runtime.
 
 The patch explicitly forwards `aria-label` to the root list. That is narrower than spreading every remaining `BaseProps` field through a vendored component, and it leaves the existing visible `header` / `aria-labelledby` path untouched. Replacing the six call sites with visible `header` props would add redundant headings and leave the advertised `List` interface broken.
 
