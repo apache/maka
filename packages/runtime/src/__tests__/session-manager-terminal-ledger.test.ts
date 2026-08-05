@@ -1289,7 +1289,14 @@ describe('SessionManager terminal ledger invariants', () => {
     // store itself stayed healthy the whole time.
     runStore.failNextRuntimeEventAppends = 1;
     await run.acceptMappedEvent(
-      { type: 'text_complete', id: 'complete-1', turnId: 'turn-1', ts: 5, messageId: 'm1', text: 'a' },
+      {
+        type: 'text_complete',
+        id: 'complete-1',
+        turnId: 'turn-1',
+        ts: 5,
+        messageId: 'm1',
+        text: 'a',
+      },
       runtimeEvent({
         id: 'rt-rejected',
         sessionId: session.id,
@@ -1355,7 +1362,14 @@ describe('SessionManager terminal ledger invariants', () => {
     await run.begin();
     runStore.failNextRuntimeEventAppends = 1;
     await run.acceptMappedEvent(
-      { type: 'text_complete', id: 'complete-1', turnId: 'turn-1', ts: 5, messageId: 'm1', text: 'a' },
+      {
+        type: 'text_complete',
+        id: 'complete-1',
+        turnId: 'turn-1',
+        ts: 5,
+        messageId: 'm1',
+        text: 'a',
+      },
       runtimeEvent({
         id: 'rt-rejected',
         sessionId: session.id,

@@ -498,6 +498,9 @@ export class AgentRun {
     }
     await this.flushRuntimePartialBuffer(false);
     await this.runtimeEventQueue.catch(() => {});
+    if (this.runtimeEventStoreAvailable) {
+      return await store.readRuntimeEvents(this.sessionId, this.runId);
+    }
     // The unavailability latch records that a past write failed, not that
     // the store cannot answer now. This read is the probe that
     // disambiguates, the same way recordRuntimeEvents reads the ledger back
