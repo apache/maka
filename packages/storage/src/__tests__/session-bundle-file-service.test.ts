@@ -10,6 +10,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   symlink,
   writeFile,
@@ -154,32 +155,25 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
   timeout: 30_000,
 }, async () => {
   const fixture = await createFixture();
-  await writeFile(join(fixture.workspaceRoot, 'large.bin'), randomBytes(16 * 1024 * 1024));
-  const crashLimits: SessionBundleLimits = {
-    ...limits,
-    maxCompressedBytes: 32 * 1024 * 1024,
-    maxDecompressedTarBytes: 32 * 1024 * 1024,
-    maxPayloadBytes: 32 * 1024 * 1024,
-    maxFileBytes: 20 * 1024 * 1024,
-  };
   const archivePath = join(fixture.root, 'crash-bundle.tar.zst');
-  const artifact = await packFixture(archivePath, fixture, crashLimits);
+  const artifact = await packFixture(archivePath, fixture);
   const childPath = join(
     dirname(fileURLToPath(import.meta.url)),
     'fixtures',
-    'session-bundle-inspect-child.js',
+    'session-bundle-hydration-binding-crash.js',
   );
   const destinationRoot = join(fixture.root, 'crash-hydrated');
   const stagingPrefix = '.crash-hydrated.maka-session-bundle-staging-';
   const child = spawn(
     process.execPath,
-    [childPath, archivePath, artifact.archiveDigest, JSON.stringify(crashLimits), destinationRoot],
+    [childPath, archivePath, artifact.archiveDigest, JSON.stringify(limits), destinationRoot],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
   const stderr: Buffer[] = [];
   child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
   const closed = waitForChildClose(child, CHILD_PROCESS_TIMEOUT_MS, 'hydration crash child');
   try {
+    await waitForStreamText(child.stdout, 'binding-partial\n', 10_000, 'partial ownership binding');
     const stagingName = await waitForDirectoryEntry(
       fixture.root,
       stagingPrefix,
@@ -187,12 +181,9 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
       'hydration staging',
     );
     const ownershipName = `${stagingName}.owner.json`;
-    await waitForFileText(
-      join(fixture.root, ownershipName),
-      '"stagingDev"',
-      10_000,
-      'bound hydration ownership',
-    );
+    const ownershipContents = await readFile(join(fixture.root, ownershipName), 'utf8');
+    assert.equal(ownershipContents.includes('"stagingDev"'), false);
+    assert.equal(ownershipContents.endsWith('\n{'), true);
     assert.equal(child.kill('SIGKILL'), true);
     const result = await closed;
     assert.equal(result.signal, 'SIGKILL', Buffer.concat(stderr).toString('utf8'));
@@ -252,6 +243,25 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
     await rm(stagingPath, { recursive: true });
     await rename(capturedStagingPath, stagingPath);
 
+    const unrelatedCleanupRoot = `${stagingPath}.cleanup`;
+    await mkdir(unrelatedCleanupRoot);
+    assert.deepEqual(
+      await createSessionBundleFileService().cleanupHydrationStaging({
+        destinationRoot,
+      }),
+      {
+        destinationRoot,
+        removedStagingDirectories: 0,
+        removedOwnershipRecords: 0,
+      },
+    );
+    assert.equal((await lstat(unrelatedCleanupRoot)).isDirectory(), true);
+    assert.equal((await lstat(stagingPath)).isDirectory(), true);
+    await rmdir(unrelatedCleanupRoot);
+
+    // Simulate a process dying after the owned staging inode was quarantined
+    // but before recursive removal started.
+    await rename(stagingPath, unrelatedCleanupRoot);
     const cleanup = await createSessionBundleFileService().cleanupHydrationStaging({
       destinationRoot,
     });
@@ -261,6 +271,7 @@ test('a process crash leaves owned staging that can be reclaimed without touchin
       removedOwnershipRecords: 1,
     });
     await assert.rejects(lstat(stagingPath), { code: 'ENOENT' });
+    await assert.rejects(lstat(unrelatedCleanupRoot), { code: 'ENOENT' });
     await assert.rejects(lstat(join(fixture.root, ownershipName)), {
       code: 'ENOENT',
     });
@@ -437,6 +448,43 @@ test('cleans a published pack when the temporary pathname disappears after link'
   assert.equal(removal.code, 'io_failure');
   await assert.rejects(lstat(destination), { code: 'ENOENT' });
   assert.equal((await lstat(removal.capturedPath)).isFile(), true);
+});
+
+test('does not clean an unrelated destination replacement after link', async () => {
+  const fixture = await createFixture();
+  const destination = join(fixture.root, 'destination-replaced.tar.zst');
+  const resultPath = join(fixture.root, 'destination-replaced-result.json');
+  const childPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    'fixtures',
+    'session-bundle-pack-destination-replacer.js',
+  );
+  const child = spawn(
+    process.execPath,
+    [
+      childPath,
+      fixture.stateRoot,
+      fixture.workspaceRoot,
+      destination,
+      resultPath,
+      JSON.stringify(limits),
+      identityBytes.toString('hex'),
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  const stderr: Buffer[] = [];
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const result = await waitForChildClose(
+    child,
+    CHILD_PROCESS_TIMEOUT_MS,
+    'Session Bundle destination replacer',
+  );
+  assert.equal(result.code, 0, Buffer.concat(stderr).toString('utf8'));
+  assert.deepEqual(JSON.parse(await readFile(resultPath, 'utf8')), {
+    code: 'source_changed',
+    destinationContents: 'UNRELATED',
+  });
+  assert.equal(await readFile(destination, 'utf8'), 'UNRELATED');
 });
 
 test('removes an ownership record when its initialization write fails', async () => {
@@ -1079,21 +1127,6 @@ async function waitForDirectoryEntry(
       const metadata = await lstat(join(root, entry));
       if (metadata.isDirectory() && !metadata.isSymbolicLink()) return entry;
     }
-    await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 1));
-  }
-  throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
-}
-
-async function waitForFileText(
-  path: string,
-  expected: string,
-  timeoutMs: number,
-  label: string,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const contents = await readFile(path, 'utf8').catch(() => undefined);
-    if (contents?.includes(expected)) return;
     await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 1));
   }
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);

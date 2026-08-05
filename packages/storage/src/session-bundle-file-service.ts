@@ -10,7 +10,6 @@ import {
   readdir,
   rename,
   rm,
-  rmdir,
   stat,
   type FileHandle,
 } from 'node:fs/promises';
@@ -78,6 +77,8 @@ const ARCHIVE_TERMINATOR = Buffer.alloc(SESSION_BUNDLE_USTAR_BLOCK_BYTES * 2);
 const HYDRATION_STAGING_MARKER = '.maka-session-bundle-staging-';
 const HYDRATION_OWNERSHIP_SUFFIX = '.owner.json';
 const HYDRATION_OWNERSHIP_KIND = 'maka-session-bundle-hydration-staging' as const;
+const HYDRATION_OWNERSHIP_BINDING_KIND = 'maka-session-bundle-hydration-staging-binding' as const;
+const HYDRATION_OWNERSHIP_ANCHOR = '.maka-session-bundle-owner';
 const HYDRATION_OWNERSHIP_MAX_BYTES = 2 * 1024;
 const HYDRATION_CLEANUP_SUFFIX = '.cleanup';
 const HYDRATION_TOKEN_PATTERN =
@@ -120,14 +121,19 @@ interface HydrationStagingOwnershipV1 {
   destinationName: string;
   stagingName: string;
   token: string;
+}
+
+interface HydrationStagingOwnershipBindingV1 {
+  schemaVersion: 1;
+  kind: typeof HYDRATION_OWNERSHIP_BINDING_KIND;
   stagingDev: string;
   stagingIno: string;
 }
 
-type HydrationStagingOwnershipReservationV1 = Omit<
-  HydrationStagingOwnershipV1,
-  'stagingDev' | 'stagingIno'
->;
+interface DecodedHydrationStagingOwnership {
+  ownership: HydrationStagingOwnershipV1;
+  binding?: HydrationStagingOwnershipBindingV1;
+}
 
 interface PackDirectoryEntry {
   canonical: Extract<SessionBundleCanonicalTreeEntry, { kind: 'directory' }>;
@@ -1556,19 +1562,39 @@ async function publishPackFileNoReplace(
     throw error;
   }
 
-  // Establish cleanup ownership from the path that link() published before any
-  // lookup of the mutable temporary pathname can fail. The final cleanup still
-  // verifies this inode binding before removing the destination.
-  const linkedMetadata = await lstat(destination, { bigint: true });
-  if (linkedMetadata.isFile() && !linkedMetadata.isSymbolicLink()) {
-    state.linkedFingerprint = fingerprint(linkedMetadata);
-  }
-  const [beforeHandle, beforeTemporary, beforeDestination] = await Promise.all([
+  const [beforeHandle, beforeDestination] = await Promise.all([
     handle.stat({ bigint: true }),
-    lstat(temporaryPath, { bigint: true }),
     lstat(destination, { bigint: true }),
   ]);
   const verificationFingerprint = fingerprint(beforeHandle);
+  const destinationFingerprint = fingerprint(beforeDestination);
+  if (
+    beforeHandle.isFile() &&
+    beforeDestination.isFile() &&
+    !beforeDestination.isSymbolicLink() &&
+    beforeHandle.size === BigInt(expectedBytes) &&
+    sameFilesystemNode(hashedFingerprint, verificationFingerprint) &&
+    sameFilesystemNode(verificationFingerprint, destinationFingerprint)
+  ) {
+    // The open, hashed file proves that this is the inode link() published.
+    // Do not claim an arbitrary destination merely because link() returned.
+    state.linkedFingerprint = destinationFingerprint;
+  }
+
+  const beforeTemporary = await lstat(temporaryPath, { bigint: true });
+  const temporaryFingerprint = fingerprint(beforeTemporary);
+  if (
+    state.linkedFingerprint === undefined &&
+    beforeTemporary.isFile() &&
+    !beforeTemporary.isSymbolicLink() &&
+    beforeDestination.isFile() &&
+    !beforeDestination.isSymbolicLink() &&
+    sameFilesystemNode(temporaryFingerprint, destinationFingerprint)
+  ) {
+    // The pathname may have been swapped before link(). In that case the
+    // current temporary inode still proves which unwanted inode we published.
+    state.linkedFingerprint = destinationFingerprint;
+  }
   if (
     !beforeHandle.isFile() ||
     !beforeTemporary.isFile() ||
@@ -1577,8 +1603,8 @@ async function publishPackFileNoReplace(
     beforeDestination.isSymbolicLink() ||
     beforeHandle.size !== BigInt(expectedBytes) ||
     state.linkedFingerprint === undefined ||
-    !sameFilesystemNode(state.linkedFingerprint, fingerprint(beforeDestination)) ||
-    !sameFilesystemNode(fingerprint(beforeTemporary), fingerprint(beforeDestination)) ||
+    !sameFilesystemNode(state.linkedFingerprint, destinationFingerprint) ||
+    !sameFilesystemNode(temporaryFingerprint, destinationFingerprint) ||
     !sameFilesystemNode(hashedFingerprint, verificationFingerprint) ||
     !sameFingerprint(verificationFingerprint, fingerprint(beforeDestination))
   ) {
@@ -1724,15 +1750,20 @@ async function writeAll(
   }
 }
 
-async function replaceOpenFileContents(
+async function appendOpenFileContents(
   handle: FileHandle,
   contents: Buffer,
+  start: number,
   operation: 'pack' | 'hydrate',
 ): Promise<void> {
-  await handle.truncate(0);
   let offset = 0;
   while (offset < contents.byteLength) {
-    const result = await handle.write(contents, offset, contents.byteLength - offset, offset);
+    const result = await handle.write(
+      contents,
+      offset,
+      contents.byteLength - offset,
+      start + offset,
+    );
     if (result.bytesWritten <= 0) throw ioError(operation);
     offset += result.bytesWritten;
   }
@@ -1750,7 +1781,8 @@ async function createHydrationStaging(
   const stagingName = `${prefix}${token}`;
   const stagingRoot = join(parent, stagingName);
   const ownershipPath = `${stagingRoot}${HYDRATION_OWNERSHIP_SUFFIX}`;
-  const reservation = encodeHydrationStagingOwnershipReservation({
+  const ownershipAnchorPath = join(stagingRoot, HYDRATION_OWNERSHIP_ANCHOR);
+  const ownership = encodeHydrationStagingOwnership({
     schemaVersion: 1,
     kind: HYDRATION_OWNERSHIP_KIND,
     destinationName,
@@ -1774,7 +1806,7 @@ async function createHydrationStaging(
       throw ioError('hydrate');
     }
     createdOwnershipFingerprint = fingerprint(createdOwnershipMetadata);
-    await writeAll(ownershipHandle, reservation, 'hydrate');
+    await writeAll(ownershipHandle, ownership, 'hydrate');
     await ownershipHandle.sync();
     await syncDirectory(parent);
 
@@ -1789,18 +1821,42 @@ async function createHydrationStaging(
       throw ioError('hydrate');
     }
     stagingFingerprint = fingerprint(stagingMetadata);
+
+    // Keep the first canonical record intact and hard-link it into the staging
+    // directory before appending the inode binding. If the process dies during
+    // that append, cleanup can still authenticate the directory through this
+    // exact owner-file inode instead of trusting a partial second JSON line.
+    await link(ownershipPath, ownershipAnchorPath);
+    const [anchoredOwnershipMetadata, ownershipAnchorMetadata] = await Promise.all([
+      ownershipHandle.stat({ bigint: true }),
+      lstat(ownershipAnchorPath, { bigint: true }),
+    ]);
+    if (
+      !anchoredOwnershipMetadata.isFile() ||
+      !ownershipAnchorMetadata.isFile() ||
+      ownershipAnchorMetadata.isSymbolicLink() ||
+      anchoredOwnershipMetadata.nlink !== 2n ||
+      !sameFilesystemNode(
+        fingerprint(anchoredOwnershipMetadata),
+        fingerprint(ownershipAnchorMetadata),
+      )
+    ) {
+      throw ioError('hydrate');
+    }
+    await syncDirectory(stagingRoot);
     await syncDirectory(parent);
 
-    const ownership = encodeHydrationStagingOwnership({
+    const binding = encodeHydrationStagingOwnershipBinding({
       schemaVersion: 1,
-      kind: HYDRATION_OWNERSHIP_KIND,
-      destinationName,
-      stagingName,
-      token,
+      kind: HYDRATION_OWNERSHIP_BINDING_KIND,
       stagingDev: stagingMetadata.dev.toString(),
       stagingIno: stagingMetadata.ino.toString(),
     });
-    await replaceOpenFileContents(ownershipHandle, ownership, 'hydrate');
+    await appendOpenFileContents(ownershipHandle, binding, ownership.byteLength, 'hydrate');
+    if (!(await removeOwnedPackFile(ownershipAnchorPath, createdOwnershipFingerprint))) {
+      throw ioError('hydrate');
+    }
+    await syncDirectory(stagingRoot);
     const [ownershipMetadata, ownershipPathMetadata] = await Promise.all([
       ownershipHandle.stat({ bigint: true }),
       lstat(ownershipPath, { bigint: true }),
@@ -1810,6 +1866,7 @@ async function createHydrationStaging(
       !ownershipPathMetadata.isFile() ||
       ownershipPathMetadata.isSymbolicLink() ||
       ownershipMetadata.nlink !== 1n ||
+      ownershipMetadata.size !== BigInt(ownership.byteLength + binding.byteLength) ||
       !sameFilesystemNode(createdOwnershipFingerprint, fingerprint(ownershipMetadata)) ||
       !sameFingerprint(fingerprint(ownershipMetadata), fingerprint(ownershipPathMetadata))
     ) {
@@ -1866,7 +1923,10 @@ async function cleanupHydrationStagingForDestination(
       ownershipName,
     );
     if (owned === undefined) continue;
-    if (await removeOwnedDirectory(owned.stagingRoot, parent, owned.stagingIdentity)) {
+    if (
+      owned.stagingIdentity !== undefined &&
+      (await removeOwnedDirectory(owned.stagingRoot, parent, owned.stagingIdentity))
+    ) {
       removedStagingDirectories += 1;
       changed = true;
       if (await removeOwnedPackFile(owned.ownershipPath, owned.ownershipFingerprint)) {
@@ -1906,7 +1966,7 @@ async function readHydrationStagingOwnership(
 ): Promise<
   | {
       stagingRoot: string;
-      stagingIdentity: FilesystemNodeIdentity;
+      stagingIdentity?: FilesystemNodeIdentity;
       ownershipPath: string;
       ownershipFingerprint: FileFingerprint;
     }
@@ -1931,7 +1991,8 @@ async function readHydrationStagingOwnership(
       !handleMetadata.isFile() ||
       !pathMetadata.isFile() ||
       pathMetadata.isSymbolicLink() ||
-      handleMetadata.nlink !== 1n ||
+      handleMetadata.nlink < 1n ||
+      handleMetadata.nlink > 2n ||
       handleMetadata.size > BigInt(HYDRATION_OWNERSHIP_MAX_BYTES) ||
       !sameFingerprint(ownershipFingerprint, fingerprint(pathMetadata))
     ) {
@@ -1941,21 +2002,26 @@ async function readHydrationStagingOwnership(
     if (bytes === undefined) return undefined;
     const after = await handle.stat({ bigint: true });
     if (!sameFingerprint(ownershipFingerprint, fingerprint(after))) return undefined;
-    const ownership = decodeHydrationStagingOwnership(bytes);
+    const decoded = decodeHydrationStagingOwnership(bytes);
     if (
-      ownership === undefined ||
-      ownership.destinationName !== destinationName ||
-      ownership.stagingName !== `${prefix}${ownership.token}` ||
-      ownershipName !== `${ownership.stagingName}${HYDRATION_OWNERSHIP_SUFFIX}`
+      decoded === undefined ||
+      decoded.ownership.destinationName !== destinationName ||
+      decoded.ownership.stagingName !== `${prefix}${decoded.ownership.token}` ||
+      ownershipName !== `${decoded.ownership.stagingName}${HYDRATION_OWNERSHIP_SUFFIX}`
     ) {
       return undefined;
     }
+    const stagingRoot = join(parent, decoded.ownership.stagingName);
+    const stagingIdentity =
+      decoded.binding === undefined
+        ? await readAnchoredHydrationStagingIdentity(stagingRoot, ownershipFingerprint)
+        : {
+            dev: BigInt(decoded.binding.stagingDev),
+            ino: BigInt(decoded.binding.stagingIno),
+          };
     return {
-      stagingRoot: join(parent, ownership.stagingName),
-      stagingIdentity: {
-        dev: BigInt(ownership.stagingDev),
-        ino: BigInt(ownership.stagingIno),
-      },
+      stagingRoot,
+      stagingIdentity,
       ownershipPath,
       ownershipFingerprint,
     };
@@ -1968,13 +2034,29 @@ function encodeHydrationStagingOwnership(value: HydrationStagingOwnershipV1): Bu
   return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
 }
 
-function encodeHydrationStagingOwnershipReservation(
-  value: HydrationStagingOwnershipReservationV1,
-): Buffer {
+function encodeHydrationStagingOwnershipBinding(value: HydrationStagingOwnershipBindingV1): Buffer {
   return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
 }
 
-function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnershipV1 | undefined {
+function decodeHydrationStagingOwnership(
+  value: Buffer,
+): DecodedHydrationStagingOwnership | undefined {
+  const firstLineEnd = value.indexOf(0x0a);
+  if (firstLineEnd < 0) return undefined;
+  const ownership = decodeHydrationStagingOwnershipRecord(value.subarray(0, firstLineEnd + 1));
+  if (ownership === undefined) return undefined;
+  const bindingBytes = value.subarray(firstLineEnd + 1);
+  if (bindingBytes.byteLength === 0) return { ownership };
+  const binding = decodeHydrationStagingOwnershipBinding(bindingBytes);
+  // An incomplete final line is an interrupted append, not a reason to lose
+  // the valid first record. The caller requires the hard-link anchor before it
+  // trusts such a reservation.
+  return binding === undefined ? { ownership } : { ownership, binding };
+}
+
+function decodeHydrationStagingOwnershipRecord(
+  value: Buffer,
+): HydrationStagingOwnershipV1 | undefined {
   let decoded: unknown;
   try {
     decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value));
@@ -1983,17 +2065,13 @@ function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnersh
   }
   if (
     !isRecord(decoded) ||
-    Object.keys(decoded).length !== 7 ||
+    Object.keys(decoded).length !== 5 ||
     decoded.schemaVersion !== 1 ||
     decoded.kind !== HYDRATION_OWNERSHIP_KIND ||
     typeof decoded.destinationName !== 'string' ||
     typeof decoded.stagingName !== 'string' ||
     typeof decoded.token !== 'string' ||
-    !HYDRATION_TOKEN_PATTERN.test(decoded.token) ||
-    typeof decoded.stagingDev !== 'string' ||
-    !FILESYSTEM_ID_PATTERN.test(decoded.stagingDev) ||
-    typeof decoded.stagingIno !== 'string' ||
-    !FILESYSTEM_ID_PATTERN.test(decoded.stagingIno)
+    !HYDRATION_TOKEN_PATTERN.test(decoded.token)
   ) {
     return undefined;
   }
@@ -2003,10 +2081,91 @@ function decodeHydrationStagingOwnership(value: Buffer): HydrationStagingOwnersh
     destinationName: decoded.destinationName,
     stagingName: decoded.stagingName,
     token: decoded.token,
+  };
+  return encodeHydrationStagingOwnership(ownership).equals(value) ? ownership : undefined;
+}
+
+function decodeHydrationStagingOwnershipBinding(
+  value: Buffer,
+): HydrationStagingOwnershipBindingV1 | undefined {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value));
+  } catch {
+    return undefined;
+  }
+  if (
+    !isRecord(decoded) ||
+    Object.keys(decoded).length !== 4 ||
+    decoded.schemaVersion !== 1 ||
+    decoded.kind !== HYDRATION_OWNERSHIP_BINDING_KIND ||
+    typeof decoded.stagingDev !== 'string' ||
+    !FILESYSTEM_ID_PATTERN.test(decoded.stagingDev) ||
+    typeof decoded.stagingIno !== 'string' ||
+    !FILESYSTEM_ID_PATTERN.test(decoded.stagingIno)
+  ) {
+    return undefined;
+  }
+  const binding: HydrationStagingOwnershipBindingV1 = {
+    schemaVersion: 1,
+    kind: HYDRATION_OWNERSHIP_BINDING_KIND,
     stagingDev: decoded.stagingDev,
     stagingIno: decoded.stagingIno,
   };
-  return encodeHydrationStagingOwnership(ownership).equals(value) ? ownership : undefined;
+  return encodeHydrationStagingOwnershipBinding(binding).equals(value) ? binding : undefined;
+}
+
+async function readAnchoredHydrationStagingIdentity(
+  stagingRoot: string,
+  ownershipFingerprint: FileFingerprint,
+): Promise<FilesystemNodeIdentity | undefined> {
+  for (const candidate of [stagingRoot, hydrationCleanupRoot(stagingRoot)]) {
+    const identity = await readAnchoredHydrationDirectoryIdentity(candidate, ownershipFingerprint);
+    if (identity !== undefined) return identity;
+  }
+  return undefined;
+}
+
+async function readAnchoredHydrationDirectoryIdentity(
+  directory: string,
+  ownershipFingerprint: FileFingerprint,
+): Promise<FilesystemNodeIdentity | undefined> {
+  const anchorPath = join(directory, HYDRATION_OWNERSHIP_ANCHOR);
+  const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+  let anchorHandle: FileHandle | undefined;
+  try {
+    anchorHandle = await open(anchorPath, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    if (isErrno(error, 'ENOENT') || isErrno(error, 'ELOOP') || isErrno(error, 'ENOTDIR')) {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    const [stagingMetadata, anchorMetadata, anchorPathMetadata] = await Promise.all([
+      lstat(directory, { bigint: true }),
+      anchorHandle.stat({ bigint: true }),
+      lstat(anchorPath, { bigint: true }),
+    ]);
+    if (
+      !stagingMetadata.isDirectory() ||
+      stagingMetadata.isSymbolicLink() ||
+      !anchorMetadata.isFile() ||
+      !anchorPathMetadata.isFile() ||
+      anchorPathMetadata.isSymbolicLink() ||
+      ownershipFingerprint.nlink !== 2n ||
+      !sameFingerprint(ownershipFingerprint, fingerprint(anchorMetadata)) ||
+      !sameFingerprint(fingerprint(anchorMetadata), fingerprint(anchorPathMetadata))
+    ) {
+      return undefined;
+    }
+    return fingerprint(stagingMetadata);
+  } catch (error) {
+    if (isErrno(error, 'ENOENT') || isErrno(error, 'ENOTDIR')) return undefined;
+    throw error;
+  } finally {
+    await anchorHandle.close().catch(() => {});
+  }
 }
 
 async function readBoundedFileHandle(
@@ -2030,29 +2189,22 @@ async function removeOwnedDirectory(
 ): Promise<boolean> {
   if (dirname(path) !== parent) return false;
   const quarantineRoot = hydrationCleanupRoot(path);
-  const quarantinedPath = join(quarantineRoot, 'staging');
-  const existingQuarantined = await lstat(quarantinedPath, {
+  const existingQuarantine = await lstat(quarantineRoot, {
     bigint: true,
   }).catch((error: unknown) => {
-    if (isErrno(error, 'ENOENT') || isErrno(error, 'ENOTDIR')) return undefined;
+    if (isErrno(error, 'ENOENT')) return undefined;
     throw error;
   });
-  if (existingQuarantined !== undefined) {
+  if (existingQuarantine !== undefined) {
     if (
-      !existingQuarantined.isDirectory() ||
-      existingQuarantined.isSymbolicLink() ||
-      !sameFilesystemNode(expectedIdentity, fingerprint(existingQuarantined))
+      !existingQuarantine.isDirectory() ||
+      existingQuarantine.isSymbolicLink() ||
+      !sameFilesystemNode(expectedIdentity, fingerprint(existingQuarantine))
     ) {
       return false;
     }
-    await rm(quarantinedPath, { recursive: true });
-    await rmdir(quarantineRoot).catch(() => {});
+    await rm(quarantineRoot, { recursive: true });
     return true;
-  }
-  try {
-    await rmdir(quarantineRoot);
-  } catch (error) {
-    if (!isErrno(error, 'ENOENT')) return false;
   }
 
   const initial = await lstat(path, { bigint: true }).catch((error: unknown) => {
@@ -2068,50 +2220,47 @@ async function removeOwnedDirectory(
     return false;
   }
 
-  // Recursive removal is path-based in Node. Move the candidate into a fresh,
-  // destination-owned quarantine first, then verify the moved inode. Its name
-  // is derivable from the ownership record so a crash during cleanup can resume.
-  let quarantined = false;
+  const current = await lstat(path, { bigint: true }).catch((error: unknown) => {
+    if (isErrno(error, 'ENOENT')) return undefined;
+    throw error;
+  });
+  if (
+    current === undefined ||
+    !current.isDirectory() ||
+    current.isSymbolicLink() ||
+    !sameFilesystemNode(expectedIdentity, fingerprint(current))
+  ) {
+    return false;
+  }
+
+  // The quarantine path itself retains the staging inode, so a crash at any
+  // later point remains recoverable from the persisted ownership binding. The
+  // lifecycle lock excludes cooperating writers; Node does not expose a
+  // rename-without-replacement primitive for non-cooperating directory writers.
   try {
-    await mkdir(quarantineRoot, { mode: 0o700 });
+    await rename(path, quarantineRoot);
   } catch (error) {
-    if (isErrno(error, 'EEXIST')) return false;
+    if (
+      isErrno(error, 'ENOENT') ||
+      isErrno(error, 'EEXIST') ||
+      isErrno(error, 'ENOTEMPTY') ||
+      isErrno(error, 'EISDIR') ||
+      isErrno(error, 'ENOTDIR')
+    ) {
+      return false;
+    }
     throw error;
   }
-  try {
-    const current = await lstat(path, { bigint: true }).catch((error: unknown) => {
-      if (isErrno(error, 'ENOENT')) return undefined;
-      throw error;
-    });
-    if (
-      current === undefined ||
-      !current.isDirectory() ||
-      current.isSymbolicLink() ||
-      !sameFilesystemNode(expectedIdentity, fingerprint(current))
-    ) {
-      return false;
-    }
-    try {
-      await rename(path, quarantinedPath);
-    } catch (error) {
-      if (isErrno(error, 'ENOENT')) return false;
-      throw error;
-    }
-    quarantined = true;
-    const moved = await lstat(quarantinedPath, { bigint: true });
-    if (
-      !moved.isDirectory() ||
-      moved.isSymbolicLink() ||
-      !sameFilesystemNode(expectedIdentity, fingerprint(moved))
-    ) {
-      return false;
-    }
-    await rm(quarantinedPath, { recursive: true });
-    quarantined = false;
-    return true;
-  } finally {
-    if (!quarantined) await rmdir(quarantineRoot).catch(() => {});
+  const moved = await lstat(quarantineRoot, { bigint: true });
+  if (
+    !moved.isDirectory() ||
+    moved.isSymbolicLink() ||
+    !sameFilesystemNode(expectedIdentity, fingerprint(moved))
+  ) {
+    return false;
   }
+  await rm(quarantineRoot, { recursive: true });
+  return true;
 }
 
 function hydrationCleanupRoot(stagingRoot: string): string {
@@ -2132,9 +2281,28 @@ async function removeOwnedHydrationStaging(
   ) {
     return;
   }
-  await removeOwnedDirectory(staging.stagingRoot, parent, staging.stagingFingerprint);
-  await removeOwnedPackFile(staging.ownershipPath, staging.ownershipFingerprint);
+  const removed = await removeOwnedDirectory(
+    staging.stagingRoot,
+    parent,
+    staging.stagingFingerprint,
+  );
+  if (removed || (await hydrationStagingPathsAbsent(staging.stagingRoot))) {
+    await removeOwnedPackFile(staging.ownershipPath, staging.ownershipFingerprint);
+  }
   await syncDirectory(parent);
+}
+
+async function hydrationStagingPathsAbsent(stagingRoot: string): Promise<boolean> {
+  const paths = [stagingRoot, hydrationCleanupRoot(stagingRoot)];
+  const metadata = await Promise.all(
+    paths.map((path) =>
+      lstat(path).catch((error: unknown) => {
+        if (isErrno(error, 'ENOENT')) return undefined;
+        throw error;
+      }),
+    ),
+  );
+  return metadata.every((value) => value === undefined);
 }
 
 async function removeOwnedPackTemporary(
