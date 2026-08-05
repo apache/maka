@@ -25,6 +25,7 @@ import {
   createSqlitePlanReminderStore,
 } from "@maka/storage";
 import { registerAppIpc } from "./app-ipc-main.js";
+import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { resizeImageForAttachment } from "./attachment-resize-native.js";
@@ -577,33 +578,33 @@ function emitSessionsChanged(
 }
 
 function wireLifecycle(): void {
-  let quitting = false;
-  const focusOrCreateWindow = () => {
-    if (quitting) return;
-    if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
-    else void mainWindowController.createWindow(new AbortController().signal);
-  };
+  const quitCoordinator = createAppQuitCoordinator({
+    cleanup: closeRuntimeHostDesktop,
+    focusOrCreateWindow: (signal) => {
+      if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
+      else void mainWindowController.createWindow(signal);
+    },
+    onCleanupError: (error) =>
+      console.error("[runtime-host] shutdown failed:", error),
+    resumeQuit: () => app.quit(),
+  });
   installDesktopShellPresentation({
     startHidden: false,
     mainWindowController,
-    focusOrCreateWindow,
+    focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
     onIconError: (error) =>
       console.error("[icon] failed to set dock icon:", error),
   });
-  app.on("second-instance", focusOrCreateWindow);
-  app.on("activate", focusOrCreateWindow);
+  app.on("second-instance", quitCoordinator.focusOrCreateWindow);
+  app.on("activate", quitCoordinator.focusOrCreateWindow);
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
     if (process.platform !== "darwin") app.quit();
   });
-  app.on("before-quit", (event) => {
-    if (quitting) return;
-    event.preventDefault();
-    quitting = true;
-    void closeRuntimeHostDesktop().finally(() => app.quit());
-  });
-  void mainWindowController.createWindow(new AbortController().signal);
+  app.on("before-quit", quitCoordinator.handleBeforeQuit);
+  const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
+  if (initialWindowSignal) void mainWindowController.createWindow(initialWindowSignal);
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
