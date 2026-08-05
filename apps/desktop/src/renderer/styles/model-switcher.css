@@ -47,12 +47,16 @@
   max-width: min(260px, 28vw);
 }
 
-/* Quiet ghost triggers (composer / new-chat). Astryx Selector's default is a
-   bordered field; product owns these classNames only on chat pickers — Settings
-   ModelPicker does not set them. Geometry mirrors .maka-composer-model-chip. */
+/* Quiet ghost triggers for the chat surface: the composer's model and thinking
+   pickers, and the workspace picker on the empty-chat hero. Astryx Selector's
+   default is a bordered field, which reads as an input asking to be filled in
+   rather than as a chip carrying a current value; product owns these
+   classNames only on chat pickers — Settings ModelPicker does not set them.
+   Geometry mirrors .maka-composer-model-chip. */
 .maka-model-switcher-trigger.astryx-selector,
 .maka-new-chat-model-selector.astryx-selector,
-.maka-thinking-level-selector.astryx-selector {
+.maka-thinking-level-selector.astryx-selector,
+.maka-workspace-picker.astryx-selector {
   font: var(--maka-text-label);
   /* #1879: this rule used to force a height — 26px originally, then 24px on the
      ruler. Both were wrong for the same reason the sidebar update button was:
@@ -84,9 +88,21 @@
   flex: 0 0 auto;
 }
 
+/* The workspace picker is alone on the hero, centred under the greeting, so it
+   sizes to its project name instead of holding a column width the way the
+   footer pair does. The cap keeps a long name from spanning the greeting. */
+.maka-workspace-picker,
+.maka-workspace-picker.astryx-selector {
+  width: max-content;
+  min-width: 0;
+  max-width: min(280px, 60vw);
+  flex: 0 0 auto;
+}
+
 .maka-model-switcher-trigger.astryx-selector:hover:not([aria-disabled="true"]),
 .maka-new-chat-model-selector.astryx-selector:hover:not([aria-disabled="true"]),
-.maka-thinking-level-selector.astryx-selector:hover:not([aria-disabled="true"]) {
+.maka-thinking-level-selector.astryx-selector:hover:not([aria-disabled="true"]),
+.maka-workspace-picker.astryx-selector:hover:not([aria-disabled="true"]) {
   background: var(--state-hover-bg);
   color: var(--foreground);
   border-color: transparent;
@@ -95,7 +111,8 @@
 
 .maka-model-switcher-trigger.astryx-selector:focus-within,
 .maka-new-chat-model-selector.astryx-selector:focus-within,
-.maka-thinking-level-selector.astryx-selector:focus-within {
+.maka-thinking-level-selector.astryx-selector:focus-within,
+.maka-workspace-picker.astryx-selector:focus-within {
   border-color: transparent;
   background: var(--state-hover-bg);
   box-shadow: none;
@@ -104,7 +121,8 @@
 
 .maka-model-switcher-trigger.astryx-selector[aria-disabled="true"],
 .maka-new-chat-model-selector.astryx-selector[aria-disabled="true"],
-.maka-thinking-level-selector.astryx-selector[aria-disabled="true"] {
+.maka-thinking-level-selector.astryx-selector[aria-disabled="true"],
+.maka-workspace-picker.astryx-selector[aria-disabled="true"] {
   background: transparent;
   border-color: transparent;
   box-shadow: none;

@@ -114,8 +114,6 @@
   -webkit-app-region: no-drag;
 }
 
-/* A long project name truncates rather than stretching the trigger across the
-   hero — the greeting above it sets the column's measure. */
 .maka-workspace-picker-option {
   min-width: 0;
 }

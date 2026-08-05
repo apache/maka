@@ -87,7 +87,10 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
         value: project.id,
         label: project.name,
       })),
-      { type: 'divider' },
+      // A divider separates the catalogue from the actions, so on first run —
+      // no projects yet — it would open the menu with a rule above its first
+      // row, dividing nothing.
+      ...(wp.projects.length > 0 ? [{ type: 'divider' } as const] : []),
       { value: ADD_PROJECT_VALUE, label: copy.addProject },
       { type: 'divider' },
       { value: NO_PROJECT_VALUE, label: copy.noProject },
