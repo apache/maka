@@ -3,10 +3,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { PtyShellOutput, ShellRunRecord } from '@maka/core';
+import {
+  encodeCanonicalRuntimeEvent,
+  type PtyShellOutput,
+  type RuntimeEvent,
+  type ShellRunRecord,
+} from '@maka/core';
 import { createSessionStore } from '@maka/storage';
 
-import { projectPtyOutputForModel, terminalContent } from '../shell-run-tool-result.js';
+import {
+  projectPtyOutputForModel,
+  shellRunContent,
+  terminalContent,
+} from '../shell-run-tool-result.js';
 
 describe('PTY model output projection', () => {
   test('shares one UTF-8 budget in screen, alternate, then latest scrollback priority', () => {
@@ -35,6 +44,48 @@ describe('PTY model output projection', () => {
     assert.equal(screenOnly.lastAlternateScreen, undefined);
     assert.equal(screenOnly.scrollback, '');
     assert.equal(screenOnly.screen.includes('\uFFFD'), false);
+  });
+
+  test('returns a losslessly serializable PTY result without an alternate screen', () => {
+    const result = shellRunContent(
+      {
+        shellRunId: 'shell-1',
+        sessionId: 'session-1',
+        sourceTurnId: 'turn-1',
+        sourceToolCallId: 'tool-1',
+        cwd: '/workspace',
+        command: 'storybook',
+        status: 'cancelled',
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 130,
+        failureMessage: 'Command cancelled',
+        revision: 2,
+        output: ptyOutput({}),
+      },
+      { kind: 'stop', applied: true },
+    );
+    const event: RuntimeEvent = {
+      id: 'operation-1_response',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      ts: 2,
+      partial: false,
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'tool-1',
+        name: 'StopBackgroundTask',
+        result,
+      },
+      refs: { operationId: 'operation-1', toolCallId: 'tool-1' },
+    };
+
+    assert.doesNotThrow(() => encodeCanonicalRuntimeEvent(event));
   });
 });
 
