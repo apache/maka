@@ -783,6 +783,7 @@ export class ToolRuntime {
       parentToolCallId?: string;
       parentOperationId?: string;
     } = {},
+    attempt?: DurableToolAttempt,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
@@ -791,7 +792,16 @@ export class ToolRuntime {
       ...(sandboxFailure ? { sandboxFailure } : {}),
       ...(uncertainOutcome ? { uncertainOutcome } : {}),
     };
-    const durableAttempt = this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
+    // The executor passes its own attempt (#2253): a stop lands endTurn's
+    // resetTurnState before a parked tool unwinds, so by the time the
+    // rejection reaches the catch that writes this result, the map below is
+    // already empty. A result written without the attempt loses its
+    // operationId, and a response for a dispatched operation with no
+    // operation identity is exactly what the tool ledger refuses as
+    // identity_conflict. The map lookup remains for the pre-dispatch
+    // guards, where no attempt exists and no identity is owed.
+    const durableAttempt =
+      attempt ?? this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
     const durableOutcome = await durableAttempt?.commitOutcome(content, true);
     const msg: ToolResultMessage = {
       type: 'tool_result',
@@ -1596,6 +1606,7 @@ export class ToolRuntime {
         sandboxBoundaryFailureSignal(sandboxError),
         uncertainOutcome,
         activityIdentity,
+        durableAttempt,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,

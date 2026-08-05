@@ -492,17 +492,30 @@ export class AgentRun {
    * never be computed over a projection the ledger cannot replay.
    */
   async loadTurnRuntimeEvents(): Promise<RuntimeEvent[]> {
-    if (!this.input.runtimeEventStore || !this.runtimeEventStoreAvailable) {
+    const store = this.input.runtimeEventStore;
+    if (!store) {
       throw new Error('RuntimeEvent store is unavailable for turn runtime events');
     }
     await this.flushRuntimePartialBuffer(false);
     await this.runtimeEventQueue.catch(() => {});
-    // A write may have failed while we waited; a snapshot from a store that
-    // just went unavailable must not be treated as a complete durable read.
-    if (!this.runtimeEventStoreAvailable) {
-      throw new Error('RuntimeEvent store became unavailable for turn runtime events');
+    // The unavailability latch records that a past write failed, not that
+    // the store cannot answer now. This read is the probe that
+    // disambiguates, the same way recordRuntimeEvents reads the ledger back
+    // after an ambiguous append: a store that answers is available again
+    // and the latch lifts, so a stop retried after one rejected write can
+    // still settle its terminal fact (#2253) instead of failing on stale
+    // history forever. A store that cannot answer keeps rejecting, and
+    // coverage is never computed over a projection the ledger cannot
+    // replay.
+    try {
+      const events = await store.readRuntimeEvents(this.sessionId, this.runId);
+      this.runtimeEventStoreAvailable = true;
+      return events;
+    } catch (error) {
+      throw new Error('RuntimeEvent store is unavailable for turn runtime events', {
+        cause: error,
+      });
     }
-    return await this.input.runtimeEventStore.readRuntimeEvents(this.sessionId, this.runId);
   }
 
   recordSemanticCompactBlock(block: SemanticCompactBlock): void {
