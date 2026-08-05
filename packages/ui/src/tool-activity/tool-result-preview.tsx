@@ -50,24 +50,31 @@ export const TOOL_OUTPUT_NOTE_CLASS =
  * changed shape as it finished.
  *
  * One panel now owns all three, and the file-diff preview besides: the heading
- * on top in foreground mono, a hairline, then the body. The heading is the
- * thing worth copying — a command to re-run, a path to open — and Astryx's
- * CodeBlock copy button reached the code instead, leaving its title
- * unreachable; the action here copies the heading and the body keeps its own
- * affordances.
+ * on top in foreground mono, a hairline, then the body.
+ *
+ * The one action copies both. Astryx's CodeBlock copy button reached only the
+ * code, leaving the command it carried as `title` unreachable; a button that
+ * reached only the heading would have traded that for the reverse, and losing
+ * one-click copy of an error's output is the worse half of the trade. `body` is
+ * the plain text of `children` — the same capped, redacted string the body
+ * renders — so callers that have it pass it, and the rest copy the heading
+ * alone.
  */
 export function ToolOutputSurface(props: {
   kind: string;
   heading?: string;
+  body?: string;
   attention?: 'error' | 'warning';
   children: ReactNode;
 }) {
   const copyText = getToolActivityCopy(useUiLocale()).copy;
   const feedback = useClipboardCopyFeedback();
   const command = props.heading?.trim() ? props.heading : undefined;
-  // Keyed by the heading itself: two surfaces in one turn are independent
-  // rows, and a shared key would flash "copied" on both.
-  const copyKey = `tool-heading:${command ?? ''}`;
+  const copyPayload = [command, props.body].filter(Boolean).join('\n');
+  // Each surface owns its own feedback hook, so the key never has to
+  // distinguish one surface from another — it only has to be stable across
+  // this surface's renders.
+  const copyKey = `tool-output:${props.kind}`;
   const phase = feedback.phaseFor(copyKey);
   const label = phase === 'pending'
     ? copyText.pending
@@ -102,7 +109,7 @@ export function ToolOutputSurface(props: {
             label={label}
             aria-busy={phase === 'pending' ? 'true' : undefined}
             isDisabled={phase === 'pending'}
-            onClick={() => void feedback.copy(copyKey, command)}
+            onClick={() => void feedback.copy(copyKey, copyPayload)}
             icon={phase === 'copied'
               ? <Check size={14} aria-hidden="true" />
               : <Copy size={14} aria-hidden="true" />}
@@ -338,6 +345,7 @@ function TerminalPreview(props: {
     <ToolOutputSurface
       kind="terminal"
       heading={safeCmd}
+      body={props.output ? shellOutputText(props.output, copy) : undefined}
       attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
     >
       {props.output ? (
@@ -411,6 +419,7 @@ function ShellRunPreview(props: {
     <ToolOutputSurface
       kind="shell_run"
       heading={safeCmd}
+      body={pipeOutput ? shellOutputText(pipeOutput, copy) : undefined}
       attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
     >
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
@@ -535,13 +544,44 @@ function ShellRunStatus(props: {
  * stream uses instead of its own bordered CodeBlock card, which used to nest a
  * second border inside the panel and put the command in its title slot.
  */
+/**
+ * The plain text a shell body renders, so the surface's copy action can offer
+ * the same string the reader is looking at — capped and redacted, with the
+ * per-stream "hidden lines" markers the body shows.
+ *
+ * The body used to be an Astryx CodeBlock, whose own copy button carried this
+ * text; the panel replaced that chrome, so the text has to reach the panel's
+ * button instead. One function owns it, and the body renders from the same
+ * call — a copy that quietly diverged from the pixels would be worse than none.
+ */
+function shellOutputText(
+  output: ShellOutput,
+  copy: ReturnType<typeof getToolActivityCopy>['result'],
+): string {
+  if (output.mode === 'pty') return redactSecrets(ptyHumanTerminalText(output));
+  const stdout = capLines(redactSecrets(output.stdout));
+  const stderr = capLines(redactSecrets(output.stderr));
+  const parts: string[] = [];
+  if (stdout.body) {
+    parts.push(stdout.capped > 0
+      ? `${stdout.body}\n\n${copy.streamHidden('stdout', stdout.capped)}`
+      : stdout.body);
+  }
+  if (stderr.body) {
+    parts.push(stderr.capped > 0
+      ? `${stderr.body}\n\n${copy.streamHidden('stderr', stderr.capped)}`
+      : stderr.body);
+  }
+  return parts.join('\n');
+}
+
 function ShellOutputBody(props: {
   output: ShellOutput;
   failed: boolean;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   if (props.output.mode === 'pty') {
-    const text = redactSecrets(ptyHumanTerminalText(props.output));
+    const text = shellOutputText(props.output, copy);
     return (
       <>
         {text ? <PtyTerminalSurface text={text} /> : (
@@ -559,18 +599,7 @@ function ShellOutputBody(props: {
   const hiddenLines = stdout.capped + stderr.capped;
   const runtimeTruncated = props.output.stdoutTruncated || props.output.stderrTruncated;
   const hasOutput = props.output.stdout.length > 0 || props.output.stderr.length > 0;
-  const parts: string[] = [];
-  if (stdout.body) {
-    parts.push(stdout.capped > 0
-      ? `${stdout.body}\n\n${copy.streamHidden('stdout', stdout.capped)}`
-      : stdout.body);
-  }
-  if (stderr.body) {
-    parts.push(stderr.capped > 0
-      ? `${stderr.body}\n\n${copy.streamHidden('stderr', stderr.capped)}`
-      : stderr.body);
-  }
-  const code = parts.join('\n');
+  const code = shellOutputText(props.output, copy);
   return (
     <>
       {hasOutput
