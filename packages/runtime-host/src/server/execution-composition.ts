@@ -277,7 +277,6 @@ export async function createExecutionRuntimeHostComposition(
       attachmentResources: createArtifactAttachmentResourceReader({
         artifactStore: openedArtifactStore,
       }),
-      archiveResources: executionArtifacts,
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
       snapshotImage: createReadImageSnapshotter(openedArtifactStore),

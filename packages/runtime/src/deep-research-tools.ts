@@ -42,7 +42,6 @@ export const DEEP_RESEARCH_COMPLETE_TOOL_NAME = 'deep_research_complete';
 const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
   'AskUserQuestion',
   'Read',
-  'ArchiveRead',
   'Glob',
   'Grep',
   'ExploreAgent',

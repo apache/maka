@@ -114,6 +114,34 @@ describe('AiSdkBackend tool-result archive capability', () => {
     assert.equal(page.ok, true, 'the ref the placeholder carries must resolve');
     assert.equal(page.content, serializedResult);
   });
+
+  test('the decoder reads as the invoking session', async () => {
+    // A ref carries no session identity, so the session boundary is only as
+    // strong as the id the tool passes down from its own invocation context.
+    const seen: { sessionId: string }[] = [];
+    const archive = createToolResultArchiveCapability({
+      archiveToolResult: async () => ({ artifactId: 'artifact-1' }),
+      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+      readArchivedToolResultResource: async (input) => {
+        seen.push({ sessionId: input.sessionId });
+        return { ok: true, serializedResult: JSON.stringify({ kind: 'agent_swarm', items: [] }) };
+      },
+    });
+
+    await archive.archiveReadTool.impl(
+      {
+        ref: buildToolResultArchiveResourceRef({
+          artifactId: `tool-result-archive-${'a'.repeat(32)}`,
+          bodySha256: 'b'.repeat(64),
+          originalBytes: 128,
+        }),
+        operation: 'inspect',
+      },
+      { ...toolContext(), sessionId: 'session-invoking' },
+    );
+
+    assert.equal(seen[0]?.sessionId, 'session-invoking');
+  });
 });
 
 function toolContext(): MakaToolContext {

@@ -1,7 +1,9 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { createToolResultArchiveCapability } from '@maka/runtime';
 import type {
   ToolArtifactRecorderInput,
+  ToolResultArchiveCapability,
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadResult,
   ToolResultArchiveRecorderInput,
@@ -31,11 +33,11 @@ export interface ToolArtifactPersistence {
     bytes: Uint8Array;
     mimeType: string;
   }): Promise<Awaited<ReturnType<ReadImageSnapshotter>>>;
-  persistArchivedToolResult(event: ToolResultArchiveRecorderInput): Promise<{ artifactId: string }>;
-  readArchivedToolResult(event: ToolResultArchiveReaderInput): Promise<ToolResultArchiveReadResult>;
-  readArchivedToolResultResource(
-    event: ToolResultArchiveResourceReadInput,
-  ): Promise<ToolResultArchiveReadResult>;
+  /**
+   * One archive authority over the session artifact store (#2026): the writer,
+   * both readers, and the `ArchiveRead` decoder that pruned placeholders name.
+   */
+  toolResultArchive: ToolResultArchiveCapability;
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {
@@ -137,8 +139,10 @@ export function createToolArtifactPersistence(deps: ToolArtifactPersistenceDeps)
   return {
     persistToolArtifacts,
     snapshotReadImage,
-    persistArchivedToolResult,
-    readArchivedToolResult,
-    readArchivedToolResultResource,
+    toolResultArchive: createToolResultArchiveCapability({
+      archiveToolResult: persistArchivedToolResult,
+      readToolResultArchive: readArchivedToolResult,
+      readArchivedToolResultResource,
+    }),
   };
 }

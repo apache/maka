@@ -1,13 +1,8 @@
 import { MAX_READ_IMAGE_BYTES, type BackendKind, type StorageRef } from '@maka/core';
-import type {
-  EffectiveProductToolSurface,
-  MakaTool,
-  ToolResultArchiveResourceReader,
-} from '@maka/runtime';
+import type { EffectiveProductToolSurface, MakaTool } from '@maka/runtime';
 import {
   assertProductBindingCatalogClean,
   bashToolShellGuidance,
-  buildArchiveReadTool,
   buildForegroundBashTool,
   buildParentAgentTools,
   computeEditedSource,
@@ -36,12 +31,6 @@ import {
 
 export interface BuildIsolatedHeadlessToolsOptions {
   agentTools?: boolean;
-  /**
-   * Ref-addressed archive reader. Supplying it binds `ArchiveRead`, which pruned
-   * tool results name explicitly in their placeholders. Pass it whenever the host
-   * also archives tool results, or the model is told to call a tool it does not have.
-   */
-  archiveResources?: ToolResultArchiveResourceReader;
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
   heavyTaskProgress?: HeavyTaskProgressRecorder;
   heavyTaskSelfCheck?: HeavyTaskSelfCheckRecorder;
@@ -99,7 +88,7 @@ export function buildIsolatedHeadlessProductToolSurface(
   executor: IsolatedToolExecutor,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'archiveResources' | 'heavyTaskEvidence' | 'snapshotImage'
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
   > = {},
 ): EffectiveProductToolSurface {
   const productTools = [
@@ -110,7 +99,6 @@ export function buildIsolatedHeadlessProductToolSurface(
     buildIsolatedGlobTool(executor, options),
     buildIsolatedGrepTool(executor, options),
     ...buildParentAgentTools(),
-    ...(options.archiveResources ? [buildArchiveReadTool(options.archiveResources)] : []),
   ];
   assertProductBindingCatalogClean(
     'headless',
@@ -135,7 +123,7 @@ export function buildHeadlessProductToolSurfaceForBackend(
   executor: IsolatedToolExecutor | undefined,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'archiveResources' | 'heavyTaskEvidence' | 'snapshotImage'
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
   > = {},
 ): EffectiveProductToolSurface | undefined {
   if (!headlessBackendBindsMakaProductTools(backend) || !executor) return undefined;

@@ -32,7 +32,6 @@ export const AGENT_TOOL_NAMES = [
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
 ] as const;
-const CHILD_RECOVERY_TOOL_NAMES = ['ArchiveRead'] as const;
 export const CHILD_AGENT_TOOL_NAMES = [
   ...new Set(BUILTIN_AGENT_DEFINITIONS.flatMap((definition) => definition.tools)),
 ] as readonly string[];
@@ -66,15 +65,6 @@ export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
       seen.add(tool.name);
       out.push(tool);
     }
-  }
-  // Runtime recovery tools are capability-dependent and must follow a child
-  // whenever the host provides them. Otherwise a child can receive an archive
-  // placeholder that explicitly names ArchiveRead without having that tool.
-  for (const name of CHILD_RECOVERY_TOOL_NAMES) {
-    const tool = tools.find((candidate) => candidate.name === name);
-    if (!tool || seen.has(name)) continue;
-    seen.add(name);
-    out.push(tool);
   }
   return out;
 }

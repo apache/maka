@@ -62,8 +62,6 @@ import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
 import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
 import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
-import { buildArchiveReadTool } from './archive-read-tool.js';
-import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
 import {
@@ -144,7 +142,6 @@ export interface BuildBuiltinToolsOptions {
       abortSignal: AbortSignal,
     ): Promise<ToolResultContent>;
   };
-  archiveResources?: ToolResultArchiveResourceReader;
   backgroundTasks?: BackgroundTaskStopper;
   ptyControls?: PtyControlWriter;
   executor?: WorkspaceExecutor;
@@ -298,7 +295,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
   const tools: MakaTool[] = [
     ...bashTools,
     ...backgroundTools,
-    ...(options.archiveResources ? [buildArchiveReadTool(options.archiveResources)] : []),
     {
       name: 'Read',
       activityKind: 'read',

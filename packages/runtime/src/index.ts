@@ -425,7 +425,14 @@ export type {
 } from './pi-agent-backend.js';
 
 export { buildBuiltinTools } from './builtin-tools.js';
-export { buildArchiveReadTool } from './archive-read-tool.js';
+export {
+  createToolResultArchiveCapability,
+  ARCHIVE_READ_TOOL_NAME,
+} from './tool-result-archive-capability.js';
+export type {
+  ToolResultArchiveCapability,
+  ToolResultArchiveServices,
+} from './tool-result-archive-capability.js';
 export { queryTavily } from './tavily-search.js';
 export { buildWebSearchTool } from './web-search-tool.js';
 export type {

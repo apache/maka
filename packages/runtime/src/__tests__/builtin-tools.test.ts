@@ -119,42 +119,14 @@ describe('builtin Read capabilities', () => {
 });
 
 describe('builtin ArchiveRead capabilities', () => {
-  test('is present only with a host reader and preserves the invoking session', async () => {
-    const body = JSON.stringify({ kind: 'agent_swarm', items: [] });
-    const bodySha256 = createHash('sha256').update(body).digest('hex');
-    const artifactId = `tool-result-archive-${'a'.repeat(32)}`;
-    const seen: unknown[] = [];
-    const withoutReader = buildBuiltinTools().find((tool) => tool.name === 'ArchiveRead');
-    const archiveRead = buildBuiltinTools({
-      archiveResources: {
-        readArchivedToolResultResource(input) {
-          seen.push(input);
-          return { ok: true, serializedResult: body };
-        },
-      },
-    }).find((tool) => tool.name === 'ArchiveRead');
-    if (!archiveRead) throw new Error('ArchiveRead tool missing');
-
-    assert.equal(withoutReader, undefined);
-    assert.equal(archiveRead.activityKind, 'read');
-    const result = await archiveRead.impl(
-      {
-        ref: `maka://archive/${artifactId}?sha256=${bodySha256}&bytes=${Buffer.byteLength(body)}`,
-        operation: 'inspect',
-      },
-      {
-        sessionId: 'session-1',
-        runId: 'run-1',
-        turnId: 'turn-1',
-        cwd: '/workspace',
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-      },
+  test('is not a built-in tool', () => {
+    // The archive decoder travels with the archive capability and is bound by
+    // the backend (#2026). A host that assembles built-ins can no longer
+    // forget it, and can no longer register it without a writer behind it.
+    assert.equal(
+      buildBuiltinTools().find((tool) => tool.name === 'ArchiveRead'),
+      undefined,
     );
-
-    assert.equal((result as { operation: string }).operation, 'inspect');
-    assert.equal((seen[0] as { sessionId: string }).sessionId, 'session-1');
   });
 });
 

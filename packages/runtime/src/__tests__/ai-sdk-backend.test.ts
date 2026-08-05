@@ -77,7 +77,10 @@ import type {
 } from '../provider-request-telemetry.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
-import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
+import {
+  createTestAiSdkBackend,
+  testToolResultArchive,
+} from './execution-boundary-test-helpers.js';
 
 describe('AiSdkBackend model history', () => {
   test('preserves operation-owned audio through the durable request path and redacts its capture', async () => {
@@ -3037,14 +3040,16 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => {
-        archiveRequests.push({
-          runtimeEventId: event.runtimeEventId,
-          serializedResult: event.serializedResult,
-          bodySha256: event.bodySha256,
-        });
-        return { artifactId: `artifact-${event.runtimeEventId}` };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => {
+          archiveRequests.push({
+            runtimeEventId: event.runtimeEventId,
+            serializedResult: event.serializedResult,
+            bodySha256: event.bodySha256,
+          });
+          return { artifactId: `artifact-${event.runtimeEventId}` };
+        },
+      }),
     });
 
     await drain(
@@ -3132,10 +3137,12 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) =>
-        event.runtimeEventId === 'rt-new-result'
-          ? { artifactId: 'artifact-new-rt-result' }
-          : undefined,
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) =>
+          event.runtimeEventId === 'rt-new-result'
+            ? { artifactId: 'artifact-new-rt-result' }
+            : undefined,
+      }),
     });
 
     await drain(
@@ -3237,7 +3244,9 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
     });
 
     for await (const event of backend.send({
@@ -3323,19 +3332,21 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => {
-        archivedBody = event.serializedResult;
-        return { artifactId: `artifact-${event.runtimeEventId}` };
-      },
-      readToolResultArchive: async (event) => {
-        if (event.originalBytes !== utf8Bytes(archivedBody)) {
-          return { ok: false, reason: 'size_mismatch' };
-        }
-        return {
-          ok: true,
-          serializedResult: event.bodySha256 === sha256(archivedBody) ? archivedBody : 'tampered',
-        };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => {
+          archivedBody = event.serializedResult;
+          return { artifactId: `artifact-${event.runtimeEventId}` };
+        },
+        readToolResultArchive: async (event) => {
+          if (event.originalBytes !== utf8Bytes(archivedBody)) {
+            return { ok: false, reason: 'size_mismatch' };
+          }
+          return {
+            ok: true,
+            serializedResult: event.bodySha256 === sha256(archivedBody) ? archivedBody : 'tampered',
+          };
+        },
+      }),
     });
 
     for await (const event of backend.send({
@@ -3482,15 +3493,17 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => {
-        archivedBodies.set(event.runtimeEventId, event.serializedResult);
-        return { artifactId: `artifact-${event.runtimeEventId}` };
-      },
-      readToolResultArchive: async (event) => {
-        readRuntimeEventIds.push(event.runtimeEventId);
-        const body = archivedBodies.get(event.runtimeEventId);
-        return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => {
+          archivedBodies.set(event.runtimeEventId, event.serializedResult);
+          return { artifactId: `artifact-${event.runtimeEventId}` };
+        },
+        readToolResultArchive: async (event) => {
+          readRuntimeEventIds.push(event.runtimeEventId);
+          const body = archivedBodies.get(event.runtimeEventId);
+          return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
+        },
+      }),
       writeSynthesisCache: async (event) => {
         writeInputs.push({ turnId: event.turnId, query: event.source.query });
         return { blocks: [] };
@@ -3613,14 +3626,16 @@ describe('AiSdkBackend model history', () => {
             : {}),
           charsPerToken: CHARS_PER_TOKEN,
         },
-        archiveToolResult: async (event) => {
-          archivedBodies.set(event.runtimeEventId, event.serializedResult);
-          return { artifactId: `artifact-${event.runtimeEventId}` };
-        },
-        readToolResultArchive: async (event) => {
-          const body = archivedBodies.get(event.runtimeEventId);
-          return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
-        },
+        toolResultArchive: testToolResultArchive({
+          archiveToolResult: async (event) => {
+            archivedBodies.set(event.runtimeEventId, event.serializedResult);
+            return { artifactId: `artifact-${event.runtimeEventId}` };
+          },
+          readToolResultArchive: async (event) => {
+            const body = archivedBodies.get(event.runtimeEventId);
+            return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
+          },
+        }),
         writeSynthesisCache: async () => ({ blocks: [] }),
       });
       for await (const _event of backend.send({
@@ -3750,15 +3765,17 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => {
-        archivedBodies.set(event.runtimeEventId, event.serializedResult);
-        return { artifactId: `artifact-${event.runtimeEventId}` };
-      },
-      readToolResultArchive: async (event) => {
-        readRuntimeEventIds.push(event.runtimeEventId);
-        const body = archivedBodies.get(event.runtimeEventId);
-        return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => {
+          archivedBodies.set(event.runtimeEventId, event.serializedResult);
+          return { artifactId: `artifact-${event.runtimeEventId}` };
+        },
+        readToolResultArchive: async (event) => {
+          readRuntimeEventIds.push(event.runtimeEventId);
+          const body = archivedBodies.get(event.runtimeEventId);
+          return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
+        },
+      }),
       loadSynthesisCache: async () => {
         loadCalls += 1;
         return { blocks: [block] };
@@ -3877,14 +3894,16 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => {
-        archivedBodies.set(event.runtimeEventId, event.serializedResult);
-        return { artifactId: `artifact-${event.runtimeEventId}` };
-      },
-      readToolResultArchive: async (event) => {
-        const body = archivedBodies.get(event.runtimeEventId);
-        return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => {
+          archivedBodies.set(event.runtimeEventId, event.serializedResult);
+          return { artifactId: `artifact-${event.runtimeEventId}` };
+        },
+        readToolResultArchive: async (event) => {
+          const body = archivedBodies.get(event.runtimeEventId);
+          return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
+        },
+      }),
       writeSynthesisCache: async (input) => {
         writeInputs.push({
           sourceRefCount: input.source.retrievedArchiveRefs.length,
@@ -4009,15 +4028,17 @@ describe('AiSdkBackend model history', () => {
         },
         charsPerToken: 1,
       },
-      archiveToolResult: async (event) => {
-        archivedBodies.set(event.runtimeEventId, event.serializedResult);
-        return { artifactId: `artifact-${event.runtimeEventId}` };
-      },
-      readToolResultArchive: async (event) => {
-        readRuntimeEventIds.push(event.runtimeEventId);
-        const body = archivedBodies.get(event.runtimeEventId);
-        return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => {
+          archivedBodies.set(event.runtimeEventId, event.serializedResult);
+          return { artifactId: `artifact-${event.runtimeEventId}` };
+        },
+        readToolResultArchive: async (event) => {
+          readRuntimeEventIds.push(event.runtimeEventId);
+          const body = archivedBodies.get(event.runtimeEventId);
+          return body ? { ok: true, serializedResult: body } : { ok: false, reason: 'not_found' };
+        },
+      }),
       writeSynthesisCache: async (event) => {
         writeInputs.push({ turnId: event.turnId, query: event.source.query });
         return { blocks: [] };
@@ -8032,7 +8053,9 @@ describe('AiSdkBackend usage telemetry', () => {
       contextBudget: {
         activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
       },
-      archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+      }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -8145,7 +8168,9 @@ describe('AiSdkBackend usage telemetry', () => {
           maxSummaryEstimatedTokens: 512,
         },
       },
-      archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+      }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -8412,10 +8437,12 @@ describe('AiSdkBackend usage telemetry', () => {
         },
       ],
       contextBudget: semanticCompactContextBudget('replace'),
-      archiveToolResult: async () => {
-        archiveCalls += 1;
-        return { artifactId: 'archived-covered-semantic-result' };
-      },
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => {
+          archiveCalls += 1;
+          return { artifactId: 'archived-covered-semantic-result' };
+        },
+      }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -8578,7 +8605,9 @@ describe('AiSdkBackend usage telemetry', () => {
         },
       ],
       contextBudget: semanticCompactContextBudget('validate_only'),
-      archiveToolResult: async () => ({ artifactId: 'archived-covered-semantic-result' }),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'archived-covered-semantic-result' }),
+      }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -8656,7 +8685,9 @@ describe('AiSdkBackend usage telemetry', () => {
         ...budget,
         semanticCompact: { ...budget.semanticCompact, summarizerModel: 'summarizer-model-id' },
       },
-      archiveToolResult: async () => ({ artifactId: 'archived-covered-semantic-result' }),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async () => ({ artifactId: 'archived-covered-semantic-result' }),
+      }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -12687,18 +12718,20 @@ async function runArchiveGatedReplay(input: {
       },
       charsPerToken: 1,
     },
-    archiveToolResult: async (event) => {
-      archivedBodies.set(event.runtimeEventId, event.serializedResult);
-      return { artifactId: `artifact-${event.runtimeEventId}` };
-    },
-    readToolResultArchive: async (event) => {
-      readRuntimeEventIds.push(event.runtimeEventId);
-      const body = archivedBodies.get(event.runtimeEventId);
-      assert.ok(body);
-      return event.bodySha256 === sha256(body)
-        ? { ok: true, serializedResult: body }
-        : { ok: false, reason: 'corrupt' };
-    },
+    toolResultArchive: testToolResultArchive({
+      archiveToolResult: async (event) => {
+        archivedBodies.set(event.runtimeEventId, event.serializedResult);
+        return { artifactId: `artifact-${event.runtimeEventId}` };
+      },
+      readToolResultArchive: async (event) => {
+        readRuntimeEventIds.push(event.runtimeEventId);
+        const body = archivedBodies.get(event.runtimeEventId);
+        assert.ok(body);
+        return event.bodySha256 === sha256(body)
+          ? { ok: true, serializedResult: body }
+          : { ok: false, reason: 'corrupt' };
+      },
+    }),
   });
   const selectedEvents = archiveGatedTurnEvents('a', input.selectedPath, input.selectedResult);
   const unselectedEvents = archiveGatedTurnEvents(

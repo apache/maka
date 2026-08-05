@@ -600,18 +600,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    */
   supportsVision?: boolean;
   maxProviderImageRequestBytes?: number;
-  /**
-   * Optional archive reader for replay-only stale tool-result retrieval. The
-   * runtime never mutates persisted RuntimeEvents; successful reads hydrate
-   * the current model request only.
-   */
-  readToolResultArchive?: ToolResultArchiveReader;
-  /**
-   * The whole tool-result archive authority (#2026): writer, replay reader,
-   * ref reader, and the `ArchiveRead` decoder the pruned placeholder names.
-   * Absent means this session archives nothing, which is a valid state.
-   */
-  toolResultArchive?: ToolResultArchiveCapability;
 }
 
 export interface SystemPromptContext {
@@ -2741,7 +2729,7 @@ export class AiSdkBackend implements AgentBackend {
       const retrieval = await retrieveArchivedToolResultsForReplay(
         runtimeContext,
         contextBudget?.archiveRetrieval,
-        this.input.readToolResultArchive,
+        this.input.toolResultArchive?.services.readToolResultArchive,
         {
           sessionId: this.sessionId,
           charsPerToken: contextBudget?.charsPerToken,

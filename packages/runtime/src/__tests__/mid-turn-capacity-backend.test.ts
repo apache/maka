@@ -23,7 +23,10 @@ import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
-import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
+import {
+  createTestAiSdkBackend,
+  testToolResultArchive,
+} from './execution-boundary-test-helpers.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
@@ -355,7 +358,11 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
             : {}),
         },
     ...(options.activeToolResultPrune
-      ? { archiveToolResult: () => ({ artifactId: 'artifact-archived-1' }) }
+      ? {
+          toolResultArchive: testToolResultArchive({
+            archiveToolResult: () => ({ artifactId: 'artifact-archived-1' }),
+          }),
+        }
       : {}),
     summarizeHistoryCompact: async (input) => {
       fixture.summarizerCalls += 1;

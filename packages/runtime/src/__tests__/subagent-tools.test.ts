@@ -454,17 +454,20 @@ describe('subagent tools', () => {
     ]);
   });
 
-  test('keeps host-provided ArchiveRead available for child recovery', () => {
-    const archiveRead = testCatalogTool('ArchiveRead', 'read');
+  test('does not smuggle ArchiveRead through the child allowlist', () => {
+    // The pool-level pass-through this replaces never worked: every child
+    // surface is re-narrowed against `definition.tools`, and no definition
+    // lists ArchiveRead. The decoder now reaches a child from its own backend's
+    // archive capability, so the allowlist stays exactly what it says it is.
     const tools = buildChildAgentTools([
       testCatalogTool('Read', 'read'),
       testCatalogTool('Glob', 'read'),
       testCatalogTool('Grep', 'read'),
       testCatalogTool('WebSearch', 'web_read'),
-      archiveRead,
+      testCatalogTool('ArchiveRead', 'read'),
     ]);
 
-    expect(tools.find((tool) => tool.name === 'ArchiveRead')).toBe(archiveRead);
+    expect(tools.find((tool) => tool.name === 'ArchiveRead')).toBeUndefined();
   });
 
   test('child agent toolset enforces explore-mode read-only behavior without prompting', async () => {

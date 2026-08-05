@@ -702,9 +702,18 @@ export interface BackendFactoryContext {
    */
   systemPrompt?: string;
   /**
-   * Optional hard tool ceiling for this backend activation. When present, a
-   * host may remove tools for stricter local policy, but must never append,
-   * substitute, or otherwise expose a tool outside this exact set.
+   * Optional hard tool ceiling on the *agent-permission* tools for this backend
+   * activation. When present, a host may remove tools for stricter local
+   * policy, but must never append, substitute, or otherwise expose an
+   * agent-permission tool outside this exact set.
+   *
+   * Runtime protocol tools are outside that ceiling by construction (#2026).
+   * `ArchiveRead` decodes a placeholder the runtime itself generated during
+   * pruning; it grants no reach the parent did not already exercise, and
+   * withholding it only strands content the model was explicitly told to
+   * retrieve. The backend therefore binds it from the archive capability, not
+   * from this set, which is why narrowing a child's allowlist can no longer
+   * silently strip the decoder for placeholders that child will still receive.
    */
   tools?: readonly MakaTool[];
   recordRunTrace?: RunTraceRecorder;

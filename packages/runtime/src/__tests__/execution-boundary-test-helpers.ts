@@ -1,6 +1,11 @@
 import { createExternalExecutionBoundary } from '@maka/core';
 
 import { AiSdkBackend, type AiSdkBackendInput } from '../ai-sdk-backend.js';
+import {
+  createToolResultArchiveCapability,
+  type ToolResultArchiveCapability,
+  type ToolResultArchiveServices,
+} from '../tool-result-archive-capability.js';
 import { ToolRuntime, type ToolRuntimeInput } from '../tool-runtime.js';
 
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
@@ -13,6 +18,23 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
     ...input,
+  });
+}
+
+/**
+ * An archive capability for tests whose subject is the writer or the replay
+ * reader. The unexercised halves resolve to `not_found` rather than being
+ * absent: a test may leave a road untravelled, but the capability itself is
+ * still whole, which is the invariant these fixtures used to be able to break.
+ */
+export function testToolResultArchive(
+  services: Partial<ToolResultArchiveServices>,
+): ToolResultArchiveCapability {
+  return createToolResultArchiveCapability({
+    archiveToolResult: async () => undefined,
+    readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+    readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
+    ...services,
   });
 }
 
