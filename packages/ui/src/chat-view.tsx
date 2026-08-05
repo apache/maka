@@ -394,20 +394,20 @@ export function ChatView(props: {
   // The lookup must land in the same commit as the session switch, or the
   // scroller paints one frame at its unseeded height and the spacer arrives
   // as a visible jump. An in-place switch has the scroller ref during
-  // render, so the memo reads it there (once per session, never per token,
-  // clientWidth stays out of the streaming render path). On a fresh mount
-  // the ref is still null, because the scroller is an ancestor host whose
-  // ref attaches after descendant effects; the effect below nudges one
-  // re-render once it exists, and that path pays the one late frame.
-  const [refReady, setRefReady] = useState(0);
-  useEffect(() => {
-    if (scrollRef.current) setRefReady((count) => count + 1);
-  }, [sessionId, scrollRef]);
+  // render, so the memo reads it there. Two things invalidate that read
+  // and are answered by the nudge effect below, each costing one late
+  // frame: on a fresh mount the ref is still null (the scroller is an
+  // ancestor host whose ref attaches after descendant effects), and on
+  // platforms with classic scrollbars the column is wider until enough
+  // turns mount to overflow, so the empty-surface read misses the record.
+  // Nudges stop once the fill completes; token streaming never re-reads
+  // layout.
+  const [lookupPass, setLookupPass] = useState(0);
   const seededGeometry = useMemo(() => {
     const root = scrollRef.current;
     if (!sessionId || !root) return undefined;
     return turnSizeIndex.lookup(sessionId, layoutKeyOf(root));
-  }, [sessionId, scrollRef, refReady]);
+  }, [sessionId, scrollRef, lookupPass]);
   const { start: mountStart, filled: turnsFilled, prefixHeight, revealTurn } = useProgressiveTurnMount({
     sessionId,
     turnIds: orderedTurnIds,
@@ -415,6 +415,9 @@ export function ChatView(props: {
     targetTurnId: props.scrollTargetTurn?.turnId,
     seededGeometry,
   });
+  useEffect(() => {
+    if (!turnsFilled && scrollRef.current) setLookupPass((count) => count + 1);
+  }, [sessionId, orderedTurnIds, turnsFilled, scrollRef]);
   const mountedTurns = mountStart === 0 ? turns : turns.slice(mountStart);
   // Record geometry once the transcript has settled: fill complete and the
   // warm-up done, so every turn's box is its remembered final size and
