@@ -597,7 +597,7 @@ describe("live tool status over persisted", () => {
             {
               toolUseId: "computer-1",
               toolName: "maka_computer",
-              status: "completed",
+              status: "running",
               args: undefined,
               // Runtime Host live events carry lifecycle but not the durable
               // result payload.
@@ -620,7 +620,7 @@ describe("live tool status over persisted", () => {
       kind: "text",
       text: "unsupported_action",
     });
-    assert.equal(tool?.status, "completed");
+    assert.equal(tool?.status, "running");
   });
 
   // Deleting the merge exception rests entirely on the live side carrying its

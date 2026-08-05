@@ -249,9 +249,6 @@ function mergeLiveOverPersisted(
     // live result at all. In both cases the committed result supplies detail
     // without taking a newer, meaningful live result away.
     merged.result = persisted.result;
-    if (isInFlightToolStatus(live.status)) {
-      merged.status = persisted.status;
-    }
   }
   // A settled turn always yields a settled persisted status — materializeTools
   // only reads a tool as in-flight while the turn record says `running` — so
