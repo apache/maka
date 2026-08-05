@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect } from 'storybook/test';
+import { expect, userEvent } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
@@ -741,9 +741,29 @@ export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
 };
 
-// Real path: sidebar → 扩展 → 技能, with several installed Skills.
+// Real path: sidebar → 扩展 → 技能, with several installed Skills. The play
+// also locks the search contract: filtering, the match-count summary and the
+// clear affordance.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    const search = await waitForStorySelector<HTMLInputElement>(
+      canvasElement,
+      'input[placeholder="搜索技能"]',
+    );
+    await userEvent.type(search, 'git');
+    await waitForStoryText(canvasElement, '1 个匹配');
+    await waitForStoryText(canvasElement, 'git-flow');
+    await expect(canvasElement.textContent).not.toContain('docs-screenshot');
+
+    const clear = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '清空搜索',
+    );
+    clear.click();
+    await waitForStoryText(canvasElement, 'docs-screenshot');
+    await expect(canvasElement.textContent).toContain('release-notes');
+  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
@@ -861,13 +881,13 @@ export const ExtensionsSkillsInspector: Story = {
     // The inspector's resize handle carries an absolutely positioned hit
     // strip; a vendor translate bug once shifted it half its height upward,
     // over the toolbar, swallowing the view switch's clicks. The strip must
-    // stay inside the content row — below the toolbar.
-    const handle = await waitForStorySelector<HTMLElement>(
+    // stay inside the content row — below the toolbar. Same selector as the
+    // CSS fix: the strip is the handle child that is not the pill, regardless
+    // of the order the vendor renders its children in.
+    const hitStrip = await waitForStorySelector<HTMLElement>(
       canvasElement,
-      '.maka-module-page .astryx-resize-handle',
+      '.maka-module-page .astryx-resize-handle > :not(.astryx-resize-handle-pill)',
     );
-    const hitStrip = handle.firstElementChild;
-    if (!(hitStrip instanceof HTMLElement)) throw new Error('Resize handle has no hit strip');
     const toolbar = await waitForStorySelector<HTMLElement>(
       canvasElement,
       '.maka-module-page-bar',
@@ -947,7 +967,8 @@ export const ExtensionsMcpMarketplace: Story = {
 };
 
 // Real path: sidebar → 扩展 → MCP, with connected and disabled servers. The
-// page lands on 已安装 once the configured inventory arrives.
+// play also locks the search contract: a discovered tool name keeps the
+// server that offers it, and the clear affordance restores the list.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
@@ -958,6 +979,22 @@ export const ExtensionsMcpConfigured: Story = {
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
+
+    const search = await waitForStorySelector<HTMLInputElement>(
+      canvasElement,
+      'input[placeholder="搜索 MCP…"]',
+    );
+    await userEvent.type(search, 'read_file');
+    await waitForStoryText(canvasElement, '1 个匹配');
+    await expect(canvasElement.textContent).toContain('filesystem');
+    await expect(canvasElement.textContent).not.toContain('linear-remote');
+
+    const clear = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '清空搜索',
+    );
+    clear.click();
+    await waitForStoryText(canvasElement, 'linear-remote');
   },
 };
 

@@ -55,10 +55,10 @@ test('MCP module page keeps one centred column without horizontal overflow', asy
 
     expect(geometry.mainOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBe(0);
     expect(geometry.contentOverflow, `${width}px: ${JSON.stringify(geometry)}`).toBe(0);
-    if (width >= 1280) {
-      expect(geometry.rowsWidth, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(900);
-      expect(geometry.centerDelta, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
-    }
+    // Centred and capped at every width, not just wide ones: below the clamp
+    // the column fills the plate, which is centring too.
+    expect(geometry.rowsWidth, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(900);
+    expect(geometry.centerDelta, `${width}px: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(1);
   }
 });
 
@@ -262,14 +262,9 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   }).toBe(false);
   await expect(inspector.getByRole('switch', { name: '启用' })).not.toBeChecked();
 
-  await inspector.getByRole('button', { name: '删除', exact: true }).click();
-  await page.getByRole('alertdialog').getByRole('button', { name: '删除', exact: true }).click();
-  await expect(mcp.getByText('还没有安装 MCP')).toBeVisible();
-  await expect.poll(async () => {
-    const next = await page.evaluate(() => window.maka.mcp.getConfig());
-    return next.mcpServers['e2e-fixture'];
-  }).toBeUndefined();
-
+  // Import a second server BEFORE the delete: with one row left behind, the
+  // delete below can prove where focus goes — the contract the empty-list
+  // path cannot exercise.
   await mcp.getByRole('button', { name: '添加 MCP' }).click();
   await page.getByRole('dialog', { name: '添加 MCP' }).getByRole('radio', { name: '粘贴 JSON' }).click();
   const jsonEditor = page.getByRole('dialog', { name: '通过 JSON 导入' });
@@ -284,4 +279,17 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     const next = await page.evaluate(() => window.maka.mcp.getConfig());
     return next.mcpServers['remote-disabled'];
   }).toMatchObject({ url: 'https://example.com/mcp', enabled: false });
+
+  // The import's view switch dropped the selection (it belongs to the view
+  // it was made in), so reopen the inspector before deleting.
+  await mcp.getByRole('button', { name: /e2e-fixture/ }).click();
+  await inspector.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除', exact: true }).click();
+  await expect.poll(async () => {
+    const next = await page.evaluate(() => window.maka.mcp.getConfig());
+    return next.mcpServers['e2e-fixture'];
+  }).toBeUndefined();
+  // Focus lands on the row that took the deleted one's place — not on body,
+  // which would drop a keyboard user at the top of the document.
+  await expect(mcp.getByRole('button', { name: /remote-disabled/ })).toBeFocused();
 });

@@ -50,6 +50,10 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
 
   await expect(page.getByRole('button', { name: /User Only/ })).toHaveCount(0);
   await expect.poll(() => access(skillDir).then(() => 'present', () => 'gone')).toBe('gone');
+
+  // Focus moves to the row that took the deleted one's place — not to body,
+  // which would drop a keyboard user at the top of the document.
+  await expect(page.locator('.maka-module-page-rows > li button:focus')).toHaveCount(1);
 });
 
 test('offers no delete for a project-scope skill', async ({ invocableSkillsWindow: page }) => {
