@@ -240,7 +240,11 @@ it('localizes the Astryx chat chrome adopted in #1795', () => {
   assert.equal(messages['@astryx.chatLayout.newMessages'], '跳到最新消息');
   assert.equal(messages['@astryx.chatLayoutScrollButton.scrollToBottom'], '滚动到底部');
   for (const key of ['@astryx.chatSendButton.send', '@astryx.chat.status.sent']) {
-    assert.doesNotMatch(messages[key] ?? '', /[A-Za-z]/, `untranslated: ${key}`);
+    // Assert presence first: a deleted key would coalesce to '', which holds no
+    // Latin letters and would satisfy the translation check on its own.
+    const value = messages[key];
+    assert.ok(value, `missing override: ${key}`);
+    assert.doesNotMatch(value, /[A-Za-z]/, `untranslated: ${key}`);
   }
 });
 
