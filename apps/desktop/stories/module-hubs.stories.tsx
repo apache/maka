@@ -158,6 +158,24 @@ const DISABLED_SKILLS: SkillEntry[] = [
   },
 ];
 
+// Enough installed Skills that the list genuinely scrolls at the story's
+// viewport — the #2236 regression surface (the view switch scrolling away
+// with the list) only exists when the list is taller than its container.
+const LONG_LIST_SKILLS: SkillEntry[] = Array.from({ length: 40 }, (_, index) => ({
+  ref: `workspace:maka:skill-long-${index}`,
+  id: `skill-long-${index}`,
+  name: `long-list-skill-${index}`,
+  description: '长列表占位技能，用于滚动契约。',
+  path: `~/.maka/skills/skill-long-${index}`,
+  declaredTools: ['Bash'],
+  sourceType: 'workspace',
+  scope: 'workspace',
+  contextStatus: 'advertised',
+  manageable: true,
+  enabled: true,
+  runtimeStatus: 'enabled',
+}));
+
 const BUNDLED_SKILLS: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']> = [
   {
     id: 'document-review',
@@ -560,6 +578,10 @@ function ModuleSurface(props: {
   return (
     <div
       data-maka-e2e-fixture="true"
+      // The detail panel's height contract hangs off `.maka-shell-astryx`
+      // (shell-layout.css); without the shell class the panel grows with
+      // content and nothing inside the page ever scrolls on its own.
+      className="app maka-shell-astryx"
       style={{
         background: 'var(--surface-canvas)',
         display: 'flex',
@@ -693,20 +715,6 @@ async function waitForStoryButton(
   throw new Error('Story action button did not render');
 }
 
-async function waitForStoryMenuItem(
-  canvasElement: HTMLElement,
-  predicate: (menuItem: HTMLElement) => boolean,
-): Promise<HTMLElement> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const menuItem = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>('[role="menuitem"]'),
-    ).find(predicate);
-    if (menuItem) return menuItem;
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
-  }
-  throw new Error('Story menu item did not render');
-}
-
 async function waitForStorySelector<T extends Element>(
   canvasElement: HTMLElement,
   selector: string,
@@ -743,6 +751,7 @@ export const ExtensionsSkillsBundled: Story = {
 };
 
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
+// The review flow lives in the inspector now: select the row, then 查看更新.
 export const ExtensionsSkillsUpdateAvailable: Story = {
   render: function Render() {
     const [updateInput, setUpdateInput] = useState<unknown>(null);
@@ -762,16 +771,15 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const moreActions = await waitForStoryButton(
+    const row = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.getAttribute('aria-label') === 'release-checklist 的更多操作',
+      (candidate) => candidate.textContent?.includes('release-checklist') === true,
     );
-    moreActions.click();
+    row.click();
 
-    const storyDocument = canvasElement.ownerDocument.documentElement;
-    const viewUpdate = await waitForStoryMenuItem(
-      storyDocument,
-      (candidate) => candidate.textContent?.includes('查看更新') === true,
+    const viewUpdate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '查看更新',
     );
     viewUpdate.click();
 
@@ -801,6 +809,51 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
         expectedSourceSha256: UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256,
       },
     });
+  },
+};
+
+// Real path: sidebar → 扩展 → 技能 → click an installed row, which opens the
+// inspector where every per-skill control now lives. Wide only: below 1024px
+// the page trades the panel for a dialog.
+export const ExtensionsSkillsInspector: Story = {
+  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('git-flow') === true,
+    );
+    row.click();
+    await waitForStoryText(canvasElement, '固定到技能上下文');
+    await waitForStoryText(canvasElement, '声明工具');
+  },
+};
+
+// Regression contract for #2236: the view switch rides the fixed header, so
+// scrolling the list must not move it. Rows scroll; the switch stays put.
+export const ExtensionsSkillsScrollContainment: Story = {
+  render: () => <ExtensionsSkillsSurface skills={LONG_LIST_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    const viewSwitch = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="技能视图"]',
+    );
+    const rows = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="技能列表"]',
+    );
+    // The scroller is whichever ancestor of the rows actually overflows —
+    // asserting through the DOM, not through a class name the layout could
+    // rename.
+    let scroller: HTMLElement | null = rows;
+    while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+      scroller = scroller.parentElement;
+    }
+    if (!scroller) throw new Error('Skills list never overflows any ancestor');
+    const before = viewSwitch.getBoundingClientRect().top;
+    scroller.scrollTop = 600;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+    await expect(scroller.scrollTop).toBeGreaterThan(0);
+    await expect(viewSwitch.getBoundingClientRect().top).toBe(before);
   },
 };
 
