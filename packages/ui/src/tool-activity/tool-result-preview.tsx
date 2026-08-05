@@ -13,6 +13,7 @@ import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
+import { previewVariants } from '../primitives/chat.js';
 import { AgentSwarmPreview, ExploreAgentPreview, SubagentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
@@ -38,7 +39,7 @@ export const TOOL_OUTPUT_NOTE_CLASS =
   'maka-tool-output-note';
 
 /**
- * The one surface a command and its output share.
+ * The one surface a tool result and the line naming it share.
  *
  * A single Bash call used to render three different ways depending on which
  * branch it landed in: streaming put the command in an Astryx `CodeBlock` card
@@ -48,23 +49,25 @@ export const TOOL_OUTPUT_NOTE_CLASS =
  * header), and a settled background run used this panel. So the same call
  * changed shape as it finished.
  *
- * One panel now owns all three: command on top in foreground mono, a hairline,
- * then the body. The command is the thing worth copying — Astryx's CodeBlock
- * copy button copied the output and left the command unreachable — so the
- * action here copies the command and the body keeps its own affordances.
+ * One panel now owns all three, and the file-diff preview besides: the heading
+ * on top in foreground mono, a hairline, then the body. The heading is the
+ * thing worth copying — a command to re-run, a path to open — and Astryx's
+ * CodeBlock copy button reached the code instead, leaving its title
+ * unreachable; the action here copies the heading and the body keeps its own
+ * affordances.
  */
 export function ToolOutputSurface(props: {
   kind: string;
-  command?: string;
+  heading?: string;
   attention?: 'error' | 'warning';
   children: ReactNode;
 }) {
   const copyText = getToolActivityCopy(useUiLocale()).copy;
   const feedback = useClipboardCopyFeedback();
-  const command = props.command?.trim() ? props.command : undefined;
-  // Keyed by the command itself: two surfaces in one turn are independent
+  const command = props.heading?.trim() ? props.heading : undefined;
+  // Keyed by the heading itself: two surfaces in one turn are independent
   // rows, and a shared key would flash "copied" on both.
-  const copyKey = `tool-command:${command ?? ''}`;
+  const copyKey = `tool-heading:${command ?? ''}`;
   const phase = feedback.phaseFor(copyKey);
   const label = phase === 'pending'
     ? copyText.pending
@@ -92,7 +95,7 @@ export function ToolOutputSurface(props: {
             size="sm"
             className="maka-tool-output-command-copy"
             data-copy-feedback={phase ?? undefined}
-            // Icon-only: the command already fills the row, and a word beside
+            // Icon-only: the heading already fills the row, and a word beside
             // it would compete with the thing being copied. `label` is the
             // accessible name in this mode.
             isIconOnly
@@ -251,10 +254,35 @@ function PtyControlPreview(props: {
 }
 
 /**
- * Line-level diff coloring. Splits the unified-diff text on newlines and
- * tags each line with `data-line="add" | "del" | "hunk" | "meta" | "ctx"`
- * for CSS to color. Doesn't try to parse the hunk semantics — we leave
- * that to a future inline editor view; this is just a readable preview.
+ * Which tint a unified-diff line takes. Deliberately shallow: it reads the
+ * line's first character, not the hunk semantics, which is all the colouring
+ * needs and all a preview should promise.
+ *
+ * `+++`/`---` are file markers, not an addition and a deletion — they have to
+ * be tested before the single-character cases or every diff opens with one
+ * green and one red line that mean nothing.
+ */
+function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
+  return 'ctx';
+}
+
+/**
+ * Line-level diff colouring — green additions, red deletions, a tinted hunk
+ * header — in the same surface a command uses, with the changed paths as its
+ * heading.
+ *
+ * This was passing `language="diff"` to Astryx's CodeBlock, which does not
+ * know that language: `buildLanguagePatterns` has no `diff` case and returns
+ * null, so every line fell through to `--color-syntax-variable` and the whole
+ * hunk painted one colour. Astryx ships no diff component, so the product owns
+ * this. The `.maka-tool-diff-*` classes it renders through are the ones
+ * `previewVariants` has always declared for exactly this — the call site was
+ * what went missing.
  */
 function FileDiffPreview(props: { diff: string; paths: string[] }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
@@ -263,15 +291,30 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
   // into a diff (commit body, .env file diff, etc.), and never let a
   // 10k-line diff create 10k React elements.
   const { body, capped } = capLines(redactSecrets(props.diff));
-  const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
+  const lines = body.split('\n');
   return (
-    <div data-kind="file_diff">
-      <ToolCodeBlock
-        code={code}
-        language="diff"
-        title={props.paths.length > 0 ? props.paths.join(', ') : undefined}
-      />
-    </div>
+    <ToolOutputSurface
+      kind="file_diff"
+      heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
+    >
+      <pre className={previewVariants({ part: 'diff-body' })}>
+        {lines.map((line, index) => (
+          <span
+            // Index keys: the list is a re-split of one immutable string, so a
+            // line's position is its identity.
+            key={index}
+            className={previewVariants({ part: 'diff-line' })}
+            data-line={diffLineKind(line)}
+          >
+            {line}
+            {'\n'}
+          </span>
+        ))}
+      </pre>
+      {capped > 0 && (
+        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.hiddenLines(capped)}</p>
+      )}
+    </ToolOutputSurface>
   );
 }
 
@@ -294,7 +337,7 @@ function TerminalPreview(props: {
   return (
     <ToolOutputSurface
       kind="terminal"
-      command={safeCmd}
+      heading={safeCmd}
       attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
     >
       {props.output ? (
@@ -367,7 +410,7 @@ function ShellRunPreview(props: {
   return (
     <ToolOutputSurface
       kind="shell_run"
-      command={safeCmd}
+      heading={safeCmd}
       attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
     >
       <p className={TOOL_OUTPUT_NOTE_CLASS}>

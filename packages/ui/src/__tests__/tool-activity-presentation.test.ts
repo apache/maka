@@ -426,6 +426,36 @@ describe('tool activity presentation', () => {
     assert.match(truncated, /输出已截断/);
   });
 
+  // Astryx's tokenizer has no `diff` language, so `language="diff"` was a
+  // no-op and every line painted `--color-syntax-variable`. The tints are the
+  // product's own; what has to hold is the classification, above all that the
+  // `---`/`+++` file markers are not read as a deletion and an addition.
+  it('tints a diff by line kind instead of painting it one colour', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: {
+        kind: 'file_diff',
+        paths: ['packages/ui/src/tool-activity.tsx'],
+        diff: [
+          'diff --git a/packages/ui/src/tool-activity.tsx b/packages/ui/src/tool-activity.tsx',
+          'index 1111111..2222222 100644',
+          '--- a/packages/ui/src/tool-activity.tsx',
+          '+++ b/packages/ui/src/tool-activity.tsx',
+          '@@ -1,3 +1,3 @@',
+          ' const kept = true;',
+          '-const removed = 1;',
+          '+const added = 2;',
+        ].join('\n'),
+      },
+    }));
+
+    const kinds = Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]);
+    assert.deepEqual(kinds, ['meta', 'meta', 'meta', 'meta', 'hunk', 'ctx', 'del', 'add']);
+    // The heading is the changed path, in the same surface a command uses.
+    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
+    assert.match(markup, /class="maka-tool-output-command"[^>]*>packages\/ui\/src\/tool-activity\.tsx</);
+    assert.doesNotMatch(markup, /astryx-codeblock/);
+  });
+
   // The row-level counterpart of the sweep below, one level down: the detail
   // panel used to draw the same command three ways — a CodeBlock card while
   // streaming, that block's `title` slot once a foreground run settled, and

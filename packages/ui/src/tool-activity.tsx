@@ -228,7 +228,7 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
       {showLiveStream && (
         <ToolOutputSurface
           kind="live_stream"
-          command={showInvocation ? invocationLine : undefined}
+          heading={showInvocation ? invocationLine : undefined}
         >
           <ToolOutputStream
             chunks={item.outputChunks!}

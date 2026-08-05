@@ -290,6 +290,13 @@
    Astryx's intent and the surface command's foreground colour carries the same
    weight of emphasis without it. */
 .maka-tool-call-detail .astryx-codeblock {
+  /* Geist Mono ligates `--`, `!==` and friends into single glyphs that sit
+     outside the cell they started in, so a `---` line looked like it had
+     escaped the block's left edge — measured, its box starts on the same x as
+     every other line. The product's own wells all disable this; Astryx's
+     CodeBlock does not, and tool output is transcript text where the literal
+     characters are the point. */
+  font-variant-ligatures: none;
   --text-supporting-size: var(--text-code-size);
   /* Unitless, so it has to move with the size: left at the supporting leading
      it would multiply the larger size into a 23px line box and give the header
@@ -478,17 +485,24 @@
 }
 .maka-tool-terminal-head { align-items: center; font-variant-ligatures: none; }
 .maka-tool-diff-paths code { color: var(--foreground-secondary); background: transparent; }
+/* Lives inside `.maka-tool-output-panel` now, so it takes the panel's code
+   tier rather than the supporting one it used as a standalone card, and its
+   line tints bleed to the panel edge instead of stopping at a padding gap. */
 .maka-tool-diff-body {
-  font: var(--maka-text-supporting);
+  font: var(--maka-text-code);
   max-height: 320px;
   margin: 0;
-  padding-block: var(--space-1);
   overflow: auto;
   font-variant-ligatures: none;
   white-space: pre;
   word-break: normal;
 }
-.maka-tool-diff-line { display: block; padding-inline: var(--space-2); white-space: pre; }
+.maka-tool-diff-line {
+  display: block;
+  padding-inline: var(--space-3);
+  margin-inline: calc(-1 * var(--space-3));
+  white-space: pre;
+}
 .maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
 .maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {
