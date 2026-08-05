@@ -28,6 +28,12 @@ export interface PromptAnchorRailProps {
    * fill reaches them, so the owner mounts the turn and finishes the scroll.
    */
   onNavigateFallback?: (turnId: string) => void;
+  /**
+   * #2052: bumped whenever turn DOM membership changes without `turns`
+   * changing, i.e. each idle fill step. The observer effect below re-snapshots
+   * on it so newly mounted turns are observed too.
+   */
+  mountedTurnsRevision?: number;
 }
 
 /**
@@ -44,7 +50,7 @@ export interface PromptAnchorRailProps {
  * against a box as tall as the conversation and scrolls away with it. See
  * `styles/prompt-rail.css` for the geometry the anchor establishes.
  */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, mountedTurnsRevision }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   // The scrollport height and the height of Astryx's sticky composer dock.
@@ -60,7 +66,10 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   // keeps it from running is the caller: ChatView hands back the same array
   // while no rail-visible field moved. Keying the effect on that array is
   // therefore both the cheap check and the thing that fails loudly if the
-  // caller ever stops reusing it.
+  // caller ever stops reusing it. The progressive mount (#2052) changes turn
+  // DOM membership WITHOUT changing the array, so the caller also bumps
+  // `mountedTurnsRevision` per fill step; a bounded handful of re-snapshots
+  // per session switch, never per token.
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || turns.length === 0) return;
@@ -122,7 +131,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       root.removeEventListener('scroll', onScroll);
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, [scrollRef, turns]);
+  }, [scrollRef, turns, mountedTurnsRevision]);
 
   useEffect(() => {
     const root = scrollRef.current;

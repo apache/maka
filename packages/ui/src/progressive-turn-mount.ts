@@ -65,8 +65,8 @@ export function initialMountWindow(
  *   same full-tree commit arrives through message loading and revision
  *   navigation without a key change, so a bulk arrival is treated like a
  *   switch;
- * - the count shrank below the window start: the old index would point past
- *   the end.
+ * - the count shrank to or below the window start: `turns.slice(start)` with
+ *   start at or past the end renders an empty transcript.
  * A growing transcript otherwise keeps its start: streaming appends land in
  * the mounted tail.
  */
@@ -79,7 +79,7 @@ export function reconcileMountWindow(
   let start = state.start;
   if (state.key !== next.key || next.length - state.length > config.initialWindow) {
     start = tailStart(next.length, config);
-  } else if (start > next.length) {
+  } else if (start >= next.length && next.length > 0) {
     start = tailStart(next.length, config);
   }
   if (ensureIndex !== undefined && ensureIndex >= 0 && ensureIndex < start) {

@@ -272,3 +272,52 @@ test('the empty-chat hero centres in the reading column', async ({ window: page 
   });
   expect(offset).toBeLessThanOrEqual(1);
 });
+
+// #2052: switching back mounts only the transcript tail; earlier turns arrive
+// in idle chunks. The compensation contract: a historical turn the reader is
+// anchored on must not move in the viewport while chunks mount above it. The
+// unit tests pin the arithmetic; this pins the real Chromium layout and
+// timing behind it. The bottom-lock path (re-pin instead of preserve) is
+// already covered by the pinned settles above.
+test('progressive fill preserves the reading anchor while earlier turns mount', async ({ longTranscriptWindow: page }) => {
+  await expect(page.locator('.maka-turn')).toHaveCount(24);
+  await settleGeometry(page, { pinned: true });
+
+  // Widen the fill window so the anchor is sampled while chunks are still
+  // mounting; unthrottled, an M-series host can finish the whole fill before
+  // the first sample.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+
+  await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .getByRole('button', { name: '扩展', exact: true })
+    .dispatchEvent('click');
+  await expect(page.locator('.maka-turn')).toHaveCount(0);
+  await page.getByText('超长会话滚动几何').first().dispatchEvent('click');
+
+  const scroller = page.locator('[data-chat-scroll-container="true"]');
+  await expect(scroller).toHaveAttribute('data-progressive-fill', 'filling');
+  const anchor = await page.evaluate(() => {
+    const root = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement;
+    // Step out of Astryx's bottom lock so preservation, not re-pinning, is
+    // the path under test.
+    root.scrollTop = Math.max(0, root.scrollTop - 600);
+    const turn = [...root.querySelectorAll('[data-turn-id]')].find(
+      (el) => el.getBoundingClientRect().top > 80,
+    );
+    if (!turn) throw new Error('Expected a mounted turn below the topbar to anchor on');
+    return { id: turn.getAttribute('data-turn-id'), top: turn.getBoundingClientRect().top };
+  });
+
+  await expect(scroller).toHaveAttribute('data-progressive-fill', 'complete', { timeout: 20_000 });
+  const after = await page.evaluate((turnId) => {
+    const el = document.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+    if (!el) throw new Error('Anchor turn disappeared during the fill');
+    return el.getBoundingClientRect().top;
+  }, anchor.id as string);
+  expect(Math.abs(after - anchor.top)).toBeLessThanOrEqual(2);
+
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+});

@@ -498,7 +498,12 @@ export function ChatView(props: {
             and a sticky box only takes an offset from its own static position
             onward. Rendered after the transcript it would stay parked at the
             bottom of the conversation until the reader scrolled there. */}
-        <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} onNavigateFallback={revealTurn} />
+        <PromptAnchorRail
+          turns={promptRailTurns}
+          scrollRef={scrollRef}
+          onNavigateFallback={revealTurn}
+          mountedTurnsRevision={mountStart}
+        />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           density="compact"

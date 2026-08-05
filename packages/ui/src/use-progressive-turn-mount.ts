@@ -105,6 +105,18 @@ export function useProgressiveTurnMount(input: {
     root.scrollTop = compensateFillScroll(before, root.scrollHeight).scrollTop;
   }, [reconciled.start, input.scrollRef]);
 
+  // Fill progress published the way the warm-up publishes its own terminal
+  // state (data-turn-warmup): tests and tooling can wait on the fill's real
+  // boundary instead of guessing at idle timing.
+  useEffect(() => {
+    const root = input.scrollRef.current;
+    if (!root) return;
+    root.dataset.progressiveFill = reconciled.start === 0 ? 'complete' : 'filling';
+    return () => {
+      delete root.dataset.progressiveFill;
+    };
+  }, [reconciled.start, input.scrollRef]);
+
   // A reveal request is served across two commits: the render above widens
   // the window through ensureIndex, and once the element exists this effect
   // performs the scroll the rail could not (its querySelector found nothing).

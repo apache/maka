@@ -49,6 +49,18 @@ describe('reconcileMountWindow', () => {
     assert.equal(next.start, 0);
   });
 
+  it('re-windows when the transcript shrinks exactly to the window start', () => {
+    // start === length slices to an empty transcript, just as invalid as
+    // start past the end (#2191 review).
+    const next = reconcileMountWindow(state('a', 30, 20), { key: 'a', length: 20 }, config);
+    assert.equal(next.start, 20 - config.initialWindow);
+  });
+
+  it('keeps an empty transcript at start zero', () => {
+    const current = state('a', 0, 0);
+    assert.equal(reconcileMountWindow(current, { key: 'a', length: 0 }, config), current);
+  });
+
   it('widens to include an ensured index', () => {
     const next = reconcileMountWindow(state('a', 30, 20), { key: 'a', length: 30 }, config, 3);
     assert.equal(next.start, 3);
