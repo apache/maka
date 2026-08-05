@@ -52,6 +52,7 @@ import {
   Selector,
   TextArea,
   useMountedRef,
+  useRovingRowFocus,
   useToast,
   useUiLocale,
   type ModuleHubHeader,
@@ -123,8 +124,15 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   // list — which only happens when the config write lands.
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
   const focusRowAfterRemovalRef = useRef<number | null>(null);
+  // One tab stop for the whole installed list, same keyboard contract as the
+  // skills and 定时任务 pages: without it, reaching the inspector from row
+  // k of N costs N−k presses.
+  const rovingRows = useRovingRowFocus(rowsContainerRef);
 
   function switchTab(next: McpTab) {
+    // The selection belongs to the view it was made in; carrying it across
+    // the switch would reopen the inspector without a user action on return.
+    setSelectedServerId(null);
     setActiveTab(next);
   }
 
@@ -361,6 +369,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (!mounted.current) return;
       setConfig(next);
       setStatuses((current) => current.filter((status) => status.serverId !== serverId));
+      // Drop the id too — keeping it would reopen the inspector if a server
+      // with the same id is added back later, without any user action.
+      setSelectedServerId((current) => (current === serverId ? null : current));
       toast.success(copy.toast.removed);
     } catch (error) {
       if (mounted.current) toast.error(copy.errors.remove, settingsActionErrorMessage(error, locale));
@@ -440,7 +451,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   );
 
   const installedPanel = (
-    <div className="maka-module-page-panel" ref={rowsContainerRef}>
+    <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
       {/* Selecting a row moves no focus, so nothing else would tell a screen
           reader that the details opened. This says so, politely. */}
       <p className="maka-visually-hidden" role="status" aria-live="polite">
@@ -778,13 +789,13 @@ function McpServerInspector(props: {
 }
 
 function mcpStatusDotVariant(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }): 'accent' | 'warning' | 'error' | 'neutral' {
-  // A failed connection is the one exceptional state; connecting and
-  // connected are simply live (accent), disabled and disconnected are the
-  // quiet neutral the server was left in.
+  // A failed connection is the one exceptional state; connected is the one
+  // live state worth the accent. Connecting is transient and indistinguishable
+  // from it by colour alone, so it stays neutral with the quiet states.
   if (state.tone === 'error') return 'error';
   if (state.tone === 'warning') return 'warning';
-  if (state.tone === 'neutral') return 'neutral';
-  return 'accent';
+  if (state.tone === 'success') return 'accent';
+  return 'neutral';
 }
 function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;
