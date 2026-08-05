@@ -98,6 +98,49 @@ describe('ShellRun UI projection', () => {
     assert.equal(result?.kind === 'shell_run' ? result.status : undefined, 'completed');
   });
 
+  test('keeps a newer live PTY screen ahead of the persisted snapshot', () => {
+    const messages: StoredMessage[] = [
+      toolCall('bash-1', 'turn-1', 'Bash', { command: 'job', pty: true }, 1),
+      toolResult('bash-1', 'turn-1', shellRun(1), 2),
+    ];
+    const liveResult = shellRun(2);
+    if (liveResult.output?.mode !== 'pty') assert.fail('expected PTY output');
+    liveResult.output.screen = 'still running';
+    const live: LiveTurnProjection = {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      steps: [{
+        stepId: 'tool:bash-1',
+        contentOrder: ['tools'],
+        tools: [{
+          toolUseId: 'bash-1',
+          toolName: 'Bash',
+          status: 'running',
+          args: { command: 'job', pty: true },
+          result: liveResult,
+          outputChunks: [{
+            seq: 1,
+            stream: 'stdout',
+            text: 'still running',
+            redacted: false,
+            createdAt: 3,
+          }],
+        }],
+      }],
+    };
+
+    const tool = createTranscriptProjection()
+      .project({ messages, liveTurn: live })[0]?.tools[0];
+    assert.equal(tool?.result?.kind === 'shell_run' ? tool.result.revision : undefined, 2);
+    assert.equal(
+      tool?.result?.kind === 'shell_run' && tool.result.output?.mode === 'pty'
+        ? tool.result.output.screen
+        : undefined,
+      'still running',
+    );
+    assert.equal(tool?.outputChunks?.[0]?.text, 'still running');
+  });
+
   test('applies a durable update that arrives before the live Bash result', () => {
     const live: LiveTurnProjection = {
       turnId: 'turn-1',

@@ -557,6 +557,72 @@ describe("live tool status over persisted", () => {
     );
   });
 
+  test("keeps durable tool detail while a Runtime Host Turn is still live", () => {
+    const settled = materializeTurns([
+      userMsg("t1", 1, "use the computer"),
+      {
+        type: "turn_state",
+        id: "s1",
+        turnId: "t1",
+        ts: 2,
+        status: "running",
+        partialOutputRetained: false,
+      },
+      {
+        type: "tool_call",
+        id: "computer-1",
+        turnId: "t1",
+        ts: 3,
+        toolName: "maka_computer",
+        args: { action: "click_element", element_id: "615" },
+      },
+      {
+        type: "tool_result",
+        id: "result-1",
+        turnId: "t1",
+        ts: 4,
+        toolUseId: "computer-1",
+        isError: false,
+        content: { kind: "text", text: "unsupported_action" },
+      },
+    ]);
+
+    const turns = overlayLiveTurn(settled, {
+      turnId: "t1",
+      phase: "streamed",
+      steps: [
+        {
+          stepId: "tool:computer-1",
+          tools: [
+            {
+              toolUseId: "computer-1",
+              toolName: "maka_computer",
+              status: "completed",
+              args: undefined,
+              // Runtime Host live events carry lifecycle but not the durable
+              // result payload.
+              result: { kind: "text", text: "" },
+            },
+          ],
+        },
+      ],
+    });
+
+    const toolGroup = turns
+      .find((turn) => turn.turnId === "t1")
+      ?.timeline.find((item: TurnTimelineItem) => item.kind === "tools");
+    const tool = toolGroup?.kind === "tools" ? toolGroup.items[0] : undefined;
+    assert.deepEqual(tool?.args, {
+      action: "click_element",
+      element_id: "615",
+    });
+    assert.deepEqual(tool?.result, {
+      kind: "text",
+      text: "unsupported_action",
+    });
+    assert.equal(tool?.status, "completed");
+  });
+
   // Deleting the merge exception rests entirely on the live side carrying its
   // own interrupted signal, so drive the real chain — a tool_start followed by
   // an abort — rather than hand-building an already-interrupted projection,
