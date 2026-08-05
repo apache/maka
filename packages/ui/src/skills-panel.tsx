@@ -192,6 +192,11 @@ export function SkillsModuleMain(props: {
       (entry) => (entry.ref ?? entry.id) === ref,
     );
     await runSkillAction(`delete:${ref}`, () => props.onDeleteSkill?.(ref));
+    // Drop the selection too — keeping it would reopen the inspector if a
+    // skill with the same ref is installed again later, unasked.
+    if (mountedRef.current) {
+      setSelectedSkillRef((current) => (current === ref ? null : current));
+    }
   }
 
   async function reviewManagedSkillUpdate(skill: SkillEntry) {
@@ -571,6 +576,10 @@ export function SkillsModuleMain(props: {
                   value={activeSkillTab}
                   onChange={(value) => {
                     if (value !== 'market' && value !== 'builtin' && value !== 'installed') return;
+                    // The selection belongs to the view it was made in;
+                    // carrying it across would reopen the inspector without
+                    // a user action on return.
+                    setSelectedSkillRef(null);
                     setActiveSkillTab(value);
                   }}
                   label={copy.tabs.ariaLabel}
