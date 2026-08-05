@@ -34,7 +34,7 @@ import {
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useProgressiveTurnMount } from './use-progressive-turn-mount.js';
-import { createTurnSizeIndex, layoutKeyFor, measureTurnGeometry } from './turn-size-index.js';
+import { createTurnSizeIndex, layoutKeyOf, measureSettledGeometry } from './turn-size-index.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer } from './session-context-layer.js';
@@ -42,15 +42,6 @@ import { SessionContextLayer } from './session-context-layer.js';
 // #2224: one geometry cache for the app's single ChatView. Session-keyed
 // inside; module scope only saves threading it through the shell.
 const turnSizeIndex = createTurnSizeIndex();
-
-// Turn heights are set by the reading column's width, not the scroller's:
-// the column is max-width capped and centred, so chrome around the scroller
-// (sidebar, panels) can change the scroller's width without moving a single
-// line break. Key on the column so records survive that chrome.
-function layoutKeyOf(root: HTMLElement): string {
-  const column = root.querySelector<HTMLElement>('.maka-chat-message-list');
-  return layoutKeyFor((column ?? root).clientWidth, root.dataset.density);
-}
 
 export function ChatView(props: {
   messages: StoredMessage[];
@@ -391,17 +382,17 @@ export function ChatView(props: {
   // the fill runs. Without them (first visit, resized window) everything
   // below degrades to the plain #2052 fill and the warm-up relearns sizes.
   const sessionId = props.activeSession?.id;
-  // The lookup must land in the same commit as the session switch, or the
-  // scroller paints one frame at its unseeded height and the spacer arrives
-  // as a visible jump. An in-place switch has the scroller ref during
-  // render, so the memo reads it there. Two things invalidate that read
-  // and are answered by the nudge effect below, each costing one late
-  // frame: on a fresh mount the ref is still null (the scroller is an
-  // ancestor host whose ref attaches after descendant effects), and on
-  // platforms with classic scrollbars the column is wider until enough
-  // turns mount to overflow, so the empty-surface read misses the record.
-  // Nudges stop once the fill completes; token streaming never re-reads
-  // layout.
+  // The lookup should land in the same commit as the session switch, so the
+  // scroller never paints a frame at its unseeded height. An in-place
+  // switch has the scroller ref during render and the memo reads it there.
+  // Two things invalidate that read: on a fresh mount the ref is still null
+  // (the scroller is an ancestor host whose ref attaches after descendant
+  // effects), and on platforms with classic scrollbars the column is wider
+  // until enough turns mount to overflow, so an early read misses the
+  // record. The nudge effect below answers both by retrying after every
+  // commit while the fill window is open (each fill chunk moves mountStart)
+  // and stopping on the first hit or when the window closes, so token
+  // streaming never re-reads layout.
   const [lookupPass, setLookupPass] = useState(0);
   const seededGeometry = useMemo(() => {
     const root = scrollRef.current;
@@ -416,8 +407,10 @@ export function ChatView(props: {
     seededGeometry,
   });
   useEffect(() => {
-    if (!turnsFilled && scrollRef.current) setLookupPass((count) => count + 1);
-  }, [sessionId, orderedTurnIds, turnsFilled, scrollRef]);
+    if (!turnsFilled && !seededGeometry && scrollRef.current) {
+      setLookupPass((count) => count + 1);
+    }
+  }, [sessionId, orderedTurnIds, mountStart, turnsFilled, seededGeometry, scrollRef]);
   const mountedTurns = mountStart === 0 ? turns : turns.slice(mountStart);
   // Record geometry once the transcript has settled: fill complete and the
   // warm-up done, so every turn's box is its remembered final size and
@@ -426,32 +419,28 @@ export function ChatView(props: {
   // Streaming turns are still moving and are left out.
   useEffect(() => {
     const root = scrollRef.current;
-    if (!sessionId || !root || !turnsFilled) return;
+    // A pair of turns is the smallest transcript measureSettledGeometry
+    // accepts, and the pair gate also keeps an empty session from polling
+    // forever: with no turns the warm-up never runs, so 'settled' is never
+    // written and the wait below would have no end.
+    if (!sessionId || !root || !turnsFilled || orderedTurnIds.length < 2) return;
     let disposed = false;
     let timer: number | undefined;
-    // Boxes are only real at the width the warm-up walked under. If the
-    // layout changes while we wait (a sidebar toggle finishing late),
-    // off-screen turns keep remembered sizes from the old width, and a
-    // measurement now would file stale heights under the new key. Give up
-    // instead; the next visit re-learns at the new width.
+    // Backstop for the same never-settles shape arriving some other way: a
+    // walk that has not settled after 150 polls is not going to, and a dead
+    // timer must not keep reading layout on a resting surface.
+    let polls = 0;
     const startKey = layoutKeyOf(root);
     const measure = () => {
-      if (disposed || layoutKeyOf(root) !== startKey) return;
-      if (root.dataset.turnWarmup !== 'settled') {
-        timer = window.setTimeout(measure, 200);
+      if (disposed) return;
+      const attempt = measureSettledGeometry(root, startKey);
+      if (attempt.status === 'pending') {
+        polls += 1;
+        if (polls < 150) timer = window.setTimeout(measure, 200);
         return;
       }
-      const boxes: Array<{ turnId: string; top: number; height: number }> = [];
-      for (const el of root.querySelectorAll<HTMLElement>('.maka-turn[data-turn-id]')) {
-        if (el.hasAttribute('data-live-streaming')) continue;
-        const turnId = el.getAttribute('data-turn-id');
-        if (!turnId) continue;
-        const rect = el.getBoundingClientRect();
-        boxes.push({ turnId, top: rect.top, height: rect.height });
-      }
-      const geometry = measureTurnGeometry(boxes);
-      if (geometry) {
-        turnSizeIndex.record(sessionId, startKey, geometry);
+      if (attempt.status === 'measured') {
+        turnSizeIndex.record(sessionId, startKey, attempt.geometry);
         // Published like data-turn-warmup, with the key as the value: a
         // wait can then ask for the record covering the layout it is about
         // to rely on, not merely some record from an earlier width.
@@ -462,6 +451,9 @@ export function ChatView(props: {
     return () => {
       disposed = true;
       window.clearTimeout(timer);
+      // The key describes the transcript that was measured; whatever
+      // replaces it must not inherit the announcement.
+      delete root.dataset.turnGeometry;
     };
   }, [sessionId, turnsFilled, orderedTurnIds, scrollRef]);
   const { highlightedTurnId } = useChatScroll({

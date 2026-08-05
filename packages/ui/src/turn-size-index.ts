@@ -14,8 +14,9 @@
  * layout, or a missing turn yields no answer and the caller falls back to
  * the plain fill and warm-up path.
  *
- * Deliberately in-memory and bounded: geometry is cheap to relearn, so the
- * index is a cache, not a store.
+ * Deliberately in-memory and bounded, one entry per session (a session's
+ * record is replaced, never accumulated per layout): geometry is cheap to
+ * relearn, so the index is a cache, not a store.
  */
 
 export interface TurnGeometryRecord {
@@ -81,6 +82,71 @@ export function prefixHeightFor(
     total += height;
   }
   return Math.round(total);
+}
+
+/** The DOM surface the measurement reads, structurally typed so the guards
+ *  are testable without a real scroller (same pattern as the warm-up). */
+export interface GeometryRoot {
+  readonly clientWidth: number;
+  readonly dataset: { turnWarmup?: string; density?: string };
+  querySelector(selectors: string): { clientWidth: number } | null;
+  querySelectorAll(selectors: string): ArrayLike<GeometryTurnElement>;
+}
+
+export interface GeometryTurnElement {
+  hasAttribute(qualifiedName: string): boolean;
+  getAttribute(qualifiedName: string): string | null;
+  getBoundingClientRect(): { top: number; height: number };
+}
+
+/**
+ * The layout key of a live scroller. Turn heights are set by the reading
+ * column's width, not the scroller's: the column is max-width capped and
+ * centred, so chrome around the scroller (sidebar, panels) can change the
+ * scroller's width without moving a single line break. Key on the column so
+ * records survive that chrome.
+ */
+export function layoutKeyOf(root: GeometryRoot): string {
+  const column = root.querySelector('.maka-chat-message-list');
+  return layoutKeyFor((column ?? root).clientWidth, root.dataset.density);
+}
+
+export type SettledGeometryResult =
+  | { status: 'pending' }
+  | { status: 'aborted' }
+  | { status: 'measured'; geometry: TurnGeometryRecord };
+
+/**
+ * One measurement attempt against a settled transcript. The guards are what
+ * keep the cache honest, so they live here where a unit test can drive each
+ * one deterministically:
+ *
+ * - `aborted` when the layout key moved since `startKey` was captured: the
+ *   warm-up walked under the old width, so off-screen turns still report
+ *   remembered sizes from it, and recording them under the new key would
+ *   poison every future lookup there. Terminal; the next visit re-learns.
+ * - `pending` while the warm-up has not settled: boxes are still moving,
+ *   ask again later.
+ * - `aborted` when the settled transcript has no measurable pair (a lone
+ *   turn, or every turn still streaming). Terminal for the same reason the
+ *   walk is done: nothing further will appear without a remount.
+ *
+ * Live-streaming turns are skipped, not aborted over: their boxes grow
+ * every frame, but the turns around them are final.
+ */
+export function measureSettledGeometry(root: GeometryRoot, startKey: string): SettledGeometryResult {
+  if (layoutKeyOf(root) !== startKey) return { status: 'aborted' };
+  if (root.dataset.turnWarmup !== 'settled') return { status: 'pending' };
+  const boxes: Array<{ turnId: string; top: number; height: number }> = [];
+  for (const turn of Array.from(root.querySelectorAll('.maka-turn[data-turn-id]'))) {
+    if (turn.hasAttribute('data-live-streaming')) continue;
+    const turnId = turn.getAttribute('data-turn-id');
+    if (!turnId) continue;
+    const rect = turn.getBoundingClientRect();
+    boxes.push({ turnId, top: rect.top, height: rect.height });
+  }
+  const geometry = measureTurnGeometry(boxes);
+  return geometry ? { status: 'measured', geometry } : { status: 'aborted' };
 }
 
 /**
