@@ -2,7 +2,18 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -12,11 +23,19 @@ import { createGitWorkspaceService } from '../git-workspace-service.js';
 
 const execFileAsync = promisify(execFile);
 
-test('opens a managed workspace using only the installed dugite-native runtime', async () => {
+test('uses the installed runtime and rejects entry-binary replacement before the next operation', async () => {
   const repoRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
-  const gitRoot = join(repoRoot, 'node_modules', 'dugite', 'git');
-  const executablePath =
-    process.platform === 'win32' ? join(gitRoot, 'cmd', 'git.exe') : join(gitRoot, 'bin', 'git');
+  const installedGitRoot = join(repoRoot, 'node_modules', 'dugite', 'git');
+  const installedExecutablePath =
+    process.platform === 'win32'
+      ? join(installedGitRoot, 'cmd', 'git.exe')
+      : join(installedGitRoot, 'bin', 'git');
+  const gitRoot = await mkdtemp(join(tmpdir(), 'maka-bundled-git-runtime-'));
+  const executablePath = await materializeIsolatedRuntime(
+    installedGitRoot,
+    gitRoot,
+    process.platform === 'win32' ? 'cmd/git.exe' : 'bin/git',
+  );
   const sourceRoot = await mkdtemp(join(tmpdir(), 'maka-bundled-git-source-'));
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-bundled-git-storage-'));
   const homePath = await mkdtemp(join(tmpdir(), 'maka-bundled-git-home-'));
@@ -28,14 +47,20 @@ test('opens a managed workspace using only the installed dugite-native runtime',
     ...bundledGitEnvironment({
       platform: process.platform,
       arch: process.arch,
-      rootPath: gitRoot,
-      executablePath,
+      rootPath: installedGitRoot,
+      executablePath: installedExecutablePath,
     }),
   };
   try {
-    await runGit(executablePath, env, ['-C', sourceRoot, 'init', '--quiet']);
-    await runGit(executablePath, env, ['-C', sourceRoot, 'config', 'user.name', 'Maka Test']);
-    await runGit(executablePath, env, [
+    await runGit(installedExecutablePath, env, ['-C', sourceRoot, 'init', '--quiet']);
+    await runGit(installedExecutablePath, env, [
+      '-C',
+      sourceRoot,
+      'config',
+      'user.name',
+      'Maka Test',
+    ]);
+    await runGit(installedExecutablePath, env, [
       '-C',
       sourceRoot,
       'config',
@@ -43,8 +68,15 @@ test('opens a managed workspace using only the installed dugite-native runtime',
       'test@maka.invalid',
     ]);
     await writeFile(join(sourceRoot, 'README.md'), 'bundled Git runtime\n');
-    await runGit(executablePath, env, ['-C', sourceRoot, 'add', 'README.md']);
-    await runGit(executablePath, env, ['-C', sourceRoot, 'commit', '--quiet', '-m', 'baseline']);
+    await runGit(installedExecutablePath, env, ['-C', sourceRoot, 'add', 'README.md']);
+    await runGit(installedExecutablePath, env, [
+      '-C',
+      sourceRoot,
+      'commit',
+      '--quiet',
+      '-m',
+      'baseline',
+    ]);
 
     const service = createGitWorkspaceService({
       storageRoot,
@@ -68,12 +100,51 @@ test('opens a managed workspace using only the installed dugite-native runtime',
       'bundled Git runtime\n',
     );
     assert.equal(binding.gitRuntimeSha256, `sha256:${'1'.repeat(64)}`);
+
+    await writeFile(executablePath, 'tampered after successful workspace creation\n');
+    await assert.rejects(
+      service.inspectManagedWorkspace(binding),
+      (error: unknown) =>
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'git_runtime_integrity_mismatch',
+    );
   } finally {
     await Promise.all(
-      [sourceRoot, storageRoot, homePath].map((path) => rm(path, { recursive: true, force: true })),
+      [sourceRoot, storageRoot, homePath, gitRoot].map((path) =>
+        rm(path, { recursive: true, force: true }),
+      ),
     );
   }
 });
+
+async function materializeIsolatedRuntime(
+  sourceRoot: string,
+  targetRoot: string,
+  executableRelativePath: string,
+): Promise<string> {
+  const executablePath = join(targetRoot, ...executableRelativePath.split('/'));
+  const executableDirectory = executableRelativePath.split('/')[0] ?? '';
+  await mkdir(dirname(executablePath), { recursive: true });
+  await copyFile(join(sourceRoot, ...executableRelativePath.split('/')), executablePath);
+  if (process.platform !== 'win32') {
+    await chmod(
+      executablePath,
+      (await stat(join(sourceRoot, ...executableRelativePath.split('/')))).mode & 0o7777,
+    );
+  }
+  for (const entry of await readdir(sourceRoot, { withFileTypes: true })) {
+    if (entry.name === executableDirectory) continue;
+    const source = join(sourceRoot, entry.name);
+    const target = join(targetRoot, entry.name);
+    if (entry.isDirectory()) {
+      await symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+    } else if (entry.isFile()) {
+      await copyFile(source, target);
+    }
+  }
+  return executablePath;
+}
 
 async function runGit(
   executablePath: string,

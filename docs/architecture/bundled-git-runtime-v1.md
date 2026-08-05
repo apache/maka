@@ -41,10 +41,26 @@ The dependency is exact-pinned as `dugite@3.2.2`. Its `embedded-git.json` pins
 archive before extraction. Maka then executes the extracted binary with `--version`, hashes that exact
 binary, and emits the platform manifest used by packaging and runtime admission.
 
+The archive checksum is not an independent trust root. `npm ci` first authenticates the exact dugite
+package bytes against `package-lock.json` integrity; that pinned package supplies `embedded-git.json`,
+which authenticates the native archive; Maka then regenerates `bundled-git.json` inside each platform's
+release job immediately before packaging. Review and branch protection own lockfile changes. The signed
+and notarized macOS application closes the artifact-publication chain. The current Windows release is
+explicitly unsigned, so its published SHA-256 and GitHub release transport do not provide OS-level
+publisher identity; that remains a release security limitation rather than something the runtime
+manifest can repair.
+
 The packaged runtime includes the complete `dugite-native` directory rather than copying only `git`.
 Git subprograms, templates, MinGit libraries, certificates, and platform support files remain relative to
 the same root. Runtime environment variables (`GIT_EXEC_PATH`, templates, Linux `PREFIX`/CA bundle, and
 Windows MinGit paths) are derived only from that declared root.
+
+Every managed Git process receives an isolated environment: an owner-specific `HOME` and
+`XDG_CONFIG_HOME`, `GIT_CONFIG_NOSYSTEM=1`, non-interactive credential settings, a fixed hooks directory,
+and a `PATH` containing only the declared runtime directories. Runtime Host does not merge the user's
+shell environment into this map. On Windows, the MinGit DLL/helper directories are included explicitly;
+the current working directory is the Maka-owned home rather than the source checkout or application
+directory.
 
 Production never resolves Git through `node_modules`. Dugite is the build-time supplier; Electron copies
 the complete extracted distribution to `resources/git`, and Runtime Host resolves only that signed
@@ -124,6 +140,12 @@ application launch. Individual Git failures remain fail-closed at the operation 
 The last item is deliberately a release gate rather than evidence that managed execution is already the
 default. Desktop/CLI activation remains a later, explicit product decision.
 
+The future M2 `WorkspaceVersionAccepted` fact must carry the same Git runtime identity alongside its
+parent version, accepted commit/tree, materialization profile, and policy identity. Repository/epoch
+binding protects the current managed artifact; version-fact binding is separately required to make an
+accepted mutation historically interpretable. It belongs to M2 and must not be approximated in this
+publication PR before that fact has a production writer and consumer.
+
 ## 7. Licensing and size policy
 
 The full `dugite-native` directory is packaged, including its component license directories, Git's
@@ -135,3 +157,9 @@ The first release keeps the full upstream distribution. Pruning shells, Perl, GU
 helpers is deferred until Maka has an exact command/helper allowlist and the pruned artifact passes the
 same production-shaped release smoke on Windows, macOS, and Linux. Package size alone is not sufficient
 evidence that a helper is safe to remove.
+
+An application upgrade currently replaces the packaged runtime. Existing managed artifacts whose
+recorded runtime identity differs therefore fail closed and require an explicit future migration,
+rebaseline, or compatible-runtime retention policy. V1 does not silently migrate them and does not ship
+multiple runtime generations. A versioned `resources/git-runtime/<identity>` layout is a possible future
+carrier, but adopting it requires an owner and retention/patching policy rather than a directory rename.
