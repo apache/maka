@@ -21,7 +21,7 @@ import {
 
 describe('interactive artifact store authority', () => {
   test('requires authentic leases and writer facades', async () => {
-    await withTemporaryRoot('headless', async (root) => {
+    await withTemporaryRoot('headless', async (root, track) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
       const lease = createHeadlessRootLease(capability, 'write');
       await assert.rejects(
@@ -31,7 +31,7 @@ describe('interactive artifact store authority', () => {
           ),
         invalidLease,
       );
-      const headless = await openHeadlessArtifactStoreForWrite(lease);
+      const headless = track(await openHeadlessArtifactStoreForWrite(lease));
       assert.equal((await headless.create(artifactInput('headless', 'leased'))).id, 'headless');
     });
 
@@ -43,11 +43,13 @@ describe('interactive artifact store authority', () => {
   });
 
   test('returns one authenticated writer per lease and preserves mutation operations', async () => {
-    await withInteractiveOwner(async (owner, root) => {
+    await withInteractiveOwner(async (owner, root, track) => {
       const [first, second] = await Promise.all([
         openInteractiveArtifactStoreForWrite(owner.lease),
         openInteractiveArtifactStoreForWrite(owner.lease),
       ]);
+      track(first);
+      track(second);
 
       assert.strictEqual(first, second);
       assert.strictEqual(authenticateInteractiveArtifactStoreWriter(first), first);
@@ -75,18 +77,18 @@ describe('interactive artifact store authority', () => {
       await assert.rejects(() => stat(join(root, ARTIFACT_WRITER_LOCK_FILE)), { code: 'ENOENT' });
 
       first.close();
-      const reopened = await openInteractiveArtifactStoreForWrite(owner.lease);
+      const reopened = track(await openInteractiveArtifactStoreForWrite(owner.lease));
       assert.notStrictEqual(reopened, first);
       assert.equal((await reopened.getInSession('session-1', 'deleted')).record?.status, 'deleted');
     });
   });
 
   test('root close revokes new facade operations after draining an in-flight write', async () => {
-    await withTemporaryRoot('interactive', async (root) => {
+    await withTemporaryRoot('interactive', async (root, track) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
-      const writer = await openInteractiveArtifactStoreForWrite(owner.lease);
+      const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
       await writer.recover();
       const accepted = writer.create(
         artifactInput('accepted', new Uint8Array(8 * 1024 * 1024).fill(0x62)),
@@ -102,8 +104,8 @@ describe('interactive artifact store authority', () => {
   });
 
   test('snapshots create inputs and makes user deletion idempotent', async () => {
-    await withInteractiveOwner(async (owner) => {
-      const writer = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await withInteractiveOwner(async (owner, _root, track) => {
+      const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
       await writer.recover();
       const bytes = Uint8Array.from([0x73, 0x61, 0x66, 0x65]);
       const createInput = artifactInput('accepted', bytes);
@@ -133,13 +135,15 @@ describe('interactive artifact store authority', () => {
 
 describe('headless artifact store authority', () => {
   test('returns one facade per lease and preserves concurrent writes', async () => {
-    await withTemporaryRoot('headless', async (root) => {
+    await withTemporaryRoot('headless', async (root, track) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
       const lease = createHeadlessRootLease(capability, 'write');
       const [first, second] = await Promise.all([
         openHeadlessArtifactStoreForWrite(lease),
         openHeadlessArtifactStoreForWrite(lease),
       ]);
+      track(first);
+      track(second);
 
       assert.strictEqual(first, second);
       await Promise.all([
@@ -155,7 +159,7 @@ describe('headless artifact store authority', () => {
   });
 
   test('serializes concurrent opener recovery while recovering every authority', async () => {
-    await withTemporaryRoot('headless', async (root) => {
+    await withTemporaryRoot('headless', async (root, track) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
       const firstLease = createHeadlessRootLease(capability, 'write');
       const secondLease = createHeadlessRootLease(capability, 'write');
@@ -165,6 +169,8 @@ describe('headless artifact store authority', () => {
         openHeadlessArtifactStoreForWrite(firstLease),
         openHeadlessArtifactStoreForWrite(secondLease),
       ]);
+      track(first);
+      track(second);
 
       assert.notStrictEqual(first, second);
       await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
@@ -184,7 +190,7 @@ describe('headless artifact store authority', () => {
         second.create(artifactInput('concurrent-second', 'second')),
       ]);
       const verificationLease = createHeadlessRootLease(capability, 'write');
-      const verificationStore = await openHeadlessArtifactStoreForWrite(verificationLease);
+      const verificationStore = track(await openHeadlessArtifactStoreForWrite(verificationLease));
       assert.deepEqual(
         (await verificationStore.list('session-1', { includeDeleted: true }))
           .map((record) => record.id)
@@ -234,14 +240,15 @@ async function withInteractiveOwner(
   run: (
     owner: NonNullable<Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>>,
     root: string,
+    track: TrackArtifactWriter,
   ) => Promise<void>,
 ): Promise<void> {
-  await withTemporaryRoot('interactive', async (root) => {
+  await withTemporaryRoot('interactive', async (root, track) => {
     const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
-      await run(owner, root);
+      await run(owner, root, track);
     } finally {
       await owner.close();
     }
@@ -250,12 +257,20 @@ async function withInteractiveOwner(
 
 async function withTemporaryRoot(
   kind: 'interactive' | 'headless',
-  run: (root: string) => Promise<void>,
+  run: (root: string, track: TrackArtifactWriter) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), `maka-artifact-${kind}-`));
+  const writers = new Set<{ close(): void }>();
+  const track: TrackArtifactWriter = (writer) => {
+    writers.add(writer);
+    return writer;
+  };
   try {
-    await run(root);
+    await run(root, track);
   } finally {
+    for (const writer of [...writers].reverse()) writer.close();
     await rm(root, { recursive: true, force: true });
   }
 }
+
+type TrackArtifactWriter = <T extends { close(): void }>(writer: T) => T;
