@@ -398,7 +398,18 @@ function isOpenAIChatCompletion(value: unknown): boolean {
       if (!choice || typeof choice !== 'object') return false;
       const message = (choice as { message?: unknown }).message;
       if (!message || typeof message !== 'object') return false;
-      return typeof (message as { content?: unknown }).content === 'string';
+      const completion = message as {
+        content?: unknown;
+        reasoning?: unknown;
+        reasoning_content?: unknown;
+        tool_calls?: unknown;
+      };
+      return (
+        typeof completion.content === 'string' ||
+        typeof completion.reasoning === 'string' ||
+        typeof completion.reasoning_content === 'string' ||
+        (Array.isArray(completion.tool_calls) && completion.tool_calls.length > 0)
+      );
     })
   );
 }

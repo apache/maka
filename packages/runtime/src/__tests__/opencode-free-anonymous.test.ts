@@ -207,6 +207,39 @@ describe('opencode-free anonymous runtime', () => {
     assert.deepEqual(requestedModels, ['big-pickle', 'nemotron-3-ultra-free']);
   });
 
+  test('accepts a reasoning completion whose final content is null', async () => {
+    const connection: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      defaultModel: 'mimo-v2.5-free',
+      enabled: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const fakeFetch: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: null,
+                reasoning_content: 'The answer was truncated before final text.',
+              },
+              finish_reason: 'length',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+
+    const result = await testConnection(connection, '', 'mimo-v2.5-free', { fetch: fakeFetch });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'mimo-v2.5-free');
+  });
+
   test('bounds all fallback probes by one shared deadline', async () => {
     const requestedModels: string[] = [];
     const connection: LlmConnection = {

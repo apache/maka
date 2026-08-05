@@ -18,6 +18,11 @@ export interface ConnectionStore {
   get(slug: string): Promise<LlmConnection | null>;
   create(input: CreateConnectionInput): Promise<LlmConnection>;
   update(slug: string, patch: UpdateConnectionInput): Promise<LlmConnection>;
+  updateIfUnchanged(
+    slug: string,
+    expectedUpdatedAt: number,
+    patch: UpdateConnectionInput,
+  ): Promise<LlmConnection | null>;
   delete(slug: string): Promise<void>;
   save(connection: LlmConnection): Promise<LlmConnection>;
   remove(slug: string): Promise<void>;
@@ -79,6 +84,7 @@ class FileConnectionStore implements ConnectionStore {
         enabledModelIds: connectionEnabledModelIds({ defaultModel }),
         createdAt: now,
         updatedAt: now,
+        ...(input.extras ? { extras: input.extras } : {}),
       };
       file.connections.push(next);
       claimVacantWorkspaceDefault(file, next);
@@ -90,12 +96,31 @@ class FileConnectionStore implements ConnectionStore {
   }
 
   async update(slug: string, patch: UpdateConnectionInput): Promise<LlmConnection> {
+    const updated = await this.updateInternal(slug, patch);
+    if (!updated) throw new Error(`No such connection: ${slug}`);
+    return updated;
+  }
+
+  async updateIfUnchanged(
+    slug: string,
+    expectedUpdatedAt: number,
+    patch: UpdateConnectionInput,
+  ): Promise<LlmConnection | null> {
+    return await this.updateInternal(slug, patch, expectedUpdatedAt);
+  }
+
+  private async updateInternal(
+    slug: string,
+    patch: UpdateConnectionInput,
+    expectedUpdatedAt?: number,
+  ): Promise<LlmConnection | null> {
     let updated: LlmConnection | null = null;
     await this.withQueue(async () => {
       const file = await this.readUnlocked();
       const index = file.connections.findIndex((connection) => connection.slug === slug);
-      if (index < 0) throw new Error(`No such connection: ${slug}`);
+      if (index < 0) return;
       const current = file.connections[index]!;
+      if (expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt) return;
       const updatesTestStatus =
         Object.prototype.hasOwnProperty.call(patch, 'lastTestStatus') ||
         Object.prototype.hasOwnProperty.call(patch, 'lastTestAt') ||
@@ -178,6 +203,7 @@ class FileConnectionStore implements ConnectionStore {
           : clearsTestStatus
             ? undefined
             : current.lastTestMessage,
+        extras: patch.extras ?? current.extras,
         updatedAt: Date.now(),
       };
       file.connections[index] = next;
@@ -196,7 +222,6 @@ class FileConnectionStore implements ConnectionStore {
       updated = next;
       await this.write(file);
     });
-    if (!updated) throw new Error(`Failed to update connection: ${slug}`);
     return updated;
   }
 

@@ -843,6 +843,36 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  test('conditionally updates a bootstrap seed without overwriting concurrent edits', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        defaultModel: 'big-pickle',
+      });
+
+      assert.equal(
+        await store.updateIfUnchanged(created.slug, created.updatedAt - 1, {
+          defaultModel: 'nemotron-3-ultra-free',
+        }),
+        null,
+      );
+      assert.equal((await store.get(created.slug))?.defaultModel, 'big-pickle');
+
+      const migrated = await store.updateIfUnchanged(created.slug, created.updatedAt, {
+        defaultModel: 'nemotron-3-ultra-free',
+        enabledModelIds: ['nemotron-3-ultra-free'],
+        extras: { makaBootstrap: { id: 'opencode-free', version: 2 } },
+      });
+      assert.equal(migrated?.defaultModel, 'nemotron-3-ultra-free');
+      assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free']);
+      assert.deepEqual(migrated?.extras, {
+        makaBootstrap: { id: 'opencode-free', version: 2 },
+      });
+    });
+  });
+
   test('save drops the provider default baseUrl instead of persisting it as an override', async () => {
     await withConnectionStore(async (store, dir) => {
       // save()'s OAuth-sync caller constructs `{ baseUrl: defaults.baseUrl }`;

@@ -2,7 +2,10 @@ import { app, nativeImage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setActiveProxy } from '@maka/runtime';
-import { resolveBootstrapConnections } from '@maka/core';
+import {
+  resolveBootstrapConnections,
+  resolveOpenCodeFreeBootstrapMigration,
+} from '@maka/core';
 import type {
   AgentGraphCoordinator,
   AgentGraphSupervisorWakeCoordinator,
@@ -210,7 +213,20 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
 
   async function ensureBootstrapConnection(): Promise<void> {
     await mkdir(workspaceRoot, { recursive: true });
-    if ((await connectionStore.list()).length > 0) return;
+    const existingConnections = await connectionStore.list();
+    let migrated = false;
+    for (const connection of existingConnections) {
+      const patch = resolveOpenCodeFreeBootstrapMigration(connection);
+      if (!patch) continue;
+      const updated = await connectionStore.updateIfUnchanged(
+        connection.slug,
+        connection.updatedAt,
+        patch,
+      );
+      migrated ||= updated !== null;
+    }
+    if (migrated) emitConnectionListChanged();
+    if (existingConnections.length > 0) return;
 
     // opencode-free is seeded unconditionally so a fresh install is usable with
     // zero credentials; env-keyed providers layer on top and take the default
@@ -225,6 +241,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
         name: seed.name,
         providerType: seed.providerType,
         defaultModel: seed.defaultModel,
+        extras: seed.extras,
       });
       const envApiKey =
         seed.providerType === 'anthropic'
