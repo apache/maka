@@ -2767,7 +2767,7 @@ MIT License
 
 ================================================================================
 
-Package: @types/node@25.9.0
+Package: @types/node@26.1.2
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/node
@@ -13237,7 +13237,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici-types@7.24.6
+Package: undici-types@8.3.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
