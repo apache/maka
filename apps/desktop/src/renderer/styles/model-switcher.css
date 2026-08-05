@@ -48,7 +48,7 @@
 }
 
 /* Quiet ghost triggers for the chat surface: the composer's model and thinking
-   pickers, and the workspace picker on the empty-chat hero. Astryx Selector's
+   pickers, and the project picker beside them. Astryx Selector's
    default is a bordered field, which reads as an input asking to be filled in
    rather than as a chip carrying a current value; product owns these
    classNames only on chat pickers — Settings ModelPicker does not set them.
@@ -88,10 +88,10 @@
   flex: 0 0 auto;
 }
 
-/* The workspace picker is alone on the hero, centred under the greeting, so it
-   sizes to its project name instead of holding a column width the way the
-   footer pair does. The cap keeps a long name from spanning the greeting. */
-.maka-workspace-picker,
+/* Sizes to the project name rather than holding a column width: it is the last
+   control in a row that already wraps, so a fixed width would spend space the
+   model chip beside it needs. The cap is what keeps a long directory name from
+   pushing the send button off the row. */
 .maka-workspace-picker.astryx-selector {
   width: max-content;
   min-width: 0;

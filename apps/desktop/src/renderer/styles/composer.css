@@ -58,8 +58,8 @@
    `flex: 0 0 auto` this box sizes to max-content, which means it never has a
    width to wrap inside — it just overflows, and the overflow runs under the
    send button and past the card's right edge. That stayed invisible while the
-   row held four controls; the project and branch pickers add ~224px and a
-   480px window has nowhere to put it. `min-width: 0` because the default
+   row held four controls; the project picker adds to it and a 480px window has
+   nowhere to put the overflow. `min-width: 0` because the default
    `auto` floor would keep the same overflow for a long model name. */
 .maka-composer-left-controls {
   flex: 1 1 auto;
@@ -325,58 +325,51 @@
   min-width: 0;
 }
 
+/* Cap the open menu at the window. Astryx gives the popover
+   `min-width: anchor-size(width)` and no ceiling, and the option labels are not
+   truncated, so one long project name grows the shrink-to-fit popover past the
+   right edge of a narrow window — where the pinned actions go with it and there
+   is no way to scroll them back. Same cap the DropdownMenu this replaced
+   carried. */
+.maka-composer-workspace [role="listbox"] {
+  max-width: min(320px, calc(100vw - var(--space-6)));
+}
+
 /* Pin "add project" / "no project" to the bottom of the open menu so only the
    project catalogue scrolls. Astryx `Selector` scrolls its whole list as one
-   region and exposes no footer slot, so the two rows are stuck in place here;
-   `workspace-picker.tsx` marks them with `-pinned`. Scoped to the wrapper because
-   the Layer renders the menu next to the trigger, not portaled to the body.
+   region and exposes no footer slot, so the two rows are stuck here — as one
+   box, because `workspace-picker.tsx` puts them in a section and Selector
+   renders that as a single `role="group"`. Sticking the box rather than its
+   rows is what keeps this one rule: the box is as tall as whatever it holds, so
+   a search that matches one action pins one row. Sticking the rows meant
+   declaring the block's height in CSS, and a search that filtered one action
+   out then left a backdrop taller than the rows, covering — and swallowing the
+   clicks of — the catalogue rows behind it.
 
-   The opaque backdrop is painted by the list's `::after`, not by the rows: the
-   rows' own background carries Astryx's hover and keyboard-highlight tints, and
-   an opaque colour on them would win the cascade (this file's `components`
-   layer sits after `astryx-components`) and silently kill both. As a pinned
-   panel behind them it hides the scrolled rows without touching those states. */
-.maka-composer-workspace [role="listbox"] {
-  /* Astryx's `sm` option height and the list's own padding. Offsets stack from
-     the bottom edge in these units; if either changes upstream the footer
-     drifts, which is visible the moment the menu is opened. */
-  --maka-picker-row: 28px;
-  --maka-picker-pad: 4px;
-}
+   The group's own background is what hides the scrolled rows, and it sits below
+   its options rather than on them, so Astryx keeps painting the hover and
+   keyboard-highlight tints on the rows themselves. An opaque colour on the rows
+   would win the cascade (this file's `components` layer sits after
+   `astryx-components`) and silently kill both states.
 
-.maka-composer-workspace [role="listbox"] > [role="option"]:has(.maka-workspace-picker-option-pinned),
-.maka-composer-workspace [role="listbox"] > [role="separator"]:has(+ [role="option"] + [role="option"]:last-child) {
-  position: sticky;
-  z-index: 1;
-}
-
-.maka-composer-workspace [role="listbox"] > [role="option"]:last-child:has(.maka-workspace-picker-option-pinned) {
-  bottom: var(--maka-picker-pad);
-}
-
-.maka-composer-workspace
-  [role="listbox"]
-  > [role="option"]:has(.maka-workspace-picker-option-pinned):has(+ [role="option"]:last-child) {
-  bottom: calc(var(--maka-picker-pad) + var(--maka-picker-row));
-}
-
-.maka-composer-workspace [role="listbox"] > [role="separator"]:has(+ [role="option"] + [role="option"]:last-child) {
-  bottom: calc(var(--maka-picker-pad) + 2 * var(--maka-picker-row));
-}
-
-/* Last in flow, pulled back over the footer rows and pinned with them. Its own
-   height would otherwise lengthen the scroll, so the negative margins cancel
-   it out. Only present while the footer is: a search that filters both actions
-   out leaves an ordinary scrolling list. */
-.maka-composer-workspace [role="listbox"]:has(.maka-workspace-picker-option-pinned)::after {
-  content: "";
-  display: block;
+   `padding-bottom` restores the list's own bottom padding, which the sticky box
+   parks on top of; without it the pinned rows sit flush against the popover's
+   bottom edge while the first row keeps its inset. */
+.maka-composer-workspace [role="listbox"] > [role="group"] {
   position: sticky;
   bottom: 0;
-  height: calc(var(--maka-picker-pad) + 2 * var(--maka-picker-row) + 1px);
-  margin-top: calc(-2 * var(--maka-picker-row) - 1px);
-  margin-bottom: calc(-1 * var(--maka-picker-pad));
+  z-index: 1;
+  padding-bottom: var(--space-1);
   background: var(--color-background-popover);
+  border-radius: 0 0 var(--radius-container) var(--radius-container);
+}
+
+/* The rule between catalogue and actions, drawn by the box that is always
+   there. `:not(:first-child)` covers first run and a search that matches no
+   project: with nothing above it, the group would open the menu with a rule
+   dividing nothing. */
+.maka-composer-workspace [role="listbox"] > [role="group"]:not(:first-child) {
+  border-top: 1px solid var(--border);
 }
 
 .maka-workspace-picker-status {

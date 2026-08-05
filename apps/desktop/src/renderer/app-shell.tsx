@@ -1314,9 +1314,9 @@ function AppShellContent({
     },
     toastApi,
   });
-  // Where a NEW chat starts. ChatView renders this under the empty-chat hero
-  // and only while there is no active session — the project is fixed once the
-  // first message creates one, so there is nothing to pick after that.
+  // Where a NEW chat starts. Built unconditionally and handed to the composer,
+  // which renders it only while no session owns it — the project is fixed once
+  // the first message creates one, so there is nothing to pick after that.
   const workspacePicker: WorkspacePickerModel = {
     label:
       currentProject?.name ??

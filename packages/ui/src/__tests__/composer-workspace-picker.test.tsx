@@ -50,11 +50,26 @@ describe('Composer workspace picker', () => {
     );
   }
 
-  it('renders the picker in the footer controls while the chat is a draft', () => {
+  /**
+   * Containment and order, not mere presence: the placement is what this
+   * control has churned on — a bar of its own above the card, the empty-chat
+   * hero, a composer header row — and each of those renders the same classes
+   * somewhere in the markup. Only the footer group puts it beside the other
+   * parameters of this send, where losing it on the first message moves
+   * nothing to its left.
+   */
+  it('renders the picker in the footer controls, after the model group', () => {
     const markup = render({});
 
-    assert.match(markup, /maka-composer-workspace/);
-    assert.match(markup, /maka-workspace-picker/);
+    const leftControls = markup.match(
+      /maka-composer-left-controls[\s\S]*?maka-composer-right-controls/,
+    )?.[0] ?? '';
+    assert.match(leftControls, /maka-composer-workspace/, 'picker rides the footer row');
+    assert.match(leftControls, /maka-workspace-picker/);
+
+    const modelIdx = leftControls.indexOf('maka-model-selection-controls');
+    const pickerIdx = leftControls.indexOf('maka-composer-workspace');
+    assert.ok(modelIdx >= 0 && pickerIdx > modelIdx, 'picker follows the model pair');
   });
 
   it('drops it once a session owns the composer, even though the host still passes it', () => {

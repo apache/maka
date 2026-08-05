@@ -30,9 +30,9 @@
  * `ModelPicker`'s `leadingOption` precedent for product values that are not
  * catalogue entries.
  *
- * The current git branch rides along as read-only trigger context (tooltip and
- * accessible name). Switching branches is the agent's job — see the commit that
- * removed the branch picker.
+ * The current git branch rides along in the trigger's accessible name only.
+ * Switching branches is the agent's job — see the commit that removed the
+ * branch picker.
  *
  * Purely presentational: a value control fed by host-injected props.
  */
@@ -48,7 +48,6 @@ export interface WorkspacePickerModel {
   label?: string;
   branch?: string | null;
   pending?: boolean;
-  defaultOpen?: boolean;
   projects: readonly ProjectRecord[];
   selectedProjectId?: string | null;
   onAdd(): void;
@@ -73,13 +72,14 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
     [wp.projects],
   );
 
-  // Catalogue first, then the two actions after a divider — and the actions
-  // stay pinned to the menu's bottom edge while only the catalogue scrolls, so
-  // "add a project" never falls under the fold on a long list. Selector scrolls
-  // its whole list as one region and has no footer slot, so the pinning is done
-  // in CSS: these two rows are marked here and `composer.css` sticks them. See
-  // the sticky block there for why the backdrop is painted by the list rather
-  // than by the rows.
+  // Catalogue first, then the two actions — which stay pinned to the menu's
+  // bottom edge while only the catalogue scrolls, so "add a project" never
+  // falls under the fold on a long list. Selector scrolls its whole list as one
+  // region and has no footer slot, so the pinning is done in CSS; what makes it
+  // one rule instead of a stack of them is the section, which Selector renders
+  // as a single `role="group"` box. `composer.css` sticks that box, and its
+  // height is whatever it actually contains — so a search that matches only one
+  // action pins exactly that row.
   //
   // Both actions carry an icon so every row shares one text axis. Without them
   // the two labels started at the icon column while the projects' text started
@@ -90,21 +90,26 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
         value: project.id,
         label: project.name,
       })),
-      // A divider separates the catalogue from the pinned actions, so on first
-      // run — no projects yet — it would open the menu with a rule above its
-      // first row, dividing nothing. The two actions carry no rule between
-      // them: pinned together against the scrolling catalogue they already read
-      // as one footer, and a second rule inside a two-row block is noise.
-      ...(wp.projects.length > 0 ? [{ type: 'divider' } as const] : []),
-      { value: ADD_PROJECT_VALUE, label: copy.addProject },
-      // Codex names this row "work without a project", which says the act
-      // rather than the empty value. Not adopted: Selector paints the trigger
-      // from the selected option's own label, with no slot to shorten it, so
-      // that phrasing would also become the label sitting alone under the
-      // greeting — a seven-character negative sentence as the calmest surface
-      // in the product. The × carries the same "deliberate, not missing"
-      // meaning at trigger length.
-      { value: NO_PROJECT_VALUE, label: copy.noProject },
+      // The rule that separates the catalogue from the actions is the group's
+      // own top border, not a divider option: a divider would scroll away with
+      // the catalogue while the group stayed, and it would need suppressing on
+      // first run — no projects yet — where it would divide nothing. The border
+      // is on the box that is always there, and CSS drops it when the group is
+      // the list's first child.
+      {
+        type: 'section',
+        options: [
+          { value: ADD_PROJECT_VALUE, label: copy.addProject },
+          // Codex names this row "work without a project", which says the act
+          // rather than the empty value. Not adopted: Selector paints the
+          // trigger from the selected option's own label, with no slot to
+          // shorten it, so that phrasing would also become the label sitting in
+          // the composer footer — a seven-character negative sentence beside
+          // the model name. The × carries the same "deliberate, not missing"
+          // meaning at trigger length.
+          { value: NO_PROJECT_VALUE, label: copy.noProject },
+        ],
+      },
     ],
     [wp.projects, copy.addProject, copy.noProject],
   );
@@ -126,7 +131,6 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       // The trigger sits in the composer footer, at the bottom of the window,
       // so the menu opens upward like every other control in that row.
       placement="above"
-      isDefaultOpen={wp.defaultOpen}
       isDisabled={wp.pending === true}
       startIcon={<FolderOpen size={13} aria-hidden="true" />}
       className="maka-workspace-picker"

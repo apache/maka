@@ -251,6 +251,12 @@ export const Composer = forwardRef<
       onCancel(): void;
     };
     /**
+     * Where a NEW chat starts. Rendered at the end of the footer's send-context
+     * group and only while no session owns the composer: the project is fixed
+     * the moment the first message creates the session.
+     */
+    workspacePicker?: WorkspacePickerModel;
+    /**
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
      * instead of the chat header. Composer renders a dropdown labelled
@@ -259,12 +265,6 @@ export const Composer = forwardRef<
      * A read-only session displays 只读 without it becoming a third
      * option (#1611).
      */
-    /**
-     * Where a NEW chat starts. Rendered at the end of the footer's send-context
-     * group and only while no session owns the composer: the project is fixed
-     * the moment the first message creates the session.
-     */
-    workspacePicker?: WorkspacePickerModel;
     permissionMode?: PermissionMode;
     permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
