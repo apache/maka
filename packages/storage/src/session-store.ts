@@ -294,16 +294,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
    * first list against the import.
    */
   private ensureLegacyImported(): Promise<void> {
-    this.legacyImportPromise ??= importLegacySessionsOnce(this, this.workspaceRoot).then(
-      (result) => {
-        if (result.imported > 0 || result.failed > 0) {
-          console.error(
-            `[storage] legacy session import: ${result.imported} imported, ${result.skipped} skipped, ${result.failed} failed`,
-            result.failures.length > 0 ? result.failures : undefined,
-          );
-        }
-      },
-    );
+    this.legacyImportPromise ??= importLegacySessionsOnce(this, this.workspaceRoot)
+      .then(() => undefined)
+      .catch(() => undefined);
     return this.legacyImportPromise;
   }
 
