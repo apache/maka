@@ -20,6 +20,26 @@ import { getConversationCopy } from './conversation-copy.js';
  * Keeping the chip on the sent message is deliberate — a quote the user can
  * see before sending but not afterwards makes the turn unauditable.
  */
+
+/**
+ * Strip a leading ATX heading marker from a quoted excerpt for display
+ * (#2213).
+ *
+ * A quote can carry markdown source verbatim (selection capture keeps the raw
+ * text), so a heading line such as `### Description` would render in the chip
+ * as cramped literal hashes. The selection capture normalizes whitespace into
+ * a single line, so the only marker that can survive is `#{1,6} ` at the start
+ * of the excerpt; mid-text `#` runs are treated as content and left alone.
+ *
+ * Presentation only — the model still receives `quote.text` verbatim via
+ * formatTextWithInlineRefs. CommonMark allows up to six `#` and requires a
+ * space (or end of line) after the marker; `###Description` (no space) is not
+ * a heading and is preserved.
+ */
+export function stripQuoteHeadingMarkers(text: string): string {
+  return text.replace(/^#{1,6}[ \t]+/, '');
+}
+
 export function QuoteRefChip(props: {
   quote: QuoteRef;
   onRemove?: () => void;
@@ -30,13 +50,14 @@ export function QuoteRefChip(props: {
   const [clipped, setClipped] = useState(false);
   const textRef = useRef<HTMLButtonElement>(null);
   const label = props.quote.label;
-  const full = label ? `${label}: ${props.quote.text}` : props.quote.text;
+  const displayText = stripQuoteHeadingMarkers(props.quote.text);
+  const full = label ? `${label}: ${displayText}` : displayText;
 
   useLayoutEffect(() => {
     const el = textRef.current;
     if (!el || expanded) return;
     setClipped(el.scrollWidth > el.clientWidth + 1);
-  }, [expanded, props.quote.text, label]);
+  }, [expanded, displayText, label]);
 
   const canExpand = clipped || expanded;
   return (
@@ -69,7 +90,7 @@ export function QuoteRefChip(props: {
         )}
       >
         {label ? <span className="maka-quote-chip-label">{label} </span> : null}
-        {props.quote.text}
+        {displayText}
       </button>
       {props.onRemove && (
         <button
