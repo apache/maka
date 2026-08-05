@@ -113,6 +113,37 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await page.getByRole('menuitem', { name: '文件' }).click();
   await expect(page.getByText('暂无生成文件')).toBeVisible();
 
+  // The record-file row is a fact about the workspace, not the session: it
+  // exists even when the trace is empty, and it derives from `app:info`'s
+  // workspace path (the same single source of truth the data-settings row
+  // shows) — no second channel, so nothing to register per boot mode.
+  // Then pin the 320px minimum: the path truncates, the label and the copy
+  // button keep their size, and the copy actually lands on the clipboard.
+  await tabs.getByRole('button', { name: /追踪/ }).click();
+  const recordFileRow = workbar.locator(
+    '[data-maka-contract="session-inspector-record-file"]',
+  );
+  await expect(recordFileRow).toBeVisible();
+  await expect(recordFileRow.getByText('runtime.sqlite')).toBeVisible();
+  const copyButton = recordFileRow.getByRole('button', { name: '复制文件路径' });
+  await expect(copyButton).toBeEnabled();
+  // Drag the divider all the way left: the width model clamps at the same
+  // 320px minimum the keyboard arrow uses, so the panel lands on the smallest
+  // surface the row is allowed to live in — the path truncates and the copy
+  // button stays inside the panel.
+  const resizeBox = (await resize.boundingBox())!;
+  const handleY = resizeBox.y + resizeBox.height / 2;
+  await page.mouse.move(resizeBox.x, handleY);
+  await page.mouse.down();
+  await page.mouse.move(resizeBox.x - 400, handleY, { steps: 5 });
+  await page.mouse.up();
+  await expect(resize).toHaveAttribute('aria-valuenow', '320');
+  await expect(workbar).toHaveCSS('width', '320px');
+  await expect(recordFileRow).toBeVisible();
+  await expect(copyButton).toBeVisible();
+  await copyButton.click();
+  await expect(page.getByText('已复制文件路径')).toBeVisible();
+
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
   await page
     .getByRole('navigation', { name: '对话列表' })
