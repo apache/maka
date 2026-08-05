@@ -91,7 +91,7 @@
     "node-pty": "^1.2.0-beta.14",
     "qrcode": "^1.5.4",
     "socks": "^2.8.9",
-    "socks-proxy-agent": "^8.0.5",
+    "socks-proxy-agent": "^10.1.0",
     "undici": "^8.7.0",
     "ws": "^8.21.0",
     "yaml": "^2.9.0",
