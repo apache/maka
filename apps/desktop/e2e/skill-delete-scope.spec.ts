@@ -33,7 +33,7 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   // unconditionally and let Playwright wait for it. Sampling `isVisible()`
   // first only added a branch that could skip the click on a slow mount and
   // then hunt for the row on the wrong tab.
-  await page.getByRole('button', { name: '已安装' }).click();
+  await page.getByRole('radio', { name: '已安装' }).click();
 
   const row = page.getByRole('button', { name: /User Only/ });
   await expect(row).toBeVisible();
@@ -61,7 +61,7 @@ test('offers no delete for a project-scope skill', async ({ invocableSkillsWindo
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
 
-  await page.getByRole('button', { name: '已安装' }).click();
+  await page.getByRole('radio', { name: '已安装' }).click();
 
   const projectRow = page.getByRole('button', { name: /Project Only/ });
   await expect(projectRow).toBeVisible();

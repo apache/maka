@@ -291,7 +291,7 @@ export function SkillsModuleMain(props: {
   }
 
   const searchSummary = normalizedSkillQuery ? (
-    <div className="maka-skill-search-summary" role="status" aria-live="polite">
+    <div className="maka-module-search-summary" role="status" aria-live="polite">
       <span>{copy.page.searchMatches(
         activeSkillTab === 'market'
           ? marketSources.length

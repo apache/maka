@@ -13,7 +13,7 @@ async function openInstalledSkills(page: Page) {
   const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
-  await page.getByRole('button', { name: '已安装' }).click();
+  await page.getByRole('radio', { name: '已安装' }).click();
 }
 
 test('keeps installed rows inert and routes every per-skill action through the inspector', async ({

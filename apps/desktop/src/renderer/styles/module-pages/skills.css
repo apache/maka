@@ -17,17 +17,6 @@
   color: var(--muted-foreground);
 }
 
-.maka-skill-search-summary {
-  font: var(--maka-text-supporting);
-  font-variant-numeric: tabular-nums;
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1-5);
-  color: var(--muted-foreground);
-}
-
 .maka-skill-inspector {
   min-width: 0;
 }

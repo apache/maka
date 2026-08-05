@@ -873,9 +873,9 @@ export const ExtensionsMcpSetupRequired: Story = {
   decorators: [withEmptyMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStorySelector<HTMLButtonElement>(
+    const installed = await waitForStoryButton(
       canvasElement,
-      '[data-tab-value="installed"]',
+      (candidate) => candidate.textContent?.trim() === '已安装',
     );
     installed.click();
     await waitForStoryText(canvasElement, '还没有安装 MCP');
@@ -886,17 +886,50 @@ export const ExtensionsMcpSetupRequired: Story = {
 export const ExtensionsMcpMarketplace: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const market = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '市场',
+    );
+    market.click();
+    await waitForStoryText(canvasElement, 'Slack');
+  },
 };
 
-// Real path: sidebar → 扩展 → MCP, with connected and disabled servers.
+// Real path: sidebar → 扩展 → MCP, with connected and disabled servers. The
+// page lands on 已安装 once the configured inventory arrives.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = canvasElement.querySelector<HTMLButtonElement>('[data-tab-value="installed"]');
-    if (!installed) throw new Error('Configured MCP story did not render the installed tab');
+    const installed = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '已安装',
+    );
     installed.click();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await waitForStoryText(canvasElement, 'filesystem');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → click a server row, which opens the
+// inspector where the enable switch, 测试, 编辑 and 删除 now live.
+export const ExtensionsMcpInspector: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const installed = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '已安装',
+    );
+    installed.click();
+    await waitForStoryText(canvasElement, 'filesystem');
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('filesystem') === true,
+    );
+    row.click();
+    await waitForStoryText(canvasElement, '测试');
+    await waitForStoryText(canvasElement, 'read_file');
   },
 };
 
@@ -914,16 +947,23 @@ export const ExtensionsMcpEditor: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to connect.
+// Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to
+// connect: the failure leads the row, the detail lives in the inspector.
 export const ExtensionsMcpConnectionFailed: Story = {
   decorators: [withFailedMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStorySelector<HTMLButtonElement>(
+    const installed = await waitForStoryButton(
       canvasElement,
-      '[data-tab-value="installed"]',
+      (candidate) => candidate.textContent?.trim() === '已安装',
     );
     installed.click();
+    await waitForStoryText(canvasElement, '连接失败');
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('team-tools') === true,
+    );
+    row.click();
     await waitForStoryText(canvasElement, '连接超时，请检查服务器地址或网络代理。');
   },
 };
