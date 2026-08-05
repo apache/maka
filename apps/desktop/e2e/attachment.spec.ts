@@ -109,7 +109,19 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
   expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
 
   await image.getByRole('button').click();
-  await expect(page.locator('.astryx-lightbox')).toBeVisible();
+  const lightbox = page.locator('.astryx-lightbox');
+  await expect(lightbox).toBeVisible();
+
+  // The lightbox close button lands inside the titlebar's drag rect, where the
+  // OS eats clicks unless the modal is `no-drag`. The overlap is asserted first —
+  // without it the app-region check would guard nothing.
+  const titlebar = page.locator('.maka-window-titlebar');
+  const [titlebarBox, lightboxBox] = await Promise.all([titlebar.boundingBox(), lightbox.boundingBox()]);
+  expect(titlebarBox).not.toBeNull();
+  expect(lightboxBox).not.toBeNull();
+  expect(lightboxBox!.y).toBeLessThan(titlebarBox!.y + titlebarBox!.height);
+  await expect(lightbox).toHaveCSS('-webkit-app-region', 'no-drag');
+
   await page.keyboard.press('Escape');
   await expect(page.locator('.astryx-lightbox')).not.toBeVisible();
 });

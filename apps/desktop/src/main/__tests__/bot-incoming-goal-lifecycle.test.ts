@@ -8,6 +8,7 @@ import {
 } from '@maka/runtime';
 import type { SessionEvent } from '@maka/core';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { createEmbeddedBotSessionAdapter } from '../embedded-bot-session-adapter.js';
 import { startDesktopSessionTurn } from '../session-turn-stream.js';
 
 const SESSION_ID = 'bot-session';
@@ -67,8 +68,6 @@ describe('bot incoming Goal lifecycle', () => {
     } as unknown as SessionManager;
 
     const service = createBotIncomingMainService({
-      runtime,
-      createSession: (input) => runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
       botRegistry: {
         async sendMessage(_platform: string, _chatId: string, text: string) {
           replies.push(text);
@@ -78,33 +77,48 @@ describe('bot incoming Goal lifecycle', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      getDefaultConnectionSlug: async () => 'provider',
-      getReadyConnection: async () => ({ connection: { slug: 'provider' }, model: 'model' }),
-      readSessionHeader: async () => ({ permissionMode: 'explore', isArchived: false, status: 'active' }),
-      ensureSessionCanSend: async () => {},
-      emitSessionsChanged() {},
-      async runAgentTurn(input) {
-        runnerCalls++;
-        const started = startDesktopSessionTurn({
-          sessionId: input.sessionId,
-          events: input.iterator,
-          turnId: input.turnId,
-          goalBoundary: 'external',
-          activities,
-          beginObservedTurn: (sessionId, turnId) => coordinator.beginObservedTurn(sessionId, turnId),
-          onEvent: input.onEvent,
-          onStreamError: (error) => { assert.fail(String(error)); },
-          onDrained: () => {},
-        });
-        assert.equal(started.kind, 'started');
-        const outcome = await started.completion;
-        return {
-          outcome,
-          ...((outcome.kind === 'errored' || outcome.kind === 'suspended')
-            ? { error: outcome.reason }
-            : {}),
-        };
-      },
+      sessions: createEmbeddedBotSessionAdapter({
+        runtime,
+        createSession: (input) =>
+          runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
+        getDefaultConnectionSlug: async () => 'provider',
+        getReadyConnection: async () => ({
+          connection: { slug: 'provider' },
+          model: 'model',
+        }),
+        readSessionHeader: async () => ({
+          permissionMode: 'explore',
+          isArchived: false,
+          status: 'active',
+        }),
+        ensureSessionCanSend: async () => {},
+        emitSessionsChanged() {},
+        async runAgentTurn(input) {
+          runnerCalls++;
+          const started = startDesktopSessionTurn({
+            sessionId: input.sessionId,
+            events: input.iterator,
+            turnId: input.turnId,
+            goalBoundary: 'external',
+            activities,
+            beginObservedTurn: (sessionId, turnId) =>
+              coordinator.beginObservedTurn(sessionId, turnId),
+            onEvent: input.onEvent,
+            onStreamError: (error) => {
+              assert.fail(String(error));
+            },
+            onDrained: () => {},
+          });
+          assert.equal(started.kind, 'started');
+          const outcome = await started.completion;
+          return {
+            outcome,
+            ...(outcome.kind === 'errored' || outcome.kind === 'suspended'
+              ? { error: outcome.reason }
+              : {}),
+          };
+        },
+      }),
     });
 
     await service.handleBotIncomingMessage({

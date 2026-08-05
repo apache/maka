@@ -2,6 +2,118 @@
 
 ## Unreleased
 
+## 0.1.5 - 2026-08-05
+
+### Highlights
+
+- Added provider-native web search: one `WebSearch` routing layer that selects
+  the current model provider or explicit Tavily execution, with OpenAI and
+  Anthropic implementations, durable replay, citation metadata, and privacy-mode
+  coverage across Desktop, CLI, Runtime Host, and opt-in Headless Harbor
+  (#2152).
+- Extended Runtime Host ownership to Plan turn transitions (#2169), Plan runtime
+  state (#2082), Daily Review runtime (#2113), Deep Research state (#2099), and
+  derived Session effects (#2066), and added its Desktop client foundation
+  (#2134): session adapter (#2140), catalog (#2143) and execution (#2149) IPC,
+  session domains (#2164), effective pricing projection (#2073) and its Pricing
+  adapter (#2148), and the native Browser and Computer Use capabilities Desktop
+  offers back to the host (#2178).
+- Instructions now load from `~/.maka/AGENTS.md` (or `CLAUDE.md`/`GEMINI.md`)
+  before the project's own, so a preference set once applies in every workspace
+  (#2183).
+- Bundled an English Computer Use Skill tailored to the shipping semantic action
+  surface, auto-installed only when a Computer Use backend is available without
+  overwriting modified or untrusted copies (#2147).
+- Made app updates background and task-aware: discovery and download now live in
+  Electron main, and restart/install is guarded by a main-owned activity
+  snapshot that confirms how many tasks it interrupts (#1992).
+- Restored the native application menu and unified platform command routing
+  (#2098).
+- Gated managed-workspace execution behind an owner-bound, short-lived authority
+  scope (#2106) and sealed baseline admission with a durable Git receipt
+  (#1872), so a capability is usable only while the storage root, workspace
+  binding, and canonical head describe the same Git state.
+- Continued the Astryx redesign of Settings: every capability gets its own
+  disclosure (#2100), a settled value stays a row until you ask to edit it
+  (#2139) behind one expandable row component instead of two (#2141), and the
+  specs and jargon nobody can act on are gone (#2118, #2116, #2120); project
+  files left Settings (#2081), the junk drawer emptied into the workbar toggle
+  (#2123), and project and branch joined the composer footer control row
+  (#2168). Usage (#2024) and Skills (#1973) followed, then three more surfaces:
+  「计划提醒」and「每日回顾」became one dense row-and-inspector page instead of two
+  unrelated implementations (#2155), the session workbar dropped its hand-rolled
+  shell and the tokens that silently resolved to fallbacks (#2158), and the MCP
+  page came down to one primary action (#2035).
+- Let the Inspector trace filter by what a reader actually asks (#2115), and
+  closed the follow-ups left on the trace panel (#2041).
+
+### Performance
+
+- Lazy-mounted sidebar session trees (#2021).
+- Removed the swarm ledger full-scan hot path (#2040).
+
+### Reliability and developer experience
+
+- Fixed copied tool authority facts on branched tools (#2061), preserved stream
+  liveness across filtered parts (#2124), returned proxied responses at headers
+  instead of body EOF (#2159), landed the terminal fact a stop claims (#2078),
+  and made the execution boundary the sole file-path authority (#2087) in one
+  realpath space (#2059).
+- Made realtime session creation single-flight (#2135), released settled bot
+  typing listeners (#2150), honored the default permission mode immediately
+  (#2109), reset incompatible operational state (#2122), resolved permission
+  overlay assets in bundled dev (#2045), and honored TMPDIR for Runtime Host
+  control endpoints (#2160).
+- Bounded Headless teardown and marked the output replay (#2151), reaped the
+  scoped command's replay (#2146), kept Harbor archive ids within ref grammar
+  (#2130), stopped handing graded competitor arms this repo's tree (#2121) and
+  misfiling their cells as infrastructure failures (#2090), let an authoritative
+  reward survive a missing agent self-report (#2112), made Maka's settlement
+  window reachable at the Harbor boundary (#2107, #2114), honored the
+  command-timeout floor (#2110), resolved `host.docker.internal` for
+  in-container arms (#2062), unified `canonicalJson` into a single serializer
+  (#2005), pointed the AHE snapshot at the moved workspace-instructions source
+  (#2092), added the Reasonix benchmark arm (#2079), and raised the A/B
+  pair-concurrency cap to 16 (#2075).
+- Rehydrated an unanswered user question the surface never received (#2086), and
+  made thinking strength follow the chosen level on Kimi/StepFun/MiniMax coding
+  plans (#2067).
+- Polished the shell and chat surfaces: an opaque popover for selection quote
+  actions (#2154), a centred empty-chat hero (#2153), traffic lights aligned
+  with the sidebar icon column (#2144), a collapsed rail that stops repainting a
+  third tone in dark mode (#2187), one 920px content column per settings section
+  (#2080), a row hairline that stops bending on Astryx Item's corners (#2111),
+  Astryx Link for the last bare anchors (#2138), a localized required/optional
+  field marker (#2184), global shortcuts through Astryx `useHotkeys` (#2091),
+  and Astryx `clickAction` owning the in-flight button state (#2089).
+- Fixed the 计划提醒 inspector to sit two tab stops from any row (#2185) and
+  seeded plan reminders with distinct `createdAt` (#2186).
+- Added an a11y audit that flags `aria-label` on elements whose role cannot hold
+  a name (#2108), and established the Windows support baseline (#2156).
+- Replaced fixed waits with explicit barriers in runtime tests (#2162), owned
+  the temp namespace in the test runners (#2068), isolated the dev bootstrap
+  environment (#2131), seeded a real project in the sidebar rename spec (#2022),
+  eliminated Desktop smoke false failures (#2101), stabilized Skill draft
+  restoration (#2137) and invocable Skill projection (#2105), built an invalid
+  UTF-8 path with Git plumbing (#2097), proved the Storybook autoplay contract
+  the smoke harness stands on (#2071), and fixed the serial workspace batch that
+  never ran after a parallel failure (#2136).
+
+### Removed
+
+- Removed dead storage modules (#2104), consumer-less Desktop IPC bridge surface
+  (#2065), and dead shell CSS recipes along with the check-dead-css blind spots
+  that hid them (#2070).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP.
+- Adds Windows x64: an NSIS installer and a ZIP, built and verified on Windows
+  in the same release run (#2182). This build is not code-signed yet, so Windows
+  SmartScreen warns on first launch.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
 ## 0.1.4 - 2026-08-04
 
 ### Highlights

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const outputPath = join(repoRoot, 'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt');
@@ -47,7 +48,9 @@ const LICENSE_METADATA_OVERRIDES = new Map([
   // Declares the ambiguous legacy "BSD"; the shipped LICENSE is BSD-3-Clause.
   ['css-mediaquery@0.1.2', 'BSD-3-Clause'],
 ]);
-const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.11']);
+// The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
+// Keyed by exact version so a bump re-checks the license rather than inheriting this.
+const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.21']);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
@@ -105,11 +108,15 @@ function normalizeText(text) {
 
 function collectDesktopClosure() {
   const tree = JSON.parse(
-    execFileSync('npm', ['ls', '--workspace', '@maka/desktop', '--omit=dev', '--all', '--json'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    }),
+    execFileSync(
+      'npm',
+      ['ls', '--workspace', '@maka/desktop', '--omit=dev', '--all', '--json'],
+      npmSpawnOptions({
+        cwd: repoRoot,
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+      }),
+    ),
   );
   const desktop = tree.dependencies?.['@maka/desktop'];
   if (!desktop) throw new Error('npm ls did not return the @maka/desktop workspace');

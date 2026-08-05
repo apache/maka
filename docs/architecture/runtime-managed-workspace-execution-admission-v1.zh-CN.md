@@ -1,6 +1,6 @@
 # Managed Workspace Execution Admission v1：M1.1 可撤销 scope 门
 
-- 状态：M1.1 已实现；尚无 runtime-host / Desktop / CLI 生产消费者
+- 状态：M1.1 已实现；M1.2 owner-bound worker bridge 与 runtime-host composition 当前切片；尚未由 Desktop/CLI 默认启用
 - 更新日期：2026-08-04
 - 主要不变量：同一个 `ManagedWorkspaceOwner` 只能用其亲自签发的进程内 execution handle 创建 active
   execution scope；一次 admission 只签发一个 scope，但同一 handle 允许多个只读 admission 并发。每次创建
@@ -41,9 +41,12 @@ runtime protocol、host lifecycle 与工具 I/O 三个边界。
 |---|---|
 | execution admission owner | 只有签发 handle 的同一个 `ManagedWorkspaceOwner` 可以消费它 |
 | durable authority | handle/scope 都不是 durable fact；canonical head 通过注册时捕获的 storage-internal reader 读取，不调用可被 caller shadow 的 public method |
-| 原子性边界 | 不虚构 Git 与 SQLite 之外的新事务；在 owner/root lease residency 内完成 final root/DB/head proof，再以 exact receipt/binding/Git verification 作为 scope 签发前最后一个 await |
+| 原子性边界 | 不虚构 Git 与 SQLite 之外的新事务；在 owner/root lease residency 内先完成 exact receipt/binding/Git verification，再以 immutable SQLite workspace head 作为 scope 签发前最后一次 durable reread；随后执行 DB pathname/inode guard 和纯内存 identity compare，不再运行慢速 Git 命令 |
 | 执行期间 | 每个 callback 分别计入 owner active operation；同一 handle 可并发多个 `workspaceEffect: none` scope；`close()` 等全部 scope drain，新 admission 在 closing 后被拒绝 |
 | invalid handle | `managed_workspace_execution_handle_invalid`；不签发 scope |
+| foreign / expired scope | `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；bridge 不解析 cwd、不 dispatch worker |
+| worker 缺失 | `managed_workspace_worker_unavailable`；不从 managed mode fallback 到 host-local I/O |
+| mutation / unknown operation | `managed_workspace_operation_denied`；Write/Edit/Format/Bash/未知 operation 在 worker dispatch 前 fail closed |
 | canonical head 漂移/缺失 | fail closed；旧 handle 不能自行选择新 head |
 | artifact drift | 不签发 scope；所有 Git verification 阶段的 `managed_workspace_drifted` 统一 quarantine |
 | mutation permission | scope 固定 `workspaceEffect: none`；M2 前没有 raw cwd consumer，Write/Edit/Bash/未知工具不得接入 |
@@ -64,10 +67,10 @@ sequenceDiagram
   O->>S: internal reader 读取 exact workspace/epoch canonical head
   S-->>O: accepted WorkspaceHead
   O->>O: exact compare frozen expected head + full cross-plane identity
-  O->>O: final root marker / runtime.sqlite pathname+inode guard
-  O->>S: final internal head reread
   O->>G: one-shot exact receipt/binding/HEAD/tree/lock verification
   G-->>O: verified artifact
+  O->>S: final internal head reread
+  O->>O: runtime.sqlite pathname+inode guard + pure identity compare
   O->>T: callback(active opaque scope)
   T-->>O: result / error
   O->>O: revoke scope；释放 active residency；允许 close 收敛
@@ -107,12 +110,22 @@ ignored dependency、secret 与 scratch overlay 必须作为独立 M1 provisioni
 | forged / cross-owner handle | `managed_workspace_execution_handle_invalid` |
 | callback 保存 scope 后再次使用 | scope 已 expired，internal consumer 必须拒绝 |
 | callback 抛错 | scope 仍在 finally 中 revoke，owner residency 正常释放 |
+| worker 在返回结果前失败 | worker error 结束本次 operation；callback 的 finally revoke scope，owner residency 被释放，后续 close 可收敛 |
+| worker timeout / abort | production `FilesystemWorkerClient` 终止并等待 one-shot worker process tree 与 I/O drain 后才 reject；scope 在此之后 revoke |
+| worker 已启动时 host process crash | M1.2 不承诺跨平台 parent-death kill；worker 仍受 read-only sandbox 与单次请求约束，不能留下 workspace mutation，且完成或超时后退出；新 host 必须重新 admission。Shell/Write/Edit 不得借此 seam 执行 |
 | 用户直接编辑 Maka-owned worktree | 系统不能物理阻止；下一次 admission 检测 drift 并 fail closed/quarantine |
 | 重启后恢复 | 新 root owner、新 managed owner、新 handle；不可恢复旧进程内 capability |
 
 production-shaped 测试使用真实 pinned Git、真实 SQLite、真实子进程和 `SIGKILL`，证明 execution artifact
 verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope authority；真实 Git 并发测试证明两个
 只读 scope 可以并行，且 `close()` 必须等待二者全部退出。
+
+filesystem worker 是 one-shot request/response process。它的 `execute()` 合同要求 Promise 只有在该次操作及其
+拥有的 process lifecycle 已终止后才能 settle；storage owner 因而以这个 Promise 作为 execution residency，
+不再增加一个无法约束真实进程的装饰性 lease。正常返回、worker error、timeout 与 abort 都必须先由现有
+`FilesystemWorkerClient` / process runner 收敛，再退出 callback 并 revoke scope。host 被 `SIGKILL` 时无法执行
+JavaScript finally，因此本切片的安全保证来自“只读 operation allowlist + read-only sandbox”，而不是虚构所有平台
+都具备 parent-death cleanup。需要 durable handle 的 ShellRun 继续留在后续独立阶段。
 
 ## 6. 平台能力矩阵
 
@@ -123,18 +136,23 @@ verification 中断后，重启只能经完整 reopen/revalidate 获得新 scope
 | callback drain | 支持 | 支持 | 支持 |
 | process crash 后重新准入 | 支持 | 支持 | 支持（进程级；不宣称断电 durability） |
 | external drift quarantine | 支持 | 支持 | 有限支持，沿用 Git artifact owner 的 Windows 保证 |
+| managed Read/Glob/Grep worker bridge | 需要可用的 Linux sandbox backend；缺失时 fail closed | 支持 seatbelt worker | 当前不支持；managed Host composition fail closed，不回退 host-local |
+| runtime-host lifecycle composition | 支持 | 支持 | 支持生命周期与 typed profile，但 managed I/O 因 worker 不可用而拒绝 |
 | power-loss durability | 不承诺 | 不承诺 | 不承诺 |
 
 ## 7. 后续切片
 
-1. M1.2：runtime-host lifecycle 组合与 managed/attached typed profile；storage-internal worker bridge 消费
-   active scope 并在内部解析 cwd，公共 host 仍不获得 path。managed profile 在 M2 前只允许
-   `workspaceEffect: none` 的 Read/Glob/Grep 类工具；Write/Edit/Bash/未知工具 fail closed。关闭顺序为
-   tool operations → managed owner → root owner；同时用 execution-context guard 拒绝 callback 内 reentrant
-   `owner.close()`，避免 callback 与自身 drain 互等。
+1. M1.2：owner-bound storage worker bridge 消费 active scope 并在内部解析 cwd；公共 caller 仍不获得 path。
+   managed profile 在 M2 前只允许 `workspaceEffect: none` 的 Read/Glob/Grep；Write/Edit/Format/Bash/未知工具在
+   worker dispatch 前 fail closed。无 ownerToken 的 inspect API 仅保留在显式 test support 中；callback 内
+   reentrant `owner.close()` 由 execution-context guard 拒绝。runtime-host 使用不可混淆的 attached/managed
+   typed profile；managed profile 只携带 opaque handle，绝不携带 attached cwd，也绝不 fallback。Host 先 drain
+   tool operations，再关闭 workspace composition/managed owner，最后由 kernel 关闭 root owner。只有显式提供
+   verified Git runtime 且 sandbox filesystem worker 可用时才组合 managed owner；否则保持未启用或 fail closed。
 2. M1.3：显式 dependency/secret/scratch provisioning；首版若无法安全提供则保持
    `canonical_tree_only_v1`，不能 silent fallback。
 3. M2：mutation candidate capture/accept；T1 前冻结 profile/base version，SQLite 原子接受 tool outcome
    与 successor workspace version。
 
-在 M1.2 出现真实生产消费者前，本切片不默认开启 managed execution，也不改变 attached mode。
+M1.2 提供真实 runtime-host composition seam，但本切片不修改 Desktop/CLI 默认配置，因此不默认开启 managed
+execution，也不改变 attached mode。bundled Git 的发行与 launcher 参数接线仍是独立发布能力，不得回退系统 Git。

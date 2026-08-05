@@ -239,10 +239,14 @@ function assertInputsSelfContained(parts: LanguageModelV4StreamPart[]): void {
  */
 function assertToolCallIdsUsable(parts: LanguageModelV4StreamPart[]): void {
   const ids = toolCallsOf(parts).map(({ toolCallId }) => toolCallId);
+  // Blank rather than empty, for the same reason the tracker normalizes blank aliases: a
+  // whitespace id is truthy, so it passes `runtime-commit-sink.ts`'s falsy check and reaches
+  // `operationId` as a key that names nothing. Two of them collide and the distinctness check
+  // below catches that, but one alone would slip through an `id === ''` test.
   assert.deepEqual(
-    ids.filter((id) => id === ''),
+    ids.filter((id) => id.trim() === ''),
     [],
-    'an empty id cannot address a tool call downstream',
+    'a blank id cannot address a tool call downstream',
   );
   assert.equal(new Set(ids).size, ids.length, `tool call ids must be distinct, got ${ids}`);
 }
@@ -540,9 +544,10 @@ describe('getAIModel: streamed tool call identity is `id`, not `index`', () => {
   }
 
   // `index` may also be the alias that arrives late, with nothing else on the continuation.
-  // Upstream resolved this by slot; failing it would make the patch worse than the code it
-  // replaces. The single open call has no index of its own, so `index: 0` cannot contradict
-  // it — which is what distinguishes this from an index another call has already claimed.
+  // The single open call has no index of its own, so `index: 0` cannot contradict it — which
+  // is what distinguishes this from an index another call has already claimed. This is the
+  // narrowest form of the fallback that replaced upstream's `latestToolCall`: upstream resolves
+  // it too, by recency rather than by agreement, and fails the shape for its own reasons.
   test('continues the only open call when an index arrives with nothing else', async () => {
     const { parts, failure } = await collectDeltas([
       { id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{"path"' } },
@@ -583,6 +588,12 @@ describe('getAIModel: streamed tool call identity is `id`, not `index`', () => {
   // The fallback is for aliases the open call has not claimed, not for aliases that disagree
   // with it. Dropping either condition turns "one call is open" into a licence to absorb any
   // delta at all, which is the misattribution this whole file exists to prevent.
+  //
+  // Known boundary, deliberately locked in — same cause as `fails loudly rather than merging
+  // when a reused index delays its name`. The delta becomes a new identity, and a new identity
+  // with no name fails. An implementation that could hold a call pending until its name arrives
+  // would emit two calls here instead and be *better*, so read a green result on these two as
+  // "the layers below improved", not as "the guard passed".
   for (const [alias, delta] of [
     ['an id', { id: 'call_zzz', function: { arguments: '{"path":"x"}' } }],
     ['an index', { index: 5, function: { arguments: '{"path":"x"}' } }],
@@ -809,6 +820,66 @@ describe('getAIModel: streamed tool call identity is `id`, not `index`', () => {
 
     assert.notEqual(failure, undefined, 'contradicting aliases must not resolve to either call');
     assertCallsSeparable(parts);
+  });
+
+  // The same contradiction, with the call the delta's index reaches never having claimed an id.
+  // Scanning stops at that call and its own aliases do not disagree — nothing about *it* is
+  // contradicted — so the disagreement is only visible in the call the id belongs to, which the
+  // scan already skipped for its index. Reading agreement per-candidate rather than across the
+  // record set made this the one contradiction that resolved anyway, and silently: the fragment
+  // landed on the wrong call, which then learned the other call's id as a late alias. Both
+  // orderings are here because the alias the candidate is missing decides which one it is.
+  for (const [shape, deltas] of Object.entries({
+    'whose index reaches a call that never claimed an id': [
+      { index: 0, type: 'function', function: { name: 'read_file', arguments: '{"pa' } },
+      {
+        index: 1,
+        id: 'call_b',
+        type: 'function',
+        function: { name: 'write_file', arguments: '{"path":"b"}' },
+      },
+      { index: 0, id: 'call_b', function: { arguments: 'th":"a"}' } },
+    ],
+    'whose id reaches a call that never claimed an index': [
+      {
+        index: 1,
+        id: 'call_b',
+        type: 'function',
+        function: { name: 'write_file', arguments: '{"pa' },
+      },
+      { index: 0, type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } },
+      { index: 0, id: 'call_b', function: { arguments: 'th":"b"}' } },
+    ],
+  } satisfies Record<string, ToolCallDelta[]>)) {
+    test(`refuses a delta ${shape}`, async () => {
+      const { parts, failure } = await collectDeltas(deltas);
+
+      assert.notEqual(
+        failure,
+        undefined,
+        'an alias belonging to another call contradicts the match just as an alias on the match does',
+      );
+      assertCallsSeparable(parts);
+    });
+  }
+
+  // Minting covers every id a call cannot be addressed by, and blank is one of those — the same
+  // normalization the aliases get. Pinned on the path that *emits* an id, because the existing
+  // whitespace cases are continuations, where the wire id is consumed as an alias and never
+  // reaches the output. Without this, narrowing `absentIfBlank` to `''` on the minting side
+  // leaves the whole file green while a turn emits an id that addresses nothing.
+  test('mints a fresh id for a new call whose only id is blank', async () => {
+    const { parts, failure } = await collectDeltas([
+      { index: 0, id: ' ', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+      { index: 1, id: '\t', type: 'function', function: { name: 'write_file', arguments: '{}' } },
+    ]);
+
+    assert.equal(failure, undefined, 'a blank id is not a reason to fail the turn');
+    assertCallsSeparable(parts);
+    assert.deepEqual(
+      toolCallsOf(parts).map(({ toolName }) => toolName),
+      ['read_file', 'write_file'],
+    );
   });
 
   // The intersection of the two shapes this file already treats as real: a gateway that both
@@ -1038,8 +1109,9 @@ describe('getAIModel: streamed tool call identity is `id`, not `index`', () => {
   });
 
   // The `openai` provider builds the same tracker with no buffer in front of it. Its chunk
-  // schema requires `index`, so it cannot express the index-omitted shapes, but it can
-  // express both reuse defects — and it is the path with no other coverage in this file.
+  // schema requires `index`, so it cannot express the index-omitted shapes, but it can express
+  // both reuse defects. The cases above that name a provider already run on it; these are the
+  // ones where the buffer's absence is the point rather than an incidental difference.
   describe('the openai provider shares this tracker', () => {
     test('keeps two calls distinct when both are labelled index 0', async () => {
       const { parts, failure } = await collectDeltas(
@@ -1147,16 +1219,39 @@ describe('getAIModel: streamed tool call shapes that cannot be demultiplexed', (
       { index: 0, id: 'p2', type: 'function', function: { name: 'read_file', arguments: '{}' } },
       { index: 0, function: { name: 'write_file', arguments: '{"late":1}' } },
     ],
+    'a continuation carrying only a name while several calls are open': [
+      {
+        index: 0,
+        id: 'call_a',
+        type: 'function',
+        function: { name: 'read_file', arguments: '{"path"' },
+      },
+      {
+        index: 1,
+        id: 'call_b',
+        type: 'function',
+        function: { name: 'write_file', arguments: '{}' },
+      },
+      { type: 'function', function: { name: 'read_file', arguments: ':"a"}' } },
+    ],
   } satisfies Record<string, ToolCallDelta[]>;
 
   // What survives differs by shape, so each states its own guarantee rather than sharing one.
   // Two keep both calls and misplace only argument text. Two lose a call: when every alias the
   // second call sends already belongs to the first — and its name too — nothing distinguishes a
-  // second call from a continuation, whether or not an index is present. The last one goes the
-  // other way and invents a call, and it is the direct price of `keeps three calls distinct when
-  // index 0 is reused and a name repeats`: resolution stops at the newest claimant of an alias,
-  // so a continuation naming an older one cannot reach it. Honouring the name instead fixes this
-  // shape and breaks that one. Pinned here so a future attempt at either sees both.
+  // second call from a continuation, whether or not an index is present. Two go the other way
+  // and invent a call. `a continuation naming a call the shared index no longer claims` is the
+  // direct price of `keeps three calls distinct when index 0 is reused and a name repeats`:
+  // resolution stops at the newest claimant of an alias, so a continuation naming an older one
+  // cannot reach it. Honouring the name instead fixes this shape and breaks that one. Pinned
+  // here so a future attempt at either sees both.
+  //
+  // `a continuation carrying only a name while several calls are open` is the same trade seen
+  // from the other end: `name` rejects a match but never proposes one, so a delta whose only
+  // field is a name claims nothing and starts a call. Letting the name resolve it is the
+  // obvious repair and is the same change that breaks the reused-index shape. Both calls it
+  // splits keep unparsable input, which is why this suite asserts ids and lifecycle but not
+  // self-containment — a shared alias makes that unachievable, not merely unachieved.
   const emitted = {
     'an index shared by two open calls, continued by index only': ['read_file', 'write_file'],
     'a shared id and a shared name with no index to separate them': ['read_file'],
@@ -1167,6 +1262,11 @@ describe('getAIModel: streamed tool call shapes that cannot be demultiplexed', (
       'write_file',
       'read_file',
       'write_file',
+    ],
+    'a continuation carrying only a name while several calls are open': [
+      'read_file',
+      'write_file',
+      'read_file',
     ],
   } satisfies Record<keyof typeof boundaries, string[]>;
 

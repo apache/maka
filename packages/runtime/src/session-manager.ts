@@ -1000,8 +1000,15 @@ export class SessionManager {
     );
   }
 
-  private hasWorktreeChildExecutor(): boolean {
-    return this.deps.worktreeChildExecutor !== undefined;
+  private async isWorktreeChildExecutorAvailable(
+    header: Pick<SessionHeader, 'cwd' | 'projectId'>,
+  ): Promise<boolean> {
+    const executor = this.deps.worktreeChildExecutor;
+    if (!executor) return false;
+    return await executor.isAvailable({
+      sourceCwd: header.cwd,
+      ...(header.projectId !== undefined ? { sourceProjectId: header.projectId } : {}),
+    });
   }
 
   private async finalizeAndListChildTurnArtifacts(
@@ -2437,7 +2444,7 @@ export class SessionManager {
     assertAgentDefinitionRunnable({
       definition,
       tools: await this.childToolsForSession(input.source.sessionId),
-      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
+      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
     });
     const childPermissionMode =
       parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
@@ -3007,7 +3014,7 @@ export class SessionManager {
     assertAgentDefinitionRunnable({
       definition,
       tools: availableChildTools,
-      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
+      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
     });
 
     const proposedTurnId = input.turnId ?? this.deps.newId();
@@ -3343,7 +3350,7 @@ export class SessionManager {
     assertAgentDefinitionRunnable({
       definition,
       tools: await this.childToolsForSession(sessionId),
-      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
+      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(sessionHeader),
     });
     const visited = new Set<string>();
     let cursor: AgentRunHeader | undefined = source;
@@ -4318,9 +4325,13 @@ export class SessionManager {
   }
 
   async listChildAgents(sessionId: string): Promise<AgentListResult> {
+    const [header, tools] = await Promise.all([
+      this.deps.store.readHeader(sessionId),
+      this.childToolsForSession(sessionId),
+    ]);
     const definitions = listBuiltinAgentDefinitions({
-      tools: await this.childToolsForSession(sessionId),
-      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
+      tools,
+      worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(header),
     });
     const presets = this.deps.subagentCatalog ? await this.deps.subagentCatalog.list() : [];
     if (!this.deps.runStore) return { definitions, presets, executions: [], runs: [] };

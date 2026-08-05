@@ -253,6 +253,8 @@ export const test = base.extend<{
   firstRunWindow: Page;
   modelPickerLongWindow: Page;
   longTranscriptWindow: Page;
+  shortFinalTurnWindow: Page;
+  overflowingRailWindow: Page;
   sidebarLongSessionsWindow: Page;
   disclosureOutputWindow: Page;
   sandboxBoundaryWindow: Page;
@@ -314,6 +316,38 @@ export const test = base.extend<{
         seed: false,
         readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
         e2eFixtureScenario: 'long-transcript',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  // Short final turn: boots the e2e-fixture `short-final-turn` fixture — five
+  // tall turns and a one-line last turn — and opens it as the active session.
+  // Same readiness contract as `longTranscriptWindow` and for the same reason:
+  // the markdown chunk must have landed before the spec scrolls. Used by the
+  // prompt-rail spec to reach an end of the scroller that the rail's
+  // activation band never covers.
+  shortFinalTurnWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
+        e2eFixtureScenario: 'short-final-turn',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  // Overflowing rail: boots the e2e-fixture `overflowing-rail` fixture — 60
+  // short turns — and opens it as the active session. Same readiness contract
+  // as the two above. Used by the prompt-rail spec to exercise the rail once it
+  // is past its cap and scrolling independently of the transcript.
+  overflowingRailWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
+        e2eFixtureScenario: 'overflowing-rail',
         locale: 'zh',
       },
       use,

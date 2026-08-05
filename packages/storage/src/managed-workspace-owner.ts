@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   createGitWorkspaceService,
   type CreateManagedWorkspaceFromSourceInput,
@@ -20,6 +21,13 @@ import {
   type ManagedWorkspaceExecutionHandle,
   type ManagedWorkspaceExecutionScope,
 } from './managed-workspace-execution-authority-internal.js';
+import {
+  createManagedWorkspaceWorkerBridgeInternal,
+  type ManagedWorkspaceFilesystemWorker,
+  type ManagedWorkspaceReadOnlyOperation,
+  type ManagedWorkspaceReadOnlyResult,
+  type ManagedWorkspaceWorkerBridgeInternal,
+} from './managed-workspace-worker-bridge-internal.js';
 import type { RuntimeWorkspaceVersionAuthorityStore, WorkspaceHeadRecordV1 } from '@maka/core';
 import {
   assertInteractiveRootOwner,
@@ -44,6 +52,8 @@ export type ManagedWorkspaceOwnerErrorCode =
   | 'managed_workspace_owner_conflict'
   | 'managed_workspace_owner_unavailable'
   | 'managed_workspace_owner_closing'
+  | 'managed_workspace_owner_reentrant_close'
+  | 'managed_workspace_worker_unavailable'
   | 'managed_workspace_quarantined'
   | 'managed_workspace_execution_handle_invalid';
 
@@ -62,6 +72,7 @@ export interface OpenManagedWorkspaceOwnerInput {
   readonly rootOwner: InteractiveRootOwner;
   readonly gitRuntime: VerifiedGitRuntimeInput;
   readonly failpoint?: (point: ManagedWorkspaceOwnerFailpoint) => void | Promise<void>;
+  readonly filesystemWorker?: ManagedWorkspaceFilesystemWorker;
 }
 
 export type ManagedWorkspaceOwnerFailpoint =
@@ -89,10 +100,22 @@ export interface ManagedWorkspaceOwner {
     handle: ManagedWorkspaceExecutionHandle,
     operation: (scope: ManagedWorkspaceExecutionScope) => Promise<T>,
   ): Promise<T>;
+  executeReadOnlyFilesystemOperation(
+    scope: ManagedWorkspaceExecutionScope,
+    operation: ManagedWorkspaceReadOnlyOperation,
+    abortSignal?: AbortSignal,
+  ): Promise<ManagedWorkspaceReadOnlyResult>;
   close(): Promise<void>;
 }
 
-export type { ManagedWorkspaceExecutionHandle, ManagedWorkspaceExecutionScope };
+export type {
+  ManagedWorkspaceExecutionHandle,
+  ManagedWorkspaceExecutionScope,
+  ManagedWorkspaceFilesystemWorker,
+  ManagedWorkspaceReadOnlyOperation,
+  ManagedWorkspaceReadOnlyResult,
+  VerifiedGitRuntimeInput,
+};
 
 const owners = new WeakMap<InteractiveRootOwner, object>();
 
@@ -128,6 +151,7 @@ export async function openManagedWorkspaceOwner(
       service,
       requireManagedBaselineReceiptAuthorityInternal(service),
       input.failpoint,
+      input.filesystemWorker,
     );
     owners.set(rootOwner, owner);
     return owner;
@@ -147,14 +171,17 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
   #activeOperations = 0;
   readonly #drainWaiters = new Set<() => void>();
   readonly #assertCurrentRootIdentity: () => Promise<void>;
+  readonly #executionContext = new AsyncLocalStorage<object>();
   #closeTask: Promise<void> | undefined;
   readonly #executionOwnerToken = {};
+  readonly #workerBridge: ManagedWorkspaceWorkerBridgeInternal | undefined;
 
   constructor(
     private readonly rootOwner: InteractiveRootOwner,
     private readonly service: GitWorkspaceService,
     private readonly receiptAuthority: ManagedBaselineReceiptAuthorityInternal,
     private readonly failpoint?: (point: ManagedWorkspaceOwnerFailpoint) => void | Promise<void>,
+    filesystemWorker?: ManagedWorkspaceFilesystemWorker,
   ) {
     // Capture the identity guard while the lease is active. Unlike a fresh
     // admission check, this guard remains valid for an already-admitted
@@ -164,6 +191,9 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       'interactive',
       'write',
     );
+    this.#workerBridge = filesystemWorker
+      ? createManagedWorkspaceWorkerBridgeInternal(this.#executionOwnerToken, filesystemWorker)
+      : undefined;
   }
 
   get state(): 'ready' | 'closing' | 'closed' {
@@ -249,7 +279,7 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       await this.#assertCurrentRootIdentity();
       const internalHead = freezeWorkspaceHead(committed.head);
       const internalBinding = freezeManagedWorkspaceBinding(binding);
-      const internalReceipt = freezeManagedWorkspaceReceipt(durableReceipt, internalBinding);
+      const internalReceipt = freezeManagedWorkspaceReceipt(durableReceipt);
       return {
         created: committed.created,
         head: freezeWorkspaceHead(committed.head),
@@ -290,11 +320,19 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         await this.failpoint('after_execution_artifact_verification');
       }
 
-      // The final proof bundle is intentionally ordered so the exact Git
-      // receipt/binding/worktree verification is the last awaited operation
-      // before the in-memory scope is issued. The root write lease excludes
-      // cooperating Maka writers across the whole sequence.
+      // The root write lease excludes cooperating Maka writers across this
+      // proof bundle. Verify the durable Git artifact first, then make the
+      // immutable workspace head the final durable reread before scope issue.
       await this.#assertCurrentRootIdentity();
+      await this.#verifyExecutionArtifactOrQuarantine(accepted.binding, accepted.receipt);
+      const currentHead = await readWorkspaceHeadInternal(
+        accepted.store,
+        accepted.binding.workspaceId,
+        accepted.binding.workspaceEpochId,
+      );
+      // Rebind only after the head read. This catches a database pathname
+      // detach at the admission boundary without putting a mutable DB guard
+      // ahead of the durable head evidence it protects.
       await assertWorkspaceBaselineAuthorityStoreRootInternal(
         accepted.store,
         this.rootOwner.capability.canonicalPath,
@@ -303,11 +341,6 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         accepted.store,
         this.rootOwner.capability.rootId,
       );
-      const currentHead = await readWorkspaceHeadInternal(
-        accepted.store,
-        accepted.binding.workspaceId,
-        accepted.binding.workspaceEpochId,
-      );
       if (!currentHead || !sameWorkspaceHead(currentHead, accepted.head)) {
         throw new ManagedWorkspaceOwnerError(
           'managed_workspace_owner_unavailable',
@@ -315,7 +348,6 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         );
       }
       assertExecutionCrossPlaneIdentity(accepted.binding, accepted.receipt, currentHead);
-      await this.#verifyExecutionArtifactOrQuarantine(accepted.binding, accepted.receipt);
       const binding = accepted.binding;
       const scope = issueManagedWorkspaceExecutionScopeInternal(this.#executionOwnerToken, {
         provisioning: 'canonical_tree_only_v1',
@@ -325,14 +357,36 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         head: freezeWorkspaceHead(currentHead),
       });
       try {
-        return await operation(scope);
+        return await this.#executionContext.run(this.#executionOwnerToken, () => operation(scope));
       } finally {
         revokeManagedWorkspaceExecutionScopeInternal(this.#executionOwnerToken, scope);
       }
     });
   }
 
+  async executeReadOnlyFilesystemOperation(
+    scope: ManagedWorkspaceExecutionScope,
+    operation: ManagedWorkspaceReadOnlyOperation,
+    abortSignal?: AbortSignal,
+  ): Promise<ManagedWorkspaceReadOnlyResult> {
+    if (!this.#workerBridge) {
+      throw new ManagedWorkspaceOwnerError(
+        'managed_workspace_worker_unavailable',
+        'Managed workspace filesystem worker is unavailable',
+      );
+    }
+    return await this.#workerBridge.execute(scope, operation, abortSignal);
+  }
+
   close(): Promise<void> {
+    if (this.#executionContext.getStore() === this.#executionOwnerToken) {
+      return Promise.reject(
+        new ManagedWorkspaceOwnerError(
+          'managed_workspace_owner_reentrant_close',
+          'Managed workspace owner cannot close from its own execution callback',
+        ),
+      );
+    }
     this.#closeTask ??= (async () => {
       this.#state = 'closing';
       await this.#waitForDrain();
@@ -455,9 +509,8 @@ function freezeManagedWorkspaceBinding(
 
 function freezeManagedWorkspaceReceipt(
   receipt: ManagedWorkspaceBaselineReceiptV1,
-  binding: Readonly<ManagedWorkspaceBinding>,
 ): Readonly<ManagedWorkspaceBaselineReceiptV1> {
-  return Object.freeze({ ...receipt, binding });
+  return Object.freeze({ ...receipt, binding: freezeManagedWorkspaceBinding(receipt.binding) });
 }
 
 function assertExecutionCrossPlaneIdentity(
@@ -466,7 +519,7 @@ function assertExecutionCrossPlaneIdentity(
   head: Readonly<WorkspaceHeadRecordV1>,
 ): void {
   if (
-    JSON.stringify(binding) !== JSON.stringify(receipt.binding) ||
+    !sameManagedWorkspaceBinding(binding, receipt.binding) ||
     head.repositoryId !== binding.repositoryId ||
     head.workspaceId !== binding.workspaceId ||
     head.workspaceEpochId !== binding.workspaceEpochId ||
@@ -480,4 +533,32 @@ function assertExecutionCrossPlaneIdentity(
       'Managed workspace execution evidence does not identify one exact accepted boundary',
     );
   }
+}
+
+function sameManagedWorkspaceBinding(
+  left: ManagedWorkspaceBinding,
+  right: ManagedWorkspaceBinding,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.protocol === right.protocol &&
+    left.repositoryId === right.repositoryId &&
+    left.workspaceId === right.workspaceId &&
+    left.workspaceEpochId === right.workspaceEpochId &&
+    left.workspaceInstanceId === right.workspaceInstanceId &&
+    left.sourceRoot === right.sourceRoot &&
+    left.sourceGitCommonDir === right.sourceGitCommonDir &&
+    left.sourceHeadCommitOid === right.sourceHeadCommitOid &&
+    left.sourceTreeOid === right.sourceTreeOid &&
+    left.repositoryPath === right.repositoryPath &&
+    left.worktreePath === right.worktreePath &&
+    left.hooksPath === right.hooksPath &&
+    left.baselineCommitOid === right.baselineCommitOid &&
+    left.baselineTreeOid === right.baselineTreeOid &&
+    left.headRef === right.headRef &&
+    left.gitRuntimeSha256 === right.gitRuntimeSha256 &&
+    left.objectFormat === right.objectFormat &&
+    left.materializationProfileDigest === right.materializationProfileDigest &&
+    left.materializationSemantics === right.materializationSemantics
+  );
 }

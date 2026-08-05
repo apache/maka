@@ -1,4 +1,4 @@
-name: Release macOS arm64
+name: Release desktop
 
 on:
   workflow_dispatch:
@@ -7,15 +7,30 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-macos-arm64
+  group: release-desktop
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    strategy:
+      # Both platforms ship from one dispatch, so a failure on one still leaves
+      # the other artifact available for diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-15
+          - platform: windows
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
     environment: release
     timeout-minutes: 45
+    defaults:
+      run:
+        # Windows runners default to pwsh; the release steps are written once,
+        # in bash, for both platforms.
+        shell: bash
 
     steps:
       - name: Check out the dispatched commit
@@ -38,6 +53,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Write App Store Connect API key
+        if: matrix.platform == 'macos'
         env:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey_Maka.p8
@@ -53,8 +69,7 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           tag="v${version}"
           dmg="apps/desktop/release/Maka-${version}-mac-arm64.dmg"
-          zip="apps/desktop/release/Maka-${version}-mac-arm64.zip"
-          update_yml="apps/desktop/release/latest-mac.yml"
+          exe="apps/desktop/release/Maka-${version}-win-x64.exe"
 
           if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists." >&2
@@ -69,11 +84,11 @@ jobs:
             echo "version=${version}"
             echo "tag=${tag}"
             echo "dmg=${dmg}"
-            echo "zip=${zip}"
-            echo "update_yml=${update_yml}"
+            echo "exe=${exe}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Package notarized app and signed DMG
+        if: matrix.platform == 'macos'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -83,6 +98,7 @@ jobs:
         run: npm run package:macos-arm64
 
       - name: Notarize and staple the signed final DMG
+        if: matrix.platform == 'macos'
         env:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -106,33 +122,76 @@ jobs:
             "$DMG_PATH"
 
       - name: Verify the final DMG
+        if: matrix.platform == 'macos'
         run: npm run verify:macos-arm64 -- "${{ steps.release.outputs.dmg }}"
+
+      # Windows has no Authenticode certificate yet, so this build is unsigned
+      # and there is nothing to notarize between packaging and verification.
+      - name: Package the Windows installer and ZIP
+        if: matrix.platform == 'windows'
+        run: npm run package:windows-x64
+
+      - name: Verify the Windows release
+        if: matrix.platform == 'windows'
+        run: npm run verify:windows-x64 -- "${{ steps.release.outputs.exe }}"
+
+      - name: Upload the verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            apps/desktop/release/Maka-*
+            apps/desktop/release/latest*.yml
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove temporary release credentials
+        if: always() && matrix.platform == 'macos'
+        run: rm -f "${{ runner.temp }}/AuthKey_Maka.p8"
+
+  publish:
+    # One draft release carries both platforms, so it is created once, after
+    # every platform has been packaged and verified.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the verified release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          DMG_PATH: ${{ steps.release.outputs.dmg }}
         run: |
-          notes="Apple Silicon macOS release built from commit ${GITHUB_SHA}.
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          tag="v${version}"
 
-          Before publishing, download this draft asset on another Apple Silicon Mac and complete .github/RELEASE_CHECKLIST.md.
+          notes="Apple Silicon macOS and Windows x64 release built from commit ${GITHUB_SHA}.
+
+          Before publishing, download these draft assets on another Apple Silicon Mac and on a Windows x64 machine, and complete .github/RELEASE_CHECKLIST.md.
+
+          The Windows build is unsigned: SmartScreen warns on first launch, and the download has to be checked against its .sha256 file.
 
           Known limitation: Computer Use is not included in this release."
 
-          gh release create "$RELEASE_TAG" \
-            "$DMG_PATH" \
-            "${DMG_PATH}.sha256" \
-            "${{ steps.release.outputs.zip }}" \
-            "${{ steps.release.outputs.update_yml }}" \
+          gh release create "$tag" release-assets/* \
             --draft \
             --target "$GITHUB_SHA" \
-            --title "Maka ${RELEASE_VERSION}" \
+            --title "Maka ${version}" \
             --notes "$notes"
 
-          echo "Draft release ${RELEASE_TAG} created from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Remove temporary release credentials
-        if: always()
-        run: rm -f "${{ runner.temp }}/AuthKey_Maka.p8"
+          echo "Draft release ${tag} created from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"

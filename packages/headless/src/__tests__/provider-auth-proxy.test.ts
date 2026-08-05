@@ -593,6 +593,79 @@ test('provider auth proxy totals OpenAI chat streaming usage without changing th
   }
 });
 
+test('provider auth proxy keeps usage from a stream the client hangs up on', async () => {
+  // A client that stops reading once it has its answer still spent every token
+  // the provider streamed, and the usage frame usually arrived before it let
+  // go. Dropping it does not leave a gap the report can see: the cell keeps the
+  // usage of whichever requests happened to reach `[DONE]` and reads as fully
+  // metered. One arm was credited 1,088 output tokens against a true 27,633
+  // that way, because its short requests completed and its long ones did not.
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-hangup-usage-'));
+  const usageFrame =
+    'data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":25,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens_details":{"reasoning_tokens":15}}}\n\n';
+  let releaseUpstream!: () => void;
+  const upstreamHeld = new Promise<void>((resolve) => {
+    releaseUpstream = resolve;
+  });
+  const upstream = createServer(async (_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    // The usage frame lands, then the stream stays open without `[DONE]` --
+    // the shape a client hangs up on.
+    response.write(usageFrame);
+    await upstreamHeld;
+    response.end();
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== 'string');
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    usageProtocol: 'openai-chat-sse',
+  });
+  const controller = new AbortController();
+
+  try {
+    const response = await fetch(`${proxy.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${proxy.token}` },
+      body: '{}',
+      signal: controller.signal,
+    });
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    await reader.read();
+    controller.abort();
+    await assert.rejects(reader.read());
+    // The abort has to land in the proxy before its telemetry is final.
+    for (let attempt = 0; attempt < 100 && proxy.telemetry().length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    assert.deepEqual(proxy.usage(), {
+      input: 100,
+      cacheRead: 20,
+      cacheWrite: 0,
+      output: 25,
+      reasoning: 15,
+    });
+    const [request] = proxy.telemetry();
+    assert.equal(request?.outcome, 'aborted');
+    // Recorded as unterminated, so a caller that wants only whole streams can
+    // still tell this one apart from a request that ran to `[DONE]`.
+    assert.equal(request?.terminalEvent, false);
+  } finally {
+    releaseUpstream();
+    await proxy.close();
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('provider auth proxy totals Responses streaming usage at response.completed', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-responses-usage-'));
   const stream = [

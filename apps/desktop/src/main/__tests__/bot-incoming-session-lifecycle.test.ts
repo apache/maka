@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import type { BotIncomingMessage, BotRegistry, SessionManager } from '@maka/runtime';
 import type { SessionEvent } from '@maka/core';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { createEmbeddedBotSessionAdapter } from '../embedded-bot-session-adapter.js';
 import { SessionLifecycleError } from '../session-lifecycle.js';
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -43,8 +44,6 @@ describe('bot session lifecycle bindings', () => {
     } as unknown as SessionManager;
 
     const service = createBotIncomingMainService({
-      runtime,
-      createSession: (input) => runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
       botRegistry: {
         async sendMessage(_platform: string, _chatId: string, text: string) {
           replies.push(text);
@@ -54,20 +53,32 @@ describe('bot session lifecycle bindings', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      getDefaultConnectionSlug: async () => 'provider',
-      getReadyConnection: async () => ({ connection: { slug: 'provider' }, model: 'model' }),
-      readSessionHeader: async () => ({ permissionMode: 'explore', isArchived: false, status: 'active' }),
-      ensureSessionCanSend: async (sessionId) => {
-        ensureCalls += 1;
-        if (sessionId === 'bot-session-1' && ensureCalls === 2) {
-          throw new SessionLifecycleError('archived');
-        }
-      },
-      emitSessionsChanged() {},
-      runAgentTurn: async ({ iterator, turnId, onEvent }) => {
-        for await (const event of iterator) onEvent(event);
-        return { outcome: { kind: 'completed', turnId } } as never;
-      },
+      sessions: createEmbeddedBotSessionAdapter({
+        runtime,
+        createSession: (input) =>
+          runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
+        getDefaultConnectionSlug: async () => 'provider',
+        getReadyConnection: async () => ({
+          connection: { slug: 'provider' },
+          model: 'model',
+        }),
+        readSessionHeader: async () => ({
+          permissionMode: 'explore',
+          isArchived: false,
+          status: 'active',
+        }),
+        ensureSessionCanSend: async (sessionId) => {
+          ensureCalls += 1;
+          if (sessionId === 'bot-session-1' && ensureCalls === 2) {
+            throw new SessionLifecycleError('archived');
+          }
+        },
+        emitSessionsChanged() {},
+        runAgentTurn: async ({ iterator, turnId, onEvent }) => {
+          for await (const event of iterator) onEvent(event);
+          return { outcome: { kind: 'completed', turnId } } as never;
+        },
+      }),
     });
 
     const base = {

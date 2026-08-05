@@ -494,6 +494,11 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
+        {/* First child on purpose: the rail pins itself with a sticky anchor,
+            and a sticky box only takes an offset from its own static position
+            onward. Rendered after the transcript it would stay parked at the
+            bottom of the conversation until the reader scrolled there. */}
+        <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} onNavigateFallback={revealTurn} />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           density="compact"
@@ -572,7 +577,6 @@ export function ChatView(props: {
             </>
           )}
         </ChatMessageList>
-        <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} onNavigateFallback={revealTurn} />
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
           selectionActionsLayer.render(
             <div

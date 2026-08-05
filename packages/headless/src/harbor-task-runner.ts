@@ -27,6 +27,10 @@ import {
   type TaskRunner,
 } from './fixed-prompt-controller.js';
 import { buildAgentRepoMounts } from './agent-repo-mount.js';
+import {
+  MAKA_NODE_TOOLCHAIN_CONTAINER_PATH,
+  MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+} from './maka-node-toolchain.js';
 import type {
   HarborTrialGrade,
   HarborVerifierAttempt,
@@ -269,8 +273,26 @@ export interface HarborTaskRunnerOptions {
   claudeCodeToolchainPath?: string;
   /** Prepared Reasonix toolchain mounted read-only into task containers. */
   reasonixToolchainPath?: string;
+  /**
+   * Where the Maka arm runs. `host-bridge` keeps the controller on the host and
+   * bridges tool calls in; `task-container` puts it where every competitor arm
+   * already is, which is what makes the arms answer for the same environment.
+   */
+  makaPlacement?: 'host-bridge' | 'task-container';
+  /**
+   * Prepared Maka Node toolchain, mounted read-only into task containers.
+   * Required by `task-container` placement: the repo mount carries Maka's code
+   * but nothing in the task image is pinned to execute it.
+   */
+  makaNodeToolchainPath?: string;
   /** Explicit Docker target platform shared by comparison arms. */
   dockerPlatform?: 'linux/amd64';
+  /**
+   * Compose overlay that points the task container's Ubuntu apt hosts at a
+   * mirror. Layered after the harness compose file so it adds `extra_hosts`
+   * entries beside the host-gateway mapping rather than replacing them.
+   */
+  aptMirrorComposePath?: string;
   /** Base directory under which each task gets an isolated per-task job dir. */
   jobsDir: string;
   /** MAKA_MODEL, e.g. "deepseek/deepseek-v4-flash". */
@@ -390,7 +412,7 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
       runnerOptions.resolveProviderCredential !== undefined ||
       githubCopilotAccountTokenFromEnv(runnerOptions.provider, runnerOptions.agentEnv) !==
         undefined ||
-      (!usesHostProviderProxy(runnerOptions.agent) &&
+      (!usesHostProviderProxy(runnerOptions.agent, runnerOptions.makaPlacement) &&
         !providerRequiresSecret(runnerOptions.provider));
     const configPath = join(jobsDir, 'job-config.json');
     const { agentEnv: _attemptAgentEnv, ...inputWithoutAttemptEnv } = input;
@@ -1125,6 +1147,10 @@ export function buildHarborJobConfig(
   const adapter = options.agent ?? 'maka';
   const agentModel = adapter === 'opencode' ? modelForOpenCode(options.model, provider) : makaModel;
   const toolchain = adapter === 'maka' ? undefined : COMPETITOR_TOOLCHAINS[adapter];
+  const makaInContainer = adapter === 'maka' && options.makaPlacement === 'task-container';
+  if (makaInContainer && !options.makaNodeToolchainPath) {
+    throw new Error('makaNodeToolchainPath is required for task-container Maka placement');
+  }
   if (toolchain) {
     const toolchainPath = options[toolchain.optionKey];
     if (!toolchainPath) {
@@ -1144,6 +1170,16 @@ export function buildHarborJobConfig(
             type: 'bind',
             source: options[toolchain.optionKey]!,
             target: toolchain.containerPath,
+            read_only: true,
+          },
+        ]
+      : []),
+    ...(makaInContainer
+      ? [
+          {
+            type: 'bind',
+            source: options.makaNodeToolchainPath!,
+            target: MAKA_NODE_TOOLCHAIN_CONTAINER_PATH,
             read_only: true,
           },
         ]
@@ -1179,6 +1215,14 @@ export function buildHarborJobConfig(
     if (options.pricing.source) {
       agentEnv.MAKA_TRIAL_PRICING_SOURCE = options.pricing.source;
     }
+  }
+
+  if (makaInContainer) {
+    // The adapter re-verifies the mounted toolchain against this before it will
+    // install, and it reads it from the agent env — the same place every other
+    // pinned-toolchain fingerprint is read from. Putting it on the provider
+    // channel instead left the mount in place and the arm unable to start.
+    agentEnv.MAKA_NODE_TOOLCHAIN_FINGERPRINT = MAKA_NODE_TOOLCHAIN_FINGERPRINT;
   }
 
   Object.assign(agentEnv, attemptAgentEnv ?? {});
@@ -1229,6 +1273,7 @@ export function buildHarborJobConfig(
                 options.makaRepoPath,
                 'packages/headless/harbor/docker-compose-linux-amd64.yaml',
               ),
+              ...(options.aptMirrorComposePath ? [options.aptMirrorComposePath] : []),
             ],
           }
         : {}),
@@ -1309,7 +1354,15 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
 } | null> {
   const agent = options.agent ?? 'maka';
   const provider = options.provider ?? 'deepseek';
-  if (usesHostProviderProxy(agent) && provider === 'github-copilot') {
+  if (usesHostProviderProxy(agent, options.makaPlacement) && provider === 'github-copilot') {
+    // Maka reaches this guard only in task-container placement, where it too
+    // goes through the proxy. Its remedy is the placement it came from, not the
+    // competitors' dead end, so it must not be told an adapter is missing.
+    if (agent === 'maka') {
+      throw new Error(
+        'GitHub Copilot Harbor runs require the host-bridge Maka placement; the host provider proxy does not carry this provider',
+      );
+    }
     const adapter =
       agent === 'kimi-code'
         ? 'Kimi Code'
@@ -1350,7 +1403,7 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
       )
     : undefined;
   const baseUrl = copilotCredential?.baseUrl ?? configuredBaseUrl;
-  if (options.resolveProviderCredential || usesHostProviderProxy(agent)) {
+  if (options.resolveProviderCredential || usesHostProviderProxy(agent, options.makaPlacement)) {
     const apiKeyFile = options.apiKeyFile;
     const resolveProviderCredential = options.resolveProviderCredential;
     if (!apiKeyFile && !resolveProviderCredential) return null;
@@ -1358,7 +1411,12 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
     const apiProtocol = providerProxyApiProtocol(agent, options.agentEnv);
     const proxy = await startProviderAuthProxy({
       upstreamBaseUrl: providerProxyUpstreamBaseUrl(baseUrl, provider, apiProtocol),
-      ...(agent === 'maka' ? { advertisedHost: '127.0.0.1' } : {}),
+      // Loopback is the right address only for a controller on this host. From
+      // inside the task container it names the container, so the arm would dial
+      // itself; competitors set nothing here for exactly that reason.
+      ...(agent === 'maka' && options.makaPlacement !== 'task-container'
+        ? { advertisedHost: '127.0.0.1' }
+        : {}),
       ...(resolveProviderCredential
         ? { resolveUpstreamCredential: resolveProviderCredential }
         : { apiKeyFile: apiKeyFile! }),
@@ -1368,7 +1426,12 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
     });
     return {
       env:
-        agent === 'maka'
+        // Which channel an arm gets follows where it runs, not which arm it is.
+        // A host-side Maka reaches the proxy directly; in the task container it
+        // is on the far side of the same boundary as every competitor, so it
+        // needs the same client channel they do — `MAKA_HOST_*` names a host
+        // that is not there.
+        agent === 'maka' && options.makaPlacement !== 'task-container'
           ? {
               MAKA_HOST_BASE_URL: proxy.baseUrl,
               MAKA_HOST_API_KEY: proxy.token,
@@ -1397,8 +1460,19 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
   };
 }
 
-function usesHostProviderProxy(agent: HarborTaskRunnerOptions['agent']): boolean {
-  return agent !== undefined && agent !== 'maka';
+/**
+ * Whether this arm reaches the provider through the host proxy rather than
+ * holding host credentials itself. That follows the container boundary, not the
+ * arm's name: Maka was exempt because it ran on the host, and an in-container
+ * Maka is on the same side as every competitor, with no host credential to use.
+ */
+function usesHostProviderProxy(
+  agent: HarborTaskRunnerOptions['agent'],
+  makaPlacement?: HarborTaskRunnerOptions['makaPlacement'],
+): boolean {
+  if (agent === undefined) return false;
+  if (agent === 'maka') return makaPlacement === 'task-container';
+  return true;
 }
 
 /** Shared cost math across runners: build the cell token summary from proxy-observed usage and per-1M pricing. */

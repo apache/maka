@@ -64,8 +64,19 @@ const EXTENDED_SCRIPT_FILES = new Set([
   'scripts/measure-session-bundle.mjs',
   'scripts/measure-session-bundle.test.mjs',
   'scripts/package-macos-arm64.mjs',
+  'scripts/npm-spawn.mjs',
+  'scripts/package-windows-x64.mjs',
+  // Shared by both platform verifiers, so a change here reaches the macOS
+  // release path even when nothing macOS-specific was touched.
+  'scripts/verify-packaged-app.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-windows-x64.mjs',
+  'scripts/windows-x64-release.test.mjs',
 ]);
+
+// The release config is loaded only by the release workflow, so nothing else in
+// CI would notice an option electron-builder rejects.
+const RELEASE_CONFIG_FILES = new Set(['apps/desktop/electron-builder.config.mjs']);
 
 const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/agent-run-store.ts',
@@ -165,6 +176,12 @@ export function planTests(changedFiles, options = {}) {
   let scriptMode = 'none';
   let unknownCode = false;
   for (const path of files) {
+    if (RELEASE_CONFIG_FILES.has(path)) {
+      code = true;
+      directWorkspaces.add('apps/desktop');
+      if (scriptMode === 'none') scriptMode = 'fast';
+      continue;
+    }
     const workspace = graph.dirs.find((dir) => path === dir || path.startsWith(`${dir}/`));
     if (workspace) {
       code = true;

@@ -3,6 +3,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { lookup } from 'node:dns/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -772,9 +773,83 @@ export function harnessMakaContextBudgetEnv() {
   };
 }
 
-export function harnessMakaAgentEnv(benchmarkProfile) {
+/**
+ * Where the Maka arm runs. Pier always places it in the task container; under
+ * Harbor it bridges from the host unless the caller asks otherwise.
+ *
+ * This is opt-in rather than a flipped default because it changes the shape of
+ * the experiment, not a parameter of it. Every competitor arm runs in the task
+ * container, so a host-side Maka arm is the one arm that cannot be hit by a
+ * defect in the container path — and three such defects were found during this
+ * benchmark. Moving it is what makes the arms comparable; keeping the old
+ * placement reachable is what lets the two topologies be run against each other
+ * to show whether a difference came from the agent or from where it ran.
+ */
+export function harnessMakaPlacement(benchmarkProfile, env = process.env) {
+  const requested = (env.MAKA_HARNESS_AB_MAKA_PLACEMENT || '').trim();
+  if (requested && requested !== 'task-container' && requested !== 'host-bridge') {
+    throw new Error(
+      `MAKA_HARNESS_AB_MAKA_PLACEMENT must be task-container or host-bridge, got ${requested}`,
+    );
+  }
+  if (benchmarkProfile.executor === 'pier') {
+    if (requested === 'host-bridge') {
+      throw new Error('the pier executor always runs the Maka arm in the task container');
+    }
+    return 'task-container';
+  }
+  return requested === 'task-container' ? 'task-container' : 'host-bridge';
+}
+
+/**
+ * The Ubuntu apt hosts a task container reaches, and where they point.
+ *
+ * Terminal-Bench task images are bare `ubuntu:24.04` plus curl, so most tasks
+ * apt-install what they need and the benchmark silently depends on
+ * archive.ubuntu.com being reachable from the run host. Where that link is
+ * degraded the dependency stops being a constant and becomes noise: the same
+ * arm on the same task finished in 479s on one run and hit the 900s deadline on
+ * the next, issuing an identical 24 tool calls both times, with the entire
+ * difference sitting in how long apt stalled. Noise of that shape does not
+ * cancel across arms — it charges whichever agent happened to need more
+ * packages, which is not the thing this benchmark is trying to measure.
+ *
+ * Redirecting is opt-in, and recorded in the manifest, because it changes the
+ * environment every task runs in. It changes no task image and no sources list:
+ * the container still resolves and requests archive.ubuntu.com, so what an
+ * agent observes — and what its trace shows it observed — is unchanged.
+ */
+export const UBUNTU_APT_HOSTS = ['archive.ubuntu.com', 'security.ubuntu.com'];
+
+export function harnessAptMirror(benchmarkProfile, env = process.env) {
+  const name = (env.MAKA_HARNESS_AB_APT_MIRROR || '').trim() || null;
+  // Only the harbor runner layers the overlay, so a pier run would record a
+  // redirect in its manifest that no cell performed, and fork its identity on
+  // that false record. Refuse the combination rather than silently dropping the
+  // mirror, the same way the placement guard refuses host-bridge under pier.
+  if (name && benchmarkProfile.executor === 'pier') {
+    throw new Error('the pier executor does not redirect package hosts');
+  }
+  return name;
+}
+
+/**
+ * Compose only accepts a literal address in `extra_hosts`, so the mirror name is
+ * resolved once per run rather than per cell. Pinning the address is also what
+ * makes the redirect reportable: the manifest records the address every cell
+ * actually used, not a name that could have resolved differently under each.
+ */
+export function aptMirrorComposeContent(address) {
+  if (!address) throw new Error('apt mirror address is required');
+  const entries = UBUNTU_APT_HOSTS.map((host) => `      - '${host}:${address}'`).join('\n');
+  return `services:\n  main:\n    extra_hosts:\n${entries}\n`;
+}
+
+export function harnessMakaAgentEnv(benchmarkProfile, env = process.env) {
   return {
-    ...(benchmarkProfile.executor === 'pier' ? { MAKA_HARBOR_MODE: 'task-run' } : {}),
+    ...(harnessMakaPlacement(benchmarkProfile, env) === 'task-container'
+      ? { MAKA_HARBOR_MODE: 'task-run' }
+      : {}),
     ...harnessMakaContextBudgetEnv(),
   };
 }
@@ -798,9 +873,12 @@ export function buildHarnessAbManifest({
   oracleEvidence,
   credentialIdentity,
   pierVersion = null,
+  aptMirrorAddress = null,
+  env = process.env,
 }) {
   assertResolvedHarnessComposition(composition);
   const { benchmarkProfile, runtimeProfile, competitorProfiles } = composition;
+  const makaPlacement = harnessMakaPlacement(benchmarkProfile, env);
   const resolvedTaskIds = taskIds ?? benchmarkProfile.taskIds;
   const resolvedPairConcurrency =
     pairConcurrency ?? Math.min(DEFAULT_PAIR_CONCURRENCY, resolvedTaskIds.length);
@@ -820,6 +898,19 @@ export function buildHarnessAbManifest({
       // task-native model budget, so every arm gets the same model time.
       agentSettlementGraceSec: MAKA_SETTLEMENT_GRACE_SEC,
       outerTimeoutGraceSec: HARBOR_SETUP_TEARDOWN_GRACE_SEC,
+      // Recorded only when the run redirects apt, for the same reason the Maka
+      // arm records its placement only when it moves: every existing run fetched
+      // packages from Ubuntu's own hosts, and saying so explicitly would fork
+      // their fingerprints without changing what they ran.
+      ...(aptMirrorAddress
+        ? {
+            packageMirror: {
+              hosts: UBUNTU_APT_HOSTS,
+              name: harnessAptMirror(benchmarkProfile, env),
+              address: aptMirrorAddress,
+            },
+          }
+        : {}),
     },
     taskIds: resolvedTaskIds,
     orderSeed: `${benchmarkProfile.id}:${execution.model}:harness-comparison:v1`,
@@ -849,7 +940,13 @@ export function buildHarnessAbManifest({
           attemptPolicy: 'single',
           billingMode: runtimeProfile.billingMode,
           contextBudget: HARNESS_MAKA_CONTEXT_BUDGET,
-          ...(benchmarkProfile.executor === 'pier'
+          // Recorded only where this arm leaves its historical placement. The
+          // fingerprint is an experiment's identity, and host-bridge Maka is
+          // the experiment every existing run already is: describing it more
+          // fully would fork their identity without changing what they ran.
+          // Moving into the task container is a different experiment, and gets
+          // a different fingerprint because it deserves one.
+          ...(makaPlacement === 'task-container'
             ? {
                 execution: {
                   placement: 'task-container',
@@ -876,7 +973,15 @@ export function buildHarnessAbManifest({
           billingMode: runtimeProfile.billingMode,
           externalSystemPrompt: 'none',
           profile: profile.id,
-          ...(benchmarkProfile.executor === 'pier'
+          // Placement is declared by every arm or by none: the report refuses a
+          // manifest where only some arms state where they ran, because a
+          // comparison that names one arm's environment and not the others'
+          // invites the reader to assume they shared it. These arms have always
+          // run in the task container, so the condition is really about the
+          // Maka arm — once it joins them the fact is worth stating, and while
+          // it bridges from the host no existing manifest states it at all.
+          // Pier reaches this through the same door: it forces task-container.
+          ...(makaPlacement === 'task-container'
             ? { execution: { placement: 'task-container' } }
             : {}),
         },
@@ -1077,13 +1182,16 @@ async function runLocked({
   });
 
   const pierVersion = benchmarkProfile.executor === 'pier' ? await readPierVersion() : null;
+  const makaPlacement = harnessMakaPlacement(benchmarkProfile);
+  const aptMirrorName = harnessAptMirror(benchmarkProfile);
+  const aptMirrorAddress = aptMirrorName ? (await lookup(aptMirrorName)).address : null;
   const toolchainFingerprint = buildHarnessAbToolchainFingerprint({
     hostToolchainFingerprint,
     competitorProfile,
     competitorProfiles,
     pierVersion,
     makaNodeToolchainFingerprint:
-      benchmarkProfile.executor === 'pier' ? MAKA_NODE_TOOLCHAIN_FINGERPRINT : null,
+      makaPlacement === 'task-container' ? MAKA_NODE_TOOLCHAIN_FINGERPRINT : null,
   });
   const proposedManifest = buildHarnessAbManifest({
     subjectFingerprint,
@@ -1096,6 +1204,7 @@ async function runLocked({
     ...(oracleEvidence ? { oracleEvidence } : {}),
     credentialIdentity: credentials.credentialIdentity,
     pierVersion,
+    aptMirrorAddress,
   });
   const manifest = await resolveHarnessAbManifestForRun({
     manifestPath,
@@ -1116,10 +1225,14 @@ async function runLocked({
     ]),
   );
   const makaNodeToolchain =
-    benchmarkProfile.executor === 'pier' ? resolveHarnessMakaNodeToolchain(runRoot) : null;
+    makaPlacement === 'task-container' ? resolveHarnessMakaNodeToolchain(runRoot) : null;
+  const aptMirrorComposePath = aptMirrorAddress ? join(runRoot, 'apt-mirror.compose.yaml') : null;
   await Promise.all([
     ...[...competitorToolchains.values()].map((toolchain) => toolchain.prepare(toolchain.path)),
     makaNodeToolchain?.prepare(makaNodeToolchain.path),
+    aptMirrorComposePath
+      ? writeFile(aptMirrorComposePath, aptMirrorComposeContent(aptMirrorAddress))
+      : null,
   ]);
 
   const execution = buildHarnessExecutionProfile(runtimeProfile);
@@ -1163,6 +1276,7 @@ async function runLocked({
           : {
               agentEnv: { MAKA_BASE_URL: execution.baseUrl },
               dockerPlatform: 'linux/amd64',
+              ...(aptMirrorComposePath ? { aptMirrorComposePath } : {}),
             }),
       };
       const config = (id) => ({
@@ -1182,6 +1296,15 @@ async function runLocked({
             ...runnerOptions,
             agent: 'maka',
             agentEnv: { ...runnerOptions.agentEnv, ...harnessMakaAgentEnv(benchmarkProfile) },
+            // Harbor needs both to place the arm: the placement decides the
+            // provider channel and the loopback address, the toolchain is what
+            // the container has to execute the repo mount with.
+            ...(benchmarkProfile.executor === 'pier'
+              ? {}
+              : {
+                  makaPlacement,
+                  ...(makaNodeToolchain ? { makaNodeToolchainPath: makaNodeToolchain.path } : {}),
+                }),
           }),
         },
         ...competitorProfiles.map((profile) => {

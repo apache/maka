@@ -1,0 +1,6 @@
+# Git on Windows converts LF to CRLF in the working tree by default. That breaks
+# every byte comparison against a generated file — `npm run check:third-party-notices`
+# fails on a checkout it has not touched — and it would ship license text whose
+# bytes differ from the macOS build of the same release. Nothing in this
+# repository needs CRLF, so the working tree stays LF everywhere.
+* text=auto eol=lf

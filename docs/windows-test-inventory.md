@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 28 |
+| windows-backend-gap | 29 |
 | portable-candidate | 21 |
 | platform-contract | 16 |
 
-Total Windows-excluded declarations: **65**
+Total Windows-excluded declarations: **66**
 
 ## Inventory
 
@@ -35,6 +35,7 @@ Total Windows-excluded declarations: **65**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/agent-graph-two-client-uds.test.ts` two UDS Clients query and control one Agent graph through Session invalidation | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/artifact-two-client-uds.test.ts` production Host recovers Artifact publication and preserves deletes across owner death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/automation-two-client-uds.test.ts` two UDS Clients share one revision-pinned Automation authority | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/daily-review-two-client-uds.test.ts` two UDS Clients share Daily Review config, generation, and restart recovery | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/deep-research-two-client-uds.test.ts` two UDS Clients and a restarted production Host share one Deep Research projection | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-host-queue.test.ts` a killed Host is recovered exactly once before its successor becomes ready | `process.platform === 'win32' ? 'POSIX process death gate' : false` |

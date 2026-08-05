@@ -15,11 +15,16 @@ const sessionBundleCodecEntrypoints = [
   join(sourceRoot, 'session-bundle-contract.ts'),
   join(sourceRoot, 'session-bundle-manifest.ts'),
   join(sourceRoot, 'session-bundle-canonical-tree.ts'),
+  join(sourceRoot, 'session-bundle-ustar.ts'),
+  join(sourceRoot, 'session-bundle-file-service.ts'),
 ];
 const allowedSessionBundleCodecLocalModules = new Set([
   'session-bundle-contract.ts',
   'session-bundle-manifest.ts',
   'session-bundle-canonical-tree.ts',
+  'session-bundle-ustar.ts',
+  'session-bundle-file-service.ts',
+  'stable-storage.ts',
 ]);
 const allowedAuthorityExternalImports = new Set([
   'fs-native-extensions',
@@ -29,7 +34,17 @@ const allowedAuthorityExternalImports = new Set([
   'node:os',
   'node:path',
 ]);
-const allowedSessionBundleCodecExternalImports = new Set(['node:buffer', 'node:crypto']);
+const allowedSessionBundleCodecExternalImports = new Set([
+  'fs-native-extensions',
+  'node:buffer',
+  'node:crypto',
+  'node:fs',
+  'node:fs/promises',
+  'node:path',
+  'node:stream',
+  'node:stream/promises',
+  'node:zlib',
+]);
 
 async function dependencyScannerFixture(target: string): Promise<void> {
   await import(`node:url`);

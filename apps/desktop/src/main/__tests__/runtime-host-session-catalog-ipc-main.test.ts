@@ -26,6 +26,7 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
       client,
       workspaceRoot: '/workspace',
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+      releaseSessionResources() {},
       newId: () => `session-${++sequence}`,
     },
     ipc,
@@ -81,6 +82,7 @@ test('filters linked subagents without exposing the filter to the Host protocol'
       client,
       workspaceRoot: '/workspace',
       emitSessionsChanged() {},
+      releaseSessionResources() {},
     },
     ipc,
   );
@@ -103,6 +105,7 @@ test('applies family metadata and retirement actions through Host-owned operatio
   const metadata: unknown[] = [];
   const lifecycle: unknown[] = [];
   const removed: string[] = [];
+  const released: string[] = [];
   const root = session('root', { revisionRootSessionId: 'root' });
   const revision = session('revision', { revisionRootSessionId: 'root' });
   const client = catalogClient({
@@ -125,6 +128,9 @@ test('applies family metadata and retirement actions through Host-owned operatio
       client,
       workspaceRoot: '/workspace',
       emitSessionsChanged() {},
+      releaseSessionResources: async (sessionId) => {
+        released.push(sessionId);
+      },
     },
     ipc,
   );
@@ -139,6 +145,7 @@ test('applies family metadata and retirement actions through Host-owned operatio
   ]);
   assert.deepEqual(lifecycle, [{ sessionId: 'root', state: 'archived' }]);
   assert.deepEqual(removed, ['revision']);
+  assert.deepEqual(released, ['root', 'revision', 'root', 'revision']);
 });
 
 test('normalizes renderer configuration actions into Host patches', async () => {
@@ -155,6 +162,7 @@ test('normalizes renderer configuration actions into Host patches', async () => 
       client,
       workspaceRoot: '/workspace',
       emitSessionsChanged() {},
+      releaseSessionResources() {},
     },
     ipc,
   );

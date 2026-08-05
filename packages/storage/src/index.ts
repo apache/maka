@@ -136,3 +136,5 @@ export * from './session-bundle-policy.js';
 export * from './session-bundle-contract.js';
 export * from './session-bundle-manifest.js';
 export * from './session-bundle-canonical-tree.js';
+export * from './session-bundle-ustar.js';
+export * from './session-bundle-file-service.js';

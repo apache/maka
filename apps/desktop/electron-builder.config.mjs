@@ -105,6 +105,21 @@ export default {
     // in latest-mac.yml.
     writeUpdateInfo: false,
   },
+  win: {
+    target: [
+      { target: 'nsis', arch: ['x64'] },
+      { target: 'zip', arch: ['x64'] },
+    ],
+    artifactName: 'Maka-${version}-win-${arch}.${ext}',
+    icon: 'assets/icon.png',
+    // No Authenticode certificate yet. Being unsigned is the absence of one:
+    // electron-builder skips signing when no certificate is configured, and
+    // `forceCodeSigning` is left off so that skip is not an error. Nothing here
+    // turns update signature verification off, because nothing has to: without a
+    // certificate there is no publisher name to put in app-update.yml, and
+    // electron-updater skips the check when there is none. Adding a certificate
+    // is then the whole change — the verification follows it.
+  },
   publish: [
     {
       provider: 'github',

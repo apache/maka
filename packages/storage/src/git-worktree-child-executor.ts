@@ -42,6 +42,17 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
 
   constructor(private readonly worktreeRoot: string) {}
 
+  async isAvailable(
+    input: Pick<ProvisionSubagentWorktreeInput, 'sourceCwd' | 'sourceProjectId'>,
+  ): Promise<boolean> {
+    try {
+      const source = await resolveProjectLocation({ path: input.sourceCwd });
+      return source.kind === 'git' && source.git !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   async provision(input: ProvisionSubagentWorktreeInput): Promise<SubagentWorkspaceBinding> {
     const suffix = leaseSuffix(input.leaseId);
     const existing = this.inFlight.get(input.leaseId);

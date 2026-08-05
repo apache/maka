@@ -1,8 +1,8 @@
 diff --git a/node_modules/@ai-sdk/provider-utils/dist/index.js b/node_modules/@ai-sdk/provider-utils/dist/index.js
-index 851fce4..2e78ce1 100644
+index 9260b6b..9386230 100644
 --- a/node_modules/@ai-sdk/provider-utils/dist/index.js
 +++ b/node_modules/@ai-sdk/provider-utils/dist/index.js
-@@ -3537,6 +3537,9 @@ function resolveSync(value) {
+@@ -3728,11 +3728,12 @@ function resolveSync(value) {
  import {
    InvalidResponseDataError
  } from "@ai-sdk/provider";
@@ -11,19 +11,23 @@ index 851fce4..2e78ce1 100644
 +}
  var StreamingToolCallTracker = class {
    constructor(controller, options = {}) {
-     this.toolCalls = [];
-@@ -3554,26 +3557,75 @@ var StreamingToolCallTracker = class {
+-    this.toolCalls = /* @__PURE__ */ new Set();
+-    this.toolCallsById = /* @__PURE__ */ new Map();
+-    this.toolCallsByIndex = /* @__PURE__ */ new Map();
++    this.toolCalls = [];
+     var _a3, _b3;
+     this.controller = controller;
+     this._generateId = (_a3 = options.generateId) != null ? _a3 : generateId;
+@@ -3746,31 +3747,90 @@ var StreamingToolCallTracker = class {
+    * events as appropriate.
     */
    processDelta(toolCallDelta) {
-     var _a2;
--    const index = (_a2 = toolCallDelta.index) != null ? _a2 : this.toolCalls.length;
--    if (this.toolCalls[index] == null) {
--      this.processNewToolCall(index, toolCallDelta);
--    } else {
--      this.processExistingToolCall(index, toolCallDelta);
+-    const { id, index } = toolCallDelta;
+-    let toolCall = id != null && id.length > 0 ? this.toolCallsById.get(id) : index != null ? this.toolCallsByIndex.get(index) : this.latestToolCall;
++    var _a3;
 +    const wireId = absentIfBlank(toolCallDelta.id);
 +    const wireIndex = toolCallDelta.index != null ? toolCallDelta.index : void 0;
-+    const wireName = absentIfBlank((_a2 = toolCallDelta.function) == null ? void 0 : _a2.name);
++    const wireName = absentIfBlank((_a3 = toolCallDelta.function) == null ? void 0 : _a3.name);
 +    let toolCall = this.findByAlias(wireId, wireIndex, wireName);
 +    if (toolCall == null && this.toolCalls.length === 1) {
 +      const only = this.toolCalls[0];
@@ -31,16 +35,22 @@ index 851fce4..2e78ce1 100644
 +        toolCall = only;
 +      }
 +    }
-+    if (toolCall == null) {
+     if (toolCall == null) {
+-      toolCall = this.processNewToolCall(toolCallDelta);
+-    } else {
+-      this.processExistingToolCall(toolCall, toolCallDelta);
 +      this.processNewToolCall(toolCallDelta, wireId, wireIndex, wireName);
 +      return;
-+    }
+     }
+-    if (index != null) {
+-      this.toolCallsByIndex.set(index, toolCall);
 +    if (wireId !== void 0) {
 +      toolCall.wireId = wireId;
-+    }
+     }
+-    this.latestToolCall = toolCall;
 +    if (wireIndex !== void 0) {
 +      toolCall.index = wireIndex;
-     }
++    }
 +    this.processExistingToolCall(toolCall, toolCallDelta);
 +  }
 +  /**
@@ -53,6 +63,17 @@ index 851fce4..2e78ce1 100644
 +   * it reaches a call whose claim on the alias a later call has already superseded, which
 +   * files a whole new call as a continuation of one two positions back.
 +   */
++  /**
++   * Whether an alias the delta carries, but the matched call has not claimed, belongs to some
++   * other call. The delta then addresses two calls at once, which resolves to neither — the
++   * other claimant cannot be it either, because the alias it did match rejected that call
++   * already. Agreement has to be read across the record set: a candidate missing the alias is
++   * not contradicted by it on its own, and reading only the candidate let exactly this
++   * contradiction resolve, silently, onto a call the gateway never addressed.
++   */
++  claimedByAnother(candidate, alias, value) {
++    return value !== void 0 && candidate[alias] === void 0 && this.toolCalls.some((other) => other !== candidate && other[alias] === value);
++  }
 +  findByAlias(wireId, wireIndex, wireName) {
 +    for (let position = this.toolCalls.length - 1; position >= 0; position--) {
 +      const candidate = this.toolCalls[position];
@@ -70,6 +91,9 @@ index 851fce4..2e78ce1 100644
 +        matched = true;
 +      }
 +      if (matched) {
++        if (this.claimedByAnother(candidate, "wireId", wireId) || this.claimedByAnother(candidate, "index", wireIndex)) {
++          return void 0;
++        }
 +        return wireName !== void 0 && candidate.function.name !== wireName ? void 0 : candidate;
 +      }
 +    }
@@ -89,14 +113,14 @@ index 851fce4..2e78ce1 100644
        }
      }
    }
--  processNewToolCall(index, toolCallDelta) {
--    var _a2, _b2, _c;
+-  processNewToolCall(toolCallDelta) {
+-    var _a3, _b3, _c;
 +  processNewToolCall(toolCallDelta, wireId, wireIndex, wireName) {
-+    var _a2, _b2;
++    var _a3, _b3;
      if (this.typeValidation === "required") {
        if (toolCallDelta.type !== "function") {
          throw new InvalidResponseDataError({
-@@ -3589,35 +3641,32 @@ var StreamingToolCallTracker = class {
+@@ -3786,38 +3846,32 @@ var StreamingToolCallTracker = class {
          });
        }
      }
@@ -106,7 +130,7 @@ index 851fce4..2e78ce1 100644
 -        message: `Expected 'id' to be a string.`
 -      });
 -    }
--    if (((_a2 = toolCallDelta.function) == null ? void 0 : _a2.name) == null) {
+-    if (((_a3 = toolCallDelta.function) == null ? void 0 : _a3.name) == null) {
 +    if (wireName === void 0) {
        throw new InvalidResponseDataError({
          data: toolCallDelta,
@@ -121,18 +145,17 @@ index 851fce4..2e78ce1 100644
 +      id: mintedId,
 +      toolName: wireName
      });
--    const metadata = (_b2 = this.extractMetadata) == null ? void 0 : _b2.call(this, toolCallDelta);
--    this.toolCalls[index] = {
+-    const metadata = (_b3 = this.extractMetadata) == null ? void 0 : _b3.call(this, toolCallDelta);
++    const metadata = (_a3 = this.extractMetadata) == null ? void 0 : _a3.call(this, toolCallDelta);
+     const toolCall = {
 -      id: toolCallDelta.id,
-+    const metadata = (_a2 = this.extractMetadata) == null ? void 0 : _a2.call(this, toolCallDelta);
-+    const toolCall = {
 +      id: mintedId,
        type: "function",
        function: {
 -        name: toolCallDelta.function.name,
 -        arguments: (_c = toolCallDelta.function.arguments) != null ? _c : ""
 +        name: wireName,
-+        arguments: (_b2 = toolCallDelta.function.arguments) != null ? _b2 : ""
++        arguments: (_b3 = toolCallDelta.function.arguments) != null ? _b3 : ""
        },
        hasFinished: false,
 -      metadata
@@ -140,19 +163,11 @@ index 851fce4..2e78ce1 100644
 +      wireId,
 +      index: wireIndex
      };
--    const toolCall = this.toolCalls[index];
+-    this.toolCalls.add(toolCall);
+-    if (toolCall.id.length > 0) {
+-      this.toolCallsById.set(toolCall.id, toolCall);
+-    }
 +    this.toolCalls.push(toolCall);
      if (toolCall.function.arguments.length > 0) {
        this.controller.enqueue({
          type: "tool-input-delta",
-@@ -3626,9 +3675,8 @@ var StreamingToolCallTracker = class {
-       });
-     }
-   }
--  processExistingToolCall(index, toolCallDelta) {
-+  processExistingToolCall(toolCall, toolCallDelta) {
-     var _a2;
--    const toolCall = this.toolCalls[index];
-     if (toolCall.hasFinished) {
-       return;
-     }

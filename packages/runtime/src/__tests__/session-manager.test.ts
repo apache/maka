@@ -875,6 +875,48 @@ describe('SessionManager graph operator provisioning', () => {
     expect(outputs[4]?.result?.text).toBe('Replacement branch completed with a verified answer.');
   });
 
+  test('does not advertise implementation when the current project cannot use worktrees', async () => {
+    const store = new MemorySessionStore();
+    const checkedSources: unknown[] = [];
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      childTools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'].map(testTool),
+      worktreeChildExecutor: {
+        isAvailable: async (input) => {
+          checkedSources.push(input);
+          return false;
+        },
+        provision: async () => {
+          throw new Error('unavailable executor must not provision');
+        },
+        ensure: async () => {},
+        capturePatch: async () => new Uint8Array(),
+        recover: async () => {},
+        retire: async () => {},
+      },
+      newId: nextId(),
+      now: nextNow(40),
+    });
+    const parent = await manager.createSession(
+      makeInput({ cwd: '/tmp/plain-folder', projectId: 'plain-project' }),
+    );
+
+    const implementation = (await manager.listChildAgents(parent.id)).definitions.find(
+      (definition) => definition.id === IMPLEMENTATION_AGENT_ID,
+    );
+
+    expect(checkedSources).toEqual([
+      { sourceCwd: '/tmp/plain-folder', sourceProjectId: 'plain-project' },
+    ]);
+    expect(implementation?.availability).toEqual({
+      status: 'unavailable',
+      reason: 'workspace_isolation_unavailable',
+      workspace: AGENT_WORKSPACE_WORKTREE,
+      requiredRuntime: 'worktree_child_executor',
+    });
+  });
+
   test('binds implementation operators to a durable project worktree', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -895,6 +937,7 @@ describe('SessionManager graph operator provisioning', () => {
       backends: new BackendRegistry(),
       childTools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'].map(testTool),
       worktreeChildExecutor: {
+        isAvailable: async () => true,
         provision: async (input) => {
           provisioned.push(input);
           return {
@@ -1044,6 +1087,7 @@ describe('SessionManager graph operator provisioning', () => {
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
       worktreeChildExecutor: {
+        isAvailable: async () => true,
         provision: async () => binding,
         ensure: async () => {},
         capturePatch: async () => {

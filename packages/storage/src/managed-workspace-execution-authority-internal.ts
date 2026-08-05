@@ -76,8 +76,7 @@ export function requireManagedWorkspaceExecutionHandleInternal(
   return state;
 }
 
-/** Package-internal evidence access for storage contract and crash tests. */
-export function inspectManagedWorkspaceExecutionHandleInternal(
+function inspectManagedWorkspaceExecutionHandleForTest(
   handle: ManagedWorkspaceExecutionHandle,
 ): ManagedWorkspaceExecutionAuthorityStateInternal {
   const state = states.get(handle);
@@ -108,8 +107,27 @@ export function revokeManagedWorkspaceExecutionScopeInternal(
   state.active = false;
 }
 
-/** Package-internal active-scope evidence access for storage contract tests. */
-export function inspectManagedWorkspaceExecutionScopeInternal(
+export function requireManagedWorkspaceExecutionScopeInternal(
+  ownerToken: object,
+  scope: ManagedWorkspaceExecutionScope,
+): ManagedWorkspaceExecutionScopeStateInternal {
+  const state = scopes.get(scope);
+  if (!state || state.ownerToken !== ownerToken) {
+    throw new ManagedWorkspaceExecutionAuthorityError(
+      'managed_workspace_execution_scope_invalid',
+      'Managed workspace execution scope is invalid for this owner',
+    );
+  }
+  if (!state.active) {
+    throw new ManagedWorkspaceExecutionAuthorityError(
+      'managed_workspace_execution_scope_expired',
+      'Managed workspace execution scope has expired',
+    );
+  }
+  return state;
+}
+
+function inspectManagedWorkspaceExecutionScopeForTest(
   scope: ManagedWorkspaceExecutionScope,
 ): ManagedWorkspaceExecutionScopeStateInternal {
   const state = scopes.get(scope);
@@ -127,3 +145,12 @@ export function inspectManagedWorkspaceExecutionScopeInternal(
   }
   return state;
 }
+
+/**
+ * Test-only evidence access. Production consumers must use the owner-bound
+ * require* functions and may never decode a handle or scope without its owner token.
+ */
+export const managedWorkspaceExecutionAuthorityTestSupport = Object.freeze({
+  inspectHandle: inspectManagedWorkspaceExecutionHandleForTest,
+  inspectScope: inspectManagedWorkspaceExecutionScopeForTest,
+});

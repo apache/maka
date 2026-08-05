@@ -15,6 +15,8 @@ export const E2E_FIXTURE_NOW = Date.UTC(2026, 4, 22, 3, 0, 0);
 
 export const TURN_SESSION_ID = 'e2e-fixture-turn';
 export const LONG_TRANSCRIPT_SESSION_ID = 'e2e-fixture-long-transcript';
+export const SHORT_FINAL_TURN_SESSION_ID = 'e2e-fixture-short-final-turn';
+export const OVERFLOWING_RAIL_SESSION_ID = 'e2e-fixture-overflowing-rail';
 export const PROCESSING_SESSION_ID = 'e2e-fixture-processing';
 export const STREAMING_SESSION_ID = 'e2e-fixture-streaming';
 export const PERMISSION_SESSION_ID = 'e2e-fixture-permission';

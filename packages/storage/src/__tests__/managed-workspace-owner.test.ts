@@ -15,8 +15,7 @@ import {
   type ManagedWorkspaceExecutionScope,
 } from '../managed-workspace-owner.js';
 import {
-  inspectManagedWorkspaceExecutionHandleInternal,
-  inspectManagedWorkspaceExecutionScopeInternal,
+  managedWorkspaceExecutionAuthorityTestSupport,
   ManagedWorkspaceExecutionAuthorityError,
 } from '../managed-workspace-execution-authority-internal.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
@@ -24,6 +23,10 @@ import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
+const {
+  inspectHandle: inspectManagedWorkspaceExecutionHandleInternal,
+  inspectScope: inspectManagedWorkspaceExecutionScopeInternal,
+} = managedWorkspaceExecutionAuthorityTestSupport;
 let gitExecutablePath: string;
 let gitExecutableSha256: `sha256:${string}`;
 
@@ -119,9 +122,13 @@ test('creates an accepted managed baseline only through the active owner', async
       runtimeStore,
       openRequest(sourceRoot),
     );
-    const { binding } = inspectManagedWorkspaceExecutionHandleInternal(accepted.executionHandle);
+    const { binding, receipt } = inspectManagedWorkspaceExecutionHandleInternal(
+      accepted.executionHandle,
+    );
 
     assert.equal(binding.sourceTreeOid, binding.baselineTreeOid);
+    assert.notEqual(binding, receipt.binding);
+    assert.deepEqual(binding, receipt.binding);
     assert.equal(existsSync(join(binding.worktreePath, '.maka-workspace.json')), false);
     await owner.close();
   } finally {
@@ -160,6 +167,16 @@ test('publishes only a revocable execution scope through its accepted handle', a
         retainedScope = scope;
         assert.equal('cwd' in scope, false);
         assert.equal(scope.kind, 'managed_workspace_execution_scope_v1');
+        await assert.rejects(
+          () =>
+            owner.executeReadOnlyFilesystemOperation(scope, {
+              kind: 'read',
+              path: 'README.md',
+            }),
+          (error) =>
+            error instanceof ManagedWorkspaceOwnerError &&
+            error.code === 'managed_workspace_worker_unavailable',
+        );
         return 'admitted';
       },
     );
@@ -489,6 +506,147 @@ test('drains an admitted managed execution before owner close completes', async 
   } finally {
     releaseExecution();
     await Promise.allSettled([executing, closing].filter((value) => value !== undefined));
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('routes read-only execution through the owner-bound worker bridge', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  const workerCalls: Array<{ cwd: string; operation: { kind: string } }> = [];
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      filesystemWorker: {
+        async execute(input) {
+          workerCalls.push(input);
+          return { kind: 'read', content: 'ok' };
+        },
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    await owner.withManagedWorkspaceExecution(accepted.executionHandle, async (scope) => {
+      assert.deepEqual(
+        await owner.executeReadOnlyFilesystemOperation(scope, {
+          kind: 'read',
+          path: 'README.md',
+        }),
+        { kind: 'read', content: 'ok' },
+      );
+    });
+
+    assert.equal(workerCalls.length, 1);
+    assert.equal(workerCalls[0]?.operation.kind, 'read');
+    assert.equal(workerCalls[0]?.cwd.endsWith('worktree'), true);
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('revokes the scope and releases owner residency when the filesystem worker fails', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let retainedScope: ManagedWorkspaceExecutionScope | undefined;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      filesystemWorker: {
+        async execute() {
+          throw new Error('simulated filesystem worker crash');
+        },
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(accepted.executionHandle, async (scope) => {
+        retainedScope = scope;
+        return await owner.executeReadOnlyFilesystemOperation(scope, {
+          kind: 'read',
+          path: 'README.md',
+        });
+      }),
+      /simulated filesystem worker crash/u,
+    );
+
+    if (!retainedScope) throw new Error('Execution callback did not expose its scope');
+    const expiredScope = retainedScope;
+    assert.throws(
+      () => inspectManagedWorkspaceExecutionScopeInternal(expiredScope),
+      /execution scope has expired/u,
+    );
+    await owner.close();
+    assert.equal(owner.state, 'closed');
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('rejects owner close reentrancy from an active execution callback', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    await owner.withManagedWorkspaceExecution(accepted.executionHandle, async () => {
+      const disposition = await Promise.race([
+        owner.close().then(
+          () => 'closed' as const,
+          (error: unknown) => error,
+        ),
+        delay(250, 'pending' as const),
+      ]);
+      assert.ok(isOwnerError('managed_workspace_owner_reentrant_close')(disposition));
+    });
+
+    assert.equal(owner.state, 'ready');
+    await owner.close();
+    assert.equal(owner.state, 'closed');
+  } finally {
     runtimeStore.close();
     await rootOwner.close();
   }

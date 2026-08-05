@@ -18,6 +18,7 @@
     "./interaction-store": "./dist/interaction-store-public.js",
     "./git-worktree-child-executor": "./dist/git-worktree-child-executor.js",
     "./memory-bundle-store": "./dist/memory-bundle-store.js",
+    "./managed-workspace-owner": "./dist/managed-workspace-owner.js",
     "./long-term-memory-store": "./dist/long-term-memory-store.js",
     "./root-authority": "./dist/root-authority.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",

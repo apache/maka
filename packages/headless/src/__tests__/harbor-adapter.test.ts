@@ -1806,6 +1806,19 @@ with tempfile.TemporaryDirectory() as tmp:
             self.domains = domains or []
 
     original_network_allowlist = maka_agent_mod._NetworkAllowlist
+
+    # Plain Harbor exports no NetworkAllowlist, and the placement gate must not
+    # care. Requiring one made this the single arm that had to satisfy a
+    # Pier-only condition to stand where its competitors already stood -- and
+    # because the manifest declares task-container either way, a regression
+    # here runs on the host while the report says otherwise.
+    maka_agent_mod._NetworkAllowlist = None
+    plain_harbor_task_run = MakaAgent(Path(tmp), extra_env={"MAKA_HARBOR_MODE": "task-run"})
+    assert plain_harbor_task_run._task_run_in_container() is True
+    assert plain_harbor_task_run.network_allowlist() is None
+    plain_harbor_cell = MakaAgent(Path(tmp), extra_env={})
+    assert plain_harbor_cell._task_run_in_container() is False
+
     maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
     os.environ["MAKA_PROVIDER_PROXY_URL"] = "http://host.docker.internal:443"
     os.environ["MAKA_PROVIDER_PROXY_TOKEN"] = "ephemeral-token"

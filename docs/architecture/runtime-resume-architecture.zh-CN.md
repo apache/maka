@@ -777,7 +777,7 @@ Resume 的 workspace plane 已经有一层 storage-owned 的执行准入地基�
 - `close()` 拒绝新 admission，并等待所有 active scope drain；callback 退出后 scope 立即失效，伪造与过期分别返回 typed `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；
 - crash harness 可配置 preliminary-verification failpoint，但该测试路径仍须再次通过 final verification 才能签发 scope。
 
-这只证明 cooperating Maka writer 下的 proof-to-scope seam，不等于 workspace-bound resume 已可用。M1.2 仍须提供真实的 storage-internal worker consumer、managed/attached typed profile、只读工具 allowlist、callback 内 reentrant `close()` guard，以及 tool operations → managed owner → root owner 的关闭顺序。在这些门完成前，Desktop、CLI、Runtime host 都不得获得 raw managed cwd，Write/Edit/Bash/未知工具必须 fail closed，也不得从 managed mode 静默 fallback 到 attached checkout。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
+M1.2 在同一交付中完成 owner-bound storage worker bridge 与 runtime-host lifecycle composition：只允许 Read/Glob/Grep，把无 owner 校验的 inspect 降为显式 test support，拒绝 active callback 内 reentrant `owner.close()`，用不可混淆的 attached/managed typed profile 阻止 silent fallback，并固定 tool operations → managed owner → root owner 的关闭顺序。本切片不让 Desktop/CLI 默认开启 managed execution；Write/Edit/Format/Bash/未知工具必须 fail closed。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
 ### Headless / Harbor
 

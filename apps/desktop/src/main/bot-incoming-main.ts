@@ -10,23 +10,10 @@ import {
   nonTextMessageAck,
   plaintextHelpReply,
 } from '@maka/core';
-import type {
-  SessionChangedEvent,
-  SessionChangedReason,
-  SessionEvent,
-} from '@maka/core';
-import type {
-  BotIncomingMessage,
-  BotRegistry,
-  GoalTurnOutcome,
-  SessionManager,
-} from '@maka/runtime';
-import type { DesktopCreateSessionInput } from './new-session-project.js';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
+import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
+import { isBotSessionUnavailableError } from './bot-session-adapter.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';
-import {
-  assertSessionCanSendFromHeader,
-  isSessionLifecycleError,
-} from './session-lifecycle.js';
 
 const BOT_RECENT_SOURCE_EVENT_LIMIT = 1_000;
 const BOT_RECENT_SOURCE_EVENT_TTL_MS = 60 * 60 * 1_000;
@@ -44,36 +31,12 @@ interface BotConversationRateBucket {
 export interface BotIncomingMainService {
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   invalidateSessionBindings(sessionId: string): void;
+  close(): Promise<void>;
 }
 
 interface BotIncomingMainServiceDeps {
-  runtime: SessionManager;
-  createSession: (
-    input: DesktopCreateSessionInput,
-  ) => ReturnType<SessionManager['createSession']>;
+  sessions: BotSessionAdapter;
   botRegistry: BotRegistry;
-  getDefaultConnectionSlug(): Promise<string | null>;
-  getReadyConnection(
-    slug: string | null | undefined,
-    model?: string,
-  ): Promise<{ connection: { slug: string }; model: string }>;
-  readSessionHeader(sessionId: string): Promise<{
-    permissionMode: string;
-    isArchived: boolean;
-    status: string;
-  }>;
-  ensureSessionCanSend(sessionId: string): Promise<void>;
-  emitSessionsChanged(
-    reason: SessionChangedReason,
-    sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId'>,
-  ): void;
-  runAgentTurn(input: {
-    sessionId: string;
-    iterator: AsyncIterable<SessionEvent>;
-    turnId: string;
-    onEvent: (event: SessionEvent) => void;
-  }): Promise<{ outcome: GoalTurnOutcome; error?: string }>;
 }
 
 export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): BotIncomingMainService {
@@ -81,6 +44,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   const botConversationQueues = new Map<string, Promise<void>>();
   const botRecentSourceEventKeys = new Map<string, number>();
   const botConversationRateBuckets = new Map<string, BotConversationRateBucket>();
+  const activeTasks = new Set<Promise<void>>();
+  let closed = false;
+  let closeTask: Promise<void> | undefined;
 
   function invalidateSessionBindings(sessionId: string): void {
     for (const [conversationKey, boundSessionId] of botConversationSessions) {
@@ -90,7 +56,15 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     }
   }
 
-  async function handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
+  function handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
+    if (closed) return Promise.resolve();
+    const task = handleAcceptedBotIncomingMessage(message);
+    const tracked = task.finally(() => activeTasks.delete(tracked));
+    activeTasks.add(tracked);
+    return tracked;
+  }
+
+  async function handleAcceptedBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
     if (rememberBotSourceEvent(message)) return;
     const text = message.text.trim();
     // PR-BOT-NON-TEXT-MESSAGE-ACK-0: previously a photo / voice / sticker
@@ -114,11 +88,24 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     const current = botConversationQueues.get(key) ?? Promise.resolve();
     const next = current
       .catch(() => {})
-      .then(() => processBotIncomingMessage(key, message, text));
+      .then(() => (closed ? undefined : processBotIncomingMessage(key, message, text)));
     const tracked = next.finally(() => {
       if (botConversationQueues.get(key) === tracked) botConversationQueues.delete(key);
     });
     botConversationQueues.set(key, tracked);
+    await tracked;
+  }
+
+  function close(): Promise<void> {
+    if (closeTask) return closeTask;
+    closed = true;
+    closeTask = Promise.allSettled([...activeTasks]).then(() => {
+      botConversationSessions.clear();
+      botConversationQueues.clear();
+      botRecentSourceEventKeys.clear();
+      botConversationRateBuckets.clear();
+    });
+    return closeTask;
   }
 
   function rememberBotSourceEvent(message: BotIncomingMessage): boolean {
@@ -178,6 +165,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   }
 
   async function sendTransientBotNotice(message: BotIncomingMessage, text: string, ttlMs: number): Promise<void> {
+    if (closed) return;
     await deps.botRegistry.sendMessage(
       message.platform,
       message.chatId,
@@ -202,19 +190,12 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       await sendTransientBotNotice(message, 'Maka 收到的机器人消息过于频繁，请稍后再试。', noticeTtlMs);
       return undefined;
     }
-    const ready = await deps.getReadyConnection(await deps.getDefaultConnectionSlug(), undefined);
-    const summary = await deps.createSession({
-      backend: 'ai-sdk',
-      llmConnectionSlug: ready.connection.slug,
-      model: ready.model,
-      permissionMode: 'explore',
+    const sessionId = await deps.sessions.createSession({
       name: `${botDisplayLabel(message.platform)} 对话`,
       labels: ['bot', message.platform],
     });
-    botConversationSessions.set(conversationKey, summary.id);
-    deps.emitSessionsChanged('created', summary.id);
-    await deps.ensureSessionCanSend(summary.id);
-    return summary.id;
+    botConversationSessions.set(conversationKey, sessionId);
+    return sessionId;
   }
 
   async function processBotIncomingMessage(
@@ -222,6 +203,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     message: BotIncomingMessage,
     text: string,
   ): Promise<void> {
+    if (closed) return;
     // PR-BOT-EPHEMERAL-REPLY-0: TTL for system notices (help / reset ack /
     // fallback errors). Five minutes is long enough for the user to read
     // and process the notice on mobile; short enough that bot DMs do not
@@ -265,47 +247,29 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     let sessionId = botConversationSessions.get(conversationKey);
     try {
       if (!sessionId) {
-        if (botConversationSessions.size >= BOT_CONVERSATION_SESSION_LIMIT) {
-          await sendTransientBotNotice(
-            message,
-            'Maka 当前机器人会话数量已达上限，请重置或清理旧会话后再试。',
-            SYSTEM_NOTICE_TTL_MS,
-          );
-          return;
-        }
-        if (!consumeBotConversationToken(conversationKey)) {
-          await sendTransientBotNotice(
-            message,
-            'Maka 收到的机器人消息过于频繁，请稍后再试。',
-            SYSTEM_NOTICE_TTL_MS,
-          );
-          return;
-        }
-        const ready = await deps.getReadyConnection(await deps.getDefaultConnectionSlug(), undefined);
-        const summary = await deps.createSession({
-          backend: 'ai-sdk',
-          llmConnectionSlug: ready.connection.slug,
-          model: ready.model,
-          // Bot conversations must not execute local side effects without an
-          // in-app approval surface. Explore allows read/web-read only.
-          permissionMode: 'explore',
-          name: `${botDisplayLabel(message.platform)} 对话`,
-          labels: ['bot', message.platform],
-        });
-        sessionId = summary.id;
-        botConversationSessions.set(conversationKey, sessionId);
-        deps.emitSessionsChanged('created', sessionId);
-        await deps.ensureSessionCanSend(sessionId);
+        sessionId = await createBotConversationSession(
+          conversationKey,
+          message,
+          SYSTEM_NOTICE_TTL_MS,
+        );
+        if (!sessionId) return;
       } else {
         let rebound = false;
         try {
-          const permissionModeOk = await ensureBotSessionExploreMode(sessionId, message, SYSTEM_NOTICE_TTL_MS);
+          const permissionModeOk = await ensureBotSessionExploreMode(
+            sessionId,
+            message,
+            SYSTEM_NOTICE_TTL_MS,
+          );
           if (!permissionModeOk) return;
-          await deps.ensureSessionCanSend(sessionId);
         } catch (error) {
-          if (!isSessionLifecycleError(error)) throw error;
+          if (!isBotSessionUnavailableError(error)) throw error;
           invalidateSessionBindings(sessionId);
-          sessionId = await createBotConversationSession(conversationKey, message, SYSTEM_NOTICE_TTL_MS);
+          sessionId = await createBotConversationSession(
+            conversationKey,
+            message,
+            SYSTEM_NOTICE_TTL_MS,
+          );
           if (!sessionId) return;
           rebound = true;
         }
@@ -320,7 +284,8 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       }
 
       const turnId = randomUUID();
-      const iterator = deps.runtime.sendMessage(sessionId, {
+      const turn = deps.sessions.runTurn({
+        sessionId,
         turnId,
         text: formatBotMessageForSession({ ...message, text }),
       });
@@ -353,11 +318,12 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       })();
       let reply: string;
       try {
-        reply = await collectBotReply(sessionId, iterator, turnId);
+        reply = botReply(await turn);
       } finally {
         typingAbort.abort();
         await typingLoop.catch(() => {});
       }
+      if (closed) return;
       // PR-BOT-REPLY-TO-MESSAGE-0 (external bot research): thread the bot reply
       // under the originating user message. Group chats with concurrent
       // conversations otherwise visually scramble; even in DMs the threading
@@ -383,6 +349,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         }
       }
     } catch (error) {
+      if (closed) return;
       const detail = isSessionWorkspaceUnavailableError(error)
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
         : generalizedErrorMessage(error, '机器人对话处理失败');
@@ -406,44 +373,22 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     message: BotIncomingMessage,
     noticeTtlMs: number,
   ): Promise<boolean> {
-    const header = await deps.readSessionHeader(sessionId);
-    assertSessionCanSendFromHeader(header);
-    try {
-      await deps.runtime.setPermissionMode(sessionId, 'explore');
-      deps.emitSessionsChanged('updated', sessionId);
-      return true;
-    } catch {
-      await sendTransientBotNotice(
-        message,
-        'Maka 已拒绝这条机器人消息：绑定会话当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
-        noticeTtlMs,
-      );
-      return false;
-    }
+    if ((await deps.sessions.prepareSession(sessionId)) === 'ready') return true;
+    await sendTransientBotNotice(
+      message,
+      'Maka 已拒绝这条机器人消息：绑定会话当前不是只读探索模式，请先在桌面端切回 explore 后再试。',
+      noticeTtlMs,
+    );
+    return false;
   }
 
-  async function collectBotReply(
-    sessionId: string,
-    iterator: AsyncIterable<SessionEvent>,
-    turnId: string,
-  ): Promise<string> {
-    let latestText = '';
-    const result = await deps.runAgentTurn({
-      sessionId,
-      iterator,
-      turnId,
-      onEvent: (event) => {
-        if (event.type === 'text_complete') latestText = event.text;
-      },
-    });
-    if (result.outcome.kind === 'suspended') {
-      return '这条请求需要在 Maka 桌面端审批后才能继续。';
-    }
-    if (result.outcome.kind === 'errored') {
-      return `Maka 处理失败：${result.error ?? result.outcome.reason}`;
-    }
-    return latestText;
-  }
+  return { handleBotIncomingMessage, invalidateSessionBindings, close };
+}
 
-  return { handleBotIncomingMessage, invalidateSessionBindings };
+function botReply(result: BotSessionTurnResult): string {
+  if (result.kind === 'suspended') {
+    return '这条请求需要在 Maka 桌面端审批后才能继续。';
+  }
+  if (result.kind === 'errored') return `Maka 处理失败：${result.reason}`;
+  return result.text;
 }

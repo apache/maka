@@ -130,6 +130,13 @@ export type E2eFixtureScenario =
   // warm-up + pinned-bottom geometry invariants (E2E scroll-geometry spec)
   // and gives the scroll-geometry Playwright spec a long-transcript surface.
   | 'long-transcript'
+  // Prompt-rail activation contract: five tall turns and a one-line final
+  // turn, so the last turn can never reach the rail's top-third activation
+  // band (see e2e/prompt-rail.spec.ts).
+  | 'short-final-turn'
+  // Prompt-rail overflow contract: 60 short turns, so the rail exceeds its cap
+  // and scrolls independently of the transcript (see e2e/prompt-rail.spec.ts).
+  | 'overflowing-rail'
   // #819: BrowserPanel renderer-chrome fixture. Seeds `liveBrowserSessionIds`
   // with the active turn session so `BrowserPanel` mounts (app-shell gates
   // on `activeId && liveBrowserSessionIds.includes(activeId)`). In

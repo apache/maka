@@ -19,6 +19,7 @@ import type {
   DesktopRuntimeHostClient,
   DesktopRuntimeHostSession,
 } from './runtime-host-client.js';
+import { foldRuntimeHostAssistantDelta } from './runtime-host-assistant-delta.js';
 
 const MAX_PENDING_FRAMES = 512;
 
@@ -395,32 +396,21 @@ export class RuntimeHostSessionObserver {
       const key = accumulatorKey(delta.kind, delta.messageId);
       const current = state.accumulators.get(key);
       const previousText = current?.text ?? '';
-      if (delta.startOffset > previousText.length) {
-        throw new Error('Runtime Host Session assistant delta has a gap');
-      }
-      const overlapLength = Math.min(previousText.length - delta.startOffset, delta.text.length);
-      if (
-        overlapLength > 0 &&
-        previousText.slice(delta.startOffset, delta.startOffset + overlapLength) !==
-          delta.text.slice(0, overlapLength)
-      ) {
-        throw new Error('Runtime Host Session assistant delta conflicts with the transcript');
-      }
-      const tail = delta.text.slice(overlapLength);
+      const folded = foldRuntimeHostAssistantDelta(previousText, delta);
       state.accumulators.set(key, {
         kind: delta.kind,
         turnId: delta.turnId,
         messageId: delta.messageId,
-        text: previousText + tail,
+        text: folded.text,
       });
-      if (tail.length > 0) {
+      if (folded.tail.length > 0) {
         this.#broadcast(state.sessionId, {
           type: delta.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: frameIdentity(frame),
           turnId: delta.turnId,
           messageId: delta.messageId,
           ts: this.#now(),
-          text: tail,
+          text: folded.tail,
         });
       }
       return;

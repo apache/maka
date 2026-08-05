@@ -512,6 +512,51 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('the provider channel follows where the arm runs, not which arm it is', async () => {
+    const channelFor = async (
+      makaPlacement: 'task-container' | undefined,
+    ): Promise<Record<string, string>> => {
+      let harborEnv: Record<string, string> = {};
+      await withRun(async ({ jobsDir, repo, keyFile }) => {
+        const captured: { config?: Record<string, unknown> } = {};
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          apiKeyFile: keyFile,
+          agentEnv: { DEEPSEEK_BASE_URL: 'https://api.deepseek.com' },
+          ...(makaPlacement
+            ? { makaPlacement, makaNodeToolchainPath: join(repo, 'toolchain') }
+            : {}),
+          runHarbor: async (request) => {
+            harborEnv = (request.env ?? {}) as Record<string, string>;
+            return fakeRunner({ reward: '0\n', captured })(request);
+          },
+        });
+        await runner(runInput());
+      });
+      return harborEnv;
+    };
+
+    // Host-bridge is the historical channel: the arm runs beside the proxy and
+    // dials it directly.
+    const hostBridge = await channelFor(undefined);
+    assert.equal(typeof hostBridge.MAKA_HOST_BASE_URL, 'string');
+    assert.equal(hostBridge.MAKA_PROVIDER_PROXY_URL, undefined);
+
+    // In the task container the arm is on the far side of the same boundary as
+    // every competitor, so it needs the competitors' channel. Routing this by
+    // arm name instead of by placement is the revert that would leave the run
+    // dialling 127.0.0.1 from inside the container -- itself -- while the
+    // manifest still declared task-container.
+    const inContainer = await channelFor('task-container');
+    assert.equal(typeof inContainer.MAKA_PROVIDER_PROXY_URL, 'string');
+    assert.equal(typeof inContainer.MAKA_PROVIDER_PROXY_TOKEN, 'string');
+    assert.equal(inContainer.MAKA_HOST_BASE_URL, undefined);
+    assert.doesNotMatch(inContainer.MAKA_PROVIDER_PROXY_URL ?? '', /127\.0\.0\.1|localhost/);
+  });
+
   test('generates a JobConfig with verbatim prompt, host-side provider auth, and trial pricing', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       const captured: { config?: Record<string, unknown> } = {};
@@ -2639,6 +2684,100 @@ describe('buildHarborJobConfig', () => {
     assert.deepEqual(
       (config.environment as { extra_docker_compose?: string[] }).extra_docker_compose,
       ['/repo/packages/headless/harbor/docker-compose-linux-amd64.yaml'],
+    );
+  });
+
+  test('the in-container Maka arm carries its toolchain and the fingerprint that admits it', async () => {
+    const { MAKA_NODE_TOOLCHAIN_CONTAINER_PATH, MAKA_NODE_TOOLCHAIN_FINGERPRINT } = await import(
+      '../maka-node-toolchain.js'
+    );
+    const base = {
+      makaRepoPath: '/repo',
+      jobsDir: '/jobs/x',
+      jobName: 'trial',
+      agent: 'maka',
+      model: 'deepseek-v4-flash',
+      provider: 'deepseek',
+    } as unknown as Parameters<typeof buildHarborJobConfig>[1];
+
+    const inContainer = buildHarborJobConfig(runInput(), {
+      ...base,
+      makaPlacement: 'task-container',
+      makaNodeToolchainPath: '/runs/r1/toolchains/maka-node',
+    } as unknown as Parameters<typeof buildHarborJobConfig>[1]);
+
+    // The arm cannot start without both halves: the adapter re-verifies the
+    // mounted toolchain against the fingerprint before it will install, so a
+    // mount without the fingerprint leaves the arm dead with the mount in
+    // place -- which is exactly how this failed the first time.
+    const mounts = (inContainer.environment as { mounts: Array<Record<string, unknown>> }).mounts;
+    assert.ok(
+      mounts.some(
+        (m) =>
+          m.target === MAKA_NODE_TOOLCHAIN_CONTAINER_PATH &&
+          m.source === '/runs/r1/toolchains/maka-node' &&
+          m.read_only === true,
+      ),
+    );
+    const agent = (inContainer.agents as Array<Record<string, unknown>>)[0]!;
+    assert.equal(
+      (agent.env as Record<string, string>).MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+      MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+    );
+
+    // Host-bridge is the historical shape and must stay free of both, or every
+    // existing Terminal-Bench manifest changes identity for a run that did not.
+    const hostBridge = buildHarborJobConfig(runInput(), base);
+    const hostMounts = (hostBridge.environment as { mounts: Array<Record<string, unknown>> })
+      .mounts;
+    assert.equal(
+      hostMounts.some((m) => m.target === MAKA_NODE_TOOLCHAIN_CONTAINER_PATH),
+      false,
+    );
+    assert.equal(
+      ((hostBridge.agents as Array<Record<string, unknown>>)[0]!.env as Record<string, string>)
+        .MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+      undefined,
+    );
+
+    // A placement that asks for the container without supplying the toolchain
+    // has to fail at config time; the alternative is a container that starts
+    // and finds nothing at the mount point.
+    assert.throws(
+      () =>
+        buildHarborJobConfig(runInput(), {
+          ...base,
+          makaPlacement: 'task-container',
+        } as unknown as Parameters<typeof buildHarborJobConfig>[1]),
+      /makaNodeToolchainPath is required for task-container Maka placement/,
+    );
+  });
+
+  test('layers the apt mirror overlay after the harness compose file', () => {
+    // Order is the assertion. Compose appends `extra_hosts` across `-f` files
+    // rather than replacing them -- `docker compose config` over a base and an
+    // overlay keeps every entry from both, duplicate keys included -- so the
+    // host-gateway mapping every competitor dials survives either way. What the
+    // order pins is a deterministic overlay position; it does not let the
+    // mirror override a task image that declares its own archive.ubuntu.com
+    // entry, which would sit beside ours and be resolved by /etc/hosts order.
+    const config = buildHarborJobConfig(runInput(), {
+      makaRepoPath: '/repo',
+      jobsDir: '/jobs/x',
+      jobName: 'trial',
+      agent: 'maka',
+      model: 'zai-coding-plan/glm-5.2',
+      provider: 'zai-coding-plan',
+      dockerPlatform: 'linux/amd64',
+      aptMirrorComposePath: '/runs/r1/apt-mirror.compose.yaml',
+    } as unknown as Parameters<typeof buildHarborJobConfig>[1]);
+
+    assert.deepEqual(
+      (config.environment as { extra_docker_compose?: string[] }).extra_docker_compose,
+      [
+        '/repo/packages/headless/harbor/docker-compose-linux-amd64.yaml',
+        '/runs/r1/apt-mirror.compose.yaml',
+      ],
     );
   });
 

@@ -164,7 +164,7 @@ describe('tool argument refusal text', () => {
   });
 });
 
-test('a tool call refused for its shape is told which fields the tool takes', async () => {
+test('ToolRuntime enforces the declared schema before impl without a permissionArgs workaround', async () => {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const runtime = createTestToolRuntime({
@@ -183,7 +183,6 @@ test('a tool call refused for its shape is told which fields the tool takes', as
     name: 'Read',
     description: 'test',
     parameters: readSchema,
-    permissionArgs: (args) => readSchema.parse(args),
     impl: async () => {
       assert.fail('invalid arguments must not reach the implementation');
     },
@@ -206,6 +205,53 @@ test('a tool call refused for its shape is told which fields the tool takes', as
   const said = (result as { error?: string }).error ?? '';
   assert.match(said, /Tool "Read" arguments failed validation/);
   assert.match(said, /Read takes `file_path`, `offset`, `limit`\./);
+});
+
+test('ToolRuntime validates without rewriting arguments at permission and implementation boundaries', async () => {
+  const observed: unknown[] = [];
+  const runtime = createTestToolRuntime({
+    sessionId: 'session-1',
+    header: header(),
+    connection: connection(),
+    modelId: 'mock-model',
+    appendMessage: async () => {},
+    newId: nextId(),
+    now: () => 1,
+    getPermissionPauseTarget: () => null,
+  });
+  const parameters = z.object({
+    file_path: z.string().transform((value) => value.trim()),
+    limit: z.number().default(25),
+  });
+  const tool: MakaTool = {
+    name: 'Read',
+    description: 'test',
+    parameters,
+    permissionArgs: (args) => {
+      observed.push(structuredClone(args));
+      return args;
+    },
+    impl: async (args) => {
+      observed.push(structuredClone(args));
+      return args;
+    },
+  };
+
+  const { result } = await runtime.settleToolCall({
+    tool,
+    turnId: 'turn-1',
+    toolCallId: 'tool-normalized',
+    input: { file_path: '  /workspace/a.ts  ' },
+    abortSignal: new AbortController().signal,
+    eventSink: {
+      push: () => {},
+      pushAndWaitUntilConsumed: async () => {},
+    },
+  });
+
+  const expected = { file_path: '  /workspace/a.ts  ' };
+  assert.deepEqual(observed, [expected, expected]);
+  assert.deepEqual(result, expected);
 });
 
 test('a sandbox denial names the tool that widens the boundary', async () => {

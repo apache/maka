@@ -1,0 +1,237 @@
+name: Windows baseline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-baseline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows_baseline:
+    name: windows_baseline (non-blocking)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      WINDOWS_BASELINE_LOG_DIR: artifacts/windows-baseline
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Create log directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force $env:WINDOWS_BASELINE_LOG_DIR | Out-Null
+
+      - name: Capture process baseline
+        shell: pwsh
+        run: |
+          $processes = @(
+            Get-CimInstance Win32_Process |
+              Where-Object { $_.Name -in @('node.exe', 'electron.exe') } |
+              ForEach-Object {
+                [pscustomobject]@{
+                  ProcessId = $_.ProcessId
+                  ParentProcessId = $_.ParentProcessId
+                  Name = $_.Name
+                  CreationDate = $_.CreationDate.ToUniversalTime().ToString('o')
+                  CommandLine = $_.CommandLine
+                }
+              }
+          )
+          [pscustomobject]@{
+            CapturedAtUtc = [DateTime]::UtcNow.ToString('o')
+            Processes = $processes
+          } | ConvertTo-Json -Depth 4 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-baseline.json"
+
+      - id: install
+        name: Install dependencies
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm.cmd ci *> "$env:WINDOWS_BASELINE_LOG_DIR/install.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/install.log"
+          exit $exitCode
+
+      - id: build
+        name: Build test artifacts
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm.cmd run build:test *> "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/build.log"
+          exit $exitCode
+
+      - id: inventory
+        name: Check Windows skip inventory
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm.cmd run windows:inventory *> "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/inventory.log"
+          exit $exitCode
+
+      - id: scripts
+        name: Run repository script tests
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm.cmd run test:scripts *> "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/script-tests.log"
+          exit $exitCode
+
+      - id: smoke
+        name: Run CLI and Electron startup smoke
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm.cmd run smoke:windows *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          exit $exitCode
+
+      - id: storage
+        name: Capture storage test baseline
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          exit $exitCode
+
+      - id: processes
+        name: Audit residual job processes
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $baseline = Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-baseline.json" -Raw |
+            ConvertFrom-Json
+          $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::Ordinal
+          )
+          foreach ($process in @($baseline.Processes)) {
+            [void]$baselineKeys.Add("$($process.ProcessId)|$($process.CreationDate)")
+          }
+          $allProcesses = @(
+            Get-CimInstance Win32_Process |
+              ForEach-Object {
+                [pscustomobject]@{
+                  ProcessId = $_.ProcessId
+                  ParentProcessId = $_.ParentProcessId
+                  Name = $_.Name
+                  CreationDate = $_.CreationDate.ToUniversalTime().ToString('o')
+                  CommandLine = $_.CommandLine
+                }
+              }
+          )
+          $leaks = @(
+            $allProcesses | Where-Object {
+                $_.Name -in @('node.exe', 'electron.exe') -and
+                -not $baselineKeys.Contains("$($_.ProcessId)|$($_.CreationDate)")
+              }
+          )
+          ConvertTo-Json -InputObject $leaks -Depth 3 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.json"
+          if ($leaks.Count -eq 0) {
+            Write-Output 'No residual job-created Node or Electron processes.'
+            exit 0
+          }
+          $treeProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+          foreach ($process in $leaks) {
+            [void]$treeProcessIds.Add($process.ProcessId)
+          }
+          do {
+            $addedDescendant = $false
+            foreach ($process in $allProcesses) {
+              if (
+                $treeProcessIds.Contains($process.ParentProcessId) -and
+                $treeProcessIds.Add($process.ProcessId)
+              ) {
+                $addedDescendant = $true
+              }
+            }
+          } while ($addedDescendant)
+          $ownedTree = @(
+            $allProcesses | Where-Object { $treeProcessIds.Contains($_.ProcessId) }
+          )
+          ConvertTo-Json -InputObject $ownedTree -Depth 3 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-process-tree.json"
+          $leaks | Format-List | Out-String | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes.log"
+          foreach ($process in $leaks) {
+            & taskkill.exe /PID $process.ProcessId /T /F 2>&1 |
+              Add-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-cleanup.log"
+          }
+          Start-Sleep -Seconds 1
+          $remainingById = @{}
+          Get-CimInstance Win32_Process |
+            ForEach-Object {
+              $key = "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))"
+              $remainingById[$key] = $_
+            }
+          $unreaped = @(
+            $ownedTree | Where-Object {
+              $remainingById.ContainsKey("$($_.ProcessId)|$($_.CreationDate)")
+            }
+          )
+          ConvertTo-Json -InputObject $unreaped -Depth 3 |
+            Set-Content "$env:WINDOWS_BASELINE_LOG_DIR/residual-processes-after-cleanup.json"
+          if ($unreaped.Count -gt 0) {
+            Write-Error "Failed to reap $($unreaped.Count) process(es) from the residual job tree."
+            exit 1
+          }
+          Write-Error "Found $($leaks.Count) residual job root(s) and reaped their $($ownedTree.Count)-process tree."
+          exit 1
+
+      - name: Publish baseline summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## Windows baseline
+
+          This lane is intentionally non-blocking while the Phase 1 backlog is being reduced.
+
+          | Check | Outcome |
+          |---|---|
+          | Install | ${{ steps.install.outcome }} |
+          | Build | ${{ steps.build.outcome }} |
+          | Skip inventory | ${{ steps.inventory.outcome }} |
+          | Script tests | ${{ steps.scripts.outcome }} |
+          | CLI / Electron smoke | ${{ steps.smoke.outcome }} |
+          | Storage suite | ${{ steps.storage.outcome }} |
+          | Residual processes | ${{ steps.processes.outcome }} |
+
+          Download the `windows-baseline` artifact for complete logs.
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload Windows baseline logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-baseline
+          path: artifacts/windows-baseline
+          if-no-files-found: warn
+          retention-days: 14

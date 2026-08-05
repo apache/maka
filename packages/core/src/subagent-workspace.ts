@@ -32,6 +32,10 @@ export interface ProvisionSubagentWorktreeInput {
 }
 
 export interface SubagentWorktreeExecutor {
+  /** Whether the current source project can back an isolated Git worktree. */
+  isAvailable(
+    input: Pick<ProvisionSubagentWorktreeInput, 'sourceCwd' | 'sourceProjectId'>,
+  ): Promise<boolean>;
   provision(input: ProvisionSubagentWorktreeInput): Promise<SubagentWorkspaceBinding>;
   ensure(binding: SubagentWorkspaceBinding): Promise<void>;
   /** Capture the complete workspace delta relative to the durable base commit. */

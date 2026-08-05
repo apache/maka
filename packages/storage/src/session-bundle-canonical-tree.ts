@@ -38,6 +38,10 @@ export type SessionBundleCanonicalTreeEntry =
   | SessionBundleCanonicalDirectoryEntry
   | SessionBundleCanonicalFileEntry;
 
+export type SessionBundleCanonicalLayoutEntry =
+  | SessionBundleCanonicalDirectoryEntry
+  | Pick<SessionBundleCanonicalFileEntry, 'kind' | 'mode' | 'path'>;
+
 export interface SessionBundleCanonicalTreeDigest {
   treeDigest: Sha256Digest;
   payloadBytes: number;
@@ -89,16 +93,10 @@ export function computeSessionBundleCanonicalTreeDigest(
  * layout, normalized modes, and the final count without retaining file bytes.
  */
 export class SessionBundleCanonicalTreeDigestBuilder {
-  readonly #expectedEntryCount: number;
   readonly #hash: Hash;
-  readonly #logicalPaths = new Set<string>();
-  readonly #directories = new Set<string>();
-  #previousPathBytes?: Buffer;
+  readonly #layout: SessionBundleCanonicalLayoutValidator;
   #entryCount = 0;
   #payloadBytes = 0;
-  #sawStateIdentity = false;
-  #sawStateRoot = false;
-  #sawWorkspaceRoot = false;
   #failed = false;
   #result?: SessionBundleCanonicalTreeDigest;
 
@@ -106,7 +104,7 @@ export class SessionBundleCanonicalTreeDigestBuilder {
     if (!Number.isSafeInteger(expectedEntryCount) || expectedEntryCount < 0) {
       throw new RangeError('Canonical tree entry count must be a non-negative safe integer');
     }
-    this.#expectedEntryCount = expectedEntryCount;
+    this.#layout = new SessionBundleCanonicalLayoutValidator(expectedEntryCount);
     this.#hash = createHash('sha256');
     this.#hash.update(encodeTreeHeader(expectedEntryCount));
   }
@@ -120,11 +118,83 @@ export class SessionBundleCanonicalTreeDigestBuilder {
     }
 
     try {
+      const validated = validateEntry(value);
+      this.#layout.add(validated.entry);
+      const nextPayloadBytes =
+        validated.entry.kind === 'file'
+          ? this.#payloadBytes + validated.entry.size
+          : this.#payloadBytes;
+      if (!Number.isSafeInteger(nextPayloadBytes)) {
+        throw unsupportedEntry('Canonical tree payload byte count exceeds safe integer range');
+      }
+      const record = encodeTreeEntry(validated);
+
+      // Commit only after every validation and encoding step has succeeded.
+      this.#hash.update(record);
+      this.#entryCount += 1;
+      this.#payloadBytes = nextPayloadBytes;
+    } catch (error) {
+      this.#failed = true;
+      throw error;
+    }
+  }
+
+  finish(): SessionBundleCanonicalTreeDigest {
+    if (this.#result !== undefined) return { ...this.#result };
+    if (this.#failed) {
+      throw integrityError('Canonical tree digest builder previously rejected an entry');
+    }
+    try {
+      this.#layout.finish();
+    } catch (error) {
+      this.#failed = true;
+      throw error;
+    }
+    this.#result = Object.freeze({
+      treeDigest: `sha256:${this.#hash.digest('hex')}` as Sha256Digest,
+      payloadBytes: this.#payloadBytes,
+      entryCount: this.#entryCount,
+    });
+    return { ...this.#result };
+  }
+}
+
+/**
+ * Shared state machine for canonical path order, explicit parents, conflicts,
+ * required roots, and entry count. The streaming reader uses it before any
+ * hydration write, while the digest builder applies the same rules after file
+ * content hashes are available.
+ */
+export class SessionBundleCanonicalLayoutValidator {
+  readonly #expectedEntryCount: number;
+  readonly #logicalPaths = new Set<string>();
+  readonly #directories = new Set<string>();
+  #previousPathBytes?: Buffer;
+  #entryCount = 0;
+  #sawStateIdentity = false;
+  #sawStateRoot = false;
+  #sawWorkspaceRoot = false;
+  #failed = false;
+  #finished = false;
+
+  constructor(expectedEntryCount: number) {
+    if (!Number.isSafeInteger(expectedEntryCount) || expectedEntryCount < 0) {
+      throw new RangeError('Canonical layout entry count must be a non-negative safe integer');
+    }
+    this.#expectedEntryCount = expectedEntryCount;
+  }
+
+  add(value: SessionBundleCanonicalLayoutEntry): void {
+    if (this.#finished) throw integrityError('Canonical layout is already finalized');
+    if (this.#failed)
+      throw integrityError('Canonical layout validator previously rejected an entry');
+
+    try {
+      const entry = validateLayoutEntry(value);
       if (this.#entryCount >= this.#expectedEntryCount) {
         throw integrityError('Canonical tree contains more entries than declared');
       }
-
-      const validated = validateEntry(value);
+      const validated = validateCanonicalPath(entry.path, entry.kind);
       if (
         this.#previousPathBytes !== undefined &&
         Buffer.compare(this.#previousPathBytes, validated.pathBytes) >= 0
@@ -141,23 +211,11 @@ export class SessionBundleCanonicalTreeDigestBuilder {
         throw unsafePath('Canonical tree entry is missing its explicit parent directory');
       }
 
-      const layout = classifyPayloadPath(validated.entry);
-      const nextPayloadBytes =
-        validated.entry.kind === 'file'
-          ? this.#payloadBytes + validated.entry.size
-          : this.#payloadBytes;
-      if (!Number.isSafeInteger(nextPayloadBytes)) {
-        throw unsupportedEntry('Canonical tree payload byte count exceeds safe integer range');
-      }
-      const record = encodeTreeEntry(validated);
-
-      // Commit only after every validation and encoding step has succeeded.
-      this.#hash.update(record);
+      const layout = classifyPayloadPath(entry);
       this.#logicalPaths.add(validated.logicalPath);
-      if (validated.entry.kind === 'directory') this.#directories.add(validated.entry.path);
+      if (entry.kind === 'directory') this.#directories.add(entry.path);
       this.#previousPathBytes = validated.pathBytes;
       this.#entryCount += 1;
-      this.#payloadBytes = nextPayloadBytes;
       if (layout === 'state_identity') this.#sawStateIdentity = true;
       if (layout === 'state_root') this.#sawStateRoot = true;
       if (layout === 'workspace_root') this.#sawWorkspaceRoot = true;
@@ -167,23 +225,22 @@ export class SessionBundleCanonicalTreeDigestBuilder {
     }
   }
 
-  finish(): SessionBundleCanonicalTreeDigest {
-    if (this.#result !== undefined) return { ...this.#result };
-    if (this.#failed) {
-      throw integrityError('Canonical tree digest builder previously rejected an entry');
+  finish(): void {
+    if (this.#finished) return;
+    if (this.#failed)
+      throw integrityError('Canonical layout validator previously rejected an entry');
+    try {
+      if (this.#entryCount !== this.#expectedEntryCount) {
+        throw integrityError('Canonical tree entry count does not match the declared count');
+      }
+      if (!this.#sawStateIdentity || !this.#sawStateRoot || !this.#sawWorkspaceRoot) {
+        throw integrityError('Canonical tree is missing a required V1 payload root');
+      }
+      this.#finished = true;
+    } catch (error) {
+      this.#failed = true;
+      throw error;
     }
-    if (this.#entryCount !== this.#expectedEntryCount) {
-      throw integrityError('Canonical tree entry count does not match the declared count');
-    }
-    if (!this.#sawStateIdentity || !this.#sawStateRoot || !this.#sawWorkspaceRoot) {
-      throw integrityError('Canonical tree is missing a required V1 payload root');
-    }
-    this.#result = Object.freeze({
-      treeDigest: `sha256:${this.#hash.digest('hex')}` as Sha256Digest,
-      payloadBytes: this.#payloadBytes,
-      entryCount: this.#entryCount,
-    });
-    return { ...this.#result };
   }
 }
 
@@ -248,6 +305,21 @@ function validateEntry(value: unknown): ValidatedCanonicalTreeEntry {
   };
 }
 
+function validateLayoutEntry(value: unknown): SessionBundleCanonicalLayoutEntry {
+  if (!isRecord(value) || typeof value.path !== 'string') {
+    throw unsupportedEntry('Canonical layout entry has an invalid shape');
+  }
+  if (value.kind === 'directory') return { kind: 'directory', path: value.path };
+  if (
+    value.kind === 'file' &&
+    typeof value.mode === 'number' &&
+    REGULAR_FILE_MODES.has(value.mode)
+  ) {
+    return { kind: 'file', path: value.path, mode: value.mode as 0o644 | 0o755 };
+  }
+  throw unsupportedEntry('Canonical layout entry has unsupported metadata');
+}
+
 function validateCanonicalPath(
   path: string,
   kind: SessionBundleCanonicalTreeEntry['kind'],
@@ -291,7 +363,7 @@ function validateCanonicalPath(
 }
 
 function classifyPayloadPath(
-  entry: SessionBundleCanonicalTreeEntry,
+  entry: SessionBundleCanonicalLayoutEntry,
 ): 'state_identity' | 'state_root' | 'workspace_root' | 'payload' {
   if (entry.path === SESSION_BUNDLE_STATE_IDENTITY_PATH) {
     if (entry.kind !== 'file' || entry.mode !== 0o644) {

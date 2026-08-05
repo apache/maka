@@ -412,6 +412,10 @@ async function forwardProviderRequest(input: {
   signal: AbortSignal;
 }): Promise<void> {
   let requestTelemetry: MutableProviderRequestTelemetry | null = null;
+  // Hoisted so the abort path can drain what the parser already read. Scoped to
+  // the streaming block it is reachable only when the stream ran to its end,
+  // which is exactly the case that never needed draining.
+  let responseUsage: SseUsageParser | null = null;
   try {
     const presentedCredential =
       input.clientAuthMode === 'x-api-key'
@@ -479,7 +483,7 @@ async function forwardProviderRequest(input: {
     });
     input.response.writeHead(upstreamResponse.status, responseHeaders);
     input.response.flushHeaders();
-    const responseUsage =
+    responseUsage =
       input.usageProtocol &&
       upstreamResponse.headers.get('content-type')?.includes('text/event-stream')
         ? new SseUsageParser(input.usageProtocol)
@@ -532,6 +536,18 @@ async function forwardProviderRequest(input: {
     input.response.end();
   } catch (error) {
     if (requestTelemetry) {
+      // A client that hangs up once it has what it needs still spent every
+      // token the provider already streamed, and the usage frame is normally
+      // among the chunks that arrived before it hung up -- this path used to
+      // drop whatever the parser had read. The cost of dropping it is not a
+      // gap, it is a wrong number: a cell keeps the usage of the requests that
+      // happened to run to `[DONE]` and reads as fully metered. One arm was
+      // credited 1,088 output tokens against a true 27,633 that way, because
+      // its short requests completed and its long ones were hung up on.
+      const parsed = responseUsage?.finish() ?? null;
+      if (parsed?.usage) input.usage.add(parsed.usage);
+      requestTelemetry.usage = parsed?.usage ?? undefined;
+      requestTelemetry.terminalEvent = parsed?.terminalEvent ?? false;
       requestTelemetry.outcome = input.signal.aborted ? 'aborted' : 'failed';
       requestTelemetry.durationMs = elapsedMs(requestTelemetry.startedAt, input.now());
       requestTelemetry.errorClass = error instanceof Error ? error.name : 'UnknownError';

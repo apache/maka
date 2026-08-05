@@ -39,10 +39,15 @@ test('production composition owns the long-term memory database lifecycle', asyn
     await assert.rejects(stat(databasePath), { code: 'ENOENT' });
 
     const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const workspaceExecution = composition.workspaceExecution;
+    assert.equal(workspaceExecution.state, 'ready');
     const memory = await openInteractiveLongTermMemoryStoreForWrite(owner.lease);
     assert.equal((await stat(databasePath)).isFile(), true);
 
+    composition.beginDrain();
+    assert.equal(workspaceExecution.state, 'draining');
     await composition.close();
+    assert.equal(workspaceExecution.state, 'closed');
     await assert.rejects(memory.readItem('after-close'), /closed/);
     const Database = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
     const database = new Database(databasePath);

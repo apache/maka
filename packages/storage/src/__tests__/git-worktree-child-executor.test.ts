@@ -16,6 +16,19 @@ afterEach(async () => {
 });
 
 describe('Git worktree child executor', () => {
+  test('reports availability only when the source workspace is a Git project', async () => {
+    const root = await temporaryRoot();
+    const repository = join(root, 'repository');
+    const folder = join(root, 'folder');
+    await createGitRepositoryWithWorktree(repository, join(root, 'existing-worktree'), 'existing');
+    await writeFileAfterMkdir(folder, 'file.txt', 'plain\n');
+    const executor = createGitWorktreeChildExecutor({ storageRoot: join(root, 'storage') });
+
+    assert.equal(await executor.isAvailable({ sourceCwd: repository }), true);
+    assert.equal(await executor.isAvailable({ sourceCwd: folder }), false);
+    assert.equal(await executor.isAvailable({ sourceCwd: join(root, 'missing') }), false);
+  });
+
   test('provisions deterministic isolated worktrees for concurrent child leases', async () => {
     const root = await temporaryRoot();
     const repository = join(root, 'repository');

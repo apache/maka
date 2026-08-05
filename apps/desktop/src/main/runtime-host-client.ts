@@ -9,6 +9,7 @@ import {
 } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import {
+  type ClientCapabilityProvider,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
@@ -18,6 +19,8 @@ import {
   ARTIFACT_INGEST_CHUNK_MAX_BYTES,
   decodePricingMutateInput,
   type EffectivePricingEntry,
+  type ClientCapabilityReplaceResult,
+  type ClientCapabilityUnregisterResult,
   type InteractionAnswerInput,
   type GoalControlAction,
   type GoalProjection,
@@ -639,6 +642,19 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<'runtime.resource.stop'>,
   ): Promise<OperationOutput<'runtime.resource.stop'>> {
     return this.#request('runtime.resource.stop', input);
+  }
+
+  replaceClientCapabilities(
+    provider: ClientCapabilityProvider,
+    timeoutMs?: number,
+  ): Promise<ClientCapabilityReplaceResult> {
+    this.#assertOpen();
+    return this.connection.replaceClientCapabilities(provider, timeoutMs);
+  }
+
+  unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult> {
+    this.#assertOpen();
+    return this.connection.unregisterClientCapabilities(timeoutMs);
   }
 
   async openSession(sessionId: string): Promise<DesktopRuntimeHostSession> {

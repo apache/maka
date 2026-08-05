@@ -777,14 +777,25 @@ export class ToolRuntime {
     },
     stepId?: string,
   ): Promise<unknown> {
-    const executionArgs = snapshotToolArgs(args);
+    const rawExecutionArgs = snapshotToolArgs(args);
     const toolUseId = ctx.toolCallId;
     // Registration is synchronous and happens before the first await, so
     // parallel Runtime settlements cannot race past exclusive admission.
     const admissionFailure = this.admitToolForStep(tool, stepId);
-    let permissionArgs = executionArgs;
+    const executionArgs = rawExecutionArgs;
+    let permissionArgs = rawExecutionArgs;
     let permissionArgsError: unknown;
     try {
+      // A surface that cannot carry a sandbox-boundary request rejects the
+      // operation before it interprets the requested expansion. Preserve that
+      // availability contract even when an older caller sends a legacy shape.
+      const sandboxBoundaryUnavailable =
+        tool.name === 'request_sandbox_boundary' &&
+        !this.interactionRun() &&
+        (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
+      if (!sandboxBoundaryUnavailable) {
+        await validateDeclaredToolArgs(tool.parameters, rawExecutionArgs);
+      }
       permissionArgs = tool.permissionArgs
         ? snapshotToolArgs(
             tool.permissionArgs(structuredClone(executionArgs) as never, {
@@ -2145,6 +2156,55 @@ export class ToolRuntime {
   }
 }
 
+async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
+  if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {
+    return;
+  }
+  const schema = parameters as {
+    safeParseAsync?: (
+      value: unknown,
+    ) => PromiseLike<{ success: true; data: unknown } | { success: false; error: unknown }>;
+    safeParse?: (
+      value: unknown,
+    ) => { success: true; data: unknown } | { success: false; error: unknown };
+    validate?: (
+      value: unknown,
+    ) =>
+      | { success: true; value: unknown }
+      | { success: false; error: unknown }
+      | PromiseLike<{ success: true; value: unknown } | { success: false; error: unknown }>;
+    '~standard'?: {
+      validate?: (
+        value: unknown,
+      ) =>
+        | { value: unknown }
+        | { issues: readonly unknown[] }
+        | PromiseLike<{ value: unknown } | { issues: readonly unknown[] }>;
+    };
+  };
+
+  if (typeof schema.safeParseAsync === 'function') {
+    const parsed = await schema.safeParseAsync(args);
+    if (parsed.success) return;
+    throw parsed.error;
+  }
+  if (typeof schema.safeParse === 'function') {
+    const parsed = schema.safeParse(args);
+    if (parsed.success) return;
+    throw parsed.error;
+  }
+  if (typeof schema.validate === 'function') {
+    const parsed = await schema.validate(args);
+    if (parsed.success) return;
+    throw parsed.error;
+  }
+  if (typeof schema['~standard']?.validate === 'function') {
+    const parsed = await schema['~standard'].validate(args);
+    if ('value' in parsed) return;
+    throw new Error('Tool arguments failed declared schema validation', { cause: parsed.issues });
+  }
+}
+
 function isInteractionControlError(error: unknown): boolean {
   return (
     error instanceof RuntimeInteractionAdmissionRejectedError ||
@@ -2549,6 +2609,7 @@ function deriveToolResultStatus(
     return 'error';
   }
   if (content.kind === 'agent_swarm') {
+    if (content.status === 'failed') return 'error';
     return content.status === 'cancelled' ? 'aborted' : 'success';
   }
   if (content.kind === 'rive_workflow' && content.ok === false) return 'error';
