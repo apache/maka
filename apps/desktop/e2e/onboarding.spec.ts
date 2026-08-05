@@ -47,14 +47,14 @@ test('first run connects a provider and starts the first task without workspace 
     .toEqual({
       defaultSlug: null,
       defaultModel: '',
-      enabledModelIds: ['big-pickle'],
+      enabledModelIds: ['nemotron-3-ultra-free'],
     });
   await page.getByRole('button', { name: '返回应用', exact: true }).click();
 
   await expect(onboarding).toHaveCount(0);
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
   await expect(page.getByRole('button', { name: /选择新对话模型/ })).toHaveAccessibleName(
-    /Big Pickle/,
+    /Nemotron 3 Ultra Free/,
   );
 
   await page.locator(COMPOSER_INPUT).fill('完成首次任务');
@@ -69,5 +69,5 @@ test('first run connects a provider and starts the first task without workspace 
         }));
       }),
     )
-    .toContainEqual({ connectionSlug: 'opencode-free', model: 'big-pickle' });
+    .toContainEqual({ connectionSlug: 'opencode-free', model: 'nemotron-3-ultra-free' });
 });

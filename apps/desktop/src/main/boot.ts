@@ -127,7 +127,6 @@ import { registerNotificationsIpc } from './notifications-ipc-main.js';
 import { registerAppIpc } from './app-ipc-main.js';
 import { createAppUpdateService } from './app-update-service.js';
 import { hasInterruptibleUpdateWork } from './app-update-activity.js';
-import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
@@ -726,6 +725,7 @@ const {
   settingsStore,
   updateAgentSettings,
   shellRuns,
+  artifactStore,
   snapshotReadImage,
   readArchivedToolResultResource,
   getWorkspacePrivacyContext,
@@ -1151,7 +1151,6 @@ function registerIpc(): void {
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
   });
   registerWorkspaceSearchIpc({ getProjectRoot: resolveProjectRootForContext });
-  registerGitIpc({ getProjectRoot: resolveProjectRootForContext });
   registerPlanReminderIpc({ planReminders, getWorkspacePrivacyContext });
   registerAgentGraphIpc({
     coordinator: agentGraphCoordinator,
@@ -1263,7 +1262,7 @@ function registerIpc(): void {
       );
     },
   });
-  registerPermissionOverlayIpc({ controller: permissionOverlay });
+  registerPermissionOverlayIpc({ controller: permissionOverlay, ipcMain });
   // A screen-saver-level panel pinned to every Space is visible to the
   // user if it outlives a slow quit; close it explicitly rather than
   // relying on process teardown to race it away.

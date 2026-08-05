@@ -392,6 +392,7 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
         sessionId: fixture.sessionId,
         expectedRevision,
         cwd: link,
+        projectId: 'project-2',
       },
       context,
     );
@@ -403,6 +404,7 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
     }
     assert.equal(outcome.result.session.cwd, await realpath(target));
     assert.equal(fixture.header().cwd, await realpath(target));
+    assert.equal(fixture.header().projectId, 'project-2');
     assert.equal(fixture.revision(), expectedRevision + 1);
     assert.equal(fixture.drainRequests(), 0);
   } finally {
@@ -567,7 +569,11 @@ function createFixture(
       return headerSnapshot(header, revision);
     },
     relocateSessionWorkspace: async (_sessionId, input) => {
-      header = { ...header, cwd: input.cwd };
+      header = {
+        ...header,
+        cwd: input.cwd,
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+      };
       revision += 1;
       return headerSnapshot(header, revision);
     },

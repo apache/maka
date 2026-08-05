@@ -6,17 +6,32 @@ import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
 } from '@maka/runtime';
-import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
+import type { WebSearchResponse } from '@maka/core/web-search';
+import type {
+  ResolveWebSearchExecutionInput,
+  RuntimePolicyOperationCoordinator,
+} from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
-export function createHostWebSearchTool(input: {
+interface HostWebSearchServiceInput {
   readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveWebSearchExecution'>;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
-}): MakaTool {
+}
+
+export interface HostWebSearchService {
+  search(input: {
+    readonly query: string;
+    readonly limit: number;
+    readonly abortSignal?: AbortSignal;
+    readonly policy?: ResolveWebSearchExecutionInput;
+  }): Promise<WebSearchResponse>;
+}
+
+export function createHostWebSearchService(input: HostWebSearchServiceInput): HostWebSearchService {
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
-  return buildWebSearchTool({
-    search: async ({ query, limit, abortSignal }) => {
-      const resolved = await input.policy.resolveWebSearchExecution();
+  return {
+    search: async ({ query, limit, abortSignal, policy }) => {
+      const resolved = await input.policy.resolveWebSearchExecution(policy);
       switch (resolved.kind) {
         case 'privacy_mode':
           return {
@@ -74,5 +89,20 @@ export function createHostWebSearchTool(input: {
         }
       }
     },
+  };
+}
+
+export function createHostWebSearchTool(input: HostWebSearchServiceInput): MakaTool {
+  return createHostWebSearchToolFromService(createHostWebSearchService(input));
+}
+
+export function createHostWebSearchToolFromService(service: HostWebSearchService): MakaTool {
+  return buildWebSearchTool({
+    search: ({ query, limit, abortSignal }) =>
+      service.search({
+        query,
+        limit,
+        ...(abortSignal ? { abortSignal } : {}),
+      }),
   });
 }

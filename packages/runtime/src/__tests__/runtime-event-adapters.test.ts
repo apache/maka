@@ -628,7 +628,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(out.map((e) => e.content?.kind)).toEqual(['function_call', 'function_response', 'text']);
   });
 
-  test('text-only AI SDK projection skips unsupported entries and preserves user attachment refs', () => {
+  test('text-only AI SDK projection skips unsupported entries and describes user attachments', () => {
     const events: RuntimeEvent[] = [
       ev({
         role: 'user',
@@ -677,7 +677,8 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(buildTextModelMessagesFromRuntimeEvents(events)).toEqual([
       {
         role: 'user',
-        content: 'see attached\n\n[attachment: brief.pdf (application/pdf)]',
+        content:
+          'see attached\n\n<attachment>\nThe attachment content is unavailable to Read.\nname: "brief.pdf"\nmime_type: "application/pdf"\n</attachment>',
       },
       { role: 'assistant', content: 'final answer' },
     ]);

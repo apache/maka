@@ -44,6 +44,7 @@ import {
   type SubscriptionActionResult,
 } from '@maka/core';
 import {
+  fetchClaudeSubscriptionUsage,
   refreshAndPersistOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
   type OAuthSubscriptionRefreshAndPersistOutcome,
@@ -66,7 +67,6 @@ const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const CLAUDE_AUTHORIZE_ENDPOINT = 'https://claude.com/cai/oauth/authorize';
 const CLAUDE_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 const CLAUDE_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
-const CLAUDE_USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage';
 const CLAUDE_PROFILE_ENDPOINT = 'https://api.anthropic.com/api/oauth/profile';
 const CLAUDE_SCOPE = 'user:sessions:claude_code user:mcp_servers user:file_upload';
 
@@ -431,37 +431,16 @@ export class ClaudeSubscriptionService {
       return { ok: false, reason: 'unknown', message: '当前未登录。' };
     }
     try {
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${accessToken}`,
-        'User-Agent': OAUTH_USER_AGENT,
-      };
-      const response = await this.fetchFn(CLAUDE_USAGE_ENDPOINT, { headers });
-      if (!response.ok) {
-        this.quotaFetchFailedMessage = `配额端点返回 ${response.status}。`;
-        return { ok: false, reason: 'unknown', message: this.quotaFetchFailedMessage };
-      }
-      const data = (await response.json()) as {
-        five_hour?: { utilization?: number; resets_at?: string };
-        seven_day?: { utilization?: number; resets_at?: string };
-      };
-      const snapshot: QuotaSnapshot = { fetchedAt: this.now() };
-      if (data.five_hour && typeof data.five_hour.utilization === 'number') {
-        snapshot.fiveHour = {
-          utilization: Math.round(data.five_hour.utilization),
-          resetsAt: data.five_hour.resets_at ?? '',
-        };
-      }
-      if (data.seven_day && typeof data.seven_day.utilization === 'number') {
-        snapshot.sevenDay = {
-          utilization: Math.round(data.seven_day.utilization),
-          resetsAt: data.seven_day.resets_at ?? '',
-        };
-      }
+      const snapshot = await fetchClaudeSubscriptionUsage({
+        accessToken,
+        fetchFn: this.fetchFn,
+        now: this.now,
+      });
       this.cachedQuota = snapshot;
       this.quotaFetchFailedMessage = null;
       return { ok: true };
     } catch (err) {
-      const message = err instanceof Error ? err.message : '配额请求失败。';
+      const message = err instanceof Error ? err.message : 'Quota request failed.';
       this.quotaFetchFailedMessage = message;
       return { ok: false, reason: 'unknown', message };
     }

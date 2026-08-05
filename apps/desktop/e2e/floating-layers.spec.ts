@@ -1,11 +1,11 @@
 import { expect, test, COMPOSER_INPUT } from './fixtures.js';
 
-test('model and adjacent thinking Selectors persist one real Electron journey', async ({
+test('model and adjacent thinking menus persist one real Electron journey', async ({
   modelPickerLongWindow: page,
 }) => {
-  const thinkingTrigger = page.getByRole('combobox', { name: '思考级别' });
+  const thinkingTrigger = page.getByRole('button', { name: /思考级别/ });
   await thinkingTrigger.click();
-  await page.getByRole('option', { name: '关', exact: true }).click();
+  await page.getByRole('menuitem', { name: '关', exact: true }).click();
   await expect(thinkingTrigger).toContainText('关');
 
   const composer = page.locator(COMPOSER_INPUT);
@@ -15,17 +15,15 @@ test('model and adjacent thinking Selectors persist one real Electron journey', 
     page.getByText(/Fake backend received: model selector persistence journey/),
   ).toBeVisible();
 
-  const activeThinkingTrigger = page.getByRole('combobox', { name: '思考级别' });
+  const activeThinkingTrigger = page.getByRole('button', { name: /思考级别/ });
   await expect(activeThinkingTrigger).toContainText('关');
   await page.reload();
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
-  await expect(page.getByRole('combobox', { name: '思考级别' })).toContainText('关');
+  await expect(page.getByRole('button', { name: /思考级别/ })).toContainText('关');
 
   const modelTrigger = page.getByRole('button', { name: '切换当前会话模型' });
   await modelTrigger.click();
-  const search = page.getByPlaceholder('搜索模型');
-  await search.fill('claude-e2e-1');
-  await page.getByRole('option', { name: 'claude-e2e-1', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'claude-e2e-1', exact: true }).click();
   await expect(page.getByText('已切换当前会话模型')).toBeVisible();
   await expect(modelTrigger).toContainText('claude-e2e-1');
 });

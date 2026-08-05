@@ -8,13 +8,18 @@ import type {
   ConnectionCatalogEntryDraft,
   CredentialStatus,
 } from '@maka/core/runtime-policy';
-import type { ConnectionEffectFetchTransport, ConnectionTestEffectOutcome } from '@maka/runtime';
+import {
+  serializeOAuthSubscriptionTokens,
+  type ConnectionEffectFetchTransport,
+  type ConnectionTestEffectOutcome,
+} from '@maka/runtime';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { HostConnectionEffectCoordinator } from '../server/connection-effect-coordinator.js';
+import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
@@ -41,6 +46,7 @@ test('serializes one connection, runs different connections concurrently, and co
     const coordinator = new HostConnectionEffectCoordinator({
       stores,
       activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
       createTransport: () =>
         recordingTransport(() => {
           transportCloses += 1;
@@ -111,6 +117,7 @@ test('beginDrain rejects new effects while close waits for an already accepted e
     const coordinator = new HostConnectionEffectCoordinator({
       stores,
       activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
       runModelDiscovery: async () => {
         started.resolve(undefined);
         await release.promise;
@@ -161,6 +168,7 @@ test('provider discovery failure preserves the existing catalog and returns no s
     const coordinator = new HostConnectionEffectCoordinator({
       stores,
       activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
       now: () => 123,
       onCommittedMutation: () => {
         invalidations += 1;
@@ -201,6 +209,69 @@ test('provider discovery failure preserves the existing catalog and returns no s
   });
 });
 
+test('OAuth connection effects resolve the canonical access token instead of sending the vault payload', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(
+      stores,
+      0,
+      connectionDraft('oauth-effects', 'openai-codex'),
+    );
+    const accessToken = 'oauth-access-token-must-not-escape';
+    const storedCredential = serializeOAuthSubscriptionTokens({
+      access_token: accessToken,
+      refresh_token: 'oauth-refresh-token-must-not-escape',
+      expires_at: Date.now() + 60 * 60_000,
+    });
+    const enrollment = await stores.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    assert.equal(enrollment.kind, 'ready');
+    if (enrollment.kind !== 'ready') throw new Error('OAuth enrollment did not start');
+    const credential = await stores.operations.completeInteractiveOAuthLogin(
+      enrollment.ticket,
+      storedCredential,
+    );
+    assert.equal(credential.kind, 'committed');
+    let transportCloses = 0;
+    let receivedDiscoverySecret = '';
+    let receivedTestSecret = '';
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () =>
+        recordingTransport(() => {
+          transportCloses += 1;
+        }),
+      runModelDiscovery: async (_connection, secret) => {
+        receivedDiscoverySecret = secret;
+        return { ok: true, models: [{ id: 'gpt-5.6-terra' }] };
+      },
+      runConnectionTest: async (_connection, secret) => {
+        receivedTestSecret = secret;
+        return { ok: true, modelId: 'gpt-5.6-terra', latencyMs: 3 };
+      },
+    });
+
+    const discovery = await coordinator.handlers['connection.models.fetch'](
+      { connectionId: connection.connectionId },
+      context,
+    );
+    const tested = await coordinator.handlers['connection.test.run'](
+      { connectionId: connection.connectionId, modelId: 'gpt-5.6-terra' },
+      context,
+    );
+
+    assert.equal(discovery.ok, true);
+    assert.equal(tested.ok, true);
+    assert.equal(receivedDiscoverySecret, accessToken);
+    assert.equal(receivedTestSecret, accessToken);
+    assert.notEqual(receivedDiscoverySecret, storedCredential);
+    assert.notEqual(receivedTestSecret, storedCredential);
+    assert.equal(transportCloses, 2);
+    assertRedacted(discovery, [accessToken, storedCredential]);
+    assertRedacted(tested, [accessToken, storedCredential]);
+  });
+});
+
 test('connection test derives a persisted summary from one bounded projection', async () => {
   await withFixture(async ({ stores }) => {
     const connection = await createConnection(stores, 0, connectionDraft('test-failure', 'openai'));
@@ -210,6 +281,7 @@ test('connection test derives a persisted summary from one bounded projection', 
     const coordinator = new HostConnectionEffectCoordinator({
       stores,
       activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
       now: () => Date.parse('2026-07-29T12:00:00.000Z'),
       createTransport: () =>
         recordingTransport(() => {
@@ -267,6 +339,7 @@ test('projects credential changes during provider I/O as semantic superseded and
     const coordinator = new HostConnectionEffectCoordinator({
       stores,
       activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
       createTransport: () =>
         recordingTransport(() => {
           transportCloses += 1;

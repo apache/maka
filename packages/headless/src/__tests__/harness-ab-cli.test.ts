@@ -780,6 +780,104 @@ test('harness composition preserves historical manifest fingerprints', async () 
   }
 });
 
+test('task-container placement is declared by every arm, or by none', async () => {
+  // The report throws on a manifest where only some arms declare placement, so
+  // this is not a documentation preference: leaving the competitors silent once
+  // the Maka arm moved is what made four-arm-canary-v1 finish all four cells
+  // and produce no report at all.
+  const { buildHarnessAbManifest, resolveHarnessComposition } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const args = {
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition: resolveHarnessComposition({ competitor: 'codex' }),
+  };
+  const placements = (manifest: { arms: { metadata?: { config?: { execution?: unknown } } }[] }) =>
+    manifest.arms.map(
+      (arm) => (arm.metadata?.config?.execution as { placement?: string } | undefined)?.placement,
+    );
+
+  assert.deepEqual(
+    placements(
+      buildHarnessAbManifest({
+        ...args,
+        env: { MAKA_HARNESS_AB_MAKA_PLACEMENT: 'task-container' },
+      }),
+    ),
+    ['task-container', 'task-container'],
+  );
+  assert.deepEqual(placements(buildHarnessAbManifest({ ...args, env: {} })), [
+    undefined,
+    undefined,
+  ]);
+});
+
+test('redirecting apt is recorded, and leaves runs that do not redirect untouched', async () => {
+  const {
+    aptMirrorComposeContent,
+    buildHarnessAbManifest,
+    resolveHarnessComposition,
+    UBUNTU_APT_HOSTS,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({ competitor: 'reasonix' });
+  const args = {
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+    env: { MAKA_HARNESS_AB_APT_MIRROR: 'mirrors.example.com' },
+  };
+
+  const plain = buildHarnessAbManifest({ ...args, env: {} });
+  const redirected = buildHarnessAbManifest({ ...args, aptMirrorAddress: '10.0.0.7' });
+
+  assert.equal(plain.metadata.benchmark.packageMirror, undefined);
+  assert.deepEqual(redirected.metadata.benchmark.packageMirror, {
+    hosts: UBUNTU_APT_HOSTS,
+    name: 'mirrors.example.com',
+    address: '10.0.0.7',
+  });
+  // Where packages came from is part of what a run was, so the two must not be
+  // resumable as each other. Recording it without forking the fingerprint would
+  // let a redirected run continue a manifest that fetched from Ubuntu's hosts.
+  assert.notEqual(plain.fingerprint, redirected.fingerprint);
+
+  // Both hosts the base image's sources list names have to move together: apt
+  // reads noble-security from security.ubuntu.com, and leaving it behind puts
+  // every security-pocket fetch back on the link the redirect exists to avoid.
+  const overlay = aptMirrorComposeContent('10.0.0.7');
+  for (const host of UBUNTU_APT_HOSTS)
+    assert.match(overlay, new RegExp(`'${host}:10\\.0\\.0\\.7'`));
+  assert.match(overlay, /^services:\n {2}main:\n {4}extra_hosts:\n/);
+  assert.throws(() => aptMirrorComposeContent(''), /apt mirror address is required/);
+});
+
+test('only the executor that applies the mirror is allowed to name one', async () => {
+  const { harnessAptMirror, resolveHarnessComposition } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const harbor = resolveHarnessComposition({ competitor: 'reasonix' }).benchmarkProfile;
+  const pier = resolveHarnessComposition({
+    benchmark: 'deep-swe-1.1',
+    competitor: 'kimi-code',
+  }).benchmarkProfile;
+  const env = { MAKA_HARNESS_AB_APT_MIRROR: 'mirrors.example.com' };
+
+  assert.equal(harnessAptMirror(harbor, env), 'mirrors.example.com');
+  // Only the harbor runner receives the compose overlay, so a pier run that
+  // accepted the name would publish a redirect its cells never performed and
+  // fork its resume identity on that false record. A shared shell env carrying
+  // the variable across both benchmarks is the way this actually happens, which
+  // is why it has to fail at launch rather than be dropped quietly.
+  assert.throws(
+    () => harnessAptMirror(pier, env),
+    /the pier executor does not redirect package hosts/,
+  );
+  assert.equal(harnessAptMirror(pier, {}), null);
+});
+
 test('Reasonix comparison freezes the DeepSeek runtime, toolchain, and run identity', async () => {
   const {
     buildHarnessAbManifest,

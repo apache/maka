@@ -143,6 +143,29 @@ describe('McpClientManager stdio E2E', () => {
     assert.doesNotMatch(status?.error ?? '', /sk-live/u);
   });
 
+  test('does not revise callable tools for status-only stderr updates', async () => {
+    const manager = createManager();
+    await manager.sync(fixtureConfig(['--runtime-stderr']));
+    const revision = manager.toolSnapshotRevision();
+
+    await waitFor(
+      () => manager.status('fixture')?.stderrTail?.includes('runtime diagnostic') === true,
+      2_000,
+    );
+
+    assert.equal(manager.toolSnapshotRevision(), revision);
+  });
+
+  test('does not revise callable tools when discovery returns the same catalog', async () => {
+    const manager = createManager();
+    await manager.sync(fixtureConfig());
+    const revision = manager.toolSnapshotRevision();
+
+    await manager.refreshTools('fixture');
+
+    assert.equal(manager.toolSnapshotRevision(), revision);
+  });
+
   test('reconciles disable and removal without leaving tools visible', async () => {
     const manager = createManager();
     await manager.sync(fixtureConfig());

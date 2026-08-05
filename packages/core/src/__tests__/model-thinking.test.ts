@@ -62,6 +62,10 @@ test('account access paths inherit thinking metadata from their provider', () =>
     thinkingOptionsForModel('claude-subscription', 'claude-opus-4-8'),
     thinkingOptionsForModel('anthropic', 'claude-opus-4-8'),
   );
+  assert.deepEqual(
+    thinkingOptionsForModel('openai-codex', 'gpt-5.6-luna'),
+    thinkingOptionsForModel('openai', 'gpt-5.6-luna'),
+  );
 });
 
 test('provider-scoped model ids do not leak metadata to ambiguous ids', () => {

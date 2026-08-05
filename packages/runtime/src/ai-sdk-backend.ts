@@ -139,7 +139,7 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
-import { kimiReasoningFieldFromProviderOptions } from './kimi-openai-transport.js';
+import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import {
   toSandboxRunTraceProjection,
@@ -776,6 +776,7 @@ export class AiSdkBackend implements AgentBackend {
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
     this.modelAdapter = new ModelAdapter({
+      sessionId: input.sessionId,
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
@@ -1586,6 +1587,7 @@ export class AiSdkBackend implements AgentBackend {
               system: requestSystemPrompt,
               abortSignal: turnAbortController.signal,
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
+              continuationKey: scope.turnId,
             });
 
             let streamFailure: unknown;
@@ -2386,6 +2388,7 @@ export class AiSdkBackend implements AgentBackend {
   async dispose(): Promise<void> {
     if (this.activeTurns.size > 0) await this.stop('user_stop');
     else this.compaction.abortHistoryCompact();
+    this.modelAdapter.dispose();
   }
 
   /** Map ai-sdk finishReason → our CompleteEvent.stopReason. */
@@ -2949,11 +2952,11 @@ export class AiSdkBackend implements AgentBackend {
         }
       }
       if (!replaySupport.unsignedThinking) return undefined;
-      const kimiReasoningField = kimiReasoningFieldFromProviderOptions(item.providerOptions);
-      if (!kimiReasoningField) return undefined;
+      const reasoningField = openAiChatReasoningFieldFromProviderOptions(item.providerOptions);
+      if (!reasoningField) return undefined;
       return {
         providerOptions: {
-          openaiCompatible: { [kimiReasoningField]: item.text },
+          openaiCompatible: { [reasoningField]: item.text },
         } as NonNullable<ModelMessage['providerOptions']>,
       };
     };
@@ -3486,6 +3489,7 @@ export class AiSdkBackend implements AgentBackend {
    */
   private async cleanupAfterTurn(scope: TurnScope): Promise<void> {
     this.activeTurns.delete(scope);
+    this.modelAdapter.endContinuation(scope.turnId);
     await scope.toolRuntime.endTurn(scope.aborted ? 'aborted' : 'completed');
   }
 

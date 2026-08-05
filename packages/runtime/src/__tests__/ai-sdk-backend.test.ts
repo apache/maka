@@ -1166,7 +1166,7 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
-  test('stored-message fallback keeps placeholder text when no reader is wired', async () => {
+  test('stored-message fallback describes an attachment that is not safely addressable', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -1239,8 +1239,10 @@ describe('AiSdkBackend model history', () => {
     const text = parts[0]?.text ?? '';
     assert.ok(text.includes('see the attached chart'), `expected user text in: ${text}`);
     assert.ok(
-      text.includes('[attachment: chart.png (image/png)]'),
-      `expected attachment ref preserved in stored-message fallback, got: ${text}`,
+      text.includes(
+        '<attachment>\nThe attachment content is unavailable to Read.\nname: "chart.png"\nmime_type: "image/png"\n</attachment>',
+      ),
+      `expected unavailable attachment context in stored-message fallback, got: ${text}`,
     );
   });
 
@@ -1426,8 +1428,10 @@ describe('AiSdkBackend model history', () => {
     const text = parts.map((p) => p.text ?? '').join('\n');
     assert.ok(text.includes('describe this chart'), `expected original text in: ${text}`);
     assert.ok(
-      text.includes('[attachment: chart.png (image/png)]'),
-      `expected attachment ref in: ${text}`,
+      text.includes(
+        '<attachment>\nThe attachment content is unavailable to Read.\nname: "chart.png"\nmime_type: "image/png"\n</attachment>',
+      ),
+      `expected unavailable attachment context in: ${text}`,
     );
     assert.ok(
       text.includes('does not support image input'),
@@ -12902,7 +12906,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     assert.equal(
       parts[0]?.text,
       buildSteeringEnvelope(
-        'inspect the authoritative inputs\n\n[attachment: first.png (image/png)] [attachment: second.pdf (application/pdf)]',
+        'inspect the authoritative inputs\n\n<attachment>\nThe attachment content is unavailable to Read.\nname: "first.png"\nmime_type: "image/png"\n</attachment>\n<attachment>\nThe attachment content is unavailable to Read.\nname: "second.pdf"\nmime_type: "application/pdf"\n</attachment>',
       ),
     );
     assert.equal(parts[1]?.mediaType, 'image/png');

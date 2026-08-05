@@ -29,14 +29,20 @@ const generatedModelProviderOverrides: Partial<
   Record<ProviderType, Record<string, { npm: string; api?: string }>>
 > = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
 
+/** Access paths that serve a canonical provider's model catalog. */
+const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, ProviderType>> = {
+  'xai-oauth': 'xai',
+  'opencode-free': 'opencode',
+  'openai-codex': 'openai',
+};
+
+function generatedMetadataProviderType(providerType: ProviderType): ProviderType {
+  return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
+}
+
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {
   const id = modelId.trim();
-  const metadataProviderType =
-    providerType === 'xai-oauth'
-      ? 'xai'
-      : providerType === 'opencode-free'
-        ? 'opencode'
-        : providerType;
+  const metadataProviderType = generatedMetadataProviderType(providerType);
   const generated = generatedMetadata[metadataProviderType]?.[id];
   const override =
     STATIC_MODEL_METADATA[providerType]?.[id] ??
@@ -64,12 +70,7 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
  * the declaration-to-wire invariant cannot silently shrink.
  */
 export function modelMetadataIdsForProvider(providerType: ProviderType): string[] {
-  const metadataProviderType =
-    providerType === 'xai-oauth'
-      ? 'xai'
-      : providerType === 'opencode-free'
-        ? 'opencode'
-        : providerType;
+  const metadataProviderType = generatedMetadataProviderType(providerType);
   return Array.from(
     new Set([
       ...Object.keys(generatedMetadata[metadataProviderType] ?? {}),

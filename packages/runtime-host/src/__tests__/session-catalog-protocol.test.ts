@@ -145,6 +145,7 @@ describe('Session catalog protocol', () => {
           sessionId: 'session-1',
           expectedRevision: 2,
           cwd: '/workspace/next',
+          projectId: 'project-2',
         },
       }),
       {
@@ -154,6 +155,7 @@ describe('Session catalog protocol', () => {
           sessionId: 'session-1',
           expectedRevision: 2,
           cwd: '/workspace/next',
+          projectId: 'project-2',
         },
       },
     );

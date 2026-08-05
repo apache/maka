@@ -9,6 +9,7 @@ import {
   isThinkingLevel,
   sanitizeTaskLedgerTask,
   thinkingVariantsForModel,
+  VOICE_INPUT_MARKER,
 } from '@maka/core';
 import type {
   CreateSessionRequestInput,
@@ -501,7 +502,8 @@ export function registerSessionsIpc(
       sessionId,
       {
         turnId,
-        text: skillInvocation.sendText,
+        text:
+          skillInvocation.sendText || (sendCommand.voiceOperationId ? VOICE_INPUT_MARKER : ''),
         ...(voiceAudio ? { voiceAudio } : {}),
         ...(skillInvocation.disposition === 'ready' || sendCommand.displayText !== undefined
           ? { displayText }

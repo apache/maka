@@ -56,6 +56,11 @@ export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
 // cross-package consumer — `apps/desktop`'s `artifact-preview.tsx` — which is the
 // promotion condition the off-barrel convention named, so the export is the rule.
 export { previewVariants } from './primitives/chat.js';
+// `diffLineKind` rides the same seam for the same reason: it decides the
+// `data-line` values those parts are selected by, so a second copy of it is a
+// second answer to "what colour is this line". `apps/desktop` had one, and the
+// two had already diverged on `diff --git` / `index` headers.
+export { diffLineKind } from './tool-activity/tool-result-preview.js';
 export { formatTurnDuration } from './chat-display-helpers.js';
 export * from './primitives/stat-tile.js';
 export * from './primitives/section-header.js';

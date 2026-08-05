@@ -259,6 +259,13 @@
   -webkit-app-region: drag;
 }
 
+/* Drag regions are hit-tested from element rects, and the top layer is invisible
+   to that pass: a `showModal()` dialog paints over the titlebar, but its controls
+   inside the titlebar rect still reach the OS as window drags. */
+dialog:modal {
+  -webkit-app-region: no-drag;
+}
+
 .maka-shell-topbar-rail {
   display: flex;
   align-items: center;

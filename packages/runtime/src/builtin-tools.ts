@@ -19,9 +19,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
 import {
   compilePermissionProfile,
+  parseAttachmentResourceRef,
   type SandboxBoundaryExpansion,
   type StorageRef,
   type PermissionProfile,
+  type ToolResultContent,
 } from '@maka/core';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import {
@@ -135,6 +137,13 @@ function internalFilesystemWriteFailure(tool: string, subject: string, extra?: s
 export interface BuildBuiltinToolsOptions {
   shellRuns?: ShellRunLauncher;
   runtimeResources?: RuntimeResourceReader;
+  attachmentResources?: {
+    readAttachmentResource(
+      sessionId: string,
+      artifactId: string,
+      abortSignal: AbortSignal,
+    ): Promise<ToolResultContent>;
+  };
   archiveResources?: ToolResultArchiveResourceReader;
   backgroundTasks?: BackgroundTaskStopper;
   ptyControls?: PtyControlWriter;
@@ -166,7 +175,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
   });
   const executionFacts = executor.facts;
-  const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${options.runtimeResources ? ', or read a whole runtime resource using ref' : ''}.`;
+  const acceptsResourceRefs = Boolean(options.runtimeResources || options.attachmentResources);
+  const readDescription = `Read a text file${options.snapshotImage ? ' or supported image' : ''} from disk${acceptsResourceRefs ? ', or read a whole runtime resource using ref' : ''}.`;
   const pathField = z
     .string()
     .describe('A file path; relative paths are resolved from the session cwd');
@@ -182,7 +192,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     .positive()
     .describe('Maximum text file lines to read')
     .optional();
-  const refField = z.string().describe('A runtime resource ref returned by another tool');
+  const refField = z
+    .string()
+    .describe('A runtime resource ref provided in the conversation or returned by another tool');
   const fileReadParameters = z
     .object({
       path: pathField,
@@ -230,7 +242,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       limit: limitField,
       ref: refField
         .describe(
-          'A runtime resource ref returned by another tool. Provide ref on its own, without path/offset/limit; omit it (or leave it empty) when reading a file.',
+          'A runtime resource ref provided in the conversation or returned by another tool. Provide ref on its own, without path/offset/limit; omit it (or leave it empty) when reading a file.',
         )
         .optional(),
     })
@@ -238,7 +250,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       'Read a file with path (optionally offset/limit), or a whole runtime resource with ref; provide exactly one of path or ref.',
     );
   const providerReadSchema = zodSchema(providerReadParameters);
-  const readParameters = options.runtimeResources
+  const readParameters = acceptsResourceRefs
     ? jsonSchema(async () => await providerReadSchema.jsonSchema, {
         validate: async (value) => {
           const result = await strictReadParameters.safeParseAsync(value);
@@ -299,6 +311,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           const { ref } = input;
           if (classifyRuntimeResourceRef(ref) !== 'runtime') {
             throw new Error(`Unsupported runtime resource ref: ${ref}`);
+          }
+          const attachment = parseAttachmentResourceRef(ref);
+          if (attachment) {
+            if (!options.attachmentResources) {
+              throw new Error('Attachment resources are not available in this toolset');
+            }
+            return await options.attachmentResources.readAttachmentResource(
+              sessionId,
+              attachment.artifactId,
+              abortSignal,
+            );
           }
           if (!options.runtimeResources)
             throw new Error('Runtime resources are not available in this toolset');
@@ -380,7 +403,12 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async ({ path, old_string, new_string }, ctx) => {
         const result = await filesystem.execute({
-          operation: { kind: 'edit', path, oldString: old_string, newString: new_string },
+          operation: {
+            kind: 'edit',
+            path,
+            oldString: old_string,
+            newString: new_string,
+          },
           ...filesystemCall(ctx),
         });
         if (result.kind !== 'edit')
@@ -423,7 +451,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async ({ path, sort_keys }, ctx) => {
         const result = await filesystem.execute({
-          operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
+          operation: {
+            kind: 'format_json',
+            path,
+            sortKeys: sort_keys ?? false,
+          },
           ...filesystemCall(ctx),
         });
         if (result.kind !== 'format_json') {
@@ -666,7 +698,10 @@ function sandboxCommand(
   }
   if (!manager.canEnforce({ profile: effective.profile, platform })) {
     if (profileRequiresSandbox(effective.profile)) {
-      const selection = manager.selectInitial({ profile: effective.profile, platform });
+      const selection = manager.selectInitial({
+        profile: effective.profile,
+        platform,
+      });
       throw new SandboxCommandError({
         domain,
         stage: selection.ok ? 'capability' : 'selection',
@@ -680,7 +715,10 @@ function sandboxCommand(
     return undefined;
   }
 
-  let preparedProfile: PreparedLinuxProfilePaths = { paths: [], unavailablePaths: [] };
+  let preparedProfile: PreparedLinuxProfilePaths = {
+    paths: [],
+    unavailablePaths: [],
+  };
   try {
     preparedProfile = prepareLinuxBashProfilePaths(
       platform,
@@ -738,7 +776,9 @@ function sandboxCommand(
                     }
                   : {}),
                 ...(preparedProfile.unavailablePaths.length > 0
-                  ? { unavailableProfilePaths: preparedProfile.unavailablePaths }
+                  ? {
+                      unavailableProfilePaths: preparedProfile.unavailablePaths,
+                    }
                   : {}),
               }
             : {}),
@@ -981,7 +1021,10 @@ function effectivePermissionProfile(
 ): { profile: PermissionProfile; workspaceRoots: readonly string[] } {
   const canonicalCwd = canonicalExistingPath(cwd);
   if (explicitProfile) return { profile: explicitProfile, workspaceRoots: [canonicalCwd] };
-  const compiled = compilePermissionProfile({ mode: permissionMode, cwd: canonicalCwd });
+  const compiled = compilePermissionProfile({
+    mode: permissionMode,
+    cwd: canonicalCwd,
+  });
   return { profile: compiled.profile, workspaceRoots: compiled.workspaceRoots };
 }
 

@@ -16,8 +16,10 @@ import {
   LONG_SIDEBAR_SCENARIOS,
   LONG_SIDEBAR_SESSION_PREFIX,
   LONG_TRANSCRIPT_SESSION_ID,
+  OVERFLOWING_RAIL_SESSION_ID,
   PERMISSION_SESSION_ID,
   PROCESSING_SESSION_ID,
+  SHORT_FINAL_TURN_SESSION_ID,
   STALE_FAKE_SESSION_ID,
   STREAMING_SESSION_ID,
   TURN_CONTROL_BRANCH_ORPHAN_SESSION_ID,
@@ -63,6 +65,10 @@ import {
   longSidebarSessions,
   longTranscriptMessages,
   longTranscriptSession,
+  overflowingRailMessages,
+  overflowingRailSession,
+  shortFinalTurnMessages,
+  shortFinalTurnSession,
   staleFakeMessages,
   staleFakeSession,
   turnControlSessions,
@@ -199,6 +205,13 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // session on boot, so off-screen turns mount as content-visibility
   // placeholders (see e2e/scroll-geometry.spec.ts).
   'long-transcript',
+  // Prompt-rail activation contract: a transcript whose final turn is one
+  // line, which never crosses the rail's top-third activation band
+  // (see e2e/prompt-rail.spec.ts).
+  'short-final-turn',
+  // Prompt-rail overflow contract: enough prompts that the rail exceeds its cap
+  // and scrolls independently (see e2e/prompt-rail.spec.ts).
+  'overflowing-rail',
   // #819: BrowserPanel renderer-chrome fixture. Seeds `liveBrowserSessionIds`
   // with the active turn session so `BrowserPanel` mounts; with no native
   // `WebContentsView` in e2e-fixture mode, `browser.getState` resolves null
@@ -651,6 +664,15 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       // above-viewport turns mount render-skipped (never rendered), the
       // exact state the warm-up + pinned-bottom invariants protect.
       return { ...state, activeSessionId: LONG_TRANSCRIPT_SESSION_ID };
+    case 'short-final-turn':
+      // Prompt-rail activation contract: boot into the short-tailed session so
+      // the spec can scroll straight to an end the activation band never
+      // reaches on its own.
+      return { ...state, activeSessionId: SHORT_FINAL_TURN_SESSION_ID };
+    case 'overflowing-rail':
+      // Prompt-rail overflow contract: boot into the 60-prompt session so the
+      // rail is already past its cap when the spec scrolls to the end.
+      return { ...state, activeSessionId: OVERFLOWING_RAIL_SESSION_ID };
     case 'all':
       return {
         ...state,
@@ -717,6 +739,16 @@ export async function seedE2eFixture(input: {
   // placeholders — the state the warm-up and pinned-bottom invariants cover.
   if (input.fixture.scenario === 'long-transcript') {
     await writeSession(input.workspaceRoot, longTranscriptSession(now), longTranscriptMessages(now));
+  }
+  // Prompt-rail activation contract (e2e/prompt-rail.spec.ts): a scrollable
+  // transcript that ends on a turn too short to reach the activation band.
+  if (input.fixture.scenario === 'short-final-turn') {
+    await writeSession(input.workspaceRoot, shortFinalTurnSession(now), shortFinalTurnMessages(now));
+  }
+  // Prompt-rail overflow contract (e2e/prompt-rail.spec.ts): more prompts than
+  // the rail can show at once, so it scrolls independently of the transcript.
+  if (input.fixture.scenario === 'overflowing-rail') {
+    await writeSession(input.workspaceRoot, overflowingRailSession(now), overflowingRailMessages(now));
   }
   // PR109f (g): all three turn-control-* scenarios share the same
   // on-disk seed; only the active session selection differs. Seeding

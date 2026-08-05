@@ -253,9 +253,20 @@ class MakaAgent(BaseInstalledAgent):
         )
 
     def _task_run_in_container(self) -> bool:
-        """Pier task runs execute in the task container; plain Harbor keeps its
-        existing host bridge for Terminal-Bench callers."""
-        return self._harbor_mode() == "task-run" and _NetworkAllowlist is not None
+        """A task run executes in the task container. The caller asks for that
+        by mode; nothing else here decides it.
+
+        This used to also require a `NetworkAllowlist`, which exists only under
+        Pier — so the clause read as "Pier only" while looking like a safety
+        check. It was neither. Every competitor adapter runs in the task
+        container under plain Harbor and returns `None` from
+        `network_allowlist` there, so the allowlist was a condition this arm
+        alone had to satisfy to stand where the others already stood, and the
+        arms it was compared against were the ones it excluded it from joining.
+        Where an allowlist exists it is still applied; where the harness has
+        none to give, this arm is confined exactly as its competitors are.
+        """
+        return self._harbor_mode() == "task-run"
 
     def _harbor_mode(self) -> str:
         """cell (default) runs a RuntimeRunner cell. task-run runs the full

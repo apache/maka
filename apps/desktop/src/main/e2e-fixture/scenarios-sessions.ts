@@ -7,6 +7,8 @@ import {
   LONG_SIDEBAR_SESSION_COUNT,
   LONG_SIDEBAR_SESSION_PREFIX,
   LONG_TRANSCRIPT_SESSION_ID,
+  OVERFLOWING_RAIL_SESSION_ID,
+  SHORT_FINAL_TURN_SESSION_ID,
   STALE_FAKE_SESSION_ID,
   TURN_CONTROL_BRANCH_ORPHAN_SESSION_ID,
   TURN_CONTROL_BRANCH_VISIBLE_SESSION_ID,
@@ -65,6 +67,116 @@ export function longTranscriptMessages(now: number): StoredMessage[] {
       turnId,
       ts: base + turn * 60_000 + 30_000,
       text: `长会话回答 ${turn + 1}\n\n${filler}`,
+      modelId: 'glm-5.1',
+    });
+  }
+  return messages;
+}
+
+export function shortFinalTurnSession(now: number): SessionHeader {
+  return header({
+    id: SHORT_FINAL_TURN_SESSION_ID,
+    name: '末轮极短的会话',
+    connection: 'zai-live',
+    model: 'glm-5.1',
+    now,
+    lastMessageAt: now - 5 * 60_000,
+  });
+}
+
+/**
+ * Five tall turns and a last turn one line long — a conversation that ends the
+ * way most do, on a short answer.
+ *
+ * The prompt rail's activation band is the top third of the scrollport. A tail
+ * this short never crosses it: scrolling to the very end still leaves the final
+ * turn below the line, because there is no scroll left to bring it up. So the
+ * last prompt can only become current if the rail resolves the end of the
+ * scroller explicitly, which is what `prompt-rail.spec.ts` asserts here.
+ *
+ * Deliberately a separate seed rather than a short tail on `long-transcript`:
+ * that fixture's warm-up contract (`scroll-geometry.spec.ts`) reads every turn
+ * as taller than its 250px content-visibility placeholder, and a turn that
+ * *shrinks* on warm-up instead of growing would change what it measures.
+ */
+export function shortFinalTurnMessages(now: number): StoredMessage[] {
+  const filler = Array.from(
+    { length: 60 },
+    (_, line) => `第 ${line + 1} 行 — 用于撑高单个 turn 的占位正文内容。`,
+  ).join('  \n');
+  const messages: StoredMessage[] = [];
+  const base = now - 30 * 60_000;
+  const total = 6;
+  for (let turn = 0; turn < total; turn++) {
+    const isFinal = turn === total - 1;
+    const turnId = `short-final-turn-${turn}`;
+    messages.push({
+      type: 'user',
+      id: `short-final-user-${turn}`,
+      turnId,
+      ts: base + turn * 60_000,
+      text: `短尾会话问题 ${turn + 1}`,
+    });
+    messages.push({
+      type: 'assistant',
+      id: `short-final-assistant-${turn}`,
+      turnId,
+      ts: base + turn * 60_000 + 30_000,
+      text: isFinal ? '好的。' : `短尾会话回答 ${turn + 1}\n\n${filler}`,
+      modelId: 'glm-5.1',
+    });
+  }
+  return messages;
+}
+
+export function overflowingRailSession(now: number): SessionHeader {
+  return header({
+    id: OVERFLOWING_RAIL_SESSION_ID,
+    name: '提问多到索引线放不下',
+    connection: 'zai-live',
+    model: 'glm-5.1',
+    now,
+    lastMessageAt: now - 5 * 60_000,
+  });
+}
+
+/**
+ * 90 short turns. The count is the point, not the height: past roughly 47
+ * prompts the rail exceeds its cap and becomes a scroller of its own, and then
+ * the active tick can sit outside the rail's own viewport — visible neither to
+ * the reader nor to a hit test — unless the rail scrolls it back into view.
+ *
+ * 90 rather than the ~50 that would just barely overflow, so the margin
+ * survives a dock that renders taller or shorter than it does here — at 60 the
+ * rail overflowed by only 58px, close enough to the cap that another
+ * platform's geometry could erase the premise the test rests on.
+ *
+ * Short answers on purpose. The rail only needs many prompts; making each turn
+ * as tall as `long-transcript`'s would multiply the transcript by 60 and buy
+ * the test nothing but warm-up time.
+ */
+export function overflowingRailMessages(now: number): StoredMessage[] {
+  const body = Array.from(
+    { length: 6 },
+    (_, line) => `第 ${line + 1} 行 — 短回答正文。`,
+  ).join('  \n');
+  const messages: StoredMessage[] = [];
+  const base = now - 120 * 60_000;
+  for (let turn = 0; turn < 90; turn++) {
+    const turnId = `overflowing-rail-turn-${turn}`;
+    messages.push({
+      type: 'user',
+      id: `overflowing-rail-user-${turn}`,
+      turnId,
+      ts: base + turn * 60_000,
+      text: `密集提问 ${turn + 1}`,
+    });
+    messages.push({
+      type: 'assistant',
+      id: `overflowing-rail-assistant-${turn}`,
+      turnId,
+      ts: base + turn * 60_000 + 30_000,
+      text: `密集回答 ${turn + 1}\n\n${body}`,
       modelId: 'glm-5.1',
     });
   }

@@ -6,6 +6,7 @@ import type {
 } from '@maka/core/runtime-policy';
 import {
   createConnectionEffectFetchTransport,
+  isOAuthSubscriptionProvider,
   runConnectionModelDiscoveryEffect,
   runConnectionTestEffect,
   type ConnectionEffectErrorKind,
@@ -21,7 +22,6 @@ import {
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
   type ConnectionEffectCompletionResult,
-  type RuntimePolicyOperationSecretMaterial,
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import type {
@@ -36,6 +36,7 @@ import type {
   OperationOutcome,
 } from '../protocol/index.js';
 import type { ConnectionEffectOperationHandlerMap } from './operation-dispatcher.js';
+import type { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
@@ -55,6 +56,7 @@ type ConnectionTestRunner = (
 export interface HostConnectionEffectCoordinatorOptions {
   readonly stores: RuntimePolicyStoresWriter;
   readonly activation: RuntimePolicyActivationGate;
+  readonly oauthCredentials: Pick<HostOAuthExecutionAuthority, 'bind'>;
   readonly onCommittedMutation?: () => void;
   readonly now?: () => number;
   readonly runModelDiscovery?: ModelDiscoveryRunner;
@@ -73,6 +75,7 @@ export class HostConnectionEffectCoordinator {
 
   readonly #stores: RuntimePolicyStoresWriter;
   readonly #activation: RuntimePolicyActivationGate;
+  readonly #oauthCredentials: Pick<HostOAuthExecutionAuthority, 'bind'>;
   readonly #onCommittedMutation: () => void;
   readonly #now: () => number;
   readonly #runModelDiscovery: ModelDiscoveryRunner;
@@ -87,6 +90,7 @@ export class HostConnectionEffectCoordinator {
   constructor(options: HostConnectionEffectCoordinatorOptions) {
     this.#stores = authenticateRuntimePolicyStoresWriter(options.stores);
     this.#activation = options.activation;
+    this.#oauthCredentials = options.oauthCredentials;
     this.#onCommittedMutation = options.onCommittedMutation ?? (() => {});
     this.#now = options.now ?? Date.now;
     this.#runModelDiscovery = options.runModelDiscovery ?? runConnectionModelDiscoveryEffect;
@@ -112,10 +116,8 @@ export class HostConnectionEffectCoordinator {
       const prepared = await this.#stores.operations.beginModelFetch(input.connectionId);
       if (prepared.kind !== 'ready') return preparationResult(prepared);
 
-      const effect = await this.#withTransport(prepared, (fetch) =>
-        this.#runModelDiscovery(prepared.connection, connectionSecret(prepared.secretMaterial), {
-          fetch,
-        }),
+      const effect = await this.#withTransport(prepared, (fetch, secret) =>
+        this.#runModelDiscovery(prepared.connection, secret, { fetch }),
       );
       if (!effect.ok || effect.models.length === 0) {
         return {
@@ -156,10 +158,10 @@ export class HostConnectionEffectCoordinator {
       );
       if (prepared.kind !== 'ready') return preparationResult(prepared);
 
-      const effect = await this.#withTransport(prepared, (fetch) =>
+      const effect = await this.#withTransport(prepared, (fetch, secret) =>
         this.#runConnectionTest(
           prepared.connection,
-          connectionSecret(prepared.secretMaterial),
+          secret,
           { fetch },
           prepared.modelId ?? undefined,
         ),
@@ -208,18 +210,40 @@ export class HostConnectionEffectCoordinator {
   async #withTransport<T>(
     prepared: Pick<
       BeginModelFetchReady | BeginConnectionTestReady,
-      'networkProxy' | 'secretMaterial'
+      'connection' | 'networkProxy' | 'secretMaterial'
     >,
-    run: (fetch: typeof globalThis.fetch) => Promise<T>,
+    run: (fetch: typeof globalThis.fetch, secret: string) => Promise<T>,
   ): Promise<T> {
-    const transport = this.#createTransport(
-      toRuntimePolicyProxy(prepared.networkProxy, prepared.secretMaterial.networkProxy?.secret),
+    const proxy = toRuntimePolicyProxy(
+      prepared.networkProxy,
+      prepared.secretMaterial.networkProxy?.secret,
     );
+    const secret = await this.#connectionSecret(prepared, proxy);
+    const transport = this.#createTransport(proxy);
     try {
-      return await run(transport.fetch);
+      return await run(transport.fetch, secret);
     } finally {
       await transport.close();
     }
+  }
+
+  async #connectionSecret(
+    prepared: Pick<
+      BeginModelFetchReady | BeginConnectionTestReady,
+      'connection' | 'secretMaterial'
+    >,
+    proxy: ConnectionEffectProxySnapshot | null,
+  ): Promise<string> {
+    const material = prepared.secretMaterial.connection;
+    if (!material) return '';
+    if (!isOAuthSubscriptionProvider(prepared.connection.providerType)) return material.secret;
+    const binding = this.#oauthCredentials.bind({
+      providerType: prepared.connection.providerType,
+      connectionSlug: prepared.connection.slug,
+      material,
+      createRefreshTransport: () => this.#createTransport(proxy),
+    });
+    return (await binding.resolve()).access_token;
   }
 
   async #complete(
@@ -279,10 +303,6 @@ function projectSuperseded(
     kind: 'superseded',
     changed: completion.changed.map((domain) => domain satisfies ConnectionEffectChangedDomain),
   };
-}
-
-function connectionSecret(material: RuntimePolicyOperationSecretMaterial): string {
-  return material.connection?.secret ?? '';
 }
 
 function projectConnectionTest(

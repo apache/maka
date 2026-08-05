@@ -312,7 +312,88 @@ describe('Anthropic-compatible Computer Use product loops', () => {
   }
 });
 
-describe('Kimi OpenAI-compatible product loop', () => {
+describe('OpenAI-compatible product loops', () => {
+  for (const provider of [
+    {
+      providerType: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+      responseField: 'reasoning_content',
+      requestField: 'reasoning_content',
+    },
+    {
+      providerType: 'ollama-cloud',
+      modelId: 'glm-5.2',
+      responseField: 'reasoning_content',
+      requestField: 'reasoning',
+    },
+  ] as const) {
+    test(`${provider.providerType} replays observed reasoning as its declared request field`, async () => {
+      const sessionId = `session-${provider.providerType}-openai-chat`;
+      const durable = createDurableTurnHarness({
+        sessionId,
+        turnId: `turn-${provider.providerType}-openai-chat`,
+        text: 'List the available applications.',
+      });
+      const requestBodies: Array<Record<string, unknown>> = [];
+      const server = await startJsonServer(async (request, response) => {
+        assert.equal(request.method, 'POST');
+        assert.equal(request.url, '/v1/chat/completions');
+        const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+        requestBodies.push(body);
+        const step = requestBodies.length;
+        respondOpenAiStream(
+          response,
+          provider.modelId,
+          step,
+          step === 1 ? { action: 'list_apps' } : undefined,
+          provider.responseField,
+        );
+      });
+      const [computerTool] = buildComputerUseTools({
+        backend: fakeSemanticBackend({ current: '' }),
+      });
+      const providerConnection = connection(
+        provider.providerType,
+        `${server.url}/v1`,
+        provider.modelId,
+        'openai-chat',
+      );
+      const runtime = createTestAiSdkBackend({
+        sessionId,
+        header: header(provider.providerType, provider.modelId),
+        appendMessage: async () => {},
+        connection: providerConnection,
+        apiKey: 'test-key',
+        modelId: provider.modelId,
+        modelFactory: (input) => getAIModel(input),
+        tools: [computerTool],
+        maxSteps: 2,
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+      for await (const event of runtime.send(durable.sendInput())) durable.record(event);
+
+      assert.equal(requestBodies.length, 2);
+      const replayedAssistant = (requestBodies[1]!.messages as unknown[]).find(
+        (message) =>
+          isRecord(message) &&
+          message.role === 'assistant' &&
+          Array.isArray(message.tool_calls) &&
+          message.tool_calls.some((toolCall) => isRecord(toolCall) && toolCall.id === 'call-1'),
+      );
+      assert.ok(replayedAssistant && isRecord(replayedAssistant));
+      assert.equal(replayedAssistant[provider.requestField], 'reasoning-step-1');
+      assert.equal(
+        replayedAssistant[
+          provider.requestField === 'reasoning' ? 'reasoning_content' : 'reasoning'
+        ],
+        undefined,
+      );
+    });
+  }
+
   test('reconstructs a recovered reasoning and tool-call step as one assistant message', async () => {
     const sessionId = 'session-kimi-openai-recovered-tool-step';
     const previousTurnId = 'turn-kimi-openai-recovered-tool-step-1';
@@ -642,7 +723,7 @@ describe('Kimi OpenAI-compatible product loop', () => {
     for (const capture of captures) {
       assert.doesNotMatch(
         capture.serializedRequest,
-        /MAKA_KIMI_EMPTY_REASONING/,
+        /MAKA_(?:KIMI|OPENAI_CHAT)_EMPTY_REASONING/,
         'provider request evidence must not persist the SDK-only empty-reasoning marker',
       );
     }
@@ -972,6 +1053,7 @@ function respondOpenAiStream(
   model: string,
   step: number,
   toolInput: Record<string, unknown> | undefined,
+  reasoningField: 'reasoning' | 'reasoning_content' = 'reasoning',
 ) {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -987,7 +1069,13 @@ function respondOpenAiStream(
     model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   });
-  send(choice({ role: 'assistant', reasoning: step === 1 ? '' : `reasoning-step-${step}` }));
+  send(
+    choice({
+      role: 'assistant',
+      [reasoningField]:
+        step === 1 && reasoningField === 'reasoning' ? '' : `reasoning-step-${step}`,
+    }),
+  );
   if (toolInput) {
     send(
       choice({

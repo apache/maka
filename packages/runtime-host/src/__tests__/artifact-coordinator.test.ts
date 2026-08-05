@@ -9,6 +9,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { ARTIFACT_READ_CHUNK_MAX_BYTES } from '../protocol/index.js';
 
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
@@ -313,6 +314,69 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       },
     );
     assert.equal(drainRequests, 2);
+  } finally {
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Artifact query streams complete content in bounded ordered chunks', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-read-chunks-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await store.recover();
+    const content = Buffer.alloc(ARTIFACT_READ_CHUNK_MAX_BYTES + 17, 7);
+    await store.create({
+      id: 'artifact-large',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'large.bin',
+      kind: 'file',
+      content,
+      now: 1,
+    });
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('successful read must not request Host drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+    );
+
+    const first = await coordinator.handlers['artifact.query'](
+      {
+        kind: 'read_chunk',
+        sessionId: 'session-1',
+        artifactId: 'artifact-large',
+        offset: 0,
+      },
+      connectionContext,
+    );
+    assert.equal(first.ok, true);
+    if (!first.ok || first.result.kind !== 'chunk') return;
+    assert.equal(
+      Buffer.from(first.result.chunkBase64, 'base64').byteLength,
+      ARTIFACT_READ_CHUNK_MAX_BYTES,
+    );
+    assert.equal(first.result.nextOffset, ARTIFACT_READ_CHUNK_MAX_BYTES);
+
+    const second = await coordinator.handlers['artifact.query'](
+      {
+        kind: 'read_chunk',
+        sessionId: 'session-1',
+        artifactId: 'artifact-large',
+        offset: first.result.nextOffset!,
+      },
+      connectionContext,
+    );
+    assert.equal(second.ok, true);
+    if (!second.ok || second.result.kind !== 'chunk') return;
+    assert.equal(Buffer.from(second.result.chunkBase64, 'base64').byteLength, 17);
+    assert.equal(second.result.nextOffset, null);
+    assert.equal(second.result.totalBytes, content.byteLength);
+    store.close();
   } finally {
     await owner.close();
     await rm(root, { recursive: true, force: true });

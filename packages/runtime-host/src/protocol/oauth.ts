@@ -5,6 +5,7 @@ import {
   requireShapedRecord,
   requireString,
 } from './codec.js';
+import type { QuotaSnapshot, QuotaWindow } from '@maka/core/oauth-subscription';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -46,6 +47,7 @@ const START_ERRORS = [
   'persistence_failed',
 ] as const;
 const ATTEMPT_ERRORS = [...COMMON_ERRORS, 'not_found'] as const;
+const ACCOUNT_USAGE_ERRORS = [...COMMON_ERRORS, 'not_found', 'persistence_failed'] as const;
 
 export type OAuthLoginProvider = (typeof OAUTH_LOGIN_PROVIDERS)[number];
 export type OAuthLoginPhase = (typeof OAUTH_LOGIN_PHASES)[number];
@@ -90,6 +92,27 @@ export interface OAuthLoginAttemptInput {
   readonly attemptId: string;
 }
 
+export interface OAuthAccountUsageFetchInput {
+  readonly connectionId: string;
+}
+
+export type OAuthAccountUsageUnavailableReason =
+  | 'unsupported_provider'
+  | 'credential_unavailable'
+  | 'provider_unavailable'
+  | 'invalid_response';
+
+export type OAuthAccountUsageFetchResult =
+  | {
+      readonly kind: 'available';
+      readonly provider: OAuthLoginProvider;
+      readonly quota: QuotaSnapshot;
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly reason: OAuthAccountUsageUnavailableReason;
+    };
+
 export const OAUTH_OPERATION_SPECS = {
   'oauth.login.start': defineOperation<
     OAuthLoginStartInput,
@@ -124,6 +147,17 @@ export const OAUTH_OPERATION_SPECS = {
     decodeInput: decodeOAuthLoginAttemptInput,
     decodeOutput: decodeOAuthLoginProjection,
   }),
+  'oauth.account.usage.fetch': defineOperation<
+    OAuthAccountUsageFetchInput,
+    OAuthAccountUsageFetchResult,
+    (typeof ACCOUNT_USAGE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCOUNT_USAGE_ERRORS,
+    decodeInput: decodeOAuthAccountUsageFetchInput,
+    decodeOutput: decodeOAuthAccountUsageFetchResult,
+  }),
 } as const;
 
 export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput {
@@ -137,6 +171,32 @@ export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput
 export function decodeOAuthLoginAttemptInput(value: unknown): OAuthLoginAttemptInput {
   const input = requireExactRecord(value, 'OAuth login attempt input', ['attemptId']);
   return { attemptId: requireEntityId(input.attemptId, 'attemptId') };
+}
+
+export function decodeOAuthAccountUsageFetchInput(value: unknown): OAuthAccountUsageFetchInput {
+  const input = requireExactRecord(value, 'OAuth account usage input', ['connectionId']);
+  return { connectionId: requireEntityId(input.connectionId, 'connectionId') };
+}
+
+export function decodeOAuthAccountUsageFetchResult(value: unknown): OAuthAccountUsageFetchResult {
+  const result = requireRecord(value, 'OAuth account usage result');
+  if (result.kind === 'available') {
+    const available = requireExactRecord(result, 'OAuth account usage result', [
+      'kind',
+      'provider',
+      'quota',
+    ]);
+    return {
+      kind: 'available',
+      provider: oauthLoginProvider(available.provider),
+      quota: quotaSnapshot(available.quota),
+    };
+  }
+  const unavailable = requireExactRecord(result, 'OAuth account usage result', ['kind', 'reason']);
+  if (unavailable.kind !== 'unavailable') {
+    throw invalidProtocolFrame('Invalid OAuth account usage result');
+  }
+  return { kind: 'unavailable', reason: accountUsageUnavailableReason(unavailable.reason) };
 }
 
 export function decodeOAuthLoginProjection(value: unknown): OAuthLoginProjection {
@@ -255,4 +315,50 @@ function oauthLoginFailure(value: unknown): OAuthLoginFailureCode {
     throw invalidProtocolFrame('Invalid OAuth login failure');
   }
   return value as OAuthLoginFailureCode;
+}
+
+function accountUsageUnavailableReason(value: unknown): OAuthAccountUsageUnavailableReason {
+  if (
+    value !== 'unsupported_provider' &&
+    value !== 'credential_unavailable' &&
+    value !== 'provider_unavailable' &&
+    value !== 'invalid_response'
+  ) {
+    throw invalidProtocolFrame('Invalid OAuth account usage unavailability reason');
+  }
+  return value;
+}
+
+function quotaSnapshot(value: unknown): QuotaSnapshot {
+  const record = requireShapedRecord(
+    value,
+    'OAuth account quota',
+    ['fetchedAt'],
+    ['fiveHour', 'sevenDay'],
+  );
+  return {
+    ...(record.fiveHour === undefined ? {} : { fiveHour: quotaWindow(record.fiveHour) }),
+    ...(record.sevenDay === undefined ? {} : { sevenDay: quotaWindow(record.sevenDay) }),
+    fetchedAt: safeInteger(record.fetchedAt, 'quota fetchedAt'),
+  };
+}
+
+function quotaWindow(value: unknown): QuotaWindow {
+  const record = requireExactRecord(value, 'OAuth account quota window', [
+    'utilization',
+    'resetsAt',
+  ]);
+  const utilization = safeInteger(record.utilization, 'quota utilization');
+  if (utilization > 100) throw invalidProtocolFrame('Invalid quota utilization');
+  return {
+    utilization,
+    resetsAt: requireString(record.resetsAt, 'quota reset timestamp', 128),
+  };
+}
+
+function safeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return value as number;
 }

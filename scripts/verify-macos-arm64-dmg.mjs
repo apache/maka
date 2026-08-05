@@ -124,6 +124,7 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
+  await requirePath(join(resources, 'git', 'bin', 'git'));
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');

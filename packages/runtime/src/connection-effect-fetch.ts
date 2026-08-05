@@ -36,10 +36,6 @@ export async function fetchForConnectionEffect(
   input: string | URL,
   init: ProxiedFetchInit = {},
 ): Promise<ConnectionEffectResponse> {
-  if (!fetchFn) {
-    return manageConnectionEffectResponse(await proxiedFetch(input.toString(), init));
-  }
-
   const { timeoutMs = 15_000, signal, ...requestInit } = init;
   const controller = new AbortController();
   let timedOut = false;
@@ -61,10 +57,19 @@ export async function fetchForConnectionEffect(
   }
 
   try {
-    const response = await fetchFn(input, {
-      ...requestInit,
-      signal: controller.signal,
-    } as RequestInit);
+    // Own the timeout above both transports so it remains active until the
+    // response body is consumed or cancelled. proxiedFetch's native timeout
+    // ends at headers because it also serves streaming callers.
+    const response = fetchFn
+      ? await fetchFn(input, {
+          ...requestInit,
+          signal: controller.signal,
+        } as RequestInit)
+      : await proxiedFetch(input.toString(), {
+          ...requestInit,
+          signal: controller.signal,
+          timeoutMs: 0,
+        });
     return manageConnectionEffectResponse(response, {
       didTimeOut: () => timedOut,
       finish: () => {

@@ -13,9 +13,13 @@
  * call has already been compiled, matching the published package output.
  *
  * Product dialect lives in chat-message.css (cursor default, hover wash,
- * chevron size). This file keeps the ejected lab DOM/behavior.
+ * chevron size). This file keeps the ejected lab DOM/behavior, except that
+ * the chevron is Astryx `Icon` rather than the lab's own 12-viewBox SVG: at
+ * the 10x10 chat-message.css forces, that glyph drew 1.25px of stroke beside
+ * the tool rows' 0.73px. One registry, one chevron.
  */
 import { useCallback, useState, type HTMLAttributes, type ReactNode } from 'react';
+import { Icon } from '@astryxdesign/core/Icon';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';
 
 export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
@@ -34,25 +38,6 @@ function ThinkingIcon() {
       <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" />
       <circle cx="5.5" cy="7" r="0.75" fill="currentColor" />
       <circle cx="8.5" cy="7" r="0.75" fill="currentColor" />
-    </svg>
-  );
-}
-
-/** Match Astryx Icon `size="xsm"` (12px) used by ChatToolCalls chevrons. */
-function ChevronDownIcon() {
-  // The attributes carry the size. There used to be a `0.75rem` inline style
-  // beside them, which disagreed with them (9.75px) for as long as the root
-  // was pinned to 13px; the type-scale convergence removed that pin, so the
-  // duplicate is now merely redundant instead of wrong. Drop it either way.
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -140,7 +125,7 @@ export function ChatReasoning(props: ChatReasoningProps) {
               : 'x3nfvp2 x6s0dn4 xl56j7k x2lah0s x6jxa94 x1v9usgg xnbbluu x1ob6yzd xvc5jky'
           }
         >
-          <ChevronDownIcon />
+          <Icon icon="chevronDown" size="xsm" color="inherit" />
         </span>
       </div>
       <div className={isExpanded ? 'xrvj5dj xb0j27v x1tu4anv' : 'xrvj5dj xihq33y xb0j27v'}>

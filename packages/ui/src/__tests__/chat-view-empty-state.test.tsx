@@ -174,3 +174,28 @@ describe('ChatView sent inline references', () => {
     assert.equal(markup.match(/astryx-badge/g)?.length, 2);
   });
 });
+
+describe('ChatView #642 streaming fallback', () => {
+  // The fallback renders outside TurnView, so it must localize the message
+  // aria-label itself — a bare ChatMessage resolves Astryx's shipped
+  // "Message from {sender}" and leaks English into a Chinese a11y tree.
+  it('localizes the fallback assistant message aria-label', () => {
+    // No liveTurn: a live turn projects into `turns` and takes the localized
+    // TurnView path instead. The fallback needs streaming with zero turns —
+    // wait indicators alone — which is exactly the #642 replay window.
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="zh">
+        <OwnedChatView
+          messages={[]}
+          activeSession={activeSession}
+          processingIndicator
+          onNew={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+
+    assert.match(markup, /data-live-streaming="true"/);
+    assert.match(markup, /aria-label="Maka 的回答"/);
+    assert.doesNotMatch(markup, /Message from/);
+  });
+});

@@ -293,6 +293,7 @@ export class HostSessionCatalogCoordinator {
           ...(input.patch.name === undefined ? {} : normalizeSessionNamePatch(input.patch.name)),
           ...(labels === undefined ? {} : { labels }),
           ...(input.patch.isFlagged === undefined ? {} : { isFlagged: input.patch.isFlagged }),
+          ...(input.patch.projectId === undefined ? {} : { projectId: input.patch.projectId }),
         };
         await this.#stores.updateHeaderVersioned(input.sessionId, patch, input.expectedRevision);
         return updateSuccess(await this.#committedUpdate(input.sessionId, lease));
@@ -417,6 +418,7 @@ export class HostSessionCatalogCoordinator {
         await this.#manager.relocateSessionWorkspace(input.sessionId, {
           expectedRevision: input.expectedRevision,
           cwd,
+          ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
         });
         return cwdSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {

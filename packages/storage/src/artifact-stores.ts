@@ -19,7 +19,12 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 
-export { createAttachmentByteReader, createReadImageSnapshotter } from './artifact-attachments.js';
+export {
+  createArtifactAttachmentResourceReader,
+  createAttachmentByteReader,
+  createReadImageSnapshotter,
+  type ArtifactAttachmentResourceReader,
+} from './artifact-attachments.js';
 export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');
@@ -45,6 +50,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   getInSession: ArtifactAuthorityStore['getInSession'];
   readTextInSession: ArtifactAuthorityStore['readTextInSession'];
   readBinaryInSession: ArtifactAuthorityStore['readBinaryInSession'];
+  readChunkInSession: ArtifactAuthorityStore['readChunkInSession'];
   deleteUserArtifactInSession: ArtifactAuthorityStore['deleteUserArtifactInSession'];
   close(): void;
 }
@@ -179,6 +185,8 @@ function createWriterFacade(
       run(() => store.readTextInSession(sessionId, artifactId, options)),
     readBinaryInSession: (sessionId, artifactId, options) =>
       run(() => store.readBinaryInSession(sessionId, artifactId, options)),
+    readChunkInSession: (sessionId, artifactId, options) =>
+      run(() => store.readChunkInSession(sessionId, artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
     recover: () => run(() => authority.recover()),
     create: (input) => {

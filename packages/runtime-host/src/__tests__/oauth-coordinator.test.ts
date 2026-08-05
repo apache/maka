@@ -35,6 +35,7 @@ test('OAuth login uses only the initiating Client presentation service and commi
     const first = await attachPresentation(fixture.capabilities, 'client-a', presentationCalls);
     const second = await attachPresentation(fixture.capabilities, 'client-b', presentationCalls);
     const tokens = tokenFixture('claude-access', { account_uuid: 'account-1' });
+    let usageTransportClosed = 0;
     const coordinator = new HostOAuthCoordinator({
       runtimePolicy: fixture.stores,
       activation: fixture.activation,
@@ -52,6 +53,19 @@ test('OAuth login uses only the initiating Client presentation service and commi
         assert.equal(input.provider, 'claude-subscription');
         assert.equal(input.code, 'authorization-code');
         return tokens;
+      },
+      createFetchTransport: () => ({
+        fetch: async () => new Response(),
+        close: async () => {
+          usageTransportClosed += 1;
+        },
+      }),
+      fetchAccountUsage: async (input) => {
+        assert.equal(input.accessToken, tokens.access_token);
+        return {
+          fiveHour: { utilization: 12, resetsAt: '2026-08-05T12:00:00.000Z' },
+          fetchedAt: NOW,
+        };
       },
     });
 
@@ -74,6 +88,24 @@ test('OAuth login uses only the initiating Client presentation service and commi
         tokens,
       );
     }
+    assert.deepEqual(
+      await coordinator.handlers['oauth.account.usage.fetch'](
+        { connectionId: fixture.connection.connectionId },
+        operationContext('client-b', fixture.acquireResidency),
+      ),
+      {
+        ok: true,
+        result: {
+          kind: 'available',
+          provider: 'claude-subscription',
+          quota: {
+            fiveHour: { utilization: 12, resetsAt: '2026-08-05T12:00:00.000Z' },
+            fetchedAt: NOW,
+          },
+        },
+      },
+    );
+    assert.equal(usageTransportClosed, 1);
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     first.close();

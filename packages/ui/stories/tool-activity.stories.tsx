@@ -5,6 +5,7 @@ import type { ToolActivityItem } from '../src/materialize.js';
 import {
   denseMixedResultItems,
   errorsAndPermissionDeniedItems,
+  shellCommandSurfaceItems,
 } from './tool-activity.fixtures.js';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -124,6 +125,15 @@ export const ErrorsAndPermissionDenied: Story = {
 export const DenseMixedResults: Story = {
   args: { items: denseMixedResultItems },
   render: (args) => <ToolDetailBoard items={args.items} />,
+};
+
+// Real path: expanding a Bash row. Live, foreground-settled (`terminal`),
+// background (`shell_run`) and failed all reach the detail panel by different
+// branches; this is where to check they still read as one surface. The
+// background case has no other story.
+export const ShellCommandSurface: Story = {
+  args: { items: shellCommandSurfaceItems },
+  render: (args) => <ToolDetailBoard items={args.items} width={860} />,
 };
 
 // Real path: a contiguous run of tool calls in one turn — the grouped surface the

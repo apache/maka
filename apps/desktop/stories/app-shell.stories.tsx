@@ -162,6 +162,20 @@ const baseChatProps: ChatViewProps = {
 
 const baseComposerProps: ComposerProps = {
   draftKey: 'storybook-app-shell',
+  // Production wires this whenever the shell has a project catalog
+  // (app-shell.tsx), unconditionally: the composer renders it only while no
+  // session owns it, so the active-session stories below carry it without
+  // showing it.
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'opencode/storybook-surface-coverage',
+    projects: catalogProjects.filter((item) => item.archivedAt === undefined),
+    selectedProjectId: 'project-maka',
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
   onSend: noop,
   onStop: noop,
   modelLabel: 'Claude Sonnet 4.5',
@@ -195,16 +209,6 @@ const baseComposerProps: ComposerProps = {
     { id: 'commit', name: 'Commit', description: '生成提交信息' },
     { id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
   ],
-  workspacePicker: {
-    label: 'maka-agent',
-    branch: 'opencode/storybook-surface-coverage',
-    projects: catalogProjects.filter((item) => item.archivedAt === undefined),
-    selectedProjectId: 'project-maka',
-    onAdd: noop,
-    onSelectProject: noop,
-    onRelink: noop,
-    onSelectNoProject: noop,
-  },
 };
 
 function ShellFrame(props: {

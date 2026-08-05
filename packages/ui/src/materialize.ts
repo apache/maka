@@ -7,15 +7,32 @@ import {
   STEP_LIMIT_NOTICE_TEXT,
   toolResultActivityStatus,
   unfinishedToolActivityStatus,
-} from '@maka/core';
-import type { AttachmentRef, ToolActivityStatus, InlineReference, QuoteRef, ShellRunToolResult, ShellRunUpdate, StoredMessage, ToolActivityKind, ToolResultContent, TurnRecord, TurnStatus, UserMessage } from '@maka/core';
-import type { LiveTurnProjection } from './live-turn-projection.js';
+} from "@maka/core";
+import type {
+  AttachmentRef,
+  ToolActivityStatus,
+  InlineReference,
+  QuoteRef,
+  ShellRunToolResult,
+  ShellRunUpdate,
+  StoredMessage,
+  ToolActivityKind,
+  ToolResultContent,
+  TurnRecord,
+  TurnStatus,
+  UserMessage,
+} from "@maka/core";
+import type { LiveTurnProjection } from "./live-turn-projection.js";
 
-export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core';
+export {
+  isCancelledToolResultContent,
+  isInFlightToolStatus,
+  toolResultActivityStatus,
+} from "@maka/core";
 
 export interface ChatItem {
   id: string;
-  role: 'user' | 'assistant' | 'system';
+  role: "user" | "assistant" | "system";
   text: string;
   /** Wall-clock timestamp of the source StoredMessage; surfaced for hover meta. */
   ts?: number;
@@ -26,7 +43,7 @@ export interface ChatItem {
   /** Frozen inline token metadata projected from StoredMessage; user rows only. */
   inlineReferences?: InlineReference[];
   /** Present when the Host authored this message instead of the user. */
-  hostOrigin?: NonNullable<UserMessage['origin']>;
+  hostOrigin?: NonNullable<UserMessage["origin"]>;
 }
 
 /**
@@ -38,7 +55,7 @@ export interface ChatItem {
  */
 export interface ToolOutputChunk {
   seq: number;
-  stream: 'stdout' | 'stderr';
+  stream: "stdout" | "stderr";
   text: string;
   redacted: boolean;
   createdAt: number;
@@ -87,7 +104,7 @@ export interface ToolActivityItem {
    */
   outputTruncated?: boolean;
   /** Ownership state for a running ShellRun copied into a branched session. */
-  shellRunSource?: 'owned' | 'unavailable';
+  shellRunSource?: "owned" | "unavailable";
 }
 
 // system_note kinds that we surface inline to the user. Everything else
@@ -95,41 +112,58 @@ export interface ToolActivityItem {
 // stays in the JSONL audit trail but is hidden from the chat surface so
 // the conversation reads like a conversation, not a debug log.
 const VISIBLE_SYSTEM_NOTES = new Set<string>([
-  'context_compacted',
-  'context_compaction_failed_open',
-  'step_limit',
+  "context_compacted",
+  "context_compaction_failed_open",
+  "step_limit",
 ]);
 
 const SYSTEM_NOTE_LABELS: Record<string, string> = {
-  context_compacted: 'Context compacted to keep this session within the model window.',
-  context_compaction_failed_open: 'Context summary failed; the session continued without a new summary.',
+  context_compacted:
+    "Context compacted to keep this session within the model window.",
+  context_compaction_failed_open:
+    "Context summary failed; the session continued without a new summary.",
   step_limit: STEP_LIMIT_NOTICE_TEXT,
-  mode_change: 'Permission mode changed',
-  turn_aborted: 'Turn aborted',
+  mode_change: "Permission mode changed",
+  turn_aborted: "Turn aborted",
 };
 
-export function materializeChat(messages: readonly StoredMessage[]): ChatItem[] {
+export function materializeChat(
+  messages: readonly StoredMessage[],
+): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
-    if (message.type === 'user') {
+    if (message.type === "user") {
       items.push({
         id: message.id,
-        role: 'user',
+        role: "user",
         text: message.displayText ?? message.text,
         ts: message.ts,
-        ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
-        ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
+        ...(message.attachments && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
+        ...(message.quotes && message.quotes.length > 0
+          ? { quotes: message.quotes }
+          : {}),
         ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       });
     }
-    if (message.type === 'assistant') items.push({ id: message.id, role: 'assistant', text: message.text, ts: message.ts });
-    if (message.type === 'system_note' && VISIBLE_SYSTEM_NOTES.has(message.kind)) {
+    if (message.type === "assistant")
       items.push({
         id: message.id,
-        role: 'system',
+        role: "assistant",
+        text: message.text,
+        ts: message.ts,
+      });
+    if (
+      message.type === "system_note" &&
+      VISIBLE_SYSTEM_NOTES.has(message.kind)
+    ) {
+      items.push({
+        id: message.id,
+        role: "system",
         text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
         ts: message.ts,
       });
@@ -138,11 +172,19 @@ export function materializeChat(messages: readonly StoredMessage[]): ChatItem[] 
   return items;
 }
 
-export function materializeTools(messages: readonly StoredMessage[]): ToolActivityItem[] {
-  const results = new Map(messages.filter((message) => message.type === 'tool_result').map((message) => [message.toolUseId, message]));
-  const turnStatusById = new Map(deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]));
+export function materializeTools(
+  messages: readonly StoredMessage[],
+): ToolActivityItem[] {
+  const results = new Map(
+    messages
+      .filter((message) => message.type === "tool_result")
+      .map((message) => [message.toolUseId, message]),
+  );
+  const turnStatusById = new Map(
+    deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
+  );
   return messages
-    .filter((message) => message.type === 'tool_call')
+    .filter((message) => message.type === "tool_call")
     .map((call) => {
       const result = results.get(call.id);
       return {
@@ -163,16 +205,19 @@ export function materializeTools(messages: readonly StoredMessage[]): ToolActivi
 }
 
 function materializeToolResultStatus(
-  result: Extract<StoredMessage, { type: 'tool_result' }>,
-): ToolActivityItem['status'] {
+  result: Extract<StoredMessage, { type: "tool_result" }>,
+): ToolActivityItem["status"] {
   return toolResultActivityStatus(result.isError, result.content);
 }
 
 /**
- * Merge live tool state on top of the persisted tool. Live normally wins: its
- * events arrive ahead of the persisted JSONL refresh, so it carries the most
- * current status, and preferring the lagging side painted every long command
- * as interrupted until it exited.
+ * Merge live tool state on top of the persisted tool. Live owns transient
+ * state: its events arrive ahead of the persisted transcript refresh, so it
+ * carries the most current status and output chunks. The durable transcript
+ * fills call arguments and settled results when the live path has no payload.
+ * Runtime Host live events deliberately omit both; letting those empty
+ * projections win made an expanded tool row blank until the whole Turn
+ * settled.
  *
  * The exception is a turn that has already ended. Live only stays current
  * while events keep arriving, and the subscription does not replay — a missed
@@ -191,13 +236,27 @@ function mergeLiveOverPersisted(
   turnSettled: boolean,
 ): ToolActivityItem {
   const merged: ToolActivityItem = { ...persisted, ...live };
+  if (live.args === undefined) {
+    merged.args = persisted.args;
+  }
+  const liveResultIsEmpty =
+    live.result === undefined ||
+    (live.result.kind === "text" && live.result.text.length === 0);
+  if (persisted.result !== undefined && liveResultIsEmpty) {
+    // Runtime Host represents its deliberately omitted result payload as an
+    // empty text result at the SessionEvent compatibility seam. A transcript
+    // refresh can also win the race with the terminal live event, leaving no
+    // live result at all. In both cases the committed result supplies detail
+    // without taking a newer, meaningful live result away.
+    merged.result = persisted.result;
+  }
   // A settled turn always yields a settled persisted status — materializeTools
   // only reads a tool as in-flight while the turn record says `running` — so
   // this needs no guard on the persisted side.
   if (turnSettled && isInFlightToolStatus(live.status)) {
     merged.status = persisted.status;
   }
-  if (live.toolName === 'Tool') {
+  if (live.toolName === "Tool") {
     merged.toolName = persisted.toolName;
     merged.activityKind = persisted.activityKind;
     merged.displayName = persisted.displayName;
@@ -205,14 +264,14 @@ function mergeLiveOverPersisted(
     merged.args = persisted.args;
   }
   if (
-    merged.toolName === 'Bash'
-    && persisted.result?.kind === 'shell_run'
-    && live.result?.kind === 'shell_run'
+    merged.toolName === "Bash" &&
+    persisted.result?.kind === "shell_run" &&
+    live.result?.kind === "shell_run"
   ) {
     const shellRun = mergeShellRunStateWithDiagnostics(
       persisted.result,
       live.result,
-      'ui.live-over-persisted',
+      "ui.live-over-persisted",
     ).result;
     merged.result = shellRun;
   }
@@ -242,9 +301,23 @@ function mergeLiveOverPersisted(
  * folding) never have to maintain a nesting invariant.
  */
 export type TurnTimelineItem =
-  | { kind: 'thinking'; text: string; messageId: string; live?: boolean; truncated?: boolean }
-  | { kind: 'text'; text: string; messageId: string; ts?: number; live?: boolean; complete?: boolean; truncated?: boolean }
-  | { kind: 'tools'; items: ToolActivityItem[] };
+  | {
+      kind: "thinking";
+      text: string;
+      messageId: string;
+      live?: boolean;
+      truncated?: boolean;
+    }
+  | {
+      kind: "text";
+      text: string;
+      messageId: string;
+      ts?: number;
+      live?: boolean;
+      complete?: boolean;
+      truncated?: boolean;
+    }
+  | { kind: "tools"; items: ToolActivityItem[] };
 
 /**
  * A single conversational turn — typically one user message, the assistant's
@@ -263,7 +336,7 @@ export interface TurnViewModel {
    * See `TurnRecord.statusSource` — whether `status` is evidence or a reading.
    * Absent on hand-built view models, which are treated as non-evidence.
    */
-  statusSource?: TurnRecord['statusSource'];
+  statusSource?: TurnRecord["statusSource"];
   parentTurnId?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
@@ -314,82 +387,102 @@ export function overlayLiveTurn(
   liveTurn: LiveTurnProjection | undefined,
 ): readonly TurnViewModel[] {
   if (!liveTurn) return turns;
-  const targetIndex = turns.findIndex((turn) => turn.turnId === liveTurn.turnId);
+  const targetIndex = turns.findIndex(
+    (turn) => turn.turnId === liveTurn.turnId,
+  );
   if (targetIndex >= 0 && liveTurn.steps.length === 0) return turns;
-  const current = targetIndex >= 0
-    ? turns[targetIndex]!
-    : {
-        turnId: liveTurn.turnId,
-        status: 'completed' as const,
-        partialOutputRetained: false,
-        tools: [],
-        notes: [],
-        timeline: [],
-        startedAt: Date.now(),
-      } satisfies TurnViewModel;
+  const current =
+    targetIndex >= 0
+      ? turns[targetIndex]!
+      : ({
+          turnId: liveTurn.turnId,
+          status: "completed" as const,
+          partialOutputRetained: false,
+          tools: [],
+          notes: [],
+          timeline: [],
+          startedAt: Date.now(),
+        } satisfies TurnViewModel);
   // Only a recorded turn_state is evidence the turn ended; a legacy turn's
   // inferred `completed` is a guess, and such a turn cannot be live anyway.
   const turnRecordedAsEnded =
-    current.statusSource === 'recorded' && current.status !== 'running';
-  const toolByUseId = new Map(current.tools.map((tool) => [tool.toolUseId, tool]));
+    current.statusSource === "recorded" && current.status !== "running";
+  const toolByUseId = new Map(
+    current.tools.map((tool) => [tool.toolUseId, tool]),
+  );
   const liveToolIds = new Set<string>();
+  const liveContentKeys = new Set<string>();
   for (const step of liveTurn.steps) {
+    if (step.thinking) liveContentKeys.add(`thinking\0${step.stepId}`);
+    if (step.text) liveContentKeys.add(`text\0${step.stepId}`);
     for (const liveTool of step.tools) {
       liveToolIds.add(liveTool.toolUseId);
       const persisted = toolByUseId.get(liveTool.toolUseId);
       toolByUseId.set(
         liveTool.toolUseId,
-        persisted ? mergeLiveOverPersisted(persisted, liveTool, turnRecordedAsEnded) : liveTool,
+        persisted
+          ? mergeLiveOverPersisted(persisted, liveTool, turnRecordedAsEnded)
+          : liveTool,
       );
     }
   }
   const timeline: TurnTimelineItem[] = [];
   for (const item of current.timeline) {
-    if (item.kind !== 'tools') {
+    if (item.kind !== "tools") {
+      if (liveContentKeys.has(`${item.kind}\0${item.messageId}`)) continue;
       timeline.push(item);
       continue;
     }
-    const settledItems = item.items.filter((tool) => !liveToolIds.has(tool.toolUseId));
-    if (settledItems.length > 0) timeline.push({ kind: 'tools', items: settledItems });
+    const settledItems = item.items.filter(
+      (tool) => !liveToolIds.has(tool.toolUseId),
+    );
+    if (settledItems.length > 0)
+      timeline.push({ kind: "tools", items: settledItems });
   }
   for (const step of liveTurn.steps) {
     const contentOrder = step.contentOrder ?? [
-      ...(step.thinking ? ['thinking' as const] : []),
-      ...(step.text ? ['text' as const] : []),
-      ...(step.tools.length > 0 ? ['tools' as const] : []),
+      ...(step.thinking ? ["thinking" as const] : []),
+      ...(step.text ? ["text" as const] : []),
+      ...(step.tools.length > 0 ? ["tools" as const] : []),
     ];
     for (const kind of contentOrder) {
-      if (kind === 'thinking' && step.thinking?.text) {
+      if (kind === "thinking" && step.thinking?.text) {
         timeline.push({
-          kind: 'thinking',
+          kind: "thinking",
           text: step.thinking.text,
           messageId: step.stepId,
           live: step.thinking.complete !== true,
           truncated: step.thinking.truncated,
         });
-      } else if (kind === 'text' && step.text?.text) {
+      } else if (kind === "text" && step.text?.text) {
         timeline.push({
-          kind: 'text',
+          kind: "text",
           text: step.text.text,
           messageId: step.stepId,
           live: true,
           complete: step.text.complete,
           truncated: step.text.truncated,
         });
-      } else if (kind === 'tools') {
+      } else if (kind === "tools") {
         const stepTools = step.tools.flatMap((tool) => {
           const projected = toolByUseId.get(tool.toolUseId);
           return projected ? [projected] : [];
         });
-        if (stepTools.length > 0) timeline.push({ kind: 'tools', items: stepTools });
+        if (stepTools.length > 0)
+          timeline.push({ kind: "tools", items: stepTools });
       }
     }
   }
   const mergedTimeline = mergeAdjacentTimeline(timeline);
-  const next = { ...current, tools: timelineTools(mergedTimeline), timeline: mergedTimeline };
-  const overlaid = targetIndex < 0
-    ? [...turns, next]
-    : turns.map((turn, index) => index === targetIndex ? next : turn);
+  const next = {
+    ...current,
+    tools: timelineTools(mergedTimeline),
+    timeline: mergedTimeline,
+  };
+  const overlaid =
+    targetIndex < 0
+      ? [...turns, next]
+      : turns.map((turn, index) => (index === targetIndex ? next : turn));
   return foldShellRunTurns(overlaid);
 }
 
@@ -400,8 +493,8 @@ export function overlayLiveTurn(
  * rather than the whole update history.
  */
 export interface ShellRunOverlayEntry {
-  result: Extract<ToolResultContent, { kind: 'shell_run' }>;
-  source: ToolActivityItem['shellRunSource'];
+  result: Extract<ToolResultContent, { kind: "shell_run" }>;
+  source: ToolActivityItem["shellRunSource"];
 }
 
 export function foldShellRunUpdates(
@@ -413,13 +506,17 @@ export function foldShellRunUpdates(
     const merged = mergeShellRunStateWithDiagnostics(
       current?.result,
       update.result,
-      'ui.overlay-shell-run-updates',
+      "ui.overlay-shell-run-updates",
     );
     byToolUseId.set(update.sourceToolCallId, {
       result: merged.result,
-      source: !isActiveShellRunStatus(merged.result.status) || update.ownership.kind === 'local'
-        ? undefined
-        : update.ownership.kind === 'source_owned' ? 'owned' : 'unavailable',
+      source:
+        !isActiveShellRunStatus(merged.result.status) ||
+        update.ownership.kind === "local"
+          ? undefined
+          : update.ownership.kind === "source_owned"
+            ? "owned"
+            : "unavailable",
     });
   }
   return byToolUseId;
@@ -439,13 +536,13 @@ export function applyShellRunOverlayEntry(
   tool: ToolActivityItem,
   entry: ShellRunOverlayEntry,
 ): ToolActivityItem {
-  if (tool.toolName !== 'Bash') return tool;
-  const current = tool.result?.kind === 'shell_run' ? tool.result : undefined;
+  if (tool.toolName !== "Bash") return tool;
+  const current = tool.result?.kind === "shell_run" ? tool.result : undefined;
   if (tool.result && !current) return tool;
   const merged = mergeShellRunStateWithDiagnostics(
     current,
     entry.result,
-    'ui.overlay-shell-run-update',
+    "ui.overlay-shell-run-update",
   );
   return merged.changed || tool.shellRunSource !== entry.source
     ? { ...tool, result: merged.result, shellRunSource: entry.source }
@@ -457,12 +554,16 @@ export function applyShellRunOverlayEntry(
  * without a turnId (e.g. fake-backend echo, or older sessions) fall into a
  * synthetic `__loose` bucket rendered first so they remain visible.
  */
-export function materializeTurns(messages: readonly StoredMessage[]): TurnViewModel[] {
+export function materializeTurns(
+  messages: readonly StoredMessage[],
+): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
-  const turnRecordById = new Map(turnRecords.map((turn) => [turn.turnId, turn]));
+  const turnRecordById = new Map(
+    turnRecords.map((turn) => [turn.turnId, turn]),
+  );
   const order: string[] = [];
   const byId = new Map<string, TurnViewModel>();
-  const looseTurnId = '__loose';
+  const looseTurnId = "__loose";
   // Storage-ordered messages per turn — the raw sequence the timeline pass
   // replays to interleave a step's thinking/text with its paired tools.
   const messagesByTurn = new Map<string, StoredMessage[]>();
@@ -473,14 +574,24 @@ export function materializeTurns(messages: readonly StoredMessage[]): TurnViewMo
       const record = turnRecordById.get(turnId);
       turn = {
         turnId,
-        status: record?.status ?? 'completed',
-        statusSource: record?.statusSource ?? 'inferred',
+        status: record?.status ?? "completed",
+        statusSource: record?.statusSource ?? "inferred",
         ...(record?.parentTurnId ? { parentTurnId: record.parentTurnId } : {}),
-        ...(record?.retriedFromTurnId ? { retriedFromTurnId: record.retriedFromTurnId } : {}),
-        ...(record?.regeneratedFromTurnId ? { regeneratedFromTurnId: record.regeneratedFromTurnId } : {}),
-        ...(record?.branchOfTurnId ? { branchOfTurnId: record.branchOfTurnId } : {}),
-        ...(record?.parentSessionId ? { parentSessionId: record.parentSessionId } : {}),
-        ...(record?.abortedAt !== undefined ? { abortedAt: record.abortedAt } : {}),
+        ...(record?.retriedFromTurnId
+          ? { retriedFromTurnId: record.retriedFromTurnId }
+          : {}),
+        ...(record?.regeneratedFromTurnId
+          ? { regeneratedFromTurnId: record.regeneratedFromTurnId }
+          : {}),
+        ...(record?.branchOfTurnId
+          ? { branchOfTurnId: record.branchOfTurnId }
+          : {}),
+        ...(record?.parentSessionId
+          ? { parentSessionId: record.parentSessionId }
+          : {}),
+        ...(record?.abortedAt !== undefined
+          ? { abortedAt: record.abortedAt }
+          : {}),
         ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
         partialOutputRetained: record?.partialOutputRetained ?? false,
@@ -506,31 +617,38 @@ export function materializeTurns(messages: readonly StoredMessage[]): TurnViewMo
     const turnMessageList = messagesByTurn.get(turnId);
     if (turnMessageList) turnMessageList.push(message);
     else messagesByTurn.set(turnId, [message]);
-    if (message.type === 'user') {
+    if (message.type === "user") {
       turn.user = {
         id: message.id,
-        role: 'user',
+        role: "user",
         text: message.displayText ?? message.text,
         ts: message.ts,
-        ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
-        ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
+        ...(message.attachments && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
+        ...(message.quotes && message.quotes.length > 0
+          ? { quotes: message.quotes }
+          : {}),
         ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       };
-    } else if (message.type === 'assistant') {
+    } else if (message.type === "assistant") {
       // A turn now holds one AssistantMessage per model step. Concatenate their
       // text (and thinking) in step order so the turn reads as one answer; keep
       // the first step's id as the stable anchor, and advance ts to the latest
       // step so durationMs measures to the turn's final assistant message.
-      const priorText = turn.assistant?.text ?? '';
-      const mergedText = message.text.length > 0
-        ? (priorText.length > 0 ? `${priorText}\n\n${message.text}` : message.text)
-        : priorText;
+      const priorText = turn.assistant?.text ?? "";
+      const mergedText =
+        message.text.length > 0
+          ? priorText.length > 0
+            ? `${priorText}\n\n${message.text}`
+            : message.text
+          : priorText;
       turn.assistant = {
         id: turn.assistant?.id ?? message.id,
-        role: 'assistant',
+        role: "assistant",
         text: mergedText,
         ts: message.ts,
       };
@@ -550,22 +668,31 @@ export function materializeTurns(messages: readonly StoredMessage[]): TurnViewMo
       if (message.ts !== undefined && message.ts >= turn.startedAt) {
         turn.durationMs = message.ts - turn.startedAt;
       }
-    } else if (message.type === 'system_note' && VISIBLE_SYSTEM_NOTES.has(message.kind)) {
+    } else if (
+      message.type === "system_note" &&
+      VISIBLE_SYSTEM_NOTES.has(message.kind)
+    ) {
       turn.notes.push({
         id: message.id,
-        role: 'system',
+        role: "system",
         text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
         ts: message.ts,
       });
-    } else if (message.type === 'token_usage') {
+    } else if (message.type === "token_usage") {
       const totals = turn.tokens ?? { input: 0, output: 0 };
       totals.input += message.input;
       totals.output += message.output;
-      if (message.cacheMissInput !== undefined) totals.cacheMiss = (totals.cacheMiss ?? 0) + message.cacheMissInput;
-      if (message.cacheRead !== undefined) totals.cacheRead = (totals.cacheRead ?? 0) + message.cacheRead;
-      if (message.cacheCreation !== undefined) totals.cacheCreation = (totals.cacheCreation ?? 0) + message.cacheCreation;
-      if (message.reasoning !== undefined) totals.reasoning = (totals.reasoning ?? 0) + message.reasoning;
-      if (message.costUsd !== undefined) totals.costUsd = (totals.costUsd ?? 0) + message.costUsd;
+      if (message.cacheMissInput !== undefined)
+        totals.cacheMiss = (totals.cacheMiss ?? 0) + message.cacheMissInput;
+      if (message.cacheRead !== undefined)
+        totals.cacheRead = (totals.cacheRead ?? 0) + message.cacheRead;
+      if (message.cacheCreation !== undefined)
+        totals.cacheCreation =
+          (totals.cacheCreation ?? 0) + message.cacheCreation;
+      if (message.reasoning !== undefined)
+        totals.reasoning = (totals.reasoning ?? 0) + message.reasoning;
+      if (message.costUsd !== undefined)
+        totals.costUsd = (totals.costUsd ?? 0) + message.costUsd;
       turn.tokens = totals;
     }
   }
@@ -574,8 +701,10 @@ export function materializeTurns(messages: readonly StoredMessage[]): TurnViewMo
   // separately by overlayLiveTurn so streaming deltas never force settled
   // history to rematerialize.
   const toolItemByUseId = new Map<string, ToolActivityItem>(
-    foldShellRunToolActivities(materializeTools(messages))
-      .map((tool) => [tool.toolUseId, tool]),
+    foldShellRunToolActivities(materializeTools(messages)).map((tool) => [
+      tool.toolUseId,
+      tool,
+    ]),
   );
   // Third pass: rebuild each turn's render timeline from its storage-ordered
   // messages, interleaving a step's thinking/text with its paired tools. The
@@ -606,10 +735,13 @@ export function materializeTurns(messages: readonly StoredMessage[]): TurnViewMo
  * there, leaving an orphan tool row and a parent that never took the child's
  * revision.
  */
-export function foldShellRunToolActivities(items: readonly ToolActivityItem[]): ToolActivityItem[] {
+export function foldShellRunToolActivities(
+  items: readonly ToolActivityItem[],
+): ToolActivityItem[] {
   const ownedRefs = new Set<string>();
   for (const item of items) {
-    if (item.toolName === 'Bash' && item.result?.kind === 'shell_run') ownedRefs.add(item.result.ref);
+    if (item.toolName === "Bash" && item.result?.kind === "shell_run")
+      ownedRefs.add(item.result.ref);
   }
 
   const folded: ToolActivityItem[] = [];
@@ -617,8 +749,8 @@ export function foldShellRunToolActivities(items: readonly ToolActivityItem[]): 
   const childResultsByRef = new Map<string, ShellRunToolResult[]>();
 
   for (const item of items) {
-    const result = item.result?.kind === 'shell_run' ? item.result : undefined;
-    if (!result || item.toolName === 'Bash') {
+    const result = item.result?.kind === "shell_run" ? item.result : undefined;
+    if (!result || item.toolName === "Bash") {
       if (result) parentIndexByRef.set(result.ref, folded.length);
       folded.push(item);
       continue;
@@ -627,7 +759,8 @@ export function foldShellRunToolActivities(items: readonly ToolActivityItem[]): 
       const pending = childResultsByRef.get(result.ref);
       if (pending) pending.push(result);
       else childResultsByRef.set(result.ref, [result]);
-      if (item.toolName === 'Read' || item.toolName === 'StopBackgroundTask') continue;
+      if (item.toolName === "Read" || item.toolName === "StopBackgroundTask")
+        continue;
     }
     folded.push(item);
   }
@@ -635,10 +768,15 @@ export function foldShellRunToolActivities(items: readonly ToolActivityItem[]): 
   for (const [ref, results] of childResultsByRef) {
     const index = parentIndexByRef.get(ref)!;
     const parent = folded[index]!;
-    let current = parent.result?.kind === 'shell_run' ? parent.result : undefined;
+    let current =
+      parent.result?.kind === "shell_run" ? parent.result : undefined;
     let changed = false;
     for (const result of results) {
-      const merged = mergeShellRunStateWithDiagnostics(current, result, 'ui.fold-shell-run-child');
+      const merged = mergeShellRunStateWithDiagnostics(
+        current,
+        result,
+        "ui.fold-shell-run-child",
+      );
       if (merged.changed) {
         current = merged.result;
         changed = true;
@@ -650,7 +788,9 @@ export function foldShellRunToolActivities(items: readonly ToolActivityItem[]): 
   return folded;
 }
 
-function foldShellRunTurns(turns: readonly TurnViewModel[]): readonly TurnViewModel[] {
+function foldShellRunTurns(
+  turns: readonly TurnViewModel[],
+): readonly TurnViewModel[] {
   return projectTurnTools(
     turns,
     foldShellRunToolActivities(turns.flatMap((turn) => turn.tools)),
@@ -658,8 +798,10 @@ function foldShellRunTurns(turns: readonly TurnViewModel[]): readonly TurnViewMo
 }
 
 /** Flatten a turn's timeline into its tool list — the one derivation direction. */
-export function timelineTools(timeline: readonly TurnTimelineItem[]): ToolActivityItem[] {
-  return timeline.flatMap((item) => item.kind === 'tools' ? item.items : []);
+export function timelineTools(
+  timeline: readonly TurnTimelineItem[],
+): ToolActivityItem[] {
+  return timeline.flatMap((item) => (item.kind === "tools" ? item.items : []));
 }
 
 /**
@@ -678,22 +820,26 @@ export function projectTurnTools(
   const projected = new Map(tools.map((tool) => [tool.toolUseId, tool]));
   return turns.map((turn) => {
     let changed = false;
-    const timeline = turn.timeline.flatMap<TurnTimelineItem>((item): TurnTimelineItem[] => {
-      if (item.kind !== 'tools') return [item];
-      const items = item.items.flatMap((tool) => {
-        const projectedTool = projected.get(tool.toolUseId);
-        return projectedTool ? [projectedTool] : [];
-      });
-      if (items.length !== item.items.length || items.some((tool, index) => tool !== item.items[index])) {
-        changed = true;
-      }
-      return items.length > 0 ? [{ kind: 'tools' as const, items }] : [];
-    });
+    const timeline = turn.timeline.flatMap<TurnTimelineItem>(
+      (item): TurnTimelineItem[] => {
+        if (item.kind !== "tools") return [item];
+        const items = item.items.flatMap((tool) => {
+          const projectedTool = projected.get(tool.toolUseId);
+          return projectedTool ? [projectedTool] : [];
+        });
+        if (
+          items.length !== item.items.length ||
+          items.some((tool, index) => tool !== item.items[index])
+        ) {
+          changed = true;
+        }
+        return items.length > 0 ? [{ kind: "tools" as const, items }] : [];
+      },
+    );
     if (!changed) return turn;
     return { ...turn, tools: timelineTools(timeline), timeline };
   });
 }
-
 
 /**
  * Rebuild a turn's render timeline from its storage-ordered messages.
@@ -725,13 +871,13 @@ function buildTurnTimeline(
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
   const flushTools = (items: ToolActivityItem[]): void => {
-    if (items.length > 0) raw.push({ kind: 'tools', items });
+    if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
-    if (message.type === 'tool_call') {
+    if (message.type === "tool_call") {
       const item = toolItemByUseId.get(message.id);
       if (item) pending.push(item);
-    } else if (message.type === 'assistant') {
+    } else if (message.type === "assistant") {
       const rowId = message.id;
       const legacy = pending.filter((tool) => tool.stepId === undefined);
       const matched = pending.filter((tool) => tool.stepId === rowId);
@@ -739,7 +885,9 @@ function buildTurnTimeline(
       // (no assistant row carries their stepId). A later step's tools cannot
       // be pending here — the ledger appends them after this assistant row —
       // so these ran earlier and must render before this step's content.
-      const orphaned = pending.filter((tool) => tool.stepId !== undefined && tool.stepId !== rowId);
+      const orphaned = pending.filter(
+        (tool) => tool.stepId !== undefined && tool.stepId !== rowId,
+      );
       pending = [];
       flushTools(orphaned);
       if (message.contentOrder?.length) {
@@ -747,27 +895,49 @@ function buildTurnTimeline(
         // old pre-answer position without letting them disturb the recorded
         // order of this row's own content.
         flushTools(legacy);
-        const remaining = new Set<'thinking' | 'text' | 'tools'>(['thinking', 'text', 'tools']);
-        const append = (kind: 'thinking' | 'text' | 'tools'): void => {
+        const remaining = new Set<"thinking" | "text" | "tools">([
+          "thinking",
+          "text",
+          "tools",
+        ]);
+        const append = (kind: "thinking" | "text" | "tools"): void => {
           if (!remaining.delete(kind)) return;
-          if (kind === 'thinking' && message.thinking?.text) {
-            raw.push({ kind: 'thinking', text: message.thinking.text, messageId: rowId });
-          } else if (kind === 'text' && message.text.length > 0) {
-            raw.push({ kind: 'text', text: message.text, messageId: rowId, ts: message.ts });
-          } else if (kind === 'tools') {
+          if (kind === "thinking" && message.thinking?.text) {
+            raw.push({
+              kind: "thinking",
+              text: message.thinking.text,
+              messageId: rowId,
+            });
+          } else if (kind === "text" && message.text.length > 0) {
+            raw.push({
+              kind: "text",
+              text: message.text,
+              messageId: rowId,
+              ts: message.ts,
+            });
+          } else if (kind === "tools") {
             flushTools(matched);
           }
         };
         for (const kind of message.contentOrder) append(kind);
         // Malformed or partial metadata must never hide persisted content.
-        for (const kind of ['thinking', 'text', 'tools'] as const) append(kind);
+        for (const kind of ["thinking", "text", "tools"] as const) append(kind);
       } else {
         if (message.thinking?.text) {
-          raw.push({ kind: 'thinking', text: message.thinking.text, messageId: rowId });
+          raw.push({
+            kind: "thinking",
+            text: message.thinking.text,
+            messageId: rowId,
+          });
         }
         flushTools(legacy);
         if (message.text.length > 0) {
-          raw.push({ kind: 'text', text: message.text, messageId: rowId, ts: message.ts });
+          raw.push({
+            kind: "text",
+            text: message.text,
+            messageId: rowId,
+            ts: message.ts,
+          });
         }
         flushTools(matched);
       }
@@ -777,16 +947,23 @@ function buildTurnTimeline(
   return mergeAdjacentTimeline(raw);
 }
 
-function mergeAdjacentTimeline(items: readonly TurnTimelineItem[]): TurnTimelineItem[] {
+function mergeAdjacentTimeline(
+  items: readonly TurnTimelineItem[],
+): TurnTimelineItem[] {
   const out: TurnTimelineItem[] = [];
   for (const item of items) {
     const last = out[out.length - 1];
-    if (item.kind === 'thinking' && last?.kind === 'thinking' && !item.live && !last.live) {
+    if (
+      item.kind === "thinking" &&
+      last?.kind === "thinking" &&
+      !item.live &&
+      !last.live
+    ) {
       last.text = `${last.text}\n\n${item.text}`;
-    } else if (item.kind === 'tools' && last?.kind === 'tools') {
+    } else if (item.kind === "tools" && last?.kind === "tools") {
       last.items = [...last.items, ...item.items];
-    } else if (item.kind === 'tools') {
-      out.push({ kind: 'tools', items: [...item.items] });
+    } else if (item.kind === "tools") {
+      out.push({ kind: "tools", items: [...item.items] });
     } else {
       out.push({ ...item });
     }
@@ -800,7 +977,10 @@ export interface TurnLineageTarget {
 }
 
 export function deriveTurnLineageMap(
-  turns: readonly Pick<TurnRecord, 'turnId' | 'retriedFromTurnId' | 'regeneratedFromTurnId'>[],
+  turns: readonly Pick<
+    TurnRecord,
+    "turnId" | "retriedFromTurnId" | "regeneratedFromTurnId"
+  >[],
 ): Map<string, TurnLineageTarget> {
   const out = new Map<string, TurnLineageTarget>();
   for (const turn of turns) {

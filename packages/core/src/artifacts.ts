@@ -43,7 +43,7 @@ export function isArtifactTurnKey(value: unknown): value is string {
   );
 }
 
-export interface ArtifactRecord {
+export interface ArtifactDescriptor {
   id: string;
   sessionId: string;
   /** Opaque, bounded Runtime turn key. It is a reference, not a filesystem path component. */
@@ -51,18 +51,21 @@ export interface ArtifactRecord {
   createdAt: number;
   name: string;
   kind: ArtifactKind;
+  sizeBytes: number;
+  mimeType?: string;
+  source?: ArtifactSource;
+  summary?: string;
+  status: ArtifactStatus;
+}
+
+export interface ArtifactRecord extends ArtifactDescriptor {
   /**
    * Artifact-root-relative path. Never absolute and never exposed as a
    * filesystem path to renderer code.
    */
   relativePath: string;
-  sizeBytes: number;
-  mimeType?: string;
-  source?: ArtifactSource;
-  summary?: string;
   /** Durable role for artifacts owned by a Deep Research workspace. */
   deepResearchRole?: import('./deep-research-run.js').DeepResearchArtifactRole;
-  status: ArtifactStatus;
 }
 
 const ARTIFACT_USER_DELETE_ALLOWED_BY_SOURCE = {

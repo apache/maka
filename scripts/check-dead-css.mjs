@@ -123,8 +123,8 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // multi-node hit target (label button + sibling chevron) stays one cursor.
   'astryx-selector',
   'astryx-multi-selector',
-  // Rendered by Astryx's own Collapsible; chat-message.css targets it to give
-  // reasoning/tool disclosures one trigger dialect inside the turn body (#1768).
+  // Rendered by Astryx's own Collapsible; settings/permission.css targets it to
+  // size the capability group's disclosure row.
   'astryx-collapsible-trigger',
   // Astryx's Item (themeProps class on every settings row). rows.css squares
   // its corners inside an open row group: Item ships a 10px radius for its

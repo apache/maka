@@ -33,6 +33,40 @@
   color: inherit;
 }
 
+/* Palette seam for Astryx value controls.
+
+   The Astryx neutral theme lives on the app Theme wrapper, closer to these
+   controls than Maka's palette tokens on <html>, so a Selector left alone
+   paints from the neutral defaults: `--color-text-primary` resolves to
+   light-dark(#171717, #fafafa) rather than the product foreground. That is
+   invisible in isolation and obvious side by side — before this seam covered
+   the workspace picker, its options came out in #171717 next to the model
+   list's oklch foreground, two Selectors from one library that did not read as
+   relatives.
+
+   One rule, listed per seam, rather than a copy per control: a second block
+   would be a second authority, and the two would drift the first time the
+   palette changes. Every Maka surface that mounts an Astryx value control
+   belongs on this selector list.
+
+   Verified against the live app per the note above, not reasoned about: the
+   two seams' option rows now report identical computed color, weight, size and
+   padding. */
+.maka-model-selection-controls,
+.maka-composer-workspace {
+  --color-background-surface: var(--background);
+  --color-background-popover: var(--background-elevated);
+  --color-text-primary: var(--foreground);
+  --color-text-secondary: var(--muted-foreground);
+  --color-text-disabled: var(--muted-foreground);
+  --color-icon-primary: var(--foreground);
+  --color-icon-secondary: var(--muted-foreground);
+  --color-border-emphasized: var(--border-strong);
+  --color-overlay-hover: var(--state-hover-bg);
+  --color-accent: var(--accent);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.12);
+}
+
 /* Titlebar tooltips only: take the popover out of the hit test.
 
    Astryx keeps `pointer-events: auto` on the tooltip layer deliberately —

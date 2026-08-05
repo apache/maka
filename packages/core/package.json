@@ -74,6 +74,7 @@
     "./long-term-memory": "./dist/long-term-memory.js",
     "./local-memory": "./dist/local-memory.js",
     "./voice": "./dist/voice.js",
+    "./web-search": "./dist/web-search.js",
     "./incognito": "./dist/incognito.js",
     "./backend-types": "./dist/backend-types.js",
     "./llm-connections": "./dist/llm-connections.js",

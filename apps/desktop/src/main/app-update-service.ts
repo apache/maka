@@ -70,7 +70,7 @@ interface AppUpdateServiceDeps {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
-  hasActiveTasks: () => boolean;
+  hasActiveTasks: () => boolean | Promise<boolean>;
   clock?: {
     setTimeout(callback: () => void, delayMs: number): unknown;
     clearTimeout(handle: unknown): void;
@@ -367,7 +367,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (status.state !== 'downloaded') return { ok: false, reason: 'not_downloaded' };
     let hasActiveTasks: boolean;
     try {
-      hasActiveTasks = deps.hasActiveTasks();
+      hasActiveTasks = await deps.hasActiveTasks();
     } catch (error) {
       publishError('install', error);
       return { ok: false, reason: 'install_failed' };

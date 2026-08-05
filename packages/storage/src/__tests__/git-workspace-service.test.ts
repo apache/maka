@@ -69,6 +69,9 @@ describe('Git workspace service', () => {
   test('imports only the clean source HEAD tree into an independent fixed-config workspace', async () => {
     const root = await temporaryRoot();
     const sourceRoot = await createEligibleSource(join(root, 'source'));
+    await git(sourceRoot, 'config', 'core.hooksPath', join(root, 'attacker-hooks'));
+    await git(sourceRoot, 'config', 'core.sshCommand', 'attacker-ssh-command');
+    await git(sourceRoot, 'config', 'credential.helper', '!attacker-credential-helper');
     const sourceSnapshot = await snapshotSource(sourceRoot);
     const service = await serviceAt(join(root, 'storage'));
 
@@ -106,9 +109,34 @@ describe('Git workspace service', () => {
       await gitBare(binding.repositoryPath, 'config', '--local', '--get', 'core.hooksPath'),
       binding.hooksPath,
     );
+    assert.equal(
+      await gitBare(binding.repositoryPath, 'config', '--local', '--get', 'core.sshCommand'),
+      '',
+    );
+    assert.equal(
+      await gitBare(binding.repositoryPath, 'config', '--local', '--get', 'protocol.allow'),
+      'never',
+    );
     assert.equal(existsSync(join(binding.repositoryPath, 'objects', 'info', 'alternates')), false);
     await assert.rejects(gitBare(binding.repositoryPath, 'cat-file', '-e', sourceSnapshot.head));
     await assertSourceUnchanged(sourceRoot, sourceSnapshot);
+  });
+
+  test('does not inherit a poisoned process-level Git config path', async () => {
+    const root = await temporaryRoot();
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    const poisonedConfig = join(root, 'poisoned-global-gitconfig');
+    await writeFile(poisonedConfig, 'this is not valid Git config\n');
+    const previous = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = poisonedConfig;
+    try {
+      const service = await serviceAt(join(root, 'storage'));
+      const binding = await service.createManagedWorkspaceFromSource(openRequest(sourceRoot));
+      assert.equal((await service.inspectManagedWorkspace(binding)).state, 'ready');
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = previous;
+    }
   });
 
   test('adopts the same binding across service restart and concurrent duplicate opens', async () => {

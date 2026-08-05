@@ -16,6 +16,8 @@ on:
       - 'apps/desktop/electron-builder.config.mjs'
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
+      - 'scripts/prepare-bundled-git.mjs'
+      - 'scripts/prepare-bundled-git.test.mjs'
       - 'scripts/verify-windows-x64.mjs'
       - 'scripts/verify-packaged-app.mjs'
       - 'scripts/npm-spawn.mjs'
@@ -23,6 +25,7 @@ on:
       - '.gitattributes'
       - 'package.json'
       - 'package-lock.json'
+      - 'apps/desktop/resources/licenses/git/NOTICE.txt'
       - '.github/workflows/release-windows-check.yml'
   workflow_dispatch:
 

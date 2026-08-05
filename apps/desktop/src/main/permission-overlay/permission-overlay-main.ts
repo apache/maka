@@ -287,6 +287,7 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
 
 export interface PermissionOverlayIpcDeps {
   controller: PermissionOverlayController;
+  ipcMain: Pick<typeof import('electron').ipcMain, 'handle'>;
 }
 
 /**
@@ -297,9 +298,9 @@ export interface PermissionOverlayIpcDeps {
  */
 export function registerPermissionOverlayIpc(deps: PermissionOverlayIpcDeps): void {
   const electron = requireElectron('electron') as Electron;
-  const { ipcMain, systemPreferences } = electron;
+  const { systemPreferences } = electron;
 
-  ipcMain.handle('permissions:startDragOnboarding', async (_event, id: unknown) => {
+  deps.ipcMain.handle('permissions:startDragOnboarding', async (_event, id: unknown) => {
     if (id === 'screen_recording') {
       return startScreenRecordingOnboarding({
         requestAccess: () => requestPermissionAccess(id),

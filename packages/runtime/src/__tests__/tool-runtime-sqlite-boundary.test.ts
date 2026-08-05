@@ -4,13 +4,219 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
+import {
+  createGenesisExecutionBoundary,
+  type LlmConnection,
+  type SessionEvent,
+  type SessionHeader,
+} from '@maka/core';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { buildMcpTools } from '../mcp-tools.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
+  it('persists a boundary-blocked Client Capability without an orphan response', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-client-capability-reject-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      let implementationCalls = 0;
+      const [clientTool] = buildMcpTools(
+        {
+          tools: () => [
+            {
+              serverId: 'desktop_computer_use',
+              name: 'maka_computer',
+              description: 'Client-owned Computer Use',
+              inputSchema: {
+                type: 'object',
+                properties: { action: { const: 'list_apps' } },
+                required: ['action'],
+                additionalProperties: false,
+              },
+            },
+          ],
+          callTool: async () => {
+            implementationCalls += 1;
+            return { content: [{ type: 'text', text: 'ok' }] };
+          },
+        },
+        { categoryHint: 'client_capability', recoveryMode: 'outcome_unknown' },
+      );
+      assert.ok(clientTool);
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: store,
+      });
+      const published: SessionEvent[] = [];
+      const result = await runtime.settleToolCall({
+        tool: clientTool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-computer-use',
+        input: { action: 'list_apps' },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
+        },
+      });
+
+      assert.equal(implementationCalls, 0);
+      assert.match(JSON.stringify(result.result), /require the Bypass execution boundary/u);
+      const toolEvents = published.filter(
+        (event) => event.type === 'tool_start' || event.type === 'tool_result',
+      );
+      assert.equal(toolEvents.length, 2);
+      assert.equal(
+        toolEvents.some((event) => event.operationId !== undefined),
+        false,
+      );
+
+      const memory = createSessionEventMapMemory();
+      for (const event of toolEvents) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          mapSessionEventToRuntimeEvent(event, invocationContext(), memory),
+        );
+      }
+      const runtimeEvents = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.content?.kind),
+        ['function_call', 'function_response'],
+      );
+      const replayCall = buildRuntimeEventModelReplayPlan(runtimeEvents).items.find(
+        (item) => item.kind === 'tool_call',
+      );
+      assert.deepEqual(replayCall?.kind === 'tool_call' ? replayCall.input : undefined, {
+        action: 'list_apps',
+      });
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('persists a subagent admission rejection without an orphan response', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-subagent-limit-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    const releases: Array<() => void> = [];
+    const pending: Promise<unknown>[] = [];
+    try {
+      let implementationsStarted = 0;
+      let resolveAllStarted!: () => void;
+      const allStarted = new Promise<void>((resolve) => {
+        resolveAllStarted = resolve;
+      });
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+        runtimeCommitSink: store,
+      });
+      const tool: MakaTool = {
+        name: 'agent_probe',
+        description: 'probe',
+        parameters: {},
+        categoryHint: 'subagent',
+        impl: async () => {
+          implementationsStarted += 1;
+          if (implementationsStarted === MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN) resolveAllStarted();
+          await new Promise<void>((resolve) => releases.push(resolve));
+          return { ok: true };
+        },
+      };
+      const quietSink = {
+        push: (_event: SessionEvent) => {},
+        pushAndWaitUntilConsumed: async (_event: SessionEvent) => {},
+      };
+      for (let index = 0; index < MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN; index += 1) {
+        pending.push(
+          runtime.settleToolCall({
+            tool,
+            turnId: 'turn-1',
+            toolCallId: `provider-call-active-${index}`,
+            input: {},
+            abortSignal: new AbortController().signal,
+            eventSink: quietSink,
+          }),
+        );
+      }
+      await withTimeout(allStarted, 'Timed out waiting for subagent slots to fill');
+
+      const published: SessionEvent[] = [];
+      const rejected = await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-rejected',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
+        },
+      });
+
+      assert.match(JSON.stringify(rejected.result), /subagents|子代理/u);
+      const toolEvents = published.filter(
+        (event) => event.type === 'tool_start' || event.type === 'tool_result',
+      );
+      assert.equal(toolEvents.length, 2);
+      assert.equal(
+        toolEvents.some((event) => event.operationId !== undefined),
+        false,
+      );
+
+      const memory = createSessionEventMapMemory();
+      for (const event of toolEvents) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          mapSessionEventToRuntimeEvent(event, invocationContext(), memory),
+        );
+      }
+      const rejectedEvents = (await store.readRuntimeEvents('session-1', 'run-1')).filter(
+        (event) =>
+          event.content?.kind === 'function_call'
+            ? event.content.id === 'provider-call-rejected'
+            : event.content?.kind === 'function_response' &&
+              event.content.id === 'provider-call-rejected',
+      );
+      assert.deepEqual(
+        rejectedEvents.map((event) => event.content?.kind),
+        ['function_call', 'function_response'],
+      );
+    } finally {
+      for (const release of releases) release();
+      await Promise.allSettled(pending);
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists a preflight-rejected sibling beside an exclusive tool without an orphan response', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-exclusive-reject-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
@@ -320,4 +526,18 @@ function nextId(): () => string {
 function nextNow(): () => number {
   let value = 0;
   return () => ++value;
+}
+
+async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 1_000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

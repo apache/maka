@@ -1,15 +1,18 @@
-import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
+import { randomUUID } from "node:crypto";
+import type { IpcMain } from "electron";
 import {
   deriveTurnRecords,
-  SKILL_INVOCATION_TOKEN_SOURCE,
   type AttachmentRef,
   type SessionChangedEvent,
   type SessionChangedReason,
-} from '@maka/core';
-import type { SkillInvocationResult } from '@maka/runtime';
-import type { AttachmentApprovalRegistry } from './attachment-approval.js';
-import { resolveAttachmentRefs, resolveIngestItems } from './attachment-ingest.js';
+  type StoredMessage,
+} from "@maka/core";
+import type { SkillInvocationResult } from "@maka/runtime";
+import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
+import {
+  resolveAttachmentRefs,
+  resolveIngestItems,
+} from "./attachment-ingest.js";
 import {
   normalizeBranchFromTurnInput,
   normalizeRegenerateTurnInput,
@@ -17,14 +20,14 @@ import {
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeUserQuestionResponse,
-} from './permission-response-guard.js';
-import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+} from "./permission-response-guard.js";
+import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
-} from './runtime-host-session-observer.js';
-import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
-import { mergeWorkspaceFileInlineReferences } from './session-workspace-inline-references.js';
+} from "./runtime-host-session-observer.js";
+import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
+import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
 
 const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
   loaded: [],
@@ -34,20 +37,20 @@ const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
 
 type RuntimeHostSessionExecutionClient = Pick<
   DesktopRuntimeHostClient,
-  | 'answerInteraction'
-  | 'compactContext'
-  | 'copySession'
-  | 'getSession'
-  | 'ingestAttachment'
-  | 'interruptTurn'
-  | 'queryTurnResume'
-  | 'readExecutionBoundary'
-  | 'regenerateTurn'
-  | 'setSessionReadMarker'
-  | 'startTurn'
-  | 'startTurnResume'
-  | 'submitMessage'
-  | 'updateSessionMetadata'
+  | "answerInteraction"
+  | "compactContext"
+  | "copySession"
+  | "getSession"
+  | "ingestAttachment"
+  | "interruptTurn"
+  | "queryTurnResume"
+  | "readExecutionBoundary"
+  | "regenerateTurn"
+  | "setSessionReadMarker"
+  | "startTurn"
+  | "startTurnResume"
+  | "submitMessage"
+  | "updateSessionMetadata"
 >;
 
 export interface RuntimeHostSessionExecutionIpcDeps {
@@ -57,7 +60,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'turnId'>,
+    extra?: Pick<SessionChangedEvent, "turnId">,
   ) => void;
   stat(path: string): Promise<{ size: number }>;
   resizeImage(bytes: Uint8Array): Promise<Uint8Array>;
@@ -71,113 +74,136 @@ export interface RuntimeHostSessionExecutionIpcDeps {
  */
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: Pick<IpcMain, "handle">,
 ): void {
   const newId = deps.newId ?? randomUUID;
 
-  ipcMain.handle('sessions:observe', async (event, sessionId: unknown, observerId: unknown) => {
-    const normalizedSessionId = requiredId(sessionId, 'Session');
-    const normalizedObserverId = requiredId(observerId, 'Session observer');
-    await deps.observer.observe(
-      normalizedSessionId,
-      normalizedObserverId,
-      event.sender as RuntimeHostSessionObserverTarget,
-    );
+  ipcMain.handle(
+    "sessions:observe",
+    async (event, sessionId: unknown, observerId: unknown) => {
+      const normalizedSessionId = requiredId(sessionId, "Session");
+      const normalizedObserverId = requiredId(observerId, "Session observer");
+      await deps.observer.observe(
+        normalizedSessionId,
+        normalizedObserverId,
+        event.sender as RuntimeHostSessionObserverTarget,
+      );
+    },
+  );
+  ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
+    await deps.observer.unobserve(requiredId(observerId, "Session observer"));
   });
-  ipcMain.handle('sessions:unobserve', async (_event, observerId: unknown) => {
-    await deps.observer.unobserve(requiredId(observerId, 'Session observer'));
-  });
-  ipcMain.handle('sessions:readMessages', async (_event, sessionId: string) => {
+  ipcMain.handle("sessions:readMessages", async (_event, sessionId: string) => {
     const messages = await deps.observer.readMessages(sessionId);
-    const readThroughMessageId = messages.at(-1)?.id;
+    const readThroughMessageId = latestVisibleMessageId(messages);
     if (readThroughMessageId) {
-      await deps.client.setSessionReadMarker(sessionId, readThroughMessageId).catch(() => undefined);
+      await deps.client
+        .setSessionReadMarker(sessionId, readThroughMessageId)
+        .catch(() => undefined);
     }
     return messages;
   });
-  ipcMain.handle('sessions:listTurns', async (_event, sessionId: string) =>
+  ipcMain.handle("sessions:listTurns", async (_event, sessionId: string) =>
     deriveTurnRecords(await deps.observer.readMessages(sessionId)),
   );
-  ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
-    deps.client.readExecutionBoundary(sessionId),
+  ipcMain.handle(
+    "sessions:readExecutionBoundary",
+    (_event, sessionId: string) => deps.client.readExecutionBoundary(sessionId),
   );
-  ipcMain.handle('sessions:listActiveInteractions', (_event, sessionId: string) =>
-    deps.observer.readActiveInteractions(sessionId),
+  ipcMain.handle(
+    "sessions:listActiveInteractions",
+    (_event, sessionId: string) =>
+      deps.observer.readActiveInteractions(sessionId),
   );
 
-  ipcMain.handle('sessions:send', async (event, sessionId: string, input: unknown) => {
-    const command = normalizeSessionSendCommand(input);
-    if (!command) return;
-    if (command.voiceOperationId) {
-      throw new Error('Runtime Host Session voice input is not available yet');
-    }
-    if (
-      (command.skillIds?.length ?? 0) > 0 ||
-      new RegExp(SKILL_INVOCATION_TOKEN_SOURCE).test(command.text)
-    ) {
-      throw new Error('Runtime Host Session Skill invocation is not available yet');
-    }
-    const session = await deps.client.getSession(sessionId);
-    if (!session) throw new Error(`Runtime Host Session not found: ${sessionId}`);
-    const turnId = command.turnId ?? newId();
-    let attachments: AttachmentRef[] = [];
-    if (command.attachmentItems !== undefined) {
-      const files = await resolveIngestItems({
-        senderId: event.sender.id,
-        items: command.attachmentItems,
-        approvals: deps.attachmentApprovals,
-        stat: deps.stat,
+  ipcMain.handle(
+    "sessions:send",
+    async (event, sessionId: string, input: unknown) => {
+      const command = normalizeSessionSendCommand(input);
+      if (!command) return;
+      const session = await deps.client.getSession(sessionId);
+      if (!session)
+        throw new Error(`Runtime Host Session not found: ${sessionId}`);
+      const turnId = command.turnId ?? newId();
+      let attachments: AttachmentRef[] = [];
+      if (command.attachmentItems !== undefined) {
+        const files = await resolveIngestItems({
+          senderId: event.sender.id,
+          items: command.attachmentItems,
+          approvals: deps.attachmentApprovals,
+          stat: deps.stat,
+        });
+        attachments = await resolveAttachmentRefs({
+          files,
+          cwd: session.cwd,
+          sessionId,
+          workspaceFiles: "snapshot",
+          resizeImage: deps.resizeImage,
+          snapshot: ({ name, mimeType, content }) =>
+            deps.client.ingestAttachment({
+              sessionId,
+              name,
+              mimeType,
+              content,
+            }),
+        });
+      }
+      const displayText =
+        command.displayText ??
+        (command.text.trim().length > 0
+          ? command.text
+          : (command.skillIds ?? []).map((id) => `/skill:${id}`).join(" "));
+      const inlineReferences = mergeWorkspaceFileInlineReferences({
+        displayText,
+        workspaceFileReferences: command.workspaceFileReferences,
       });
-      attachments = await resolveAttachmentRefs({
-        files,
-        cwd: session.cwd,
+      await deps.client.startTurn({
         sessionId,
-        workspaceFiles: 'snapshot',
-        resizeImage: deps.resizeImage,
-        snapshot: ({ name, mimeType, content }) =>
-          deps.client.ingestAttachment({ sessionId, name, mimeType, content }),
+        turnId,
+        content: {
+          text: command.text,
+          ...(command.displayText !== undefined
+            ? { displayText: command.displayText }
+            : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.quotes ? { quotes: command.quotes } : {}),
+          inlineReferences,
+        },
+        ...((command.skillIds?.length ?? 0) > 0
+          ? { skillIds: command.skillIds }
+          : {}),
+        ...(command.voiceOperationId
+          ? { voiceOperationId: command.voiceOperationId }
+          : {}),
+        ...(command.turnOrchestration
+          ? { turnOrchestration: command.turnOrchestration }
+          : {}),
       });
-    }
-    const displayText = command.displayText ?? command.text;
-    const inlineReferences = mergeWorkspaceFileInlineReferences({
-      displayText,
-      workspaceFileReferences: command.workspaceFileReferences,
-    });
-    await deps.client.startTurn({
-      sessionId,
-      turnId,
-      content: {
-        text: command.text,
-        ...(command.displayText !== undefined ? { displayText: command.displayText } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
-        ...(command.quotes ? { quotes: command.quotes } : {}),
+      deps.emitSessionsChanged("status-change", sessionId, { turnId });
+      return {
+        ok: true as const,
+        turnId,
+        attachments,
         inlineReferences,
-      },
-      ...(command.turnOrchestration
-        ? { turnOrchestration: command.turnOrchestration }
-        : {}),
-    });
-    deps.emitSessionsChanged('status-change', sessionId, { turnId });
-    return {
-      ok: true as const,
-      turnId,
-      attachments,
-      inlineReferences,
-      skillInvocation: EMPTY_SKILL_INVOCATION,
-    };
-  });
+        skillInvocation: EMPTY_SKILL_INVOCATION,
+      };
+    },
+  );
 
-  ipcMain.handle('sessions:steer', async (_event, sessionId: string, text: unknown) => {
-    const content = steeringContent(text);
-    await deps.client.submitMessage({
-      sessionId,
-      messageId: newId(),
-      content: { text: content },
-      placement: 'current_turn',
-    });
-    return { kind: 'queued' as const };
-  });
-  ipcMain.handle('sessions:stop', async (_event, sessionId: string) => {
+  ipcMain.handle(
+    "sessions:steer",
+    async (_event, sessionId: string, text: unknown) => {
+      const content = steeringContent(text);
+      await deps.client.submitMessage({
+        sessionId,
+        messageId: newId(),
+        content: { text: content },
+        placement: "current_turn",
+      });
+      return { kind: "queued" as const };
+    },
+  );
+  ipcMain.handle("sessions:stop", async (_event, sessionId: string) => {
     const turn = (await deps.observer.snapshot(sessionId)).rootTurn;
     if (!turn || isTerminalStatus(turn.status)) return;
     await deps.client.interruptTurn({
@@ -186,52 +212,62 @@ export function registerRuntimeHostSessionExecutionIpc(
       turnId: turn.turnId,
       runId: turn.runId,
     });
-    deps.emitSessionsChanged('turn-status-change', sessionId, { turnId: turn.turnId });
+    deps.emitSessionsChanged("turn-status-change", sessionId, {
+      turnId: turn.turnId,
+    });
   });
 
   ipcMain.handle(
-    'sessions:respondToSandboxBoundary',
+    "sessions:respondToSandboxBoundary",
     async (_event, sessionId: string, input: unknown) => {
       const response = normalizeSandboxBoundaryResponse(input);
-      const pending = await requireInteraction(deps.observer, sessionId, response.requestId);
-      if (pending.request.kind !== 'sandbox_boundary') {
-        throw new Error('Interaction is not a sandbox boundary request');
+      const pending = await requireInteraction(
+        deps.observer,
+        sessionId,
+        response.requestId,
+      );
+      if (pending.request.kind !== "sandbox_boundary") {
+        throw new Error("Interaction is not a sandbox boundary request");
       }
       const answered = await deps.client.answerInteraction({
         sessionId,
         interactionId: response.requestId,
-        answer: { kind: 'sandbox_boundary', decision: response.decision },
+        answer: { kind: "sandbox_boundary", decision: response.decision },
       });
       deps.observer.publishInteractionAnswer(answered, pending);
     },
   );
   ipcMain.handle(
-    'sessions:respondToUserQuestion',
+    "sessions:respondToUserQuestion",
     async (_event, sessionId: string, input: unknown) => {
       const response = normalizeUserQuestionResponse(input);
-      const pending = await requireInteraction(deps.observer, sessionId, response.requestId);
-      if (pending.request.kind !== 'question') {
-        throw new Error('Interaction is not a user question request');
+      const pending = await requireInteraction(
+        deps.observer,
+        sessionId,
+        response.requestId,
+      );
+      if (pending.request.kind !== "question") {
+        throw new Error("Interaction is not a user question request");
       }
       const answered = await deps.client.answerInteraction({
         sessionId,
         interactionId: response.requestId,
-        answer: { kind: 'question', answers: response.answers },
+        answer: { kind: "question", answers: response.answers },
       });
       deps.observer.publishInteractionAnswer(answered, pending);
     },
   );
 
-  ipcMain.handle('sessions:compact', async (_event, sessionId: string) => {
+  ipcMain.handle("sessions:compact", async (_event, sessionId: string) => {
     const turnId = newId();
     await deps.client.compactContext({ sessionId, turnId });
-    deps.emitSessionsChanged('status-change', sessionId, { turnId });
+    deps.emitSessionsChanged("status-change", sessionId, { turnId });
   });
-  ipcMain.handle('sessions:resumeLatest', async (_event, sessionId: string) => {
+  ipcMain.handle("sessions:resumeLatest", async (_event, sessionId: string) => {
     const plan = await deps.client.queryTurnResume({ sessionId });
-    if (plan.disposition === 'parked') {
+    if (plan.disposition === "parked") {
       return {
-        disposition: 'park' as const,
+        disposition: "park" as const,
         rejectionReasons: [plan.reason],
         diagnostics: [],
       };
@@ -243,22 +279,22 @@ export function registerRuntimeHostSessionExecutionIpc(
       sourceRunId: plan.sourceRunId,
       sourceRuntimeEventHighWater: plan.sourceRuntimeEventHighWater,
     });
-    if (result.kind === 'parked') {
+    if (result.kind === "parked") {
       return {
-        disposition: 'park' as const,
+        disposition: "park" as const,
         rejectionReasons: [result.plan.reason],
         diagnostics: [],
       };
     }
-    deps.emitSessionsChanged('status-change', sessionId, { turnId });
+    deps.emitSessionsChanged("status-change", sessionId, { turnId });
     return {
-      disposition: 'started' as const,
+      disposition: "started" as const,
       runId: result.turn.runId,
       turnId: result.turn.turnId,
     };
   });
   ipcMain.handle(
-    'sessions:regenerateTurn',
+    "sessions:regenerateTurn",
     async (_event, sessionId: string, input: unknown) => {
       const normalized = normalizeRegenerateTurnInput(input);
       const turnId = normalized.turnId ?? newId();
@@ -267,33 +303,52 @@ export function registerRuntimeHostSessionExecutionIpc(
         sourceTurnId: normalized.sourceTurnId,
         turnId,
       });
-      deps.emitSessionsChanged('status-change', sessionId, { turnId });
+      deps.emitSessionsChanged("status-change", sessionId, { turnId });
     },
   );
 
-  ipcMain.handle('sessions:branchFromTurn', async (_event, sessionId: string, input: unknown) => {
-    const normalized = normalizeBranchFromTurnInput(input);
-    let branch = await deps.client.copySession('branch', {
-      sourceSessionId: sessionId,
-      targetSessionId: newId(),
-      sourceTurnId: normalized.sourceTurnId,
-    });
-    if (normalized.name) {
-      branch = await deps.client.updateSessionMetadata(branch.id, { name: normalized.name });
-    }
-    deps.emitSessionsChanged('created', branch.id);
-    return toDesktopHostSessionSummary(branch);
-  });
-  ipcMain.handle('sessions:reviseBeforeTurn', async (_event, sessionId: string, input: unknown) => {
-    const normalized = normalizeReviseBeforeTurnInput(input);
-    const revision = await deps.client.copySession('revision', {
-      sourceSessionId: sessionId,
-      targetSessionId: newId(),
-      sourceTurnId: normalized.sourceTurnId,
-    });
-    deps.emitSessionsChanged('created', revision.id);
-    return toDesktopHostSessionSummary(revision);
-  });
+  ipcMain.handle(
+    "sessions:branchFromTurn",
+    async (_event, sessionId: string, input: unknown) => {
+      const normalized = normalizeBranchFromTurnInput(input);
+      let branch = await deps.client.copySession("branch", {
+        sourceSessionId: sessionId,
+        targetSessionId: newId(),
+        sourceTurnId: normalized.sourceTurnId,
+      });
+      if (normalized.name) {
+        branch = await deps.client.updateSessionMetadata(branch.id, {
+          name: normalized.name,
+        });
+      }
+      deps.emitSessionsChanged("created", branch.id);
+      return toDesktopHostSessionSummary(branch);
+    },
+  );
+  ipcMain.handle(
+    "sessions:reviseBeforeTurn",
+    async (_event, sessionId: string, input: unknown) => {
+      const normalized = normalizeReviseBeforeTurnInput(input);
+      const revision = await deps.client.copySession("revision", {
+        sourceSessionId: sessionId,
+        targetSessionId: newId(),
+        sourceTurnId: normalized.sourceTurnId,
+      });
+      deps.emitSessionsChanged("created", revision.id);
+      return toDesktopHostSessionSummary(revision);
+    },
+  );
+}
+
+function latestVisibleMessageId(
+  messages: readonly StoredMessage[],
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.type === "user" || message.type === "assistant")
+      return message.id;
+  }
+  return undefined;
 }
 
 async function requireInteraction(
@@ -302,24 +357,31 @@ async function requireInteraction(
   interactionId: string,
 ) {
   const interaction = await observer.readInteraction(sessionId, interactionId);
-  if (!interaction) throw new Error(`Runtime Host Interaction not found: ${interactionId}`);
+  if (!interaction)
+    throw new Error(`Runtime Host Interaction not found: ${interactionId}`);
   return interaction;
 }
 
 function requiredId(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) {
     throw new Error(`Invalid ${label} identity`);
   }
   return value;
 }
 
 function steeringContent(value: unknown): string {
-  if (typeof value !== 'string' || value.trim().length === 0 || value.length > 128_000) {
-    throw new Error('Invalid steering text');
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > 128_000
+  ) {
+    throw new Error("Invalid steering text");
   }
   return value.trim();
 }
 
 function isTerminalStatus(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+  return (
+    status === "completed" || status === "failed" || status === "cancelled"
+  );
 }

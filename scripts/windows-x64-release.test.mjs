@@ -72,6 +72,25 @@ test('Windows packaging fails closed on hosts that cannot produce the release', 
   await assert.rejects(packageWindowsX64({ platform: 'win32', arch: 'arm64' }), /Windows x64 host/);
 });
 
+test('Windows packaging regenerates bundled Git evidence before electron-builder consumes it', async () => {
+  const commands = [];
+  await packageWindowsX64({
+    platform: 'win32',
+    arch: 'x64',
+    run: async (command, args) => commands.push([command, ...args].join(' ')),
+    remove: async () => {},
+    assertFile: async () => {},
+  });
+
+  assert.deepEqual(commands, [
+    'npm run clean',
+    'npm run build',
+    'npm run prepare:bundled-git',
+    'npm run check:release',
+    'npm --workspace @maka/desktop run package:windows-x64',
+  ]);
+});
+
 test('Windows verification fails closed on the host, the input, and the architecture', async () => {
   await assert.rejects(
     verifyWindowsX64Release('C:/Maka.exe', { platform: 'darwin' }),

@@ -95,6 +95,54 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
   );
 });
 
+test('OAuth account usage exposes only a bounded safe quota projection', () => {
+  assert.deepEqual(
+    decodeHostFrame({
+      requestId: 'request',
+      operation: 'oauth.account.usage.fetch',
+      ok: true,
+      result: {
+        kind: 'available',
+        provider: 'claude-subscription',
+        quota: {
+          fiveHour: { utilization: 25, resetsAt: '2026-08-05T12:00:00.000Z' },
+          fetchedAt: 1,
+        },
+      },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.account.usage.fetch',
+      ok: true,
+      result: {
+        kind: 'available',
+        provider: 'claude-subscription',
+        quota: {
+          fiveHour: { utilization: 25, resetsAt: '2026-08-05T12:00:00.000Z' },
+          fetchedAt: 1,
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      decodeHostFrame({
+        requestId: 'request',
+        operation: 'oauth.account.usage.fetch',
+        ok: true,
+        result: {
+          kind: 'available',
+          provider: 'claude-subscription',
+          quota: {
+            fiveHour: { utilization: 101, resetsAt: '' },
+            fetchedAt: 1,
+          },
+        },
+      }),
+    (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
 test('OAuth presentation methods share one closed request and result contract', () => {
   assert.deepEqual(
     decodeOAuthPresentationRequest('open_external', {

@@ -6,8 +6,7 @@ test('chat input preserves an IME composition when a file paste arrives', async 
   await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: ime-paste-test/)).toBeVisible();
 
-  const composer = page.locator('.maka-composer');
-  await expect(composer).toHaveAttribute('data-maka-file-drop-target', 'true');
+  const composer = page.locator('.maka-composer[data-maka-file-drop-target="true"]');
   const editable = composer.locator('[contenteditable="true"]');
 
   const pasteResults = await editable.evaluate((input) => {
@@ -50,18 +49,23 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
   await expect(composer).toBeVisible();
   // Assistant text becomes visible before the turn's terminal event can clear
   // the streaming state. The composer intentionally rejects attachments until
-  // that happens, so synchronize on its actual file-drop readiness contract.
-  await expect(composer).toHaveAttribute('data-maka-file-drop-target', 'true');
-  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
-  await dataTransfer.evaluate((dt: DataTransfer) => {
-    dt.items.add(new File(['hello attachment content'], 'note.txt', { type: 'text/plain' }));
+  // that happens. Match the ready target and dispatch from the same renderer
+  // task so a state transition cannot land between readiness and the drop.
+  const dropTarget = page.locator('.maka-composer[data-maka-file-drop-target="true"]');
+  await dropTarget.evaluate((element) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(
+      new File(['hello attachment content'], 'note.txt', { type: 'text/plain' }),
+    );
     const png = Uint8Array.from(
       atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='),
       (character) => character.charCodeAt(0),
     );
-    dt.items.add(new File([png], 'pixel.png', { type: 'image/png' }));
+    dataTransfer.items.add(new File([png], 'pixel.png', { type: 'image/png' }));
+    element.dispatchEvent(
+      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }),
+    );
   });
-  await composer.dispatchEvent('drop', { dataTransfer });
 
   // Both attachment kinds appear in the composer before send.
   await expect(page.getByText('note.txt')).toBeVisible();
@@ -109,7 +113,19 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
   expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
 
   await image.getByRole('button').click();
-  await expect(page.locator('.astryx-lightbox')).toBeVisible();
+  const lightbox = page.locator('.astryx-lightbox');
+  await expect(lightbox).toBeVisible();
+
+  // The lightbox close button lands inside the titlebar's drag rect, where the
+  // OS eats clicks unless the modal is `no-drag`. The overlap is asserted first —
+  // without it the app-region check would guard nothing.
+  const titlebar = page.locator('.maka-window-titlebar');
+  const [titlebarBox, lightboxBox] = await Promise.all([titlebar.boundingBox(), lightbox.boundingBox()]);
+  expect(titlebarBox).not.toBeNull();
+  expect(lightboxBox).not.toBeNull();
+  expect(lightboxBox!.y).toBeLessThan(titlebarBox!.y + titlebarBox!.height);
+  await expect(lightbox).toHaveCSS('-webkit-app-region', 'no-drag');
+
   await page.keyboard.press('Escape');
   await expect(page.locator('.astryx-lightbox')).not.toBeVisible();
 });

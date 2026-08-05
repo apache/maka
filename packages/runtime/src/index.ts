@@ -72,6 +72,10 @@ export {
   collectConversationCopyLinkedChildReferences,
   conversationCopyLinkedChildReferences,
 } from './conversation-copy.js';
+export {
+  CLAUDE_SUBSCRIPTION_USAGE_ENDPOINT,
+  fetchClaudeSubscriptionUsage,
+} from './claude-subscription-usage.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {
   AGENT_GRAPH_RECORD_FACETS,

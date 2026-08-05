@@ -3,7 +3,6 @@ import type { ProjectRecord, UiLocale } from '@maka/core';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,
-  type ProjectBranchListState,
   type RendererAppInfo,
   type SessionProjectInfoState,
 } from './app-shell-project-actions';
@@ -17,9 +16,8 @@ type ToastApi = {
 
 /**
  * Owns the workspace / project-picker cluster: the new-task project, active
- * session project projection, branch list + its in-flight flag, the
- * persistent project catalog, and the project-picker pending state / dedup
- * refs. Seeds appInfo from the persisted composer defaults so the home view
+ * session project projection, the persistent project catalog, and the
+ * project-picker pending state / dedup refs. Seeds appInfo from the persisted composer defaults so the home view
  * is populated before the async `app:info`
  * round-trip completes on mount.
  *
@@ -42,8 +40,6 @@ export function useAppShellProjectContext(options: {
   selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
-  branchList: { branches: string[]; current?: string } | null;
-  branchPending: boolean;
   projectPickerPending: boolean;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
@@ -59,8 +55,6 @@ export function useAppShellProjectContext(options: {
   } = options;
   const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
-  const [branchListState, setBranchList] = useState<ProjectBranchListState | null>(null);
-  const [branchPending, setBranchPending] = useState(false);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
   const [projectPickerPending, setProjectPickerPending] = useState(false);
@@ -120,11 +114,6 @@ export function useAppShellProjectContext(options: {
   const currentProject = projects.find(
     (project) => project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
   );
-  const branchList =
-    branchListState?.contextKey === (sessionId ?? null)
-    ? { branches: branchListState.branches, current: branchListState.current }
-    : null;
-
   const actions = createAppShellProjectActions({
     uiLocale,
     projectPickerPendingRef,
@@ -133,8 +122,6 @@ export function useAppShellProjectContext(options: {
     setAppInfo,
     setSessionProjectInfo,
     setProjectPickerPending,
-    setBranchPending,
-    setBranchList,
     setProjects,
     setSelectedProjectId,
     selectedProjectId,
@@ -151,8 +138,6 @@ export function useAppShellProjectContext(options: {
     selectedProjectId,
     currentProjectId,
     currentProject,
-    branchList,
-    branchPending,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,

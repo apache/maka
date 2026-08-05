@@ -5,7 +5,6 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders } from './subscription-auth.js';
@@ -29,6 +28,10 @@ import {
 } from './connection-effect-outcome.js';
 
 const CONNECTION_TEST_TIMEOUT_MS = 15_000;
+
+export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
+  readonly timeoutMs?: number;
+}
 
 /**
  * Prefer an explicit model, then a still-live configured model. Legacy
@@ -66,11 +69,18 @@ export async function testConnection(
   connection: LlmConnection,
   apiKey: string,
   model?: string,
-  options: ConnectionEffectFetchOptions = {},
+  options: ConnectionTestOptions = {},
 ): Promise<ConnectionTestResult> {
   const t0 = Date.now();
+  const configuredTimeoutMs = options.timeoutMs;
+  const timeoutMs =
+    typeof configuredTimeoutMs === 'number' &&
+    Number.isFinite(configuredTimeoutMs) &&
+    configuredTimeoutMs > 0
+      ? Math.floor(configuredTimeoutMs)
+      : CONNECTION_TEST_TIMEOUT_MS;
   try {
-    return await testConnectionStrict(connection, apiKey, model, options.fetch, t0);
+    return await testConnectionStrict(connection, apiKey, model, options.fetch, t0, timeoutMs);
   } catch (error) {
     return connectionTestFailure(error, t0, true);
   }
@@ -115,6 +125,7 @@ async function testConnectionStrict(
   model: string | undefined,
   fetchFn: ConnectionEffectFetch | undefined,
   t0: number,
+  timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
@@ -129,24 +140,69 @@ async function testConnectionStrict(
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
   }
-  const { adapter, baseUrl, apiProtocol } = resolveModelRuntime(connection, testModel);
+  if (connection.providerType === 'opencode-free' && !model?.trim()) {
+    const candidates = [
+      ...new Set([...connectionEnabledModelIds(connection), ...defaults.fallbackModels]),
+    ];
+    let lastFailure: ConnectionTestResult | undefined;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]!;
+      const remainingMs = timeoutMs - (Date.now() - t0);
+      if (remainingMs <= 0) break;
+      const remainingCandidates = candidates.length - index;
+      const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
+      try {
+        const result = await testConnectionModel(
+          connection,
+          secret,
+          candidate,
+          fetchFn,
+          t0,
+          attemptTimeoutMs,
+        );
+        if (result.ok) return result;
+        lastFailure = result;
+      } catch (error) {
+        lastFailure = connectionTestFailure(error, t0, true);
+      }
+    }
+    return (
+      lastFailure ?? {
+        ok: false,
+        errorMessage: 'No OpenCode Free model responded within the connection-test budget',
+        errorClass: 'provider_unavailable',
+        latencyMs: Date.now() - t0,
+      }
+    );
+  }
+
+  return await testConnectionModel(connection, secret, testModel, fetchFn, t0, timeoutMs);
+}
+
+async function testConnectionModel(
+  connection: ConnectionEffectConnection,
+  secret: string,
+  testModel: string,
+  fetchFn: ConnectionEffectFetch | undefined,
+  t0: number,
+  timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
+): Promise<ConnectionTestResult> {
+  const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
 
   switch (adapter.kind) {
     case 'anthropic':
     case 'claude-subscription':
       return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
-    case 'openai': {
-      const resolvedApiProtocol =
-        adapter.apiProtocol ??
-        apiProtocol ??
-        openAiAdapterApiProtocol(testModel, connection.providerType);
-      return resolvedApiProtocol === 'openai-responses'
+    case 'openai':
+      return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
-        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn);
-    }
+        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     case 'openai-codex':
+      return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     case 'openai-compatible':
-      return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn);
+      return wire === 'openai-responses'
+        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
+        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn, timeoutMs);
     case 'github-copilot':
       return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
@@ -287,6 +343,7 @@ async function probeOpenAI(
   model: string,
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
+  timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
   if (connection.providerType === 'openai-codex') {
     // Codex Subscription credentials are ChatGPT account-scoped OAuth
@@ -309,11 +366,49 @@ async function probeOpenAI(
       max_tokens: 16,
       messages: [{ role: 'user', content: 'Hi' }],
     }),
-    timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
+    timeoutMs,
   });
   if (!r.ok) return httpFailure(r, t0);
+  if (connection.providerType === 'opencode-free') {
+    const body = await r.readJson<unknown>();
+    if (!isOpenAIChatCompletion(body)) {
+      return {
+        ok: false,
+        errorMessage: 'OpenCode Free returned no valid chat completion',
+        errorClass: 'provider_unavailable',
+        latencyMs: Date.now() - t0,
+        modelTested: model,
+      };
+    }
+    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
+  }
   await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
+}
+
+function isOpenAIChatCompletion(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const choices = (value as { choices?: unknown }).choices;
+  return (
+    Array.isArray(choices) &&
+    choices.some((choice) => {
+      if (!choice || typeof choice !== 'object') return false;
+      const message = (choice as { message?: unknown }).message;
+      if (!message || typeof message !== 'object') return false;
+      const completion = message as {
+        content?: unknown;
+        reasoning?: unknown;
+        reasoning_content?: unknown;
+        tool_calls?: unknown;
+      };
+      return (
+        typeof completion.content === 'string' ||
+        typeof completion.reasoning === 'string' ||
+        typeof completion.reasoning_content === 'string' ||
+        (Array.isArray(completion.tool_calls) && completion.tool_calls.length > 0)
+      );
+    })
+  );
 }
 
 async function probeGoogle(

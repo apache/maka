@@ -22,6 +22,7 @@ deepseek.key
 
 # Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/
+apps/desktop/bundled-git.json
 
 # Generated desktop release inputs and outputs.
 apps/desktop/resources/tools/

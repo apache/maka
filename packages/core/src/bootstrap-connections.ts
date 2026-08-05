@@ -13,7 +13,15 @@
  * prior env-bootstrap precedence (Anthropic before OpenAI).
  */
 
-import type { ProviderType } from './llm-connections.js';
+import type { LlmConnection, ProviderType, UpdateConnectionInput } from './llm-connections.js';
+
+export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
+export const OPENCODE_FREE_LEGACY_DEFAULT_MODEL = 'big-pickle';
+export const OPENCODE_FREE_BOOTSTRAP_VERSION = 2;
+
+const OPENCODE_FREE_BOOTSTRAP_EXTRAS = {
+  makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
+} as const;
 
 export interface BootstrapConnectionSeed {
   readonly slug: string;
@@ -21,6 +29,7 @@ export interface BootstrapConnectionSeed {
   readonly providerType: ProviderType;
   readonly defaultModel: string;
   readonly isDefault: boolean;
+  readonly extras?: Record<string, unknown>;
 }
 
 export interface BootstrapEnv {
@@ -32,7 +41,8 @@ const OPENCODE_FREE_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   slug: 'opencode-free',
   name: 'OpenCode Free',
   providerType: 'opencode-free',
-  defaultModel: 'big-pickle',
+  defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
+  extras: OPENCODE_FREE_BOOTSTRAP_EXTRAS,
 };
 
 const ANTHROPIC_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
@@ -71,4 +81,34 @@ export function resolveBootstrapConnections(env: BootstrapEnv): readonly Bootstr
     seeds.push({ ...OPENAI_ENV_SEED, isDefault: true });
   }
   return seeds;
+}
+
+/**
+ * Migrate only the exact connection shape written by Maka's historical
+ * OpenCode Free bootstrap. Any user-visible customization makes ownership
+ * ambiguous and therefore fails closed.
+ */
+export function resolveOpenCodeFreeBootstrapMigration(
+  connection: LlmConnection,
+): UpdateConnectionInput | undefined {
+  if (
+    connection.slug !== 'opencode-free' ||
+    connection.name !== 'OpenCode Free' ||
+    connection.providerType !== 'opencode-free' ||
+    connection.baseUrl !== undefined ||
+    connection.defaultModel !== OPENCODE_FREE_LEGACY_DEFAULT_MODEL ||
+    connection.enabled !== true ||
+    connection.enabledModelIds?.length !== 1 ||
+    connection.enabledModelIds[0] !== OPENCODE_FREE_LEGACY_DEFAULT_MODEL ||
+    connection.models !== undefined ||
+    connection.extras !== undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
+    enabledModelIds: [OPENCODE_FREE_DEFAULT_MODEL],
+    extras: OPENCODE_FREE_BOOTSTRAP_EXTRAS,
+  };
 }

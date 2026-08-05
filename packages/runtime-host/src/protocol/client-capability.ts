@@ -66,6 +66,7 @@ export const CLIENT_CAPABILITY_MAX_RESULT_CHUNKS = Math.ceil(
 const CLIENT_CAPABILITY_INLINE_RESULT_MAX_BYTES = 40 * 1024;
 const CLIENT_CAPABILITY_JSON_MAX_DEPTH = 32;
 const CLIENT_CAPABILITY_JSON_MAX_NODES = 8_192;
+const CLIENT_CAPABILITY_TOOL_DESCRIPTION_MAX_CHARS = 8_192;
 const CLIENT_CAPABILITY_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -590,7 +591,11 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
     ...(record.description === undefined
       ? {}
       : {
-          description: requireString(record.description, 'description', 4_096),
+          description: requireString(
+            record.description,
+            'description',
+            CLIENT_CAPABILITY_TOOL_DESCRIPTION_MAX_CHARS,
+          ),
         }),
     inputSchema,
     ...(record.annotations === undefined
@@ -721,7 +726,16 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
     ) {
       visit(schema.additionalProperties);
     }
-    if (schema.items !== undefined) visit(schema.items);
+    if (schema.items !== undefined) {
+      if (Array.isArray(schema.items)) {
+        if (schema.items.length === 0) {
+          throw invalidProtocolFrame('Invalid Client Capability tool schema items');
+        }
+        for (const nested of schema.items) visit(nested);
+      } else {
+        visit(schema.items);
+      }
+    }
     for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
       if (schema[key] === undefined) continue;
       if (!Array.isArray(schema[key]) || schema[key].length === 0) {

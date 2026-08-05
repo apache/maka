@@ -39,7 +39,7 @@ import {
   Copy,
   Trash2,
 } from '@maka/ui/icons';
-import type { ArtifactKind, ArtifactRecord, UiLocale } from '@maka/core';
+import type { ArtifactDescriptor, ArtifactKind, UiLocale } from '@maka/core';
 import { formatRelativeTimestamp, generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core';
 import {
   Badge,
@@ -71,7 +71,7 @@ export function ArtifactPane(props: {
     title: copy.pane.empty,
     description: copy.pane.emptyHint,
   };
-  const [records, setRecords] = useState<ArtifactRecord[]>([]);
+  const [records, setRecords] = useState<ArtifactDescriptor[]>([]);
   const [recordsSessionId, setRecordsSessionId] = useState<string | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [listError, setListError] = useState<{
@@ -229,7 +229,7 @@ export function ArtifactPane(props: {
   async function openInFinder(artifactId: string) {
     const actionSessionId = sessionId;
     try {
-      const result = await window.maka.app.openArtifactPath(artifactId);
+      const result = await window.maka.app.openArtifactPath(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(copy.pane.openFailed, openPathFailureCopy(result.reason, locale));
@@ -248,7 +248,7 @@ export function ArtifactPane(props: {
     if (!record || !isTextKind(record.kind)) return;
     const actionSessionId = sessionId;
     try {
-      const result = await window.maka.artifacts.readText(artifactId);
+      const result = await window.maka.artifacts.readText(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(copy.pane.copyFailed, copy.pane.readTextFailed);
@@ -266,7 +266,7 @@ export function ArtifactPane(props: {
   async function saveAs(artifactId: string) {
     const actionSessionId = sessionId;
     try {
-      const result = await window.maka.app.saveArtifactAs(artifactId);
+      const result = await window.maka.app.saveArtifactAs(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (result.ok) {
         const record = activeRecords.find((entry) => entry.id === artifactId);
@@ -295,7 +295,7 @@ export function ArtifactPane(props: {
     if (!ok) return;
     if (!isArtifactActionSurfaceActive(actionSessionId)) return;
     try {
-      await window.maka.artifacts.delete(artifactId);
+      await window.maka.artifacts.delete(sessionId, artifactId);
       await refresh();
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       toast.success(copy.pane.deleted(name));
@@ -591,6 +591,6 @@ function KindIcon(props: { kind: ArtifactKind }) {
    the 7-day-then-absolute horizon, and the locale-switching
    formatter cache. Removed; we import the shared helper. */
 
-function preferredArtifactSelectionId(records: readonly ArtifactRecord[]): string | null {
+function preferredArtifactSelectionId(records: readonly ArtifactDescriptor[]): string | null {
   return (records.find((record) => record.status !== 'deleted') ?? records[0])?.id ?? null;
 }

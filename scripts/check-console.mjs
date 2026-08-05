@@ -43,6 +43,14 @@ const ALLOW = new Map([
     'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
   ],
   [
+    'apps/desktop/src/main/runtime-host-boot.ts',
+    'opt-in Runtime Host startup, reconnect projection, and bounded shutdown diagnostics; no credentials or provider payloads.',
+  ],
+  [
+    'apps/desktop/src/main/runtime-host-desktop-owner.ts',
+    'Runtime Host reconnect exhaustion is fatal before the Desktop can present an in-app error; no credentials or provider payloads.',
+  ],
+  [
     'apps/desktop/src/main/startup-step.ts',
     'names a startup step that has not come back, before any window exists to show it in; a step name and no secrets.',
   ],

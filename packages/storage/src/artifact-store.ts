@@ -124,6 +124,17 @@ export interface ArtifactSessionEntry {
   readonly record: ArtifactRecord | null;
 }
 
+export type ArtifactChunkReadResult =
+  | {
+      readonly ok: true;
+      readonly bytes: Uint8Array;
+      readonly offset: number;
+      readonly totalBytes: number;
+      readonly nextOffset: number | null;
+    }
+  | ArtifactReadFailure
+  | { readonly ok: false; readonly reason: 'out_of_range' };
+
 export interface ConversationArtifactCopyInput {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
@@ -194,6 +205,11 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     artifactId: string,
     opts?: { maxBytes?: number },
   ): Promise<ArtifactBinaryReadResult>;
+  readChunkInSession(
+    sessionId: string,
+    artifactId: string,
+    options: { offset: number; maxBytes: number },
+  ): Promise<ArtifactChunkReadResult>;
 }
 
 export interface ArtifactStoreWriteAuthority {
@@ -679,6 +695,29 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         opts.maxBytes ?? ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
       );
       return this.readPreparedBinary(prepared);
+    });
+  }
+
+  readChunkInSession(
+    sessionId: string,
+    artifactId: string,
+    options: { offset: number; maxBytes: number },
+  ): Promise<ArtifactChunkReadResult> {
+    return this.enqueue(async () => {
+      if (
+        !Number.isSafeInteger(options.offset) ||
+        options.offset < 0 ||
+        !Number.isSafeInteger(options.maxBytes) ||
+        options.maxBytes < 1
+      ) {
+        return { ok: false, reason: 'out_of_range' };
+      }
+      const prepared = await this.prepareReadInSessionUnlocked(
+        sessionId,
+        artifactId,
+        Number.MAX_SAFE_INTEGER,
+      );
+      return prepared.ok ? readPreparedChunk(prepared, options.offset, options.maxBytes) : prepared;
     });
   }
 
@@ -1466,6 +1505,41 @@ async function readPreparedBytes(
       return { ok: false, reason: total > prepared.maxBytes ? 'too_large' : 'read_failed' };
     }
     return { ok: true, bytes: bytes.subarray(0, total) };
+  } catch {
+    return { ok: false, reason: 'read_failed' };
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function readPreparedChunk(
+  prepared: PreparedArtifactRead,
+  offset: number,
+  maxBytes: number,
+): Promise<ArtifactChunkReadResult> {
+  let handle;
+  try {
+    handle = await openRealTarget(prepared.path);
+    const payloadStat = await handle.stat();
+    if (!payloadStat.isFile()) return { ok: false, reason: 'not_found' };
+    if (offset > payloadStat.size) return { ok: false, reason: 'out_of_range' };
+    const expected = Math.min(maxBytes, payloadStat.size - offset);
+    const bytes = Buffer.alloc(expected);
+    let total = 0;
+    while (total < expected) {
+      const read = await handle.read(bytes, total, expected - total, offset + total);
+      if (read.bytesRead === 0) break;
+      total += read.bytesRead;
+    }
+    if (total !== expected) return { ok: false, reason: 'read_failed' };
+    const nextOffset = offset + total;
+    return {
+      ok: true,
+      bytes,
+      offset,
+      totalBytes: payloadStat.size,
+      nextOffset: nextOffset < payloadStat.size ? nextOffset : null,
+    };
   } catch {
     return { ok: false, reason: 'read_failed' };
   } finally {

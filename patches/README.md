@@ -110,3 +110,13 @@ Two fixes, one behavioural and one opt-in prop, all in `dist/`:
 - `useChatNewMessages.js` exposes `reset()` (used above) and still resets `lastMessageRef`/`hasNewMessages` when a fresh content element is attached, covering hosts that swap the message container itself.
 
 **Delete it when** `@astryxdesign/core` ships a `hasNewMessages` reset on lock (or an equivalent "at bottom" notification), a public reset for the new-message baseline, and a way to re-lock the scroll on a conversation switch without remounting. Verify with the issue #2205 repro: scroll up, receive a message, scroll back down — the badge must clear; switch conversations with the badge active — the new conversation must start clean and its composer draft must survive the switch. Patches touch `dist/` and `dist/Chat/ChatLayout.d.ts` (the `conversationKey` prop type); `.map` files are left stale, so stack traces inside these hooks point at upstream `src/` lines.
+
+## `@astryxdesign/core`: `List` must render the accessible name its interface accepts
+
+Fixes [#2189](https://github.com/maka-agent/maka-agent/issues/2189). `ListProps` extends Astryx `BaseProps`, whose interface includes `aria-label`, but `List` 0.2.0 destructures a fixed prop set and never forwards that name to its root `<ul>` or `<ol>`. Six Maka lists pass localized accessible names that therefore disappear at runtime.
+
+The patch explicitly forwards `aria-label` to the root list. That is narrower than spreading every remaining `BaseProps` field through a vendored component, and it leaves the existing visible `header` / `aria-labelledby` path untouched. Replacing the six call sites with visible `header` props would add redundant headings and leave the advertised `List` interface broken.
+
+Only `dist/List/List.js` is patched because package exports resolve there and Maka does not compile Astryx `src/` or load its UMD bundle. The source and map remain upstream copies, so debugger locations inside these two lines do not describe the patched runtime exactly.
+
+**Delete it when `packages/ui/src/__tests__/astryx-list-accessible-name.test.tsx` passes without the patch.** Reinstall an unpatched `@astryxdesign/core` and run `npm --workspace @maka/ui test`; the guard renders the public `List` interface and asserts that its root carries the caller-provided accessible name.

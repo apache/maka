@@ -7,6 +7,7 @@ import {
   ARTIFACT_NAME_MAX_BYTES,
   ARTIFACT_PAGE_MAX_ITEMS,
   ARTIFACT_PREVIEW_MAX_BYTES,
+  ARTIFACT_READ_CHUNK_MAX_BYTES,
   ARTIFACT_RESULT_MAX_BYTES,
   ARTIFACT_SUMMARY_MAX_BYTES,
   decodeClientFrame,
@@ -46,6 +47,7 @@ describe('Artifact protocol', () => {
       { kind: 'get', sessionId: 'session-1', artifactId: 'artifact-1' },
       { kind: 'read_text', sessionId: 'session-1', artifactId: 'artifact-1' },
       { kind: 'read_binary', sessionId: 'session-1', artifactId: 'artifact-1' },
+      { kind: 'read_chunk', sessionId: 'session-1', artifactId: 'artifact-1', offset: 0 },
     ]) {
       assert.doesNotThrow(() => request('artifact.query', input));
     }
@@ -64,6 +66,47 @@ describe('Artifact protocol', () => {
     }
     assert.throws(
       () => request('artifact.delete', { sessionId: 'session-1', artifactId: 'a', purge: true }),
+      isInvalidFrame,
+    );
+  });
+
+  test('bounds sequential Artifact read chunks below the frame limit', () => {
+    const bytes = Buffer.alloc(ARTIFACT_READ_CHUNK_MAX_BYTES, 9);
+    assert.doesNotThrow(() =>
+      response('artifact.query', {
+        kind: 'chunk',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+        offset: 0,
+        totalBytes: bytes.byteLength + 1,
+        chunkBase64: bytes.toString('base64'),
+        nextOffset: bytes.byteLength,
+      }),
+    );
+    assert.throws(
+      () =>
+        response('artifact.query', {
+          kind: 'chunk',
+          sessionId: 'session-1',
+          artifactId: 'artifact-1',
+          offset: 0,
+          totalBytes: bytes.byteLength + 1,
+          chunkBase64: Buffer.alloc(bytes.byteLength + 1).toString('base64'),
+          nextOffset: bytes.byteLength + 1,
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        response('artifact.query', {
+          kind: 'chunk',
+          sessionId: 'session-1',
+          artifactId: 'artifact-1',
+          offset: 0,
+          totalBytes: 10,
+          chunkBase64: Buffer.from('abc').toString('base64'),
+          nextOffset: 4,
+        }),
       isInvalidFrame,
     );
   });

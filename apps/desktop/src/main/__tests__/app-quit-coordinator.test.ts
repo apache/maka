@@ -23,6 +23,36 @@ describe('app quit coordinator', () => {
     assert.equal(coordinator.getWindowCreationSignal(), windowCreationSignal);
   });
 
+  it('keeps quit prevented until it resumes in a fresh event-loop turn', async () => {
+    let resumeQuitCount = 0;
+    let preventedCount = 0;
+    const coordinator = createAppQuitCoordinator({
+      cleanup: async () => {},
+      focusOrCreateWindow: () => {},
+      onCleanupError: () => {},
+      resumeQuit: () => {
+        resumeQuitCount += 1;
+      },
+    });
+
+    const event = {
+      preventDefault: () => {
+        preventedCount += 1;
+      },
+    };
+    coordinator.handleBeforeQuit(event);
+    await Promise.resolve();
+    await Promise.resolve();
+    coordinator.handleBeforeQuit(event);
+
+    assert.equal(resumeQuitCount, 0);
+    assert.equal(preventedCount, 2);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(resumeQuitCount, 1);
+  });
+
   it('runs async cleanup once and resumes quitting when it settles', async () => {
     let cleanupCount = 0;
     let focusOrCreateCount = 0;
@@ -60,6 +90,7 @@ describe('app quit coordinator', () => {
     releaseCleanup();
     await cleanupPending;
     await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.equal(resumeQuitCount, 1);
 
@@ -114,6 +145,7 @@ describe('app quit coordinator', () => {
     const coordinator = createAppQuitCoordinator(deps);
 
     coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    await Promise.resolve();
     await new Promise<void>((resolve) => setImmediate(resolve));
     let secondQuitPrevented = false;
     coordinator.focusOrCreateWindow();

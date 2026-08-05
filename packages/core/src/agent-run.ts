@@ -49,7 +49,11 @@ export type AgentRunContinuationSource =
   | AgentRunContinuationSourceV2;
 
 export type RootExecutionDescriptor =
-  | { kind: 'external_message'; inputDigest?: `sha256:${string}` }
+  | {
+      kind: 'external_message';
+      inputDigest?: `sha256:${string}`;
+      ephemeralInput?: 'voice';
+    }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
   | { kind: 'automation'; automationId: string }

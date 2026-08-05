@@ -159,11 +159,6 @@ type ShellCopy = {
       'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed' | 'unknown',
       string
     >;
-    branchListFailedTitle: string;
-    branchListFallback: string;
-    branchCheckoutFailedTitle: string;
-    branchCheckoutFallback(branch: string): string;
-    branchCheckoutSuccessTitle: string;
   };
   commandActions: {
     connectionVerified(name: string): string;
@@ -701,11 +696,6 @@ const SHELL_COPY_BY_LOCALE = {
         'open-failed': '系统没有打开该目录。',
         unknown: '无法打开目录。',
       },
-      branchListFailedTitle: '读取分支列表失败',
-      branchListFallback: '无法读取本地分支，请稍后重试。',
-      branchCheckoutFailedTitle: '切换分支失败',
-      branchCheckoutFallback: (branch: string) => `无法切换到分支 ${branch}。`,
-      branchCheckoutSuccessTitle: '已切换分支',
     },
     commandActions: {
       connectionVerified: (name: string) => `连接已验证 · ${name}`,
@@ -1166,11 +1156,6 @@ const SHELL_COPY_BY_LOCALE = {
         'open-failed': 'The system could not open the folder.',
         unknown: 'The folder could not be opened.',
       },
-      branchListFailedTitle: 'Could not read branches',
-      branchListFallback: 'Local branches could not be read. Try again later.',
-      branchCheckoutFailedTitle: 'Could not switch branch',
-      branchCheckoutFallback: (branch: string) => `Could not switch to branch ${branch}.`,
-      branchCheckoutSuccessTitle: 'Branch switched',
     },
     commandActions: {
       connectionVerified: (name: string) => `Connection verified · ${name}`,

@@ -20,6 +20,7 @@ import { defineOperation } from './operation-spec.js';
 export const ARTIFACT_PAGE_MAX_ITEMS = 128;
 export const ARTIFACT_RESULT_MAX_BYTES = 48 * 1024;
 export const ARTIFACT_PREVIEW_MAX_BYTES = 32 * 1024;
+export const ARTIFACT_READ_CHUNK_MAX_BYTES = 32 * 1024;
 export const ARTIFACT_CURSOR_MAX_BYTES = 32;
 export const ARTIFACT_NAME_MAX_BYTES = 512;
 export const ARTIFACT_MIME_TYPE_MAX_BYTES = 512;
@@ -75,7 +76,13 @@ export type ArtifactQueryInput =
     }
   | { readonly kind: 'get'; readonly sessionId: string; readonly artifactId: string }
   | { readonly kind: 'read_text'; readonly sessionId: string; readonly artifactId: string }
-  | { readonly kind: 'read_binary'; readonly sessionId: string; readonly artifactId: string };
+  | { readonly kind: 'read_binary'; readonly sessionId: string; readonly artifactId: string }
+  | {
+      readonly kind: 'read_chunk';
+      readonly sessionId: string;
+      readonly artifactId: string;
+      readonly offset: number;
+    };
 
 export type ArtifactTextPreview =
   | { readonly ok: true; readonly text: string }
@@ -114,6 +121,15 @@ export type ArtifactQueryResult =
       readonly sessionId: string;
       readonly artifactId: string;
       readonly preview: ArtifactBinaryPreview;
+    }
+  | {
+      readonly kind: 'chunk';
+      readonly sessionId: string;
+      readonly artifactId: string;
+      readonly offset: number;
+      readonly totalBytes: number;
+      readonly chunkBase64: string;
+      readonly nextOffset: number | null;
     };
 
 export interface ArtifactDeleteInput {
@@ -360,6 +376,20 @@ export function decodeArtifactQueryInput(value: unknown): ArtifactQueryInput {
       artifactId: artifactEntityId(exact.artifactId, 'artifactId'),
     };
   }
+  if (input.kind === 'read_chunk') {
+    const exact = requireExactRecord(input, 'artifact chunk query input', [
+      'kind',
+      'sessionId',
+      'artifactId',
+      'offset',
+    ]);
+    return {
+      kind: 'read_chunk',
+      sessionId: artifactEntityId(exact.sessionId, 'sessionId'),
+      artifactId: artifactEntityId(exact.artifactId, 'artifactId'),
+      offset: requireCount(exact.offset, 'artifact chunk offset'),
+    };
+  }
   throw invalidProtocolFrame('Invalid artifact query kind');
 }
 
@@ -444,6 +474,51 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
       sessionId: artifactEntityId(exact.sessionId, 'sessionId'),
       artifactId: artifactEntityId(exact.artifactId, 'artifactId'),
       preview: decodeBinaryPreview(exact.preview),
+    };
+  } else if (result.kind === 'chunk') {
+    const exact = requireExactRecord(result, 'artifact chunk result', [
+      'kind',
+      'sessionId',
+      'artifactId',
+      'offset',
+      'totalBytes',
+      'chunkBase64',
+      'nextOffset',
+    ]);
+    const offset = requireCount(exact.offset, 'artifact chunk offset');
+    const totalBytes = requireCount(exact.totalBytes, 'artifact chunk total bytes');
+    const chunkBase64 = boundedText(
+      exact.chunkBase64,
+      'artifact chunk',
+      Math.ceil((ARTIFACT_READ_CHUNK_MAX_BYTES * 4) / 3) + 4,
+      true,
+    );
+    if (!isCanonicalBase64(chunkBase64)) {
+      throw invalidProtocolFrame('Invalid artifact chunk');
+    }
+    const chunkBytes = Buffer.from(chunkBase64, 'base64').byteLength;
+    if (chunkBytes > ARTIFACT_READ_CHUNK_MAX_BYTES || offset + chunkBytes > totalBytes) {
+      throw invalidProtocolFrame('Invalid artifact chunk bounds');
+    }
+    const nextOffset =
+      exact.nextOffset === null
+        ? null
+        : requireCount(exact.nextOffset, 'artifact chunk next offset');
+    if (
+      (nextOffset === null && offset + chunkBytes !== totalBytes) ||
+      (nextOffset !== null &&
+        (chunkBytes === 0 || nextOffset !== offset + chunkBytes || nextOffset >= totalBytes))
+    ) {
+      throw invalidProtocolFrame('Invalid artifact chunk continuation');
+    }
+    decoded = {
+      kind: 'chunk',
+      sessionId: artifactEntityId(exact.sessionId, 'sessionId'),
+      artifactId: artifactEntityId(exact.artifactId, 'artifactId'),
+      offset,
+      totalBytes,
+      chunkBase64,
+      nextOffset,
     };
   } else {
     throw invalidProtocolFrame('Invalid artifact query result kind');

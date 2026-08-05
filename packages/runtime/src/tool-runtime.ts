@@ -847,7 +847,6 @@ export class ToolRuntime {
     const now = this.input.now();
     const toolIntent = describeToolIntent(tool, persistedArgs);
     const trace = this.input.getRunTrace?.() ?? null;
-
     const runId = this.input.runId;
     const invocationId = this.input.invocationId ?? runId;
     if (this.input.runtimeCommitSink && !runId) {
@@ -856,13 +855,56 @@ export class ToolRuntime {
         new Error('Durable tool execution requires a run id'),
       );
     }
-    // Exclusive-step rejection is preflight: it must remain on the generic
-    // call/response lane instead of claiming the T1 dispatch protocol. If the
-    // call carried an operationId here, AgentRun would (correctly) skip its
-    // generic projection assuming commitToolPrepared already persisted it;
-    // the synthetic response would then become an orphan.
+    const callSignature = `${tool.name} ${loopGateArgsKey(executionArgs, toolUseId)}`;
+    const computerSemanticSignature =
+      tool.categoryHint === 'computer_use'
+        ? computerUseSemanticSignature(permissionArgs)
+        : undefined;
+    const repeatedAmbiguousComputerTarget =
+      computerSemanticSignature !== undefined &&
+      computerSemanticSignature === this.lastAmbiguousComputerSignature;
+    const repeatedFailedCall =
+      callSignature === this.lastFailedToolCallSignature &&
+      this.failedToolCallStreak >= LOOP_GATE_IDENTICAL_THRESHOLD - 1;
+    const deferredToolNotLoaded =
+      this.gating !== undefined &&
+      this.gating.gatedNames.has(tool.name) &&
+      !this.gating.activeNames().has(tool.name);
+    const rejectedBeforeClientBoundary =
+      admissionFailure !== undefined ||
+      permissionArgsError !== undefined ||
+      repeatedAmbiguousComputerTarget ||
+      repeatedFailedCall ||
+      deferredToolNotLoaded;
+    let clientCapabilityBoundary: ExecutionBoundary | undefined;
+    let clientCapabilityBoundaryReadFailed = false;
+    let clientCapabilityBoundaryReadError: unknown;
+    if (!rejectedBeforeClientBoundary && tool.categoryHint === 'client_capability') {
+      try {
+        clientCapabilityBoundary = await this.readExecutionBoundary();
+      } catch (error) {
+        clientCapabilityBoundaryReadFailed = true;
+        clientCapabilityBoundaryReadError = error;
+      }
+    }
+    const clientCapabilityBoundaryRejected =
+      clientCapabilityBoundaryReadFailed ||
+      (tool.categoryHint === 'client_capability' && clientCapabilityBoundary?.kind !== 'bypass');
+    const rejectedBeforeSubagentAdmission =
+      rejectedBeforeClientBoundary || clientCapabilityBoundaryRejected;
+    // Slot admission is part of preflight too. Reserve it before assigning a
+    // durable operation id so a saturated subagent call stays on the generic
+    // call/response lane just like every other pre-dispatch rejection.
+    const reservedSubagentSlot = !rejectedBeforeSubagentAdmission && this.reserveSubagentSlot(tool);
+    const preflightRejected = rejectedBeforeSubagentAdmission || !reservedSubagentSlot;
+
+    // Preflight rejection must remain on the generic call/response lane instead
+    // of claiming the T1 dispatch protocol. If the call carried an operationId
+    // here, AgentRun would (correctly) skip its generic projection assuming
+    // commitToolPrepared already persisted it; the synthetic response would
+    // then become an orphan.
     const operationId =
-      this.input.runtimeCommitSink && invocationId && !admissionFailure
+      this.input.runtimeCommitSink && invocationId && !preflightRejected
         ? buildToolOperationId({ invocationId, providerToolCallId: toolUseId })
         : undefined;
     const startEv: ToolStartEvent = {
@@ -899,14 +941,18 @@ export class ToolRuntime {
       // timeline and post-restart backfill can pair this call with its step.
       ...(stepId !== undefined ? { stepId } : {}),
     };
-    await this.input.appendMessage(callMsg);
-    queue.push(startEv);
-    trace?.emit('tool', 'tool_started', 'Tool execution started', {
-      toolUseId,
-      toolName: tool.name,
-      ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-    });
-    const callSignature = `${tool.name} ${loopGateArgsKey(executionArgs, toolUseId)}`;
+    try {
+      await this.input.appendMessage(callMsg);
+      queue.push(startEv);
+      trace?.emit('tool', 'tool_started', 'Tool execution started', {
+        toolUseId,
+        toolName: tool.name,
+        ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
+      });
+    } catch (error) {
+      if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
+      throw error;
+    }
     if (admissionFailure) {
       await this.writeSyntheticToolResult(toolUseId, turnId, admissionFailure, queue);
       trace?.emit('tool', 'tool_failed', 'Tool rejected by exclusive-step admission', {
@@ -919,10 +965,6 @@ export class ToolRuntime {
       this.recordLoopGateOutcome(callSignature, true);
       return this.errorReturn(admissionFailure);
     }
-    const computerSemanticSignature =
-      tool.categoryHint === 'computer_use'
-        ? computerUseSemanticSignature(permissionArgs)
-        : undefined;
     if (permissionArgsError !== undefined) {
       // Computer Use keeps its own formatter: the generic one relays whatever
       // the error carries, and these arguments can hold typed text. The
@@ -997,10 +1039,7 @@ export class ToolRuntime {
     // so polling and iterate-then-retry are never gated. Recoverable: the model
     // is told to change its approach. The block itself records no outcome, so the
     // streak stays parked and every further identical repeat stays blocked.
-    if (
-      computerSemanticSignature &&
-      computerSemanticSignature === this.lastAmbiguousComputerSignature
-    ) {
+    if (repeatedAmbiguousComputerTarget) {
       const reason = formatAmbiguousComputerLoopGateText();
       await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
       trace?.emit('tool', 'tool_failed', 'Blocked repeated ambiguous Computer Use target', {
@@ -1018,10 +1057,7 @@ export class ToolRuntime {
     ) {
       this.lastAmbiguousComputerSignature = undefined;
     }
-    if (
-      callSignature === this.lastFailedToolCallSignature &&
-      this.failedToolCallStreak >= LOOP_GATE_IDENTICAL_THRESHOLD - 1
-    ) {
+    if (repeatedFailedCall) {
       const reason = formatLoopGateText(tool.name);
       await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
       trace?.emit('tool', 'tool_failed', 'Loop-gate blocked a repeated identical failing call', {
@@ -1040,11 +1076,7 @@ export class ToolRuntime {
     // before permission eval and before the real impl. This also closes the AI
     // SDK `activeTools` leak (vercel/ai#8653). The rejection is recoverable: the
     // model loads via `load_tools`, then retries next step.
-    if (
-      this.gating &&
-      this.gating.gatedNames.has(tool.name) &&
-      !this.gating.activeNames().has(tool.name)
-    ) {
+    if (deferredToolNotLoaded) {
       const reason = formatDeferredNotLoadedText(tool.name);
       await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
       trace?.emit('tool', 'tool_failed', 'Deferred tool used before load', {
@@ -1057,12 +1089,9 @@ export class ToolRuntime {
       return this.errorReturn(reason);
     }
 
-    let clientCapabilityBoundary: ExecutionBoundary | undefined;
     if (tool.categoryHint === 'client_capability') {
-      try {
-        clientCapabilityBoundary = await this.readExecutionBoundary();
-      } catch (error) {
-        const reason = formatSyntheticToolErrorText(error);
+      if (clientCapabilityBoundaryReadFailed) {
+        const reason = formatSyntheticToolErrorText(clientCapabilityBoundaryReadError);
         await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
         trace?.emit('tool', 'tool_failed', 'Client Capability boundary read failed', {
           toolUseId,
@@ -1073,7 +1102,7 @@ export class ToolRuntime {
         this.recordLoopGateOutcome(callSignature, true);
         return this.errorReturn(reason);
       }
-      if (clientCapabilityBoundary.kind !== 'bypass') {
+      if (clientCapabilityBoundary?.kind !== 'bypass') {
         await this.writeSyntheticToolResult(
           toolUseId,
           turnId,
@@ -1091,7 +1120,6 @@ export class ToolRuntime {
       }
     }
 
-    const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
       trace?.emit('tool', 'tool_failed', 'Tool execution rejected by runtime limit', {
         toolUseId,

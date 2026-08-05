@@ -1,6 +1,19 @@
 import type { ComponentProps, Ref } from 'react';
 import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
+import {
+  readNewTaskReloadIntent,
+  writeNewTaskReloadDraft,
+} from './new-task-reload-intent';
+
+const newTaskDraftPersistence = {
+  read(key: string | undefined): string | undefined {
+    return key === 'new-session' ? readNewTaskReloadIntent()?.draft : undefined;
+  },
+  write(key: string | undefined, value: string): void {
+    if (key === 'new-session') writeNewTaskReloadDraft(value);
+  },
+};
 
 /**
  * #1629: what the composer's slot shows when the active session's boundary
@@ -108,6 +121,7 @@ export function ChatComposerRegion({
         {...composerRest}
         hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
         draftKey={activeId ?? 'new-session'}
+        draftPersistence={newTaskDraftPersistence}
         stopPending={activeId ? stopPendingBySession[activeId] === true : false}
       />
     </>

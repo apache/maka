@@ -4,6 +4,7 @@ export const VOICE_MAX_AUDIO_BYTES = 16 * 1024 * 1024;
 export const VOICE_MAX_SAMPLE_RATE = 48_000;
 export const VOICE_MAX_CHANNELS = 1;
 export const VOICE_TTS_MAX_TEXT_CHARS = 4_000;
+export const VOICE_INPUT_MARKER = '[Voice input]';
 
 const CONTROL_CHARS_REGEX = /[\u0000-\u001F\u007F-\u009F]/g;
 const WHITESPACE_REGEX = /\s+/g;

@@ -14,6 +14,7 @@ import {
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import { bundledGitEnvironment } from './dugite-native-environment.js';
 import { registerManagedBaselineReceiptAuthorityInternal } from './managed-baseline-receipt-authority-internal.js';
 
 const execFileAsync = promisify(execFile);
@@ -140,10 +141,26 @@ export class GitWorkspaceServiceError extends Error {
   }
 }
 
-export interface VerifiedGitRuntimeInput {
+interface GitRuntimeExecutableIdentity {
   readonly executablePath: string;
   readonly expectedSha256: `sha256:${string}`;
 }
+
+export type VerifiedGitRuntimeInput = GitRuntimeExecutableIdentity &
+  (
+    | {
+        readonly distribution?: undefined;
+        readonly runtimeIdentitySha256?: undefined;
+      }
+    | {
+        readonly distribution: {
+          readonly kind: 'dugite_native_v1';
+          readonly rootPath: string;
+        };
+        /** Stable identity of the complete declared distribution. */
+        readonly runtimeIdentitySha256: `sha256:${string}`;
+      }
+  );
 
 export interface CreateGitWorkspaceServiceInput {
   readonly storageRoot: string;
@@ -1236,8 +1253,10 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       ['core.autocrlf', 'false'],
       ['core.safecrlf', 'true'],
       ['core.hooksPath', normalize(hooksPath)],
+      ['core.sshCommand', ''],
       ['credential.helper', ''],
       ['credential.interactive', 'never'],
+      ['protocol.allow', 'never'],
       ['gc.auto', '0'],
     ];
     for (const [key, value] of entries) {
@@ -1591,11 +1610,31 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
 
 class VerifiedGitRuntime {
   constructor(private readonly input: VerifiedGitRuntimeInput) {
-    if (!isAbsolute(input.executablePath) || !SHA256_PATTERN.test(input.expectedSha256)) {
+    if (
+      !isAbsolute(input.executablePath) ||
+      !SHA256_PATTERN.test(input.expectedSha256) ||
+      (input.distribution !== undefined && !SHA256_PATTERN.test(input.runtimeIdentitySha256 ?? ''))
+    ) {
       throw new GitWorkspaceServiceError(
         'git_runtime_unavailable',
         'Managed workspace requires an absolute Git executable and SHA-256 digest',
       );
+    }
+    if (input.distribution) {
+      const rootPath = input.distribution.rootPath;
+      const executableRelativePath = relative(rootPath, input.executablePath);
+      if (
+        !isAbsolute(rootPath) ||
+        executableRelativePath === '' ||
+        executableRelativePath === '..' ||
+        executableRelativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) ||
+        isAbsolute(executableRelativePath)
+      ) {
+        throw new GitWorkspaceServiceError(
+          'git_runtime_unavailable',
+          'Bundled Git executable must belong to its declared distribution root',
+        );
+      }
     }
   }
 
@@ -1615,17 +1654,16 @@ class VerifiedGitRuntime {
       await mkdir(homePath, { recursive: true });
       await mkdir(hooksPath, { recursive: true });
     }
-    const env = isolatedGitEnvironment(
-      runtime.executablePath,
-      homePath ?? dirname(runtime.executablePath),
-    );
+    const env = isolatedGitEnvironment(this.input, homePath ?? dirname(runtime.executablePath));
     try {
       const { stdout } = await execFileAsync(
         runtime.executablePath,
         [...fixedGitArguments(hooksPath), ...args],
         {
           cwd: homePath ?? dirname(runtime.executablePath),
-          env: { ...env, ...extraEnv },
+          // Operation-scoped values (currently only deterministic commit
+          // identity) cannot override the hermetic Git execution profile.
+          env: { ...extraEnv, ...env },
           encoding: 'utf8',
           maxBuffer: GIT_MAX_BUFFER_BYTES,
           timeout: GIT_TIMEOUT_MS,
@@ -1650,16 +1688,13 @@ class VerifiedGitRuntime {
       await mkdir(homePath, { recursive: true });
       await mkdir(hooksPath, { recursive: true });
     }
-    const env = isolatedGitEnvironment(
-      runtime.executablePath,
-      homePath ?? dirname(runtime.executablePath),
-    );
+    const env = isolatedGitEnvironment(this.input, homePath ?? dirname(runtime.executablePath));
     const { stdout } = await execFileAsync(
       runtime.executablePath,
       [...fixedGitArguments(hooksPath), ...args],
       {
         cwd: homePath ?? dirname(runtime.executablePath),
-        env: { ...env, ...extraEnv },
+        env: { ...extraEnv, ...env },
         encoding: 'buffer',
         maxBuffer: GIT_MAX_BUFFER_BYTES,
         timeout: GIT_TIMEOUT_MS,
@@ -1696,7 +1731,7 @@ class VerifiedGitRuntime {
       [...fixed, '-C', sourceRoot, 'pack-objects', '--stdout', '--revs'],
       {
         cwd: homePath,
-        env: isolatedGitEnvironment(packRuntime.executablePath, homePath),
+        env: isolatedGitEnvironment(this.input, homePath),
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },
@@ -1717,7 +1752,7 @@ class VerifiedGitRuntime {
       [...fixed, '--git-dir', repositoryPath, 'index-pack', '--stdin', '--fix-thin'],
       {
         cwd: homePath,
-        env: isolatedGitEnvironment(indexRuntime.executablePath, homePath),
+        env: isolatedGitEnvironment(this.input, homePath),
         stdio: ['pipe', 'ignore', 'pipe'],
         windowsHide: true,
       },
@@ -1766,14 +1801,17 @@ class VerifiedGitRuntime {
       const executablePath = normalize(await realpath(this.input.executablePath));
       const info = await stat(executablePath);
       if (!info.isFile()) throw new Error('not a regular file');
-      const digest = await sha256File(executablePath);
-      if (digest !== this.input.expectedSha256) {
+      const executableDigest = await sha256File(executablePath);
+      if (executableDigest !== this.input.expectedSha256) {
         throw new GitWorkspaceServiceError(
           'git_runtime_integrity_mismatch',
-          `Git runtime digest mismatch: ${executablePath}`,
+          `Git executable digest mismatch: ${executablePath}`,
         );
       }
-      return { executablePath, digest };
+      return {
+        executablePath,
+        digest: this.input.runtimeIdentitySha256 ?? executableDigest,
+      };
     } catch (error) {
       if (error instanceof GitWorkspaceServiceError) throw error;
       throw new GitWorkspaceServiceError(
@@ -2783,7 +2821,11 @@ function isOwnedBaselineCommit(raw: string): boolean {
   );
 }
 
-function isolatedGitEnvironment(executablePath: string, homePath: string): NodeJS.ProcessEnv {
+function isolatedGitEnvironment(
+  input: VerifiedGitRuntimeInput,
+  homePath: string,
+): NodeJS.ProcessEnv {
+  const executablePath = input.executablePath;
   const env: NodeJS.ProcessEnv = {
     HOME: homePath,
     XDG_CONFIG_HOME: join(homePath, 'xdg'),
@@ -2797,6 +2839,17 @@ function isolatedGitEnvironment(executablePath: string, homePath: string): NodeJ
     LC_ALL: 'C',
     PATH: dirname(executablePath),
   };
+  if (input.distribution?.kind === 'dugite_native_v1') {
+    Object.assign(
+      env,
+      bundledGitEnvironment({
+        platform: process.platform,
+        arch: process.arch,
+        rootPath: input.distribution.rootPath,
+        executablePath,
+      }),
+    );
+  }
   for (const name of ['SystemRoot', 'WINDIR', 'COMSPEC', 'TMP', 'TEMP', 'TMPDIR']) {
     if (process.env[name]) env[name] = process.env[name];
   }
@@ -2820,6 +2873,10 @@ function fixedGitArguments(hooksPath: string): string[] {
     'credential.helper=',
     '-c',
     'credential.interactive=never',
+    '-c',
+    'core.sshCommand=',
+    '-c',
+    'protocol.allow=never',
     '-c',
     'gc.auto=0',
     '-c',

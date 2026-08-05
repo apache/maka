@@ -42,7 +42,9 @@
   min-height: 0;
 }
 
-.maka-quote-companion .maka-prompt-rail {
+/* The anchor, not just the rail inside it: hiding the sticky box outright
+   keeps a zero-height sticky element out of the narrow panel's flow. */
+.maka-quote-companion .maka-prompt-rail-anchor {
   display: none;
 }
 

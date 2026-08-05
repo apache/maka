@@ -92,6 +92,10 @@ export type AutomationOperationKey = Extract<OperationKey, `automation.${string}
 export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
 export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
 export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${string}`>;
+export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`>;
+export type NetworkProxyOperationKey = Extract<OperationKey, `network-proxy.${string}`>;
+export type ConfigurationOperationKey = Extract<OperationKey, `configuration.${string}`>;
+export type VoiceOperationKey = Extract<OperationKey, `voice.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -143,6 +147,10 @@ export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, Automation
 export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
 export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
+export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
+export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
+export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
+export type VoiceOperationHandlerMap = Pick<OperationHandlerMap, VoiceOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

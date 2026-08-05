@@ -1,27 +1,97 @@
 /* Codex-style prompt navigation rail: one tick per user prompt, pinned to the
-   right edge of the chat scroll shell. Low-key by default, brightens on hover;
+   right edge of the chat scrollport. Low-key by default, brightens on hover;
    each tick jumps to that prompt and the active turn's tick stays highlighted.
    The tick bar draws in `currentColor` so active/hover just shift the neutral
-   text color (muted -> primary) — no brand rail, no hover-surface background. */
+   text color (muted -> primary) — no brand rail, no hover-surface background.
+   The hover preview is Astryx's HoverCard; only the two lines inside it are
+   styled here. */
+
+/* Astryx's ChatLayout is the scroll container and the transcript — chat shell
+   and all — renders inside it, so `position: absolute` resolves against a box
+   as tall as the whole conversation: the rail used to be laid out across
+   ~32000px and scroll away with the content instead of staying on screen.
+
+   This zero-height sticky anchor is what pins it. It costs no flow space and
+   holds the scrollport's top edge at every scroll position — the same sticky
+   mechanism Astryx uses for the composer dock. It only works from the anchor's
+   own static position onward, so ChatView renders it as the first child of
+   `.maka-chat-shell`.
+
+   `top: 0` rather than the centreline, deliberately: a sticky offset is
+   clamped by its containing block, and this one's is the chat shell, which
+   ends where the transcript does — above the scrollport's bottom edge, since
+   the dock's own box follows it in flow. An anchor parked mid-scrollport
+   therefore gets dragged upward as the reader reaches the end of a
+   conversation, taking the rail off the top of the scrollport with it (CI
+   caught -62px at a 500px window). Pinned to the top edge the clamp cannot
+   engage while any transcript is on screen, and the rail does its own
+   centring from the measured band below.
+
+   `--maka-prompt-rail-scrollport` / `--maka-prompt-rail-dock` are measured in
+   prompt-anchor-rail.tsx; see the rail's own rule for what they buy. */
+.maka-prompt-rail-anchor {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: var(--z-panel-action);
+  /* The anchor spans the full chat column; only the rail inside it is a
+     target, or it would swallow clicks across the transcript. */
+  pointer-events: none;
+}
+
 .maka-prompt-rail {
   position: absolute;
-  top: var(--space-8);
-  bottom: var(--space-8);
   right: var(--space-1);
-  z-index: var(--z-panel-action);
+  /* The scrollport's lower band belongs to the sticky composer dock, so the
+     rail centres on — and is capped to — what is left above it. Centring on
+     the bare scrollport ran the lower ticks under the dock (122px of overlap
+     at 1240x617), over the frosted blur and the composer card.
+
+     Measured from the anchor's top edge, which is the scrollport's, so this is
+     an absolute position rather than an offset from a centreline that sticky
+     clamping can move. The fallbacks are the pre-measurement first paint: no
+     dock inset, and the window standing in for the scrollport. */
+  top: calc((var(--maka-prompt-rail-scrollport, 100svh) - var(--maka-prompt-rail-dock, 0px)) / 2);
+  /* The -50% is the centring; the X offset is motion. The rail rests
+     tucked a few px toward the window edge and settles inward when the
+     pointer arrives, so reaching for it is met halfway. */
+  transform: translateY(-50%) translateX(3px);
+  max-height: calc(
+    var(--maka-prompt-rail-scrollport, 100svh) - var(--maka-prompt-rail-dock, 0px) - (2 * var(--space-2))
+  );
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  justify-content: center;
+  /* `safe` so the max-height above can never strand the first ticks past an
+     unscrollable overflow edge, which plain centring does. */
+  justify-content: safe center;
   gap: var(--space-1);
   padding: var(--space-1);
+  pointer-events: auto;
   opacity: var(--opacity-muted);
-  transition: opacity var(--duration-base) var(--ease-out-strong);
+  transition:
+    opacity var(--duration-base) var(--ease-out-strong),
+    transform var(--duration-emphasized) var(--ease-out-strong);
   -webkit-app-region: no-drag;
 }
 
 .maka-prompt-rail:hover {
   opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* Ticks arrive rather than appear: a new prompt's tick slides in from the edge,
+   and a whole transcript (session switch, remount) cascades top to bottom.
+   `--maka-prompt-rail-index` is set per tick in prompt-anchor-rail.tsx.
+   `backwards` holds the from-state through the stagger delay so a late tick
+   does not flash into place before its turn. */
+@keyframes maka-prompt-rail-tick-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--space-2));
+  }
 }
 
 .maka-prompt-rail-tick {
@@ -36,6 +106,10 @@
   justify-content: flex-end;
   position: relative;
   transition: color var(--duration-base) var(--ease-out-strong);
+  animation: maka-prompt-rail-tick-in var(--duration-large) var(--ease-out-strong) backwards;
+  /* Capped, so a 90-prompt conversation cascades in a third of a second rather
+     than nearly two: past the cap the tail arrives together. */
+  animation-delay: calc(min(var(--maka-prompt-rail-index, 0), 20) * 18ms);
 }
 
 .maka-prompt-rail-tick:hover,
@@ -43,52 +117,75 @@
   color: var(--foreground);
 }
 
-.maka-prompt-rail-tick::after {
-  content: "";
-  width: 14px;
+/* Dock-style falloff. `--maka-prompt-rail-proximity` counts ticks away from the
+   pointer (0 = hovered) and rests at the falloff distance, so the whole ramp is
+   one expression and the resting width is its own tail. */
+.maka-prompt-rail-tick-bar {
+  width: calc(14px + ((3 - var(--maka-prompt-rail-proximity, 3)) * 3px));
   height: 3px;
   border-radius: var(--radius-pill);
   background: currentColor;
-  transition: width var(--duration-base) var(--ease-out-strong);
+  transition: width var(--duration-emphasized) var(--ease-out-strong);
 }
 
-.maka-prompt-rail-tick:hover::after {
-  width: 20px;
+/* The travelling highlight for the prompt currently being read. Anchor
+   positioning is Astryx's own idiom for a sliding indicator (see its Outline):
+   the active tick's bar publishes an anchor name, the highlight reads its
+   position, and the transition on `top` is what makes it glide between prompts
+   as the transcript scrolls. Sized past the widest tick so it always reads as
+   the longer bar. */
+.maka-prompt-rail-tick[data-active="true"] .maka-prompt-rail-tick-bar {
+  anchor-name: --maka-prompt-rail-active;
+  /* The highlight is drawn over this bar, so hide the bar rather than
+     double-print it. Fading rather than hiding also gives the prompt being
+     left something to do while the highlight travels away from it. */
+  opacity: 0;
+  transition:
+    width var(--duration-emphasized) var(--ease-out-strong),
+    opacity var(--duration-base) var(--ease-out-strong);
 }
 
-.maka-prompt-rail-tick[data-active="true"]::after {
-  width: 22px;
+.maka-prompt-rail-indicator {
+  position: absolute;
+  position-anchor: --maka-prompt-rail-active;
+  right: var(--space-1);
+  top: anchor(center);
+  translate: 0 -50%;
+  width: 26px;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--foreground);
+  pointer-events: none;
+  transition: top var(--duration-large) var(--ease-out-strong);
 }
 
+/* No active prompt yet (a transcript that has not been scrolled) leaves the
+   anchor undefined, and an unresolved anchor would park the bar at the top of
+   the rail. Hide it until a tick claims the anchor. */
+.maka-prompt-rail:not(:has(.maka-prompt-rail-tick[data-active="true"])) .maka-prompt-rail-indicator {
+  display: none;
+}
+
+/* HoverCard content. Astryx owns the card itself — surface, radius, shadow,
+   padding — so these rules only stack and clamp the two lines and set the two
+   text tiers, which stay on the same foreground aliases the transcript uses. */
 .maka-prompt-rail-preview {
   font: var(--maka-text-supporting);
-  position: absolute;
-  right: calc(100% + var(--space-2));
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
   flex-direction: column;
   gap: var(--space-0-5);
-  width: max-content;
   max-width: 280px;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-control);
-  border: var(--border-width-hairline) solid var(--border);
-  background: var(--card-bg);
-  box-shadow: var(--card-shadow);
-  text-align: left;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-base) var(--ease-out-strong);
+  text-align: start;
 }
 
 .maka-prompt-rail-preview-prompt {
   font: var(--maka-text-heading-5);
   min-width: 0;
   color: var(--foreground);
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .maka-prompt-rail-preview-reply {
@@ -97,9 +194,4 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-.maka-prompt-rail-tick:hover .maka-prompt-rail-preview,
-.maka-prompt-rail-tick:focus-visible .maka-prompt-rail-preview {
-  opacity: 1;
 }
