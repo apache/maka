@@ -24,6 +24,7 @@ import {
   createKimiOpenAiTransport,
   type KimiOpenAiTransportState,
 } from './kimi-openai-transport.js';
+import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
@@ -34,11 +35,19 @@ export interface ModelFactoryInput {
   modelId: string;
   fetch?: typeof globalThis.fetch;
   kimiOpenAiTransportState?: KimiOpenAiTransportState;
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
 }
 
 const ANTHROPIC_BETA = 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14';
 export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
-  const { connection, apiKey, modelId, fetch, kimiOpenAiTransportState } = input;
+  const {
+    connection,
+    apiKey,
+    modelId,
+    fetch,
+    kimiOpenAiTransportState,
+    openAiResponsesTransportState,
+  } = input;
   const { adapter, baseUrl: baseURL, apiProtocol } = resolveModelRuntime(connection, modelId);
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
@@ -66,7 +75,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createOpenAI({
         apiKey,
         baseURL,
-        fetch,
+        fetch: openAiResponsesTransportState?.wrapFetch(fetch ?? globalThis.fetch) ?? fetch,
         headers: openAiCodexHeaders(apiKey),
       }).responses(modelId);
 
@@ -93,7 +102,11 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       throw new Error(`${connection.providerType} is experimental and not wired yet`);
 
     case 'openai': {
-      const openai = createOpenAI({ apiKey, baseURL, fetch });
+      const openai = createOpenAI({
+        apiKey,
+        baseURL,
+        fetch: openAiResponsesTransportState?.wrapFetch(fetch ?? globalThis.fetch) ?? fetch,
+      });
       // Routing is declaration-driven via the ModelInfo.apiProtocol seam: an
       // account-declared protocol wins (mirrors the github-copilot case above);
       // otherwise the model's declared OpenAI-adapter protocol decides. gpt-5*

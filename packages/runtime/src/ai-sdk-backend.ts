@@ -776,6 +776,7 @@ export class AiSdkBackend implements AgentBackend {
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
     this.modelAdapter = new ModelAdapter({
+      sessionId: input.sessionId,
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
@@ -1586,6 +1587,7 @@ export class AiSdkBackend implements AgentBackend {
               system: requestSystemPrompt,
               abortSignal: turnAbortController.signal,
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
+              continuationKey: scope.turnId,
             });
 
             let streamFailure: unknown;
@@ -2386,6 +2388,7 @@ export class AiSdkBackend implements AgentBackend {
   async dispose(): Promise<void> {
     if (this.activeTurns.size > 0) await this.stop('user_stop');
     else this.compaction.abortHistoryCompact();
+    this.modelAdapter.dispose();
   }
 
   /** Map ai-sdk finishReason → our CompleteEvent.stopReason. */
@@ -3486,6 +3489,7 @@ export class AiSdkBackend implements AgentBackend {
    */
   private async cleanupAfterTurn(scope: TurnScope): Promise<void> {
     this.activeTurns.delete(scope);
+    this.modelAdapter.endContinuation(scope.turnId);
     await scope.toolRuntime.endTurn(scope.aborted ? 'aborted' : 'completed');
   }
 

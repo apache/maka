@@ -4,6 +4,8 @@ import type { ConnectionEffectFetch } from '../connection-effect-fetch.js';
 import { matchesBypassList } from './bypass-matcher.js';
 import { buildProxyDispatcher } from './proxy-dispatcher.js';
 
+export const FETCH_PROXY_SNAPSHOT = Symbol.for('maka.fetch.proxy-snapshot');
+
 export interface ConnectionEffectProxySnapshot {
   readonly enabled: boolean;
   readonly type: ProxySettings['type'];
@@ -61,6 +63,10 @@ export function createProxiedFetchTransport(
       } as Parameters<typeof undiciFetch>[1],
     )) as unknown as Response;
   };
+  Object.defineProperty(fetch, FETCH_PROXY_SNAPSHOT, {
+    value: proxySnapshot,
+    enumerable: false,
+  });
 
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;

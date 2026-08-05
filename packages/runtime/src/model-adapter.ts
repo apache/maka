@@ -50,6 +50,15 @@ import {
   restoreKimiEmptyReasoning,
   type KimiOpenAiTransportState,
 } from './kimi-openai-transport.js';
+import {
+  mergeOpenAiResponsesProviderOptions,
+  planOpenAiResponsesContinuation,
+} from './openai-responses-continuation.js';
+import {
+  createOpenAiResponsesTransportState,
+  OPENAI_RESPONSES_LANE_HEADER,
+  type OpenAiResponsesTransportState,
+} from './openai-responses-websocket.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -64,6 +73,7 @@ export interface ModelFactoryInput {
   apiKey: string;
   modelId: string;
   kimiOpenAiTransportState?: KimiOpenAiTransportState;
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
 }
 export type ModelFactory = (input: ModelFactoryInput) => unknown;
 
@@ -76,6 +86,7 @@ export interface RepairableAiSdkToolCall {
 }
 
 export interface ModelAdapterInput {
+  sessionId?: string;
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
@@ -121,6 +132,8 @@ export interface ModelAdapterStreamInput {
   }) => RepairableAiSdkToolCall | null | Promise<RepairableAiSdkToolCall | null>;
   /** Main-agent provider-call tracker. Auxiliary calls track their own generates. */
   providerRequestTracker?: ProviderRequestTracker;
+  /** Turn-scoped continuation lane. Omitted callers keep the full-request path. */
+  continuationKey?: string;
 }
 
 interface ProviderMiddlewareStreamInput {
@@ -135,6 +148,7 @@ interface ProviderMiddlewareStreamInput {
 
 export class ModelAdapter {
   private readonly kimiOpenAiTransportState = createKimiOpenAiTransportState();
+  private readonly openAiResponsesTransportState = createOpenAiResponsesTransportState();
 
   constructor(private readonly input: ModelAdapterInput) {}
 
@@ -158,6 +172,9 @@ export class ModelAdapter {
       modelId: this.input.modelId,
       ...(usesKimiOpenAiChat(this.input.connection, this.input.modelId)
         ? { kimiOpenAiTransportState: this.kimiOpenAiTransportState }
+        : {}),
+      ...(usesNativeOpenAiResponses(this.input.connection, this.input.modelId)
+        ? { openAiResponsesTransportState: this.openAiResponsesTransportState }
         : {}),
     });
   }
@@ -206,9 +223,27 @@ export class ModelAdapter {
             },
       ]),
     );
+    const fullMessages = lowerNativeAudioMessages(input.messages);
+    const responsesLane =
+      input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.input.modelId)
+        ? input.continuationKey
+        : undefined;
+    const continuation = responsesLane
+      ? planOpenAiResponsesContinuation(
+          fullMessages,
+          this.openAiResponsesTransportState.semanticBaseline(responsesLane),
+        )
+      : { messages: fullMessages };
+    const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.input.modelId)
+      ? mergeOpenAiResponsesProviderOptions(
+          this.input.providerOptions,
+          this.input.sessionId ?? this.input.connection.slug,
+          continuation.previousResponseId,
+        )
+      : this.input.providerOptions;
     const sdkResult = streamText({
       model: trackedModel,
-      messages: lowerNativeAudioMessages(input.messages),
+      messages: continuation.messages,
       tools: sdkTools,
       activeTools: input.activeTools,
       // An empty active set is an authoritative tool-free request (not merely
@@ -221,7 +256,8 @@ export class ModelAdapter {
       repairToolCall: input.repairToolCall,
       ...(input.system ? { instructions: input.system } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      providerOptions: this.input.providerOptions,
+      providerOptions,
+      ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
       maxRetries: 0,
       // Preserve the final request's Maka-owned message projection without
       // retaining the provider request body. ProviderRequestTracker owns body
@@ -236,7 +272,10 @@ export class ModelAdapter {
       // `error` event → ErrorEvent path, so silence the default.
       onError: () => {},
     }) as unknown as SdkStreamResult;
-    return this.toModelStreamResult(sdkResult, input.onStreamActivity);
+    return this.toModelStreamResult(sdkResult, input.onStreamActivity, {
+      ...(responsesLane ? { lane: responsesLane } : {}),
+      requestMessages: fullMessages,
+    });
   }
 
   /**
@@ -248,19 +287,45 @@ export class ModelAdapter {
   private toModelStreamResult(
     sdk: SdkStreamResult,
     onStreamActivity: () => void,
+    continuation: { lane?: string; requestMessages: ModelMessage[] },
   ): ModelStreamResult {
     const kimiOpenAiTransportState = usesKimiOpenAiChat(this.input.connection, this.input.modelId)
       ? this.kimiOpenAiTransportState
       : undefined;
+    const openAiResponsesTransportState = this.openAiResponsesTransportState;
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
+        let succeeded = true;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
-            for (const event of translateChunk(chunk, kimiOpenAiTransportState)) yield event;
+            for (const event of translateChunk(chunk, kimiOpenAiTransportState)) {
+              if (event.kind === 'error') succeeded = false;
+              yield event;
+            }
           }
         } catch (error) {
+          succeeded = false;
           yield { kind: 'error', failure: normalizeModelFailure(error) };
+        } finally {
+          if (!continuation.lane) return;
+          if (!succeeded) {
+            openAiResponsesTransportState.clearSemantic(continuation.lane);
+            return;
+          }
+          const response = await Promise.resolve(sdk.response).catch(() => undefined);
+          if (
+            response?.id &&
+            openAiResponsesTransportState.canRecordSemantic(continuation.lane, response.id)
+          ) {
+            openAiResponsesTransportState.recordSemantic(continuation.lane, {
+              requestMessages: structuredClone(continuation.requestMessages),
+              responseMessages: structuredClone(response.messages ?? []),
+              responseId: response.id,
+            });
+          } else {
+            openAiResponsesTransportState.clearSemantic(continuation.lane);
+          }
         }
       },
     };
@@ -273,10 +338,20 @@ export class ModelAdapter {
     })();
     const finishReason = (async () =>
       rawFinishReasonString(await sdk.finishReason.catch(() => undefined)))();
-    const request = Promise.resolve(sdk.request)
-      .then(normalizeRequestMetadata)
-      .catch(() => undefined);
+    // The SDK request contains only the wire delta during continuation. Keep
+    // Maka's public request metadata anchored to the complete durable
+    // projection so diagnostics and recovery never mistake an optimization for
+    // lost history.
+    const request = Promise.resolve({ messages: continuation.requestMessages });
     return { events, usage, finishReason, request };
+  }
+
+  endContinuation(lane: string): void {
+    this.openAiResponsesTransportState.endLane(lane);
+  }
+
+  dispose(): void {
+    this.openAiResponsesTransportState.close();
   }
 
   async generateCompactSummary(input: CompactSummaryRequest): Promise<CompactSummaryResult> {
@@ -452,6 +527,13 @@ function usesOpenAiResponses(connection: RuntimeExecutionConnection, modelId: st
   );
 }
 
+function usesNativeOpenAiResponses(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+): boolean {
+  return connection.providerType === 'openai' && usesOpenAiResponses(connection, modelId);
+}
+
 function fixedAnthropicThinkingBudget(
   providerOptions: Record<string, unknown> | undefined,
 ): number {
@@ -507,6 +589,10 @@ interface SdkStreamResult {
   usage: Promise<AiSdkUsageLike | undefined>;
   finishReason: Promise<unknown>;
   request: PromiseLike<{
+    messages?: ModelMessage[];
+  }>;
+  response: PromiseLike<{
+    id: string;
     messages?: ModelMessage[];
   }>;
 }
