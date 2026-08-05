@@ -102,6 +102,90 @@ export interface SharedUiCopy {
   };
   artifact: { unknownSize: string };
   providers: { minimaxChina: string; custom: string; claudeSubscription: string };
+  /**
+   * Copy that exists only to fill Astryx's own message catalog, which ships no
+   * `zh`. Grouped by the component that renders it so a slice adopting a new
+   * Astryx surface can see at a glance whether its strings are already covered.
+   * `astryxMessageOverrides` is the only consumer — nothing here is rendered by
+   * Maka's own components.
+   */
+  astryx: {
+    appShell: { mobileNavigation: string };
+    banner: { collapse: string; expand: string };
+    breadcrumbs: { label: string };
+    calendar: {
+      dayInRange: string;
+      dayRangeEnd: string;
+      dayRangeStart: string;
+      dayRangeStartAndEnd: string;
+      daySelected: string;
+      nextMonth: string;
+      previousMonth: string;
+      rangeCompleteAnnounce: string;
+      rangeStartAnnounce: string;
+    };
+    chat: {
+      composerPlaceholder: string;
+      composerDrawerLabel: string;
+      composerInputLabel: string;
+      messageAriaLabel: string;
+      pastedTextExpand: string;
+      statusDelivered: string;
+      statusFailed: string;
+      statusRead: string;
+      statusSending: string;
+      statusSent: string;
+      drawerCollapse: string;
+      drawerExpand: string;
+      newMessages: string;
+      scrollToBottom: string;
+      send: string;
+      stop: string;
+      toolCallsError: string;
+      toolCallsGroupLabel: string;
+      triggerSuggestions: string;
+    };
+    commandPalette: {
+      emptyBootstrap: string;
+      emptySearch: string;
+      inputPlaceholder: string;
+      label: string;
+      noResultsFor: string;
+      resultCount: string;
+    };
+    dateTime: {
+      closeCalendar: string;
+      openCalendar: string;
+      dialogLabel: string;
+      datePlaceholder: string;
+      timePlaceholder: string;
+      timeSuffix: string;
+    };
+    inputStatus: { error: string; success: string; warning: string };
+    menus: { dropdown: string; more: string };
+    multiSelector: { clearAll: string; selectAll: string };
+    /** Selector and MultiSelector render the same two search affordances. */
+    search: { options: string; placeholder: string };
+    sideNav: {
+      label: string;
+      resizeSidebar: string;
+      collapseSidebar: string;
+      expandSidebar: string;
+      itemCollapse: string;
+      itemExpand: string;
+    };
+    tabList: { label: string };
+    table: {
+      label: string;
+      noData: string;
+      filterAll: string;
+      filterApply: string;
+      filterReset: string;
+      filterByColumn: string;
+    };
+    thumbnail: { fallbackName: string; open: string; remove: string };
+    token: { remove: string };
+  };
 }
 
 const SHARED_UI_COPY = {
@@ -192,6 +276,82 @@ const SHARED_UI_COPY = {
     stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
+    astryx: {
+      appShell: { mobileNavigation: '移动端导航' },
+      banner: { collapse: '收起', expand: '展开' },
+      breadcrumbs: { label: '面包屑导航' },
+      calendar: {
+        dayInRange: '{date}，在所选范围内',
+        dayRangeEnd: '{date}，范围结束',
+        dayRangeStart: '{date}，范围开始',
+        dayRangeStartAndEnd: '{date}，范围开始与结束',
+        daySelected: '{date}，已选择',
+        nextMonth: '下个月',
+        previousMonth: '上个月',
+        rangeCompleteAnnounce: '已选择范围：{start} 至 {end}。',
+        rangeStartAnnounce: '开始日期 {date}。请选择结束日期。',
+      },
+      chat: {
+        composerPlaceholder: '输入消息…',
+        composerDrawerLabel: '附加内容',
+        composerInputLabel: '消息输入框',
+        messageAriaLabel: '消息：{status}',
+        pastedTextExpand: '展开',
+        statusDelivered: '已送达',
+        statusFailed: '发送失败',
+        statusRead: '已读',
+        statusSending: '发送中',
+        statusSent: '已发送',
+        drawerCollapse: '收起{label}',
+        drawerExpand: '展开{label}',
+        newMessages: '有新消息',
+        scrollToBottom: '滚动到底部',
+        send: '发送',
+        stop: '停止',
+        toolCallsError: '错误：{message}',
+        toolCallsGroupLabel: '{count} 次工具调用',
+        triggerSuggestions: '建议',
+      },
+      commandPalette: {
+        emptyBootstrap: '输入以搜索',
+        emptySearch: '无结果',
+        inputPlaceholder: '搜索…',
+        label: '命令面板',
+        noResultsFor: '没有与「{query}」匹配的结果',
+        resultCount: '{count, number} 条结果',
+      },
+      dateTime: {
+        closeCalendar: '关闭日历',
+        openCalendar: '打开日历',
+        dialogLabel: '选择日期',
+        datePlaceholder: '选择日期',
+        timePlaceholder: '选择时间',
+        timeSuffix: '{label}时间',
+      },
+      inputStatus: { error: '错误详情', success: '成功详情', warning: '警告详情' },
+      menus: { dropdown: '菜单', more: '更多选项' },
+      multiSelector: { clearAll: '清除全部{label}', selectAll: '全选' },
+      search: { options: '搜索选项', placeholder: '搜索…' },
+      sideNav: {
+        label: '侧边导航',
+        resizeSidebar: '调整侧边栏宽度',
+        collapseSidebar: '收起侧边栏',
+        expandSidebar: '展开侧边栏',
+        itemCollapse: '收起{label}',
+        itemExpand: '展开{label}',
+      },
+      tabList: { label: '标签页' },
+      table: {
+        label: '表格',
+        noData: '暂无数据',
+        filterAll: '全部',
+        filterApply: '应用',
+        filterReset: '重置',
+        filterByColumn: '筛选{header}',
+      },
+      thumbnail: { fallbackName: '缩略图', open: '打开{accessibleName}', remove: '移除{accessibleName}' },
+      token: { remove: '移除{label}' },
+    },
   },
   en: {
     capabilityAudit: {
@@ -280,6 +440,85 @@ const SHARED_UI_COPY = {
     stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },
     providers: { minimaxChina: 'MiniMax China', custom: 'Custom', claudeSubscription: 'Claude subscription' },
+    // Never applied — `astryxMessageOverrides` returns undefined for `en`, so
+    // Astryx resolves its own shipped catalog. Mirrored verbatim from that
+    // catalog so the two columns stay diffable when Astryx changes a default.
+    astryx: {
+      appShell: { mobileNavigation: 'Mobile navigation' },
+      banner: { collapse: 'Collapse', expand: 'Expand' },
+      breadcrumbs: { label: 'Breadcrumb' },
+      calendar: {
+        dayInRange: '{date}, in range',
+        dayRangeEnd: '{date}, range end',
+        dayRangeStart: '{date}, range start',
+        dayRangeStartAndEnd: '{date}, range start and range end',
+        daySelected: '{date}, selected',
+        nextMonth: 'Next month',
+        previousMonth: 'Previous month',
+        rangeCompleteAnnounce: 'Selected range: {start} to {end}.',
+        rangeStartAnnounce: 'Start date {date}. Select an end date.',
+      },
+      chat: {
+        composerPlaceholder: 'Type a message…',
+        composerDrawerLabel: 'Items',
+        composerInputLabel: 'Message input',
+        messageAriaLabel: 'Message {status}',
+        pastedTextExpand: 'Expand',
+        statusDelivered: 'Delivered',
+        statusFailed: 'Failed',
+        statusRead: 'Read',
+        statusSending: 'Sending',
+        statusSent: 'Sent',
+        drawerCollapse: 'Collapse {label}',
+        drawerExpand: 'Expand {label}',
+        newMessages: 'New messages',
+        scrollToBottom: 'Scroll to bottom',
+        send: 'Send',
+        stop: 'Stop',
+        toolCallsError: 'Error: {message}',
+        toolCallsGroupLabel: '{count} tool calls',
+        triggerSuggestions: 'Suggestions',
+      },
+      commandPalette: {
+        emptyBootstrap: 'Type to search',
+        emptySearch: 'No results',
+        inputPlaceholder: 'Search…',
+        label: 'Command palette',
+        noResultsFor: 'No results for {query}',
+        resultCount: '{count, number} {count, plural, one {result} other {results}}',
+      },
+      dateTime: {
+        closeCalendar: 'Close calendar',
+        openCalendar: 'Open calendar',
+        dialogLabel: 'Choose date',
+        datePlaceholder: 'Select a date',
+        timePlaceholder: 'Select a time',
+        timeSuffix: '{label} time',
+      },
+      inputStatus: { error: 'Error details', success: 'Success details', warning: 'Warning details' },
+      menus: { dropdown: 'Menu', more: 'More options' },
+      multiSelector: { clearAll: 'Clear all {label}', selectAll: 'Select all' },
+      search: { options: 'Search options', placeholder: 'Search…' },
+      sideNav: {
+        label: 'Side navigation',
+        resizeSidebar: 'Resize sidebar',
+        collapseSidebar: 'Collapse sidebar',
+        expandSidebar: 'Expand sidebar',
+        itemCollapse: 'Collapse {label}',
+        itemExpand: 'Expand {label}',
+      },
+      tabList: { label: 'Tabs' },
+      table: {
+        label: 'Table',
+        noData: 'No data',
+        filterAll: 'All',
+        filterApply: 'Apply',
+        filterReset: 'Reset',
+        filterByColumn: 'Filter {header}',
+      },
+      thumbnail: { fallbackName: 'Thumbnail', open: 'Open {accessibleName}', remove: 'Remove {accessibleName}' },
+      token: { remove: 'Remove {label}' },
+    },
   },
 } satisfies UiCatalog<SharedUiCopy>;
 

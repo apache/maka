@@ -219,14 +219,28 @@ it('localizes Astryx Markdown accessibility copy in Chinese', () => {
   assert.doesNotMatch(markup, />Checkbox</);
 });
 
+// `chat` used to be listed here too: Maka rendered its own transcript chrome,
+// so an Astryx chat override was dead config. #1795 moved the chat surfaces
+// onto Astryx ChatLayout without bringing the copy across, which is how the
+// scroll-to-bottom pill ended up reading "New messages" in a Chinese UI.
+// Lightbox is still ours to guard — nothing renders it.
 it('ships overrides only for Astryx surfaces Maka renders', () => {
   const messages = astryxMessageOverrides('zh')?.zh ?? {};
   for (const key of Object.keys(messages)) {
     assert.doesNotMatch(
       key,
-      /^@astryx\.(?:lightbox|chat)/,
+      /^@astryx\.lightbox/,
       `dead Astryx locale override: ${key}`,
     );
+  }
+});
+
+it('localizes the Astryx chat chrome adopted in #1795', () => {
+  const messages = astryxMessageOverrides('zh')?.zh ?? {};
+  assert.equal(messages['@astryx.chatLayout.newMessages'], '有新消息');
+  assert.equal(messages['@astryx.chatLayoutScrollButton.scrollToBottom'], '滚动到底部');
+  for (const key of ['@astryx.chatSendButton.send', '@astryx.chat.status.sent']) {
+    assert.doesNotMatch(messages[key] ?? '', /[A-Za-z]/, `untranslated: ${key}`);
   }
 });
 
