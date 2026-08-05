@@ -75,9 +75,13 @@ export const Default: Story = {
 };
 
 // Real path: Settings → 通用 before any provider exposes a model choice.
+// The 260px frame stands in for the one part that cannot be imported from
+// this package: the desktop's `select.css` sizes the trigger to 260px via
+// `.settingsRows .settingsModelPickerTrigger`, which only exists in the
+// renderer's stylesheet. Size and state are the production ones.
 export const EmptyCatalog: Story = {
   render: () => (
-    <div style={{ width: 320 }}>
+    <div style={{ width: 260 }}>
       <ModelPicker
         groups={[]}
         value=""

@@ -149,7 +149,6 @@ export function PermissionModeSelect(props: {
       disabledMessage={props.disabledReason}
       aria-description={meta.hint}
       placement="below"
-      width={320}
       className={cn('permissionModeSelector', props.className)}
       renderOption={(option) => (
         <SelectorOption
