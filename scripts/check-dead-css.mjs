@@ -178,6 +178,13 @@ const RESERVED_SCALE_TOKENS = new Set([
   '--h-control-2xl',
   // Border widths 1/2/3px.
   '--border-width-accent',
+  // Display type scale — display-1 is the hero rung, display-3 the settings
+  // nav rung; display-2 was the module-page title until the Astryx Layout
+  // header took over (#2236), and stays as the middle rung of the series.
+  '--maka-text-display-2',
+  // Dimmed-opacity tiers 0.5/0.65/0.8 — disabled and muted are live; the
+  // pending rung lost its last consumer with the old skills card styles.
+  '--opacity-pending',
   // Zero rung of the spacing ruler.
   '--space-0',
   // Easing vocabulary (see the motion governance comment in maka-tokens.css):

@@ -37,17 +37,20 @@ test('MCP module page keeps one centred column without horizontal overflow', asy
       const main = document.querySelector<HTMLElement>('.maka-module-main');
       const content = main?.querySelector<HTMLElement>('.astryx-layout-content');
       if (!main || !content) throw new Error('Expected the MCP module layout');
-      const mainRect = main.getBoundingClientRect();
       const rows = content.querySelector<HTMLElement>('.maka-module-page-rows')
         ?? content.querySelector<HTMLElement>('.maka-module-page-panel');
       if (!rows) throw new Error('Expected the MCP module content');
       const rowsRect = rows.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
       return {
         mainOverflow: main.scrollWidth - main.clientWidth,
         contentOverflow: content.scrollWidth - content.clientWidth,
+        // Centring is measured against the content scroller's inner box, not
+        // the page: a classic (non-overlay) vertical scrollbar takes width
+        // out of the scroller, and the column centres in what remains.
         centerDelta: Math.abs(
           rowsRect.left + rowsRect.width / 2
-            - (mainRect.left + main.clientWidth / 2),
+            - (contentRect.left + content.clientWidth / 2),
         ),
         rowsWidth: rowsRect.width,
       };
