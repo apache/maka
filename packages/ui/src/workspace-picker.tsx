@@ -2,16 +2,21 @@
  * Workspace picker (issue #1044) — the control that decides which project a
  * NEW chat starts in.
  *
- * It lives on the empty-chat canvas, under the hero greeting and above the
- * composer, because that is where its lifetime belongs. The project is a
- * session-creation parameter: it is fixed the moment the first message creates
- * the session, and no other entry point changes it afterwards. The composer's
- * footer control row, where this used to sit, holds controls that persist for
- * the whole session (＋, the permission shield, the model), so a chip that
- * vanishes on send broke that row's implicit contract. On the hero it leaves
- * with the surface it belongs to.
+ * It lives in the composer's header row, above the input, and only while the
+ * chat is a draft. The project is a session-creation parameter: it is fixed the
+ * moment the first message creates the session, and no other entry point
+ * changes it afterwards — so the row it sits in is passed only in that state
+ * and leaves with it.
  *
- * Reading order follows decision order: greeting → where → what.
+ * Two placements were tried and rejected. The composer's FOOTER row, where this
+ * originally sat, holds controls that persist for the whole session (＋, the
+ * permission shield, the model); a chip that vanishes on send broke that row's
+ * implicit contract. The empty-chat HERO, under the greeting, fixed the
+ * lifetime but floated the control in the gap between the greeting and the
+ * card, belonging to neither. The header row belongs to the card the user is
+ * about to type in, and stays clear of the persistent controls below it.
+ *
+ * Reading order still follows decision order: where → what.
  *
  * Built on Astryx `Selector`, the same primitive as the model picker, because
  * picking a project IS choosing a value: one selection out of a catalogue,
@@ -117,11 +122,11 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       hasSearch
       searchPlaceholder={copy.searchPlaceholder}
       size="sm"
-      // The trigger sits high on the canvas with the composer below it, so the
-      // menu opens downward, over that content. Opening 'above' here would drop
-      // it into the empty upper canvas — the anchoring complaint that moved
-      // these controls off their old bar above the card in the first place.
-      placement="below"
+      // The trigger sits in the composer's header, near the bottom of the
+      // window, so the menu opens upward into the canvas the draft state leaves
+      // empty. Downward it would cover the input the user is about to type in,
+      // and on a short window it would run past the frame.
+      placement="above"
       isDefaultOpen={wp.defaultOpen}
       isDisabled={wp.pending === true}
       startIcon={<FolderOpen size={13} aria-hidden="true" />}

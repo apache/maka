@@ -34,6 +34,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js';
 import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
+import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useComposerDraft, type ComposerDraftPersistence } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
 import {
@@ -258,6 +259,13 @@ export const Composer = forwardRef<
      * A read-only session displays 只读 without it becoming a third
      * option (#1611).
      */
+    /**
+     * Session-creation context rendered in the composer's header row, above the
+     * input — today the project picker. Passed only while the chat is a draft;
+     * once the first message creates the session the caller stops passing it and
+     * the header row goes with it.
+     */
+    workspacePicker?: WorkspacePickerModel;
     permissionMode?: PermissionMode;
     permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
@@ -1217,6 +1225,14 @@ export const Composer = forwardRef<
           // render our own into the `sendButton` slot.
           onSubmit={() => {}}
           isDisabled={props.disabled}
+          headerActions={props.workspacePicker ? (
+            // The wrapper is the popover's scope: Astryx's Layer renders the
+            // open menu next to the trigger rather than portaling it, so the
+            // palette rebinding and the pinned-footer rules attach here.
+            <div className="maka-composer-workspace">
+              <WorkspacePicker workspacePicker={props.workspacePicker} />
+            </div>
+          ) : undefined}
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer count={drawerTokenCount} label={copy.addContext}>
               <div className="maka-composer-context-drawer" role="group" aria-label={copy.addContext}>

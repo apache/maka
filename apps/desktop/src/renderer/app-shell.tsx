@@ -2254,6 +2254,7 @@ function AppShellContent({
                     ) : null}
                     {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
                     <ChatComposerRegion
+                  workspacePicker={activeSessionForView ? undefined : workspacePicker}
                   composerRef={composerRef}
                   active={navSelection.section === 'sessions'}
                   onboardingComposerHidden={
@@ -2427,7 +2428,6 @@ function AppShellContent({
               >
                 {navSelection.section === 'sessions' ? (
                   <ChatMessageSurface
-                workspacePicker={workspacePicker}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 messages={messages}

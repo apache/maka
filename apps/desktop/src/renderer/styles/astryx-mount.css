@@ -53,7 +53,7 @@
    two seams' option rows now report identical computed color, weight, size and
    padding. */
 .maka-model-selection-controls,
-.maka-hero-workspace {
+.maka-composer-workspace {
   --color-background-surface: var(--background);
   --color-background-popover: var(--background-elevated);
   --color-text-primary: var(--foreground);

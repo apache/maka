@@ -113,66 +113,6 @@ describe('ChatView session context', () => {
   });
 });
 
-/**
- * The project is a session-creation parameter: it decides where a NEW chat
- * starts and is fixed once the first message creates the session. That
- * lifetime is why the picker lives on the hero instead of the composer's
- * footer control row, whose other controls persist for the whole session — so
- * these assertions pin the lifetime, not the placement.
- */
-describe('ChatView workspace picker', () => {
-  const workspacePicker = {
-    label: 'maka-agent',
-    projects: [],
-    onAdd: () => undefined,
-    onSelectProject: () => undefined,
-    onRelink: () => undefined,
-    onSelectNoProject: () => undefined,
-  };
-
-  it('renders the picker under the hero while the chat is a draft', () => {
-    const markup = renderToStaticMarkup(
-      <LocaleProvider locale="en">
-        <OwnedChatView messages={[]} workspacePicker={workspacePicker} onNew={() => undefined} />
-      </LocaleProvider>,
-    );
-
-    assert.match(markup, /maka-hero-workspace/);
-    assert.match(markup, /maka-workspace-picker/);
-  });
-
-  it('drops the picker once a session exists', () => {
-    const markup = renderToStaticMarkup(
-      <LocaleProvider locale="en">
-        <OwnedChatView
-          messages={[]}
-          activeSession={activeSession}
-          workspacePicker={workspacePicker}
-          onNew={() => undefined}
-        />
-      </LocaleProvider>,
-    );
-
-    assert.doesNotMatch(markup, /maka-workspace-picker/);
-  });
-
-  it('yields the whole hero to emptyOverride, so onboarding shows no picker', () => {
-    const markup = renderToStaticMarkup(
-      <LocaleProvider locale="en">
-        <OwnedChatView
-          messages={[]}
-          workspacePicker={workspacePicker}
-          emptyOverride={<div className="onboarding-stand-in" />}
-          onNew={() => undefined}
-        />
-      </LocaleProvider>,
-    );
-
-    assert.match(markup, /onboarding-stand-in/);
-    assert.doesNotMatch(markup, /maka-workspace-picker/);
-  });
-});
-
 describe('ChatView system notices', () => {
   it('renders visible runtime notices with the Astryx system-message primitive', () => {
     const markup = renderToStaticMarkup(

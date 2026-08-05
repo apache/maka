@@ -7,7 +7,6 @@ import {
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
-import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type {
   DeepResearchClientProgress,
@@ -93,15 +92,6 @@ export function ChatView(props: {
    * the regular prompt-suggestion hero shows.
    */
   emptyOverride?: ReactNode;
-  /**
-   * Project picker for the draft state, rendered under the hero greeting.
-   *
-   * Only reaches the screen when there is no active session: the project is a
-   * session-creation parameter, so once a session exists there is nothing left
-   * to pick. `emptyOverride` still wins over the whole hero, which is what
-   * keeps the onboarding surface free of a picker the user cannot act on yet.
-   */
-  workspacePicker?: WorkspacePickerModel;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -401,13 +391,7 @@ export function ChatView(props: {
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
     const emptyContent = props.emptyOverride ?? (
-      <EmptyChatHero
-        onPromptSuggestion={props.onPromptSuggestion}
-        userLabel={props.userLabel}
-        workspaceSlot={props.workspacePicker ? (
-          <WorkspacePicker workspacePicker={props.workspacePicker} />
-        ) : undefined}
-      />
+      <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
     return (
       <main className="maka-main agents-chat-panel agents-chat-view-root">
