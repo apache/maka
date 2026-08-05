@@ -444,12 +444,26 @@ function usesKimiOpenAiChat(connection: RuntimeExecutionConnection, modelId: str
 
 function usesOpenAiResponses(connection: RuntimeExecutionConnection, modelId: string): boolean {
   const runtime = resolveModelRuntime(connection, modelId);
-  if (runtime.adapter.kind !== 'openai') return false;
-  return (
-    runtime.adapter.apiProtocol === 'openai-responses' ||
-    runtime.apiProtocol === 'openai-responses' ||
-    openAiAdapterApiProtocol(modelId, connection.providerType) === 'openai-responses'
-  );
+  switch (runtime.adapter.kind) {
+    case 'openai-codex':
+      return true;
+    case 'github-copilot':
+      return runtime.apiProtocol === 'openai-responses';
+    case 'openai':
+      return (
+        (runtime.adapter.apiProtocol ??
+          runtime.apiProtocol ??
+          openAiAdapterApiProtocol(modelId, connection.providerType)) === 'openai-responses'
+      );
+    case 'openai-compatible':
+      return (
+        runtime.adapter.supportsOpenAiResponses === true &&
+        (runtime.apiProtocol ?? openAiAdapterApiProtocol(modelId, connection.providerType)) ===
+          'openai-responses'
+      );
+    default:
+      return false;
+  }
 }
 
 function fixedAnthropicThinkingBudget(

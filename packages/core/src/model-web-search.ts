@@ -18,10 +18,11 @@ export interface HostedWebSearchCapability {
 /**
  * Resolves provider-hosted search for one exact model.
  *
- * Stored model metadata wins when it explicitly declares webSearch. Unknown
- * models then use narrow provider rules backed by the provider's public API
- * contract. Unknown never means supported: sending an unsupported built-in
- * tool can be silently ignored by several OpenAI-compatible providers.
+ * Stored model metadata can explicitly deny search, or grant it when the
+ * selected request wire can carry the provider tool. Unknown models use
+ * narrow provider rules backed by the provider's public API contract. Unknown
+ * never means supported: sending an unsupported built-in tool can be silently
+ * ignored by several OpenAI-compatible providers.
  *
  * The connection provider/wire is authoritative when a service supports both
  * Responses and Anthropic Messages. Search never switches wire independently
@@ -47,9 +48,31 @@ export function resolveHostedWebSearchCapability(
     return null;
   }
   if (stored?.capabilities?.webSearch === true) {
+    // A capability declaration does not select a request protocol. These
+    // providers expose both Chat Completions and Responses, so an omitted
+    // apiProtocol must still follow the same narrow model-family default as
+    // the model factory. Otherwise metadata such as `webSearch: true` on a
+    // Chat model would make Runtime compile a Responses-only provider tool for
+    // the wrong wire.
+    if (
+      stored.apiProtocol === undefined &&
+      adapter.adapter === 'openai-responses' &&
+      providerSelectsOpenAiWireByModel(providerType)
+    ) {
+      return providerDefaultHostedWebSearchCapability(providerType, id, adapter);
+    }
     return adapter;
   }
   return providerDefaultHostedWebSearchCapability(providerType, id, adapter);
+}
+
+function providerSelectsOpenAiWireByModel(providerType: ProviderType): boolean {
+  return (
+    providerType === 'deepseek' ||
+    providerType === 'openai' ||
+    providerType === 'xai' ||
+    providerType === 'xai-oauth'
+  );
 }
 
 function providerHostedWebSearchAdapter(

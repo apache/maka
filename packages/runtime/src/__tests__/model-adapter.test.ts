@@ -131,6 +131,51 @@ describe('ModelAdapter stream and error normalization', () => {
     });
   });
 
+  test('supports Responses reasoning replay for dual-wire OpenAI-compatible providers', () => {
+    const deepseek = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const chat = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-chat',
+        models: [{ id: 'deepseek-chat', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-chat',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const explicitOpenAiChat = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.5',
+        models: [{ id: 'gpt-5.5', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'openai-token',
+      modelId: 'gpt-5.5',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.equal(deepseek.runtimeEventReplaySupport().openAiResponsesThinking, true);
+    assert.equal(chat.runtimeEventReplaySupport().openAiResponsesThinking, false);
+    assert.equal(explicitOpenAiChat.runtimeEventReplaySupport().openAiResponsesThinking, false);
+  });
+
   test('translates provider text, reasoning, tool calls, and errors into ModelStreamEvents', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];

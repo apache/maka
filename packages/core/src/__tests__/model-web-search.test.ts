@@ -77,6 +77,24 @@ describe('hosted web search capability', () => {
       ),
       null,
     );
+    assert.equal(
+      resolveHostedWebSearchCapability(
+        'openai',
+        [{ id: 'gpt-4.1', capabilities: { webSearch: true } }],
+        'gpt-4.1',
+      ),
+      null,
+      'capability metadata must not switch a Chat Completions model to Responses',
+    );
+    assert.equal(
+      resolveHostedWebSearchCapability(
+        'deepseek',
+        [{ id: 'deepseek-chat', capabilities: { webSearch: true } }],
+        'deepseek-chat',
+      ),
+      null,
+      'capability metadata must not switch a DeepSeek Chat model to Responses',
+    );
     assert.deepEqual(
       resolveHostedWebSearchCapability(
         'openai-responses-compatible',
