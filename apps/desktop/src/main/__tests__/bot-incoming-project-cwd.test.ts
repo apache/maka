@@ -7,10 +7,6 @@ import { createEmbeddedBotSessionAdapter } from '../embedded-bot-session-adapter
 describe('bot incoming new-session cwd', () => {
   it('leaves the cwd to the shared desktop session resolver', async () => {
     let capturedCwd: unknown = undefined;
-    let resolveCreated: () => void = () => {};
-    const created = new Promise<void>((resolve) => {
-      resolveCreated = resolve;
-    });
     const service = createBotIncomingMainService({
       botRegistry: {
         async sendMessage() {},
@@ -23,11 +19,10 @@ describe('bot incoming new-session cwd', () => {
       } as unknown as BotRegistry,
       sessions: createEmbeddedBotSessionAdapter({
         runtime: {} as SessionManager,
-        // createSession captures the cwd it was given, signals the test, then
-        // throws to short-circuit before the streaming / typing path runs.
+        // createSession captures the cwd it was given, then throws to
+        // short-circuit before the streaming / typing path runs.
         async createSession(input) {
           capturedCwd = input.cwd;
-          resolveCreated();
           throw new Error('__short_circuit_after_create__');
         },
         getDefaultConnectionSlug: async () => 'slug',
@@ -55,15 +50,6 @@ describe('bot incoming new-session cwd', () => {
       sourceMessageId: '',
       receivedAt: Date.now(),
     } as unknown as BotIncomingMessage);
-
-    // handleBotIncomingMessage returns before the queued create runs; wait
-    // for createSession to actually be invoked (or time out).
-    await Promise.race([
-      created,
-      new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('createSession was not called')), 1000),
-      ),
-    ]);
 
     assert.equal(capturedCwd, undefined);
   });

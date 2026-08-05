@@ -24,7 +24,7 @@ import {
   type RuntimeHostSessionObserverTarget,
 } from './runtime-host-session-observer.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
-import { mergeSentInlineReferences } from './session-send-inline-references.js';
+import { mergeWorkspaceFileInlineReferences } from './session-workspace-inline-references.js';
 
 const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
   loaded: [],
@@ -139,10 +139,9 @@ export function registerRuntimeHostSessionExecutionIpc(
       });
     }
     const displayText = command.displayText ?? command.text;
-    const inlineReferences = mergeSentInlineReferences({
+    const inlineReferences = mergeWorkspaceFileInlineReferences({
       displayText,
       workspaceFileReferences: command.workspaceFileReferences,
-      receipts: [],
     });
     await deps.client.startTurn({
       sessionId,

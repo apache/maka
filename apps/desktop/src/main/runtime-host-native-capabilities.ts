@@ -18,11 +18,9 @@ interface NativeCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly MakaTool[];
-  readonly clearSession?: (sessionId: string) => void;
 }
 
 interface NativeToolBinding {
-  readonly group: NativeCapabilityGroup;
   readonly tool: MakaTool;
 }
 
@@ -31,73 +29,99 @@ type DesktopToolContentPart = Extract<DesktopToolModelOutput, { type: 'content' 
 
 export interface DesktopNativeCapabilityProviderInput {
   readonly browserTools: readonly MakaTool[];
+  readonly releaseBrowserSession: (sessionId: string) => void | Promise<void>;
   readonly computerUseTools: ComputerUseToolSet;
+  readonly releaseComputerUseSession: (sessionId: string) => void | Promise<void>;
+}
+
+export interface DesktopNativeCapabilityProvider extends ClientCapabilityProvider {
+  releaseSession(sessionId: string): Promise<void>;
+  close(): Promise<void>;
 }
 
 /** Adapt Desktop-owned Maka tools to the open Client Capability protocol. */
 export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
-): ClientCapabilityProvider {
+): DesktopNativeCapabilityProvider {
   const groups = capabilityGroups(input);
   const offers = Object.freeze(groups.map(capabilityOffer));
   const bindings = indexBindings(groups);
-  const activeInvocations = new Set<AbortController>();
-  const usedSessions = new Map<NativeCapabilityGroup, Set<string>>();
+  const releaseSessionResources = [
+    input.releaseBrowserSession,
+    input.releaseComputerUseSession,
+  ] as const;
+  const activeInvocations = new Map<
+    AbortController,
+    { readonly sessionId: string; readonly settled: Promise<void> }
+  >();
+  const usedSessionIds = new Set<string>();
   let closed = false;
+  let closeTask: Promise<void> | undefined;
+
+  function close(): Promise<void> {
+    if (closeTask) return closeTask;
+    closed = true;
+    closeTask = closeProvider(activeInvocations, usedSessionIds, releaseSessionResources);
+    return closeTask;
+  }
 
   return {
     offers: () => offers,
-    call: async (frame, options) => {
+    call: (frame, options) => {
       if (closed) throw new Error('Desktop native capability provider is closed');
       const binding = bindings.get(bindingKey(frame));
       if (!binding) throw new Error('Desktop native capability is not offered');
 
       const invocation = new AbortController();
-      activeInvocations.add(invocation);
-      const signal = AbortSignal.any([options.signal, invocation.signal]);
-      try {
-        signal.throwIfAborted();
-        const parameters = requireZodSchema(binding.tool);
-        const args = await parameters.parseAsync(frame.arguments);
-        signal.throwIfAborted();
-        await options.accept();
-        signal.throwIfAborted();
-        if (binding.group.clearSession) {
-          let sessions = usedSessions.get(binding.group);
-          if (!sessions) {
-            sessions = new Set();
-            usedSessions.set(binding.group, sessions);
-          }
-          sessions.add(frame.sessionId);
-        }
-        const output = await binding.tool.impl(args, {
-          sessionId: frame.sessionId,
-          turnId: frame.turnId,
-          cwd: frame.cwd,
-          toolCallId: frame.toolCallId,
-          abortSignal: signal,
-          emitOutput() {},
-        });
-        return projectToolResult(binding.tool, frame.toolCallId, args, output);
-      } finally {
-        activeInvocations.delete(invocation);
-      }
+      const task = invokeNativeTool(binding, frame, options, invocation, usedSessionIds);
+      const settled = task.then(
+        () => undefined,
+        () => undefined,
+      );
+      activeInvocations.set(invocation, { sessionId: frame.sessionId, settled });
+      void settled.finally(() => activeInvocations.delete(invocation));
+      return task;
     },
-    close: async () => {
-      if (closed) return;
-      closed = true;
-      for (const invocation of activeInvocations) {
-        invocation.abort(new Error('Desktop native capability provider closed'));
-      }
-      activeInvocations.clear();
-      const sessionCleanup =
-        [...usedSessions].flatMap(([group, sessions]) =>
-          [...sessions].map(async (sessionId) => group.clearSession?.(sessionId)),
-        );
-      usedSessions.clear();
-      await Promise.all(sessionCleanup);
+    releaseSession: async (sessionId) => {
+      const settling = abortInvocations(activeInvocations, sessionId);
+      await Promise.all(settling);
+      usedSessionIds.delete(sessionId);
+      await settleSessionReleases(releaseSessionResources, [sessionId]);
     },
+    close,
   };
+}
+
+async function closeProvider(
+  activeInvocations: ReadonlyMap<
+    AbortController,
+    { readonly sessionId: string; readonly settled: Promise<void> }
+  >,
+  usedSessionIds: Set<string>,
+  releases: readonly ((sessionId: string) => void | Promise<void>)[],
+): Promise<void> {
+  const settling: Promise<void>[] = [];
+  for (const [invocation, active] of activeInvocations) {
+    invocation.abort(new Error('Desktop native capability provider closed'));
+    settling.push(active.settled);
+  }
+  await Promise.all(settling);
+  const sessionIds = [...usedSessionIds];
+  usedSessionIds.clear();
+  await settleSessionReleases(releases, sessionIds);
+}
+
+async function settleSessionReleases(
+  releases: readonly ((sessionId: string) => void | Promise<void>)[],
+  sessionIds: readonly string[],
+): Promise<void> {
+  const results = await Promise.allSettled(
+    sessionIds.flatMap((sessionId) =>
+      releases.map(async (release) => release(sessionId)),
+    ),
+  );
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
 function capabilityGroups(input: DesktopNativeCapabilityProviderInput): NativeCapabilityGroup[] {
@@ -119,11 +143,52 @@ function capabilityGroups(input: DesktopNativeCapabilityProviderInput): NativeCa
             label: 'Computer Use',
             description: 'Observe and operate the desktop through this Desktop client.',
             tools: input.computerUseTools,
-            clearSession: (sessionId: string) => input.computerUseTools.clearSession(sessionId),
           },
         ]
       : []),
   ];
+}
+
+async function invokeNativeTool(
+  binding: NativeToolBinding,
+  frame: ClientCapabilityCallFrame,
+  options: Parameters<NonNullable<ClientCapabilityProvider['call']>>[1],
+  invocation: AbortController,
+  usedSessionIds: Set<string>,
+): Promise<ClientCapabilityCallResult> {
+  const signal = AbortSignal.any([options.signal, invocation.signal]);
+  signal.throwIfAborted();
+  const parameters = requireZodSchema(binding.tool);
+  const args = await parameters.parseAsync(frame.arguments);
+  signal.throwIfAborted();
+  await options.accept();
+  signal.throwIfAborted();
+  usedSessionIds.add(frame.sessionId);
+  const output = await binding.tool.impl(args, {
+    sessionId: frame.sessionId,
+    turnId: frame.turnId,
+    cwd: frame.cwd,
+    toolCallId: frame.toolCallId,
+    abortSignal: signal,
+    emitOutput() {},
+  });
+  return projectToolResult(binding.tool, frame.toolCallId, args, output);
+}
+
+function abortInvocations(
+  activeInvocations: ReadonlyMap<
+    AbortController,
+    { readonly sessionId: string; readonly settled: Promise<void> }
+  >,
+  sessionId: string,
+): Promise<void>[] {
+  const settling: Promise<void>[] = [];
+  for (const [invocation, active] of activeInvocations) {
+    if (active.sessionId !== sessionId) continue;
+    invocation.abort(new Error('Desktop native capability Session released'));
+    settling.push(active.settled);
+  }
+  return settling;
 }
 
 function capabilityOffer(group: NativeCapabilityGroup): ClientCapabilityOffer {
@@ -155,6 +220,7 @@ function toolInputSchema(tool: MakaTool): Record<string, unknown> {
     cycles: 'ref',
     reused: 'inline',
   });
+  delete schema.$schema;
   if (schema.type !== 'object') {
     throw new Error(`Desktop native capability tool schema must be an object: ${tool.name}`);
   }
@@ -180,7 +246,7 @@ function indexBindings(groups: readonly NativeCapabilityGroup[]): Map<string, Na
       if (bindings.has(key)) {
         throw new Error(`Duplicate Desktop native capability tool: ${group.offerId}/${tool.name}`);
       }
-      bindings.set(key, { group, tool });
+      bindings.set(key, { tool });
     }
   }
   return bindings;

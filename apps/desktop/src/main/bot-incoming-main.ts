@@ -31,6 +31,7 @@ interface BotConversationRateBucket {
 export interface BotIncomingMainService {
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   invalidateSessionBindings(sessionId: string): void;
+  close(): Promise<void>;
 }
 
 interface BotIncomingMainServiceDeps {
@@ -43,6 +44,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   const botConversationQueues = new Map<string, Promise<void>>();
   const botRecentSourceEventKeys = new Map<string, number>();
   const botConversationRateBuckets = new Map<string, BotConversationRateBucket>();
+  const activeTasks = new Set<Promise<void>>();
+  let closed = false;
+  let closeTask: Promise<void> | undefined;
 
   function invalidateSessionBindings(sessionId: string): void {
     for (const [conversationKey, boundSessionId] of botConversationSessions) {
@@ -52,7 +56,15 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     }
   }
 
-  async function handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
+  function handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
+    if (closed) return Promise.resolve();
+    const task = handleAcceptedBotIncomingMessage(message);
+    const tracked = task.finally(() => activeTasks.delete(tracked));
+    activeTasks.add(tracked);
+    return tracked;
+  }
+
+  async function handleAcceptedBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
     if (rememberBotSourceEvent(message)) return;
     const text = message.text.trim();
     // PR-BOT-NON-TEXT-MESSAGE-ACK-0: previously a photo / voice / sticker
@@ -76,11 +88,24 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     const current = botConversationQueues.get(key) ?? Promise.resolve();
     const next = current
       .catch(() => {})
-      .then(() => processBotIncomingMessage(key, message, text));
+      .then(() => (closed ? undefined : processBotIncomingMessage(key, message, text)));
     const tracked = next.finally(() => {
       if (botConversationQueues.get(key) === tracked) botConversationQueues.delete(key);
     });
     botConversationQueues.set(key, tracked);
+    await tracked;
+  }
+
+  function close(): Promise<void> {
+    if (closeTask) return closeTask;
+    closed = true;
+    closeTask = Promise.allSettled([...activeTasks]).then(() => {
+      botConversationSessions.clear();
+      botConversationQueues.clear();
+      botRecentSourceEventKeys.clear();
+      botConversationRateBuckets.clear();
+    });
+    return closeTask;
   }
 
   function rememberBotSourceEvent(message: BotIncomingMessage): boolean {
@@ -140,6 +165,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   }
 
   async function sendTransientBotNotice(message: BotIncomingMessage, text: string, ttlMs: number): Promise<void> {
+    if (closed) return;
     await deps.botRegistry.sendMessage(
       message.platform,
       message.chatId,
@@ -177,6 +203,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     message: BotIncomingMessage,
     text: string,
   ): Promise<void> {
+    if (closed) return;
     // PR-BOT-EPHEMERAL-REPLY-0: TTL for system notices (help / reset ack /
     // fallback errors). Five minutes is long enough for the user to read
     // and process the notice on mobile; short enough that bot DMs do not
@@ -296,6 +323,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         typingAbort.abort();
         await typingLoop.catch(() => {});
       }
+      if (closed) return;
       // PR-BOT-REPLY-TO-MESSAGE-0 (external bot research): thread the bot reply
       // under the originating user message. Group chats with concurrent
       // conversations otherwise visually scramble; even in DMs the threading
@@ -321,6 +349,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         }
       }
     } catch (error) {
+      if (closed) return;
       const detail = isSessionWorkspaceUnavailableError(error)
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
         : generalizedErrorMessage(error, '机器人对话处理失败');
@@ -353,7 +382,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     return false;
   }
 
-  return { handleBotIncomingMessage, invalidateSessionBindings };
+  return { handleBotIncomingMessage, invalidateSessionBindings, close };
 }
 
 function botReply(result: BotSessionTurnResult): string {

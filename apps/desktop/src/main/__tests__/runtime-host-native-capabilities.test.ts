@@ -2,14 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ComputerUseToolSet, MakaTool, MakaToolContext } from '@maka/runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
-import type { ClientCapabilityCallFrame } from '@maka/runtime-host/protocol';
+import {
+  decodeClientCapabilityReplaceInput,
+  type ClientCapabilityCallFrame,
+} from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({ includeHidden: z.boolean().optional() }), async () => 'ok')],
+    releaseBrowserSession() {},
     computerUseTools: computerTools(async () => ({ text: 'ok' })),
+    releaseComputerUseSession() {},
   });
 
   assert.deepEqual(
@@ -41,6 +46,12 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
   assert.equal(browserSchema?.type, 'object');
   assert.equal(browserSchema?.required, undefined);
   assert.deepEqual(Object.keys((browserSchema?.properties as object | undefined) ?? {}), ['includeHidden']);
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
 });
 
 test('validates before admission and invokes the exact offered tool with Host context', async () => {
@@ -69,7 +80,9 @@ test('validates before admission and invokes the exact offered tool with Host co
         return 'Loaded';
       }),
     ],
+    releaseBrowserSession() {},
     computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
   });
 
   await assert.rejects(
@@ -94,8 +107,9 @@ test('validates before admission and invokes the exact offered tool with Host co
   });
 });
 
-test('projects Computer Use screenshots and releases only sessions used by that group', async () => {
-  const cleared: string[] = [];
+test('projects Computer Use screenshots and releases all native resources for a Session', async () => {
+  const browserReleased: string[] = [];
+  const computerReleased: string[] = [];
   let invocationStarted!: () => void;
   const started = new Promise<void>((resolve) => {
     invocationStarted = resolve;
@@ -115,12 +129,32 @@ test('projects Computer Use screenshots and releases only sessions used by that 
         screenshot: { base64: 'aW1hZ2U=', mimeType: 'image/png' },
       };
     },
-    (sessionId) => cleared.push(sessionId),
+    (sessionId) => computerReleased.push(sessionId),
   );
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({}), async () => 'snapshot')],
+    releaseBrowserSession: (sessionId) => {
+      browserReleased.push(sessionId);
+    },
     computerUseTools,
+    releaseComputerUseSession: (sessionId) => computerUseTools.clearSession(sessionId),
   });
+
+  await provider.releaseSession('manual-session');
+  assert.deepEqual(browserReleased, ['manual-session']);
+  assert.deepEqual(computerReleased, ['manual-session']);
+
+  await call(
+    provider,
+    capabilityFrame({
+      sessionId: 'browser-session',
+      toolName: 'browser_snapshot',
+      arguments: {},
+    }),
+  );
+  await provider.releaseSession('browser-session');
+  assert.deepEqual(browserReleased, ['manual-session', 'browser-session']);
+  assert.deepEqual(computerReleased, ['manual-session', 'browser-session']);
 
   const completed = await call(provider, computerFrame({ sessionId: 'completed-session', arguments: {} }));
   assert.deepEqual(completed, {
@@ -129,21 +163,36 @@ test('projects Computer Use screenshots and releases only sessions used by that 
       { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
     ],
   });
+  await provider.releaseSession('completed-session');
+  assert.deepEqual(browserReleased, ['manual-session', 'browser-session', 'completed-session']);
+  assert.deepEqual(computerReleased, ['manual-session', 'browser-session', 'completed-session']);
 
   const inFlight = call(provider, computerFrame({ sessionId: 'active-session', arguments: { wait: true } }));
   await started;
-  await provider.close?.();
+  await provider.close();
   await assert.rejects(inFlight, /provider closed/u);
-  assert.deepEqual(cleared.sort(), ['active-session', 'completed-session']);
-  await provider.close?.();
-  assert.deepEqual(cleared.sort(), ['active-session', 'completed-session']);
+  assert.deepEqual(browserReleased, [
+    'manual-session',
+    'browser-session',
+    'completed-session',
+    'active-session',
+  ]);
+  assert.deepEqual(computerReleased, [
+    'manual-session',
+    'browser-session',
+    'completed-session',
+    'active-session',
+  ]);
+  await provider.close();
   await assert.rejects(() => call(provider, capabilityFrame()), /provider is closed/u);
 });
 
 test('does not advertise unavailable capability groups or dispatch unknown identities', async () => {
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+    releaseBrowserSession() {},
     computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
   });
   assert.deepEqual(
     provider.offers().map((offer) => offer.offerId),
@@ -159,6 +208,32 @@ test('does not advertise unavailable capability groups or dispatch unknown ident
     /not offered/u,
   );
   assert.equal(admitted, false);
+});
+
+test('settles every native Session cleanup before reporting a release failure', async () => {
+  let resolveComputerRelease: (() => void) | undefined;
+  const computerRelease = new Promise<void>((resolve) => {
+    resolveComputerRelease = resolve;
+  });
+  let computerReleased = false;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {
+      throw new Error('browser release failed');
+    },
+    computerUseTools: computerTools(),
+    async releaseComputerUseSession() {
+      await computerRelease;
+      computerReleased = true;
+    },
+  });
+
+  const releasing = provider.releaseSession('session-1');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(computerReleased, false);
+  resolveComputerRelease?.();
+  await assert.rejects(releasing, /browser release failed/u);
+  assert.equal(computerReleased, true);
 });
 
 test('forwards Host cancellation to an admitted Desktop invocation', async () => {
@@ -179,7 +254,9 @@ test('forwards Host cancellation to an admitted Desktop invocation', async () =>
         });
       }),
     ],
+    releaseBrowserSession() {},
     computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
   });
   const controller = new AbortController();
   if (!provider.call) throw new Error('Expected a callable provider');

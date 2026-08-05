@@ -50,6 +50,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
   ) => void;
+  releaseSessionResources: (sessionId: string) => void | Promise<void>;
   newId?: () => string;
 }
 
@@ -96,13 +97,15 @@ export function registerRuntimeHostSessionCatalogIpc(
   });
   ipcMain.handle('sessions:archive', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
+    const ids = await actionIds(sessionId, { revisionFamily: true });
     await deps.client.setSessionLifecycle(sessionId, 'archived');
-    deps.emitSessionsChanged('archived', sessionId);
+    await finishSessionRetirement(deps, ids, 'archived');
   });
   ipcMain.handle('sessions:unarchive', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
+    const ids = await actionIds(sessionId, { revisionFamily: true });
     await deps.client.setSessionLifecycle(sessionId, 'active');
-    deps.emitSessionsChanged('updated', sessionId);
+    for (const id of ids) deps.emitSessionsChanged('updated', id);
   });
   ipcMain.handle(
     'sessions:setFlagged',
@@ -164,9 +167,23 @@ export function registerRuntimeHostSessionCatalogIpc(
   });
   ipcMain.handle('sessions:remove', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
+    const ids = await actionIds(sessionId, { revisionFamily: true });
     await deps.client.removeSession(sessionId);
-    deps.emitSessionsChanged('deleted', sessionId);
+    await finishSessionRetirement(deps, ids, 'deleted');
   });
+}
+
+async function finishSessionRetirement(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionIds: readonly string[],
+  reason: Extract<SessionChangedReason, 'archived' | 'deleted'>,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    sessionIds.map((sessionId) => deps.releaseSessionResources(sessionId)),
+  );
+  for (const sessionId of sessionIds) deps.emitSessionsChanged(reason, sessionId);
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
 async function updateConfiguration(

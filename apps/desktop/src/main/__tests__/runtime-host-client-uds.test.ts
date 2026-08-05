@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
+import type { BotRegistry, ComputerUseToolSet, MakaTool } from '@maka/runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
 import {
   HOST_OPERATION_SPECS,
@@ -19,9 +20,10 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { z } from 'zod';
 import { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
-import { registerRuntimeHostSessionCatalogIpc } from '../runtime-host-session-catalog-ipc-main.js';
+import { startDesktopRuntimeHostCandidate } from '../runtime-host-desktop-candidate.js';
 import { registerRuntimeHostSessionExecutionIpc } from '../runtime-host-session-execution-ipc-main.js';
 import { registerRuntimeHostSessionDomainsIpc } from '../runtime-host-session-domains-ipc-main.js';
 import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';
@@ -108,6 +110,14 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       idleGraceMs: 10_000,
       compositionFactory: async () => ({
         handlers: handlers({
+          'client.capability.replace': async (input) => ({
+            ok: true,
+            result: { registrationId: input.registrationId, revision: 1 },
+          }),
+          'client.capability.unregister': async (input) => ({
+            ok: true,
+            result: { registrationId: input.registrationId, revision: 2 },
+          }),
           'session.catalog.query': async (input) => {
             if (input.kind === 'get') {
               return {
@@ -177,28 +187,32 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         async close() {},
       }),
     });
-    const connected = await connectRuntimeHost({
-      rootPath: base,
-      surface: 'desktop',
-      protocol: {
-        min: RUNTIME_HOST_PROTOCOL_VERSION,
-        max: RUNTIME_HOST_PROTOCOL_VERSION,
-      },
-    });
-    assert.equal(connected.kind, 'connected');
-    if (connected.kind !== 'connected') throw new Error('Desktop did not connect to Runtime Host');
-    const client = new DesktopRuntimeHostClient(connected.connection);
     const ipc = ipcHarness();
     const changes: Array<{ reason: string; sessionId?: string }> = [];
-    registerRuntimeHostSessionCatalogIpc(
-      {
-        client,
-        workspaceRoot: base,
-        emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
-        newId: () => 'session-ipc',
+    const started = await startDesktopRuntimeHostCandidate({
+      rootPath: base,
+      ipcMain: ipc,
+      workspaceRoot: base,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      nativeCapabilities: {
+        browserTools: [nativeTool()],
+        releaseBrowserSession() {},
+        computerUseTools: Object.assign([], {
+          clearSession() {},
+        }) as unknown as ComputerUseToolSet,
+        releaseComputerUseSession() {},
       },
-      ipc,
-    );
+      botRegistry: {} as BotRegistry,
+      resolveBotCreateTarget: async () => ({ cwd: base }),
+      emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+      emitModeChanged() {},
+      newId: () => 'session-ipc',
+    });
+    assert.equal(started.kind, 'ready');
+    if (started.kind !== 'ready') throw new Error('Desktop candidate did not start');
+    const { candidate } = started;
 
     const created = await ipc.invoke('sessions:create', undefined);
     assert.deepEqual((await ipc.invoke('sessions:list')) as unknown[], [created]);
@@ -219,7 +233,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       { reason: 'deleted', sessionId: 'session-ipc' },
     ]);
 
-    await client.close();
+    await candidate.close();
   } finally {
     await host?.close().catch(() => undefined);
     await rm(base, { recursive: true, force: true });
@@ -462,6 +476,9 @@ function ipcHarness() {
       assert.equal(ipcHandlers.has(channel), false, `duplicate handler: ${channel}`);
       ipcHandlers.set(channel, handler);
     },
+    removeHandler(channel: string) {
+      ipcHandlers.delete(channel);
+    },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = ipcHandlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
@@ -495,5 +512,14 @@ function session(
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,
+  };
+}
+
+function nativeTool(): MakaTool {
+  return {
+    name: 'browser_snapshot',
+    description: 'Capture the current page.',
+    parameters: z.object({}),
+    impl: async () => 'snapshot',
   };
 }

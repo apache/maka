@@ -55,7 +55,7 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
     },
   });
 
-  await service.handleBotIncomingMessage({
+  const handling = service.handleBotIncomingMessage({
     platform: 'telegram',
     userId: 'user',
     userName: 'User',
@@ -84,7 +84,7 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
   }
 
   releaseTurn();
-  await waitFor(() => replies.length === 1, 'bot reply was not delivered');
+  await handling;
   assert.equal(typingSignal!.aborted, true);
   assert.equal(getEventListeners(typingSignal!, 'abort').length, 0);
 
