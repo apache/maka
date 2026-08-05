@@ -34,7 +34,7 @@
 import type { ProjectRecord } from '@maka/core';
 import { Selector, SelectorOption, type SelectorOptionData, type SelectorOptionType } from '@astryxdesign/core/Selector';
 import { useMemo } from 'react';
-import { AlertTriangle, FolderOpen } from './icons.js';
+import { AlertTriangle, FolderOpen, Plus, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -58,14 +58,6 @@ export interface WorkspacePickerModel {
 const ADD_PROJECT_VALUE = 'maka:workspace/add-project';
 const NO_PROJECT_VALUE = 'maka:workspace/no-project';
 
-/**
- * The scroll region this replaced was 224px — about eight rows. Below that the
- * catalogue fits on one screen and a search field is a box to skip past; above
- * it, scanning starts to cost more than typing. `ModelPicker` searches
- * unconditionally because a provider catalogue is long by construction.
- */
-const SEARCH_THRESHOLD = 8;
-
 export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }) {
   const wp = props.workspacePicker;
   const copy = getConversationCopy(useUiLocale()).workspace;
@@ -79,8 +71,12 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
   // this replaced pinned them below a scrolling catalogue so they stayed on
   // screen; Selector scrolls as one list, so a long catalogue now pushes them
   // under the fold. That is the right trade: switching projects is the common
-  // act and stays at the top, adding one is rare, and past SEARCH_THRESHOLD
-  // typing reaches any row — including these — faster than scrolling did.
+  // act and stays at the top, adding one is rare, and search reaches any row —
+  // including these — faster than scrolling did.
+  //
+  // Both actions carry an icon so every row shares one text axis. Without them
+  // the two labels started at the icon column while the projects' text started
+  // past it, which read as a broken list rather than as a separate group.
   const options = useMemo<SelectorOptionType[]>(
     () => [
       ...wp.projects.map((project): SelectorOptionData => ({
@@ -93,6 +89,13 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       ...(wp.projects.length > 0 ? [{ type: 'divider' } as const] : []),
       { value: ADD_PROJECT_VALUE, label: copy.addProject },
       { type: 'divider' },
+      // Codex names this row "work without a project", which says the act
+      // rather than the empty value. Not adopted: Selector paints the trigger
+      // from the selected option's own label, with no slot to shorten it, so
+      // that phrasing would also become the label sitting alone under the
+      // greeting — a seven-character negative sentence as the calmest surface
+      // in the product. The × carries the same "deliberate, not missing"
+      // meaning at trigger length.
       { value: NO_PROJECT_VALUE, label: copy.noProject },
     ],
     [wp.projects, copy.addProject, copy.noProject],
@@ -106,7 +109,10 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       // `null` means "no project", which is a real choice here rather than the
       // absence of one, so it maps to its own option instead of the placeholder.
       value={wp.selectedProjectId ?? NO_PROJECT_VALUE}
-      hasSearch={wp.projects.length >= SEARCH_THRESHOLD}
+      // Always searchable, like the model picker: a threshold would make the
+      // menu change shape as the catalogue grows, so the same control would
+      // answer the keyboard differently on different days.
+      hasSearch
       searchPlaceholder={copy.searchPlaceholder}
       size="sm"
       // The trigger sits high on the canvas with the composer below it, so the
@@ -136,11 +142,13 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
         <SelectorOption
           className="maka-workspace-picker-option"
           icon={
-            option.value === ADD_PROJECT_VALUE || option.value === NO_PROJECT_VALUE
-              ? undefined
-              : unavailable.has(option.value)
-                ? <AlertTriangle size={13} aria-hidden="true" />
-                : <FolderOpen size={13} aria-hidden="true" />
+            option.value === ADD_PROJECT_VALUE
+              ? <Plus size={13} aria-hidden="true" />
+              : option.value === NO_PROJECT_VALUE
+                ? <X size={13} aria-hidden="true" />
+                : unavailable.has(option.value)
+                  ? <AlertTriangle size={13} aria-hidden="true" />
+                  : <FolderOpen size={13} aria-hidden="true" />
           }
           label={option.label ?? option.value}
           endContent={unavailable.has(option.value) ? (
