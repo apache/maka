@@ -890,7 +890,13 @@ export class ToolRuntime {
     const clientCapabilityBoundaryRejected =
       clientCapabilityBoundaryReadFailed ||
       (tool.categoryHint === 'client_capability' && clientCapabilityBoundary?.kind !== 'bypass');
-    const preflightRejected = rejectedBeforeClientBoundary || clientCapabilityBoundaryRejected;
+    const rejectedBeforeSubagentAdmission =
+      rejectedBeforeClientBoundary || clientCapabilityBoundaryRejected;
+    // Slot admission is part of preflight too. Reserve it before assigning a
+    // durable operation id so a saturated subagent call stays on the generic
+    // call/response lane just like every other pre-dispatch rejection.
+    const reservedSubagentSlot = !rejectedBeforeSubagentAdmission && this.reserveSubagentSlot(tool);
+    const preflightRejected = rejectedBeforeSubagentAdmission || !reservedSubagentSlot;
 
     // Preflight rejection must remain on the generic call/response lane instead
     // of claiming the T1 dispatch protocol. If the call carried an operationId
@@ -935,13 +941,18 @@ export class ToolRuntime {
       // timeline and post-restart backfill can pair this call with its step.
       ...(stepId !== undefined ? { stepId } : {}),
     };
-    await this.input.appendMessage(callMsg);
-    queue.push(startEv);
-    trace?.emit('tool', 'tool_started', 'Tool execution started', {
-      toolUseId,
-      toolName: tool.name,
-      ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-    });
+    try {
+      await this.input.appendMessage(callMsg);
+      queue.push(startEv);
+      trace?.emit('tool', 'tool_started', 'Tool execution started', {
+        toolUseId,
+        toolName: tool.name,
+        ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
+      });
+    } catch (error) {
+      if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
+      throw error;
+    }
     if (admissionFailure) {
       await this.writeSyntheticToolResult(toolUseId, turnId, admissionFailure, queue);
       trace?.emit('tool', 'tool_failed', 'Tool rejected by exclusive-step admission', {
@@ -1109,7 +1120,6 @@ export class ToolRuntime {
       }
     }
 
-    const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
       trace?.emit('tool', 'tool_failed', 'Tool execution rejected by runtime limit', {
         toolUseId,
