@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { importLegacySessionsOnce } from '../legacy-session-import.js';
+import { decodeLegacySessionHeader, importLegacySessionsOnce } from '../legacy-session-import.js';
 import { createSessionStore } from '../session-store.js';
 
 function fixturePath(name: string): string {
@@ -53,6 +53,8 @@ test('imports a complete legacy session with messages in order and restored time
       skipped: 0,
       failed: 0,
       failures: [],
+      skippedExisting: 0,
+      skippedCollision: 0,
     });
 
     const header = await sessions.readHeaderSnapshot('legacy-a1b2c3d4e5f6');
@@ -90,7 +92,14 @@ test('is idempotent: a second run skips the already-imported session without dup
     assert.equal(first.imported, 1);
 
     const second = await importLegacySessionsOnce(sessions, workspace);
-    assert.deepEqual(second, { imported: 0, skipped: 1, failed: 0, failures: [] });
+    assert.deepEqual(second, {
+      imported: 0,
+      skipped: 1,
+      failed: 0,
+      failures: [],
+      skippedExisting: 1,
+      skippedCollision: 0,
+    });
 
     const messages = await sessions.readMessages('legacy-a1b2c3d4e5f6');
     assert.equal(messages.length, 6, 'no duplicate messages after a second import');
@@ -153,5 +162,130 @@ test('a legacy turn without turn_state records normalizes to completed on read',
     // presence of an assistant message.
     assert.equal(turns[0]?.status, 'completed');
     assert.equal(turns[0]?.statusSource, 'inferred');
+  });
+});
+
+test('list() lazy-imports legacy sessions without a direct importer call', async () => {
+  await withWorkspace(async ({ sessions, workspace }) => {
+    await seedLegacySession(workspace, 'legacy-a1b2c3d4e5f6', 'normal-session.jsonl');
+
+    // No direct importer call: the list() gate must trigger the import itself.
+    const summaries = await sessions.list();
+    assert.ok(summaries.some((summary) => summary.id === 'legacy-a1b2c3d4e5f6'));
+    const header = await sessions.readHeaderSnapshot('legacy-a1b2c3d4e5f6');
+    assert.equal(
+      header.createdAt,
+      1783929889564,
+      'lazy import restores the legacy lifecycle facts',
+    );
+  });
+});
+
+test('readHeaderSnapshot (the resume path) triggers the import too', async () => {
+  await withWorkspace(async ({ sessions, workspace }) => {
+    await seedLegacySession(workspace, 'legacy-a1b2c3d4e5f6', 'normal-session.jsonl');
+
+    // `maka --resume <legacy-id>` reads the header before any list; the import
+    // gate must cover this entry point or the first post-upgrade resume
+    // silently starts fresh.
+    const header = await sessions.readHeaderSnapshot('legacy-a1b2c3d4e5f6');
+    assert.equal(header.id, 'legacy-a1b2c3d4e5f6');
+    const messages = await sessions.readMessages('legacy-a1b2c3d4e5f6');
+    assert.equal(messages.length, 6);
+  });
+});
+
+test('a torn tail (interrupted append) is tolerated: the intact records still import', async () => {
+  await withWorkspace(async ({ sessions, workspace }) => {
+    await seedLegacySession(workspace, 'legacy-torntail-1', 'torn-tail-session.jsonl');
+
+    const result = await importLegacySessionsOnce(sessions, workspace);
+    assert.equal(result.imported, 1);
+
+    const messages = await sessions.readMessages('legacy-torntail-1');
+    // The final incomplete line is skipped, matching the pre-#1994 strict
+    // reader; the six intact records of normal-session.jsonl are preserved.
+    assert.equal(messages.length, 6);
+    assert.ok(
+      messages.every(
+        (message) => message.type !== 'user' || message.text !== 'this line was cut off mid-wr',
+      ),
+    );
+  });
+});
+
+test('a session_transcript marker with no SQLite metadata fails closed instead of fabricating a session', async () => {
+  await withWorkspace(async ({ sessions, workspace }) => {
+    await seedLegacySession(workspace, 'legacy-marker-0001', 'marker-session.jsonl');
+
+    const result = await importLegacySessionsOnce(sessions, workspace);
+    assert.equal(result.imported, 0);
+    assert.equal(result.failed, 1);
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0]?.sessionId, 'legacy-marker-0001');
+    assert.match(result.failures[0]?.error ?? '', /session_transcript marker/);
+
+    // Nothing was fabricated: the marker file must not create a fake session.
+    await assert.rejects(
+      sessions.readHeaderSnapshot('legacy-marker-0001'),
+      /Session metadata not found/,
+    );
+  });
+});
+
+test('a subagent child with incomplete spawn identity fails closed instead of flattening to a top-level session', async () => {
+  await withWorkspace(async ({ sessions, workspace }) => {
+    await seedLegacySession(workspace, 'legacy-subagent-0001', 'subagent-parent-session.jsonl');
+
+    const result = await importLegacySessionsOnce(sessions, workspace);
+    // The lineage is valid for normalizeSessionHeader, but createSubagent
+    // requires parent+runtime+spawn; the child must be reported as failed,
+    // not silently imported as a flat top-level session.
+    assert.equal(result.imported, 0);
+    assert.equal(result.failed, 1);
+    assert.match(result.failures[0]?.error ?? '', /parent, runtime, and spawn metadata/);
+    await assert.rejects(
+      sessions.readHeaderSnapshot('legacy-subagent-0001'),
+      /Session metadata not found/,
+    );
+  });
+});
+
+test('decodeLegacySessionHeader preserves legacy subagent lineage, thinkingLevel, and unread position', async () => {
+  const header = decodeLegacySessionHeader(
+    {
+      id: 'legacy-child-1',
+      workspaceRoot: '/w',
+      cwd: '/w/project',
+      createdAt: 1000,
+      lastUsedAt: 2000,
+      name: 'Child',
+      isFlagged: false,
+      labels: [],
+      isArchived: false,
+      hasUnread: true,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'conn',
+      connectionLocked: true,
+      model: 'm',
+      permissionMode: 'ask',
+      lastReadMessageId: 'msg-42',
+      thinkingLevel: 'high',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: 'legacy-parent-1',
+        spawnedBy: { parentRunId: 'r1', parentTurnId: 't1', toolCallId: 'c1' },
+        lifecycle: 'foreground',
+      },
+    },
+    'legacy-child-1',
+  );
+  assert.equal(header.lastReadMessageId, 'msg-42');
+  assert.equal(header.thinkingLevel, 'high');
+  assert.deepEqual(header.subagentParent, {
+    kind: 'subagent',
+    parentSessionId: 'legacy-parent-1',
+    spawnedBy: { parentRunId: 'r1', parentTurnId: 't1', toolCallId: 'c1' },
+    lifecycle: 'foreground',
   });
 });

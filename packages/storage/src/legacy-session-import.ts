@@ -14,7 +14,7 @@ import {
   type SessionHeader,
   type StoredMessage,
 } from '@maka/core';
-import type { SessionAuthorityStore } from './session-store.js';
+import { normalizeSessionHeader, type SessionAuthorityStore } from './session-store.js';
 
 /**
  * One-time importer for the legacy file-backed session transcripts that the
@@ -26,31 +26,43 @@ import type { SessionAuthorityStore } from './session-store.js';
  * the JSONL session tree (#2029) without an import path, so sessions created
  * before the cutover stay on disk but never appear in the UI (issue #2260).
  *
+ * Between #1373 and #1994 the writer stored line 1 as a
+ * `{"type":"session_transcript",...}` marker instead (data lived in SQLite),
+ * and the pre-#1994 reader fail-closed on a marker file whose SQLite row was
+ * absent. The importer preserves that contract: a marker file with no backing
+ * SQLite row is reported as failed, never fabricated into a fake session.
+ *
  * Design:
  * - Runs once per session: idempotency key is the session id itself. We probe
- *   with `probeStableSessionCreate` and skip any id already present in SQLite,
- *   so re-running (e.g. after a partial failure or a second launch) is safe
- *   and does not duplicate data.
+ *   with `probeStableSessionCreate` first and skip any id already present in
+ *   SQLite, so re-running (e.g. after a partial failure or a second launch)
+ *   is safe and does not duplicate data — and the probe runs BEFORE the
+ *   expensive file read, so every launch of an upgraded install skips known
+ *   ids without touching the transcript.
  * - Per-file atomicity: a file either imports completely (header + all
- *   messages) or is skipped and counted as failed. We never write a partial
- *   session, and we never silently degrade a corrupt record into a synthetic
- *   note in the new authoritative store.
+ *   messages) or is skipped and counted as failed. The decoded header and the
+ *   post-create header patch are validated through `normalizeSessionHeader`
+ *   BEFORE any write, so the three store writes (create → append → update)
+ *   cannot fail validation after two of three commits — the failure mode that
+ *   used to leave a permanent partial session.
  * - Best-effort: a malformed or unreadable file is reported in the result and
  *   never blocks startup or the import of other sessions.
  * - Legacy files are retained after import, honoring the repository policy
  *   that legacy stores are kept as migration evidence.
+ * - Legacy subagent children (real on-disk sessions before the cutover) are
+ *   routed through `createSubagent` so their parent/child lineage is kept; a
+ *   subagent header whose spawn identity is incomplete fails the file instead
+ *   of silently flattening into a top-level session.
  *
  * The compatibility defaults mirror the old `decodeSessionHeader` (kept public
  * for one-way importers before #1994 deleted it): missing `permissionMode`
  * defaults to `ask`, `collaborationMode` to `agent`, `orchestrationMode` to
  * `default`, model to `default`, and `claude`/`pi` backends are remapped.
- * Final header validation happens inside `createStableSession` (the metadata
- * store runs `normalizeSessionHeader`), so this module does not re-implement
- * it.
  */
 
 const LEGACY_SESSIONS_DIR = 'sessions';
 const LEGACY_TRANSCRIPT_FILE = 'session.jsonl';
+const SESSION_TRANSCRIPT_MARKER_TYPE = 'session_transcript';
 
 /**
  * Stable request fingerprint for legacy imports. `createStableSession`
@@ -67,7 +79,15 @@ export interface LegacySessionImportResult {
   skipped: number;
   failed: number;
   failures: Array<{ sessionId: string; error: string }>;
+  /** `skipped` where the session id already existed in SQLite (already imported, or a concurrent process won the race). */
+  skippedExisting: number;
+  /** `skipped` where the session id was claimed by a different request fingerprint or tombstoned. */
+  skippedCollision: number;
 }
+
+type LegacySessionFileOutcome =
+  | { kind: 'imported' }
+  | { kind: 'skipped'; reason: 'existing' | 'conflict' };
 
 /**
  * Import all legacy `sessions/<session-id>/session.jsonl` transcripts under
@@ -80,7 +100,14 @@ export async function importLegacySessionsOnce(
   store: SessionAuthorityStore,
   workspaceRoot: string,
 ): Promise<LegacySessionImportResult> {
-  const result: LegacySessionImportResult = { imported: 0, skipped: 0, failed: 0, failures: [] };
+  const result: LegacySessionImportResult = {
+    imported: 0,
+    skipped: 0,
+    failed: 0,
+    failures: [],
+    skippedExisting: 0,
+    skippedCollision: 0,
+  };
   const sessionsDir = join(workspaceRoot, LEGACY_SESSIONS_DIR);
 
   let entries: Dirent[];
@@ -102,10 +129,15 @@ export async function importLegacySessionsOnce(
     const transcriptPath = join(sessionsDir, sessionId, LEGACY_TRANSCRIPT_FILE);
     try {
       const outcome = await importLegacySessionFile(store, sessionId, transcriptPath);
-      if (outcome === 'imported') {
+      if (outcome.kind === 'imported') {
         result.imported += 1;
       } else {
         result.skipped += 1;
+        if (outcome.reason === 'conflict') {
+          result.skippedCollision += 1;
+        } else {
+          result.skippedExisting += 1;
+        }
       }
     } catch (error) {
       result.failed += 1;
@@ -123,31 +155,57 @@ async function importLegacySessionFile(
   store: SessionAuthorityStore,
   sessionId: string,
   transcriptPath: string,
-): Promise<'imported' | 'skipped'> {
+): Promise<LegacySessionFileOutcome> {
+  // Idempotency probe FIRST: any session id already known to SQLite — whether
+  // imported by an earlier run, created by the user, or claimed by a
+  // concurrent first-launch process — is left untouched, and we never read or
+  // parse its transcript on later launches.
+  const probe = await store.probeStableSessionCreate(sessionId, LEGACY_IMPORT_FINGERPRINT);
+  if (probe.kind === 'existing') return { kind: 'skipped', reason: 'existing' };
+  if (probe.kind === 'conflict') return { kind: 'skipped', reason: 'conflict' };
+
   const { header, messages } = await readLegacyTranscript(transcriptPath, sessionId);
 
-  // Idempotency: any session id already known to SQLite — whether imported by
-  // an earlier run or created by the user — is left untouched.
-  const probe = await store.probeStableSessionCreate(sessionId, LEGACY_IMPORT_FINGERPRINT);
-  if (probe.kind !== 'absent') return 'skipped';
+  // Validate BEFORE any write. `createStableSession` and `updateHeader` both
+  // re-validate through `normalizeSessionHeader`; the old flow let the update
+  // (the third of three transactions) throw after create+append had already
+  // committed, leaving a permanent partial session that the next run's probe
+  // would report as "skipped". Validating the decoded header AND the final
+  // post-patch shape here moves that failure before the first write.
+  const normalized = normalizeSessionHeader(header);
+  const patch = legacyHeaderPatch(header, messages);
+  normalizeSessionHeader({ ...normalized, ...patch }, sessionId);
 
   const input = toCreateSessionInput(header);
-  const created = await store.createStableSession({
-    sessionId,
-    requestFingerprint: LEGACY_IMPORT_FINGERPRINT,
-    input,
-  });
-  // A concurrent process may have won the race between probe and create;
-  // both `existing` and `conflict` mean the id is taken, so skip.
-  if (created.kind !== 'created') return 'skipped';
+  if (header.subagentParent) {
+    // Legacy subagent children carry parent/runtime/spawn metadata; route
+    // through createSubagent so lineage is preserved. A malformed/incomplete
+    // spawn identity throws (requireSubagentSpawnIdentity) and fails the file
+    // rather than flattening the child into a top-level session.
+    const created = await store.createSubagent(input);
+    if (!created.created) return { kind: 'skipped', reason: 'existing' };
+  } else {
+    const created = await store.createStableSession({
+      sessionId,
+      requestFingerprint: LEGACY_IMPORT_FINGERPRINT,
+      input,
+    });
+    // A concurrent process may have won the race between probe and create;
+    // both `existing` and `conflict` mean the id is taken, so skip.
+    if (created.kind !== 'created') {
+      return { kind: 'skipped', reason: created.kind };
+    }
+  }
 
   await store.appendMessages(sessionId, messages);
 
-  // `createStableSession` stamps now-based timestamps and default flags; the
-  // legacy header carries the real lifecycle facts, so restore them.
-  await store.updateHeader(sessionId, legacyHeaderPatch(header, messages));
+  // `createStableSession`/`createSubagent` stamp now-based timestamps and
+  // default flags; the legacy header carries the real lifecycle facts, so
+  // restore them. The final shape was pre-validated above, so this update
+  // cannot fail validation.
+  await store.updateHeader(sessionId, patch);
 
-  return 'imported';
+  return { kind: 'imported' };
 }
 
 async function readLegacyTranscript(
@@ -155,19 +213,48 @@ async function readLegacyTranscript(
   sessionId: string,
 ): Promise<{ header: SessionHeader; messages: StoredMessage[] }> {
   const text = await readFile(transcriptPath, 'utf8');
-  const lines = text.split('\n').filter((line) => line.trim().length > 0);
-  if (lines.length === 0) {
+  const rawLines = text.split('\n');
+  const contentLines = rawLines.filter((line) => line.trim().length > 0);
+  if (contentLines.length === 0) {
     throw new Error(`Legacy session ${sessionId} is empty`);
   }
 
-  const header = decodeLegacySessionHeader(JSON.parse(lines[0]!), sessionId);
+  let firstRecord: unknown;
+  try {
+    firstRecord = JSON.parse(contentLines[0]!);
+  } catch (error) {
+    throw new Error(
+      `Legacy session ${sessionId} has an invalid header line: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  // Between #1373 and #1994 line 1 was a `session_transcript` marker and the
+  // data lived in SQLite. A marker file with no backing SQLite row (restored
+  // backup, copied sessions/, reset DB) cannot be imported from JSONL — the
+  // pre-#1994 reader fail-closed on this shape, and so do we: report it as
+  // failed rather than fabricating a fake session with import-time stamps.
+  if (isSessionTranscriptMarker(firstRecord)) {
+    throw new Error(
+      `Legacy session ${sessionId} is a session_transcript marker whose SQLite metadata is absent; ` +
+        'refusing to fabricate a session from the marker alone',
+    );
+  }
+
+  const header = decodeLegacySessionHeader(firstRecord, sessionId);
   const messages: StoredMessage[] = [];
-  for (let index = 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
+  for (let index = 1; index < rawLines.length; index += 1) {
+    const line = rawLines[index]!;
+    if (line.trim().length === 0) continue;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch (error) {
+      // The classic interrupted-append artifact: a final line cut off mid-write.
+      // The pre-#1994 strict reader skipped such a torn tail; the rest of the
+      // file is intact and still imports.
+      if (isLastContentLine(rawLines, index)) break;
       throw new Error(
         `Legacy session ${sessionId} has a corrupt JSONL record at line ${index + 1}: ${
           error instanceof Error ? error.message : String(error)
@@ -179,6 +266,18 @@ async function readLegacyTranscript(
     messages.push(decodeStoredMessageForRecovery(parsed));
   }
   return { header, messages };
+}
+
+function isSessionTranscriptMarker(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return (value as { type?: unknown }).type === SESSION_TRANSCRIPT_MARKER_TYPE;
+}
+
+function isLastContentLine(rawLines: string[], index: number): boolean {
+  for (let i = index + 1; i < rawLines.length; i += 1) {
+    if (rawLines[i]!.trim().length > 0) return false;
+  }
+  return true;
 }
 
 /**
@@ -238,6 +337,20 @@ export function decodeLegacySessionHeader(value: unknown, sessionId: string): Se
     statusUpdatedAt,
     ...(header.parentSessionId !== undefined ? { parentSessionId: header.parentSessionId } : {}),
     ...(header.branchOfTurnId !== undefined ? { branchOfTurnId: header.branchOfTurnId } : {}),
+    // Legacy subagent lineage and per-session state that the pre-#1994 decoder
+    // preserved by spreading the whole stored header. Dropping these silently
+    // flattened subagent children into top-level sessions and lost
+    // thinkingLevel / unread position.
+    ...(header.subagentParent !== undefined ? { subagentParent: header.subagentParent } : {}),
+    ...(header.subagentRuntime !== undefined ? { subagentRuntime: header.subagentRuntime } : {}),
+    ...(header.subagentSpawn !== undefined ? { subagentSpawn: header.subagentSpawn } : {}),
+    ...(header.subagentWorkspace !== undefined
+      ? { subagentWorkspace: header.subagentWorkspace }
+      : {}),
+    ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),
+    ...(header.lastReadMessageId !== undefined
+      ? { lastReadMessageId: header.lastReadMessageId }
+      : {}),
     ...(header.revisionRootSessionId !== undefined
       ? { revisionRootSessionId: header.revisionRootSessionId }
       : {}),
@@ -283,6 +396,7 @@ function toCreateSessionInput(header: SessionHeader): CreateSessionInput {
     backend: header.backend,
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
+    ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),
     permissionMode: header.permissionMode,
     collaborationMode: header.collaborationMode,
     orchestrationMode: header.orchestrationMode,
@@ -291,6 +405,12 @@ function toCreateSessionInput(header: SessionHeader): CreateSessionInput {
     labels: header.labels,
     ...(header.parentSessionId !== undefined ? { parentSessionId: header.parentSessionId } : {}),
     ...(header.branchOfTurnId !== undefined ? { branchOfTurnId: header.branchOfTurnId } : {}),
+    ...(header.subagentParent !== undefined ? { subagentParent: header.subagentParent } : {}),
+    ...(header.subagentRuntime !== undefined ? { subagentRuntime: header.subagentRuntime } : {}),
+    ...(header.subagentSpawn !== undefined ? { subagentSpawn: header.subagentSpawn } : {}),
+    ...(header.subagentWorkspace !== undefined
+      ? { subagentWorkspace: header.subagentWorkspace }
+      : {}),
     ...(header.revisionRootSessionId !== undefined
       ? { revisionRootSessionId: header.revisionRootSessionId }
       : {}),
@@ -306,7 +426,9 @@ function toCreateSessionInput(header: SessionHeader): CreateSessionInput {
 /**
  * Fields `buildSessionHeader` cannot express (it stamps `Date.now()` and
  * default flags) but the legacy header carries. `updateHeader` re-validates
- * through `normalizeSessionHeader`, so the values must be canonically shaped.
+ * through `normalizeSessionHeader`, so the values must be canonically shaped —
+ * `importLegacySessionFile` pre-validates this exact merged shape before the
+ * first write.
  */
 function legacyHeaderPatch(
   header: SessionHeader,
@@ -346,6 +468,12 @@ type LegacyStoredSessionHeader = {
   statusUpdatedAt?: number;
   parentSessionId?: string;
   branchOfTurnId?: string;
+  subagentParent?: SessionHeader['subagentParent'];
+  subagentRuntime?: SessionHeader['subagentRuntime'];
+  subagentSpawn?: SessionHeader['subagentSpawn'];
+  subagentWorkspace?: SessionHeader['subagentWorkspace'];
+  thinkingLevel?: SessionHeader['thinkingLevel'];
+  lastReadMessageId?: string;
   revisionRootSessionId?: string;
   revisionParentSessionId?: string;
   revisionOfTurnId?: string;

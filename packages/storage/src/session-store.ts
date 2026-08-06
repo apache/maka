@@ -274,6 +274,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private readonly metadata: SqliteSessionMetadataStore;
   private readonly workspaceRoot: string;
   private legacyImportPromise: Promise<void> | null = null;
+  private legacyImportResult:
+    | import('./legacy-session-import.js').LegacySessionImportResult
+    | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(workspaceRoot: string, _dependencies: SessionAuthorityStoreTestDependencies) {
@@ -291,12 +294,31 @@ class SqliteSessionStore implements SessionAuthorityStore {
    *
    * The import itself is best-effort (per-file errors are reported, never
    * thrown), so this promise never rejects; it exists only to serialize the
-   * first list against the import.
+   * first list against the import. The outcome is retained on the instance
+   * (and failures surfaced to the log) so a whole-run or per-file failure is
+   * observable instead of silently swallowed — the feature's purpose (data
+   * appears in the UI) can otherwise fail with zero signal.
    */
   private ensureLegacyImported(): Promise<void> {
     this.legacyImportPromise ??= importLegacySessionsOnce(this, this.workspaceRoot)
-      .then(() => undefined)
-      .catch(() => undefined);
+      .then((result) => {
+        this.legacyImportResult = result;
+        if (result.failed > 0) {
+          console.warn(
+            `[legacy-session-import] ${result.failed} of ${result.imported + result.skipped + result.failed} legacy session(s) failed to import; ` +
+              `failures: ${result.failures.map((failure) => `${failure.sessionId}: ${failure.error}`).join(' | ')}`,
+          );
+        } else if (result.imported > 0) {
+          console.info(`[legacy-session-import] imported ${result.imported} legacy session(s)`);
+        }
+      })
+      .catch((error: unknown) => {
+        this.legacyImportResult = null;
+        console.error(
+          '[legacy-session-import] import run failed:',
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     return this.legacyImportPromise;
   }
 
@@ -565,6 +587,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readHeaderRecordSnapshot(sessionId: string): Promise<SessionHeaderSnapshot> {
     await this.ensureReady();
+    // `maka --resume <legacy-id>` reads the header before any list, so the
+    // import gate must cover this entry point too — otherwise the first
+    // post-upgrade resume of a pre-cutover session silently starts fresh.
+    await this.ensureLegacyImported();
     return projectHeaderSnapshot(await this.metadata.read(sessionId));
   }
 
@@ -579,6 +605,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]> {
     await this.ensureReady();
+    // Same import gate as readHeaderSnapshot: a resumed legacy session reads
+    // its messages immediately after the header, and both must see the
+    // imported rows on the first post-upgrade run.
+    await this.ensureLegacyImported();
     return this.metadata.readMessages(sessionId);
   }
 
