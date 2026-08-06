@@ -84,6 +84,11 @@ describe('ToolRuntime turn-close outcome identity', () => {
     // per-turn state in the same synchronous body. The tool's unwind runs
     // after both.
     await runtime.endTurn('aborted');
+    // Ordering is part of the contract: the run's terminal fact is settled
+    // right after the stop resolves, and the store keeps the terminal event
+    // as the immutable ledger tail, so the aborted operation's outcome must
+    // already be committed by the time endTurn hands back.
+    assert.equal(outcomes.length, 1);
     await settled;
 
     const result = events.find(

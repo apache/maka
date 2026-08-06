@@ -496,6 +496,7 @@ export class ToolRuntime {
   private lastAmbiguousComputerSignature: string | undefined;
   private readonly recentSandboxDenials = new Set<string>();
   private readonly durableToolAttempts = new Map<string, DurableToolAttempt>();
+  private readonly activeToolSettlements = new Set<Promise<unknown>>();
   private readonly readExecutionBoundary: NonNullable<ToolRuntimeInput['readExecutionBoundary']>;
   private readonly stepAdmissions = new Map<
     string,
@@ -570,6 +571,14 @@ export class ToolRuntime {
       this.questionClosureDeferred = false;
     }
     this.resetTurnState();
+    // The stop path settles the run's terminal fact right after the
+    // backend's stop resolves, and that stop awaits this method. Unwinds
+    // already in flight commit their T2 outcomes on their own microtask
+    // chains, so wait for them here: the terminal event stays the ledger's
+    // immutable tail instead of racing an outcome in behind it (#2253).
+    // Bounded, not open-ended: every rejection above has already been
+    // dispatched, and running impls observe the turn abort signal.
+    await Promise.allSettled([...this.activeToolSettlements]);
     if (boundarySettlementErrors.length > 0) {
       throw new AggregateError(
         boundarySettlementErrors,
@@ -700,6 +709,19 @@ export class ToolRuntime {
    * turn-scoped provider resources such as the image budget.
    */
   async settleToolCallRaw(call: ResolvedMakaToolCall): Promise<RawToolSettlement> {
+    const settlement = this.performToolSettlement(call);
+    // Tracked so endTurn can wait out unwinds already in flight (#2253):
+    // their T2 outcomes must land before the stop path settles the run's
+    // terminal fact, and nested Code Mode calls route through here too.
+    // The caller observes the settlement itself; the tracking handler only
+    // removes the entry.
+    this.activeToolSettlements.add(settlement);
+    const untrack = () => this.activeToolSettlements.delete(settlement);
+    void settlement.then(untrack, untrack);
+    return settlement;
+  }
+
+  private async performToolSettlement(call: ResolvedMakaToolCall): Promise<RawToolSettlement> {
     const result = await this.executeTool(
       call.tool,
       call.turnId,

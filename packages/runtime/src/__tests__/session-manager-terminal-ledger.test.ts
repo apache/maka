@@ -1320,6 +1320,8 @@ describe('SessionManager terminal ledger invariants', () => {
       isTerminalRuntimeEvent,
     );
     expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.status).toBe('aborted');
+    expect(terminalEvents[0]?.actions?.stateDelta?.abortSource).toBe('renderer.stop_button');
   });
 
   test('a retried stop settles once a latched store answers again', async () => {
@@ -1397,6 +1399,77 @@ describe('SessionManager terminal ledger invariants', () => {
       isTerminalRuntimeEvent,
     );
     expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.status).toBe('aborted');
+    expect(terminalEvents[0]?.actions?.stateDelta?.abortSource).toBe('renderer.stop_button');
+  });
+
+  test('stop settlement probes a latched run store instead of skipping the header commit', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const session = await store.create(makeInput());
+    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, []);
+    const activeRuns = new Map<string, AgentRun>();
+    const turnToRunId = new Map<string, string>();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(42_100),
+      hooks: {
+        reserveRun: async (_sessionId, _header, activeRun) => {
+          activeRuns.set(activeRun.runId, activeRun);
+          turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
+        },
+        unregisterRun: (_active, activeRun) => {
+          activeRuns.delete(activeRun.runId);
+          turnToRunId.delete(activeRun.turnId);
+        },
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    await run.begin();
+    // One best-effort trace append failure latches the Run store. Nothing
+    // surfaces to the user, which is what made the pre-fix behaviour a
+    // silent stop success: commitTerminalRun skips under the latch and the
+    // run stays non-terminal with no error to retry on.
+    runStore.failNextRunEventAppends = 1;
+    run.recordRunTrace({
+      id: 'trace-1',
+      sessionId: session.id,
+      turnId: 'turn-1',
+      ts: 1,
+      phase: 'turn',
+      type: 'abort_requested',
+      message: 'trace append that latches the store',
+    });
+    await timerDelay(0);
+    await timerDelay(0);
+    run.stop('stop_button');
+
+    await run.settleStopTerminal();
+
+    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+      isTerminalRuntimeEvent,
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.status).toBe('aborted');
+    const cancelled = (await runStore.readEvents(session.id, run.runId)).filter(
+      (event) => event.type === 'run_cancelled',
+    );
+    expect(cancelled).toHaveLength(1);
   });
 
   test('direct AgentRun error events still commit failed terminal facts when failed turn projection fails', async () => {
@@ -2191,6 +2264,8 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   failNextRuntimeEventAppends = 0;
   /** While true every runtime-event read rejects, a store that is down. */
   failRuntimeEventReads = false;
+  /** One-shot run-event append rejections, for latching the Run store. */
+  failNextRunEventAppends = 0;
 
   constructor(
     private readonly options: {
@@ -2230,6 +2305,10 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   }
 
   async appendEvent(sessionId: string, runId: string, event: AgentRunEvent): Promise<void> {
+    if (this.failNextRunEventAppends > 0) {
+      this.failNextRunEventAppends -= 1;
+      throw new Error('run event append rejected');
+    }
     const eventKey = key(sessionId, runId);
     this.events.set(eventKey, [...(this.events.get(eventKey) ?? []), clone(event)]);
   }
