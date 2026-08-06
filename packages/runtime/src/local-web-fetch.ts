@@ -11,15 +11,36 @@ interface LocalWebFetchInput {
 const BLOCKED_CLOUD_METADATA_HOSTS = new Set([
   '169.254.169.254',
   '169.254.170.2',
+  '169.254.170.23',
   '100.100.100.200',
   'fd00:ec2::254',
+  'fd00:ec2::23',
   '::ffff:a9fe:a9fe',
   'instance-data.ec2.internal',
   'metadata.google.internal',
   'metadata.goog',
+  'metadata.tencentyun.com',
 ]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 10;
+const MAX_HTML_NESTING_DEPTH = 512;
+const VOID_HTML_ELEMENTS = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+]);
+const RAW_TEXT_HTML_ELEMENTS = new Set(['script', 'style', 'textarea', 'title']);
 export const WEB_FETCH_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 export const WEB_FETCH_TIMEOUT_MS = 30_000;
 
@@ -92,7 +113,7 @@ async function readBoundedText(response: Response): Promise<string> {
   if (!response.body) return '';
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = responseTextDecoder(response);
   let bytes = 0;
   let text = '';
   try {
@@ -112,6 +133,17 @@ async function readBoundedText(response: Response): Promise<string> {
   }
 }
 
+function responseTextDecoder(response: Response): TextDecoder {
+  const contentType = response.headers.get('content-type') ?? '';
+  const charset = /(?:^|;)\s*charset\s*=\s*"?([^;"\s]+)/i.exec(contentType)?.[1];
+  if (!charset) return new TextDecoder();
+  try {
+    return new TextDecoder(charset);
+  } catch {
+    return new TextDecoder();
+  }
+}
+
 function responseLimitError(): Error {
   return new Error('WebFetch response exceeds the 5 MB response limit.');
 }
@@ -124,18 +156,39 @@ function assertAllowedTarget(url: URL): void {
     .toLowerCase()
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '');
-  if (BLOCKED_CLOUD_METADATA_HOSTS.has(hostname)) {
+  if (
+    BLOCKED_CLOUD_METADATA_HOSTS.has(hostname) ||
+    BLOCKED_CLOUD_METADATA_HOSTS.has(ipv4FromMappedIpv6(hostname) ?? '')
+  ) {
     throw new Error('WebFetch cloud metadata target is not allowed.');
   }
 }
 
+function ipv4FromMappedIpv6(hostname: string): string | null {
+  const match = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(hostname);
+  if (!match) return null;
+  const high = Number.parseInt(match[1]!, 16);
+  const low = Number.parseInt(match[2]!, 16);
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
 function htmlToMarkdown(html: string, pageUrl: string): string {
+  assertSafeHtmlNesting(html);
   const { document } = parseHTML(html);
+  const baseHref = document.querySelector('base[href]')?.getAttribute('href');
+  let linkBaseUrl = pageUrl;
+  if (baseHref) {
+    try {
+      linkBaseUrl = new URL(baseHref, pageUrl).toString();
+    } catch {
+      // Fall back to the response URL for a malformed page-authored base URL.
+    }
+  }
   for (const element of document.querySelectorAll<HTMLElement>('[href]')) {
     const href = element.getAttribute('href');
     if (!href) continue;
     try {
-      element.setAttribute('href', new URL(href, pageUrl).toString());
+      element.setAttribute('href', new URL(href, linkBaseUrl).toString());
     } catch {
       // Keep malformed page-authored links as-is.
     }
@@ -145,6 +198,35 @@ function htmlToMarkdown(html: string, pageUrl: string): string {
   return new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
     .turndown(readableHtml)
     .trim();
+}
+
+function assertSafeHtmlNesting(html: string): void {
+  const stack: string[] = [];
+  const tags = /<\/?([a-z][^\s/>]*)\b[^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(html))) {
+    const source = match[0];
+    const name = match[1]!.toLowerCase();
+    if (source.startsWith('</')) {
+      const index = stack.lastIndexOf(name);
+      if (index >= 0) stack.length = index;
+      continue;
+    }
+    if (source.endsWith('/>') || VOID_HTML_ELEMENTS.has(name)) continue;
+    if (RAW_TEXT_HTML_ELEMENTS.has(name)) {
+      const closingTag = new RegExp(`</${name}\\s*>`, 'gi');
+      closingTag.lastIndex = tags.lastIndex;
+      const closingMatch = closingTag.exec(html);
+      if (closingMatch) tags.lastIndex = closingTag.lastIndex;
+      continue;
+    }
+    stack.push(name);
+    if (stack.length > MAX_HTML_NESTING_DEPTH) {
+      throw new Error(
+        `WebFetch HTML nesting exceeds the safety limit of ${MAX_HTML_NESTING_DEPTH}.`,
+      );
+    }
+  }
 }
 
 function defaultUserAgent(): string {

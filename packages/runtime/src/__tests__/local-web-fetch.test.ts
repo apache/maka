@@ -15,6 +15,19 @@ test('local WebFetch passes plain text through', async () => {
   assert.equal(result, 'plain body');
 });
 
+test('local WebFetch decodes the charset declared by the response', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x96, 0x20, 0x6e, 0x65, 0x77]), {
+        headers: { 'content-type': 'text/plain; charset=windows-1252' },
+      }),
+  });
+
+  const result = await executor.fetch({ url: 'https://example.com/legacy', sessionId: 's1' });
+
+  assert.equal(result, 'café – new');
+});
+
 test('local WebFetch extracts readable HTML as Markdown', async () => {
   const executor = createLocalWebFetchExecutor({
     fetch: async () =>
@@ -36,6 +49,34 @@ test('local WebFetch extracts readable HTML as Markdown', async () => {
   assert.doesNotMatch(result, /Site navigation/);
 });
 
+test('local WebFetch resolves links against the document base URL', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><head><base href="https://cdn.example/assets/"></head><body><article>' +
+          '<h1>Base URL</h1><p>A useful <a href="details">article link</a>.</p>' +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({ url: 'https://example.com/page', sessionId: 's1' });
+
+  assert.match(result, /\[article link\]\(https:\/\/cdn\.example\/assets\/details\)/);
+});
+
+test('local WebFetch rejects pathologically deep HTML before DOM parsing', async () => {
+  const html = `<html><body>${'<div>'.repeat(600)}content${'</div>'.repeat(600)}</body></html>`;
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () => new Response(html, { headers: { 'content-type': 'text/html' } }),
+  });
+
+  await assert.rejects(
+    executor.fetch({ url: 'https://example.com/deep', sessionId: 's1' }),
+    /HTML nesting exceeds the safety limit/i,
+  );
+});
+
 test('local WebFetch rejects explicit cloud metadata targets before connecting', async () => {
   let requests = 0;
   const executor = createLocalWebFetchExecutor({
@@ -48,10 +89,15 @@ test('local WebFetch rejects explicit cloud metadata targets before connecting',
   for (const url of [
     'http://169.254.169.254/latest/meta-data/',
     'http://169.254.170.2/v2/credentials',
+    'http://169.254.170.23/v1/credentials',
     'http://100.100.100.200/latest/meta-data/',
     'http://[fd00:ec2::254]/latest/meta-data/',
+    'http://[fd00:ec2::23]/v1/credentials',
     'http://[::ffff:169.254.169.254]/latest/meta-data/',
+    'http://[::ffff:169.254.170.2]/v2/credentials',
+    'http://[::ffff:100.100.100.200]/latest/meta-data/',
     'http://metadata.google.internal/computeMetadata/v1/',
+    'http://metadata.tencentyun.com/latest/meta-data/',
   ]) {
     await assert.rejects(
       executor.fetch({ url, sessionId: 's1' }),
