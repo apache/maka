@@ -132,6 +132,10 @@ const ALLOW = new Map([
     'best-effort warning when automation store read/write fails.',
   ],
   [
+    'packages/storage/src/session-store.ts',
+    'one-time legacy JSONL session import diagnostics (imported/failed counts + per-file reasons); no credentials or provider payloads.',
+  ],
+  [
     'packages/cli/src/runtime-bootstrap.ts',
     'best-effort warning when CLI durable automation persistence fails.',
   ],
