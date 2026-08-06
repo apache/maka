@@ -88,7 +88,7 @@ export function ProviderCatalogPage(props: {
             placeholder={copy.searchPlaceholder}
             label={copy.searchAria}
             isLabelHidden
-            startIcon={<Search aria-hidden="true" />}
+            startIcon={Search}
           />
           <Selector
             label={copy.category}

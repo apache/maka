@@ -44,6 +44,9 @@ async function openCatalog(page: Page, options: { category: string; search: stri
   const search = catalog.getByPlaceholder('搜索服务商');
   const category = catalog.getByRole('combobox', { name: '分类', exact: true });
   await expect(search).toBeFocused();
+  const searchIcon = search.locator('xpath=..').locator('svg').first();
+  await expect(searchIcon).toHaveCSS('width', '16px');
+  await expect(searchIcon).toHaveCSS('height', '16px');
   // These are independent filters, not one composite toolbar: ordinary Tab
   // order must move between them in both directions.
   await page.keyboard.press('Tab');
