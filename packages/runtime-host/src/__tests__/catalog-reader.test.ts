@@ -61,6 +61,45 @@ test('rejects a repeated Skill catalog cursor instead of looping forever', async
   );
 });
 
+test('reassembles per-item relay profiles into the connection profile table', async () => {
+  const profile = { thinkingLevels: ['low'], vision: false, contextWindow: 65_536 } as const;
+  const connection = fakeConnection(async (_operation, input) => {
+    const continuation = input.kind === 'continue';
+    return {
+      kind: 'page',
+      revision: 1,
+      defaultTarget: null,
+      connectionCount: 1,
+      items: continuation
+        ? [{ kind: 'enabled_model_id', connectionIndex: 0, itemIndex: 1, modelId: 'plain' }]
+        : [
+            connectionHeader(2),
+            {
+              kind: 'enabled_model_id',
+              connectionIndex: 0,
+              itemIndex: 0,
+              modelId: 'declared',
+              relayProfile: profile,
+            },
+          ],
+      nextCursor: continuation
+        ? null
+        : { connectionIndex: 0, part: 'enabled_model_id', itemIndex: 1 },
+    };
+  });
+
+  const catalog = await readRuntimeHostConnectionCatalog(connection);
+  assert.deepEqual(catalog.connections, [
+    {
+      enabledModelIds: ['declared', 'plain'],
+      models: [],
+      // Only the profiled model lands in the reassembled table — the item
+      // shape is wire-only and never surfaces per item downstream.
+      relayModelProfiles: { declared: profile },
+    },
+  ]);
+});
+
 test('rejects a Connection catalog with a missing index', async () => {
   const connection = fakeConnection(async () => ({
     kind: 'page',

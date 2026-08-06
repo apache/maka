@@ -5,6 +5,7 @@ import type {
   ModelInfo,
 } from './llm-connections.js';
 import type { ProviderType } from './provider-registry.js';
+import type { RelayModelProfile } from './model-thinking.js';
 import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
 import {
   WEB_SEARCH_PROVIDERS,
@@ -31,6 +32,7 @@ export {
   decodeCanonicalConnectionBaseUrl,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
+  decodeRelayModelProfilesTable,
   decodeConnectionModel,
   decodeConnectionName,
   decodeConnectionSlug,
@@ -168,6 +170,12 @@ export interface ConnectionConfiguration {
   readonly baseUrl?: string;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
+  /**
+   * Per-model relay declarations (thinking levels, vision, context window),
+   * as a typed table scoped to `enabledModelIds` — never an extras bag.
+   * Execution paths read it through the shared `relayModelProfile` seam.
+   */
+  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
 }
 
 export interface ConnectionCatalogEntry extends ConnectionConfiguration {
@@ -186,6 +194,14 @@ export interface ConnectionCatalogEntryUpdate {
   readonly baseUrl?: string;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
+  /**
+   * Profile-table instruction in three states: an absent key leaves the
+   * stored table untouched (except that an endpoint change in the same update
+   * retires it — declarations belong to the endpoint they were declared
+   * against); `null` clears all declarations; a table replaces them wholly.
+   * Profile-blind writers simply omit the key and can never clobber.
+   */
+  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>> | null;
 }
 
 export interface ConnectionVersionBasis {

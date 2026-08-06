@@ -37,6 +37,20 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'max',
 ];
 
+/**
+ * The levels a generic-relay declaration may hold — the vocabulary the
+ * settings surfaces offer and the one the data layer admits. `off` is the
+ * sole exclusion: it is not an intensity tier but a *disable* wire
+ * (`reasoning_effort: 'none'`), and no generic relay is presumed to honor
+ * that encoding; built-in providers that support it get `off` from their own
+ * metadata instead. `minimal` and every effort tier above are pure
+ * intensity values — the user declaring them is the authority on what the
+ * relay accepts.
+ */
+export const DECLARABLE_RELAY_THINKING_LEVELS: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
+  (level) => level !== 'off',
+);
+
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === 'string' && (THINKING_LEVELS as readonly string[]).includes(value);
 }
@@ -84,6 +98,175 @@ export function deriveThinkingChoices(
     // level to THINKING_LEVELS if a provider introduces a new effort tier.
   }
   return THINKING_LEVELS.filter((level) => choices.has(level));
+}
+
+/**
+ * One model behind an `openai-compatible` relay, as declared by the user:
+ * the facts neither the relay's /models report nor built-in metadata can be
+ * trusted to know. Every field is independent, and every ABSENT field means
+ * "Auto" — the /models report and the metadata chain decide. The single
+ * exception in shape, not spirit, is `vision: false`: an explicit DISABLE
+ * that overrides Auto, because the runtime would otherwise believe a vision
+ * report the relay may emit regardless.
+ *
+ * Profiles live on the connection as a first-class typed field
+ * (`relayModelProfiles`, keyed by model id): relay models are unknown to
+ * `model-metadata.ts` and a catalog refresh rewrites `models[]` rows, so
+ * declarations sit next to the user-edited connection fields. Two invariants
+ * are enforced at the store boundaries — profiles exist only for
+ * `openai-compatible` connections, and only for models in `enabledModelIds`
+ * (disabling a model deletes its profile).
+ */
+export interface RelayModelProfile {
+  readonly thinkingLevels?: readonly ThinkingLevel[];
+  readonly vision?: boolean;
+  readonly contextWindow?: number;
+}
+
+export type RelayModelProfiles = Readonly<Record<string, RelayModelProfile>>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefined {
+  if (!isRecord(entry)) return undefined;
+  const declared: {
+    thinkingLevels?: readonly ThinkingLevel[];
+    vision?: boolean;
+    contextWindow?: number;
+  } = {};
+  if (Array.isArray(entry.thinkingLevels)) {
+    // Declared levels are filtered to the declarable vocabulary, not merely
+    // the level vocabulary: `off` is a disable-wire encoding no generic
+    // relay is presumed to speak, and a declaration table has no business
+    // carrying it. The codec rejects it in persisted documents for the same
+    // reason; normalize silently drops it because it also sanitizes input
+    // that never passed a validator (settings drafts, hand-edited tables).
+    const declaredSet = new Set(
+      entry.thinkingLevels.filter(
+        (level): level is ThinkingLevel =>
+          isThinkingLevel(level) &&
+          (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level),
+      ),
+    );
+    if (declaredSet.size > 0) {
+      declared.thinkingLevels = DECLARABLE_RELAY_THINKING_LEVELS.filter((level) =>
+        declaredSet.has(level),
+      );
+    }
+  }
+  if (typeof entry.vision === 'boolean') declared.vision = entry.vision;
+  // Safe-integer, matching the store codec's 1..MAX_SAFE_INTEGER bound: a
+  // value that normalizes here must never be rejected by the write it feeds.
+  if (
+    typeof entry.contextWindow === 'number' &&
+    Number.isSafeInteger(entry.contextWindow) &&
+    entry.contextWindow > 0
+  ) {
+    declared.contextWindow = entry.contextWindow;
+  }
+  return Object.keys(declared).length > 0 ? (declared as RelayModelProfile) : undefined;
+}
+
+/**
+ * Write-side sanitation for a whole profiles table (settings drafts, config
+ * imports): every entry passes the same filter the read seam applies,
+ * over-long/empty model ids are dropped (the codec bounds ids the same way),
+ * and the result is `undefined` when nothing usable remains so callers can
+ * omit the field instead of storing an empty table. fromEntries, not
+ * `table[modelId] = profile` on a `{}`: relay-supplied ids may be prototype
+ * keys, and literal assignment would poison the prototype instead of storing
+ * the entry.
+ */
+export function normalizeRelayModelProfiles(
+  table: unknown,
+): Record<string, RelayModelProfile> | undefined {
+  if (!isRecord(table)) return undefined;
+  const parsed: [string, RelayModelProfile][] = [];
+  for (const [modelId, entry] of Object.entries(table)) {
+    if (modelId.length === 0 || modelId.length > 512) continue;
+    const declared = normalizeRelayModelProfile(entry);
+    if (declared) parsed.push([modelId, declared]);
+  }
+  return parsed.length > 0 ? Object.fromEntries(parsed) : undefined;
+}
+
+/**
+ * Restore the `keys(profiles) ⊆ enabledModelIds` invariant after a selection
+ * change that left the table untouched: profiles for models the user just
+ * disabled are dropped rather than kept stale. Returns `undefined` for an
+ * empty remainder so the recycled state reads as "no profiles", never "{}".
+ */
+export function pruneRelayModelProfiles(
+  table: RelayModelProfiles | undefined,
+  enabledModelIds: readonly string[],
+): RelayModelProfiles | undefined {
+  if (table === undefined) return undefined;
+  const kept = Object.fromEntries(
+    Object.entries(table).filter(([modelId]) => enabledModelIds.includes(modelId)),
+  );
+  return Object.keys(kept).length > 0 ? kept : undefined;
+}
+
+/**
+ * Minimal connection shape the connection-aware helpers below need. Kept
+ * structural so callers holding either `LlmConnection` or a partial view can
+ * pass it through without widening runtime connection types.
+ */
+export interface ConnectionThinkingContext {
+  readonly providerType: ProviderType;
+  readonly relayModelProfiles?: RelayModelProfiles;
+}
+
+/**
+ * The one gated read seam for relay profiles. Profiles are an
+ * `openai-compatible` feature — on every other provider the metadata chain
+ * is the truth — and thinking, vision, and context window reads all enter
+ * through here so the gate cannot leak. Entries ride through
+ * `normalizeRelayModelProfile` so even a hand-edited local file degrades to
+ * Auto instead of trusting a malformed field.
+ */
+export function relayModelProfile(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+): RelayModelProfile | undefined {
+  if (connection.providerType !== 'openai-compatible') return undefined;
+  return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
+}
+
+/**
+ * `openai-compatible` connections declare thinking support **per model** via
+ * `relayModelProfiles[modelId].thinkingLevels` — a relay may front a
+ * DeepSeek-family reasoner and a plain instruct model side by side, so the
+ * declaration granularity is the model, not the connection. Without a usable
+ * declaration for that model every provider (including relays) falls through
+ * to the metadata-derived variants.
+ */
+export function thinkingVariantsForConnection(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+): readonly ThinkingLevel[] {
+  const declared = relayModelProfile(connection, modelId)?.thinkingLevels;
+  if (declared) return declared;
+  return thinkingVariantsForModel(connection.providerType, modelId);
+}
+
+/**
+ * Discard-semantics gate: returns the level when the model offers it,
+ * `undefined` otherwise. Callers that must *reject* a bad level (IPC/session
+ * boundaries with an error channel) keep their own `includes` branch — the
+ * distinction between "silently drop" and "tell the caller" is the policy of
+ * the call site, not of this helper.
+ */
+export function resolveThinkingLevel(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+  level: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+  return level !== undefined && thinkingVariantsForConnection(connection, modelId).includes(level)
+    ? level
+    : undefined;
 }
 
 /**

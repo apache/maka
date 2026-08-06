@@ -7,6 +7,12 @@ import {
 } from '@maka/core';
 import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import {
+  normalizeRelayModelProfiles,
+  pruneRelayModelProfiles,
+  type RelayModelProfile,
+  type ThinkingLevel,
+} from '@maka/core/model-thinking';
 import { isWiredOAuthProvider } from '@maka/core/provider-registry';
 import {
   providerAuthRequiresSecret,
@@ -16,6 +22,7 @@ import {
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
+import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { useKeyedActionGuard } from './use-action-guard';
 import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
 import {
@@ -100,7 +107,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'save-relay-profiles' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -327,6 +334,137 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
+  // Per-model profile declarations for openai-compatible relays, edited as a
+  // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
+  // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
+  // saved table; entries a user empties fully drop out of the map, and the
+  // ≥1-enabled-model invariant is honored live: the draft is pruned against
+  // `enabledModelIds` on every read, so disabling a model in the section above
+  // removes its unsaved declaration too (the store prunes the SAVED table the
+  // same way on write).
+  const [relayProfileDrafts, setRelayProfileDrafts] = useState<Record<string, RelayModelProfile>>(
+    () => relayProfileDraftSeed(connection.relayModelProfiles),
+  );
+  const [relayProfilesDirty, setRelayProfilesDirty] = useState(false);
+  // The dirty flag names a slug: the same instance continues across the
+  // connection switcher, and draft state is owned by one connection at a
+  // time (see relayProfileDraftReseedPlan).
+  const relayProfileDraftOwnerRef = useRef(connection.slug);
+
+  function updateRelayProfileDraft(
+    modelId: string,
+    next: (current: RelayModelProfile | undefined) => RelayModelProfile | undefined,
+  ): void {
+    setRelayProfilesDirty(true);
+    setRelayProfileDrafts((current) => {
+      const updated = next(current[modelId]);
+      if (updated === undefined) {
+        if (!(modelId in current)) return current;
+        const { [modelId]: _dropped, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [modelId]: updated };
+    });
+  }
+
+  // One shape for all three fields: the field setter pins or removes its key,
+  // and an entry with no keys left IS the undeclared state — storing it would
+  // keep the row looking edited after the user emptied every field.
+  function setDraftThinkingLevels(modelId: string, levels: ThinkingLevel[] | undefined): void {
+    updateRelayProfileDraft(modelId, (current) => {
+      if (levels === undefined || levels.length === 0) {
+        if (!current) return current;
+        const { thinkingLevels: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), thinkingLevels: levels };
+    });
+  }
+
+  // Tri-state vision: undefined = Auto (relay/metadata decides), true/false
+  // pin the declaration. The Selector's three options map straight onto this.
+  function setDraftVision(modelId: string, vision: boolean | undefined): void {
+    updateRelayProfileDraft(modelId, (current) => {
+      if (vision === undefined) {
+        if (!current) return current;
+        const { vision: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), vision };
+    });
+  }
+
+  function setDraftContextWindow(modelId: string, contextWindow: number | undefined): void {
+    updateRelayProfileDraft(modelId, (current) => {
+      if (contextWindow === undefined) {
+        if (!current) return current;
+        const { contextWindow: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), contextWindow };
+    });
+  }
+
+  // Compare against what persistence would store: drafts pruned to the
+  // current selection and order-normalized by the same sanitizer the write
+  // path applies, so a reordered-but-equal draft doesn't keep 保存 lit.
+  const savedRelayProfiles = normalizeRelayModelProfiles(
+    pruneRelayModelProfiles(connection.relayModelProfiles, enabledModelIds) ?? {},
+  );
+  const draftedRelayProfiles = normalizeRelayModelProfiles(
+    pruneRelayModelProfiles(relayProfileDrafts, enabledModelIds) ?? {},
+  );
+  const hasRelayProfileChanges = !relayProfilesEqual(draftedRelayProfiles, savedRelayProfiles);
+
+  useEffect(() => {
+    // Slug switch always reseeds AND clears dirty — carrying A's unsaved
+    // declarations onto B would let one save write them into B's document.
+    // A same-slug reload reseeds only while the draft is clean: mid-edit
+    // reloads (another action's props.onChanged) keep the user's typed work.
+    const plan = relayProfileDraftReseedPlan(
+      { slug: relayProfileDraftOwnerRef.current, dirty: relayProfilesDirty },
+      connection.slug,
+    );
+    relayProfileDraftOwnerRef.current = connection.slug;
+    if (plan.reseed) {
+      setRelayProfileDrafts(relayProfileDraftSeed(connection.relayModelProfiles));
+    }
+    if (plan.clearDirty) {
+      setRelayProfilesDirty(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection.slug, connection.relayModelProfiles, relayProfilesDirty]);
+
+  async function saveRelayProfiles(): Promise<boolean> {
+    // Refuse while the draft still belongs to the previous connection: in the
+    // window between the slug switch rendering and the reseed effect
+    // flushing, 保存 must not hand B this draft.
+    if (relayProfileDraftOwnerRef.current !== connection.slug) return false;
+    const releaseSave = connectionDetailActionGuard.beginExclusive('save-relay-profiles');
+    if (!releaseSave) return false;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    setBusy(true);
+    try {
+      // Send the whole table — the update contract is whole-table replace —
+      // after the write-path sanitizer so a hand-assembled draft degrades the
+      // same way a saved document would.
+      await props.bridge.update(connection.slug, {
+        relayModelProfiles: draftedRelayProfiles ?? null,
+      });
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
+      setRelayProfilesDirty(false);
+      await props.onChanged();
+      return true;
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return false;
+      toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+      return false;
+    } finally {
+      releaseSave();
+      if (isConnectionDetailCurrent(lifecycle)) setBusy(false);
+    }
+  }
+
   async function runTest() {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
@@ -499,6 +637,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    relayProfileDraft: relayProfileDrafts,
+    relayProfilesDirty,
+    hasRelayProfileChanges,
+    setDraftThinkingLevels,
+    setDraftVision,
+    setDraftContextWindow,
+    saveRelayProfiles,
     runTest,
     refreshModels,
     remove,
@@ -557,4 +702,24 @@ function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
 
 function modelIdListsEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function relayProfilesEqual(
+  left: ReturnType<typeof normalizeRelayModelProfiles>,
+  right: ReturnType<typeof normalizeRelayModelProfiles>,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  const leftIds = Object.keys(left);
+  const rightIds = Object.keys(right);
+  if (leftIds.length !== rightIds.length) return false;
+  for (const id of leftIds) {
+    const a = left[id];
+    const b = right[id];
+    if (!a || !b) return false;
+    if (a.vision !== b.vision || a.contextWindow !== b.contextWindow) return false;
+    const al = a.thinkingLevels ?? [];
+    const bl = b.thinkingLevels ?? [];
+    if (al.length !== bl.length || al.some((level, index) => level !== bl[index])) return false;
+  }
+  return true;
 }

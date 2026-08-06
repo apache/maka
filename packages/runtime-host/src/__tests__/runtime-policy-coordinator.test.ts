@@ -598,6 +598,7 @@ test('projects state-dependent OAuth endpoint overrides as invalid requests', as
           baseUrl: 'https://copilot.example.test/v1',
           enabled: connection.enabled,
           enabledModelIds: connection.enabledModelIds,
+          relayModelProfiles: null,
         },
       },
       context,
@@ -662,6 +663,74 @@ test('returns connection_not_found when deleting a credential after its connecti
       context,
     );
     assert.deepEqual(deleted, { ok: true, result: { kind: 'connection_not_found' } });
+  });
+});
+
+test('a fully profiled relay catalog paginates with profiles riding per item', async () => {
+  await withCoordinator(async ({ coordinator, stores }) => {
+    // Every claim in one header table used to be what made a long catalog
+    // unreadable: the header item is atomic to the paginator. Profiles now
+    // travel with their own enabled_model_id item, so a connection whose
+    // EVERY enabled model declares a full profile must still paginate.
+    const modelIds = Array.from({ length: 40 }, (_, index) => `relay-model-${index}`);
+    const profiles = Object.fromEntries(
+      modelIds.map((modelId) => [
+        modelId,
+        {
+          thinkingLevels: ['low', 'high'] as ('low' | 'high')[],
+          vision: true,
+          contextWindow: 131_072,
+        },
+      ]),
+    );
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'profiled-relay',
+        name: 'Profiled relay',
+        providerType: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+        enabled: true,
+        enabledModelIds: modelIds,
+        relayModelProfiles: profiles,
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+
+    const seen: Extract<ConnectionCatalogPageItem, { kind: 'enabled_model_id' }>[] = [];
+    const first = await coordinator.handlers['connection.catalog.query'](
+      { kind: 'start' },
+      context,
+    );
+    assert.equal(first.ok, true);
+    if (!first.ok || first.result.kind !== 'page') return;
+    const queue = [first.result];
+    while (queue.length > 0) {
+      const observed = queue.pop()!;
+      assert.ok(
+        Buffer.byteLength(JSON.stringify(observed), 'utf8') <= CONNECTION_CATALOG_PAGE_MAX_BYTES,
+      );
+      for (const item of observed.items) {
+        if (item.kind === 'connection') {
+          assert.ok(!('relayModelProfiles' in item), 'header must not carry the profile table');
+        }
+        if (item.kind === 'enabled_model_id') seen.push(item);
+      }
+      if (observed.nextCursor) {
+        const next = await coordinator.handlers['connection.catalog.query'](
+          { kind: 'continue', revision: observed.revision, cursor: observed.nextCursor },
+          context,
+        );
+        assert.equal(next.ok, true);
+        if (!next.ok || next.result.kind !== 'page') return;
+        queue.push(next.result);
+      }
+    }
+    assert.equal(seen.length, modelIds.length);
+    for (const item of seen) {
+      assert.deepEqual(item.relayProfile, profiles[item.modelId]);
+    }
   });
 });
 
@@ -802,7 +871,10 @@ function largeConnection(connectionIndex: number): ConnectionCatalogEntryDraft {
 function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCatalogPageItem[] {
   const items: ConnectionCatalogPageItem[] = [];
   for (const [connectionIndex, connection] of snapshot.connections.entries()) {
-    const { enabledModelIds, models, ...header } = connection;
+    // Mirror `projectCatalogItems`: profiles ride on their enabled_model_id
+    // item, never in one header table (a header item is atomic to the
+    // paginator — a long declaration list would make it unsplittable).
+    const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
     items.push({
       kind: 'connection',
       connectionIndex,
@@ -811,7 +883,14 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
       modelCount: models.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
-      items.push({ kind: 'enabled_model_id', connectionIndex, itemIndex, modelId });
+      const relayProfile = relayModelProfiles?.[modelId];
+      items.push({
+        kind: 'enabled_model_id',
+        connectionIndex,
+        itemIndex,
+        modelId,
+        ...(relayProfile === undefined ? {} : { relayProfile }),
+      });
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });

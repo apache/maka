@@ -15,8 +15,9 @@ import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
+  resolveThinkingLevel,
   thinkingOptionsForModel,
-  thinkingVariantsForModel,
+  thinkingVariantsForConnection,
   type ThinkingOptions,
 } from '@maka/core/model-thinking';
 import {
@@ -162,7 +163,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           )
         : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
-        name: openAiCompatibleProviderOptionsName(adapter, connection),
+        name: openAiCompatibleProviderName(adapter, connection),
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
@@ -337,8 +338,7 @@ export function buildProviderOptions(
   thinkingLevel?: ThinkingLevel,
 ): SharedV4ProviderOptions {
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
-  const variants = thinkingVariantsForModel(connection.providerType, modelId);
-  const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
+  const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
   switch (connection.providerType) {
     case 'kimi-coding-plan': {
       // Kimi's coding route has no off wire. Check the raw argument, not the
@@ -523,7 +523,8 @@ function buildFamilyWire(
   // Our own declared thinking variants are the authority on that question, so
   // say so with `forceReasoning` rather than letting a name decide.
   if (wire === 'openai-responses') {
-    const reasons = thinkingVariantsForModel(connection.providerType, modelId).length > 0;
+    // Connection-aware: a relay model's declared variants count too.
+    const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     return {
       openai: {
         store: false,
@@ -536,7 +537,7 @@ function buildFamilyWire(
   switch (adapter.kind) {
     case 'openai-compatible':
       return {
-        [openAiCompatibleProviderOptionsName(adapter, connection)]: { reasoningEffort },
+        [openAiCompatibleProviderOptionsKey(adapter, connection)]: { reasoningEffort },
       };
     case 'openai':
       return { openai: { reasoningEffort } };
@@ -571,14 +572,38 @@ function buildFamilyWire(
 }
 
 /**
- * providerOptions namespace matches the `name` passed to `createOpenAICompatible`
- * in `getAIModel`; both derive it from this one rule so the two can never drift.
+ * The provider IDENTITY passed as `name` to `createOpenAICompatible` in
+ * `getAIModel` — the raw slug for custom relays. Distinct from the
+ * providerOptions key the SDK wants: see `openAiCompatibleProviderOptionsKey`.
  */
-function openAiCompatibleProviderOptionsName(
+function openAiCompatibleProviderName(
   adapter: ProviderRuntimeAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
   return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
     ? connection.slug
+    : connection.providerType;
+}
+
+// Mirrors @ai-sdk/openai-compatible's own toCamelCase derivation, so the
+// key we emit always matches the alias the SDK resolves.
+function toCamelCase(name: string): string {
+  return name.replace(/[_-]([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+}
+
+/**
+ * The providerOptions key for an openai-compatible model. The SDK still
+ * accepts the raw provider name but flags dashed keys as deprecated (a
+ * `type: 'deprecated'` warning on every doGenerate result); its canonical
+ * key is the camelCase alias. Only the custom-relay path keys options by
+ * the connection slug, so only that path camelCases — built-in adapter
+ * namespaces stay as they were.
+ */
+function openAiCompatibleProviderOptionsKey(
+  adapter: ProviderRuntimeAdapter,
+  connection: RuntimeExecutionConnection,
+): string {
+  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
+    ? toCamelCase(connection.slug)
     : connection.providerType;
 }

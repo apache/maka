@@ -1,4 +1,10 @@
 import { PROVIDER_DEFAULTS, validateSlug, type ProviderType } from '../llm-connections.js';
+import {
+  DECLARABLE_RELAY_THINKING_LEVELS,
+  isThinkingLevel,
+  type RelayModelProfile,
+  type ThinkingLevel,
+} from '../model-thinking.js';
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogEntryDraft,
@@ -87,18 +93,27 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
   const item = exactRecord(
     value,
     'connection draft',
-    ['slug', 'name', 'providerType', 'baseUrl', 'enabled', 'enabledModelIds'],
+    ['slug', 'name', 'providerType', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles'],
     ['slug', 'name', 'providerType', 'enabled', 'enabledModelIds'],
   );
   const providerType = decodeProviderType(item.providerType);
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl, providerType);
+  const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
+  const profiles =
+    item.relayModelProfiles === undefined
+      ? {}
+      : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
+  if (profiles.relayModelProfiles !== undefined) {
+    rejectForeignProfiles(providerType);
+  }
   return {
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
     providerType,
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
-    enabledModelIds: decodeConnectionModelIds(item.enabledModelIds),
+    enabledModelIds,
+    ...profiles,
   };
 }
 
@@ -108,15 +123,34 @@ export function normalizeConnectionCatalogEntryUpdate(
   const item = exactRecord(
     value,
     'connection update',
-    ['name', 'baseUrl', 'enabled', 'enabledModelIds'],
+    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles'],
     ['name', 'enabled', 'enabledModelIds'],
   );
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl);
+  const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
+  // Tri-state profile instruction: an absent key stays absent (untouched),
+  // null clears, a table replaces. An absent key must never materialize into
+  // a clear — profile-blind writers omit the key by definition.
   return {
     name: decodeConnectionName(item.name),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
-    enabledModelIds: decodeConnectionModelIds(item.enabledModelIds),
+    enabledModelIds,
+    ...(item.relayModelProfiles === undefined
+      ? {}
+      : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds)),
+  };
+}
+
+function profilesUpdateInstruction(
+  value: unknown,
+  enabledModelIds: readonly string[],
+): { readonly relayModelProfiles: Readonly<Record<string, RelayModelProfile>> | null } {
+  return {
+    relayModelProfiles:
+      value === null
+        ? null
+        : (nonEmptyRelayProfiles(value, enabledModelIds).relayModelProfiles ?? null),
   };
 }
 
@@ -126,12 +160,118 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
+  // A `null` (clear stale data) or absent (untouched) instruction is legal on
+  // any provider; only a non-empty table is relay-only.
+  if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
+    rejectForeignProfiles(providerType);
+  }
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: update.enabled,
     enabledModelIds: update.enabledModelIds,
+    ...(update.relayModelProfiles === undefined
+      ? {}
+      : { relayModelProfiles: update.relayModelProfiles }),
   };
+}
+
+// Relay profiles are an openai-compatible feature: on any other provider the
+// metadata chain is the truth, and a table here would either sit as dead
+// state or silently shadow metadata for the ungated read seams.
+function rejectForeignProfiles(providerType: ProviderType): void {
+  if (providerType !== 'openai-compatible') {
+    throw domainError('relay model profiles are only supported for openai-compatible connections');
+  }
+}
+
+/**
+ * The relay profiles carried by catalog entries, keyed by model id. Strict
+ * on purpose: writers (the settings UI) emit already-normalized tables, so
+ * anything malformed here is a corrupt document or a foreign writer, and
+ * the catalog fails loudly the way every exactRecord does. Profiles are
+ * scoped to `enabledModelIds` — the store prunes them when the selection
+ * changes, so a key outside the set marks a document the store never wrote.
+ */
+export function decodeRelayModelProfilesTable(
+  value: unknown,
+  enabledModelIds: readonly string[],
+): Readonly<Record<string, RelayModelProfile>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw domainError('connection relay model profiles must be a record');
+  }
+  // fromEntries, not `table[modelId] = declared` on a `{}`: model ids are
+  // arbitrary relay-supplied strings, and a literal `obj['__proto__'] = x`
+  // assignment poisons the prototype instead of creating an own key — the
+  // entry would then vanish from Object.entries and JSON.stringify (silent
+  // data loss on the persistence roundtrip). fromEntries defines every key
+  // as an own data property.
+  const parsed: [string, RelayModelProfile][] = [];
+  for (const [modelId, rawEntry] of Object.entries(value)) {
+    decodeConnectionModelId(modelId);
+    if (!enabledModelIds.includes(modelId)) {
+      throw domainError(`relay model profile for ${modelId} is not an enabled model`);
+    }
+    const entry = exactRecord(
+      rawEntry,
+      `relay model profile for ${modelId}`,
+      ['thinkingLevels', 'vision', 'contextWindow'],
+      [],
+    );
+    const declared: {
+      thinkingLevels?: readonly ThinkingLevel[];
+      vision?: boolean;
+      contextWindow?: number;
+    } = {};
+    if (entry.thinkingLevels !== undefined) {
+      if (!Array.isArray(entry.thinkingLevels) || entry.thinkingLevels.length === 0) {
+        throw domainError(`declared thinking levels for ${modelId} must be a non-empty array`);
+      }
+      if (new Set(entry.thinkingLevels).size !== entry.thinkingLevels.length) {
+        throw domainError(`declared thinking levels for ${modelId} must not repeat`);
+      }
+      for (const level of entry.thinkingLevels) {
+        if (
+          !isThinkingLevel(level) ||
+          !(DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level)
+        ) {
+          // Not just "unknown": 'off' is a disable-wire encoding, not an
+          // intensity tier, and no declaration may carry it (normalize drops
+          // it at write; a persisted table containing it is foreign/corrupt).
+          throw domainError(`declared thinking level for ${modelId} is not declarable`);
+        }
+      }
+      declared.thinkingLevels = [...entry.thinkingLevels] as ThinkingLevel[];
+    }
+    if (entry.vision !== undefined) {
+      declared.vision = booleanValue(entry.vision, `declared vision for ${modelId}`);
+    }
+    if (entry.contextWindow !== undefined) {
+      declared.contextWindow = integerValue(
+        entry.contextWindow,
+        `declared context window for ${modelId}`,
+        1,
+        Number.MAX_SAFE_INTEGER,
+      );
+    }
+    if (Object.keys(declared).length === 0) {
+      throw domainError(`relay model profile for ${modelId} declares nothing`);
+    }
+    parsed.push([modelId, declared]);
+  }
+  return Object.fromEntries(parsed);
+}
+
+// An empty table is not a state worth storing: drafts/canonical entries omit
+// the key, and updates treat it as the same instruction as `null` (clear).
+function nonEmptyRelayProfiles(
+  value: unknown,
+  enabledModelIds: readonly string[],
+): {
+  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+} {
+  const table = decodeRelayModelProfilesTable(value, enabledModelIds);
+  return Object.keys(table).length > 0 ? { relayModelProfiles: table } : {};
 }
 
 export function decodeCanonicalConnectionCatalogEntry(value: unknown): ConnectionCatalogEntry {
@@ -147,6 +287,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'baseUrl',
       'enabled',
       'enabledModelIds',
+      'relayModelProfiles',
       'models',
       'modelSource',
       'modelsFetchedAt',
@@ -170,6 +311,9 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.baseUrl === undefined ? {} : { baseUrl: item.baseUrl }),
     enabled: item.enabled,
     enabledModelIds: item.enabledModelIds,
+    ...(item.relayModelProfiles === undefined
+      ? {}
+      : { relayModelProfiles: item.relayModelProfiles }),
   });
   if (
     !Array.isArray(item.models) ||

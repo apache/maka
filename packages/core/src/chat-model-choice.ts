@@ -1,6 +1,6 @@
 import { normalizeOpenAiCodexConnection } from './connection-readiness.js';
 import { buildConnectionModelCatalogEntries } from './model-catalog.js';
-import { thinkingVariantsForModel, type ThinkingLevel } from './model-thinking.js';
+import { thinkingVariantsForConnection, type ThinkingLevel } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
@@ -66,7 +66,7 @@ export function buildChatModelChoices(connections: readonly LlmConnection[]): Ch
         label: entry.displayName?.trim() || entry.id,
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
         isDefault: entry.isDefault,
-        thinkingLevels: thinkingVariantsForModel(connection.providerType, entry.id),
+        thinkingLevels: thinkingVariantsForConnection(connection, entry.id),
       });
     }
   }

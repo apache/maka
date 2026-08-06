@@ -1,5 +1,6 @@
 import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { GoalTurnAdmission, HostCapabilities, SkillSource } from '@maka/runtime';
 import type { MakaPiTuiTurnLifecycle } from './pi-tui-turn.js';
 
@@ -9,7 +10,16 @@ export interface ModelChoice {
   providerType: ProviderType;
   model: string;
   isDefaultConnection: boolean;
+  /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
+  /**
+   * Thinking levels this model exposes. `listReadyModelChoices` always
+   * computes this with the full connection (so an openai-compatible relay's
+   * declared `relayModelProfiles[model].thinkingLevels` are honoured);
+   * optional only so hand-written choice literals stay valid — consumers
+   * must tolerate its absence.
+   */
+  thinkingLevels?: readonly ThinkingLevel[];
 }
 
 export interface OnboardableProvider {

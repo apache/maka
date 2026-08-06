@@ -9,6 +9,7 @@ import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
+import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
@@ -86,6 +87,9 @@ export function registerRuntimeHostConnectionsIpc(
   deps.ipcMain.handle('connections:create', async (_event, raw: unknown) => {
     const input = normalizeCreateInput(raw);
     const catalog = await snapshot();
+    // Profiles ride as the typed field end to end — nothing free-form
+    // crosses to the host.
+    const relayModelProfiles = input.relayModelProfiles;
     const created = await deps.client.createConnection(catalog.revision, {
       slug: input.slug,
       name: input.name,
@@ -93,6 +97,7 @@ export function registerRuntimeHostConnectionsIpc(
       ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
       enabled: true,
       enabledModelIds: input.defaultModel ? [input.defaultModel] : [],
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
     });
     if (created.kind !== 'committed') {
       throw new Error(`Unable to create Connection: ${created.kind}`);
@@ -129,6 +134,12 @@ export function registerRuntimeHostConnectionsIpc(
             : { baseUrl: patch.baseUrl }),
         enabled: patch.enabled ?? current.enabled,
         enabledModelIds: patch.enabledModelIds ?? current.enabledModelIds,
+        // Tri-state: a patch that mentions profiles re-normalizes them (empty
+        // normalization = clear); a patch without profiles omits the key
+        // entirely, which the store reads as "leave the table alone".
+        ...(patch.relayModelProfiles === undefined
+          ? {}
+          : { relayModelProfiles: normalizeRelayModelProfiles(patch.relayModelProfiles) ?? null }),
       },
     );
     if (updated.kind !== 'committed') {
@@ -229,6 +240,9 @@ export function projectHostConnections(catalog: ConnectionCatalogSnapshot): LlmC
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
+      ...(connection.relayModelProfiles === undefined
+        ? {}
+        : { relayModelProfiles: connection.relayModelProfiles }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
       ...(connection.modelsFetchedAt === undefined
         ? {}

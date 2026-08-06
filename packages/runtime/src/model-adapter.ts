@@ -164,6 +164,10 @@ export class ModelAdapter {
       toolCalls: true,
       toolResults: true,
       signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
+      // openai-compatible transports replay stored reasoning unconditionally:
+      // DeepSeek-style endpoints 400 tool calls whose history lacks it, and
+      // relays that don't need the field ignore it. Reasoning is still
+      // recorded to the event log and rendered regardless.
       unsignedThinking: this.runtime.reasoningReplay.kind === 'openai-chat-plaintext',
       openAiResponsesThinking: this.runtime.reasoningReplay.kind === 'openai-responses-item',
     };

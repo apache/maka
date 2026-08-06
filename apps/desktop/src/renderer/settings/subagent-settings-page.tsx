@@ -27,7 +27,7 @@ import {
   type UpdateAppSettingsResult,
 } from '@maka/core';
 import { connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { thinkingVariantsForModel } from '@maka/core/model-thinking';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
   Badge,
   Button,
@@ -349,7 +349,7 @@ function SubagentPresetEditor(props: {
     ? connectionEnabledModelIds(selectedConnection)
     : [];
   const thinkingLevels = selectedConnection
-    ? thinkingVariantsForModel(selectedConnection.providerType, draft.model)
+    ? thinkingVariantsForConnection(selectedConnection, draft.model)
     : [];
   const profileCopy = copy.profiles[draft.profile];
   const validId = isSafeSubagentPresetId(draft.id.trim());
