@@ -135,7 +135,7 @@ class FileConnectionStore implements ConnectionStore {
           patch.baseUrl !== undefined ||
           patch.defaultModel !== undefined ||
           patch.models !== undefined);
-      const models = updatesModelCache ? patch.models : current.models;
+      let models = updatesModelCache ? patch.models : current.models;
       // A patch carrying `enabledModelIds` is the user stating a selection, so
       // it is written as stated — including empty. Anything else re-asserts a
       // choice they just withdrew. `reconcileConnectionAfterEnabledModelsChange`
@@ -164,6 +164,26 @@ class FileConnectionStore implements ConnectionStore {
       const writesFetchedModels =
         Object.prototype.hasOwnProperty.call(patch, 'models') && patch.modelSource === 'fetched';
       if (writesFetchedModels && models && models.length > 0) {
+        // A fetched list replaces the model cache wholesale, which would drop
+        // the user's per-model thinking declarations (openai-compatible relays
+        // have no catalog entry to re-derive them from). Carry declarations
+        // forward by id so a refresh does not silently disable the thinking
+        // knob the user set up.
+        const declaredThinkingOptions = new Map<
+          string,
+          NonNullable<LlmConnection['models']>[number]['thinkingOptions']
+        >();
+        for (const model of current.models ?? []) {
+          if (model.thinkingOptions !== undefined) {
+            declaredThinkingOptions.set(model.id, model.thinkingOptions);
+          }
+        }
+        if (declaredThinkingOptions.size > 0) {
+          models = models.map((model) => {
+            const thinkingOptions = declaredThinkingOptions.get(model.id);
+            return thinkingOptions !== undefined ? { ...model, thinkingOptions } : model;
+          });
+        }
         const reconciled = reconcileConnectionAfterModelFetch(
           {
             defaultModel,

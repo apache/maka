@@ -292,6 +292,49 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  test('fetched model refresh preserves user-declared thinking options by id', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'relay-main',
+        name: 'Relay',
+        providerType: 'openai-compatible',
+        defaultModel: 'deepseek-v4-flash-0731',
+      });
+
+      // The user declares reasoning support for one relay model…
+      const declared = await store.update(created.slug, {
+        models: [
+          { id: 'deepseek-v4-flash-0731', thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+          { id: 'other-model' },
+        ],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      });
+      assert.deepEqual(
+        declared.models?.find((m) => m.id === 'deepseek-v4-flash-0731')?.thinkingOptions,
+        { efforts: ['low', 'high', 'max'] },
+      );
+
+      // …then a later /v1/models refresh replaces the cache wholesale. The
+      // declaration must survive by id — dropping it would silently disable
+      // the thinking knob the user set up.
+      const refreshed = await store.update(declared.slug, {
+        models: [{ id: 'deepseek-v4-flash-0731' }, { id: 'brand-new-model' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 2,
+      });
+      assert.deepEqual(
+        refreshed.models?.find((m) => m.id === 'deepseek-v4-flash-0731')?.thinkingOptions,
+        { efforts: ['low', 'high', 'max'] },
+      );
+      // Models the refresh brings in without a prior declaration stay clean.
+      assert.equal(
+        refreshed.models?.find((m) => m.id === 'brand-new-model')?.thinkingOptions,
+        undefined,
+      );
+    });
+  });
+
   test('a routine account sync never takes the vacant workspace default', async () => {
     await withConnectionStore(async (store) => {
       const xai: LlmConnection = {

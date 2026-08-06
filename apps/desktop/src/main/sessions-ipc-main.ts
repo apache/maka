@@ -8,8 +8,9 @@ import {
   isPermissionMode,
   isThinkingLevel,
   sanitizeTaskLedgerTask,
-  thinkingVariantsForModel,
+  thinkingVariantsForConnection,
   VOICE_INPUT_MARKER,
+  type ThinkingDeclaringConnection,
 } from '@maka/core';
 import type {
   CreateSessionRequestInput,
@@ -22,7 +23,6 @@ import type {
   ThinkingLevel,
   EphemeralVoiceAudio,
 } from '@maka/core';
-import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runtime';
 import type { ArtifactStore, createSessionStore } from '@maka/storage';
@@ -161,7 +161,7 @@ function latestStoredMessageTs(messages: readonly StoredMessage[]): number | und
 
 function normalizeSupportedSessionThinkingLevel(
   input: unknown,
-  providerType: ProviderType,
+  connection: ThinkingDeclaringConnection,
   model: string,
 ): ThinkingLevel | undefined {
   const thinkingLevel = input === undefined || input === null ? undefined : input;
@@ -169,7 +169,7 @@ function normalizeSupportedSessionThinkingLevel(
   if (!isThinkingLevel(thinkingLevel)) {
     throw new Error(`Invalid thinking level: ${String(input)}`);
   }
-  if (!thinkingVariantsForModel(providerType, model).includes(thinkingLevel)) {
+  if (!thinkingVariantsForConnection(connection, model).includes(thinkingLevel)) {
     throw new Error(`当前模型不支持思考级别：${thinkingLevel}`);
   }
   return thinkingLevel;
@@ -287,7 +287,7 @@ export function registerSessionsIpc(
 
     const requestedSlug = input?.llmConnectionSlug ?? (await connectionStore.getDefault());
     const { connection, model } = await getReadyConnection(requestedSlug, input?.model);
-    const thinkingLevel = normalizeSupportedSessionThinkingLevel(input?.thinkingLevel, connection.providerType, model);
+    const thinkingLevel = normalizeSupportedSessionThinkingLevel(input?.thinkingLevel, connection, model);
 
     const session = await createSession({
       ...(input?.cwd ? { cwd: input.cwd } : {}),
@@ -732,7 +732,7 @@ export function registerSessionsIpc(
     if (!connection) {
       throw new Error(`Unknown connection: ${header.llmConnectionSlug}`);
     }
-    const nextThinkingLevel = normalizeSupportedSessionThinkingLevel(input, connection.providerType, header.model);
+    const nextThinkingLevel = normalizeSupportedSessionThinkingLevel(input, connection, header.model);
     const next = await runtime.updateSession(sessionId, nextThinkingLevel === undefined ? { thinkingLevel: undefined } : { thinkingLevel: nextThinkingLevel });
     emitSessionsChanged('updated', sessionId);
     return next;

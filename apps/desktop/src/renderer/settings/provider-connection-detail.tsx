@@ -14,6 +14,7 @@ import { SettingsExpandableRow } from './settings-expandable-row';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { EnabledModelManager } from './provider-enabled-model-manager';
+import { ThinkingOptionsEditor } from './provider-thinking-options-editor';
 import { useActionGuard } from './use-action-guard';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
@@ -96,6 +97,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     baseUrl,
     setBaseUrl,
     enabledModelIds,
+    models,
     modelChoices,
     busy,
     testing,
@@ -118,6 +120,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    saveThinkingOptions,
     runTest,
     refreshModels,
     remove,
@@ -127,11 +130,19 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
   // `save` became per-field — rode along with the next save.
-  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
+  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | 'thinking' | null>(null);
   function openRow(row: 'key' | 'endpoint') {
     if (row === 'key') setBaseUrl(savedBaseUrl);
     else setApiKey('');
     setEditingRow(row);
+  }
+  function openThinkingRow() {
+    // A thinking declaration belongs to the model list; entering it discards
+    // any abandoned key/endpoint draft, the way opening either of those rows
+    // discards the other's.
+    setApiKey('');
+    setBaseUrl(savedBaseUrl);
+    setEditingRow('thinking');
   }
   // Most of the 60 providers publish a fixed endpoint; editing it there can
   // only break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in
@@ -292,6 +303,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           enabledModelIds={enabledModelIds}
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
+        />
+        {/* The thinking declaration editor is part of the same model section:
+            a relay's backing model is user-configured, so the built-in catalog
+            cannot know its reasoning support — the user states it here. */}
+        <ThinkingOptionsEditor
+          models={models}
+          enabledModelIds={enabledModelIds}
+          disabled={detailActionBusy}
+          isEditing={editingRow === 'thinking'}
+          onEdit={openThinkingRow}
+          onCancel={() => setEditingRow(null)}
+          onSave={saveThinkingOptions}
         />
         {/* Each button reports its own work through clickAction (spinner +
             aria-busy + "Loading" announcement) instead of renaming itself to

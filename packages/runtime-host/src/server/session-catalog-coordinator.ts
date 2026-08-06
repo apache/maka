@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
-import { thinkingVariantsForModel } from '@maka/core/model-thinking';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
   executionBoundaryDisplayMode,
   type ExecutionBoundary,
@@ -587,7 +587,7 @@ export class HostSessionCatalogCoordinator {
     }
     if (
       thinkingLevel !== undefined &&
-      !thinkingVariantsForModel(connection.providerType, selected.modelId).includes(thinkingLevel)
+      !thinkingVariantsForConnection(connection, selected.modelId).includes(thinkingLevel)
     ) {
       throw new SessionOperationFailure(
         'invalid_request',

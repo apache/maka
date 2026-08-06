@@ -6,6 +6,7 @@
  */
 
 import type { BackendKind } from './session.js';
+import type { ThinkingOptions } from './model-thinking.js';
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -78,6 +79,14 @@ export interface ModelInfo {
     'openai_chat_audio' | 'openai_audio_transcriptions' | 'openai_realtime' | 'provider_native'
   >;
   transcriptOutput?: boolean;
+  /**
+   * User-declared reasoning controls for this model. openai-compatible relays
+   * and other user-configured connections have no built-in catalog entry, so
+   * this is the only place their thinking support can be stated; when present
+   * it wins over the catalog in `thinkingVariantsForConnection`. Declarations
+   * are merged back by id when a later model fetch replaces the list.
+   */
+  thinkingOptions?: ThinkingOptions;
 }
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';

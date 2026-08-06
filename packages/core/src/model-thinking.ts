@@ -115,3 +115,37 @@ export function thinkingVariantsForModel(
 ): readonly ThinkingLevel[] {
   return deriveThinkingChoices(thinkingOptionsForModel(providerType, modelId));
 }
+
+/**
+ * The connection slice `thinkingVariantsForConnection` reads: the provider
+ * type plus the per-model declarations on the connection's model list. Both
+ * `LlmConnection` and `RuntimeExecutionConnection` satisfy it.
+ */
+export interface ThinkingDeclaringConnection {
+  providerType: ProviderType;
+  models?: readonly { id: string; thinkingOptions?: ThinkingOptions }[];
+}
+
+/**
+ * Levels a model supports on a specific connection, in display order.
+ *
+ * A user declaration on the connection's model list wins over the built-in
+ * catalog: the user knows what their relay's backing model is, which
+ * `providerType + modelId` alone cannot say (`openai-compatible` models have
+ * no catalog entry, so without a declaration every such connection would
+ * report no thinking support). No declaration falls back to
+ * `thinkingVariantsForModel`, preserving the current behavior for every
+ * provider, model, and connection that has never been declared.
+ */
+export function thinkingVariantsForConnection(
+  connection: ThinkingDeclaringConnection,
+  modelId: string,
+): readonly ThinkingLevel[] {
+  const declared = connection.models?.find(
+    (model) => model.id === modelId && model.thinkingOptions !== undefined,
+  );
+  if (declared?.thinkingOptions !== undefined) {
+    return deriveThinkingChoices(declared.thinkingOptions);
+  }
+  return thinkingVariantsForModel(connection.providerType, modelId);
+}

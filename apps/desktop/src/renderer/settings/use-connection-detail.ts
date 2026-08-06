@@ -4,6 +4,7 @@ import {
   type LlmConnection,
   type ModelInfo,
   type ProviderType,
+  type ThinkingOptions,
 } from '@maka/core';
 import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
@@ -98,9 +99,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
+  const [savingThinkingOptions, setSavingThinkingOptions] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'save-thinking-options' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -142,6 +144,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     testing ||
     fetchingModels ||
     savingEnabledModels ||
+    savingThinkingOptions ||
     deleting;
   const issue = connectionChipStatus(connection, locale);
   const lastTestMessage = connectionLastTestMessageDisplay(connection.lastTestMessage, locale);
@@ -327,6 +330,50 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
+  /**
+   * Persist a user-declared thinking-options declaration for one model.
+   *
+   * The whole `models` list rides along because the store treats a `models`
+   * patch as the model cache (there is no per-model update endpoint). Only the
+   * targeted entry's `thinkingOptions` changes; `undefined` clears a previous
+   * declaration (the JSON serializer drops the field, so it reads back as
+   * "not declared" — the built-in catalog remains the fallback). Returns
+   * whether the write landed, so the editor can keep its draft open on failure.
+   */
+  async function saveThinkingOptions(
+    modelId: string,
+    thinkingOptions: ThinkingOptions | undefined,
+  ): Promise<boolean> {
+    if (connectionDetailActionGuard.has('save-thinking-options') || detailActionBusy) return false;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    const releaseSaveThinkingOptions = connectionDetailActionGuard.begin('save-thinking-options');
+    if (!releaseSaveThinkingOptions) return false;
+    const previous = models;
+    const next = previous.map((model) =>
+      model.id === modelId ? { ...model, thinkingOptions } : model,
+    );
+    setModels(next);
+    let saved = false;
+    try {
+      await props.bridge.update(connection.slug, { models: next });
+      saved = true;
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
+      await props.onChanged();
+      return true;
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
+      if (!saved) setModels(previous);
+      toast.error(
+        saved ? copy.refreshFailed : copy.saveThinkingOptionsFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+      return false;
+    } finally {
+      releaseSaveThinkingOptions();
+      if (isConnectionDetailCurrent(lifecycle)) setSavingThinkingOptions(false);
+    }
+  }
+
   async function runTest() {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
@@ -477,6 +524,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     baseUrl,
     setBaseUrl,
     enabledModelIds,
+    models,
     modelChoices,
     busy,
     testing,
@@ -499,6 +547,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    saveThinkingOptions,
     runTest,
     refreshModels,
     remove,

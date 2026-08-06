@@ -397,11 +397,16 @@ export {
 } from './tool-result-record-schema.js';
 
 // model-thinking.ts
-export type { ThinkingLevel } from './model-thinking.js';
+export type {
+  ThinkingLevel,
+  ThinkingDeclaringConnection,
+  ThinkingOptions,
+} from './model-thinking.js';
 export {
   THINKING_LEVELS,
   isThinkingLevel,
   thinkingVariantsForModel,
+  thinkingVariantsForConnection,
 } from './model-thinking.js';
 
 export type { ChatModelChoice } from './chat-model-choice.js';

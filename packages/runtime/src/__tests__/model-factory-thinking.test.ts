@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
-import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core';
+import {
+  thinkingVariantsForConnection,
+  thinkingVariantsForModel,
+  type ThinkingLevel,
+} from '@maka/core';
 import { changesBackendConfig, buildProviderOptions, getAIModel } from '@maka/runtime';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -583,6 +587,45 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       buildProviderOptions(conn('zai-coding-plan', 'zai-coding-plan'), 'glm-5.2', 'max'),
       { 'zai-coding-plan': { reasoningEffort: 'max' } },
     );
+  });
+  test('user-declared thinkingOptions on an openai-compatible relay reach the wire', () => {
+    const relay = {
+      ...conn('openai-compatible'),
+      models: [
+        { id: 'deepseek-v4-flash-0731', thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+        { id: 'plain-model' },
+      ],
+    };
+    // The declaration drives both the selector vocabulary and the wire. Off
+    // is only accepted when the declaration includes 'none' (mirrors the
+    // catalog rule: a model without a real off wire does not expose off).
+    assert.deepEqual(
+      [...thinkingVariantsForConnection(relay, 'deepseek-v4-flash-0731')],
+      ['low', 'high', 'max'],
+    );
+    assert.deepEqual(buildProviderOptions(relay, 'deepseek-v4-flash-0731', 'high'), {
+      test: { reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(relay, 'deepseek-v4-flash-0731', 'off'), {});
+    // A declaration that includes 'none' surfaces the off level and maps it
+    // to reasoning_effort: none on the wire.
+    const withOff = {
+      ...relay,
+      models: [
+        { id: 'deepseek-v4-flash-0731', thinkingOptions: { efforts: ['none', 'low', 'high'] } },
+      ],
+    };
+    assert.deepEqual(
+      [...thinkingVariantsForConnection(withOff, 'deepseek-v4-flash-0731')],
+      ['off', 'low', 'high'],
+    );
+    assert.deepEqual(buildProviderOptions(withOff, 'deepseek-v4-flash-0731', 'off'), {
+      test: { reasoningEffort: 'none' },
+    });
+    // Undeclared models on the same relay stay silent: no catalog entry, no
+    // declaration, so no level is accepted and nothing reaches the wire.
+    assert.deepEqual([...thinkingVariantsForConnection(relay, 'plain-model')], []);
+    assert.deepEqual(buildProviderOptions(relay, 'plain-model', 'high'), {});
   });
   test('deepseek uses its own raw namespace on the chat wire, the OpenAI one on Responses', () => {
     assert.deepEqual(

@@ -5,6 +5,7 @@ import {
   deriveThinkingChoices,
   isThinkingLevel,
   thinkingOptionsForModel,
+  thinkingVariantsForConnection,
   thinkingVariantsForModel,
 } from '../model-thinking.js';
 
@@ -75,6 +76,74 @@ test('provider-scoped model ids do not leak metadata to ambiguous ids', () => {
   );
   assert.deepEqual([...thinkingVariantsForModel('vercel', 'grok-4.3')], []);
   assert.deepEqual([...thinkingVariantsForModel('openai-compatible', 'gpt-5.5')], []);
+});
+
+test('connection declarations win over the built-in catalog', () => {
+  const relay = {
+    providerType: 'openai-compatible' as const,
+    models: [
+      { id: 'deepseek-v4-flash-0731', thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+    ],
+  };
+  assert.deepEqual(
+    [...thinkingVariantsForConnection(relay, 'deepseek-v4-flash-0731')],
+    ['low', 'high', 'max'],
+  );
+  // 'none' in a declaration surfaces the off level, exactly like the catalog.
+  assert.deepEqual(
+    [
+      ...thinkingVariantsForConnection(
+        {
+          providerType: 'openai-compatible' as const,
+          models: [{ id: 'm', thinkingOptions: { efforts: ['none', 'low', 'high'] } }],
+        },
+        'm',
+      ),
+    ],
+    ['off', 'low', 'high'],
+  );
+});
+
+test('connection misses fall back to the built-in catalog', () => {
+  // A catalog-backed model on any connection keeps its catalog levels when the
+  // connection does not declare anything for it.
+  assert.deepEqual(
+    [
+      ...thinkingVariantsForConnection(
+        { providerType: 'openai' as const, models: [{ id: 'gpt-5.5' }] },
+        'gpt-5.5',
+      ),
+    ],
+    ['off', 'low', 'medium', 'high', 'xhigh'],
+  );
+  // A declared connection still reports nothing for undeclared models…
+  const relay = {
+    providerType: 'openai-compatible' as const,
+    models: [
+      { id: 'deepseek-v4-flash-0731', thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+    ],
+  };
+  assert.deepEqual([...thinkingVariantsForConnection(relay, 'some-other-model')], []);
+  // …and a connection with no declarations at all behaves exactly like
+  // `thinkingVariantsForModel` (the pre-feature behavior for every connection).
+  assert.deepEqual(
+    [
+      ...thinkingVariantsForConnection(
+        { providerType: 'openai-compatible' as const, models: [] },
+        'm',
+      ),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    [
+      ...thinkingVariantsForConnection(
+        { providerType: 'anthropic' as const, models: [] },
+        'claude-opus-4-8',
+      ),
+    ],
+    thinkingVariantsForModel('anthropic', 'claude-opus-4-8'),
+  );
 });
 
 test('thinking-level guard accepts only the closed display vocabulary', () => {

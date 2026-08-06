@@ -16,7 +16,7 @@ import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   thinkingOptionsForModel,
-  thinkingVariantsForModel,
+  thinkingVariantsForConnection,
   type ThinkingOptions,
 } from '@maka/core/model-thinking';
 import {
@@ -337,7 +337,7 @@ export function buildProviderOptions(
   thinkingLevel?: ThinkingLevel,
 ): SharedV4ProviderOptions {
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
-  const variants = thinkingVariantsForModel(connection.providerType, modelId);
+  const variants = thinkingVariantsForConnection(connection, modelId);
   const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
   switch (connection.providerType) {
     case 'kimi-coding-plan': {
@@ -523,7 +523,7 @@ function buildFamilyWire(
   // Our own declared thinking variants are the authority on that question, so
   // say so with `forceReasoning` rather than letting a name decide.
   if (wire === 'openai-responses') {
-    const reasons = thinkingVariantsForModel(connection.providerType, modelId).length > 0;
+    const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     return {
       openai: {
         store: false,
