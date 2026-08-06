@@ -1,6 +1,7 @@
 node_modules
 dist
 dist-renderer
+test-results
 storybook-static
 .DS_Store
 *.log
