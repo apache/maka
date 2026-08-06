@@ -27,6 +27,7 @@ import {
   buildToolsForAgentDefinition,
   buildUpdatePlanTool,
   projectEffectiveProductToolSurface,
+  routeWebFetchTools,
   routeWebSearchTools,
   selectCollaborationTools,
 } from '@maka/runtime';
@@ -115,7 +116,10 @@ export async function resolveDesktopChildToolSurface(
     Promise.resolve(defaultWebSearchSettings()));
   const privacySettings = await deps.getPrivacySettings?.();
   return routeWebSearchTools({
-    tools: input.tools,
+    tools: routeWebFetchTools(
+      input.tools,
+      privacySettings ?? { incognitoActive: false },
+    ),
     settings: webSearchSettings,
     connection,
     model,
@@ -251,7 +255,10 @@ export async function resolveDesktopBackendToolSurface(
     Promise.resolve(defaultWebSearchSettings()));
   const privacySettings = await deps.getPrivacySettings?.();
   const routedCandidateTools = routeWebSearchTools({
-    tools: candidateTools,
+    tools: routeWebFetchTools(
+      candidateTools,
+      privacySettings ?? { incognitoActive: false },
+    ),
     settings: webSearchSettings,
     connection,
     model,
@@ -259,7 +266,10 @@ export async function resolveDesktopBackendToolSurface(
   });
   const routedChildTools = deps.childTools
     ? routeWebSearchTools({
-        tools: deps.childTools,
+        tools: routeWebFetchTools(
+          deps.childTools,
+          privacySettings ?? { incognitoActive: false },
+        ),
         settings: webSearchSettings,
         connection,
         model,

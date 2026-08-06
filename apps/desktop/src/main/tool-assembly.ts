@@ -23,6 +23,7 @@ import {
   type ArtifactStore,
 } from '@maka/storage';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
+import { buildWebFetchAgentTool } from './web-fetch/agent-tool.js';
 import { buildAgentSettingsTools } from './agent-settings-tools.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
@@ -171,6 +172,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     settingsStore,
     getPrivacyContext: getWorkspacePrivacyContext,
   });
+  const webFetchTool = buildWebFetchAgentTool({
+    getPrivacyContext: getWorkspacePrivacyContext,
+  });
   const agentSettingsTools = buildAgentSettingsTools({
     settingsStore,
     updateSettings: updateAgentSettings,
@@ -204,6 +208,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     // permission engine routes it through the `web_read` policy which
     // prompts the user in explore / ask modes.
     webSearchTool,
+    webFetchTool,
     // Safe self-configuration surface: read a redacted projection and update
     // only an explicit non-secret allowlist after an in-app confirmation.
     ...agentSettingsTools,
@@ -261,6 +266,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       } : {}),
     }),
     webSearchTool,
+    webFetchTool,
   ]);
 
   return {
