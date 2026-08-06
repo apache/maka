@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   configureSqliteRuntimeDatabase,
+  configureSqliteRuntimeLockWait,
   migrateSqliteRuntimeDatabase,
   readUserVersion,
   SQLITE_RUNTIME_SCHEMA_VERSION,
@@ -94,6 +95,9 @@ class OperationalStateDatabaseOwner {
     const Database = loadDatabaseSync();
     this.database = new Database(databasePath);
     try {
+      // Preflight reads must wait for another opener's WAL transition, but this
+      // connection-only pragma keeps rejected databases byte-for-byte intact.
+      configureSqliteRuntimeLockWait(this.database);
       // Reject every unsupported authority before the first migration commits,
       // so a newer later scope cannot leave an older earlier scope half-upgraded.
       assertOperationalSchemaCanMigrate(this.database);
@@ -262,13 +266,18 @@ function registerSchema(db: DatabaseSync, scope: string, version: number, applie
   const existing = db
     .prepare('SELECT version FROM operational_schema_migrations WHERE scope = ?')
     .get(scope) as { version?: unknown } | undefined;
-  if (
-    existing &&
-    (typeof existing.version !== 'number' ||
+  if (existing) {
+    if (
+      typeof existing.version !== 'number' ||
       !Number.isSafeInteger(existing.version) ||
-      existing.version > version)
-  ) {
-    throw new Error(`Operational schema ${scope} is newer than supported version ${version}`);
+      existing.version < 0
+    ) {
+      throw new Error(
+        `Operational schema ${scope} has invalid version ${String(existing.version)}; ` +
+          'Maka did not migrate or delete the database. Restore or repair this workspace before opening it.',
+      );
+    }
+    assertSupportedOperationalSchemaVersion(scope, existing.version, version);
   }
   db.prepare(`
     INSERT INTO operational_schema_migrations(scope, version, applied_at)

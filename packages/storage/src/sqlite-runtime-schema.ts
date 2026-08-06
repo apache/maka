@@ -307,10 +307,15 @@ export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
   // Bound lock acquisition before touching persistent journal state. WAL mode is
   // database-persistent, so established workspaces only need to verify it rather
   // than making every concurrent opener execute the setting form of the pragma.
-  db.exec(`PRAGMA busy_timeout = ${SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS}`);
+  configureSqliteRuntimeLockWait(db);
   ensureWalJournalMode(db);
   db.exec('PRAGMA synchronous = FULL');
   db.exec('PRAGMA foreign_keys = ON');
+}
+
+/** Configure connection-local lock waiting without changing persistent database state. */
+export function configureSqliteRuntimeLockWait(db: DatabaseSync): void {
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS}`);
 }
 
 export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {

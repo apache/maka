@@ -144,6 +144,46 @@ test('rejects a newer scope before migrating an older scope', async () => {
   }
 });
 
+test('rejects a newer runtime schema without changing the database', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-newer-runtime-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.close();
+
+    const database = new DatabaseSync(databasePath);
+    database.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION + 1}`);
+    database.exec('CREATE TABLE runtime_future_sentinel (value TEXT NOT NULL)');
+    database.exec("INSERT INTO runtime_future_sentinel(value) VALUES ('preserved')");
+    database.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /Operational schema runtime is newer than supported/,
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.equal(
+        (preserved.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION + 1,
+      );
+      assert.equal(
+        (
+          preserved.prepare('SELECT value FROM runtime_future_sentinel').get() as {
+            value: string;
+          }
+        ).value,
+        'preserved',
+      );
+    } finally {
+      preserved.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('rejects newer session metadata before migrating older runtime state', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-newer-metadata-'));
   const databasePath = join(root, 'runtime.sqlite');
