@@ -387,7 +387,10 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
   readonly sessionId: string;
   stopCalls = 0;
 
-  constructor(sessionId: string) {
+  constructor(
+    sessionId: string,
+    private readonly terminalClaimed?: () => void,
+  ) {
     this.sessionId = sessionId;
   }
 
@@ -409,7 +412,13 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
       ts: Date.now(),
       stopReason: 'end_turn',
     };
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    // Resuming here proves the runtime accepted the terminal event: the
+    // post-terminal drain pulls the next value only after the previous one
+    // was processed, so by now the terminal claim is taken. A deadline the
+    // test fires from this hook is late by construction (#2221), where the
+    // old shape made it late by racing a 1100ms sleep against a 1000ms
+    // timer and lost on loaded runners.
+    this.terminalClaimed?.();
   }
 
   async stop(): Promise<void> {
@@ -1284,16 +1293,23 @@ describe('runHarborCell', () => {
   test('does not report deadline settlement after normal completion already claimed the terminal state', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       let backend: TerminalClaimBeforeDeadlineBackend | undefined;
+      let claimReached!: () => void;
+      const terminalClaimed = new Promise<void>((resolve) => {
+        claimReached = resolve;
+      });
       const result = await runHarborCell({
         config,
         instruction: 'finish before the deadline',
         cwd: workspaceDir,
         outputDir,
         storageRoot,
-        settleAfterMs: 1_000,
+        // The deadline this test cares about is one that lands after normal
+        // completion claimed the terminal state, so fire it from the claim
+        // itself instead of hoping a wall-clock budget loses the race.
+        settleSignal: terminalClaimed,
         registerBackends: (registry) => {
           registry.register('fake', (ctx) => {
-            backend = new TerminalClaimBeforeDeadlineBackend(ctx.sessionId);
+            backend = new TerminalClaimBeforeDeadlineBackend(ctx.sessionId, claimReached);
             return backend;
           });
         },

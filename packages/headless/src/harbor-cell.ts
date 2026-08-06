@@ -148,6 +148,14 @@ export interface RunHarborCellInput {
   continuationPolicy?: HarborCellContinuationPolicy;
   taskToolSummaryEnabled?: boolean;
   settleAfterMs?: number;
+  /**
+   * Deterministic trigger for the same settlement the settleAfterMs timer
+   * arms. A wall-clock budget cannot encode an ordering guarantee, so a test
+   * about "deadline fires before/after completion" resolves this promise at
+   * the exact point in the run it means, instead of hoping a fixed number of
+   * milliseconds lands on the right side of the race (#2221).
+   */
+  settleSignal?: Promise<void>;
   now?: () => number;
   newId?: () => string;
   /** Resume one already-materialized session instead of creating a fresh session. */
@@ -430,19 +438,23 @@ export async function runHarborCellWithStorage(
   let deadlineReached = false;
   let settlementError: unknown;
   let settlementAttempt: Promise<void> | undefined;
+  let settlementClosed = false;
+  const armDeadlineSettlement = () => {
+    if (settlementClosed || deadlineReached) return;
+    deadlineReached = true;
+    settlementAttempt = sessionCapabilities
+      .settle(session.id, {
+        source: 'benchmark_deadline',
+      })
+      .catch((error) => {
+        settlementError = error;
+      });
+  };
   const settlementTimer =
     input.settleAfterMs === undefined
       ? undefined
-      : setTimeout(() => {
-          deadlineReached = true;
-          settlementAttempt = sessionCapabilities
-            .settle(session.id, {
-              source: 'benchmark_deadline',
-            })
-            .catch((error) => {
-              settlementError = error;
-            });
-        }, input.settleAfterMs);
+      : setTimeout(armDeadlineSettlement, input.settleAfterMs);
+  if (input.settleSignal) void input.settleSignal.then(armDeadlineSettlement);
 
   const continuationPolicy = input.continuationPolicy ?? {
     enabled: false,
@@ -488,6 +500,7 @@ export async function runHarborCellWithStorage(
     if (isStorageRootAuthorityError(error)) throw error;
     sendMessageError = error;
   } finally {
+    settlementClosed = true;
     if (settlementTimer) clearTimeout(settlementTimer);
     // The agent phase is over here, and grading runs after this process exits.
     // Anything the model left managed — a background build, a PTY it never
