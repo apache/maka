@@ -21,6 +21,19 @@ import type { Page } from '@playwright/test';
  * motion resolves to — where the highlight lands, how wide each bar computes —
  * and cannot assert that anything animated on the way there. The tick entrance
  * has no end state to check and therefore no coverage here at all.
+ *
+ * Platform note: the pointer-reachability assertions in this file
+ * (`unreachableTicks`, `activeTickVisibility`) are load-bearing on macOS and
+ * nowhere else. macOS renders the chat scroller's vertical scrollbar as an
+ * overlay: it takes no layout space, so a rail parked on the scroller's right
+ * edge draws on top of it, but the scrollbar's hit region still intercepts
+ * the pointer — every tick under it renders yet never receives a click or
+ * hover, and the rail reads as gone. Linux's in-flow scrollbar moves the
+ * content column left instead, so the regression itself goes green in CI.
+ * What CI *does* catch is the platform-neutral geometry the fix rests on:
+ * the `stays inside the scrollport` test asserts the rail keeps clear
+ * of the measured dead band. Run this spec on a macOS machine before merging
+ * anything that touches the rail's edge or scrollbar.
  */
 
 const RAIL_PROBE = `(() => {
@@ -167,6 +180,18 @@ test('the prompt rail stays inside the scrollport at every scroll position', asy
     expect(probe!.insetTop, where).toBeGreaterThanOrEqual(0);
     expect(probe!.insetBottom, where).toBeGreaterThanOrEqual(0);
     expect(probe!.insetRight, where).toBeGreaterThanOrEqual(0);
+    // macOS's overlay scrollbar hit band starts ~14px in from the scroller's
+    // right edge; the tick bar must stay clear of it. Platform-neutral: a
+    // Linux in-flow scrollbar passes this trivially, but it is the geometry
+    // the macOS click-through fix rests on — pre-fix this read ~5px.
+    const barInset = await page.evaluate(() => {
+      const scroller = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement;
+      const bar = document.querySelector('.maka-prompt-rail-tick-bar') as HTMLElement;
+      const s = scroller.getBoundingClientRect();
+      const b = bar.getBoundingClientRect();
+      return Math.round(s.right - b.right);
+    });
+    expect(barInset, where).toBeGreaterThanOrEqual(14);
   }
 });
 

@@ -27,8 +27,9 @@
    engage while any transcript is on screen, and the rail does its own
    centring from the measured band below.
 
-   `--maka-prompt-rail-scrollport` / `--maka-prompt-rail-dock` are measured in
-   prompt-anchor-rail.tsx; see the rail's own rule for what they buy. */
+   `--maka-prompt-rail-scrollport` / `--maka-prompt-rail-dock` /
+   `--maka-prompt-rail-height` are measured in prompt-anchor-rail.tsx; see the
+   rail's own rule for what they buy. */
 .maka-prompt-rail-anchor {
   position: sticky;
   top: 0;
@@ -41,26 +42,32 @@
 
 .maka-prompt-rail {
   position: absolute;
-  right: var(--space-1);
-  /* The scrollport's lower band belongs to the sticky composer dock, so the
-     rail centres on — and is capped to — what is left above it. Centring on
-     the bare scrollport ran the lower ticks under the dock (122px of overlap
-     at 1240x617), over the frosted blur and the composer card.
-
-     Measured from the anchor's top edge, which is the scrollport's, so this is
-     an absolute position rather than an offset from a centreline that sticky
-     clamping can move. The fallbacks are the pre-measurement first paint: no
-     dock inset, and the window standing in for the scrollport. */
+  /* On macOS the chat scroller's vertical scrollbar is overlay: it takes no
+     layout space, but its hit region still intercepts the pointer, so a rail
+     parked under it renders yet reads as dead. Linux's in-flow scrollbar
+     moves the content column left instead, which is why the regression
+     sailed through CI green. Measured on macOS the dead band starts 14px in
+     from the scroller's right edge, so the rail rests at
+     `right: space-1 + space-2` (12px), clear of it, and hovering settles it
+     3px further inward — the old motion's translateX(3px) did the opposite
+     and pushed the ticks into the band. `translateY(-50%)` stays: it only
+     centres vertically and has no part in the hit-region problem. */
+  right: calc(var(--space-1) + var(--space-2));
   top: calc((var(--maka-prompt-rail-scrollport, 100svh) - var(--maka-prompt-rail-dock, 0px)) / 2);
-  /* The -50% is the centring; the X offset is motion. The rail rests
-     tucked a few px toward the window edge and settles inward when the
-     pointer arrives, so reaching for it is met halfway. */
-  transform: translateY(-50%) translateX(3px);
+  transform: translateY(-50%);
   max-height: calc(
     var(--maka-prompt-rail-scrollport, 100svh) - var(--maka-prompt-rail-dock, 0px) - (2 * var(--space-2))
   );
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* The rail is 22px wide: a visible scrollbar crowds the ticks, and on macOS
+     the overlay scrollbar's hit region swallows the right half of every tick
+     for a beat after the rail scrolls itself. Wheel/trackpad scrolling still
+     works with the bar hidden. */
+  scrollbar-width: none;
+  ::-webkit-scrollbar {
+    width: 0;
+  }
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -73,13 +80,14 @@
   opacity: var(--opacity-muted);
   transition:
     opacity var(--duration-base) var(--ease-out-strong),
-    transform var(--duration-emphasized) var(--ease-out-strong);
+    right var(--duration-emphasized) var(--ease-out-strong);
   -webkit-app-region: no-drag;
 }
 
 .maka-prompt-rail:hover {
   opacity: 1;
-  transform: translateY(-50%) translateX(0);
+  right: calc(var(--space-1) + var(--space-2) + 3px);
+  transform: translateY(-50%);
 }
 
 /* Ticks arrive rather than appear: a new prompt's tick slides in from the edge,
