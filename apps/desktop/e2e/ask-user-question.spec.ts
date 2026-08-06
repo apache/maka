@@ -40,11 +40,23 @@ test('answers three questions and continues the same fake-backend turn', async (
   await selectedOption.click();
   await expect(selectedOption).toBeChecked();
   await expect(unselectedOption).not.toBeChecked();
+  // The first question has nothing to go back to: no previous button at all,
+  // not a disabled one.
+  const previous = prompt.getByRole('button', { name: '上一题' });
+  await expect(previous).toHaveCount(0);
   const next = prompt.getByRole('button', { name: '下一题' });
   await next.click();
 
   await expect(prompt.getByText('2 / 3', { exact: true })).toBeVisible();
   await expect(next).toBeFocused();
+  // Going back keeps the answer already chosen on the first question.
+  await expect(previous).toBeVisible();
+  await previous.click();
+  await expect(prompt.getByText('1 / 3', { exact: true })).toBeVisible();
+  await expect(selectedOption).toBeChecked();
+  await expect(previous).toHaveCount(0);
+  await next.click();
+  await expect(prompt.getByText('2 / 3', { exact: true })).toBeVisible();
   const thisWeek = prompt.getByRole('radio', { name: '本周' });
   const nextWeek = prompt.getByRole('radio', { name: '下周' });
   await thisWeek.focus();

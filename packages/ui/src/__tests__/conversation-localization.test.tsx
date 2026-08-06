@@ -355,6 +355,29 @@ describe('localized conversation journey', () => {
     }
   });
 
+  it('does not render the previous-question button on the first of several questions', () => {
+    const multiQuestionRequest = {
+      ...questionRequest,
+      questions: [
+        { question: 'First?', options: [{ label: 'A' }] },
+        { question: 'Second?', options: [{ label: 'B' }] },
+      ],
+    } satisfies UserQuestionRequestEvent;
+    const surface = (
+      <UserQuestionPrompt request={multiQuestionRequest} onRespond={() => {}} onStop={() => {}} />
+    );
+    assert.doesNotMatch(render('zh', surface), /上一题/);
+    assert.doesNotMatch(render('en', surface), /Previous/);
+  });
+
+  it('does not render the previous-question button for a single-question prompt', () => {
+    const surface = (
+      <UserQuestionPrompt request={questionRequest} onRespond={() => {}} onStop={() => {}} />
+    );
+    assert.doesNotMatch(render('zh', surface), /上一题/);
+    assert.doesNotMatch(render('en', surface), /Previous/);
+  });
+
   it('localizes sandbox boundary chrome while preserving exact requested scopes', () => {
     const surface = <SandboxBoundaryPrompt request={sandboxBoundaryRequest} onRespond={() => {}} />;
     const zh = render('zh', surface);
