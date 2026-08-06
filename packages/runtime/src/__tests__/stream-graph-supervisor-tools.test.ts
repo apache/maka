@@ -180,7 +180,7 @@ describe('stream graph supervisor tools', () => {
     });
     try {
       const schema = updateTool.parameters as {
-        safeParse(value: unknown): { success: boolean };
+        safeParse(value: unknown): { success: boolean; data?: Record<string, unknown> };
       };
       assert.equal(schema.safeParse({}).success, false);
       assert.equal(
@@ -202,19 +202,18 @@ describe('stream graph supervisor tools', () => {
         }).success,
         false,
       );
-      assert.equal(
-        schema.safeParse({
-          graph_id: 'forged-graph',
-          add_work: [
-            {
-              agent_id: 'researcher',
-              instruction: 'Try to escape the bound graph.',
-              input_ids: [],
-            },
-          ],
-        }).success,
-        false,
-      );
+      const forgedIdentity = schema.safeParse({
+        graph_id: 'forged-graph',
+        add_work: [
+          {
+            agent_id: 'researcher',
+            instruction: 'Try to escape the bound graph.',
+            input_ids: [],
+          },
+        ],
+      });
+      assert.equal(forgedIdentity.success, true);
+      assert.equal(forgedIdentity.data?.graph_id, undefined);
       assert.equal(
         schema.safeParse({
           add_work: [
@@ -344,6 +343,41 @@ describe('stream graph supervisor tools', () => {
       observeGraph: async () => observationWithRecords('graph-provider-filled'),
     });
     try {
+      const parsed = (
+        updateTool.parameters as {
+          safeParse(input: unknown): { success: boolean; data?: Record<string, unknown> };
+        }
+      ).safeParse({
+        operation: 'add_work',
+        add_work: [
+          {
+            target_kind: 'new_agent',
+            agent_id: 'implementation',
+            operator_id: { malformed: true },
+            instruction: 'Implement node A.',
+            replacement_mode: 'none',
+            replaces: { malformed: true },
+            ignored: true,
+          },
+        ],
+        stop: 'not-an-array',
+        finish: { malformed: true },
+        ignored: true,
+      });
+      assert.equal(parsed.success, true);
+      assert.deepEqual(parsed.data, {
+        operation: 'add_work',
+        add_work: [
+          {
+            target_kind: 'new_agent',
+            agent_id: 'implementation',
+            instruction: 'Implement node A.',
+            input_ids: [],
+            replacement_mode: 'none',
+          },
+        ],
+      });
+
       const result = await updateTool.impl(
         {
           operation: 'add_work',

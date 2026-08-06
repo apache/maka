@@ -41,6 +41,12 @@ const AGENT_SPAWN_ISOLATION_MODES = [
   AGENT_WORKSPACE_WORKTREE,
 ] as const;
 const CHILD_PROGRESS_ERROR_MAX_CHARS = 1_000;
+const AGENT_LIST_PAGE_SIZE = 8;
+// Active tool-result archival starts at roughly 8k characters with the default
+// token estimate. Keep discovery safely below it even with maximal catalog text.
+const AGENT_LIST_MAX_RESPONSE_CHARS = 7_000;
+const AGENT_LIST_DESCRIPTION_MAX_CHARS = 240;
+const AGENT_LIST_MODEL_MAX_CHARS = 160;
 
 /**
  * Which schema fields each `agent_output` locator needs. A rejection that only
@@ -88,76 +94,84 @@ export function buildSubagentSpawnTool(
     name: AGENT_SPAWN_TOOL_NAME,
     displayName: 'Agent',
     description:
-      'Run one bounded foreground child task. Prefer agent_list, then select the user-approved subagent_id whose description fits the task; profile is retained for legacy callers.',
-    parameters: z
-      .object({
-        profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
-        subagent_id: z
-          .string()
-          .min(1)
-          .max(128)
-          .refine(isSafeSubagentPresetId)
-          .optional()
-          .describe('User-approved subagent preset id from agent_list.'),
-        task: z.string().min(1).max(60_000).describe('Bounded task for the selected child agent.'),
-        write_back: z
-          .enum(AGENT_SPAWN_WRITE_BACK_MODES)
-          .optional()
-          .describe(
-            'Requested child write-back mode. Each built-in profile declares its supported modes.',
-          ),
-        isolation: z
-          .enum(AGENT_SPAWN_ISOLATION_MODES)
-          .optional()
-          .describe(
-            'Requested child workspace isolation. Worktree profiles fail closed until a worktree child executor is available.',
-          ),
-        ...(deps.taskLedger
-          ? {
-              task_id: z
-                .string()
-                .min(1)
-                .max(TASK_ID_MAX_CHARS)
-                .refine(isSafeTaskId)
-                .optional()
-                .describe('Existing task UUID or short key to bind to this child run.'),
-            }
-          : {}),
-      })
-      .strict()
-      .superRefine((input, ctx) => {
-        if (Boolean(input.profile) === Boolean(input.subagent_id)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Provide exactly one of subagent_id or legacy profile.',
-          });
-          return;
-        }
-        if (!input.profile) return;
-        const definition = requireAgentDefinitionByProfile(definitions, input.profile);
-        const requestedWriteBack = input.write_back ?? definition.contract.defaultWriteBack;
-        if (!definition.contract.supportedWriteBack.some((mode) => mode === requestedWriteBack)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['write_back'],
-            message: `Agent profile "${definition.profile}" does not support write_back "${requestedWriteBack}".`,
-          });
-        }
-        const requestedIsolation = input.isolation ?? definition.contract.workspace;
-        if (requestedIsolation !== definition.contract.workspace) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['isolation'],
-            message: `Agent profile "${definition.profile}" requires isolation "${definition.contract.workspace}", not "${requestedIsolation}".`,
-          });
-        }
-      }),
+      'Run one bounded foreground child task. Prefer agent_list, then select the user-approved subagent_id whose description fits the task; profile is retained for legacy callers. If both selectors are present, subagent_id wins and profile is ignored.',
+    parameters: z.preprocess(
+      (input) => cleanSubagentSpawnInput(input, deps.taskLedger !== undefined),
+      z
+        .object({
+          profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
+          subagent_id: z
+            .string()
+            .min(1)
+            .max(128)
+            .refine(isSafeSubagentPresetId)
+            .optional()
+            .describe('User-approved subagent preset id from agent_list.'),
+          task: z
+            .string()
+            .min(1)
+            .max(60_000)
+            .describe('Bounded task for the selected child agent.'),
+          write_back: z
+            .enum(AGENT_SPAWN_WRITE_BACK_MODES)
+            .optional()
+            .describe(
+              'Requested child write-back mode. Each built-in profile declares its supported modes.',
+            ),
+          isolation: z
+            .enum(AGENT_SPAWN_ISOLATION_MODES)
+            .optional()
+            .describe(
+              'Requested child workspace isolation. Worktree profiles fail closed until a worktree child executor is available.',
+            ),
+          ...(deps.taskLedger
+            ? {
+                task_id: z
+                  .string()
+                  .min(1)
+                  .max(TASK_ID_MAX_CHARS)
+                  .refine(isSafeTaskId)
+                  .optional()
+                  .describe('Existing task UUID or short key to bind to this child run.'),
+              }
+            : {}),
+        })
+        .strip()
+        .superRefine((input, ctx) => {
+          if (!input.profile && !input.subagent_id) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Provide subagent_id or legacy profile.',
+            });
+            return;
+          }
+          if (input.subagent_id) return;
+          if (!input.profile) return;
+          const definition = requireAgentDefinitionByProfile(definitions, input.profile);
+          const requestedWriteBack = input.write_back ?? definition.contract.defaultWriteBack;
+          if (!definition.contract.supportedWriteBack.some((mode) => mode === requestedWriteBack)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['write_back'],
+              message: `Agent profile "${definition.profile}" does not support write_back "${requestedWriteBack}".`,
+            });
+          }
+          const requestedIsolation = input.isolation ?? definition.contract.workspace;
+          if (requestedIsolation !== definition.contract.workspace) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['isolation'],
+              message: `Agent profile "${definition.profile}" requires isolation "${definition.contract.workspace}", not "${requestedIsolation}".`,
+            });
+          }
+        }),
+    ),
     categoryHint: 'subagent',
     nesting: 'direct_only',
     impl: async (input, ctx) => {
-      const definition = input.profile
-        ? requireAgentDefinitionByProfile(definitions, input.profile)
-        : await resolvePresetDefinition(input.subagent_id!, ctx, definitions);
+      const definition = input.subagent_id
+        ? await resolvePresetDefinition(input.subagent_id, ctx, definitions)
+        : requireAgentDefinitionByProfile(definitions, input.profile!);
       const requestedWriteBack = input.write_back ?? definition.contract.defaultWriteBack;
       if (!definition.contract.supportedWriteBack.some((mode) => mode === requestedWriteBack)) {
         throw new Error(
@@ -179,13 +193,12 @@ export function buildSubagentSpawnTool(
           },
         );
       }
-      const boundTask = input.task_id
-        ? await deps.taskLedger?.get(ctx.sessionId, input.task_id)
-        : undefined;
-      if (input.task_id && !deps.taskLedger)
-        throw new Error('Task binding is unavailable in this runtime');
-      if (input.task_id && !boundTask)
-        throw new Error(`No such task in this session: ${input.task_id}`);
+      // task_id is meaningful only in compositions that advertise task
+      // binding. Older or over-eager callers may still send it elsewhere;
+      // ignore it instead of turning an optional integration into a refusal.
+      const taskId = deps.taskLedger ? input.task_id : undefined;
+      const boundTask = taskId ? await deps.taskLedger!.get(ctx.sessionId, taskId) : undefined;
+      if (taskId && !boundTask) throw new Error(`No such task in this session: ${taskId}`);
       let claimedOwner:
         | {
             actor: 'child_agent';
@@ -286,6 +299,14 @@ export function buildSubagentSpawnTool(
   };
 }
 
+function cleanSubagentSpawnInput(input: unknown, taskBindingAvailable: boolean): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  if (cleaned.subagent_id !== undefined) delete cleaned.profile;
+  if (!taskBindingAvailable) delete cleaned.task_id;
+  return cleaned;
+}
+
 async function resolvePresetDefinition(
   subagentId: string,
   ctx: MakaToolContext,
@@ -349,16 +370,33 @@ function boundedChildError(error: unknown): string {
     : `${message.slice(0, CHILD_PROGRESS_ERROR_MAX_CHARS - 1)}…`;
 }
 
-export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown> {
+export function buildSubagentListTool(): MakaTool<
+  { view?: 'selection' | 'catalog'; cursor?: string },
+  unknown
+> {
   return {
     name: AGENT_LIST_TOOL_NAME,
     displayName: 'Agent List',
     description:
-      'List user-approved subagent presets (including task descriptions, model routes, and availability), capability definitions, and child runs for this session.',
-    parameters: z.object({}),
+      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by runnable legacy profiles. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn/agent_swarm with agent_output.',
+    parameters: z
+      .object({
+        view: z
+          .enum(['selection', 'catalog'])
+          .default('selection')
+          .describe(
+            'selection lists runnable choices; catalog also includes unavailable choices and reasons.',
+          ),
+        cursor: z
+          .string()
+          .regex(/^\d+$/)
+          .optional()
+          .describe('next_cursor returned by the previous agent_list page.'),
+      })
+      .strip(),
     categoryHint: 'read',
     nesting: 'direct_only',
-    impl: async (_input, ctx) => {
+    impl: async (input, ctx) => {
       // Not reachable from the desktop app or the CLI: both pass
       // `listChildAgents` to ToolRuntime unconditionally
       // (`session-stream.ts`, `runtime-bootstrap.ts`), and ToolRuntime hands
@@ -367,14 +405,164 @@ export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown
       // here — which is why this stays a sentence rather than being deleted.
       if (!ctx.listChildAgents) {
         throw new Error(
-          'agent_list is not available in this session, so no agent catalog or child run list could be read. ' +
+          'agent_list is not available in this session, so no agent catalog could be read. ' +
             'Retrying agent_list will fail the same way — pick a child agent profile from the agent_spawn schema instead.',
           { cause: new Error('listChildAgents capability is unavailable in this runtime context') },
         );
       }
-      return await ctx.listChildAgents();
+      return projectAgentList(await ctx.listChildAgents(), input);
     },
   };
+}
+
+function projectAgentList(
+  catalog: unknown,
+  input: { view?: 'selection' | 'catalog'; cursor?: string },
+): unknown {
+  // The host capability remains a rich control-plane projection because spawn
+  // and swarm resolve presets through it. Only the model-facing list is narrowed.
+  if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) {
+    throw new Error('agent_list returned an invalid catalog');
+  }
+  const raw = catalog as Record<string, unknown>;
+  const definitions = Array.isArray(raw.definitions) ? raw.definitions : [];
+  const definitionByProfile = new Map<string, Record<string, unknown>>();
+  for (const candidate of definitions) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const definition = candidate as Record<string, unknown>;
+    if (typeof definition.profile === 'string') {
+      definitionByProfile.set(definition.profile, definition);
+    }
+  }
+
+  const view = input.view ?? 'selection';
+  const presets = (Array.isArray(raw.presets) ? raw.presets : [])
+    .flatMap((candidate) => {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+      const preset = candidate as Record<string, unknown>;
+      if (
+        typeof preset.id !== 'string' ||
+        typeof preset.name !== 'string' ||
+        typeof preset.description !== 'string' ||
+        typeof preset.profile !== 'string' ||
+        typeof preset.model !== 'string'
+      ) {
+        return [];
+      }
+      const availability = effectivePresetAvailability(
+        preset,
+        definitionByProfile.get(preset.profile),
+      );
+      return [
+        {
+          subagent_id: preset.id,
+          name: boundedCatalogText(preset.name, 128),
+          description: boundedCatalogText(preset.description, AGENT_LIST_DESCRIPTION_MAX_CHARS),
+          profile: preset.profile,
+          model: boundedCatalogText(preset.model, AGENT_LIST_MODEL_MAX_CHARS),
+          ...(typeof preset.thinkingLevel === 'string'
+            ? { thinking_level: boundedCatalogText(preset.thinkingLevel, 32) }
+            : {}),
+          ...availability,
+        },
+      ];
+    })
+    .filter((preset) => view === 'catalog' || preset.status === 'available');
+
+  const offset = Math.min(Number.parseInt(input.cursor ?? '0', 10), presets.length);
+  const pagePresets = presets.slice(offset, offset + AGENT_LIST_PAGE_SIZE);
+  const legacyProfiles = definitions.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+    const definition = candidate as Record<string, unknown>;
+    if (
+      typeof definition.profile !== 'string' ||
+      typeof definition.name !== 'string' ||
+      typeof definition.description !== 'string'
+    ) {
+      return [];
+    }
+    const availability = catalogAvailability(definition.availability);
+    if (view === 'selection' && availability.status !== 'available') return [];
+    const contract =
+      definition.contract &&
+      typeof definition.contract === 'object' &&
+      !Array.isArray(definition.contract)
+        ? (definition.contract as Record<string, unknown>)
+        : undefined;
+    return [
+      {
+        profile: definition.profile,
+        name: boundedCatalogText(definition.name, 128),
+        description: boundedCatalogText(definition.description, AGENT_LIST_DESCRIPTION_MAX_CHARS),
+        ...(typeof contract?.workspace === 'string'
+          ? { workspace: boundedCatalogText(contract.workspace, 32) }
+          : {}),
+        ...(typeof contract?.defaultWriteBack === 'string'
+          ? { write_back: boundedCatalogText(contract.defaultWriteBack, 32) }
+          : {}),
+        ...availability,
+      },
+    ];
+  });
+
+  const buildPage = () => {
+    const nextOffset = offset + pagePresets.length;
+    return {
+      presets: pagePresets,
+      legacy_profiles: legacyProfiles,
+      page: {
+        returned: pagePresets.length,
+        total: presets.length,
+        ...(nextOffset < presets.length ? { next_cursor: String(nextOffset) } : {}),
+      },
+      view,
+    };
+  };
+  while (
+    pagePresets.length > 1 &&
+    JSON.stringify(buildPage()).length > AGENT_LIST_MAX_RESPONSE_CHARS
+  ) {
+    pagePresets.pop();
+  }
+  return buildPage();
+}
+
+function effectivePresetAvailability(
+  preset: Record<string, unknown>,
+  definition: Record<string, unknown> | undefined,
+): { status: 'available' } | { status: 'unavailable'; reason: string } {
+  const presetAvailability = catalogAvailability(preset.availability);
+  if (presetAvailability.status === 'unavailable') return presetAvailability;
+  if (!definition) return { status: 'unavailable', reason: 'unknown_profile' };
+  const definitionAvailability = catalogAvailability(definition.availability);
+  if (definitionAvailability.status === 'unavailable') {
+    return {
+      status: 'unavailable',
+      reason: `profile_${definitionAvailability.reason}`,
+    };
+  }
+  return { status: 'available' };
+}
+
+function catalogAvailability(
+  value: unknown,
+): { status: 'available' } | { status: 'unavailable'; reason: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { status: 'unavailable', reason: 'availability_unknown' };
+  }
+  const availability = value as Record<string, unknown>;
+  if (availability.status === 'available') return { status: 'available' };
+  return {
+    status: 'unavailable',
+    reason:
+      typeof availability.reason === 'string'
+        ? boundedCatalogText(availability.reason, 120)
+        : 'availability_unknown',
+  };
+}
+
+function boundedCatalogText(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : `${value.slice(0, maxChars - 1)}…`;
 }
 
 export function buildSubagentOutputTool(): MakaTool<
@@ -394,64 +582,68 @@ export function buildSubagentOutputTool(): MakaTool<
     displayName: 'Agent Output',
     description:
       'Inspect bounded child output. Use view=result for the final committed model text plus its Graph result record id; runtime_events is the default compatibility view. Always set locator: child_session_run for a graph childSessionId/currentRunId, child_session_latest for its latest run, or a legacy locator. Use view=all only for targeted diagnostics.',
-    parameters: z
-      .object({
-        locator: z
-          .enum(['child_session_latest', 'child_session_run', 'legacy_run', 'legacy_turn'])
-          .optional()
-          .describe(
-            'Explicit locator discriminator. The runtime applies only fields selected by this value.',
-          ),
-        child_session_id: z
-          .string()
-          .min(1)
-          .optional()
-          .describe('Linked child Session id. Without run_id, inspects its latest AgentRun.'),
-        run_id: z.string().min(1).optional(),
-        turn_id: z.string().min(1).optional(),
-        max_events: z.number().int().min(1).max(100).optional(),
-        max_bytes: z
-          .number()
-          .int()
-          .min(1024)
-          .max(128 * 1024)
-          .optional(),
-        view: z.enum(['result', 'events', 'runtime_events', 'all']).optional(),
-      })
-      .superRefine((input, ctx) => {
-        if (input.locator) {
-          const valid =
-            (input.locator === 'child_session_latest' && Boolean(input.child_session_id)) ||
-            (input.locator === 'child_session_run' &&
-              Boolean(input.child_session_id) &&
-              Boolean(input.run_id)) ||
-            (input.locator === 'legacy_run' && Boolean(input.run_id)) ||
-            (input.locator === 'legacy_turn' && Boolean(input.turn_id));
-          if (!valid) {
+    parameters: z.preprocess(
+      cleanSubagentOutputInput,
+      z
+        .object({
+          locator: z
+            .enum(['child_session_latest', 'child_session_run', 'legacy_run', 'legacy_turn'])
+            .optional()
+            .describe(
+              'Explicit locator discriminator. The runtime applies only fields selected by this value.',
+            ),
+          child_session_id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('Linked child Session id. Without run_id, inspects its latest AgentRun.'),
+          run_id: z.string().min(1).optional(),
+          turn_id: z.string().min(1).optional(),
+          max_events: z.number().int().min(1).max(100).optional(),
+          max_bytes: z
+            .number()
+            .int()
+            .min(1024)
+            .max(128 * 1024)
+            .optional(),
+          view: z.enum(['result', 'events', 'runtime_events', 'all']).optional(),
+        })
+        .strip()
+        .superRefine((input, ctx) => {
+          if (input.locator) {
+            const valid =
+              (input.locator === 'child_session_latest' && Boolean(input.child_session_id)) ||
+              (input.locator === 'child_session_run' &&
+                Boolean(input.child_session_id) &&
+                Boolean(input.run_id)) ||
+              (input.locator === 'legacy_run' && Boolean(input.run_id)) ||
+              (input.locator === 'legacy_turn' && Boolean(input.turn_id));
+            if (!valid) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `locator=${input.locator} requires ${LOCATOR_REQUIRED_FIELDS[input.locator]}.`,
+              });
+            }
+            return;
+          }
+          if (input.child_session_id) {
+            if (input.turn_id) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['turn_id'],
+                message: 'turn_id cannot be combined with child_session_id',
+              });
+            }
+            return;
+          }
+          if (Number(!!input.run_id) + Number(!!input.turn_id) !== 1) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message: `locator=${input.locator} requires ${LOCATOR_REQUIRED_FIELDS[input.locator]}.`,
+              message: 'Provide child_session_id, or exactly one legacy run_id/turn_id',
             });
           }
-          return;
-        }
-        if (input.child_session_id) {
-          if (input.turn_id) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['turn_id'],
-              message: 'turn_id cannot be combined with child_session_id',
-            });
-          }
-          return;
-        }
-        if (Number(!!input.run_id) + Number(!!input.turn_id) !== 1) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Provide child_session_id, or exactly one legacy run_id/turn_id',
-          });
-        }
-      }),
+        }),
+    ),
     categoryHint: 'read',
     nesting: 'direct_only',
     impl: async (input, ctx) => {
@@ -520,6 +712,27 @@ export function buildSubagentOutputTool(): MakaTool<
       });
     },
   };
+}
+
+function cleanSubagentOutputInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  switch (cleaned.locator) {
+    case 'child_session_latest':
+      delete cleaned.run_id;
+      delete cleaned.turn_id;
+      break;
+    case 'child_session_run':
+    case 'legacy_run':
+      delete cleaned.turn_id;
+      if (cleaned.locator === 'legacy_run') delete cleaned.child_session_id;
+      break;
+    case 'legacy_turn':
+      delete cleaned.child_session_id;
+      delete cleaned.run_id;
+      break;
+  }
+  return cleaned;
 }
 
 export function buildSubagentProjectionTools(): MakaTool[] {

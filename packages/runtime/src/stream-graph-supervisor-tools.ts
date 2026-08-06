@@ -56,69 +56,72 @@ const cursorSchema = z
   .max(512)
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), 'Cursor contains control characters');
 
-const addWorkSchema = z
-  .object({
-    target_kind: z
-      .enum(['new_agent', 'existing_operator'])
-      .optional()
-      .describe(
-        'Explicit target discriminator. Use new_agent with agent_id, or existing_operator with operator_id. When present, unrelated optional identity fields are ignored.',
-      ),
-    agent_id: identitySchema
-      .optional()
-      .describe(
-        'Catalog agent id for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
-      ),
-    operator_id: identitySchema
-      .optional()
-      .describe(
-        'Runtime id of an EXISTING graph operator returned by view_agent_graph. Use only for follow-up work; set operator_id OR agent_id, never both.',
-      ),
-    instruction: z.string().trim().min(1).max(AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS),
-    input_ids: z
-      .array(identitySchema)
-      .max(AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS)
-      .default([])
-      .describe('Durable record or result ids that form this work item input frontier.'),
-    replaces: identitySchema
-      .optional()
-      .describe('Existing work or activation superseded by this request.'),
-    replacement_mode: z
-      .enum(['none', 'replace'])
-      .optional()
-      .describe(
-        'Use none for normal work. Use replace only with a real replaces id. When none, any provider-filled replaces placeholder is ignored.',
-      ),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    const validTarget = value.target_kind
-      ? value.target_kind === 'new_agent'
-        ? Boolean(value.agent_id)
-        : Boolean(value.operator_id)
-      : (value.agent_id ? 1 : 0) + (value.operator_id ? 1 : 0) === 1;
-    if (!validTarget) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          'Set target_kind=new_agent with agent_id, target_kind=existing_operator with operator_id, or omit target_kind and provide exactly one identity',
-      });
-    }
-    if (value.replacement_mode === 'replace' && !value.replaces) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'replacement_mode=replace requires replaces',
-      });
-    }
-    addDuplicateIssue(ctx, value.input_ids, ['input_ids']);
-  });
+const addWorkSchema = z.preprocess(
+  cleanAddWorkInput,
+  z
+    .object({
+      target_kind: z
+        .enum(['new_agent', 'existing_operator'])
+        .optional()
+        .describe(
+          'Explicit target discriminator. Use new_agent with agent_id, or existing_operator with operator_id. When present, unrelated optional identity fields are ignored.',
+        ),
+      agent_id: identitySchema
+        .optional()
+        .describe(
+          'Catalog agent id for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
+        ),
+      operator_id: identitySchema
+        .optional()
+        .describe(
+          'Runtime id of an EXISTING graph operator returned by view_agent_graph. Use only for follow-up work; set operator_id OR agent_id, never both.',
+        ),
+      instruction: z.string().trim().min(1).max(AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS),
+      input_ids: z
+        .array(identitySchema)
+        .max(AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS)
+        .default([])
+        .describe('Durable record or result ids that form this work item input frontier.'),
+      replaces: identitySchema
+        .optional()
+        .describe('Existing work or activation superseded by this request.'),
+      replacement_mode: z
+        .enum(['none', 'replace'])
+        .optional()
+        .describe(
+          'Use none for normal work. Use replace only with a real replaces id. When none, any provider-filled replaces placeholder is ignored.',
+        ),
+    })
+    .strip()
+    .superRefine((value, ctx) => {
+      const validTarget = value.target_kind
+        ? value.target_kind === 'new_agent'
+          ? Boolean(value.agent_id)
+          : Boolean(value.operator_id)
+        : (value.agent_id ? 1 : 0) + (value.operator_id ? 1 : 0) === 1;
+      if (!validTarget) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'Set target_kind=new_agent with agent_id, target_kind=existing_operator with operator_id, or omit target_kind and provide exactly one identity',
+        });
+      }
+      if (value.replacement_mode === 'replace' && !value.replaces) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'replacement_mode=replace requires replaces',
+        });
+      }
+      addDuplicateIssue(ctx, value.input_ids, ['input_ids']);
+    }),
+);
 
 const stopSchema = z
   .object({
     target_id: identitySchema,
     reason: z.string().trim().min(1).max(AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS),
   })
-  .strict();
+  .strip();
 
 const finishSchema = z
   .object({
@@ -129,44 +132,65 @@ const finishSchema = z
       .describe('Committed graph record ids selected as the final result.'),
     reason: z.string().trim().min(1).max(AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => addDuplicateIssue(ctx, value.result_ids, ['result_ids']));
 
-const updateSchema = z
-  .object({
-    operation: z
-      .enum(['add_work', 'stop', 'finish'])
-      .optional()
-      .describe(
-        'Explicit operation discriminator. Only the matching payload is applied; unrelated provider-filled optional payloads are ignored.',
-      ),
-    add_work: z
-      .array(addWorkSchema)
-      .max(AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK)
-      .optional()
-      .describe(
-        'Schedule work. For a new operator, provide agent_id only. Omit finish whenever add_work is present.',
-      ),
-    stop: z.array(stopSchema).max(AGENT_GRAPH_SCHEDULE_MAX_STOP).optional(),
-    finish: finishSchema
-      .optional()
-      .describe(
-        'Terminal operation selecting committed result ids. Use only after all work is done; never combine with add_work.',
-      ),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    const addWork = value.add_work ?? [];
-    const stop = value.stop ?? [];
-    if (value.operation) {
-      const hasSelectedPayload =
-        (value.operation === 'add_work' && addWork.length > 0) ||
-        (value.operation === 'stop' && stop.length > 0) ||
-        (value.operation === 'finish' && value.finish !== undefined);
-      if (!hasSelectedPayload) {
+const updateSchema = z.preprocess(
+  cleanUpdateInput,
+  z
+    .object({
+      operation: z
+        .enum(['add_work', 'stop', 'finish'])
+        .optional()
+        .describe(
+          'Explicit operation discriminator. Only the matching payload is applied; unrelated provider-filled optional payloads are ignored.',
+        ),
+      add_work: z
+        .array(addWorkSchema)
+        .max(AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK)
+        .optional()
+        .describe(
+          'Schedule work. For a new operator, provide agent_id only. Omit finish whenever add_work is present.',
+        ),
+      stop: z.array(stopSchema).max(AGENT_GRAPH_SCHEDULE_MAX_STOP).optional(),
+      finish: finishSchema
+        .optional()
+        .describe(
+          'Terminal operation selecting committed result ids. Use only after all work is done; never combine with add_work.',
+        ),
+    })
+    .strip()
+    .superRefine((value, ctx) => {
+      const addWork = value.add_work ?? [];
+      const stop = value.stop ?? [];
+      if (value.operation) {
+        const hasSelectedPayload =
+          (value.operation === 'add_work' && addWork.length > 0) ||
+          (value.operation === 'stop' && stop.length > 0) ||
+          (value.operation === 'finish' && value.finish !== undefined);
+        if (!hasSelectedPayload) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `operation=${value.operation} requires its matching payload`,
+          });
+        }
+        addDuplicateIssue(
+          ctx,
+          stop.map((entry) => entry.target_id),
+          ['stop'],
+        );
+        return;
+      }
+      if (addWork.length + stop.length + (value.finish ? 1 : 0) === 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `operation=${value.operation} requires its matching payload`,
+          message: 'At least one add_work, stop, or finish operation is required',
+        });
+      }
+      if (value.finish && addWork.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'finish cannot be combined with add_work',
         });
       }
       addDuplicateIssue(
@@ -174,50 +198,35 @@ const updateSchema = z
         stop.map((entry) => entry.target_id),
         ['stop'],
       );
-      return;
-    }
-    if (addWork.length + stop.length + (value.finish ? 1 : 0) === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'At least one add_work, stop, or finish operation is required',
-      });
-    }
-    if (value.finish && addWork.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'finish cannot be combined with add_work',
-      });
-    }
-    addDuplicateIssue(
-      ctx,
-      stop.map((entry) => entry.target_id),
-      ['stop'],
-    );
-  });
+    }),
+);
 
-const viewSchema = z
-  .object({
-    mode: z
-      .enum(['latest', 'page'])
-      .optional()
-      .describe(
-        'Use latest for the current graph view. Use page only with an opaque cursor returned by a previous view.',
-      ),
-    cursor: cursorSchema
-      .optional()
-      .describe(
-        'Opaque cursor returned by an earlier view_agent_graph call. Ignored when mode=latest.',
-      ),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (value.mode === 'page' && !value.cursor) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'mode=page requires cursor',
-      });
-    }
-  });
+const viewSchema = z.preprocess(
+  cleanViewInput,
+  z
+    .object({
+      mode: z
+        .enum(['latest', 'page'])
+        .optional()
+        .describe(
+          'Use latest for the current graph view. Use page only with an opaque cursor returned by a previous view.',
+        ),
+      cursor: cursorSchema
+        .optional()
+        .describe(
+          'Opaque cursor returned by an earlier view_agent_graph call. Ignored when mode=latest.',
+        ),
+    })
+    .strip()
+    .superRefine((value, ctx) => {
+      if (value.mode === 'page' && !value.cursor) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'mode=page requires cursor',
+        });
+      }
+    }),
+);
 
 const yieldSchema = z
   .object({
@@ -228,7 +237,39 @@ const yieldSchema = z
       .max(AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS)
       .describe('Why the supervisor has no immediate decision until the graph changes.'),
   })
-  .strict();
+  .strip();
+
+function cleanAddWorkInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  if (cleaned.target_kind === 'new_agent') delete cleaned.operator_id;
+  if (cleaned.target_kind === 'existing_operator') delete cleaned.agent_id;
+  if (cleaned.replacement_mode === 'none') delete cleaned.replaces;
+  return cleaned;
+}
+
+function cleanUpdateInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  if (cleaned.operation === 'add_work') {
+    delete cleaned.stop;
+    delete cleaned.finish;
+  } else if (cleaned.operation === 'stop') {
+    delete cleaned.add_work;
+    delete cleaned.finish;
+  } else if (cleaned.operation === 'finish') {
+    delete cleaned.add_work;
+    delete cleaned.stop;
+  }
+  return cleaned;
+}
+
+function cleanViewInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  if (cleaned.mode === undefined || cleaned.mode === 'latest') delete cleaned.cursor;
+  return cleaned;
+}
 
 export interface ViewAgentGraphToolInput {
   mode?: 'latest' | 'page';

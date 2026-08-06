@@ -129,18 +129,34 @@ describe('subagent tools', () => {
     ).toEqual(['profile', 'subagent_id', 'task', 'write_back', 'isolation', 'task_id']);
   });
 
-  test('agent_spawn rejects task_id when task binding is unavailable', () => {
+  test('agent_spawn strips task_id when task binding is unavailable', () => {
     const schema = buildSubagentSpawnTool().parameters as {
-      safeParse(input: unknown): { success: boolean };
+      safeParse(input: unknown): { success: boolean; data?: Record<string, unknown> };
     };
 
-    expect(
-      schema.safeParse({
-        profile: LOCAL_READ_AGENT_PROFILE,
-        task: 'Inspect the repo.',
-        task_id: 'T1',
-      }).success,
-    ).toBe(false);
+    const parsed = schema.safeParse({
+      profile: LOCAL_READ_AGENT_PROFILE,
+      task: 'Inspect the repo.',
+      task_id: 'T1',
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({
+      profile: LOCAL_READ_AGENT_PROFILE,
+      task: 'Inspect the repo.',
+    });
+
+    const presetParsed = schema.safeParse({
+      profile: 'not-a-real-profile',
+      subagent_id: 'fast-reader',
+      task: 'Inspect the repo.',
+      task_id: { malformed: true },
+      ignored: true,
+    });
+    expect(presetParsed.success).toBe(true);
+    expect(presetParsed.data).toEqual({
+      subagent_id: 'fast-reader',
+      task: 'Inspect the repo.',
+    });
   });
 
   test('built-in catalog exposes local-read without shell, web, nested, or write tools', () => {
@@ -501,6 +517,7 @@ describe('subagent tools', () => {
       {
         profile: LOCAL_READ_AGENT_PROFILE,
         task: 'Inspect the runtime tests.',
+        task_id: 'ignored-without-task-binding',
       },
       {
         sessionId: 'session-1',
@@ -580,11 +597,15 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent_spawn resolves a configured subagent_id and never accepts a raw model target', async () => {
+  test('agent_spawn prefers a configured subagent_id over a redundant legacy profile', async () => {
     const tool = buildSubagentSpawnTool();
     const calls: Array<{ agentProfile: string; subagentId?: string; prompt?: string }> = [];
     await tool.impl(
-      { subagent_id: 'fast-reader', task: 'Inspect the runtime tests.' },
+      {
+        profile: IMPLEMENTATION_AGENT_PROFILE,
+        subagent_id: 'fast-reader',
+        task: 'Inspect the runtime tests.',
+      },
       {
         sessionId: 'session-1',
         turnId: 'parent-turn',
@@ -1130,7 +1151,28 @@ describe('subagent tools', () => {
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
         listChildAgents: async () => ({
-          definitions: [{ id: LOCAL_READ_AGENT_ID }],
+          definitions: [
+            {
+              id: LOCAL_READ_AGENT_ID,
+              profile: LOCAL_READ_AGENT_PROFILE,
+              name: 'Local Read',
+              description: 'Read-only repository exploration.',
+              contract: { workspace: 'same_workspace', defaultWriteBack: 'summary' },
+              availability: { status: 'available' },
+            },
+          ],
+          presets: [
+            {
+              id: 'fast-reader',
+              name: 'Fast reader',
+              description: 'Cheap repository inspection.',
+              profile: LOCAL_READ_AGENT_PROFILE,
+              model: 'deepseek-v4-flash',
+              thinkingLevel: 'low',
+              availability: { status: 'available' },
+            },
+          ],
+          executions: [{ execution: { kind: 'legacy_child_run', runId: 'child-run' } }],
           runs: [{ runId: 'child-run', turnId: 'child-turn' }],
         }),
       },
@@ -1163,8 +1205,29 @@ describe('subagent tools', () => {
     expect(listTool.name).toBe(AGENT_LIST_TOOL_NAME);
     expect(outputTool.name).toBe(AGENT_OUTPUT_TOOL_NAME);
     expect(list).toEqual({
-      definitions: [{ id: LOCAL_READ_AGENT_ID }],
-      runs: [{ runId: 'child-run', turnId: 'child-turn' }],
+      presets: [
+        {
+          subagent_id: 'fast-reader',
+          name: 'Fast reader',
+          description: 'Cheap repository inspection.',
+          profile: LOCAL_READ_AGENT_PROFILE,
+          model: 'deepseek-v4-flash',
+          thinking_level: 'low',
+          status: 'available',
+        },
+      ],
+      legacy_profiles: [
+        {
+          profile: LOCAL_READ_AGENT_PROFILE,
+          name: 'Local Read',
+          description: 'Read-only repository exploration.',
+          workspace: 'same_workspace',
+          write_back: 'summary',
+          status: 'available',
+        },
+      ],
+      page: { returned: 1, total: 1 },
+      view: 'selection',
     });
     expect(output).toEqual({
       requested: {
@@ -1184,6 +1247,95 @@ describe('subagent tools', () => {
         },
       },
     });
+  });
+
+  test('agent_list keeps discovery compact, paginated, and free of execution history', async () => {
+    const listTool = buildSubagentListTool();
+    const schema = listTool.parameters as {
+      safeParse(input: unknown): {
+        success: boolean;
+        data?: { view?: string; cursor?: string };
+      };
+    };
+    expect(schema.safeParse({ ignored: true }).data).toEqual({ view: 'selection' });
+    expect(schema.safeParse({ cursor: 'not-a-cursor' }).success).toBe(false);
+
+    const catalog = {
+      definitions: [
+        {
+          profile: LOCAL_READ_AGENT_PROFILE,
+          name: 'Local Read',
+          description: 'Read-only repository exploration.',
+          contract: { workspace: 'same_workspace', defaultWriteBack: 'summary' },
+          availability: { status: 'available' },
+        },
+      ],
+      presets: Array.from({ length: 11 }, (_, index) => ({
+        id: `reader-${index}`,
+        name: `Reader ${index}`,
+        description: 'x'.repeat(1_000),
+        profile: LOCAL_READ_AGENT_PROFILE,
+        model: 'deepseek-v4-flash',
+        availability:
+          index === 10
+            ? { status: 'unavailable', reason: 'connection_disabled' }
+            : { status: 'available' },
+      })),
+      executions: Array.from({ length: 100 }, (_, index) => ({ runId: `run-${index}` })),
+      runs: Array.from({ length: 100 }, (_, index) => ({ runId: `legacy-run-${index}` })),
+    };
+    const call = async (
+      input: { view?: 'selection' | 'catalog'; cursor?: string },
+      source = catalog,
+    ) =>
+      (await listTool.impl(input, {
+        sessionId: 'session-1',
+        turnId: 'parent-turn',
+        cwd: '/tmp/cwd',
+        toolCallId: 'tool-list-compact',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+        listChildAgents: async () => source,
+      })) as Record<string, unknown>;
+
+    const first = await call({});
+    expect((first.presets as unknown[]).length).toBe(8);
+    expect(first.page).toEqual({ returned: 8, total: 10, next_cursor: '8' });
+    expect('definitions' in first).toBe(false);
+    expect('executions' in first).toBe(false);
+    expect('runs' in first).toBe(false);
+    expect(JSON.stringify(first).length < 8_192).toBe(true);
+
+    const second = await call({ cursor: '8' });
+    expect((second.presets as unknown[]).length).toBe(2);
+    expect(second.page).toEqual({ returned: 2, total: 10 });
+
+    const diagnosticTail = await call({ view: 'catalog', cursor: '8' });
+    expect(diagnosticTail.page).toEqual({ returned: 3, total: 11 });
+    expect((diagnosticTail.presets as Array<Record<string, unknown>>)[2]).toMatchObject({
+      subagent_id: 'reader-10',
+      status: 'unavailable',
+      reason: 'connection_disabled',
+    });
+
+    const worstCase = await call(
+      {},
+      {
+        ...catalog,
+        definitions: catalog.definitions.map((definition) => ({
+          ...definition,
+          name: 'n'.repeat(128),
+          description: 'd'.repeat(1_000),
+        })),
+        presets: catalog.presets.map((preset, index) => ({
+          ...preset,
+          id: `reader-${index}`.padEnd(128, 'x'),
+          name: 'n'.repeat(128),
+          model: 'm'.repeat(500),
+        })),
+      },
+    );
+    expect(JSON.stringify(worstCase).length <= 7_000).toBe(true);
   });
 
   test('agent_output accepts linked child-session and legacy run locators', () => {
@@ -1214,6 +1366,24 @@ describe('subagent tools', () => {
 
   test('agent_output uses an explicit locator when a provider fills unrelated fields', async () => {
     const outputTool = buildSubagentOutputTool();
+    const parsed = (
+      outputTool.parameters as {
+        safeParse(input: unknown): { success: boolean; data?: Record<string, unknown> };
+      }
+    ).safeParse({
+      locator: 'child_session_run',
+      child_session_id: 'child-session',
+      run_id: 'child-run',
+      turn_id: { malformed: true },
+      ignored: true,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({
+      locator: 'child_session_run',
+      child_session_id: 'child-session',
+      run_id: 'child-run',
+    });
+
     const output = await outputTool.impl(
       {
         locator: 'child_session_run',

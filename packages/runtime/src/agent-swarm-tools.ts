@@ -473,71 +473,67 @@ function traceAgentSwarm(
 }
 
 /**
- * Why a call was refused for its child selector, and what would work instead.
- *
- * The two failures read very differently to a model and shared one sentence:
- * "Provide exactly one of subagent_id or legacy profile." It named neither which
- * mistake this was, nor a single value that would have been accepted. A model
- * that got two of three items right and slipped on the third was told only that
- * — and the field list `formatToolArgsViolationText` appends is the *top-level*
- * one, which is not where the violation was (`path: ["items", 2]`). So name the
- * mistake, and name both ways out: the preset ids live behind `agent_list`, and
- * the legacy profiles are a closed set this schema already knows.
+ * Explain the one selector error that remains after redundant fields are
+ * cleaned: neither the preferred preset nor a legacy profile was provided.
  */
-function childSelectorIssueMessage(bothSet: boolean, profiles: readonly string[]): string {
-  const waysOut =
+function missingChildSelectorMessage(profiles: readonly string[]): string {
+  return (
+    'Neither subagent_id nor profile is set, so no child is selected. ' +
     `Set subagent_id to a user-approved preset id from agent_list, ` +
-    `or profile to one of: ${profiles.join(', ')}.`;
-  return bothSet
-    ? `subagent_id and profile are both set; exactly one of them selects the child. ${waysOut}`
-    : `Neither subagent_id nor profile is set, so no child is selected. ${waysOut}`;
+    `or profile to one of: ${profiles.join(', ')}.`
+  );
 }
 
 function agentSwarmInputSchema(
   definitions: readonly AgentDefinition[],
   profiles: ReturnType<typeof agentProfilesForDefinitions>,
 ) {
-  const itemSchema = z
-    .object({
-      item_id: z
-        .string()
-        .min(1)
-        .max(TASK_ID_MAX_CHARS)
-        .refine(isSafeTaskId)
-        .describe('Stable item id (letters, digits, dot, underscore, colon, or dash).'),
-      profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
-      subagent_id: z
-        .string()
-        .min(1)
-        .max(128)
-        .refine(isSafeSubagentPresetId)
-        .optional()
-        .describe('User-approved subagent preset id from agent_list.'),
-      task: z
-        .string()
-        .min(1)
-        .max(AGENT_SWARM_TASK_MAX_CHARS)
-        .describe('Bounded, self-contained task for this item.'),
-      write_back: z
-        .enum(AGENT_SWARM_WRITE_BACK_MODES)
-        .optional()
-        .describe('Requested child write-back mode.'),
-      isolation: z
-        .enum(AGENT_SWARM_ISOLATION_MODES)
-        .optional()
-        .describe('Requested child workspace isolation.'),
-    })
-    .superRefine((input, ctx) => {
-      if (Boolean(input.profile) === Boolean(input.subagent_id)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: childSelectorIssueMessage(Boolean(input.profile), profiles),
-        });
-        return;
-      }
-      if (!input.profile) return;
-      addAgentContractIssues(input, ctx, definitions);
-    });
+  const itemSchema = z.preprocess(
+    cleanPreferredSubagentSelector,
+    z
+      .object({
+        item_id: z
+          .string()
+          .min(1)
+          .max(TASK_ID_MAX_CHARS)
+          .refine(isSafeTaskId)
+          .describe('Stable item id (letters, digits, dot, underscore, colon, or dash).'),
+        profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
+        subagent_id: z
+          .string()
+          .min(1)
+          .max(128)
+          .refine(isSafeSubagentPresetId)
+          .optional()
+          .describe('User-approved subagent preset id from agent_list.'),
+        task: z
+          .string()
+          .min(1)
+          .max(AGENT_SWARM_TASK_MAX_CHARS)
+          .describe('Bounded, self-contained task for this item.'),
+        write_back: z
+          .enum(AGENT_SWARM_WRITE_BACK_MODES)
+          .optional()
+          .describe('Requested child write-back mode.'),
+        isolation: z
+          .enum(AGENT_SWARM_ISOLATION_MODES)
+          .optional()
+          .describe('Requested child workspace isolation.'),
+      })
+      .strip()
+      .superRefine((input, ctx) => {
+        if (!input.profile && !input.subagent_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: missingChildSelectorMessage(profiles),
+          });
+          return;
+        }
+        if (input.subagent_id) return;
+        if (!input.profile) return;
+        addAgentContractIssues(input, ctx, definitions);
+      }),
+  );
 
   const explicitItemsSchema = z
     .array(itemSchema)
@@ -559,156 +555,167 @@ function agentSwarmInputSchema(
     });
   const templateItemsSchema = z.array(z.string().trim().min(1)).min(1).max(AGENT_SWARM_MAX_ITEMS);
 
-  return z
-    .object({
-      items: z.union([explicitItemsSchema, templateItemsSchema]).optional(),
-      prompt_template: z
-        .string()
-        .trim()
-        .min(1)
-        .max(AGENT_SWARM_TASK_MAX_CHARS)
-        .optional()
-        .describe(
-          `Shared task template for string items; every ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER} occurrence is replaced.`,
-        ),
-      profile: z
-        .enum(profiles)
-        .optional()
-        .describe('Shared child profile for prompt_template string items.'),
-      subagent_id: z
-        .string()
-        .min(1)
-        .max(128)
-        .refine(isSafeSubagentPresetId)
-        .optional()
-        .describe('Shared user-approved subagent preset id for string items.'),
-      resume_run_ids: z
-        .record(z.string().trim().min(1), z.string().trim().min(1).max(AGENT_SWARM_TASK_MAX_CHARS))
-        .optional()
-        .describe('Map of terminal child AgentRun runId to its continuation prompt.'),
-      max_concurrency: z
-        .number()
-        .int()
-        .min(1)
-        .max(AGENT_SWARM_MAX_CONCURRENCY)
-        .default(AGENT_SWARM_DEFAULT_CONCURRENCY)
-        .describe('Maximum number of child items active inside this batch.'),
-    })
-    .superRefine((input, ctx) => {
-      const resumeCount = Object.keys(input.resume_run_ids ?? {}).length;
-      const itemCount = input.items?.length ?? 0;
-      if (resumeCount + itemCount < 1) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Agent swarm requires at least one item or resume_run_ids entry.',
-        });
-      }
-      if (resumeCount + itemCount > AGENT_SWARM_MAX_ITEMS) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Agent swarm supports at most ${AGENT_SWARM_MAX_ITEMS} total items.`,
-        });
-      }
+  return z.preprocess(
+    cleanPreferredSubagentSelector,
+    z
+      .object({
+        items: z.union([explicitItemsSchema, templateItemsSchema]).optional(),
+        prompt_template: z
+          .string()
+          .trim()
+          .min(1)
+          .max(AGENT_SWARM_TASK_MAX_CHARS)
+          .optional()
+          .describe(
+            `Shared task template for string items; every ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER} occurrence is replaced.`,
+          ),
+        profile: z
+          .enum(profiles)
+          .optional()
+          .describe('Shared child profile for prompt_template string items.'),
+        subagent_id: z
+          .string()
+          .min(1)
+          .max(128)
+          .refine(isSafeSubagentPresetId)
+          .optional()
+          .describe('Shared user-approved subagent preset id for string items.'),
+        resume_run_ids: z
+          .record(
+            z.string().trim().min(1),
+            z.string().trim().min(1).max(AGENT_SWARM_TASK_MAX_CHARS),
+          )
+          .optional()
+          .describe('Map of terminal child AgentRun runId to its continuation prompt.'),
+        max_concurrency: z
+          .number()
+          .int()
+          .min(1)
+          .max(AGENT_SWARM_MAX_CONCURRENCY)
+          .default(AGENT_SWARM_DEFAULT_CONCURRENCY)
+          .describe('Maximum number of child items active inside this batch.'),
+      })
+      .strip()
+      .superRefine((input, ctx) => {
+        const resumeCount = Object.keys(input.resume_run_ids ?? {}).length;
+        const itemCount = input.items?.length ?? 0;
+        if (resumeCount + itemCount < 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Agent swarm requires at least one item or resume_run_ids entry.',
+          });
+        }
+        if (resumeCount + itemCount > AGENT_SWARM_MAX_ITEMS) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Agent swarm supports at most ${AGENT_SWARM_MAX_ITEMS} total items.`,
+          });
+        }
 
-      if (!input.items) {
-        if (input.prompt_template !== undefined) {
+        if (!input.items) {
+          if (input.prompt_template !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['prompt_template'],
+              message: 'prompt_template requires string items.',
+            });
+          }
+          if (input.profile !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['profile'],
+              message: 'profile requires string items.',
+            });
+          }
+          if (input.subagent_id !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['subagent_id'],
+              message: 'subagent_id requires string items.',
+            });
+          }
+          return;
+        }
+
+        const templateItems = input.items.every((item) => typeof item === 'string');
+        if (!templateItems) {
+          if (input.prompt_template !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['prompt_template'],
+              message: 'prompt_template is only valid when items are strings.',
+            });
+          }
+          if (input.profile !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['profile'],
+              message: 'profile is specified per item when items are structured.',
+            });
+          }
+          if (input.subagent_id !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['subagent_id'],
+              message: 'subagent_id is specified per item when items are structured.',
+            });
+          }
+          return;
+        }
+
+        if (input.prompt_template === undefined) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['prompt_template'],
-            message: 'prompt_template requires string items.',
+            message: 'prompt_template is required when items are strings.',
           });
+          return;
         }
-        if (input.profile !== undefined) {
+        if (!input.profile && !input.subagent_id) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            path: ['profile'],
-            message: 'profile requires string items.',
+            message: `String items share one selector for the whole batch. ${missingChildSelectorMessage(profiles)}`,
           });
         }
-        if (input.subagent_id !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['subagent_id'],
-            message: 'subagent_id requires string items.',
-          });
-        }
-        return;
-      }
-
-      const templateItems = input.items.every((item) => typeof item === 'string');
-      if (!templateItems) {
-        if (input.prompt_template !== undefined) {
+        if (!input.prompt_template.includes(AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['prompt_template'],
-            message: 'prompt_template is only valid when items are strings.',
+            message: `prompt_template must include ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER}.`,
           });
+          return;
         }
-        if (input.profile !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['profile'],
-            message: 'profile is specified per item when items are structured.',
-          });
-        }
-        if (input.subagent_id !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['subagent_id'],
-            message: 'subagent_id is specified per item when items are structured.',
-          });
-        }
-        return;
-      }
 
-      if (input.prompt_template === undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['prompt_template'],
-          message: 'prompt_template is required when items are strings.',
-        });
-        return;
-      }
-      if (Boolean(input.profile) === Boolean(input.subagent_id)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `String items share one selector for the whole batch. ${childSelectorIssueMessage(
-            Boolean(input.profile),
-            profiles,
-          )}`,
-        });
-      }
-      if (!input.prompt_template.includes(AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['prompt_template'],
-          message: `prompt_template must include ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER}.`,
-        });
-        return;
-      }
+        const seenTasks = new Set<string>();
+        for (let index = 0; index < input.items.length; index += 1) {
+          const item = input.items[index];
+          if (typeof item !== 'string') continue;
+          const task = expandAgentSwarmPromptTemplate(input.prompt_template, item);
+          if (task.length > AGENT_SWARM_TASK_MAX_CHARS) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['items', index],
+              message: `Expanded agent swarm task exceeds ${AGENT_SWARM_TASK_MAX_CHARS} characters.`,
+            });
+          }
+          if (seenTasks.has(task)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['items', index],
+              message: 'Template items must produce distinct agent swarm tasks.',
+            });
+          }
+          seenTasks.add(task);
+        }
+      }),
+  );
+}
 
-      const seenTasks = new Set<string>();
-      for (let index = 0; index < input.items.length; index += 1) {
-        const item = input.items[index];
-        if (typeof item !== 'string') continue;
-        const task = expandAgentSwarmPromptTemplate(input.prompt_template, item);
-        if (task.length > AGENT_SWARM_TASK_MAX_CHARS) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['items', index],
-            message: `Expanded agent swarm task exceeds ${AGENT_SWARM_TASK_MAX_CHARS} characters.`,
-          });
-        }
-        if (seenTasks.has(task)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['items', index],
-            message: 'Template items must produce distinct agent swarm tasks.',
-          });
-        }
-        seenTasks.add(task);
-      }
-    });
+function cleanPreferredSubagentSelector(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  if (cleaned.subagent_id !== undefined) delete cleaned.profile;
+  return cleaned;
 }
 
 function addAgentContractIssues(
@@ -854,7 +861,7 @@ function preflightAgentSwarmInput(
       throw new Error(`Agent swarm item "${item.item_id}" has an invalid task.`);
     }
 
-    const profile = item.profile ?? presetProfiles.get(item.subagent_id!);
+    const profile = item.subagent_id ? presetProfiles.get(item.subagent_id) : item.profile;
     if (!profile) {
       throw new Error(
         `Unknown or unavailable subagent_id "${item.subagent_id}". Call agent_list first.`,
@@ -906,8 +913,8 @@ function normalizeAgentSwarmItems(input: AgentSwarmToolInput): AgentSwarmExplici
   if (!('prompt_template' in input) || typeof input.prompt_template !== 'string') {
     throw new Error('prompt_template is required when agent swarm items are strings.');
   }
-  if (Boolean(input.profile) === Boolean(input.subagent_id)) {
-    throw new Error('String items require exactly one of subagent_id or legacy profile.');
+  if (!input.profile && !input.subagent_id) {
+    throw new Error('String items require subagent_id or legacy profile.');
   }
 
   const promptTemplate = input.prompt_template.trim();

@@ -168,36 +168,62 @@ describe('AgentSwarm adapter', () => {
     assert.match(refusal, /profile to one of: [^.]*\blocal_read\b/);
   });
 
-  test('rejects an item that sets both selectors, and says which mistake it is', async () => {
-    let starts = 0;
-    const runtime = buildRuntime(async () => {
-      starts += 1;
-      return childResult(starts);
+  test('prefers subagent_id when an item also carries a redundant legacy profile', async () => {
+    const parsed = (
+      buildAgentSwarmTool().parameters as {
+        safeParse(input: unknown): { success: boolean; data?: Record<string, unknown> };
+      }
+    ).safeParse({
+      items: [
+        {
+          item_id: 'both-selectors',
+          task: 'Inspect runtime validation.',
+          profile: 'not-a-real-profile',
+          subagent_id: 'reviewer',
+          ignored: true,
+        },
+      ],
     });
+    assert.equal(parsed.success, true);
+    assert.deepEqual(parsed.data?.items, [
+      {
+        item_id: 'both-selectors',
+        task: 'Inspect runtime validation.',
+        subagent_id: 'reviewer',
+      },
+    ]);
 
-    const result = await executeTool(
-      runtime,
-      buildAgentSwarmTool(),
+    const selectors: Array<{ profile: string; subagentId?: string }> = [];
+    const result = await buildAgentSwarmTool().impl(
       {
         items: [
           {
             item_id: 'both-selectors',
             task: 'Inspect runtime validation.',
-            profile: LOCAL_READ_AGENT_PROFILE,
+            profile: IMPLEMENTATION_AGENT_PROFILE,
             subagent_id: 'reviewer',
           },
         ],
       },
-      new AbortController(),
+      context({
+        listChildAgents: async () => ({
+          presets: [
+            {
+              id: 'reviewer',
+              profile: LOCAL_READ_AGENT_PROFILE,
+              availability: { status: 'available' },
+            },
+          ],
+        }),
+        spawnChildSession: async (input) => {
+          selectors.push({ profile: input.agentProfile, subagentId: input.subagentId });
+          return childResult(1);
+        },
+      }),
     );
 
-    assert.equal(starts, 0);
-    const refusal = String((result as { error?: unknown }).error);
-    // The opposite mistake must not read as the same sentence — a model told
-    // "neither is set" while it set both learns nothing it can act on.
-    assert.match(refusal, /subagent_id and profile are both set/);
-    assert.doesNotMatch(refusal, /Neither subagent_id nor profile is set/);
-    assert.match(refusal, /a user-approved preset id from agent_list/);
+    assert.deepEqual(selectors, [{ profile: LOCAL_READ_AGENT_PROFILE, subagentId: 'reviewer' }]);
+    assert.equal(result.status, 'completed');
   });
 
   test('accepts prompt_template with string items and rejects ambiguous template input', () => {
@@ -326,11 +352,26 @@ describe('AgentSwarm adapter', () => {
   });
 
   test('routes every configured template item through the selected subagent_id', async () => {
+    const parsed = (
+      buildAgentSwarmTool().parameters as {
+        safeParse(input: unknown): { success: boolean; data?: Record<string, unknown> };
+      }
+    ).safeParse({
+      prompt_template: `Review ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER}.`,
+      profile: 'not-a-real-profile',
+      subagent_id: 'fast-reader',
+      items: ['runtime'],
+    });
+    assert.equal(parsed.success, true);
+    assert.equal(parsed.data?.profile, undefined);
+    assert.equal(parsed.data?.subagent_id, 'fast-reader');
+
     const selectors: Array<{ profile: string; subagentId?: string }> = [];
     const tool = buildAgentSwarmTool();
     const result = await tool.impl(
       {
         prompt_template: `Review ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER}.`,
+        profile: IMPLEMENTATION_AGENT_PROFILE,
         subagent_id: 'fast-reader',
         items: ['runtime', 'desktop'],
         max_concurrency: 2,

@@ -10,54 +10,50 @@ import {
 export const ARCHIVE_READ_TOOL_NAME = 'ArchiveRead';
 
 export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): MakaTool {
-  const parameters = z
-    .object({
-      ref: z
-        .string()
-        .describe('A maka://archive/... ref returned in an archived tool-result placeholder'),
-      operation: z
-        .enum(['inspect', 'read', 'query'])
-        .default('inspect')
-        .describe(
-          'inspect lists archive metadata/items; query reads one structured item; read returns one bounded raw page',
-        ),
-      offset: z
-        .number()
-        .int()
-        .nonnegative()
-        .optional()
-        .describe('Zero-based character offset for read/query pagination'),
-      limit: z
-        .number()
-        .int()
-        .positive()
-        .max(TOOL_RESULT_ARCHIVE_MAX_LIMIT)
-        .optional()
-        .describe(`Maximum returned characters, capped at ${TOOL_RESULT_ARCHIVE_MAX_LIMIT}`),
-      itemId: z
-        .string()
-        .min(1)
-        .max(256)
-        .optional()
-        .describe('Structured item id returned by inspect; required for query'),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.operation === 'query' && !value.itemId) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['itemId'],
-          message: 'itemId is required for query',
-        });
-      }
-      if (value.operation !== 'query' && value.itemId !== undefined) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['itemId'],
-          message: 'itemId is only valid for query',
-        });
-      }
-    });
+  const parameters = z.preprocess(
+    cleanArchiveReadInput,
+    z
+      .object({
+        ref: z
+          .string()
+          .describe('A maka://archive/... ref returned in an archived tool-result placeholder'),
+        operation: z
+          .enum(['inspect', 'read', 'query'])
+          .default('inspect')
+          .describe(
+            'inspect lists archive metadata/items; query reads one structured item; read returns one bounded raw page',
+          ),
+        offset: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe('Zero-based character offset for read/query pagination'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(TOOL_RESULT_ARCHIVE_MAX_LIMIT)
+          .optional()
+          .describe(`Maximum returned characters, capped at ${TOOL_RESULT_ARCHIVE_MAX_LIMIT}`),
+        itemId: z
+          .string()
+          .min(1)
+          .max(256)
+          .optional()
+          .describe('Structured item id returned by inspect; required for query'),
+      })
+      .strip()
+      .superRefine((value, ctx) => {
+        if (value.operation === 'query' && !value.itemId) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['itemId'],
+            message: 'itemId is required for query',
+          });
+        }
+      }),
+  );
   const providerSchema = zodSchema(parameters);
   return {
     name: ARCHIVE_READ_TOOL_NAME,
@@ -76,4 +72,16 @@ export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): M
     impl: async (input, ctx) =>
       readToolResultArchiveResource(reader, ctx.sessionId, input, ctx.abortSignal),
   };
+}
+
+function cleanArchiveReadInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const cleaned = { ...(input as Record<string, unknown>) };
+  const operation = cleaned.operation ?? 'inspect';
+  if (operation !== 'query') delete cleaned.itemId;
+  if (operation === 'inspect') {
+    delete cleaned.offset;
+    delete cleaned.limit;
+  }
+  return cleaned;
 }

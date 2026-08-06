@@ -145,6 +145,47 @@ describe('AiSdkBackend tool-result archive capability', () => {
 
     assert.equal(seen[0]?.sessionId, 'session-invoking');
   });
+
+  test('the decoder ignores itemId outside query instead of refusing the call', async () => {
+    const archive = createToolResultArchiveCapability({
+      archiveToolResult: async () => ({ artifactId: 'artifact-1' }),
+      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+      readArchivedToolResultResource: async () => ({
+        ok: true,
+        serializedResult: JSON.stringify({ presets: [{ id: 'fast-reader' }] }),
+      }),
+    });
+    const parameters = archive.archiveReadTool.parameters as {
+      validate(
+        input: unknown,
+      ): Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
+    };
+    const parsed = await parameters.validate({
+      ref: buildToolResultArchiveResourceRef({
+        artifactId: `tool-result-archive-${'a'.repeat(32)}`,
+        bodySha256: 'b'.repeat(64),
+        originalBytes: 128,
+      }),
+      operation: 'inspect',
+      itemId: { malformed: true },
+      offset: 'not-a-number',
+      limit: -1,
+      ignored: true,
+    });
+
+    assert.equal(parsed.success, true);
+
+    const missingQueryItem = await parameters.validate({
+      ref: buildToolResultArchiveResourceRef({
+        artifactId: `tool-result-archive-${'a'.repeat(32)}`,
+        bodySha256: 'b'.repeat(64),
+        originalBytes: 128,
+      }),
+      operation: 'query',
+      ignored: true,
+    });
+    assert.equal(missingQueryItem.success, false, 'required branch fields still fail closed');
+  });
 });
 
 function toolContext(): MakaToolContext {
