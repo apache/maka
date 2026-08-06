@@ -2,12 +2,20 @@ import type { SessionEvent } from '@maka/core/events';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type { SessionSummary } from '@maka/core/session';
 import type { InvocationResult } from '@maka/runtime';
-import { runMakaTextCli, type MakaRunContext, type MakaRunRuntime } from '../run-command.js';
-import type { CreateMakaCliRuntimeContextInput } from '../runtime-bootstrap.js';
+import {
+  runMakaTextCli,
+  type MakaRunContext,
+  type MakaRunContextInput,
+  type MakaRunRuntime,
+} from '../run-command.js';
+import {
+  invocationHasSandboxBoundaryFailure,
+  invocationRecoveredSandboxBoundaryFailure,
+} from '../sandbox-boundary-failure.js';
 import type { ReadySessionTarget } from '../connection-target.js';
 
 const scenario = process.env.MAKA_RUN_FIXTURE_SCENARIO ?? 'completed';
-let observer: CreateMakaCliRuntimeContextInput['runtimeInvocationObserver'];
+let observer: MakaRunContextInput['runOutcomeObserver'];
 let permissionDenied = false;
 let releaseStop: (() => void) | undefined;
 let releaseGraphWait: (() => void) | undefined;
@@ -218,7 +226,7 @@ const runtime: MakaRunRuntime = {
   },
 };
 
-async function createContext(input: CreateMakaCliRuntimeContextInput): Promise<MakaRunContext> {
+async function createContext(input: MakaRunContextInput): Promise<MakaRunContext> {
   if (scenario === 'config-error') throw new Error('unknown connection fixture-missing');
   if (
     process.env.MAKA_RUN_EXPECT_MAX_STEPS &&
@@ -250,7 +258,7 @@ async function createContext(input: CreateMakaCliRuntimeContextInput): Promise<M
       throw new Error(`unexpected sessionCwdOverride ${actual}`);
     }
   }
-  observer = input.runtimeInvocationObserver;
+  observer = input.runOutcomeObserver;
   if (
     process.env.MAKA_RUN_EXPECT_GRAPH === '1' ||
     scenario === 'graph-runtime-error' ||
@@ -382,7 +390,17 @@ function functionResponseEvent(
 }
 
 async function notify(result: InvocationResult): Promise<void> {
-  await observer?.(result);
+  await observer?.({
+    outcomeId: result.invocationId,
+    status: result.status === 'completed' ? 'completed' : 'failed',
+    ...(result.finalOutput !== undefined ? { finalOutput: result.finalOutput } : {}),
+    ...(result.failure ? { failure: result.failure } : {}),
+    sandboxBoundary: invocationRecoveredSandboxBoundaryFailure(result)
+      ? 'recovered'
+      : invocationHasSandboxBoundaryFailure(result)
+        ? 'unresolved'
+        : 'none',
+  });
 }
 
 runMakaTextCli(process.argv.slice(2), { createContext, listSessions }).then(
