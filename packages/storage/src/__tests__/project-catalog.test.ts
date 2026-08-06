@@ -1,19 +1,53 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm as remove, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, parse } from 'node:path';
+import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
 import {
-  createProjectCatalog,
+  createProjectCatalog as createProjectCatalogBase,
+  type ProjectCatalog,
   type ResolvedProjectLocation,
   resolveProjectLocation,
 } from '../project-catalog.js';
 import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
+const trackedCatalogs = new Map<ProjectCatalog, string>();
+
+// Every catalog owns a lease on runtime.sqlite. POSIX can unlink that database
+// while it is open, but Windows cannot, so test cleanup must release every
+// catalog under the temporary root before removing the root itself.
+function createProjectCatalog(
+  storageRoot: string,
+  deps?: Parameters<typeof createProjectCatalogBase>[1],
+): ProjectCatalog {
+  const catalog = createProjectCatalogBase(storageRoot, deps);
+  const close = catalog.close.bind(catalog);
+  catalog.close = () => {
+    if (!trackedCatalogs.delete(catalog)) return;
+    close();
+  };
+  trackedCatalogs.set(catalog, storageRoot);
+  return catalog;
+}
+
+async function rm(path: string, options?: Parameters<typeof remove>[1]): Promise<void> {
+  const removedRoot = resolve(path);
+  for (const [catalog, storageRoot] of [...trackedCatalogs].reverse()) {
+    const storagePath = resolve(storageRoot);
+    const fromRemovedRoot = relative(removedRoot, storagePath);
+    if (
+      fromRemovedRoot === '' ||
+      (!fromRemovedRoot.startsWith('..') && !isAbsolute(fromRemovedRoot))
+    ) {
+      catalog.close();
+    }
+  }
+  await remove(path, options);
+}
 
 test('a plain folder resolves without requiring the Git executable', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-no-git-'));
