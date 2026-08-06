@@ -78,19 +78,80 @@ test('Host WebFetch fails closed before transport creation in privacy mode', asy
   assert.equal(transportCreated, false);
 });
 
+test('Host WebFetch fails closed before transport creation when proxy credentials are missing', async () => {
+  let transportCreated = false;
+  const tool = createHostWebFetchTool({
+    policy: resolver({
+      kind: 'credential_not_configured',
+      status: {
+        locator: { scope: 'network_proxy', kind: 'password' },
+        configured: false,
+        credentialId: null,
+        revision: null,
+        updatedAt: null,
+      },
+    }),
+    createFetchTransport: () => {
+      transportCreated = true;
+      throw new Error('transport must not be created');
+    },
+  });
+
+  await assert.rejects(
+    async () => tool.impl({ url: 'https://example.com/page' }, context()),
+    /configure the network proxy credential/i,
+  );
+  assert.equal(transportCreated, false);
+});
+
+test('Host WebFetch closes its transport when the owning turn is cancelled', async () => {
+  const abort = new AbortController();
+  let closed = 0;
+  let markFetchStarted!: () => void;
+  const fetchStarted = new Promise<void>((resolve) => {
+    markFetchStarted = resolve;
+  });
+  const tool = createHostWebFetchTool({
+    policy: resolver({
+      kind: 'ready',
+      networkProxy: createDefaultRuntimePolicy().networkProxy,
+      secretMaterial: {},
+    }),
+    createFetchTransport: () => ({
+      fetch: async (_url, init) =>
+        await new Promise<Response>((_resolve, reject) => {
+          markFetchStarted();
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+      close: async () => {
+        closed += 1;
+      },
+    }),
+  });
+
+  const result = tool.impl({ url: 'https://example.com/page' }, context(abort.signal));
+  await fetchStarted;
+  abort.abort(new Error('turn cancelled'));
+
+  await assert.rejects(async () => result, /turn cancelled/i);
+  assert.equal(closed, 1);
+});
+
 function resolver(
   result: ResolveWebFetchExecutionResult,
 ): Pick<RuntimePolicyOperationCoordinator, 'resolveWebFetchExecution'> {
   return { resolveWebFetchExecution: async () => result };
 }
 
-function context(): MakaToolContext {
+function context(abortSignal = new AbortController().signal): MakaToolContext {
   return {
     sessionId: 'session-1',
     turnId: 'turn-1',
     cwd: '/tmp',
     toolCallId: 'tool-1',
-    abortSignal: new AbortController().signal,
+    abortSignal,
     emitOutput: () => {},
   };
 }
