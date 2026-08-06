@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createReadOnlyPermissionProfile } from '@maka/core';
 import {
@@ -15,6 +16,17 @@ function scopeFor(ownerToken: object) {
     provisioning: 'canonical_tree_only_v1',
     workspaceEffect: 'none',
     cwd: '/managed/worktree',
+    binding: Object.freeze({}) as never,
+    head: Object.freeze({}) as never,
+  });
+}
+
+function dependencyScopeFor(ownerToken: object, dependencyRoot: string) {
+  return issueManagedWorkspaceExecutionScopeInternal(ownerToken, {
+    provisioning: 'dependency_environment_v1',
+    workspaceEffect: 'none',
+    cwd: '/managed/worktree',
+    dependencyRoot,
     binding: Object.freeze({}) as never,
     head: Object.freeze({}) as never,
   });
@@ -101,5 +113,59 @@ test('rejects foreign, expired, mutating, and unknown operations before worker d
         error.code === 'managed_workspace_operation_denied',
     );
   }
+  assert.equal(dispatches, 0);
+});
+
+test('routes relative and cwd-absolute dependency paths through the owner-bound environment', async () => {
+  const ownerToken = {};
+  const dependencyRoot = join('/maka', 'dependency-environment', 'node_modules');
+  const routedPaths: string[] = [];
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute(input) {
+      routedPaths.push(input.operation.path);
+      if (input.operation.kind === 'glob') {
+        return { kind: 'glob', files: [join(dependencyRoot, 'fixture', 'index.js')] };
+      }
+      return { kind: 'read', content: 'trusted' };
+    },
+  });
+  const scope = dependencyScopeFor(ownerToken, dependencyRoot);
+
+  await bridge.execute(scope, { kind: 'read', path: 'node_modules/fixture/index.js' });
+  await bridge.execute(scope, {
+    kind: 'read',
+    path: join('/managed/worktree', 'node_modules', 'fixture', 'index.js'),
+  });
+  const glob = await bridge.execute(scope, {
+    kind: 'glob',
+    path: 'node_modules',
+    pattern: '**/*.js',
+  });
+
+  assert.deepEqual(routedPaths, [
+    join(dependencyRoot, 'fixture', 'index.js'),
+    join(dependencyRoot, 'fixture', 'index.js'),
+    dependencyRoot,
+  ]);
+  assert.deepEqual(glob, { kind: 'glob', files: ['node_modules/fixture/index.js'] });
+});
+
+test('rejects dependency traversal before worker dispatch', async () => {
+  const ownerToken = {};
+  let dispatches = 0;
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute() {
+      dispatches += 1;
+      return { kind: 'read', content: 'unexpected' };
+    },
+  });
+  const scope = dependencyScopeFor(ownerToken, join('/maka', 'environment', 'node_modules'));
+
+  await assert.rejects(
+    bridge.execute(scope, { kind: 'read', path: 'node_modules/../outside.txt' }),
+    (error) =>
+      error instanceof ManagedWorkspaceWorkerBridgeError &&
+      error.code === 'managed_workspace_operation_denied',
+  );
   assert.equal(dispatches, 0);
 });
