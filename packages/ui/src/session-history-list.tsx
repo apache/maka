@@ -21,12 +21,14 @@ import {
   Pin,
   PinOff,
   Plug,
+  Plus,
   SquarePen,
   Trash2,
 } from './icons.js';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import {
   SideNavItem,
   SideNavSection,
@@ -37,6 +39,7 @@ import { describeBlockedReason, presentSessionStatus } from './session-status-pr
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { getShellControlsCopy } from './shell-controls-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
@@ -78,6 +81,13 @@ export function SessionHistoryList(props: {
   headingEnd?: ReactNode;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
+  /**
+   * Creates a new task from a group header's trailing trigger (time grouping
+   * only). Same handler as the rail's top-level 新任务 row: a session created
+   * here lands where any new session lands; the trigger is a proximity entry,
+   * not a different creation path. Absent = no trigger.
+   */
+  onNewTask?(): void;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
@@ -123,6 +133,7 @@ export function SessionHistoryList(props: {
       onSelectSession={props.onSelectSession}
       rowActions={props.rowActions}
       projectActions={props.projectActions}
+      onNewTask={props.onNewTask}
     />
   );
 
@@ -159,8 +170,10 @@ function SessionListGroups(props: {
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
+  onNewTask?(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
+  const newTaskCopy = getShellControlsCopy(useUiLocale()).navigation.newTask;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -293,6 +306,24 @@ function SessionListGroups(props: {
     );
   }
 
+  // Group-header new-task trigger (time grouping). Same label and handler as
+  // the rail's top-level 新任务 SideNavItem — the header copy comes from the
+  // same shell-controls source so the two entries cannot drift. IconButton +
+  // Tooltip is the icon-only pattern SessionSidebarFooter already uses; the
+  // compact 24px box and column alignment belong to sidebar.css.
+  const newTaskAction = props.onNewTask ? (
+    <Tooltip content={newTaskCopy}>
+      <IconButton
+        className="maka-group-new-task-button"
+        variant="ghost"
+        size="sm"
+        label={newTaskCopy}
+        icon={<Plus size={14} aria-hidden="true" />}
+        onClick={() => void props.onNewTask?.()}
+      />
+    </Tooltip>
+  ) : undefined;
+
   return (
     <>
       {renameDialog}
@@ -306,7 +337,12 @@ function SessionListGroups(props: {
           );
         }
         return (
-          <SideNavSection key={group.key} title={group.label} className="maka-session-group">
+          <SideNavSection
+            key={group.key}
+            title={group.label}
+            endContent={newTaskAction}
+            className="maka-session-group"
+          >
             {items}
           </SideNavSection>
         );

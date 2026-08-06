@@ -189,6 +189,29 @@
 }
 
 /*
+ * Group-header new-task trigger (session-history-list.tsx): the compact plus
+ * on the Pinned / Recent section titles.
+ *
+ * Size: Astryx IconButton ships sm/md/lg (28/32/40px) — there is no xs. The
+ * trigger deliberately takes the rail's compact control step instead
+ * (--h-control-sm, 24px — the same box the rows' trailing ⋯ column is
+ * measured in), so the section header gains almost no height; one product
+ * size override is the cost. !important for the same reason as every other
+ * StyleX override in this file.
+ *
+ * Column alignment needs no margin: the header's endContent and the rows'
+ * trailing column are both 24px boxes right-aligned to the SAME content edge
+ * (the SideNav scrollable zone's spacing-2 plus their own spacing-2
+ * paddingInline on each side), so the plus centre lands on the ⋯ column's
+ * centre by layout. Title entry, row actions — one vertical action column,
+ * one eye sweep.
+ */
+.maka-group-new-task-button {
+  width: var(--h-control-sm, 24px) !important;
+  height: var(--h-control-sm, 24px) !important;
+}
+
+/*
  * Dim only this row's SideNavItem. Child combinators stop before [role=group]
  * nests under project groups.
  * DOM: .maka-session-row > SideNavItem root > .astryx-side-nav-item

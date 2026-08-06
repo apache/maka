@@ -160,6 +160,11 @@ export function SessionListPanel(props: {
             projectActions={props.projectActions}
             onSelectSession={props.onSelectSession}
             rowActions={props.rowActions}
+            /* The group-header trigger is the SAME creation path as the rail's
+               新任务 row: one handler, two proximity entries (decision D1-a:
+               a session created from the Pinned header is an ordinary new
+               session, nothing auto-pinned). */
+            onNewTask={props.onNew}
             heading={onViewModeChange ? copy.title : undefined}
             headingEnd={groupingSwitch}
           />
