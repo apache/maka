@@ -1918,28 +1918,44 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('fails closed before terminal protocol replies can form an unbounded native write queue', async () => {
-    const manager = await createTestManager();
-    const queries = Math.floor(PTY_PROTOCOL_REPLY_MAX_BYTES / 4) + 1;
-    const initial = await manager.runBackgroundBash(
-      shellInput({
-        cwd: await workspace(),
-        command: nodeCommand(`
-        process.stdin.setRawMode?.(true);
-        process.stdin.pause();
-        const query = '\\u001b[5n'.repeat(${queries});
-        process.stdout.write(query);
-        setInterval(() => {}, 1000);
-      `),
-        pty: true,
-        timeoutMs: 10_000,
-      }),
-    );
-    const result = await waitForTerminalShellRun(manager, initial.ref, 10_000);
-    assertShellRunSnapshot(result);
-    assert.equal(result.status, 'failed');
-    assert.match(result.failureMessage ?? '', /protocol replies exceeded/);
-    assert.equal(manager.liveCount(), 0);
-    assert.equal(manager.livePtyCount(), 0);
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      const error = args[1] as NodeJS.ErrnoException | undefined;
+      if (
+        args[0] === 'Unhandled pty write error' &&
+        (error?.code === 'EBADF' || error?.code === 'EIO')
+      ) {
+        return;
+      }
+      originalConsoleError(...args);
+    };
+    try {
+      const manager = await createTestManager();
+      const queries = Math.floor(PTY_PROTOCOL_REPLY_MAX_BYTES / 4) + 1;
+      const initial = await manager.runBackgroundBash(
+        shellInput({
+          cwd: await workspace(),
+          command: nodeCommand(`
+          process.stdin.setRawMode?.(true);
+          process.stdin.pause();
+          const query = '\\u001b[5n'.repeat(${queries});
+          process.stdout.write(query);
+          setInterval(() => {}, 1000);
+        `),
+          pty: true,
+          timeoutMs: 10_000,
+        }),
+      );
+      const result = await waitForTerminalShellRun(manager, initial.ref, 10_000);
+      assertShellRunSnapshot(result);
+      assert.equal(result.status, 'failed');
+      assert.match(result.failureMessage ?? '', /protocol replies exceeded/);
+      assert.equal(manager.liveCount(), 0);
+      assert.equal(manager.livePtyCount(), 0);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   test('redacts a secret across a soft wrap and the scrollback/screen boundary', async () => {
