@@ -131,15 +131,16 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expect(recordFileRow.getByText('runtime.sqlite').filter({ visible: true })).toBeVisible();
   const copyButton = recordFileRow.getByRole('button', { name: '复制文件路径' });
   await expect(copyButton).toBeEnabled();
-  // Drag the divider all the way left: the width model clamps at the same
-  // 320px minimum the keyboard arrow uses, so the panel lands on the smallest
-  // surface the row is allowed to live in — the path truncates and the copy
-  // button stays inside the panel.
+  // Drag the divider all the way right: the workbar is an end-of-row panel
+  // (the shell hands Astryx `isReversed`), so dragging right shrinks it, and
+  // the width model clamps at the same 320px minimum the keyboard arrow uses,
+  // landing the panel on the smallest surface the row is allowed to live in —
+  // the path truncates and the copy button stays inside the panel.
   const resizeBox = (await resize.boundingBox())!;
   const handleY = resizeBox.y + resizeBox.height / 2;
   await page.mouse.move(resizeBox.x, handleY);
   await page.mouse.down();
-  await page.mouse.move(resizeBox.x - 400, handleY, { steps: 5 });
+  await page.mouse.move(resizeBox.x + 400, handleY, { steps: 5 });
   await page.mouse.up();
   await expect(resize).toHaveAttribute('aria-valuenow', '320');
   await expect(workbar).toHaveCSS('width', '320px');
