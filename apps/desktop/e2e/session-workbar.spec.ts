@@ -124,7 +124,11 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
     '[data-maka-contract="session-inspector-record-file"]',
   );
   await expect(recordFileRow).toBeVisible();
-  await expect(recordFileRow.getByText('runtime.sqlite')).toBeVisible();
+  // The path renders twice inside the row: once as the visible text and once
+  // as the Astryx Tooltip's inline popover copy (hidden until hovered). A bare
+  // text locator matches both and trips strict mode, so pin the visible one —
+  // the assertion then does not depend on the tooltip's open state.
+  await expect(recordFileRow.getByText('runtime.sqlite').filter({ visible: true })).toBeVisible();
   const copyButton = recordFileRow.getByRole('button', { name: '复制文件路径' });
   await expect(copyButton).toBeEnabled();
   // Drag the divider all the way left: the width model clamps at the same
