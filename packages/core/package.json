@@ -51,6 +51,7 @@
     "./workspace": "./dist/workspace.js",
     "./attachments": "./dist/attachments.js",
     "./artifacts": "./dist/artifacts.js",
+    "./pet": "./dist/pet.js",
     "./runtime-inputs": "./dist/runtime-inputs.js",
     "./e2e-fixture": "./dist/e2e-fixture.js",
     "./capabilities": "./dist/capabilities.js",
