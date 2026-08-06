@@ -6,6 +6,7 @@
   "type": "module",
   "private": true,
   "exports": {
+    "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",

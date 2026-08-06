@@ -14,6 +14,16 @@ export {
   type RuntimeHostSubscriptionFailureReason,
 } from './session-subscription.js';
 export {
+  RuntimeHostCatalogReadError,
+  readRuntimeHostConnectionCatalog,
+  readRuntimeHostResources,
+  readRuntimeHostSessions,
+  readRuntimeHostSkillCatalog,
+  type RuntimeHostConnectionCatalogEntry,
+  type RuntimeHostConnectionCatalogSnapshot,
+  type RuntimeHostSkillCatalogSnapshot,
+} from './catalog-reader.js';
+export {
   connectOrSpawnRuntimeHost,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,

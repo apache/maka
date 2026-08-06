@@ -1,0 +1,909 @@
+import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
+import { describe, test } from 'node:test';
+import type { StoredMessage } from '@maka/core';
+import type {
+  DirectRequestOperationKey,
+  RuntimeHostConnection,
+  RuntimeHostSessionSubscription,
+} from '@maka/runtime-host/client';
+import type {
+  OperationInput,
+  OperationOutput,
+  SessionCatalogProjection,
+  SessionContinuitySnapshot,
+  SubscriptionFrame,
+} from '@maka/runtime-host/protocol';
+import { createRuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
+import type { MakaPreparedSessionTurn } from '../session-driver.js';
+
+describe('Runtime Host Maka Session driver', () => {
+  test('atomically joins an active turn without losing output produced during transcript load', async () => {
+    const transcript = deferred<StoredMessage[]>();
+    const subscription = new FakeSubscription(continuitySnapshot(), transcript.promise);
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 50,
+    });
+
+    const switching = driver.switchSession('session-1');
+    await waitFor(() => subscription.nextCalls > 0);
+    subscription.push(deltaFrame(1, 'turn-1', 5, ' world'));
+    transcript.resolve([assistantMessage('turn-1', 'Hello')]);
+
+    const switched = await switching;
+    assert.deepEqual(switched.messages, [assistantMessage('turn-1', 'Hello')]);
+    assert.ok(switched.activeTurn);
+    const event = await nextEvent(switched.activeTurn.events);
+    assert.deepEqual(event, {
+      type: 'text_delta',
+      id: 'host-frame:host-1:subscription-1:1',
+      turnId: 'turn-1',
+      messageId: 'message-turn-1',
+      ts: 50,
+      text: ' world',
+    });
+  });
+
+  test('drains the active cut when its turn completes during transcript load', async () => {
+    const transcript = deferred<StoredMessage[]>();
+    const subscription = new FakeSubscription(continuitySnapshot(), transcript.promise);
+    const connection = new FakeConnection([
+      subscription,
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+        Promise.resolve([assistantMessage('turn-1', 'Hello world')]),
+        'subscription-2',
+      ),
+    ]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    const switching = driver.switchSession('session-1');
+    await waitFor(() => subscription.nextCalls > 0);
+    subscription.push(deltaFrame(1, 'turn-1', 5, ' world'));
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: completedTurn('turn-1', 'run-1'),
+      }),
+    });
+    transcript.resolve([assistantMessage('turn-1', 'Hello')]);
+
+    const switched = await switching;
+    assert.ok(switched.activeTurn);
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'text_delta');
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'text_complete');
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+  });
+
+  test('reattaches atomically when another client starts the successor turn', async () => {
+    const first = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([assistantMessage('turn-1', 'Finished')]),
+    );
+    const refresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([assistantMessage('turn-1', 'Finished')]),
+      'subscription-refresh',
+    );
+    const second = new FakeSubscription(
+      continuitySnapshot({
+        projectionRevision: 3,
+        rootTurn: runningTurn('turn-2', 'run-2'),
+      }),
+      Promise.resolve([userMessage('turn-2', 'Follow up'), assistantMessage('turn-2', 'New')]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([first, refresh, second]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 60,
+    });
+    const initial = await driver.switchSession('session-1');
+    assert.ok(initial.activeTurn);
+    const started = deferred<MakaPreparedSessionTurn>();
+    driver.subscribeStartedTurns!((turn) => started.resolve(turn));
+
+    first.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: completedTurn('turn-1', 'run-1'),
+      }),
+    });
+    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'text_complete');
+    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => refresh.nextCalls > 0);
+    first.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      snapshot: continuitySnapshot({
+        projectionRevision: 3,
+        rootTurn: runningTurn('turn-2', 'run-2'),
+      }),
+    });
+    const attached = await Promise.race([
+      started.promise,
+      delay(100).then(() => assert.fail('Timed out waiting for successor turn')),
+    ]);
+    assert.deepEqual(attached.messages, [
+      userMessage('turn-2', 'Follow up'),
+      assistantMessage('turn-2', 'New'),
+    ]);
+    second.push(deltaFrame(1, 'turn-2', 3, ' text', 'subscription-2', 'run-2'));
+    assert.equal((await nextEvent(attached.events)).type, 'text_delta');
+  });
+
+  test('adopts a successor that finishes before its atomic reattach completes', async () => {
+    const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const refresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+      'subscription-refresh',
+    );
+    const second = new FakeSubscription(
+      continuitySnapshot({
+        projectionRevision: 3,
+        rootTurn: completedTurn('turn-2', 'run-2'),
+      }),
+      Promise.resolve([
+        userMessage('turn-2', 'Fast follow up'),
+        assistantMessage('turn-2', 'Done'),
+      ]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([first, refresh, second]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    const started = deferred<MakaPreparedSessionTurn>();
+    driver.subscribeStartedTurns!((turn) => started.resolve(turn));
+
+    first.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: completedTurn('turn-1', 'run-1'),
+      }),
+    });
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => refresh.nextCalls > 0);
+    first.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      snapshot: continuitySnapshot({
+        projectionRevision: 3,
+        rootTurn: runningTurn('turn-2', 'run-2'),
+      }),
+    });
+
+    const attached = await started.promise;
+    assert.deepEqual(attached.messages, [
+      userMessage('turn-2', 'Fast follow up'),
+      assistantMessage('turn-2', 'Done'),
+    ]);
+    assert.equal((await nextEvent(attached.events)).type, 'complete');
+  });
+
+  test('serializes buffered successor reattach so transcript completion cannot reverse turn order', async () => {
+    const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const refreshFirst = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+      'subscription-refresh-1',
+    );
+    const refreshSecond = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-2', 'run-2') }),
+      Promise.resolve([]),
+      'subscription-refresh-2',
+    );
+    const secondTranscript = deferred<StoredMessage[]>();
+    const thirdTranscript = deferred<StoredMessage[]>();
+    const second = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 4, rootTurn: runningTurn('turn-2', 'run-2') }),
+      secondTranscript.promise,
+      'subscription-2',
+    );
+    const third = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 5, rootTurn: runningTurn('turn-3', 'run-3') }),
+      thirdTranscript.promise,
+      'subscription-3',
+    );
+    const connection = new FakeConnection([first, refreshFirst, refreshSecond, second, third]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    const started: MakaPreparedSessionTurn[] = [];
+    driver.subscribeStartedTurns!((turn) => started.push(turn));
+
+    first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
+    first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
+    first.push(projectionFrame(3, completedTurn('turn-2', 'run-2'), 4));
+    first.push(projectionFrame(4, runningTurn('turn-3', 'run-3'), 5));
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+
+    await waitFor(() => connection.openedSubscriptions === 4);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(connection.openedSubscriptions, 4, 'the later successor must wait for reattach');
+    secondTranscript.resolve([userMessage('turn-2', 'Second')]);
+    await waitFor(() => started.length === 1 && connection.openedSubscriptions === 5);
+    assert.equal(started[0]?.turnId, 'turn-2');
+
+    thirdTranscript.resolve([userMessage('turn-3', 'Third')]);
+    await waitFor(() => started.length === 2);
+    assert.deepEqual(
+      started.map((turn) => turn.turnId),
+      ['turn-2', 'turn-3'],
+    );
+  });
+
+  test('an explicit Session switch fences an older successor reattach already loading', async () => {
+    const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const refresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+      'subscription-refresh',
+    );
+    const staleTranscript = deferred<StoredMessage[]>();
+    const stale = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 3, rootTurn: runningTurn('turn-2', 'run-2') }),
+      staleTranscript.promise,
+      'subscription-stale',
+    );
+    const switchedSubscription = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 4, rootTurn: runningTurn('turn-3', 'run-3') }),
+      Promise.resolve([userMessage('turn-3', 'Current')]),
+      'subscription-current',
+    );
+    const connection = new FakeConnection([first, refresh, stale, switchedSubscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const initial = await driver.switchSession('session-1');
+    assert.ok(initial.activeTurn);
+    const started: string[] = [];
+    driver.subscribeStartedTurns!((turn) => started.push(turn.turnId));
+
+    first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
+    first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
+    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => connection.openedSubscriptions === 3);
+
+    const switched = await driver.switchSession('session-1');
+    assert.equal(switched.activeTurn?.turnId, 'turn-3');
+    staleTranscript.resolve([userMessage('turn-2', 'Stale')]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(started, []);
+  });
+
+  test('a stale reattach cannot overwrite configuration adopted by an explicit switch', async () => {
+    const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const refresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+      'subscription-refresh',
+    );
+    const stale = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 3, rootTurn: runningTurn('turn-2', 'run-2') }),
+      Promise.resolve([userMessage('turn-2', 'Stale')]),
+      'subscription-stale',
+    );
+    const current = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 4, rootTurn: runningTurn('turn-3', 'run-3') }),
+      Promise.resolve([userMessage('turn-3', 'Current')]),
+      'subscription-current',
+    );
+    const staleConfiguration = deferred<SessionCatalogProjection>();
+    const connection = new FakeConnection([first, refresh, stale, current]);
+    connection.sessionQueries.push(
+      sessionProjection(),
+      staleConfiguration.promise,
+      sessionProjection({ orchestrationMode: 'graph' }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const initial = await driver.switchSession('session-1');
+    assert.ok(initial.activeTurn);
+
+    first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
+    first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
+    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(
+      () =>
+        connection.requests.filter((request) => request.operation === 'session.catalog.query')
+          .length === 2,
+    );
+
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    assert.equal(driver.getOrchestrationMode!(), 'graph');
+    staleConfiguration.resolve(sessionProjection({ orchestrationMode: 'default' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(driver.getOrchestrationMode!(), 'graph');
+  });
+
+  test('a stale generation cannot block successor reattach after an explicit switch', async () => {
+    const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const oldRefresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+      'subscription-old-refresh',
+    );
+    const staleTranscript = deferred<StoredMessage[]>();
+    const stale = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 3, rootTurn: runningTurn('turn-2', 'run-2') }),
+      staleTranscript.promise,
+      'subscription-stale',
+    );
+    const current = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 4, rootTurn: runningTurn('turn-3', 'run-3') }),
+      Promise.resolve([userMessage('turn-3', 'Current')]),
+      'subscription-current',
+    );
+    const currentRefresh = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 5, rootTurn: completedTurn('turn-3', 'run-3') }),
+      Promise.resolve([assistantMessage('turn-3', 'Done')]),
+      'subscription-current-refresh',
+    );
+    const successor = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 6, rootTurn: runningTurn('turn-4', 'run-4') }),
+      Promise.resolve([userMessage('turn-4', 'Next')]),
+      'subscription-successor',
+    );
+    const connection = new FakeConnection([
+      first,
+      oldRefresh,
+      stale,
+      current,
+      currentRefresh,
+      successor,
+    ]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const initial = await driver.switchSession('session-1');
+    assert.ok(initial.activeTurn);
+    const started: string[] = [];
+    driver.subscribeStartedTurns!((turn) => started.push(turn.turnId));
+
+    first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
+    first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
+    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => connection.openedSubscriptions === 3);
+
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    current.push(projectionFrame(1, completedTurn('turn-3', 'run-3'), 5, 'subscription-current'));
+    current.push(projectionFrame(2, runningTurn('turn-4', 'run-4'), 6, 'subscription-current'));
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => connection.openedSubscriptions === 6 && started.includes('turn-4'));
+    assert.deepEqual(started, ['turn-4']);
+  });
+
+  test('routes queue and retract mutations through Host authority', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('message-1', 'retract-1'),
+    });
+    await driver.switchSession('session-1');
+
+    assert.deepEqual(await driver.queueMessage!('Later'), { kind: 'queued' });
+    assert.equal(await driver.retractQueued!(), 'Later');
+    assert.deepEqual(
+      connection.requests.filter(
+        (request) =>
+          request.operation === 'turn.message.submit' || request.operation === 'queue.retract',
+      ),
+      [
+        {
+          operation: 'turn.message.submit',
+          input: {
+            originHostEpoch: 'host-1',
+            sessionId: 'session-1',
+            messageId: 'message-1',
+            content: { text: 'Later' },
+            placement: 'next_turn',
+          },
+        },
+        {
+          operation: 'queue.retract',
+          input: {
+            originHostEpoch: 'host-1',
+            sessionId: 'session-1',
+            retractId: 'retract-1',
+          },
+        },
+      ],
+    );
+  });
+
+  test('projects the acknowledgement that releases a question answered through the Host', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [pendingQuestion()] } }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 75,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'user_question_request');
+
+    await driver.respondToUserQuestion!({ requestId: 'question-1', answers: ['Yes'] });
+
+    assert.deepEqual(await nextEvent(switched.activeTurn.events), {
+      type: 'user_question_answer_ack',
+      id: 'host-interaction:question-1:2',
+      turnId: 'turn-1',
+      ts: 75,
+      requestId: 'question-1',
+      toolUseId: 'tool-question',
+    });
+  });
+
+  test('reads a fresh Host transcript when listing rewind targets', async () => {
+    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const current = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([userMessage('turn-new', 'Newest prompt')]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([attached, current]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    assert.deepEqual(await driver.listRewindTargets(), [
+      { turnId: 'turn-new', label: 'Newest prompt' },
+    ]);
+  });
+
+  test('reopens a failed Session channel before starting the next turn', async () => {
+    const first = new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([]));
+    const second = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([first, second]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('turn-2'),
+    });
+    await driver.switchSession('session-1');
+
+    first.push({
+      kind: 'subscription.closed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      reason: 'slow_consumer',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const turn = await driver.preparePrompt('Continue');
+    second.push(deltaFrame(1, 'turn-2', 0, 'Recovered', 'subscription-2', 'run-2'));
+    assert.equal((await nextEvent(turn.events)).text, 'Recovered');
+  });
+
+  test('retires a pending question when another client answers it', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [pendingQuestion()] } }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    connection.interactionQuery = {
+      ...pendingQuestion(),
+      revision: 2,
+      status: 'answered',
+      outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 80 },
+    };
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+    const resolved = deferred<string>();
+    driver.subscribeResolvedInteractions!((_sessionId, requestId) => resolved.resolve(requestId));
+
+    subscription.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({ projectionRevision: 2, interactions: { pending: [] } }),
+    });
+
+    assert.equal(await resolved.promise, 'question-1');
+  });
+
+  test('reconciles the durable transcript after a turn reaches its terminal boundary', async () => {
+    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const durableMessages = [userMessage('turn-1', 'Run it'), assistantMessage('turn-1', 'Done')];
+    const refresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve(durableMessages),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([attached, refresh]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+    const replacement = deferred<StoredMessage[]>();
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages) =>
+      replacement.resolve(messages),
+    );
+
+    attached.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: completedTurn('turn-1', 'run-1'),
+      }),
+    });
+
+    assert.deepEqual(await replacement.promise, durableMessages);
+  });
+});
+
+class FakeConnection {
+  readonly requests: Array<{ operation: string; input: unknown }> = [];
+  readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
+  openedSubscriptions = 0;
+  interactionQuery: unknown;
+  readonly value: RuntimeHostConnection;
+
+  constructor(private readonly subscriptions: FakeSubscription[]) {
+    this.value = {
+      hostEpoch: 'host-1',
+      connectionId: 'connection-1',
+      selectedProtocol: 0,
+      closed: new Promise(() => {}),
+      request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
+        this.request(operation, input),
+      openSessionSubscription: async () => {
+        const subscription = this.subscriptions[this.openedSubscriptions];
+        this.openedSubscriptions += 1;
+        if (!subscription) throw new Error('No fake subscription available');
+        return subscription;
+      },
+      close: async () => {},
+    } as unknown as RuntimeHostConnection;
+  }
+
+  async request<K extends DirectRequestOperationKey>(
+    operation: K,
+    input: OperationInput<K>,
+  ): Promise<OperationOutput<K>> {
+    this.requests.push({ operation, input });
+    const result: unknown =
+      operation === 'session.catalog.query'
+        ? {
+            kind: 'session',
+            session: await (this.sessionQueries.shift() ?? sessionProjection()),
+          }
+        : operation === 'session.execution_boundary.query'
+          ? { kind: 'managed', access: 'read_write', revision: 1 }
+          : operation === 'turn.message.submit'
+            ? { disposition: 'queued', queueRevision: 2 }
+            : operation === 'queue.retract'
+              ? {
+                  hostEpoch: 'host-1',
+                  queueRevision: 3,
+                  retracted: [
+                    {
+                      entryId: 'entry-1',
+                      messageId: 'message-1',
+                      content: { text: 'Later' },
+                      placement: 'next_turn',
+                    },
+                  ],
+                }
+              : operation === 'interaction.answer'
+                ? {
+                    ...pendingQuestion(),
+                    revision: 2,
+                    status: 'answered',
+                    outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
+                  }
+                : operation === 'interaction.query'
+                  ? this.interactionQuery
+                  : operation === 'turn.start'
+                    ? { kind: 'started' }
+                    : undefined;
+    if (result === undefined) throw new Error(`Unexpected fake operation: ${operation}`);
+    return result as OperationOutput<K>;
+  }
+}
+
+class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
+  readonly hostEpoch = 'host-1';
+  readonly subscriptionId: string;
+  readonly #frames: SubscriptionFrame[] = [];
+  readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
+  nextCalls = 0;
+  #closed = false;
+
+  constructor(
+    readonly snapshot: SessionContinuitySnapshot,
+    private readonly transcript: Promise<StoredMessage[]>,
+    subscriptionId = 'subscription-1',
+  ) {
+    this.subscriptionId = subscriptionId;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
+    return this;
+  }
+
+  next(): Promise<IteratorResult<SubscriptionFrame>> {
+    this.nextCalls += 1;
+    const frame = this.#frames.shift();
+    if (frame) return Promise.resolve({ done: false, value: frame });
+    if (this.#closed) return Promise.resolve({ done: true, value: undefined });
+    return new Promise((resolve) => this.#waiters.push(resolve));
+  }
+
+  push(frame: SubscriptionFrame): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) waiter({ done: false, value: frame });
+    else this.#frames.push(frame);
+  }
+
+  async loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]> {
+    return (await this.transcript).map(decodeMessage);
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined });
+  }
+}
+
+function continuitySnapshot(
+  overrides: Partial<SessionContinuitySnapshot> = {},
+): SessionContinuitySnapshot {
+  return {
+    schemaVersion: 3,
+    session: {
+      sessionId: 'session-1',
+      metadataRevision: 1,
+      status: 'running',
+      createdAt: 1,
+      lastUsedAt: 1,
+      isArchived: false,
+    },
+    projectionRevision: 1,
+    rootTurn: runningTurn('turn-1', 'run-1'),
+    goal: null,
+    queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+    interactions: { pending: [] },
+    ...overrides,
+  };
+}
+
+function runningTurn(turnId: string, runId: string) {
+  return { sessionId: 'session-1', turnId, runId, status: 'running' as const };
+}
+
+function completedTurn(turnId: string, runId: string) {
+  return {
+    sessionId: 'session-1',
+    turnId,
+    runId,
+    status: 'completed' as const,
+    completedAt: 80,
+    terminalEventId: `terminal-${turnId}`,
+  };
+}
+
+function sessionProjection(
+  overrides: Partial<SessionCatalogProjection> = {},
+): SessionCatalogProjection {
+  return {
+    id: 'session-1',
+    revision: 1,
+    cwd: '/tmp',
+    createdAt: 1,
+    lastUsedAt: 2,
+    name: 'Session',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    labelsTruncated: false,
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'openai-main',
+    connectionLocked: true,
+    model: 'gpt-5',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+    ...overrides,
+  };
+}
+
+function assistantMessage(turnId: string, text: string): StoredMessage {
+  return {
+    type: 'assistant',
+    id: `message-${turnId}`,
+    turnId,
+    ts: 10,
+    text,
+    modelId: 'gpt-5',
+  };
+}
+
+function userMessage(turnId: string, text: string): StoredMessage {
+  return { type: 'user', id: `user-${turnId}`, turnId, ts: 9, text };
+}
+
+function deltaFrame(
+  sequence: number,
+  turnId: string,
+  startOffset: number,
+  text: string,
+  subscriptionId = 'subscription-1',
+  runId = 'run-1',
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_delta',
+    hostEpoch: 'host-1',
+    subscriptionId,
+    sequence,
+    sessionId: 'session-1',
+    delta: {
+      kind: 'text',
+      turnId,
+      runId,
+      messageId: `message-${turnId}`,
+      startOffset,
+      text,
+    },
+  };
+}
+
+function projectionFrame(
+  sequence: number,
+  rootTurn: NonNullable<SessionContinuitySnapshot['rootTurn']>,
+  projectionRevision: number,
+  subscriptionId = 'subscription-1',
+): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId,
+    sequence,
+    snapshot: continuitySnapshot({ projectionRevision, rootTurn }),
+  };
+}
+
+function pendingQuestion() {
+  return {
+    schemaVersion: 1 as const,
+    interactionId: 'question-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    outcome: null,
+    request: {
+      kind: 'question' as const,
+      toolUseId: 'tool-question',
+      questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    },
+  };
+}
+
+async function nextEvent(events: AsyncIterable<unknown>): Promise<any> {
+  const iterator = events[Symbol.asyncIterator]();
+  const result = await Promise.race([
+    iterator.next(),
+    delay(100).then(() => assert.fail('Timed out waiting for Session event')),
+  ]);
+  assert.equal(result.done, false);
+  return result.value;
+}
+
+function sequenceIds(...ids: string[]): () => string {
+  let index = 0;
+  return () => ids[index++] ?? `id-${index}`;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('Timed out waiting for fake Host state');
+}

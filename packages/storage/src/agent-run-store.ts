@@ -21,6 +21,7 @@ import {
 } from './bounded-evidence.js';
 import {
   DurableStoreWriteError,
+  aggregateMessageContents,
   decodeAgentGraphIntentClaim,
   decodeMessageContent,
   encodeCanonicalRuntimeEvent,
@@ -60,6 +61,7 @@ const ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS =
 export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
+  submittedContentDigest?: `sha256:${string}`;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
 }
@@ -1125,19 +1127,8 @@ export function normalizeRootTurnAdmissionPayload(
     normalizedInputMaxAttachments,
   );
   if (sourceMessages.length > 0) {
-    const sourceText = sourceMessages.map((source) => source.content.text).join('\n\n');
-    const sourceDisplayText = sourceMessages
-      .map((source) => source.content.displayText ?? source.content.text)
-      .join('\n\n');
-    const sourceAttachments = sourceMessages.flatMap((source) => source.content.attachments ?? []);
-    const sourceQuotes = sourceMessages.flatMap((source) => source.content.quotes ?? []);
     const expectedInput = normalizeRootTurnMessageContent(
-      {
-        text: sourceText,
-        ...(sourceDisplayText !== sourceText ? { displayText: sourceDisplayText } : {}),
-        ...(sourceAttachments.length > 0 ? { attachments: sourceAttachments } : {}),
-        ...(sourceQuotes.length > 0 ? { quotes: sourceQuotes } : {}),
-      },
+      aggregateMessageContents(sourceMessages.map((source) => source.content)),
       'root turn aggregated source content',
       normalizedInputMaxAttachments,
     );
@@ -1162,11 +1153,17 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
   const normalized = value.map((item, index): RootTurnSourceMessage => {
     if (
       !isPlainRecord(item) ||
-      !hasExactKeys(item, ['messageId', 'content', 'placement', 'disposition'])
+      !hasExactKeys(item, [
+        'messageId',
+        'content',
+        'placement',
+        'disposition',
+        ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
+      ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const { messageId, content, placement, disposition } = item;
+    const { messageId, content, submittedContentDigest, placement, disposition } = item;
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1175,7 +1172,8 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'followup' &&
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
-      (disposition === 'followup' && placement !== 'next_turn')
+      (disposition === 'followup' && placement !== 'next_turn') ||
+      (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest))
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
@@ -1190,6 +1188,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         `root turn source message content at index ${index}`,
         MAX_ATTACHMENT_COUNT,
       ),
+      ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
       placement,
       disposition,
     });
@@ -1215,6 +1214,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.messageId === other.messageId &&
         source.placement === other.placement &&
         source.disposition === other.disposition &&
+        source.submittedContentDigest === other.submittedContentDigest &&
         messageContentsEqual(source.content, other.content)
       );
     })

@@ -476,6 +476,70 @@ test('turn.start resolves explicit Skills once before durable admission and repl
   }
 });
 
+test('idle turn.message.submit applies hosted Skill preparation before durable admission', async () => {
+  let preparationCount = 0;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async (): Promise<PreparedSkillInvocationMessage> => {
+      preparationCount += 1;
+      return {
+        disposition: 'ready',
+        sendText: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+        skillInvocation: {
+          loaded: [{ id: 'writer', name: 'Writer' }],
+          failed: [],
+          receipts: [
+            {
+              invocation: 'explicit',
+              request: 'writer',
+              success: true,
+              ref: 'project:maka:writer',
+              id: 'writer',
+              name: 'Writer',
+              scope: 'project',
+              source: 'maka',
+              truncated: false,
+            },
+          ],
+        },
+      };
+    },
+  });
+  try {
+    const outcome = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'idle-skill-message',
+        content: { text: '/skill:writer Draft this.' },
+        placement: 'current_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(outcome.ok, true, JSON.stringify(outcome));
+    assert.equal(preparationCount, 1);
+    if (!outcome.ok || outcome.result.disposition !== 'turn_started') return;
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      outcome.result.turnId,
+    );
+    assert.deepEqual(admission?.normalizedInput, {
+      text: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+      displayText: '/skill:writer Draft this.',
+      inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+    });
+    assert.deepEqual(admission?.sourceMessages[0]?.content, admission?.normalizedInput);
+    assert.match(
+      admission?.execution.kind === 'external_message'
+        ? (admission.execution.inputDigest ?? '')
+        : '',
+      /^sha256:[a-f0-9]{64}$/,
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test('turn.start transfers Host-owned native audio into one runtime execution', async () => {
   const recordingBackends: VoiceRecordingBackend[] = [];
   let consumeCount = 0;
@@ -1813,6 +1877,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
       startFromMessage: (input, admission) =>
         requireCoordinator(coordinator).startFromMessage(input, admission),
+      prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
       claimStop: (input, commitQueueFence, admission) =>
         requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
     };
@@ -4279,6 +4344,7 @@ async function createFailureFixture(options: {
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
     startFromMessage: (input, admission) =>
       requireCoordinator(coordinator).startFromMessage(input, admission),
+    prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
   };

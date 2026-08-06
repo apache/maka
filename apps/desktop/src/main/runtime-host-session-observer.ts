@@ -5,21 +5,22 @@ import type {
   StoredMessage,
 } from "@maka/core";
 import type { AgentGraphClientChangedEvent } from "@maka/runtime";
+import {
+  RuntimeHostSessionProjector,
+  isRuntimeHostTerminalTurn as isTerminalTurn,
+  projectRuntimeHostInteractionRequest,
+} from "@maka/runtime-host/adapter";
 import type {
   InteractionAnsweredSnapshot,
   InteractionPendingSnapshot,
-  SessionMessageQueueProjection,
   SessionDomainChange,
   SessionContinuitySnapshot,
-  SteeringMessageSnapshot,
   SubscriptionFrame,
-  TurnSnapshot,
 } from "@maka/runtime-host/protocol";
 import type {
   DesktopRuntimeHostClient,
   DesktopRuntimeHostSession,
 } from "./runtime-host-client.js";
-import { foldRuntimeHostAssistantDelta } from "./runtime-host-assistant-delta.js";
 
 const MAX_PENDING_FRAMES = 512;
 
@@ -48,13 +49,6 @@ export interface RuntimeHostSessionObserverDeps {
   now?: () => number;
 }
 
-interface AssistantAccumulator {
-  kind: "text" | "thinking";
-  turnId: string;
-  messageId: string;
-  text: string;
-}
-
 interface ObserverTargetGroup {
   readonly target: RuntimeHostSessionObserverTarget;
   readonly observerIds: Set<string>;
@@ -62,22 +56,17 @@ interface ObserverTargetGroup {
   seeded: boolean;
 }
 
-type TerminalTurnSnapshot = Extract<
-  TurnSnapshot,
-  { status: "completed" } | { status: "failed" } | { status: "cancelled" }
->;
-
 interface ObservedSessionState {
   readonly sessionId: string;
   readonly targets: Map<number, ObserverTargetGroup>;
   readonly pendingFrames: SubscriptionFrame[];
-  readonly accumulators: Map<string, AssistantAccumulator>;
   readonly watchedTurnIds: Set<string>;
   openTask: Promise<void>;
   handle?: DesktopRuntimeHostSession;
   transcript?: StoredMessage[];
   transcriptConsumed: boolean;
   snapshot?: SessionContinuitySnapshot;
+  projector?: RuntimeHostSessionProjector;
   ready: boolean;
   closing: boolean;
 }
@@ -234,7 +223,7 @@ export class RuntimeHostSessionObserver {
     const snapshot = this.#states.get(sessionId)?.snapshot;
     return snapshot
       ? snapshot.interactions.pending.flatMap((interaction) =>
-          projectInteractionRequest(interaction, this.#now()),
+          projectRuntimeHostInteractionRequest(interaction, this.#now()),
         )
       : undefined;
   }
@@ -246,7 +235,7 @@ export class RuntimeHostSessionObserver {
     if (cached) return cached;
     const snapshot = await this.snapshot(sessionId);
     return snapshot.interactions.pending.flatMap((interaction) =>
-      projectInteractionRequest(interaction, this.#now()),
+      projectRuntimeHostInteractionRequest(interaction, this.#now()),
     );
   }
 
@@ -308,7 +297,6 @@ export class RuntimeHostSessionObserver {
       sessionId,
       targets: new Map(),
       pendingFrames: [],
-      accumulators: new Map(),
       watchedTurnIds: new Set(),
       openTask: Promise.resolve(),
       transcriptConsumed: false,
@@ -333,7 +321,11 @@ export class RuntimeHostSessionObserver {
       state.transcript = await handle.transcript;
       if (state.closing)
         throw new Error("Runtime Host Session observer closed while opening");
-      this.#seedAccumulators(state);
+      state.projector = new RuntimeHostSessionProjector(
+        handle.snapshot,
+        state.transcript,
+        this.#now,
+      );
       state.ready = true;
       for (const group of state.targets.values())
         this.#seedTarget(state, group);
@@ -374,118 +366,15 @@ export class RuntimeHostSessionObserver {
     }
   }
 
-  #seedAccumulators(state: ObservedSessionState): void {
-    const root = state.snapshot?.rootTurn;
-    if (!root || isTerminalTurn(root)) return;
-    for (const message of state.transcript ?? []) {
-      if (message.type !== "assistant" || message.turnId !== root.turnId)
-        continue;
-      if (message.thinking?.text) {
-        state.accumulators.set(accumulatorKey("thinking", message.id), {
-          kind: "thinking",
-          turnId: root.turnId,
-          messageId: message.id,
-          text: message.thinking.text,
-        });
-      }
-      if (message.text) {
-        state.accumulators.set(accumulatorKey("text", message.id), {
-          kind: "text",
-          turnId: root.turnId,
-          messageId: message.id,
-          text: message.text,
-        });
-      }
-    }
-  }
-
   #seedTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {
     if (group.seeded) return;
     group.seeded = true;
-    const snapshot = state.snapshot;
-    const root = snapshot?.rootTurn;
-    if (snapshot && root && !isTerminalTurn(root)) {
-      for (const accumulator of state.accumulators.values()) {
-        this.#send(state, group, {
-          type: accumulator.kind === "text" ? "text_delta" : "thinking_delta",
-          id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
-          turnId: accumulator.turnId,
-          messageId: accumulator.messageId,
-          ts: this.#now(),
-          text: accumulator.text,
-        });
-      }
-      for (const interaction of snapshot.interactions.pending) {
-        for (const event of projectInteractionRequest(
-          interaction,
-          this.#now(),
-        )) {
-          this.#send(state, group, event);
-        }
-      }
-      for (const entry of rootQueueInFlight(snapshot.queue)) {
-        if (state.transcript?.some((message) => message.id === entry.messageId))
-          continue;
-        this.#send(state, group, {
-          type: "steering_message",
-          id: `host-queue:${snapshot.queue.hostEpoch}:${snapshot.queue.queueRevision}:${entry.entryId}`,
-          turnId: root.turnId,
-          messageId: entry.messageId,
-          ts: this.#now(),
-          content: structuredClone(entry.content),
-        });
-      }
-      if (queueHasEntries(snapshot.queue)) {
-        this.#send(
-          state,
-          group,
-          projectQueueUpdate(snapshot.queue, root.turnId, this.#now()),
-        );
-      }
+    for (const event of state.projector?.seedActive(true) ?? []) {
+      this.#send(state, group, event);
     }
   }
 
   #acceptFrame(state: ObservedSessionState, frame: SubscriptionFrame): void {
-    if (frame.kind === "subscription.session_delta") {
-      const delta = frame.delta;
-      const key = accumulatorKey(delta.kind, delta.messageId);
-      const current = state.accumulators.get(key);
-      const previousText = current?.text ?? "";
-      const folded = foldRuntimeHostAssistantDelta(previousText, delta);
-      state.accumulators.set(key, {
-        kind: delta.kind,
-        turnId: delta.turnId,
-        messageId: delta.messageId,
-        text: folded.text,
-      });
-      if (folded.tail.length > 0) {
-        this.#broadcast(state.sessionId, {
-          type: delta.kind === "text" ? "text_delta" : "thinking_delta",
-          id: frameIdentity(frame),
-          turnId: delta.turnId,
-          messageId: delta.messageId,
-          ts: this.#now(),
-          text: folded.tail,
-        });
-      }
-      return;
-    }
-    if (frame.kind === "subscription.session_event") {
-      const event = projectToolEvent(frame);
-      if (event) {
-        this.#broadcast(state.sessionId, event);
-        if (event.type === "tool_result") {
-          this.#emitSessionsChanged("message-appended", state.sessionId, {
-            turnId: event.turnId,
-          });
-        }
-      }
-      return;
-    }
-    if (frame.kind === "subscription.session_projection") {
-      this.#acceptProjection(state, frame.snapshot);
-      return;
-    }
     if (frame.kind === "subscription.session_domain_changed") {
       this.#emitSessionDomainChanged(
         frame.domain === "runtime_resource"
@@ -507,66 +396,45 @@ export class RuntimeHostSessionObserver {
       });
       return;
     }
-    if (frame.reason === "session_removed") {
-      this.#emitSessionsChanged("deleted", state.sessionId);
-      void this.#closeState(state);
-    } else {
-      this.#publishSubscriptionFailure(
-        state,
-        new Error(
-          "Runtime Host Session subscription closed for a slow consumer",
-        ),
-      );
-    }
-  }
-
-  #acceptProjection(
-    state: ObservedSessionState,
-    snapshot: SessionContinuitySnapshot,
-  ): void {
-    const previous = state.snapshot;
-    state.snapshot = structuredClone(snapshot);
-    if (!sameGoal(previous?.goal, snapshot.goal)) {
-      this.#emitSessionsChanged("goal-change", state.sessionId);
-    }
-    for (const interaction of newlyPendingInteractions(previous, snapshot)) {
-      for (const event of projectInteractionRequest(interaction, this.#now())) {
-        this.#broadcast(state.sessionId, event);
+    if (frame.kind === "subscription.closed") {
+      if (frame.reason === "session_removed") {
+        this.#emitSessionsChanged("deleted", state.sessionId);
+        void this.#closeState(state);
+      } else {
+        this.#publishSubscriptionFailure(
+          state,
+          new Error(
+            "Runtime Host Session subscription closed for a slow consumer",
+          ),
+        );
       }
+      return;
     }
-    const previousRoot = previous?.rootTurn;
-    const root = snapshot.rootTurn;
-    if (root && queueChanged(previous?.queue, snapshot.queue)) {
-      for (const entry of newlyInFlight(previous?.queue, snapshot.queue)) {
-        this.#broadcast(state.sessionId, {
-          type: "steering_message",
-          id: `host-queue:${snapshot.queue.hostEpoch}:${snapshot.queue.queueRevision}:${entry.entryId}`,
-          turnId: root.turnId,
-          messageId: entry.messageId,
-          ts: this.#now(),
-          content: structuredClone(entry.content),
+    const update = state.projector?.accept(frame);
+    if (!update || !state.projector) return;
+    state.snapshot = state.projector.snapshot;
+    for (const event of update.events) {
+      this.#broadcast(state.sessionId, event);
+      if (event.type === "tool_result") {
+        this.#emitSessionsChanged("message-appended", state.sessionId, {
+          turnId: event.turnId,
         });
       }
-      this.#broadcast(
-        state.sessionId,
-        projectQueueUpdate(snapshot.queue, root.turnId, this.#now()),
-      );
     }
-    if (root && (!previousRoot || previousRoot.runId !== root.runId)) {
-      state.accumulators.clear();
-      this.#emitSessionsChanged("status-change", state.sessionId, {
-        turnId: root.turnId,
-      });
+    const previous = update.previousSnapshot;
+    if (!previous) return;
+    if (!sameGoal(previous.goal, state.snapshot.goal)) {
+      this.#emitSessionsChanged("goal-change", state.sessionId);
     }
-    if (root && isTerminalTurn(root) && !sameTerminalTurn(previousRoot, root)) {
-      this.#publishTerminal(state, root);
-      this.#finishWatchedTurn(state, root.turnId, "completed");
+    const root = state.snapshot.rootTurn;
+    if (update.terminalTurn) {
+      this.#finishWatchedTurn(state, update.terminalTurn.turnId, "completed");
       void this.#closeIfIdle(state);
       this.#emitSessionsChanged("turn-status-change", state.sessionId, {
-        turnId: root.turnId,
+        turnId: update.terminalTurn.turnId,
       });
       this.#emitSessionsChanged("message-appended", state.sessionId, {
-        turnId: root.turnId,
+        turnId: update.terminalTurn.turnId,
       });
     } else {
       this.#emitSessionsChanged(
@@ -574,50 +442,6 @@ export class RuntimeHostSessionObserver {
         state.sessionId,
         root ? { turnId: root.turnId } : undefined,
       );
-    }
-  }
-
-  #publishTerminal(
-    state: ObservedSessionState,
-    root: TerminalTurnSnapshot,
-  ): void {
-    for (const accumulator of state.accumulators.values()) {
-      this.#broadcast(state.sessionId, {
-        type:
-          accumulator.kind === "text" ? "text_complete" : "thinking_complete",
-        id: `${root.terminalEventId}:${accumulator.kind}:${accumulator.messageId}`,
-        turnId: root.turnId,
-        messageId: accumulator.messageId,
-        ts: this.#now(),
-        text: accumulator.text,
-      });
-    }
-    if (root.status === "completed") {
-      this.#broadcast(state.sessionId, {
-        type: "complete",
-        id: root.terminalEventId,
-        turnId: root.turnId,
-        ts: this.#now(),
-        stopReason: "end_turn",
-      });
-    } else if (root.status === "failed") {
-      this.#broadcast(state.sessionId, {
-        type: "error",
-        id: root.terminalEventId,
-        turnId: root.turnId,
-        ts: this.#now(),
-        recoverable: false,
-        reason: root.failureClass,
-        message: `Turn failed: ${root.failureClass}`,
-      });
-    } else {
-      this.#broadcast(state.sessionId, {
-        type: "abort",
-        id: root.terminalEventId,
-        turnId: root.turnId,
-        ts: this.#now(),
-        reason: abortReason(root.abortSource),
-      });
     }
   }
 
@@ -784,198 +608,14 @@ export class RuntimeHostSessionObserver {
   }
 }
 
-function projectInteractionRequest(
-  interaction: InteractionPendingSnapshot,
-  now: number,
-): ActiveInteractionRequestEvent[] {
-  const base = {
-    id: `host-interaction:${interaction.interactionId}:${interaction.revision}`,
-    turnId: interaction.turnId,
-    ts: now,
-    requestId: interaction.interactionId,
-    toolUseId: interactionToolUseId(interaction),
-  };
-  if (interaction.request.kind === "question") {
-    return [
-      {
-        type: "user_question_request",
-        ...base,
-        questions: interaction.request.questions.map((question) => ({
-          question: question.question,
-          options: question.options.map((option) => ({ ...option })),
-        })),
-      },
-    ];
-  }
-  if (interaction.request.kind === "sandbox_boundary") {
-    return [
-      {
-        type: "sandbox_boundary_request",
-        ...base,
-        justification: interaction.request.justification,
-        expansion: interaction.request.expansion,
-      },
-    ];
-  }
-  return [];
-}
-
-function projectToolEvent(
-  frame: Extract<SubscriptionFrame, { kind: "subscription.session_event" }>,
-): SessionEvent | undefined {
-  const event = frame.event;
-  const base = {
-    id: event.id,
-    turnId: event.turnId,
-    ts: event.ts,
-    toolUseId: event.toolUseId,
-  };
-  if (event.type === "tool_start") {
-    return {
-      type: event.type,
-      ...base,
-      toolName: event.toolName,
-      args: undefined,
-      ...(event.operationId ? { operationId: event.operationId } : {}),
-      ...(event.activityKind ? { activityKind: event.activityKind } : {}),
-      ...(event.displayName ? { displayName: event.displayName } : {}),
-      ...(event.stepId ? { stepId: event.stepId } : {}),
-    };
-  }
-  if (event.type === "tool_output_delta") {
-    return {
-      type: event.type,
-      ...base,
-      sessionId: frame.sessionId,
-      toolCallId: event.toolUseId,
-      seq: event.seq,
-      stream: event.stream,
-      chunk: event.chunk,
-      redacted: event.redacted,
-      createdAt: event.createdAt,
-    };
-  }
-  if (event.type === "tool_progress")
-    return { type: event.type, ...base, chunk: event.chunk };
-  return {
-    type: "tool_result",
-    ...base,
-    isError: event.status === "errored",
-    content: { kind: "text", text: "" },
-    ...(event.operationId ? { operationId: event.operationId } : {}),
-    ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
-  };
-}
-
-function newlyPendingInteractions(
-  previous: SessionContinuitySnapshot | undefined,
-  next: SessionContinuitySnapshot,
-): InteractionPendingSnapshot[] {
-  const previousIds = new Set(
-    previous?.interactions.pending.map(
-      (interaction) => interaction.interactionId,
-    ) ?? [],
-  );
-  return next.interactions.pending.filter(
-    (interaction) => !previousIds.has(interaction.interactionId),
-  );
-}
-
-function queueChanged(
-  previous: SessionMessageQueueProjection | undefined,
-  next: SessionMessageQueueProjection,
-): boolean {
-  return (
-    previous === undefined ||
-    previous.hostEpoch !== next.hostEpoch ||
-    previous.queueRevision !== next.queueRevision
-  );
-}
-
-function newlyInFlight(
-  previous: SessionMessageQueueProjection | undefined,
-  next: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: "in_flight" }>[] {
-  const previousInFlight = new Set(
-    previous?.steering
-      .filter((entry) => entry.state === "in_flight")
-      .map((entry) => entry.entryId) ?? [],
-  );
-  return rootQueueInFlight(next).filter(
-    (entry) => !previousInFlight.has(entry.entryId),
-  );
-}
-
-function rootQueueInFlight(
-  queue: SessionMessageQueueProjection | undefined,
-): Extract<SteeringMessageSnapshot, { state: "in_flight" }>[] {
-  return (queue?.steering ?? []).filter(
-    (
-      entry,
-    ): entry is Extract<SteeringMessageSnapshot, { state: "in_flight" }> =>
-      entry.state === "in_flight",
-  );
-}
-
-function queueHasEntries(
-  queue: SessionMessageQueueProjection | undefined,
-): boolean {
-  return (queue?.steering.length ?? 0) > 0 || (queue?.followup.length ?? 0) > 0;
-}
-
-function projectQueueUpdate(
-  queue: SessionMessageQueueProjection,
-  turnId: string,
-  now: number,
-): Extract<SessionEvent, { type: "queue_update" }> {
-  return {
-    type: "queue_update",
-    id: `host-queue:${queue.hostEpoch}:${queue.queueRevision}`,
-    turnId,
-    ts: now,
-    steering: queue.steering.map((entry) => entry.content.text),
-    followup: queue.followup.map((entry) => entry.content.text),
-  };
-}
-
 function interactionToolUseId(interaction: InteractionPendingSnapshot): string {
   return interaction.request.kind === "sandbox_boundary"
     ? interaction.interactionId
     : interaction.request.toolUseId;
 }
 
-function accumulatorKey(kind: "text" | "thinking", messageId: string): string {
-  return `${kind}\0${messageId}`;
-}
-
-function frameIdentity(frame: SubscriptionFrame): string {
-  return `host-frame:${frame.hostEpoch}:${frame.subscriptionId}:${frame.sequence}`;
-}
-
 function sessionEventChannel(sessionId: string): string {
   return `sessions:event:${sessionId}`;
-}
-
-function isTerminalTurn(turn: TurnSnapshot): turn is TerminalTurnSnapshot {
-  return (
-    turn.status === "completed" ||
-    turn.status === "failed" ||
-    turn.status === "cancelled"
-  );
-}
-
-function sameTerminalTurn(
-  previous: TurnSnapshot | null | undefined,
-  next: TurnSnapshot,
-): boolean {
-  return (
-    previous !== null &&
-    previous !== undefined &&
-    isTerminalTurn(previous) &&
-    isTerminalTurn(next) &&
-    previous.runId === next.runId &&
-    previous.terminalEventId === next.terminalEventId
-  );
 }
 
 function sameGoal(
@@ -988,15 +628,6 @@ function sameGoal(
     previous.goalId === next.goalId &&
     previous.revision === next.revision
   );
-}
-
-function abortReason(
-  source: string,
-): Extract<SessionEvent, { type: "abort" }>["reason"] {
-  if (source.includes("timeout")) return "timeout";
-  if (source.includes("crash") || source.includes("restart")) return "crash";
-  if (source.includes("redirect")) return "redirect";
-  return "user_stop";
 }
 
 function cloneMessages(messages: readonly StoredMessage[]): StoredMessage[] {

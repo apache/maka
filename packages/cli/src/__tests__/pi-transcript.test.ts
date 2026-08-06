@@ -16,6 +16,7 @@ import {
   renderMakaPiStatusLine,
   renderMakaPiTranscript,
   refreshRunningShellRunElapsed,
+  reconcileToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
@@ -134,6 +135,118 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[3]?.kind === 'assistant' ? state.entries[3].text : '',
       'The package is named maka-agent.',
     );
+  });
+
+  test('reconciles durable tool details without resetting live turn state', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'tool-1', toolName: 'Read', args: {} }),
+    );
+    state.entries.push({ kind: 'notice', level: 'error', text: 'Turn failed: provider_error' });
+    state.steering = ['Keep going'];
+    state.pendingFallback = [{ text: 'Try again', enqueue: 'steer' }];
+
+    assert.equal(
+      reconcileToolsWithStoredMessages(state, 'turn-1', [
+        {
+          type: 'tool_call',
+          id: 'tool-1',
+          turnId: 'turn-1',
+          ts: 3,
+          toolName: 'Read',
+          args: { path: 'README.md' },
+        },
+        {
+          type: 'tool_result',
+          id: 'tool-result-1',
+          turnId: 'turn-1',
+          ts: 4,
+          toolUseId: 'tool-1',
+          isError: false,
+          content: { kind: 'text', text: 'README contents' },
+        },
+      ]),
+      true,
+    );
+
+    const tool = state.entries.find(
+      (entry): entry is Extract<(typeof state.entries)[number], { kind: 'tool' }> =>
+        entry.kind === 'tool',
+    );
+    assert.deepEqual(tool?.input, { path: 'README.md' });
+    assert.deepEqual(tool?.result, { kind: 'text', text: 'README contents' });
+    assert.deepEqual(state.steering, ['Keep going']);
+    assert.deepEqual(state.pendingFallback, [{ text: 'Try again', enqueue: 'steer' }]);
+    assert.equal(state.entries.at(-1)?.kind, 'notice');
+  });
+
+  test('removes a live poll card that the durable transcript folds into its Bash parent', () => {
+    const state = createMakaPiTranscriptState();
+    for (const tool of [
+      { toolUseId: 'bash-1', toolName: 'Bash' },
+      { toolUseId: 'poll-1', toolName: 'Read' },
+    ]) {
+      applyMakaSessionEventToTranscript(state, event({ type: 'tool_start', ...tool, args: {} }));
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_result',
+          toolUseId: tool.toolUseId,
+          isError: false,
+          content: { kind: 'text', text: '' },
+        }),
+      );
+    }
+    const initialRun = shellRun({ ref: 'maka://runtime/session-1/run-1', revision: 1 });
+    const polledRun = shellRun({ ref: 'maka://runtime/session-1/run-1', revision: 2 });
+
+    reconcileToolsWithStoredMessages(state, 'turn-1', [
+      {
+        type: 'tool_call',
+        id: 'bash-1',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      },
+      {
+        type: 'tool_result',
+        id: 'bash-result',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'bash-1',
+        isError: false,
+        content: initialRun,
+      },
+      {
+        type: 'tool_call',
+        id: 'poll-1',
+        turnId: 'turn-1',
+        ts: 3,
+        toolName: 'Read',
+        args: { ref: initialRun.ref },
+      },
+      {
+        type: 'tool_result',
+        id: 'poll-result',
+        turnId: 'turn-1',
+        ts: 4,
+        toolUseId: 'poll-1',
+        isError: false,
+        content: polledRun,
+      },
+    ]);
+
+    const tools = state.entries.filter(
+      (entry): entry is Extract<(typeof state.entries)[number], { kind: 'tool' }> =>
+        entry.kind === 'tool',
+    );
+    assert.deepEqual(
+      tools.map((tool) => tool.toolUseId),
+      ['bash-1'],
+    );
+    assert.equal(tools[0]?.result?.kind === 'shell_run' ? tools[0].result.revision : undefined, 2);
   });
 
   test('renders steering messages with human-facing text and falls back to model-facing text', () => {

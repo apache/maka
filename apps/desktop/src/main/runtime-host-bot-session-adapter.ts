@@ -13,7 +13,7 @@ import {
   DesktopRuntimeHostClientError,
   type DesktopRuntimeHostClient,
 } from './runtime-host-client.js';
-import { foldRuntimeHostAssistantDelta } from './runtime-host-assistant-delta.js';
+import { foldRuntimeHostAssistantDelta } from '@maka/runtime-host/adapter';
 
 type RuntimeHostBotSessionClient = Pick<
   DesktopRuntimeHostClient,

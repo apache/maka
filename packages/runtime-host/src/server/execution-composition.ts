@@ -322,6 +322,7 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).claimStopFence(input, commitQueueFence, admission),
       startFromMessage: (input, admission) =>
         requireRootCoordinator(rootCoordinator).startFromMessage(input, admission),
+      prepareMessage: (input) => requireRootCoordinator(rootCoordinator).prepareMessage(input),
       claimStop: (input, commitQueueFence, admission) =>
         requireRootCoordinator(rootCoordinator).claimStop(input, commitQueueFence, admission),
     };

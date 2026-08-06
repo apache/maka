@@ -1082,23 +1082,23 @@ describe('Maka session driver', () => {
     await collectPrompt(driver, 'run tests');
 
     runtime.steerOutcome = { kind: 'queued' };
-    assert.deepEqual(driver.steer?.('x'), { kind: 'queued' });
+    assert.deepEqual(await driver.steer?.('x'), { kind: 'queued' });
     assert.deepEqual(runtime.steered, [{ sessionId: 'session-1', text: 'x' }]);
 
     runtime.queueOutcome = { kind: 'queued' };
-    assert.deepEqual(driver.queueMessage?.('y'), { kind: 'queued' });
+    assert.deepEqual(await driver.queueMessage?.('y'), { kind: 'queued' });
     assert.deepEqual(runtime.queued, [{ sessionId: 'session-1', text: 'y' }]);
 
     runtime.followupText = 'a\n\nb';
-    assert.equal(driver.takePendingFollowup?.(), 'a\n\nb');
+    assert.equal(await driver.takePendingFollowup?.(), 'a\n\nb');
     assert.deepEqual(runtime.followupDrains, ['session-1']);
 
     runtime.retractText = 'x\n\ny';
-    assert.equal(driver.retractQueued?.(), 'x\n\ny');
+    assert.equal(await driver.retractQueued?.(), 'x\n\ny');
     assert.deepEqual(runtime.retracted, ['session-1']);
   });
 
-  test('steer / queueMessage fall back before any session exists', () => {
+  test('steer / queueMessage fall back before any session exists', async () => {
     const runtime = new RecordingRuntime();
     const driver = createMakaSessionDriver({
       runtime,
@@ -1106,10 +1106,10 @@ describe('Maka session driver', () => {
       llmConnectionSlug: 'anthropic',
       model: 'claude-sonnet-4-5',
     });
-    assert.deepEqual(driver.steer?.('x'), { kind: 'fallback' });
-    assert.deepEqual(driver.queueMessage?.('y'), { kind: 'fallback' });
-    assert.equal(driver.takePendingFollowup?.(), null);
-    assert.equal(driver.retractQueued?.(), '');
+    assert.deepEqual(await driver.steer?.('x'), { kind: 'fallback' });
+    assert.deepEqual(await driver.queueMessage?.('y'), { kind: 'fallback' });
+    assert.equal(await driver.takePendingFollowup?.(), null);
+    assert.equal(await driver.retractQueued?.(), '');
     assert.deepEqual(runtime.steered, []);
   });
 

@@ -143,6 +143,8 @@ export type MakaPiTranscriptEntry =
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
       kind: 'tool';
+      /** Present for live events so terminal reconciliation is turn-scoped. */
+      turnId?: string;
       toolUseId: string;
       toolName: string;
       title?: string;
@@ -339,6 +341,57 @@ export function replaceTranscriptWithStoredMessages(
 }
 
 /**
+ * Fill durable tool details that are intentionally absent from Runtime Host
+ * live events without applying session-switch reset semantics.
+ */
+export function reconcileToolsWithStoredMessages(
+  state: MakaPiTranscriptState,
+  turnId: string,
+  messages: readonly StoredMessage[],
+): boolean {
+  const turnMessages = messages.filter((message) => message.turnId === turnId);
+  const durableTools = new Map(
+    foldStoredShellRunChildren(
+      materializeSession(turnMessages).items.flatMap(chatItemToTranscriptEntries),
+    )
+      .filter(
+        (entry): entry is Extract<MakaPiTranscriptEntry, { kind: 'tool' }> => entry.kind === 'tool',
+      )
+      .map((entry) => [entry.toolUseId, entry]),
+  );
+  let changed = false;
+  const reconciled: MakaPiTranscriptEntry[] = [];
+  for (const entry of state.entries) {
+    if (entry.kind !== 'tool' || entry.turnId !== turnId) {
+      reconciled.push(entry);
+      continue;
+    }
+    const durable = durableTools.get(entry.toolUseId);
+    if (!durable) {
+      if (!entryInLiveViewport(state, entry)) {
+        entry.hidden = true;
+        reconciled.push(entry);
+      }
+      changed = true;
+      continue;
+    }
+    entry.toolName = durable.toolName;
+    entry.title = durable.title;
+    entry.input = structuredClone(durable.input);
+    entry.result = durable.result ? structuredClone(durable.result) : undefined;
+    entry.output = durable.output;
+    entry.durationMs = durable.durationMs;
+    entry.status = durable.status;
+    entry.hidden = durable.hidden;
+    entry.resultVersion += 1;
+    changed = true;
+    reconciled.push(entry);
+  }
+  state.entries = reconciled;
+  return changed;
+}
+
+/**
  * True when the entry will render inside the live viewport, or has not been
  * rendered yet (a fresh entry first appears at the tail, inside the viewport).
  * Entries above the viewport sit in terminal scrollback, which ANSI terminals
@@ -514,6 +567,7 @@ export function applyMakaSessionEventToTranscript(
       }
       state.entries.push({
         kind: 'tool',
+        turnId: event.turnId,
         toolUseId: event.toolUseId,
         toolName: event.toolName,
         ...(event.displayName ? { title: event.displayName } : {}),
@@ -545,6 +599,7 @@ export function applyMakaSessionEventToTranscript(
         // failure is never swallowed by the fold.
         const entry: MakaPiToolEntry = {
           kind: 'tool',
+          turnId: event.turnId,
           toolUseId: event.toolUseId,
           toolName: foldedPoll.toolName,
           ...(foldedPoll.title ? { title: foldedPoll.title } : {}),
@@ -607,6 +662,7 @@ export function applyMakaSessionEventToTranscript(
       } else {
         state.entries.push({
           kind: 'tool',
+          turnId: event.turnId,
           toolUseId: event.toolUseId,
           toolName: event.toolUseId,
           input: undefined,
@@ -669,6 +725,10 @@ export function applyMakaSessionEventToTranscript(
           });
         }
       }
+      break;
+
+    case 'user_question_answer_ack':
+      completePendingInteraction(state, event.requestId);
       break;
 
     case 'plan_submitted':

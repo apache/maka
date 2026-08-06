@@ -133,6 +133,24 @@ function collect(stream: AsyncIterable<RuntimeEvent>): Promise<RuntimeEvent[]> {
 // ============================================================================
 
 describe('AiSdkFlow seam', () => {
+  test('maps the original steering content digest into the durable Runtime event', () => {
+    const digest = `sha256:${'a'.repeat(64)}` as const;
+    const runtimeEvent = mapSessionEventToRuntimeEvent(
+      {
+        id: 'steering-event',
+        turnId: 'turn-1',
+        ts: 1,
+        type: 'steering_message',
+        messageId: 'steering-message',
+        content: { text: '<invoked-skill>Prepared</invoked-skill>' },
+        submittedContentDigest: digest,
+      },
+      ctx,
+    );
+
+    assert.equal(runtimeEvent.refs?.sourceMessageDigest, digest);
+  });
+
   test('implements AgentFlow + AgentFlowControl and reflects the wrapped backend', () => {
     const backend = new ScriptedBackend({ events: [] });
     const flow = new AiSdkFlow({ backend });

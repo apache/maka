@@ -871,6 +871,18 @@ describe('createRuntimeEventId', () => {
 });
 
 describe('RuntimeEvent shape compile-time contract', () => {
+  test('accepts only canonical source message digests', () => {
+    const digest = `sha256:${'a'.repeat(64)}` as `sha256:${string}`;
+    const event = baseEvent({ refs: { sourceMessageDigest: digest } });
+    expect(decodeRuntimeEvent(event).refs?.sourceMessageDigest).toBe(digest);
+    assert.throws(() =>
+      decodeRuntimeEvent({
+        ...event,
+        refs: { sourceMessageDigest: 'sha256:not-a-digest' },
+      }),
+    );
+  });
+
   test('accepts a provider-request trace reference and rejects a non-string reference', () => {
     const event = baseEvent({ refs: { providerRequestTraceId: 'provider-trace-1' } });
     expect(decodeRuntimeEvent(event).refs?.providerRequestTraceId).toBe('provider-trace-1');

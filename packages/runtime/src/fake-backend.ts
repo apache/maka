@@ -155,6 +155,9 @@ export class FakeBackend implements AgentBackend {
             ts: Date.now(),
             messageId: lease.messageId,
             content: lease.content,
+            ...(lease.submittedContentDigest
+              ? { submittedContentDigest: lease.submittedContentDigest }
+              : {}),
           } satisfies SessionEvent,
         };
       });

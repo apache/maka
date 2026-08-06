@@ -112,6 +112,7 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
         source.messageId === other.messageId &&
         source.placement === other.placement &&
         source.disposition === other.disposition &&
+        source.submittedContentDigest === other.submittedContentDigest &&
         messageContentsEqual(source.content, other.content)
       );
     }) &&

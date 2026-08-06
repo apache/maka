@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SteeringLease } from '@maka/core/backend-types';
 import {
+  aggregateMessageContents,
   messageContentsEqual,
   normalizeMessageContent,
   type MessageContent,
@@ -42,6 +43,7 @@ import {
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import type { ConnectionContext, MessageOperationHandlerMap } from './operation-dispatcher.js';
+import { messageContentDigest } from './message-content-digest.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 
 type MessageOperationErrorCode =
@@ -77,6 +79,14 @@ export interface HostMessageStartInput {
   readonly initiatingConnectionId: string;
 }
 
+export interface HostMessagePreparationInput {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly content: MessageContent;
+  readonly placement: MessagePlacement;
+  readonly initiatingConnectionId: string;
+}
+
 export interface HostMessageStopClaim {
   readonly deliverStop: () => Promise<void>;
   readonly terminal: Promise<TurnSnapshot>;
@@ -100,6 +110,12 @@ export interface HostMessageRootPort {
     input: HostMessageStartInput,
     admission: SessionAdmissionLease,
   ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  prepareMessage(
+    input: HostMessagePreparationInput,
+  ): Promise<
+    | { readonly kind: 'ready'; readonly content: MessageContent }
+    | { readonly kind: 'rejected'; readonly error: string }
+  >;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
     commitQueueFence: () => QueueFenceResult,
@@ -144,6 +160,7 @@ interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
   readonly content: MessageContent;
+  readonly modelContent: MessageContent;
   readonly initiatingConnectionId: string;
   readonly placement: MessagePlacement;
   readonly disposition: 'steering' | 'followup';
@@ -203,12 +220,9 @@ interface SessionState {
   interruptReceipts: Map<string, InterruptReceipt>;
 }
 
-export interface RootFollowupSource {
-  readonly messageId: string;
-  readonly content: MessageContent;
-  readonly placement: MessagePlacement;
+export type RootFollowupSource = RootTurnSourceMessage & {
   readonly disposition: 'steering' | 'followup';
-}
+};
 
 export interface RootFollowupBatch {
   readonly transitionId: string;
@@ -216,6 +230,7 @@ export interface RootFollowupBatch {
   readonly previousTurnId: string;
   readonly initiatingConnectionId: string | undefined;
   readonly content: MessageContent;
+  readonly submittedContent: MessageContent;
   readonly sources: readonly RootFollowupSource[];
 }
 
@@ -404,6 +419,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       previousTurnId: identity.turnId,
       initiatingConnectionId: entries[0]?.initiatingConnectionId,
       content: followup.content,
+      submittedContent: followup.submittedContent,
       sources: followup.sources,
     };
   }
@@ -551,6 +567,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           const sourceMessage: RootTurnSourceMessage = {
             messageId: input.messageId,
             content: payload.content,
+            submittedContentDigest: messageContentDigest(payload.content),
             placement: input.placement,
             disposition: 'turn_started',
           };
@@ -590,6 +607,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           return failure('session_busy', 'Message queue capacity is full');
         }
         const disposition = input.placement === 'current_turn' ? 'steering' : 'followup';
+        const prepared = await this.#root.prepareMessage({
+          sessionId: input.sessionId,
+          turnId: rootState.turnId,
+          content: payload.content,
+          placement: input.placement,
+          initiatingConnectionId,
+        });
+        if (prepared.kind === 'rejected') {
+          return failure('operation_conflict', prepared.error);
+        }
         const candidateRevision = state.revision;
         const candidateGeneration = state.generation;
         const entryId = this.#createId();
@@ -635,7 +662,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           ),
           {
             messageId: input.messageId,
-            content: payload.content,
+            content: prepared.content,
+            submittedContentDigest: messageContentDigest(payload.content),
             placement: input.placement,
             disposition,
           },
@@ -661,6 +689,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           entryId,
           messageId: input.messageId,
           content: payload.content,
+          modelContent: prepared.content,
           initiatingConnectionId,
           placement: input.placement,
           disposition,
@@ -942,7 +971,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
     if (receipt) {
       const source = receipt.sourceMessage;
-      if (!sameSourcePayload(source, payload)) {
+      if (!sameSourcePayload(receipt, payload)) {
         return failure('operation_conflict', 'Durable message receipt has a different payload');
       }
       if (source.disposition === 'turn_started') {
@@ -959,10 +988,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     );
     const event = steeringProof?.event;
     if (event) {
+      const durableDigest = event.refs?.sourceMessageDigest;
       if (
         input.placement !== 'current_turn' ||
         event.content?.kind !== 'text' ||
-        !messageContentsEqual(runtimeEventContent(event.content), payload.content)
+        (durableDigest !== undefined
+          ? durableDigest !== messageContentDigest(payload.content)
+          : !messageContentsEqual(runtimeEventContent(event.content), payload.content))
       ) {
         return failure('operation_conflict', 'Durable steering fact has a different payload');
       }
@@ -1095,7 +1127,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       return {
         id: leaseId,
         messageId: entry.messageId,
-        content: normalizeMessageContent(entry.content),
+        content: normalizeMessageContent(entry.modelContent),
+        submittedContentDigest: messageContentDigest(entry.content),
       };
     });
     this.#mutated(state);
@@ -1219,8 +1252,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       transition.entries[0]?.initiatingConnectionId !== batch.initiatingConnectionId ||
       !isDeepStrictEqual(transition.entries.map(sourceFromEntry), batch.sources) ||
       !messageContentsEqual(
-        aggregateMessageContent(transition.entries.map((entry) => entry.content)),
+        aggregateMessageContent(transition.entries.map((entry) => entry.modelContent)),
         batch.content,
+      ) ||
+      !messageContentsEqual(
+        aggregateMessageContent(transition.entries.map((entry) => entry.content)),
+        batch.submittedContent,
       )
     ) {
       throw new RuntimeMessageAuthorityInvariantError(
@@ -1371,10 +1408,24 @@ function sameRun(left: RuntimeMessageRunIdentity, right: RuntimeMessageRunIdenti
   );
 }
 
-function sameSourcePayload(source: RootTurnSourceMessage, input: CanonicalSubmitPayload): boolean {
+function sameSourcePayload(
+  receipt: RootTurnSourceMessageReceipt,
+  input: CanonicalSubmitPayload,
+): boolean {
+  const source = receipt.sourceMessage;
+  const execution = receipt.admission.execution;
+  const durableDigest =
+    source.submittedContentDigest ??
+    (receipt.admission.sourceMessages.length === 1 &&
+    execution.kind === 'external_message' &&
+    execution.inputDigest
+      ? execution.inputDigest
+      : undefined);
   return (
     source.messageId === input.messageId &&
-    messageContentsEqual(source.content, input.content) &&
+    (durableDigest
+      ? durableDigest === messageContentDigest(input.content)
+      : messageContentsEqual(source.content, input.content)) &&
     source.placement === input.placement
   );
 }
@@ -1382,7 +1433,8 @@ function sameSourcePayload(source: RootTurnSourceMessage, input: CanonicalSubmit
 function sourceFromEntry(entry: LiveEntry): RootFollowupSource {
   return {
     messageId: entry.messageId,
-    content: normalizeMessageContent(entry.content),
+    content: normalizeMessageContent(entry.modelContent),
+    submittedContentDigest: messageContentDigest(entry.content),
     placement: entry.placement,
     disposition: entry.disposition,
   };
@@ -1489,23 +1541,23 @@ function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitP
 }
 
 function aggregateMessageContent(contents: readonly MessageContent[]): MessageContent {
-  const text = contents.map((content) => content.text).join('\n\n');
-  const displayText = contents.map((content) => content.displayText ?? content.text).join('\n\n');
-  const attachments = contents.flatMap((content) => content.attachments ?? []);
-  const quotes = contents.flatMap((content) => content.quotes ?? []);
-  return normalizeMessageContent({ text, displayText, attachments, quotes });
+  return aggregateMessageContents(contents);
 }
 
 function canonicalFollowupBatch(entries: readonly LiveEntry[]): {
   readonly content: MessageContent;
+  readonly submittedContent: MessageContent;
   readonly sources: readonly RootFollowupSource[];
 } {
-  if (entries.length === 0) return { content: { text: '' }, sources: [] };
+  if (entries.length === 0) {
+    return { content: { text: '' }, submittedContent: { text: '' }, sources: [] };
+  }
   const sources = entries.map(sourceFromEntry);
-  const content = aggregateMessageContent(entries.map((entry) => entry.content));
+  const content = aggregateMessageContent(entries.map((entry) => entry.modelContent));
+  const submittedContent = aggregateMessageContent(entries.map((entry) => entry.content));
   try {
     const { normalizedInput } = normalizeRootTurnAdmissionPayload(content, sources);
-    return { content: normalizedInput, sources };
+    return { content: normalizedInput, submittedContent, sources };
   } catch {
     throw new RuntimeMessageAuthorityInvariantError(
       'Accepted follow-up batch violates the durable root admission contract',

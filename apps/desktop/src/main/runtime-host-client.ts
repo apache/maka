@@ -29,7 +29,12 @@ import {
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
+  RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  readRuntimeHostConnectionCatalog,
+  readRuntimeHostResources,
+  readRuntimeHostSessions,
+  readRuntimeHostSkillCatalog,
 } from "@maka/runtime-host/client";
 import {
   ARTIFACT_INGEST_CHUNK_MAX_BYTES,
@@ -42,8 +47,6 @@ import {
   type EffectivePricingEntry,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
-  type ConnectionCatalogPageItem,
-  type ConnectionCatalogQueryResult,
   type InteractionAnswerInput,
   type MemoryMutateInput,
   type MemoryMutateResult,
@@ -62,7 +65,6 @@ import {
   type SessionCatalogFilter,
   type SessionCatalogItem,
   type SessionCatalogProjection,
-  type SessionCatalogQueryResult,
   type SessionConfiguration,
   type SessionContinuitySnapshot,
   type SessionConversationCopyInput,
@@ -78,7 +80,6 @@ import {
   type SkillCatalogPageItem,
   type SkillCatalogPreviewUpdateInput,
   type SkillCatalogPreviewUpdateResult,
-  type SkillCatalogQueryResult,
   type SkillCatalogRevision,
   type SkillCatalogView,
   type SubscriptionFrame,
@@ -178,14 +179,16 @@ export class DesktopRuntimeHostClient {
   }
 
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
-      const snapshot = await this.#readConnectionCatalog();
-      if (snapshot) return snapshot;
+    this.#assertOpen();
+    try {
+      return await readRuntimeHostConnectionCatalog(this.connection);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "catalog_unstable",
+        "Connection catalog kept changing while Desktop read it",
+      );
     }
-    throw new DesktopRuntimeHostClientError(
-      "catalog_unstable",
-      "Connection catalog kept changing while Desktop read it",
-    );
   }
 
   queryCredential(
@@ -312,14 +315,16 @@ export class DesktopRuntimeHostClient {
     context: SkillCatalogLocalContext,
     view: SkillCatalogView,
   ): Promise<DesktopSkillCatalogSnapshot> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
-      const snapshot = await this.#readSkillCatalog(context, view);
-      if (snapshot) return snapshot;
+    this.#assertOpen();
+    try {
+      return await readRuntimeHostSkillCatalog(this.connection, context, view);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "skill_catalog_unstable",
+        "Skill catalog kept changing while Desktop read it",
+      );
     }
-    throw new DesktopRuntimeHostClientError(
-      "skill_catalog_unstable",
-      "Skill catalog kept changing while Desktop read it",
-    );
   }
 
   mutateSkillCatalog(
@@ -407,14 +412,17 @@ export class DesktopRuntimeHostClient {
   async listSessions(
     filter?: SessionCatalogFilter,
   ): Promise<SessionCatalogProjection[]> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
-      const sessions = await this.#readCatalog(filter);
-      if (sessions) return sessions;
+    this.#assertOpen();
+    try {
+      return (await readRuntimeHostSessions(this.connection, filter)).map(requireSessionProjection);
+    } catch (error) {
+      if (error instanceof DesktopRuntimeHostClientError) throw error;
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "catalog_unstable",
+        "Session catalog kept changing while Desktop read it",
+      );
     }
-    throw new DesktopRuntimeHostClientError(
-      "catalog_unstable",
-      "Session catalog kept changing while Desktop read it",
-    );
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
@@ -1161,37 +1169,13 @@ export class DesktopRuntimeHostClient {
   }
 
   async listRuntimeResources(sessionId: string): Promise<ShellRunUpdate[]> {
-    const projection = await collectStableProjection({
-      name: "Runtime Resource",
-      sessionId,
-      start: () =>
-        this.#request("runtime.resource.query", {
-          kind: "list_start",
-          sessionId,
-        }),
-      continue: (first, cursor) =>
-        this.#request("runtime.resource.query", {
-          kind: "list_continue",
-          sessionId,
-          revision: first.revision,
-          cursor,
-        }),
-      page(result, first) {
-        if (
-          result.kind !== "page" ||
-          result.sessionId !== sessionId ||
-          (first !== undefined && result.revision !== first.revision)
-        ) {
-          throw invalidProjection("Runtime Resource");
-        }
-        return {
-          source: result,
-          items: result.resources,
-          nextCursor: result.nextCursor,
-        };
-      },
-    });
-    return projection.items;
+    this.#assertOpen();
+    try {
+      return await readRuntimeHostResources(this.connection, sessionId);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw unstableProjection("Runtime Resource", sessionId);
+    }
   }
 
   async getRuntimeResource(
@@ -1327,66 +1311,6 @@ export class DesktopRuntimeHostClient {
     };
   }
 
-  async #readConnectionCatalog(): Promise<
-    ConnectionCatalogSnapshot | undefined
-  > {
-    const first = await this.#request("connection.catalog.query", {
-      kind: "start",
-    });
-    if (first.kind !== "page") return undefined;
-    const items = [...first.items];
-    let cursor = first.nextCursor;
-    while (cursor !== null) {
-      const page = await this.#request("connection.catalog.query", {
-        kind: "continue",
-        revision: first.revision,
-        cursor,
-      });
-      if (page.kind !== "page") return undefined;
-      items.push(...page.items);
-      cursor = page.nextCursor;
-    }
-    return assembleConnectionCatalog(first, items);
-  }
-
-  async #readSkillCatalog(
-    context: SkillCatalogLocalContext,
-    view: SkillCatalogView,
-  ): Promise<DesktopSkillCatalogSnapshot | undefined> {
-    const first = await this.#request("skill.catalog.query", {
-      kind: "start",
-      context,
-      view,
-    });
-    if (first.kind !== "page" || first.view !== view) return undefined;
-    const items = [...first.items];
-    const cursors = new Set<string>();
-    let page: Extract<SkillCatalogQueryResult, { kind: "page" }> = first;
-    while (page.nextCursor !== null) {
-      const cursor = page.nextCursor;
-      if (cursors.has(cursor)) {
-        throw new DesktopRuntimeHostClientError(
-          "skill_catalog_unstable",
-          "Runtime Host repeated a Skill catalog cursor",
-        );
-      }
-      cursors.add(cursor);
-      const next = await this.#request("skill.catalog.query", {
-        kind: "continue",
-        context,
-        view,
-        revision: first.revision,
-        cursor,
-      });
-      if (next.kind === "revision_changed") return undefined;
-      if (next.view !== view || next.revision !== first.revision)
-        return undefined;
-      items.push(...next.items);
-      page = next;
-    }
-    return { revision: first.revision, view, items };
-  }
-
   async #reconcilePricingMutation(
     target: PricingReconciliationTarget,
     reason: "revision_conflict" | "outcome_unknown",
@@ -1416,51 +1340,6 @@ export class DesktopRuntimeHostClient {
         return requireSessionProjection(result.session);
     }
     throw revisionConflict("update", sessionId);
-  }
-
-  async #readCatalog(
-    filter: SessionCatalogFilter | undefined,
-  ): Promise<SessionCatalogProjection[] | undefined> {
-    const first = await this.#request("session.catalog.query", {
-      kind: "list_start",
-      ...(filter ? { filter } : {}),
-    });
-    if (first.kind !== "page") {
-      throw new DesktopRuntimeHostClientError(
-        "catalog_unstable",
-        "Runtime Host returned an invalid initial Session catalog page",
-      );
-    }
-    const sessions: SessionCatalogProjection[] = [];
-    const cursors = new Set<string>();
-    let page: Extract<SessionCatalogQueryResult, { kind: "page" }> = first;
-    while (true) {
-      sessions.push(...page.sessions.map(requireSessionProjection));
-      const cursor = page.nextCursor;
-      if (cursor === null) return sessions;
-      if (cursors.has(cursor)) {
-        throw new DesktopRuntimeHostClientError(
-          "catalog_unstable",
-          "Runtime Host repeated a Session catalog cursor",
-        );
-      }
-      cursors.add(cursor);
-      const next = await this.#request("session.catalog.query", {
-        kind: "list_continue",
-        ...(filter ? { filter } : {}),
-        revision: first.revision,
-        cursor,
-      });
-      if (next.kind === "revision_changed") return undefined;
-      if (next.kind !== "page") {
-        throw new DesktopRuntimeHostClientError(
-          "catalog_unstable",
-          "Runtime Host returned an invalid Session catalog continuation",
-        );
-      }
-      if (next.revision !== first.revision) return undefined;
-      page = next;
-    }
   }
 
   async #requireSession(sessionId: string): Promise<SessionCatalogProjection> {
@@ -1515,85 +1394,6 @@ function requireSessionProjection(
     "unsupported_session",
     `Runtime Host Session is not representable by this Desktop Client: ${item.id}`,
   );
-}
-
-function assembleConnectionCatalog(
-  first: Extract<ConnectionCatalogQueryResult, { kind: "page" }>,
-  items: readonly ConnectionCatalogPageItem[],
-): ConnectionCatalogSnapshot {
-  const entries = new Map<
-    number,
-    {
-      header: Extract<ConnectionCatalogPageItem, { kind: "connection" }>;
-      enabledModelIds: string[];
-      models: ConnectionCatalogEntry["models"][number][];
-    }
-  >();
-  for (const item of items) {
-    if (item.kind !== "connection") continue;
-    if (entries.has(item.connectionIndex)) {
-      throw new DesktopRuntimeHostClientError(
-        "catalog_unstable",
-        "Runtime Host returned a duplicate Connection catalog header",
-      );
-    }
-    entries.set(item.connectionIndex, {
-      header: item,
-      enabledModelIds: [],
-      models: [],
-    });
-  }
-  for (const item of items) {
-    if (item.kind === "connection") continue;
-    const entry = entries.get(item.connectionIndex);
-    if (!entry) {
-      throw new DesktopRuntimeHostClientError(
-        "catalog_unstable",
-        "Runtime Host returned a Connection catalog item without its header",
-      );
-    }
-    if (item.kind === "enabled_model_id")
-      entry.enabledModelIds[item.itemIndex] = item.modelId;
-    else entry.models[item.itemIndex] = item.model;
-  }
-  if (entries.size !== first.connectionCount) {
-    throw new DesktopRuntimeHostClientError(
-      "catalog_unstable",
-      "Runtime Host returned an incomplete Connection catalog",
-    );
-  }
-  const connections = [...entries.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([, entry]): ConnectionCatalogEntry => {
-      if (
-        entry.enabledModelIds.length !== entry.header.enabledModelIdCount ||
-        entry.models.length !== entry.header.modelCount ||
-        entry.enabledModelIds.some((modelId) => modelId === undefined) ||
-        entry.models.some((model) => model === undefined)
-      ) {
-        throw new DesktopRuntimeHostClientError(
-          "catalog_unstable",
-          "Runtime Host returned an incomplete Connection catalog entry",
-        );
-      }
-      const {
-        kind: _kind,
-        connectionIndex: _index,
-        enabledModelIdCount: _enabledCount,
-        modelCount: _modelCount,
-        ...header
-      } = entry.header;
-      return {
-        ...header,
-        enabledModelIds: entry.enabledModelIds,
-        models: entry.models,
-      };
-    });
-  return {
-    revision: first.revision,
-    defaultTarget: first.defaultTarget,
-    connections,
-  };
 }
 
 function clientClosed(): DesktopRuntimeHostClientError {

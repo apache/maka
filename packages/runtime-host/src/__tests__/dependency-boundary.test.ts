@@ -90,6 +90,7 @@ const allowedServerExternalImports = new Set([
   'node:http',
 ]);
 const allowedExternalImports = {
+  adapter: new Set(['@maka/core/events', '@maka/core/session']),
   client: allowedHostExternalImports,
   protocol: new Set([
     '@maka/core/attachments',
@@ -151,7 +152,7 @@ function loadCompilerProject() {
 test('protocol and client stay within their subpaths and the root-authority boundary', async () => {
   const violations: string[] = [];
   const publicEntrypoints = await readPublicEntrypoints();
-  for (const area of ['protocol', 'client'] as const) {
+  for (const area of ['protocol', 'client', 'adapter'] as const) {
     const entrypoint = publicEntrypoints.get(area);
     assert.ok(entrypoint, `missing public ${area} entrypoint`);
     for (const path of reachableModules(entrypoint, publicEntrypoints)) {
@@ -160,7 +161,8 @@ test('protocol and client stay within their subpaths and the root-authority boun
       if (
         localPath === 'candidate-main.ts' ||
         topLevelArea === 'server' ||
-        (area === 'protocol' && topLevelArea !== 'protocol')
+        (area === 'protocol' && topLevelArea !== 'protocol') ||
+        (area === 'adapter' && topLevelArea !== 'adapter' && topLevelArea !== 'protocol')
       ) {
         violations.push(`${area} reaches ${localPath}`);
       }
@@ -173,7 +175,9 @@ test('protocol and client stay within their subpaths and the root-authority boun
         const allowedImports =
           topLevelArea === 'protocol'
             ? allowedExternalImports.protocol
-            : allowedExternalImports[area];
+            : topLevelArea === 'adapter'
+              ? allowedExternalImports.adapter
+              : allowedExternalImports[area];
         if (!allowedImports.has(specifier)) violations.push(`${path}: ${specifier}`);
       }
     }
@@ -192,7 +196,9 @@ test('only the server subgraph can reach the M2 Runtime composition', async () =
         ? allowedServerExternalImports
         : topLevelArea === 'protocol'
           ? allowedExternalImports.protocol
-          : allowedHostExternalImports;
+          : topLevelArea === 'adapter'
+            ? allowedExternalImports.adapter
+            : allowedHostExternalImports;
     for (const specifier of moduleSpecifiers(path)) {
       if (isRelativeSpecifier(specifier)) {
         const target = sourcePathForSpecifier(path, specifier);
@@ -394,7 +400,7 @@ async function readPublicEntrypoints(): Promise<Map<string, string>> {
   };
   assert.equal(manifest.name, packageName);
   const entrypoints = new Map<string, string>();
-  for (const area of ['protocol', 'client', 'server']) {
+  for (const area of ['adapter', 'protocol', 'client', 'server']) {
     const target = manifest.exports?.[`./${area}`];
     if (typeof target !== 'string') throw new Error(`missing ${packageName}/${area} export`);
     assert.match(target, /^\.\/dist\/.+\.js$/, `invalid ${packageName}/${area} export target`);

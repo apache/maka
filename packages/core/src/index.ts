@@ -92,6 +92,7 @@ export type {
 } from './user-question.js';
 export {
   decodeMessageContent,
+  aggregateMessageContents,
   failureClassFromCompleteStopReason,
   isAttachmentRef,
   isCanonicalAttachmentRef,

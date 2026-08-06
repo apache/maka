@@ -1,9 +1,5 @@
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
-import { promisify } from 'node:util';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { realpath } from 'node:fs/promises';
 import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ExecutionBoundary, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -26,7 +22,12 @@ import type {
 } from '@maka/runtime';
 import { DEFAULT_SESSION_NAME } from '@maka/core';
 
-const execFileAsync = promisify(execFile);
+import {
+  cwdRank,
+  firstLine,
+  inspectGitCwdChanges,
+  resolveMoveCwd,
+} from './session-driver-policy.js';
 
 export interface MakaSessionMoveResult {
   previousCwd: string;
@@ -105,12 +106,18 @@ export interface MakaSessionDriverInput {
 export interface MakaSessionSwitchResult {
   summary: SessionSummary;
   messages: StoredMessage[];
+  /** A Host-owned Turn already running when this Client attached. */
+  activeTurn?: MakaPreparedSessionTurn;
 }
 
 export interface MakaPreparedSessionTurn {
   sessionId: string;
   turnId: string;
   events: AsyncIterable<SessionEvent>;
+  /** Atomic transcript paired with an externally discovered live Turn. */
+  messages?: StoredMessage[];
+  /** Authoritative Session metadata refreshed at external Turn adoption. */
+  summary?: SessionSummary;
 }
 
 export interface MakaPreparePromptOptions {
@@ -141,13 +148,13 @@ export interface MakaSessionDriver {
    * should open a fresh turn with the text instead so it is never dropped.
    * Optional so existing driver stubs need not implement the steering surface.
    */
-  steer?(text: string): QueueEnqueueOutcome;
+  steer?(text: string): Promise<QueueEnqueueOutcome>;
   /** Queue the text to open the turn after the current one finishes. */
-  queueMessage?(text: string): QueueEnqueueOutcome;
+  queueMessage?(text: string): Promise<QueueEnqueueOutcome>;
   /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
-  takePendingFollowup?(): string | null;
+  takePendingFollowup?(): Promise<string | null>;
   /** Take back every queued message as one `\n\n`-joined string (clears both queues). */
-  retractQueued?(): string;
+  retractQueued?(): Promise<string>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   /**
@@ -171,6 +178,16 @@ export interface MakaSessionDriver {
    * turn's prompt so the caller can refill the editor for an edit-and-resend.
    */
   rewindToTurn(turnId: string): Promise<MakaSessionRewindResult>;
+  /** Observe Turns started by another Client or by the Runtime Host scheduler. */
+  subscribeStartedTurns?(listener: (turn: MakaPreparedSessionTurn) => void): () => void;
+  /** Observe interactions resolved by another Client so local prompts can retire. */
+  subscribeResolvedInteractions?(
+    listener: (sessionId: string, requestId: string) => void,
+  ): () => void;
+  /** Reconcile durable messages after a Host Turn reaches a terminal state. */
+  subscribeTranscriptReplacements?(
+    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+  ): () => void;
   /** Abandon the active session so the next prompt starts a fresh one. */
   startNewSession(): void;
   stop(): Promise<void>;
@@ -310,22 +327,22 @@ class RuntimeMakaSessionDriver implements MakaSessionDriver {
     await this.input.runtime.stopSession(this.sessionId, { source: 'stop_button' });
   }
 
-  steer(text: string): QueueEnqueueOutcome {
+  async steer(text: string): Promise<QueueEnqueueOutcome> {
     if (!this.sessionId) return { kind: 'fallback' };
     return this.input.runtime.steer(this.sessionId, text);
   }
 
-  queueMessage(text: string): QueueEnqueueOutcome {
+  async queueMessage(text: string): Promise<QueueEnqueueOutcome> {
     if (!this.sessionId) return { kind: 'fallback' };
     return this.input.runtime.queueMessage(this.sessionId, text);
   }
 
-  takePendingFollowup(): string | null {
+  async takePendingFollowup(): Promise<string | null> {
     if (!this.sessionId) return null;
     return this.input.runtime.drainFollowup(this.sessionId);
   }
 
-  retractQueued(): string {
+  async retractQueued(): Promise<string> {
     if (!this.sessionId) return '';
     return this.input.runtime.retractQueue(this.sessionId);
   }
@@ -537,69 +554,4 @@ class RuntimeMakaSessionDriver implements MakaSessionDriver {
     this.sessionId = session.id;
     return session.id;
   }
-}
-
-async function resolveMoveCwd(rawCwd: string, currentCwd: string): Promise<string> {
-  const input = rawCwd.trim();
-  if (!input) throw new Error('Working directory cannot be empty.');
-  const unquoted =
-    input.length >= 2 &&
-    ((input.startsWith('"') && input.endsWith('"')) ||
-      (input.startsWith("'") && input.endsWith("'")))
-      ? input.slice(1, -1)
-      : input;
-  const expanded =
-    unquoted === '~'
-      ? homedir()
-      : unquoted.startsWith('~/')
-        ? resolve(homedir(), unquoted.slice(2))
-        : unquoted;
-  const candidate = resolve(currentCwd, expanded);
-  let canonical: string;
-  try {
-    canonical = await realpath(candidate);
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      throw new Error(`Working directory does not exist: ${candidate}`);
-    }
-    throw error;
-  }
-  const details = await stat(canonical);
-  if (!details.isDirectory()) throw new Error(`Working directory is not a directory: ${canonical}`);
-  return canonical;
-}
-
-async function inspectGitCwdChanges(cwd: string): Promise<boolean | undefined> {
-  try {
-    const result = await execFileAsync(
-      'git',
-      ['-c', 'core.fsmonitor=false', 'status', '--porcelain=v1', '--untracked-files=normal'],
-      {
-        cwd,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-        encoding: 'utf8',
-        maxBuffer: 1024 * 1024,
-        timeout: 5_000,
-      },
-    );
-    return result.stdout.trim().length > 0;
-  } catch {
-    // A non-git directory, inaccessible repository, or a git timeout should
-    // never prevent a successful move. The warning is best-effort by design.
-    return undefined;
-  }
-}
-
-function cwdRank(session: SessionSummary, cwd: string): number {
-  return session.cwd === cwd ? 0 : 1;
-}
-
-/** First non-empty line of a prompt, for a compact rewind-target label. */
-function firstLine(text: string): string {
-  const line = text
-    .split('\n')
-    .map((part) => part.trim())
-    .find((part) => part.length > 0);
-  return line ?? '(empty prompt)';
 }

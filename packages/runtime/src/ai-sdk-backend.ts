@@ -3888,6 +3888,9 @@ export class AiSdkBackend implements AgentBackend {
           ts: this.now(),
           messageId: lease.messageId,
           content: lease.content,
+          ...(lease.submittedContentDigest
+            ? { submittedContentDigest: lease.submittedContentDigest }
+            : {}),
         } satisfies SessionEvent);
         // The mapped RuntimeEvent inherits this session event's id, so the
         // injected message and its future ledger replay share one identity.

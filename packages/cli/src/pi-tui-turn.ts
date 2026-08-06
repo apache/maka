@@ -8,7 +8,7 @@ import {
   type SessionActivityLease,
   type SessionActivityRegistry,
 } from '@maka/runtime';
-import type { MakaSessionDriver } from './session-driver.js';
+import type { MakaPreparedSessionTurn, MakaSessionDriver } from './session-driver.js';
 
 export interface MakaPiTuiTurnLifecycle {
   activities: SessionActivityRegistry;
@@ -31,6 +31,11 @@ export type MakaPiTuiTurnRequest =
       prompt: string;
       turnId: string;
       activity: SessionActivityLease;
+    }
+  | {
+      /** A Turn that another Client or the Runtime Host already started. */
+      kind: 'attached';
+      turn: MakaPreparedSessionTurn;
     };
 
 export interface RunMakaPiTuiTurnInput {
@@ -39,6 +44,7 @@ export interface RunMakaPiTuiTurnInput {
   request: MakaPiTuiTurnRequest;
   shouldAbort: () => boolean;
   onStart?: () => void;
+  onPrepared?: (turn: MakaPreparedSessionTurn) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void | Promise<void>;
   onFailure?: (error: unknown) => void | Promise<void>;
 }
@@ -51,7 +57,12 @@ export interface RunMakaPiTuiTurnInput {
 export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<GoalTurnOutcome> {
   const { request } = input;
   let activity = request.kind === 'coordinator' ? request.activity : undefined;
-  let preparedTurnId = request.kind === 'coordinator' ? request.turnId : undefined;
+  let preparedTurnId =
+    request.kind === 'coordinator'
+      ? request.turnId
+      : request.kind === 'attached'
+        ? request.turn.turnId
+        : undefined;
   let settleExternalTurn: GoalObservedTurnSettler | undefined;
 
   const notifySettlement = (outcome: GoalTurnOutcome): void => {
@@ -72,30 +83,40 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
       return finishBeforeDrain(abortedOutcome(preparedTurnId));
     }
 
-    if (request.kind === 'external' && request.sessionId) {
-      activity = await input.lifecycle.activities.acquire(request.sessionId);
+    const observedSessionId =
+      request.kind === 'external'
+        ? request.sessionId
+        : request.kind === 'attached'
+          ? request.turn.sessionId
+          : null;
+    if (observedSessionId) {
+      activity = await input.lifecycle.activities.acquire(observedSessionId);
       if (input.shouldAbort()) {
         return finishBeforeDrain(abortedOutcome(preparedTurnId));
       }
     }
 
-    const turn = await input.driver.preparePrompt(request.prompt, {
-      ...(request.kind === 'coordinator' ? { turnId: request.turnId } : {}),
-      ...(request.kind === 'external' && request.sendText !== undefined
-        ? { modelText: request.sendText }
-        : {}),
-      ...(request.kind === 'external' && request.turnOrchestration
-        ? { turnOrchestration: request.turnOrchestration }
-        : {}),
-    });
+    const turn =
+      request.kind === 'attached'
+        ? request.turn
+        : await input.driver.preparePrompt(request.prompt, {
+            ...(request.kind === 'coordinator' ? { turnId: request.turnId } : {}),
+            ...(request.kind === 'external' && request.sendText !== undefined
+              ? { modelText: request.sendText }
+              : {}),
+            ...(request.kind === 'external' && request.turnOrchestration
+              ? { turnOrchestration: request.turnOrchestration }
+              : {}),
+          });
     preparedTurnId = turn.turnId;
+    await input.onPrepared?.(turn);
 
     if (!activity) activity = await input.lifecycle.activities.acquire(turn.sessionId);
     if (input.shouldAbort()) {
       return finishBeforeDrain(abortedOutcome(turn.turnId));
     }
 
-    if (request.kind === 'external') {
+    if (request.kind !== 'coordinator') {
       const registration = input.lifecycle.beginObservedTurn(turn.sessionId, turn.turnId);
       if (registration.kind !== 'registered') {
         throw new Error(registration.reason);

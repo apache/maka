@@ -138,6 +138,8 @@ export interface SteeringLease {
   /** Ephemeral delivery lease identity used only for ack/nack settlement. */
   id: string;
   content: MessageContent;
+  /** Digest of the canonical user submission before host-side preparation. */
+  submittedContentDigest?: `sha256:${string}`;
 }
 
 export interface BackendCompactHistoryInput {

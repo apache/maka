@@ -6,12 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { createSessionStore } from '@maka/storage';
-import {
-  parseMakaCliArgs,
-  formatStartupConnectionError,
-  resolveMakaCliExitCode,
-  resolveTuiResumeTarget,
-} from '../cli.js';
+import { parseMakaCliArgs, resolveMakaCliExitCode } from '../cli.js';
+import { formatStartupConnectionError, resolveTuiResumeTarget } from '../embedded-tui-command.js';
 
 describe('Maka CLI args', () => {
   test('parses canonical commands and rejects malformed input', () => {

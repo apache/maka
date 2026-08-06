@@ -71,6 +71,7 @@ import type { RuntimeHostResidency } from './host-kernel.js';
 import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import {
   type HostMessageRootState,
+  type HostMessagePreparationInput,
   type HostMessageSessionHeader,
   type HostMessageStartInput,
   type HostMessageStopClaim,
@@ -79,6 +80,7 @@ import {
   type QueueFenceResult,
   type RootFollowupBatch,
 } from './message-coordinator.js';
+import { messageContentDigest } from './message-content-digest.js';
 import type {
   ConnectionContext,
   ContextOperationHandlerMap,
@@ -1529,24 +1531,51 @@ export class RootTurnCoordinator {
         const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
         const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
         if (unavailableReason) return { error: unavailableReason };
-        const binding = await this.clientCapabilities?.bindSession(
-          input.sessionId,
-          input.initiatingConnectionId,
-        );
+        const turnId = randomUUID();
+        const hasSkillInvocation = parseSkillInvocationTokens(content.text).length > 0;
+        const prepared = hasSkillInvocation
+          ? await this.prepareHostedSkillInvocationContent(
+              input.sessionId,
+              turnId,
+              content,
+              [],
+              input.initiatingConnectionId,
+            )
+          : ({ kind: 'ready', content } as const);
+        if (prepared.kind === 'rejected') {
+          return {
+            error: prepared.outcome.ok
+              ? 'Hosted Skill invocation was rejected'
+              : prepared.outcome.error.message,
+          };
+        }
+        const canonicalContent = preflightRootMessageContent(prepared.content);
+        if (!canonicalContent.ok)
+          return { error: 'Prepared message content exceeds durable limits' };
+        const binding = prepared.commitCapabilityBinding
+          ? await prepared.commitCapabilityBinding()
+          : await this.clientCapabilities?.bindSession(
+              input.sessionId,
+              input.initiatingConnectionId,
+            );
         if (binding && !binding.ok) return { error: binding.message };
         if (!this.beginRootAdmission(reservation)) {
           return { error: 'Root Turn reservation is no longer current' };
         }
 
-        const turnId = randomUUID();
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId,
           proposedRunId: randomUUID(),
           proposedUserMessageId: input.sourceMessage.messageId,
-          execution: { kind: 'external_message' },
-          normalizedInput: content,
-          sourceMessages: [input.sourceMessage],
+          execution: {
+            kind: 'external_message',
+            inputDigest: messageContentDigest(content),
+          },
+          normalizedInput: canonicalContent.content,
+          sourceMessages: [
+            { ...input.sourceMessage, content: normalizeMessageContent(canonicalContent.content) },
+          ],
           admittedAt: Date.now(),
         });
         if (admitted.kind !== 'admitted') {
@@ -1555,7 +1584,7 @@ export class RootTurnCoordinator {
           );
         }
         const disposition = await this.prepareAdmittedTurn(
-          { sessionId: input.sessionId, turnId, content },
+          { sessionId: input.sessionId, turnId, content: canonicalContent.content },
           admitted.admission,
           this.acquireRecoveryResidency,
           admissionLease,
@@ -1572,6 +1601,29 @@ export class RootTurnCoordinator {
       } finally {
         this.releaseRootReservation(reservation);
       }
+    });
+  }
+
+  prepareMessage(
+    input: HostMessagePreparationInput,
+  ): Promise<
+    | { readonly kind: 'ready'; readonly content: MessageContent }
+    | { readonly kind: 'rejected'; readonly error: string }
+  > {
+    return this.runCommand(async () => {
+      const content = normalizeMessageContent(input.content);
+      if (parseSkillInvocationTokens(content.text).length === 0) {
+        return { kind: 'ready', content };
+      }
+      const prepare = () =>
+        this.prepareSkillInvocationContent(input.sessionId, input.turnId, content, []);
+      if (input.placement === 'current_turn') return prepare();
+      const preview = await this.previewCapabilityBinding(
+        input.sessionId,
+        input.initiatingConnectionId,
+        prepare,
+      );
+      return preview.ok ? preview.value : { kind: 'rejected', error: preview.message };
     });
   }
 
@@ -1691,29 +1743,46 @@ export class RootTurnCoordinator {
     skillIds: readonly string[],
     connectionId: string,
   ): Promise<RootMessageContentPreparation> {
-    if (!this.prepareSkillInvocation) {
-      return {
-        kind: 'rejected',
-        outcome: operationUnavailable('Hosted Skill invocation authority is unavailable'),
-      };
-    }
     const preview = await this.previewCapabilityBinding(sessionId, connectionId, () =>
-      this.prepareSkillInvocation!({ sessionId, turnId, text: content.text, skillIds }),
+      this.prepareSkillInvocationContent(sessionId, turnId, content, skillIds),
     );
     if (!preview.ok) {
       return { kind: 'rejected', outcome: operationConflict(preview.message) };
     }
-    if (preview.value.disposition === 'blocked') {
+    if (preview.value.kind === 'rejected') {
       return {
         kind: 'rejected',
-        outcome: operationConflict('Explicit Skill invocation could not be resolved'),
+        outcome: operationConflict(preview.value.error),
       };
     }
     return {
       kind: 'ready',
-      content: composeHostedSkillInvocationContent(content, preview.value),
+      content: preview.value.content,
       commitCapabilityBinding: preview.commit,
     };
+  }
+
+  private async prepareSkillInvocationContent(
+    sessionId: string,
+    turnId: string,
+    content: MessageContent,
+    skillIds: readonly string[],
+  ): Promise<
+    | { readonly kind: 'ready'; readonly content: MessageContent }
+    | { readonly kind: 'rejected'; readonly error: string }
+  > {
+    if (!this.prepareSkillInvocation) {
+      return { kind: 'rejected', error: 'Hosted Skill invocation authority is unavailable' };
+    }
+    const prepared = await this.prepareSkillInvocation({
+      sessionId,
+      turnId,
+      text: content.text,
+      skillIds,
+    });
+    return prepared.disposition === 'blocked'
+      ? { kind: 'rejected', error: 'Explicit Skill invocation could not be resolved' }
+      : { kind: 'ready', content: composeHostedSkillInvocationContent(content, prepared) };
   }
 
   private regenerateTurn(
@@ -2855,7 +2924,10 @@ export class RootTurnCoordinator {
       turnId,
       proposedRunId: randomUUID(),
       proposedUserMessageId: randomUUID(),
-      execution: { kind: 'external_message' },
+      execution: {
+        kind: 'external_message',
+        inputDigest: messageContentDigest(batch.submittedContent),
+      },
       normalizedInput: batch.content,
       sourceMessages: batch.sources,
       admittedAt: Date.now(),

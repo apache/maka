@@ -329,6 +329,8 @@ export interface RuntimeEventRefs {
   traceEventId?: string;
   toolCallId?: string;
   providerEventId?: string;
+  /** Canonical digest of a user submission before host-side preparation. */
+  sourceMessageDigest?: `sha256:${string}`;
   /** Trace-group id linking aggregate usage to physical provider attempts. */
   providerRequestTraceId?: string;
   artifactId?: string;
@@ -576,6 +578,7 @@ const RUNTIME_REFS_SHAPE = defineObjectShape<RuntimeEventRefs>()(
     'traceEventId',
     'toolCallId',
     'providerEventId',
+    'sourceMessageDigest',
     'providerRequestTraceId',
     'artifactId',
     'operationId',
@@ -896,6 +899,7 @@ function isRuntimeEventRefs(value: unknown): value is RuntimeEventRefs {
       value.sourceRunId,
       value.sourceTurnId,
     ].every(isOptionalString) &&
+    (value.sourceMessageDigest === undefined || isSha256Digest(value.sourceMessageDigest)) &&
     (value.sourceRuntimeEventHighWater === undefined ||
       (typeof value.sourceRuntimeEventHighWater === 'number' &&
         Number.isSafeInteger(value.sourceRuntimeEventHighWater) &&

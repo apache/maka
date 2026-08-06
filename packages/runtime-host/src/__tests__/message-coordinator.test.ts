@@ -19,6 +19,7 @@ import {
   type HostMessageRootPort,
   type HostMessageRootState,
 } from '../server/message-coordinator.js';
+import { messageContentDigest } from '../server/message-content-digest.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const ROOT = { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' } as const;
@@ -96,6 +97,55 @@ test('submit re-runs admission when the queue revision moves during preflight', 
     `expected admission retry, preflight ran ${preflightCalls} time(s)`,
   );
   owner.release();
+});
+
+test('keeps submitted Skill text durable while handing prepared content to steering and follow-up roots', async () => {
+  const fixture = createFixture();
+  fixture.setMessagePreparation(async (input) => ({
+    kind: 'ready',
+    content: {
+      text: `<invoked-skill>Prepared</invoked-skill>\n\n${input.content.text}`,
+      displayText: input.content.text,
+    },
+  }));
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  assert.equal(
+    (await submit(fixture, 'skill-steering', '/skill:writer steer', 'current_turn')).ok,
+    true,
+  );
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering[0]?.content, {
+    text: '/skill:writer steer',
+  });
+  const [steering] = owner.pull();
+  assert.deepEqual(steering?.content, {
+    text: '<invoked-skill>Prepared</invoked-skill>\n\n/skill:writer steer',
+    displayText: '/skill:writer steer',
+  });
+  assert.equal(
+    steering?.submittedContentDigest,
+    messageContentDigest({ text: '/skill:writer steer' }),
+  );
+  if (steering) owner.ack([steering.id]);
+
+  assert.equal(
+    (await submit(fixture, 'skill-followup', '/skill:writer follow', 'next_turn')).ok,
+    true,
+  );
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(batch.content, {
+    text: '<invoked-skill>Prepared</invoked-skill>\n\n/skill:writer follow',
+    displayText: '/skill:writer follow',
+  });
+  assert.deepEqual(batch.sources[0]?.content, {
+    text: '<invoked-skill>Prepared</invoked-skill>\n\n/skill:writer follow',
+    displayText: '/skill:writer follow',
+  });
+  const nextRoot = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(batch, nextRoot);
+  fixture.coordinator.abandonRootReservation(nextRoot);
 });
 
 test('invalidates the canonical projection after each observable queue mutation', async () => {
@@ -859,12 +909,23 @@ test('release folds unpulled steering ahead of follow-up without changing source
         attachments: [firstAttachment],
         quotes: firstQuotes,
       },
+      submittedContentDigest: messageContentDigest({
+        text: '<model>first</model>',
+        displayText: 'first',
+        attachments: [firstAttachment],
+        quotes: firstQuotes,
+      }),
       placement: 'current_turn',
       disposition: 'steering',
     },
     {
       messageId: 'steer-2',
       content: { text: 'second', attachments: [secondAttachment], quotes: secondQuotes },
+      submittedContentDigest: messageContentDigest({
+        text: 'second',
+        attachments: [secondAttachment],
+        quotes: secondQuotes,
+      }),
       placement: 'current_turn',
       disposition: 'steering',
     },
@@ -876,6 +937,12 @@ test('release folds unpulled steering ahead of follow-up without changing source
         attachments: [thirdAttachment],
         quotes: thirdQuotes,
       },
+      submittedContentDigest: messageContentDigest({
+        text: '<model>third</model>',
+        displayText: 'third',
+        attachments: [thirdAttachment],
+        quotes: thirdQuotes,
+      }),
       placement: 'next_turn',
       disposition: 'followup',
     },
@@ -916,6 +983,7 @@ test('terminal transition atomically folds messages submitted after run release'
     {
       messageId: 'late-steer',
       content: { text: 'next intent' },
+      submittedContentDigest: messageContentDigest({ text: 'next intent' }),
       placement: 'current_turn',
       disposition: 'steering',
     },
@@ -1166,6 +1234,136 @@ test('old-Epoch steering proof compares ordered quote provenance before reportin
   }
 });
 
+test('old-Epoch prepared Skill proofs retain the exact submitted message identity', async () => {
+  const fixture = createFixture();
+  const rawFollowup = { text: '/skill:writer first' };
+  const preparedFollowup = {
+    text: '<invoked-skill>Prepared</invoked-skill>',
+    displayText: rawFollowup.text,
+  };
+  fixture.receipts.set(
+    'prepared-followup',
+    sourceReceipt(
+      'prepared-followup',
+      preparedFollowup,
+      'next_turn',
+      'followup',
+      'durable-turn',
+      rawFollowup,
+    ),
+  );
+  const exactFollowup = await submitContent(
+    fixture,
+    'prepared-followup',
+    rawFollowup,
+    'next_turn',
+    'old-epoch',
+  );
+  assert.equal(exactFollowup.ok, false);
+  if (!exactFollowup.ok) assert.equal(exactFollowup.error.code, 'outcome_unknown');
+  const conflictingFollowup = await submitContent(
+    fixture,
+    'prepared-followup',
+    { text: '/skill:writer second', displayText: rawFollowup.text },
+    'next_turn',
+    'old-epoch',
+  );
+  assert.equal(conflictingFollowup.ok, false);
+  if (!conflictingFollowup.ok) {
+    assert.equal(conflictingFollowup.error.code, 'operation_conflict');
+  }
+
+  const rawSteering = { text: '/skill:writer steer' };
+  fixture.events.push(
+    steeringEvent(
+      'prepared-steering',
+      {
+        text: '<invoked-skill>Prepared steering</invoked-skill>',
+        displayText: rawSteering.text,
+      },
+      rawSteering,
+    ),
+  );
+  const exactSteering = await submitContent(
+    fixture,
+    'prepared-steering',
+    rawSteering,
+    'current_turn',
+    'old-epoch',
+  );
+  assert.equal(exactSteering.ok, false);
+  if (!exactSteering.ok) assert.equal(exactSteering.error.code, 'outcome_unknown');
+  const conflictingSteering = await submitContent(
+    fixture,
+    'prepared-steering',
+    { text: '/skill:writer other', displayText: rawSteering.text },
+    'current_turn',
+    'old-epoch',
+  );
+  assert.equal(conflictingSteering.ok, false);
+  if (!conflictingSteering.ok) {
+    assert.equal(conflictingSteering.error.code, 'operation_conflict');
+  }
+});
+
+test('old-Epoch retries prove each submitted message in a prepared follow-up batch', async () => {
+  const fixture = createFixture();
+  const raw = [{ text: '/skill:writer first' }, { text: '/skill:writer second' }] as const;
+  const prepared = raw.map((content, index) => ({
+    text: `<invoked-skill>Prepared ${index + 1}</invoked-skill>`,
+    displayText: content.text,
+  }));
+  const sourceMessages = prepared.map((content, index) => ({
+    messageId: `prepared-batch-${index + 1}`,
+    content,
+    submittedContentDigest: messageContentDigest(raw[index]!),
+    placement: 'next_turn' as const,
+    disposition: 'followup' as const,
+  }));
+  const admission: RootTurnSourceMessageReceipt['admission'] = {
+    schemaVersion: 1,
+    sessionId: ROOT.sessionId,
+    turnId: 'durable-batch-turn',
+    runId: 'durable-batch-run',
+    userMessageId: 'durable-batch-user-message',
+    execution: {
+      kind: 'external_message',
+      inputDigest: messageContentDigest({ text: raw.map((content) => content.text).join('\n\n') }),
+    },
+    previousRootTurnId: ROOT.turnId,
+    normalizedInput: {
+      text: prepared.map((content) => content.text).join('\n\n'),
+      displayText: prepared.map((content) => content.displayText).join('\n\n'),
+    },
+    sourceMessages,
+    admittedAt: 1,
+  };
+  for (const sourceMessage of sourceMessages) {
+    fixture.receipts.set(sourceMessage.messageId, { admission, sourceMessage });
+  }
+
+  for (const [index, content] of raw.entries()) {
+    const exact = await submitContent(
+      fixture,
+      `prepared-batch-${index + 1}`,
+      content,
+      'next_turn',
+      'old-epoch',
+    );
+    assert.equal(exact.ok, false);
+    if (!exact.ok) assert.equal(exact.error.code, 'outcome_unknown');
+  }
+  const conflict = await submitContent(
+    fixture,
+    'prepared-batch-1',
+    { text: '/skill:writer changed', displayText: raw[0].text },
+    'next_turn',
+    'old-epoch',
+  );
+  assert.equal(conflict.ok, false);
+  if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+});
+
 test('canonical content preserves ordered attachment and quote identity across queue projections', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
@@ -1306,6 +1504,10 @@ function createFixture(
   let receiptReads = 0;
   let rootReads = 0;
   let stopDeliveryError: Error | undefined;
+  let prepareMessage: NonNullable<HostMessageRootPort['prepareMessage']> = async (input) => ({
+    kind: 'ready',
+    content: input.content,
+  });
   let rootState: HostMessageRootState = { kind: 'active', ...ROOT };
   let rootStateDelay:
     | {
@@ -1369,6 +1571,7 @@ function createFixture(
       coordinator.reserveRootTurn(rootState);
       return { turnId };
     },
+    prepareMessage: (input) => prepareMessage(input),
     claimStop: async (_input, commitQueueFence) => {
       commitQueueFence();
       return {
@@ -1431,6 +1634,9 @@ function createFixture(
     coordinator,
     setRootState: (state: HostMessageRootState) => {
       rootState = state;
+    },
+    setMessagePreparation: (prepare: NonNullable<HostMessageRootPort['prepareMessage']>) => {
+      prepareMessage = prepare;
     },
     startCalls: () => startCalls,
     events,
@@ -1521,9 +1727,16 @@ function sourceReceipt(
   placement: 'current_turn' | 'next_turn',
   disposition: 'steering' | 'followup' | 'turn_started',
   turnId = 'durable-turn',
+  submittedContent?: MessageContent,
 ): RootTurnSourceMessageReceipt {
   const normalizedContent = typeof content === 'string' ? { text: content } : content;
-  const sourceMessage = { messageId, content: normalizedContent, placement, disposition };
+  const sourceMessage = {
+    messageId,
+    content: normalizedContent,
+    ...(submittedContent ? { submittedContentDigest: messageContentDigest(submittedContent) } : {}),
+    placement,
+    disposition,
+  };
   return {
     admission: {
       schemaVersion: 1,
@@ -1531,7 +1744,10 @@ function sourceReceipt(
       turnId,
       runId: 'durable-run',
       userMessageId: 'durable-user-message',
-      execution: { kind: 'external_message' },
+      execution: {
+        kind: 'external_message',
+        ...(submittedContent ? { inputDigest: messageContentDigest(submittedContent) } : {}),
+      },
       previousRootTurnId: ROOT.turnId,
       normalizedInput: normalizedContent,
       sourceMessages: [sourceMessage],
@@ -1541,7 +1757,11 @@ function sourceReceipt(
   };
 }
 
-function steeringEvent(messageId: string, content: MessageContent | string): RuntimeEvent {
+function steeringEvent(
+  messageId: string,
+  content: MessageContent | string,
+  submittedContent?: MessageContent,
+): RuntimeEvent {
   const normalizedContent = typeof content === 'string' ? { text: content } : content;
   return {
     id: `event-${messageId}`,
@@ -1554,7 +1774,10 @@ function steeringEvent(messageId: string, content: MessageContent | string): Run
     role: 'user',
     author: 'user',
     content: { kind: 'text', ...normalizedContent, steering: true },
-    refs: { providerEventId: messageId },
+    refs: {
+      providerEventId: messageId,
+      ...(submittedContent ? { sourceMessageDigest: messageContentDigest(submittedContent) } : {}),
+    },
   };
 }
 
