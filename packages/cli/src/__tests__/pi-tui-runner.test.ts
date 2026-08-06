@@ -8286,7 +8286,12 @@ async function runSignalExitProbe(
   });
   let stdout = '';
   let signalSent = false;
-  let killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+  // Cold-start guard: spawning Node and synchronously importing the TUI stack
+  // (runner, driver, shell-run manager) can take well over 5 s on a loaded CI
+  // runner before READY is ever flushed, so the pre-READY budget must be a
+  // generous backstop against a child that never becomes ready, not a tight
+  // deadline. The precise budget starts once READY arrives, below.
+  let killTimer = setTimeout(() => child.kill('SIGKILL'), 30_000);
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
@@ -8294,10 +8299,11 @@ async function runSignalExitProbe(
       signalSent = true;
       child.kill(signalToSend);
       // Time the kill against the signal handling window, not the child's
-      // startup: on a slow CI runner importing the TUI and reaching READY can
-      // itself take seconds, which would otherwise leave the 3s exit grace
-      // (beginMakaCliExit) past the 5s kill timer and the probe would be
-      // SIGKILLed before the graceful exit it is asserting.
+      // startup: the post-signal path is synchronous (terminal restore, TUI
+      // stop, resolve, exit), so a few seconds is ample once READY is in; the
+      // 3s exit grace (beginMakaCliExit) plus the pre-READY startup must not
+      // share a single 5s budget or a slow CI runner gets SIGKILLed before the
+      // graceful exit it is asserting.
       clearTimeout(killTimer);
       killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
     }
@@ -8393,7 +8399,11 @@ async function runFatalExitProbe(
   let stdout = '';
   let stderr = '';
   let childReady = false;
-  let killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+  // Same two-budget scheme as runSignalExitProbe: a generous 30 s pre-READY
+  // backstop for cold starts on loaded CI runners, then a tight 5 s budget
+  // for the post-READY fatal path (which is synchronous and needs at most the
+  // 3 s exit grace from beginMakaCliExit).
+  let killTimer = setTimeout(() => child.kill('SIGKILL'), 30_000);
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
