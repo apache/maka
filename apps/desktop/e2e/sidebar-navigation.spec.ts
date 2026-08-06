@@ -128,6 +128,10 @@ test('renaming a project commits from the dialog and leaves its disclosure alone
     sidebar.locator('[data-project-id]').filter({ hasText: '示例项目 II' }).first(),
   ).toBeVisible();
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
+  // The project row captures its opener through its own ref and query, which
+  // is a different few lines from the session row's — the shared half is only
+  // the hand-back itself.
+  await expect(projectActions).toBeFocused();
 });
 
 test('double-clicking the flat ListItem menu does not enter rename', async ({
