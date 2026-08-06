@@ -315,6 +315,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
+      importSession: (header, messages) => run(() => sessionStore.importSession(header, messages)),
       createSubagent: (input, initialBoundary) =>
         run(() => sessionStore.createSubagent(input, initialBoundary)),
       createAgentGraphOperator: (input, request, expectedRevision, initialBoundary) =>

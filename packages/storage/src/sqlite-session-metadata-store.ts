@@ -1254,6 +1254,63 @@ export class SqliteSessionMetadataStore {
     return this.readCatalogRevisionSync();
   }
 
+  /**
+   * Import a session with its historical facts in a single SQLite
+   * transaction: the header row is written with the given (historical)
+   * timestamps and flags, and every message is appended in order.
+   *
+   * Idempotent by primary key: if the session id already exists — imported
+   * by an earlier run, created by the user, or written by a concurrent
+   * first-launch process — nothing is written and `'existing'` is returned.
+   * Tombstoned ids are never resurrected. Concurrent first launches converge
+   * on one winner for free: SQLite serializes the transaction and the loser
+   * observes the winner's row, so no create claims or fingerprints are
+   * needed. A failure anywhere inside the transaction (e.g. a failpoint)
+   * rolls back the whole import, so a partial session can never persist.
+   */
+  async importSession(
+    header: SessionHeader,
+    messages: readonly StoredMessage[],
+    projection: SessionCatalogMessageProjection,
+  ): Promise<'imported' | 'existing'> {
+    this.assertOpen();
+    const normalized = normalizeSessionHeader(header);
+    assertSafeSessionId(normalized.id);
+    assertCatalogMessageProjection(projection);
+    // Canonicalize every record exactly like appendMessages: round-trip
+    // through JSON so the stored form matches what the recovery path reads.
+    const encoded = messages.map((message) => {
+      const json = JSON.stringify(message);
+      const canonical = decodeStoredMessageForRecovery(JSON.parse(json) as unknown);
+      return { message: canonical, json };
+    });
+    return this.transaction(() => {
+      if (this.hasTombstone(normalized.id)) return 'existing';
+      const inserted = this.tryInsertHeader(normalized, 1, normalized.createdAt, true);
+      if (!inserted) return 'existing';
+      if (encoded.length > 0) {
+        const insert = this.db.prepare(`
+          INSERT INTO session_messages(
+            session_id, sequence, message_id, message_type, message_ts, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        for (let sequence = 0; sequence < encoded.length; sequence += 1) {
+          const entry = encoded[sequence]!;
+          insert.run(
+            normalized.id,
+            sequence,
+            entry.message.id,
+            entry.message.type,
+            entry.message.ts,
+            entry.json,
+          );
+        }
+        this.updateCatalogProjectionSync(normalized.id, projection, false);
+      }
+      return 'imported';
+    });
+  }
+
   async appendMessages(
     sessionId: string,
     messages: readonly StoredMessage[],
