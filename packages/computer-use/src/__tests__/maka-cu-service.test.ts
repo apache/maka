@@ -346,14 +346,20 @@ describe('maka-cu supervisor: cancelling a delivered request (§7.2/§7.3)', () 
   it('clears one session without ending the others', async () => {
     // Before: any session with a delivered request in flight SIGKILLed the
     // child, which invalidated every other session's observations too.
-    const { service, logPath } = makeService({ silent: ['observe'], timeoutMs: 8000 });
+    const { service, logPath } = makeService({
+      silent: ['observe'],
+      answerCancel: true,
+      timeoutMs: 8000,
+    });
     await service.ensureStarted();
     const generation = service.snapshot().generation;
     const call = service.withSession('session-a', () => service.call('observe', {}));
-    void call.catch(() => {});
-    await delay(80);
+    const barrier = await service.call('window.list', {});
+    assert.equal(barrier.ok, true, 'the later round trip proves observe reached the executor');
     service.clearSession('session-a');
-    await delay(80);
+    const cancelled = await call;
+    assert.equal(cancelled.ok, false);
+    assert.equal(cancelled.ok === false && cancelled.error.code, 'aborted');
     assert.equal(service.snapshot().state, 'ready');
     assert.equal(service.snapshot().generation, generation, 'the generation must survive');
     const records = await readRecords(logPath);
