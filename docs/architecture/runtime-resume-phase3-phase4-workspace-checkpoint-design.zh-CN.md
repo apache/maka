@@ -573,8 +573,13 @@ M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime
 2. **M1.2 owner-bound worker 与 runtime-host composition**：storage-internal bridge 只能用同 owner 的 active
    scope 解析 cwd，M2 前只允许 Read/Glob/Grep；建立不可混淆的 managed/attached typed profile 与
    startup/drain/shutdown 顺序，关闭顺序固定为 tool operations → managed owner → root owner；
-3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
-   `.env`、`node_modules` 或 build output，也不以 attached checkout silent fallback 掩盖能力缺失。
+3. **M1.3 environment provisioning**：按
+   [Managed Workspace Environment Provisioning v1](./managed-workspace-environment-provisioning-v1.zh-CN.md)
+   施工。在一个 M1.3 PR 内按独立 commit 依次交付 dependency environment artifact authority、owner-bound
+   只读 binding 与 bundled package-manager producer，最终 PR 不接受没有 producer 或没有 managed worker
+   消费者的半成品。M1.1 不复制 `.env`、`node_modules` 或 build output，也不以 attached
+   checkout、系统 package manager 或 source ignored inputs silent fallback 掩盖能力缺失。secret 与 scratch
+   只有在出现真实 Shell/Build 消费者后才分别施工。
 
 M1.1 合同见
 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。

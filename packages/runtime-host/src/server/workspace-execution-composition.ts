@@ -2,6 +2,7 @@ import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type {
   ManagedWorkspaceExecutionHandle,
+  ManagedWorkspaceExecutionOptions,
   ManagedWorkspaceFilesystemWorker,
   ManagedWorkspaceOwner,
   ManagedWorkspaceReadOnlyOperation,
@@ -16,6 +17,7 @@ export type RuntimeHostWorkspaceExecutionProfile =
   | {
       readonly kind: 'managed_worktree_v1';
       readonly executionHandle: ManagedWorkspaceExecutionHandle;
+      readonly provisioning: NonNullable<ManagedWorkspaceExecutionOptions['provisioning']>;
     };
 
 export type RuntimeHostWorkspaceExecutionErrorCode =
@@ -64,8 +66,13 @@ export function createAttachedWorkspaceExecutionProfile(
 
 export function createManagedWorkspaceExecutionProfile(
   executionHandle: ManagedWorkspaceExecutionHandle,
+  options: ManagedWorkspaceExecutionOptions = {},
 ): RuntimeHostWorkspaceExecutionProfile {
-  return Object.freeze({ kind: 'managed_worktree_v1', executionHandle });
+  return Object.freeze({
+    kind: 'managed_worktree_v1',
+    executionHandle,
+    provisioning: options.provisioning ?? 'canonical_tree_only_v1',
+  });
 }
 
 export function createRuntimeHostWorkspaceExecutionComposition(
@@ -126,6 +133,7 @@ export function createRuntimeHostWorkspaceExecutionComposition(
             profile.executionHandle,
             (scope) =>
               input.managedOwner!.executeReadOnlyFilesystemOperation(scope, operation, abortSignal),
+            { provisioning: profile.provisioning },
           );
         }
         if (!input.filesystemWorker) {
@@ -171,12 +179,15 @@ function isWorkspaceExecutionProfile(
     kind?: unknown;
     cwd?: unknown;
     executionHandle?: { kind?: unknown };
+    provisioning?: unknown;
   };
   if (candidate.kind === 'attached_checkout_v1') {
     return typeof candidate.cwd === 'string' && candidate.cwd.length > 0;
   }
   return (
     candidate.kind === 'managed_worktree_v1' &&
-    candidate.executionHandle?.kind === 'managed_workspace_execution_handle_v1'
+    candidate.executionHandle?.kind === 'managed_workspace_execution_handle_v1' &&
+    (candidate.provisioning === 'canonical_tree_only_v1' ||
+      candidate.provisioning === 'dependency_environment_v1')
   );
 }

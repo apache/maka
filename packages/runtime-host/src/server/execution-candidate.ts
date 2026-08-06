@@ -2,9 +2,14 @@ import {
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { join } from 'node:path';
 import type { RuntimeHostCandidateOptions } from './candidate.js';
-import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
+import type {
+  ManagedDependencyEnvironmentProducer,
+  VerifiedGitRuntimeInput,
+} from '@maka/storage/managed-workspace-owner';
 import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
+import { resolveBundledNpmDependencyProducer } from './bundled-npm-dependency-producer.js';
 import { createExecutionRuntimeHostComposition } from './execution-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 
@@ -16,6 +21,11 @@ export interface ExecutionRuntimeHostCandidateOptions extends RuntimeHostCandida
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   /** Packaged resource root containing bundled-git.json and the Git toolchain. */
   readonly bundledGitResourcesRoot?: string;
+  readonly managedWorkspaceDependencyProducer?: ManagedDependencyEnvironmentProducer;
+  /** Packaged resource root containing bundled-npm.json and the npm runtime. */
+  readonly bundledNpmResourcesRoot?: string;
+  readonly dependencyCacheRoot?: string;
+  readonly dependencyNodeExecutablePath?: string;
 }
 
 export async function startExecutionRuntimeHostCandidate(
@@ -27,6 +37,18 @@ export async function startExecutionRuntimeHostCandidate(
   const managedWorkspaceGitRuntime = options.bundledGitResourcesRoot
     ? await resolveBundledGitRuntime({ resourcesRoot: options.bundledGitResourcesRoot })
     : options.managedWorkspaceGitRuntime;
+  if (options.managedWorkspaceDependencyProducer && options.bundledNpmResourcesRoot) {
+    throw new Error('Managed dependency producer must have exactly one authority');
+  }
+  const managedWorkspaceDependencyProducer = options.bundledNpmResourcesRoot
+    ? await resolveBundledNpmDependencyProducer({
+        resourcesRoot: options.bundledNpmResourcesRoot,
+        cacheRoot:
+          options.dependencyCacheRoot ??
+          join(options.rootPath, 'managed-workspaces', 'dependency-runtime'),
+        nodeExecutablePath: options.dependencyNodeExecutablePath ?? process.execPath,
+      })
+    : options.managedWorkspaceDependencyProducer;
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
@@ -41,6 +63,7 @@ export async function startExecutionRuntimeHostCandidate(
     compositionFactory: (context) =>
       createExecutionRuntimeHostComposition(context, {
         ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
+        ...(managedWorkspaceDependencyProducer ? { managedWorkspaceDependencyProducer } : {}),
       }),
   });
   return { kind: 'winner', host };

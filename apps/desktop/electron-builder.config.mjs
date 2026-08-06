@@ -17,6 +17,14 @@ export default {
       to: 'bundled-git.json',
     },
     {
+      from: '.generated/bundled-npm/npm',
+      to: 'npm',
+    },
+    {
+      from: '.generated/bundled-npm/bundled-npm.json',
+      to: 'bundled-npm.json',
+    },
+    {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
     },
@@ -65,6 +73,10 @@ export default {
     {
       from: 'resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       to: 'licenses/npm/THIRD_PARTY_NOTICES.txt',
+    },
+    {
+      from: '../../node_modules/npm/LICENSE',
+      to: 'licenses/npm-cli/LICENSE',
     },
     {
       from: 'src/renderer/public/THIRD_PARTY_LICENSES.txt',

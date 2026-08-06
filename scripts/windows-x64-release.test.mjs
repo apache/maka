@@ -86,6 +86,8 @@ test('Windows packaging regenerates bundled Git evidence before electron-builder
     'npm run clean',
     'npm run build',
     'npm run prepare:bundled-git',
+    'npm run prepare:bundled-npm',
+    'npm run verify:bundled-npm',
     'npm run check:release',
     'npm --workspace @maka/desktop run package:windows-x64',
   ]);

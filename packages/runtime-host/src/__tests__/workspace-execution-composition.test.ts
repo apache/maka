@@ -67,6 +67,23 @@ test('never falls back a managed profile to attached execution', async () => {
   await composition.close();
 });
 
+test('preserves an explicit managed dependency provisioning profile through admission', async () => {
+  const calls: string[] = [];
+  const admissionOptions: unknown[] = [];
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  const scope = Object.freeze({ kind: 'managed_workspace_execution_scope_v1' as const });
+  const managedOwner = fakeManagedOwner({ handle, scope, calls, admissionOptions });
+  const composition = createRuntimeHostWorkspaceExecutionComposition({ managedOwner });
+  const profile = createManagedWorkspaceExecutionProfile(handle, {
+    provisioning: 'dependency_environment_v1',
+  });
+
+  await composition.executeReadOnly(profile, { kind: 'read', path: 'node_modules/pkg/index.js' });
+
+  assert.deepEqual(admissionOptions, [{ provisioning: 'dependency_environment_v1' }]);
+  await composition.close();
+});
+
 test('rejects forged or malformed profiles before worker dispatch', async () => {
   let workerCalls = 0;
   const composition = createRuntimeHostWorkspaceExecutionComposition({
@@ -131,14 +148,16 @@ function fakeManagedOwner(input: {
   scope: ManagedWorkspaceExecutionScope;
   calls: string[];
   workerBlocked?: Promise<void>;
+  admissionOptions?: unknown[];
 }): ManagedWorkspaceOwner {
   return {
     state: 'ready',
     async openManagedWorkspaceBaseline() {
       throw new Error('not used');
     },
-    async withManagedWorkspaceExecution(handle, operation) {
+    async withManagedWorkspaceExecution(handle, operation, options) {
       assert.equal(handle, input.handle);
+      input.admissionOptions?.push(options);
       input.calls.push('managed:admit');
       return await operation(input.scope);
     },
