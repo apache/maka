@@ -651,11 +651,11 @@ function AppShellContent({
   });
   // Surface a credential-lifecycle alert directly in the chat header when
   // the active session's connection is in `needs_reauth` / `error` or has
-  // been deleted entirely with no usable default. We skip the async hasSecret
-  // fetch here — the composer-adjacent notice is a hard-block surface;
-  // AccountSettingsPage remains the authoritative detailed view. Model /
-  // thinking selection + the hard-only health notice live in useShellChatModel
-  // (pure derivation of the connection list + active session);
+  // been deleted entirely with no usable default. Main resolves credential
+  // presence into the onboarding snapshot; a connection event starts an async
+  // snapshot pull, so the notice keeps the previous outcome only until that
+  // pull completes. Model / thinking selection + the hard-only health notice
+  // live in useShellChatModel (pure derivation of the snapshot + active session);
   // openSettingsSection is injected so the notice can wrap the derived click
   // target.
   const {

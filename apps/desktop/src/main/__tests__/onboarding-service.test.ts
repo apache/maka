@@ -90,6 +90,48 @@ function fakeDeps(overrides: Partial<OnboardingServiceDeps> = {}): OnboardingSer
 }
 
 describe('createOnboardingService.getSnapshot', () => {
+  it('pins the complete renderer projection for every physical session', async () => {
+    const service = createOnboardingService(fakeDeps({
+      listConnections: async () => [realConnection({ slug: 'a' })],
+      getDefaultSlug: async () => 'a',
+      listSessions: async () => [
+        session(),
+        session({ id: 's2', llmConnectionSlug: 'removed' }),
+      ],
+      getMilestones: async () => [{ id: 'initial_onboarding', completedAt: 1 }],
+      hasCredential: async () => true,
+    }));
+
+    const snapshot = await service.getSnapshot();
+    assert.deepEqual({
+      chatModelChoices: snapshot.chatModelChoices,
+      sessionSendOutcomes: snapshot.sessionSendOutcomes,
+    }, {
+      chatModelChoices: [{
+        connectionSlug: 'a',
+        providerType: 'anthropic',
+        providerLabel: 'Anthropic',
+        model: 'claude-sonnet-4-5-20250929',
+        label: 'Claude Sonnet 4.5',
+        connectionName: 'Anthropic Live',
+        isDefault: true,
+        thinkingLevels: ['off'],
+      }],
+      sessionSendOutcomes: {
+        s1: { kind: 'ready' },
+        s2: {
+          kind: 'blocked',
+          reason: 'connection_missing',
+          connectionLocked: true,
+        },
+      },
+    });
+    assert.deepEqual(
+      Object.keys(snapshot.sessionSendOutcomes).sort(),
+      snapshot.sessions.map((item) => item.id).sort(),
+    );
+  });
+
   it('returns derived OnboardingState + sanitized milestones together', async () => {
     const service = createOnboardingService(
       fakeDeps({

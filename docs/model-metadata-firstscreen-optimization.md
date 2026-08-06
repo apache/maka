@@ -43,6 +43,8 @@ Reuse the existing `onboarding:getSnapshot` path. The main process already loads
 
 The renderer consumes this projection instead of reading the model catalog or metadata at startup. Connection changes continue to use the existing `connections:event → onboarding snapshot refresh` flow; no new IPC channel is needed.
 
+The session health notice uses the last completed snapshot while an event-triggered refresh is in flight, then updates from that pull; it does not wait for another invalidation cycle. Credential lookup failures are projected conservatively as `hasSecret: false`. This replaces the renderer's former optimistic `true` fallback on probe errors, so an unreadable credential surfaces the existing repair path instead of hiding a likely send failure.
+
 Remove the remaining provider-registry dependencies from the startup path:
 
 - `modelMenuGroups` receives the required label from the startup projection instead of reading `PROVIDER_DEFAULTS`.
@@ -113,6 +115,8 @@ Acceptance criteria:
 - model menu heading 所需的 provider fallback label。
 
 Renderer 使用 snapshot 数据渲染首屏，不再自行读取 model catalog 或 model metadata。connection 发生变化时，继续复用现有 `connections:event → onboarding snapshot refresh` 更新投影，不新增 IPC channel。
+
+Session health notice 在 event 触发的异步刷新完成前继续使用上一份 snapshot，当前 pull 返回后立即更新，不需要再等下一轮 invalidation。Credential lookup 失败时会保守投影为 `hasSecret: false`；这取代了 renderer 旧逻辑在 probe 报错时乐观返回 `true` 的行为，使凭据无法读取时进入已有修复路径，而不是隐藏一次很可能失败的发送。
 
 同时切断其余 provider registry 依赖：
 

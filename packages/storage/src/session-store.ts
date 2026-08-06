@@ -481,14 +481,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
     const summaries: SessionSummary[] = [];
     for (let index = 0; index < withPreviews.length; index += 1) {
       const { record, previewMessages } = withPreviews[index]!;
-      let { header } = record;
+      const { header } = record;
       let messages = previewMessages.slice(-10);
-      if (index < 3 || (!header.connectionLocked && previewMessages.length > 0)) {
-        const storedMessages = await this.metadata.readMessages(header.id);
-        if (!header.connectionLocked) {
-          header = await this.lockConnectionAfterFirstUserMessage(header, storedMessages);
-        }
-        if (index < 3) messages = storedMessages.slice(-10);
+      if (index < 3) {
+        messages = (await this.metadata.readMessages(header.id)).slice(-10);
       }
       summaries.push(toSummary(header, messages));
     }
@@ -576,15 +572,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   async readHeader(sessionId: string): Promise<SessionHeader> {
-    const header = await this.readHeaderSnapshot(sessionId);
-    return this.lockConnectionAfterFirstUserMessage(header);
+    return this.readHeaderSnapshot(sessionId);
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
-    const messages = await this.readMessagesSnapshot(sessionId);
-    const header = (await this.metadata.read(sessionId)).header;
-    await this.lockConnectionAfterFirstUserMessage(header, messages);
-    return messages;
+    return this.readMessagesSnapshot(sessionId);
   }
 
   async listTurns(sessionId: string): Promise<TurnRecord[]> {
@@ -771,16 +763,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   private async closeAfterReady(): Promise<void> {
     this.metadata.close();
-  }
-
-  private async lockConnectionAfterFirstUserMessage(
-    header: SessionHeader,
-    knownMessages?: StoredMessage[],
-  ): Promise<SessionHeader> {
-    if (header.connectionLocked) return header;
-    const messages = knownMessages ?? (await this.metadata.readMessages(header.id));
-    if (!messages.some((message) => message.type === 'user')) return header;
-    return this.updateHeader(header.id, { connectionLocked: true });
   }
 
   private async ensureReady(): Promise<void> {}
