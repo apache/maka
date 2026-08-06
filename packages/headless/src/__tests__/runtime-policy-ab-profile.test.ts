@@ -11,7 +11,13 @@ test('checked-in runtime A/B profile pins DeepSeek Flash identity, pricing, and 
   const profile = parseRuntimePolicyAbExecutionProfile(JSON.parse(await readFile(path, 'utf8')));
 
   assert.equal(profile.model, 'deepseek/deepseek-v4-flash');
-  assert.equal(profile.pricing.source, 'deepseek-v4-flash');
+  assert.deepEqual(profile.pricing, {
+    inputUsdPer1M: 0.14,
+    outputUsdPer1M: 0.28,
+    cacheReadUsdPer1M: 0.0028,
+    cacheWriteUsdPer1M: 0,
+    source: 'deepseek-v4-flash',
+  });
   assert.equal(profile.observedCostStopUsd, 20);
   assert.equal(profile.maxConcurrentAttempts, 2);
 });

@@ -6,9 +6,9 @@
   "baseUrl": "https://api.deepseek.com",
   "model": "deepseek/deepseek-v4-flash",
   "pricing": {
-    "inputUsdPer1M": 0.145,
-    "outputUsdPer1M": 0.29,
-    "cacheReadUsdPer1M": 0.0029,
+    "inputUsdPer1M": 0.14,
+    "outputUsdPer1M": 0.28,
+    "cacheReadUsdPer1M": 0.0028,
     "cacheWriteUsdPer1M": 0,
     "source": "deepseek-v4-flash"
   },

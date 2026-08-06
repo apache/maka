@@ -620,7 +620,7 @@ test('harness A/B resolves an explicit GLM 5.2 runtime independently from OpenCo
   assert.equal(resolveHarnessAbRunId(composition), 'glm-5.2-maka-vs-opencode-tbench-2.1-full-v1');
 });
 
-test('harness A/B resolves DeepSeek V4 Flash as a metered OpenCode comparison', async () => {
+test('harness A/B freezes current DeepSeek V4 Flash metered pricing', async () => {
   const {
     buildHarnessAbManifest,
     buildHarnessExecutionProfile,
@@ -641,10 +641,10 @@ test('harness A/B resolves DeepSeek V4 Flash as a metered OpenCode comparison', 
     baseUrl: 'https://api.deepseek.com',
     billingMode: 'metered',
     pricing: {
-      inputUsdPer1M: 0.145,
-      cacheReadUsdPer1M: 0.0029,
+      inputUsdPer1M: 0.14,
+      cacheReadUsdPer1M: 0.0028,
       cacheWriteUsdPer1M: 0,
-      outputUsdPer1M: 0.29,
+      outputUsdPer1M: 0.28,
       source: 'deepseek-v4-flash',
     },
   });
@@ -665,10 +665,10 @@ test('harness A/B resolves DeepSeek V4 Flash as a metered OpenCode comparison', 
   assert.deepEqual(manifest.metadata.pricing, {
     currency: 'USD',
     unit: 'per_1m_tokens',
-    input: 0.145,
-    cachedInput: 0.0029,
+    input: 0.14,
+    cachedInput: 0.0028,
     cacheWrite: 0,
-    output: 0.29,
+    output: 0.28,
     source: 'deepseek-v4-flash',
   });
   assert.equal(manifest.arms[1].id, 'opencode');
