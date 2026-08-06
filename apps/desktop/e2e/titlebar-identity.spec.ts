@@ -435,3 +435,34 @@ test('ending a titlebar rename from the keyboard returns focus to the crumb', as
   await identity.getByRole('textbox', { name: '重命名对话' }).press('Enter');
   await expect(crumb).toBeFocused();
 });
+
+/**
+ * An IME's Enter accepts its candidate; it does not end the edit.
+ *
+ * Typing 会话 in Chinese means typing `huihua` and pressing Enter to take the
+ * candidate — and that keystroke reaches the field as a plain `Enter`. Without
+ * the `isComposing` guard it commits a half-typed name mid-word and closes the
+ * field, in the language most of this product's users type in.
+ *
+ * A synthesised event, because a real IME cannot be driven from here: the flag
+ * is settable on the constructor, which is the whole of what the guard reads.
+ * This is the coverage the sidebar's rename used to carry, on the field that
+ * inherited its guard.
+ */
+test('a composing Enter does not end a titlebar rename', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const identity = page.locator(IDENTITY);
+  await identity.getByRole('button', { name: /会话 00/ }).click();
+  const field = identity.getByRole('textbox', { name: '重命名对话' });
+  await field.fill('会话 0');
+
+  await field.evaluate((element) => {
+    element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }),
+    );
+  });
+
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue('会话 0');
+});
