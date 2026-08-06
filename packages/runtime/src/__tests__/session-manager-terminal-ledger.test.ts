@@ -1246,6 +1246,232 @@ describe('SessionManager terminal ledger invariants', () => {
     expect(terminalEvents[0]?.id).toBe('rt-foreign-terminal');
   });
 
+  test('stop settlement probes a latched store and settles when it answers', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const session = await store.create(makeInput());
+    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, []);
+    const activeRuns = new Map<string, AgentRun>();
+    const turnToRunId = new Map<string, string>();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(41_900),
+      hooks: {
+        reserveRun: async (_sessionId, _header, activeRun) => {
+          activeRuns.set(activeRun.runId, activeRun);
+          turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
+        },
+        unregisterRun: (_active, activeRun) => {
+          activeRuns.delete(activeRun.runId);
+          turnToRunId.delete(activeRun.turnId);
+        },
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    await run.begin();
+    // One rejected write latches store availability. #2253 reached this
+    // state through the ledger refusing an aborted question's outcome; the
+    // store itself stayed healthy the whole time.
+    runStore.failNextRuntimeEventAppends = 1;
+    await run.acceptMappedEvent(
+      {
+        type: 'text_complete',
+        id: 'complete-1',
+        turnId: 'turn-1',
+        ts: 5,
+        messageId: 'm1',
+        text: 'a',
+      },
+      runtimeEvent({
+        id: 'rt-rejected',
+        sessionId: session.id,
+        invocationId: run.invocationId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'a' },
+      }),
+    );
+    run.stop('stop_button');
+
+    // The latch says a write failed once, not that the store is gone. The
+    // settlement's own durable read is the probe; a store that answers
+    // lifts the latch and the terminal fact lands on the first stop.
+    await run.settleStopTerminal();
+
+    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+      isTerminalRuntimeEvent,
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.status).toBe('aborted');
+    expect(terminalEvents[0]?.actions?.stateDelta?.abortSource).toBe('renderer.stop_button');
+  });
+
+  test('a retried stop settles once a latched store answers again', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const session = await store.create(makeInput());
+    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, []);
+    const activeRuns = new Map<string, AgentRun>();
+    const turnToRunId = new Map<string, string>();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(42_000),
+      hooks: {
+        reserveRun: async (_sessionId, _header, activeRun) => {
+          activeRuns.set(activeRun.runId, activeRun);
+          turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
+        },
+        unregisterRun: (_active, activeRun) => {
+          activeRuns.delete(activeRun.runId);
+          turnToRunId.delete(activeRun.turnId);
+        },
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    await run.begin();
+    runStore.failNextRuntimeEventAppends = 1;
+    await run.acceptMappedEvent(
+      {
+        type: 'text_complete',
+        id: 'complete-1',
+        turnId: 'turn-1',
+        ts: 5,
+        messageId: 'm1',
+        text: 'a',
+      },
+      runtimeEvent({
+        id: 'rt-rejected',
+        sessionId: session.id,
+        invocationId: run.invocationId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'a' },
+      }),
+    );
+    run.stop('stop_button');
+
+    // While the store cannot answer, the settlement keeps failing and the
+    // stop operation stays retryable rather than reporting a success the
+    // ledger does not carry.
+    runStore.failRuntimeEventReads = true;
+    await assert.rejects(run.settleStopTerminal(), /RuntimeEvent store is unavailable/);
+
+    runStore.failRuntimeEventReads = false;
+    await run.settleStopTerminal();
+
+    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+      isTerminalRuntimeEvent,
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.status).toBe('aborted');
+    expect(terminalEvents[0]?.actions?.stateDelta?.abortSource).toBe('renderer.stop_button');
+  });
+
+  test('stop settlement probes a latched run store instead of skipping the header commit', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const session = await store.create(makeInput());
+    const backend = new ScriptBackend({ sessionId: session.id } as BackendFactoryContext, []);
+    const activeRuns = new Map<string, AgentRun>();
+    const turnToRunId = new Map<string, string>();
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(42_100),
+      hooks: {
+        reserveRun: async (_sessionId, _header, activeRun) => {
+          activeRuns.set(activeRun.runId, activeRun);
+          turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
+        },
+        unregisterRun: (_active, activeRun) => {
+          activeRuns.delete(activeRun.runId);
+          turnToRunId.delete(activeRun.turnId);
+        },
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    await run.begin();
+    // One best-effort trace append failure latches the Run store. Nothing
+    // surfaces to the user, which is what made the pre-fix behaviour a
+    // silent stop success: commitTerminalRun skips under the latch and the
+    // run stays non-terminal with no error to retry on.
+    runStore.failNextRunEventAppends = 1;
+    run.recordRunTrace({
+      id: 'trace-1',
+      sessionId: session.id,
+      turnId: 'turn-1',
+      ts: 1,
+      phase: 'turn',
+      type: 'abort_requested',
+      message: 'trace append that latches the store',
+    });
+    await timerDelay(0);
+    await timerDelay(0);
+    run.stop('stop_button');
+
+    await run.settleStopTerminal();
+
+    const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+      isTerminalRuntimeEvent,
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.status).toBe('aborted');
+    const cancelled = (await runStore.readEvents(session.id, run.runId)).filter(
+      (event) => event.type === 'run_cancelled',
+    );
+    expect(cancelled).toHaveLength(1);
+  });
+
   test('direct AgentRun error events still commit failed terminal facts when failed turn projection fails', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
@@ -2034,6 +2260,12 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   private headers = new Map<string, AgentRunHeader>();
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  /** One-shot append rejections, for latching the store availability. */
+  failNextRuntimeEventAppends = 0;
+  /** While true every runtime-event read rejects, a store that is down. */
+  failRuntimeEventReads = false;
+  /** One-shot run-event append rejections, for latching the Run store. */
+  failNextRunEventAppends = 0;
 
   constructor(
     private readonly options: {
@@ -2073,6 +2305,10 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   }
 
   async appendEvent(sessionId: string, runId: string, event: AgentRunEvent): Promise<void> {
+    if (this.failNextRunEventAppends > 0) {
+      this.failNextRunEventAppends -= 1;
+      throw new Error('run event append rejected');
+    }
     const eventKey = key(sessionId, runId);
     this.events.set(eventKey, [...(this.events.get(eventKey) ?? []), clone(event)]);
   }
@@ -2082,6 +2318,10 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   }
 
   async appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void> {
+    if (this.failNextRuntimeEventAppends > 0) {
+      this.failNextRuntimeEventAppends -= 1;
+      throw new Error('runtime event append rejected');
+    }
     if (this.options.failTerminalRuntimeEventAppends && isTerminalRuntimeEvent(event)) {
       throw new Error('terminal runtime event append failed');
     }
@@ -2112,6 +2352,7 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   }
 
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
+    if (this.failRuntimeEventReads) throw new Error('runtime event read rejected');
     return clone(this.runtimeEvents.get(key(sessionId, runId)) ?? []);
   }
 

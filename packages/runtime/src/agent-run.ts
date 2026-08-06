@@ -322,7 +322,8 @@ export class AgentRun {
     // failure below is real and must reach the stop's caller: a stop that
     // reports success while the run stays non-terminal is the silent loss this
     // method exists to prevent.
-    if (!this.input.runtimeEventStore || !this.input.runStore) return;
+    const runStore = this.input.runStore;
+    if (!this.input.runtimeEventStore || !runStore) return;
     await this.flushRuntimePartialBuffer(true);
     // The claim only fences writers inside this Run. Another owner — a Host
     // recovery, a resumed continuation — may have sealed the ledger already,
@@ -333,6 +334,21 @@ export class AgentRun {
     const events = await this.loadTurnRuntimeEvents();
     if (events.some((event) => isTerminalRuntimeEvent(event) && event.id !== claimedEventId))
       return;
+    if (!this.runStoreAvailable) {
+      // The Run-store latch is best-effort history (one busy trace append
+      // sets it) and commitTerminalRun silently skips under it, which here
+      // would turn the stop into a reported success with no terminal fact:
+      // the silent variant of the loss this method exists to prevent.
+      // Probe like the RuntimeEvent read above; a store that answers lifts
+      // the latch, one that cannot fails the settlement loudly so the stop
+      // stays retryable.
+      try {
+        await runStore.readRun(this.sessionId, this.runId);
+        this.runStoreAvailable = true;
+      } catch (error) {
+        throw new Error('AgentRun store is unavailable for stop settlement', { cause: error });
+      }
+    }
     const ts = this.lastTs || this.input.now();
     const finalStatus = { status: 'aborted' as const };
     this.finalStatus ??= finalStatus;
@@ -492,17 +508,33 @@ export class AgentRun {
    * never be computed over a projection the ledger cannot replay.
    */
   async loadTurnRuntimeEvents(): Promise<RuntimeEvent[]> {
-    if (!this.input.runtimeEventStore || !this.runtimeEventStoreAvailable) {
+    const store = this.input.runtimeEventStore;
+    if (!store) {
       throw new Error('RuntimeEvent store is unavailable for turn runtime events');
     }
     await this.flushRuntimePartialBuffer(false);
     await this.runtimeEventQueue.catch(() => {});
-    // A write may have failed while we waited; a snapshot from a store that
-    // just went unavailable must not be treated as a complete durable read.
-    if (!this.runtimeEventStoreAvailable) {
-      throw new Error('RuntimeEvent store became unavailable for turn runtime events');
+    if (this.runtimeEventStoreAvailable) {
+      return await store.readRuntimeEvents(this.sessionId, this.runId);
     }
-    return await this.input.runtimeEventStore.readRuntimeEvents(this.sessionId, this.runId);
+    // The unavailability latch records that a past write failed, not that
+    // the store cannot answer now. This read is the probe that
+    // disambiguates, the same way recordRuntimeEvents reads the ledger back
+    // after an ambiguous append: a store that answers is available again
+    // and the latch lifts, so a stop retried after one rejected write can
+    // still settle its terminal fact (#2253) instead of failing on stale
+    // history forever. A store that cannot answer keeps rejecting, and
+    // coverage is never computed over a projection the ledger cannot
+    // replay.
+    try {
+      const events = await store.readRuntimeEvents(this.sessionId, this.runId);
+      this.runtimeEventStoreAvailable = true;
+      return events;
+    } catch (error) {
+      throw new Error('RuntimeEvent store is unavailable for turn runtime events', {
+        cause: error,
+      });
+    }
   }
 
   recordSemanticCompactBlock(block: SemanticCompactBlock): void {
