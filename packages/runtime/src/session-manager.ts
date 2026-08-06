@@ -53,6 +53,7 @@ import type {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type {
   CreateSandboxBoundaryRequest,
   ExecutionBoundary,
@@ -151,11 +152,13 @@ import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
+import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
   attributeSandboxBoundaryRestartClosure,
   classifyAgentRunRecovery,
   type AgentRunRecoveryDecision,
 } from './agent-run-recovery.js';
+import { buildInterruptedCodeModeOutcomeCommits } from './recovery-resolver.js';
 import type { InvocationResult, InvocationSource } from './invocation-context.js';
 import {
   isRuntimeHostedRootAuthority,
@@ -227,6 +230,16 @@ function runtimeContinuationAuthority(
     typeof candidate.commitContinuationStart === 'function' &&
     typeof candidate.commitContinuationRepairStart === 'function'
     ? (candidate as RuntimeContinuationAuthorityStore)
+    : undefined;
+}
+
+function runtimeCommitSinkFromEventStore(
+  store: RuntimeEventStore | undefined,
+): RuntimeCommitSink | undefined {
+  const candidate = store as Partial<RuntimeCommitSink> | undefined;
+  return typeof candidate?.commitToolPrepared === 'function' &&
+    typeof candidate.commitToolOutcome === 'function'
+    ? (candidate as RuntimeCommitSink)
     : undefined;
 }
 
@@ -702,9 +715,18 @@ export interface BackendFactoryContext {
    */
   systemPrompt?: string;
   /**
-   * Optional hard tool ceiling for this backend activation. When present, a
-   * host may remove tools for stricter local policy, but must never append,
-   * substitute, or otherwise expose a tool outside this exact set.
+   * Optional hard tool ceiling on the *agent-permission* tools for this backend
+   * activation. When present, a host may remove tools for stricter local
+   * policy, but must never append, substitute, or otherwise expose an
+   * agent-permission tool outside this exact set.
+   *
+   * Runtime protocol tools are outside that ceiling by construction (#2026).
+   * `ArchiveRead` decodes a placeholder the runtime itself generated during
+   * pruning; it grants no reach the parent did not already exercise, and
+   * withholding it only strands content the model was explicitly told to
+   * retrieve. The backend therefore binds it from the archive capability, not
+   * from this set, which is why narrowing a child's allowlist can no longer
+   * silently strip the decoder for placeholders that child will still receive.
    */
   tools?: readonly MakaTool[];
   recordRunTrace?: RunTraceRecorder;
@@ -777,6 +799,7 @@ interface SessionManagerBaseDeps {
   planStore?: PlanStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
+  runtimeCommitSink?: RuntimeCommitSink;
   /** Host capability; RuntimeKernel gates it by the selected backend. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   backends: BackendRegistry;
@@ -868,6 +891,7 @@ export type RuntimeContinuationLifecycleEvent =
 export class SessionManager {
   private readonly runtimeKernel: RuntimeKernelLike;
   private readonly runtimeLedgerRepair?: RuntimeLedgerRepair;
+  private readonly runtimeCommitSink?: RuntimeCommitSink;
   private readonly activeHostedLinkedChildSessions = new Set<string>();
   private readonly childSessionSpawns = new Map<
     string,
@@ -886,6 +910,8 @@ export class SessionManager {
     if (deps.publishChildWorkspacePatch && !deps.listArtifactsForTurn) {
       throw new Error('Child workspace patch publication requires Artifact turn listing');
     }
+    this.runtimeCommitSink =
+      deps.runtimeCommitSink ?? runtimeCommitSinkFromEventStore(deps.runtimeEventStore);
     if (deps.runStore && deps.runtimeEventStore) {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runStore: deps.runStore,
@@ -5731,7 +5757,7 @@ export class SessionManager {
       if (policy.kind === 'strict') {
         await policy.stores.agentRunStore.readEventsForRecovery(sessionId, run.runId);
       }
-      const inspected = await inspectAgentRunReadModel(
+      let inspected = await inspectAgentRunReadModel(
         this.deps.runStore,
         this.deps.runtimeEventStore,
         { sessionId, runId: run.runId, header: run },
@@ -5760,6 +5786,36 @@ export class SessionManager {
         // includes claim-only, deterministic repair-start, and live provider
         // T1 states; generic app-restart repair must never write into them.
         continue;
+      }
+      if (this.runtimeCommitSink) {
+        const interruptedOutcomes = buildInterruptedCodeModeOutcomeCommits(
+          inspected.runtimeEvents,
+          this.deps.now(),
+          run.toolMode ?? DEFAULT_TOOL_MODE,
+        );
+        let outcomeCommitFailed = false;
+        for (const outcome of interruptedOutcomes) {
+          const committed = await commitInterruptedOutcomeWithRetry(policy, () =>
+            this.runtimeCommitSink!.commitToolOutcome(outcome),
+          );
+          if (!committed) {
+            // Keep the run non-terminal so a later recovery pass can retry the
+            // missing outcome before any terminal repair seals the ledger.
+            outcomeCommitFailed = true;
+          } else {
+            recovered ||= committed.created;
+          }
+        }
+        if (outcomeCommitFailed) {
+          continue;
+        }
+        if (interruptedOutcomes.length > 0) {
+          inspected = await inspectAgentRunReadModel(
+            this.deps.runStore,
+            this.deps.runtimeEventStore,
+            { sessionId, runId: run.runId, header: run },
+          );
+        }
       }
       const terminalLedger = classifyTerminalRuntimeLedger(run, inspected.runtimeEvents);
       if (terminalLedger.kind === 'ambiguous') {
@@ -5925,6 +5981,8 @@ function continuationExecutionErrorClass(error: unknown): string {
 
 type RecoveryPolicy = { kind: 'best_effort' } | { kind: 'strict'; stores: StrictRecoveryStores };
 
+const MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS = 2;
+
 function listSessionsForRecovery(
   store: SessionStore,
   policy: RecoveryPolicy,
@@ -5943,6 +6001,21 @@ async function recoverOr<T>(
     if (policy.kind === 'strict') throw error;
     return fallback;
   }
+}
+
+async function commitInterruptedOutcomeWithRetry(
+  policy: RecoveryPolicy,
+  operation: () => Promise<RuntimeCommitResult>,
+): Promise<RuntimeCommitResult | undefined> {
+  const attempts = policy.kind === 'strict' ? 1 : MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (policy.kind === 'strict') throw error;
+    }
+  }
+  return undefined;
 }
 
 function continuationRepairEventId(

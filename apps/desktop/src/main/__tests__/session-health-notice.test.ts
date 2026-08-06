@@ -1,13 +1,9 @@
 /**
  * #1038 — session health notice derivation, aligned with send authority.
  *
- * The notice sits above the composer and answers exactly one question:
- * "will the next send fail for a recoverable connection/session reason,
- * and where should the user go?" The answer comes from the same core
- * projection (`projectSessionSendOutcome`) that the main-process send
- * gate delegates to, fed with renderer-side facts (connection list,
- * default slug, secret presence probe, `connectionLocked` on the
- * session summary). Soft "will rebind on send" cases stay silent.
+ * Main projects send readiness and carries it in the onboarding snapshot.
+ * These tests cover only the renderer's outcome-to-copy mapping and reminder
+ * priority; send/rebind decision cases live in session-send-projection.test.ts.
  *
  * `lastTestStatus` is an intentional pre-send reminder (product contract
  * decided in #1038): it never claims send is blocked — E4 locks that it
@@ -24,7 +20,7 @@ import {
   type SessionHealthNoticeInput,
 } from '../../renderer/session-health-notice.js';
 
-function connection(overrides: Partial<LlmConnection> = {}): LlmConnection {
+function connection(): LlmConnection {
   return {
     slug: 'openai-live',
     name: 'OpenAI Live',
@@ -35,7 +31,6 @@ function connection(overrides: Partial<LlmConnection> = {}): LlmConnection {
     modelSource: 'fetched',
     createdAt: 1,
     updatedAt: 1,
-    ...overrides,
   } as LlmConnection;
 }
 
@@ -48,16 +43,11 @@ function input(partial: Partial<SessionHealthNoticeInput> = {}): SessionHealthNo
       model: 'gpt-4.1',
       connectionLocked: false,
     },
+    outcome: { kind: 'ready' },
     connections: [connection()],
-    defaultSlug: 'openai-live',
-    hasSecret: () => true,
     lastTestStatus: undefined,
     ...partial,
   };
-}
-
-function fakeSession(connectionLocked: boolean): SessionHealthNoticeInput['session'] {
-  return { backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model', connectionLocked };
 }
 
 describe('deriveSessionHealthNotice', () => {
@@ -65,86 +55,44 @@ describe('deriveSessionHealthNotice', () => {
     assert.equal(deriveSessionHealthNotice(input({ session: undefined })), undefined);
   });
 
+  it('stays hidden when the snapshot outcome is unavailable', () => {
+    assert.equal(deriveSessionHealthNotice(input({ outcome: undefined })), undefined);
+  });
+
   it('returns undefined when the next send will succeed', () => {
     assert.equal(deriveSessionHealthNotice(input({})), undefined);
   });
 
-  describe('locked sessions — the send cannot silently rebind', () => {
-    it('locked fake session warns even when a default connection is ready', () => {
-      // #1038 case 1: previously hidden behind "default looks ready".
-      const result = deriveSessionHealthNotice(input({ session: fakeSession(true) }));
-      assert.equal(result?.tone, 'destructive');
-      assert.equal(result?.label, '会话已过期 · 请先配置真实模型');
-      assert.equal(result?.onClickTarget, 'models');
-    });
-
-    it('locked session with deleted connection warns even when a default is ready', () => {
-      const result = deriveSessionHealthNotice(
+  it('stays hidden when main projects a silent rebind', () => {
+    assert.equal(
+      deriveSessionHealthNotice(
         input({
-          session: {
-            backend: 'ai-sdk',
-            llmConnectionSlug: 'deleted-slug',
-            model: 'gpt-4.1',
-            connectionLocked: true,
-          },
+          outcome: { kind: 'rebind', connectionSlug: 'openai-live', model: 'gpt-4.1' },
         }),
-      );
-      assert.equal(result?.tone, 'destructive');
-      assert.equal(result?.label, '连接已删除');
-      assert.equal(result?.onClickTarget, 'models');
-    });
-
-    it('handles legacy backend (e.g. "claude") with missing connection — same notice', () => {
-      const result = deriveSessionHealthNotice(
-        input({
-          session: {
-            backend: 'claude',
-            llmConnectionSlug: 'deleted-slug',
-            model: 'gpt-4.1',
-            connectionLocked: true,
-          },
-        }),
-      );
-      assert.equal(result?.label, '连接已删除');
-    });
+      ),
+      undefined,
+    );
   });
 
-  describe('unlocked sessions — silent when the send path can rebind', () => {
-    it('fake session stays silent when a default connection is ready', () => {
-      assert.equal(deriveSessionHealthNotice(input({ session: fakeSession(false) })), undefined);
-    });
-
-    it('missing connection stays silent when ANOTHER (non-default) connection is ready', () => {
-      // #1038 case 3: the send walk tries every persisted connection.
-      assert.equal(
-        deriveSessionHealthNotice(
-          input({
-            session: {
-              backend: 'ai-sdk',
-              llmConnectionSlug: 'deleted-slug',
-              model: 'gpt-4.1',
-              connectionLocked: false,
-            },
-            defaultSlug: 'also-broken',
-            connections: [connection({ slug: 'second-ready' })],
-          }),
-        ),
-        undefined,
-      );
-    });
-
-    it('fake session warns when the default is enabled but has no secret', () => {
-      // #1038 case 2: "exists && enabled" is not send readiness.
-      const result = deriveSessionHealthNotice(
-        input({ session: fakeSession(false), hasSecret: () => false }),
-      );
+  describe('blocked outcomes', () => {
+    it('renders the fake-backend recovery copy without internal terminology', () => {
+      const result = deriveSessionHealthNotice(input({
+        session: {
+          backend: 'fake',
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          connectionLocked: false,
+        },
+        outcome: { kind: 'blocked', reason: 'fake_backend', connectionLocked: false },
+      }));
       assert.equal(result?.tone, 'destructive');
       assert.equal(result?.label, '会话已过期 · 请先配置真实模型');
+      assert.equal(result?.onClickTarget, 'models');
       assert.doesNotMatch(result?.label ?? '', /演示版|fake|FakeBackend/i);
       assert.doesNotMatch(result?.tooltip ?? '', /演示版|fake|FakeBackend/i);
     });
 
-    it('missing connection with no ready rebind target → destructive models notice', () => {
+    it('renders the missing-connection recovery copy', () => {
       const result = deriveSessionHealthNotice(
         input({
           session: {
@@ -153,27 +101,22 @@ describe('deriveSessionHealthNotice', () => {
             model: 'gpt-4.1',
             connectionLocked: false,
           },
-          hasSecret: () => false,
+          outcome: { kind: 'blocked', reason: 'connection_missing', connectionLocked: false },
         }),
       );
       assert.equal(result?.tone, 'destructive');
       assert.equal(result?.label, '连接已删除');
-      assert.equal(result?.onClickTarget, 'models');
       assert.match(result?.tooltip ?? '', /设置.*模型/);
     });
 
-    it('non-rebindable failure (missing key) blocks even when another connection is ready', () => {
-      // Mirrors the send path: missing_api_key never silently rebinds,
-      // so the notice must say the send will fail.
+    it('names the session connection when its API key is missing', () => {
       const result = deriveSessionHealthNotice(
         input({
-          hasSecret: (slug) => slug !== 'openai-live',
-          connections: [connection(), connection({ slug: 'second-ready' })],
+          outcome: { kind: 'blocked', reason: 'missing_api_key', connectionLocked: false },
         }),
       );
       assert.equal(result?.tone, 'destructive');
       assert.equal(result?.label, '连接缺少密钥');
-      assert.equal(result?.onClickTarget, 'models');
       assert.match(result?.tooltip ?? '', /OpenAI Live/);
     });
   });
@@ -203,27 +146,18 @@ describe('deriveSessionHealthNotice', () => {
 
     it('a blocked send beats the reminder', () => {
       const result = deriveSessionHealthNotice(
-        input({ session: fakeSession(true), lastTestStatus: 'error' }),
+        input({
+          outcome: { kind: 'blocked', reason: 'missing_api_key', connectionLocked: false },
+          lastTestStatus: 'error',
+        }),
       );
-      assert.equal(result?.label, '会话已过期 · 请先配置真实模型');
+      assert.equal(result?.label, '连接缺少密钥');
     });
 
     it('the reminder stays silent when the send will rebind away from this connection', () => {
-      // The session's own connection is broken but rebindable; the next
-      // send moves the session to a healthy connection, so nudging the
-      // user about the abandoned connection's old test result is noise.
       const result = deriveSessionHealthNotice(
         input({
-          session: {
-            backend: 'ai-sdk',
-            llmConnectionSlug: 'openai-live',
-            model: 'gpt-4.1',
-            connectionLocked: false,
-          },
-          connections: [
-            connection({ models: [], defaultModel: undefined }),
-            connection({ slug: 'second-ready' }),
-          ],
+          outcome: { kind: 'rebind', connectionSlug: 'second-ready', model: 'gpt-4.1' },
           lastTestStatus: 'error',
         }),
       );

@@ -100,6 +100,23 @@ describe('session trace projection', () => {
     assert.equal(trace.turns[0]?.steps[0]?.kind, 'model_call');
   });
 
+  test('carries the window an attempt was metered against', () => {
+    // The inspector's context bar is drawn from this one field; without it the
+    // bar has no denominator and silently disappears.
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [],
+      modelCallAttempts: [attempt({ contextWindow: 200_000 })],
+    });
+
+    const call = trace.turns[0]?.steps[0];
+    assert.equal(call?.kind, 'model_call');
+    assert.equal(
+      call?.kind === 'model_call' ? call.attempts[0]?.contextWindow : undefined,
+      200_000,
+    );
+  });
+
   test('counts compaction calls made inside a turn', () => {
     // The compaction kinds settle through the same seam as the send they
     // interrupt (#1877), so a compacted turn shows what compacting cost.

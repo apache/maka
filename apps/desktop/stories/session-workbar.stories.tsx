@@ -143,7 +143,7 @@ const populatedTrace: SessionTrace = {
           endedAt: NOW + 3_100,
           durationMs: 3_100,
           callKind: 'main',
-          providerId: 'zhipu',
+          providerId: 'zai',
           modelId: 'glm-5.1',
           step: 0,
           status: 'completed',
@@ -167,8 +167,11 @@ const populatedTrace: SessionTrace = {
               startedAt: NOW + 1_000,
               completedAt: NOW + 3_100,
               latencyMs: 2_100,
-              inputTokens: 6_200,
+              inputTokens: 62_400,
               outputTokens: 480,
+              cacheReadInputTokens: 58_900,
+              reasoningTokens: 120,
+              contextWindow: 200_000,
               costUsd: 0.0182,
               costBasis: 'priced',
               usageBasis: 'reported',
@@ -200,7 +203,7 @@ const populatedTrace: SessionTrace = {
         modelAttempts: 2,
         retries: 1,
         compactions: 1,
-        inputTokens: 6_200,
+        inputTokens: 62_400,
         outputTokens: 480,
         costUsd: 0.0182,
         unpricedAttempts: 1,
@@ -245,15 +248,67 @@ const populatedTrace: SessionTrace = {
       },
       failure: { code: 'tool_failed', message: 'sandbox denied the write' },
     },
+    {
+      turnId: 'turn-3',
+      runId: 'run-3',
+      startedAt: NOW + 40_000,
+      endedAt: NOW + 43_600,
+      durationMs: 3_600,
+      steps: [
+        {
+          kind: 'model_call',
+          id: 'call-3',
+          turnId: 'turn-3',
+          runId: 'run-3',
+          startedAt: NOW + 40_000,
+          endedAt: NOW + 42_900,
+          durationMs: 2_900,
+          callKind: 'main',
+          providerId: 'zai',
+          modelId: 'glm-5.1',
+          step: 0,
+          status: 'completed',
+          costUsd: 0.0061,
+          attempts: [
+            {
+              attemptId: 'attempt-3a',
+              attempt: 0,
+              status: 'completed',
+              startedAt: NOW + 40_000,
+              completedAt: NOW + 42_900,
+              latencyMs: 2_900,
+              timeToFirstTokenMs: 640,
+              inputTokens: 18_900,
+              outputTokens: 260,
+              cacheReadInputTokens: 15_200,
+              contextWindow: 200_000,
+              costUsd: 0.0061,
+              costBasis: 'priced',
+              usageBasis: 'reported',
+            },
+          ],
+        },
+      ],
+      totals: {
+        durationMs: 3_600,
+        modelAttempts: 1,
+        retries: 0,
+        compactions: 0,
+        inputTokens: 18_900,
+        outputTokens: 260,
+        costUsd: 0.0061,
+        unpricedAttempts: 0,
+      },
+    },
   ],
   totals: {
-    durationMs: 12_900,
-    modelAttempts: 2,
+    durationMs: 16_500,
+    modelAttempts: 3,
     retries: 1,
     compactions: 1,
-    inputTokens: 6_200,
-    outputTokens: 480,
-    costUsd: 0.0182,
+    inputTokens: 81_300,
+    outputTokens: 740,
+    costUsd: 0.0243,
     unpricedAttempts: 1,
   },
   coverage: {
@@ -262,6 +317,34 @@ const populatedTrace: SessionTrace = {
     unreadableRecords: 1,
     turnsWithFewerModelCallsThanSteps: [],
   },
+};
+
+/**
+ * The same session with its latest prompt resized, rather than a second copy
+ * of the fixture: what the near-limit story is about is the size of one call,
+ * and a fork would drift from `populatedTrace` on every other axis.
+ */
+const nearLimitTrace: SessionTrace = {
+  ...populatedTrace,
+  turns: populatedTrace.turns.map((turn, index) =>
+    index !== populatedTrace.turns.length - 1
+      ? turn
+      : {
+          ...turn,
+          steps: turn.steps.map((step) =>
+            step.kind !== 'model_call'
+              ? step
+              : {
+                  ...step,
+                  attempts: step.attempts.map((attempt) => ({
+                    ...attempt,
+                    inputTokens: 186_400,
+                    cacheReadInputTokens: 151_800,
+                  })),
+                },
+          ),
+        },
+  ),
 };
 
 const emptyTrace: SessionTrace = {
@@ -387,11 +470,22 @@ export const Files: Story = {
   render: () => <Workbar tab="files" />,
 };
 
-// Real path: 会话工作栏 → 追踪, on a session that has run turns — a retried
-// model call, a compaction, and a turn that failed on a denied tool, under the
-// coverage notice the projection raises when records are missing.
+// Real path: 会话工作栏 → 追踪, on a session that has run turns — the overview
+// reads a context budget, token/cache figures and the session's facts off a
+// retried model call and a post-compaction call, while a turn that failed on a
+// denied tool sits in the raw record under the coverage notice the projection
+// raises when records are missing.
 export const Trace: Story = {
   decorators: [bridge({ trace: populatedTrace })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: 会话工作栏 → 追踪 on a long session whose latest call sits near the
+// top of its window — the tier the context bands and their legend switch to
+// before a compaction, and the state a reader is most likely to open the tab
+// for. Same session as Trace, sized differently, so the two read side by side.
+export const TraceContextNearLimit: Story = {
+  decorators: [bridge({ trace: nearLimitTrace })],
   render: () => <Workbar tab="inspector" />,
 };
 

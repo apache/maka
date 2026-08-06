@@ -1,38 +1,30 @@
+import { parseUnifiedDiffRows, type UnifiedDiffRow } from '@maka/core';
 import { ansi } from './tui-ansi.js';
 
-export type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx';
-
 /**
- * Classify a single unified-diff line. Copied from the renderer-side
- * `diffLineKind` in `@maka/ui` (tool-result-preview.tsx) so the CLI stays
- * free of React/DOM imports. `+++`/`---` file headers count as metadata,
- * `@@` hunk headers get their own kind, and bare `+`/`-` are add/del.
+ * Diff coloring for the transcript, over the shared structural parse in
+ * `@maka/core`. The parse drives classification with the declared hunk
+ * counts, so a deleted `-- `-prefixed line colors red instead of dimming as
+ * a false file header, and file headers (`---`/`+++`/`index`) never reach
+ * the transcript at all. Hunk headers stay: they are the only line-number
+ * anchor in the terminal rendering.
  */
-export function diffLineKind(line: string): DiffLineKind {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  return 'ctx';
-}
-
-/** Tint a diff line by kind: add→green, del→red, hunk→accent, meta→dim, ctx→plain. */
-export function colorDiffLine(line: string): string {
-  switch (diffLineKind(line)) {
+export function colorDiffRow(row: UnifiedDiffRow): string {
+  switch (row.kind) {
     case 'add':
-      return ansi.green(line);
+      return ansi.green(row.text);
     case 'del':
-      return ansi.red(line);
+      return ansi.red(row.text);
     case 'hunk':
-      return ansi.accent(line);
+      return ansi.accent(row.text);
     case 'meta':
-      return ansi.dim(line);
+      return ansi.dim(row.text);
     case 'ctx':
-      return line;
+      return row.text;
   }
 }
 
 /** Color a whole diff body, preserving line breaks. */
 export function colorDiff(diff: string): string {
-  return diff.split('\n').map(colorDiffLine).join('\n');
+  return parseUnifiedDiffRows(diff).map(colorDiffRow).join('\n');
 }

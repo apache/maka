@@ -126,10 +126,18 @@ describe('Plan Reminder scanning hierarchy', () => {
     ]);
 
     assert.equal(markup.match(/aria-label="已完成"/g)?.length, 1);
-    // The task row carries the reminder's own lifecycle state once, on its
-    // StatusDot. A run's outcome — its status and its MESSAGE — belongs to the
-    // 执行记录 view and the inspector, never repeated inside every task row.
-    assert.doesNotMatch(markup, /失败/);
+    // A failed delivery reads on the row itself. Scanning this page for what
+    // is broken is the reason it exists, and while the row reported only the
+    // reminder's own lifecycle a failed reminder and a healthy one rendered
+    // identically — findable only by opening every entry in turn.
+    //
+    // Exactly one, so the tone stays on the row that earned it: `triggered`
+    // is a plain "it ran" record and must not colour its row, and the other
+    // fixtures here are healthy.
+    assert.equal(markup.match(/aria-label="失败"/g)?.length, 1);
+    assert.match(markup, /失败 ·/, 'and as text, since colour alone fails WCAG 1.4.1');
+    // The run's MESSAGE is still the inspector's and 执行记录's to tell — that
+    // part of the original rule holds, and only the status crosses over.
     assert.doesNotMatch(markup, /投递目标不可用。/);
     assert.doesNotMatch(markup, /maka-capability-audit-strip/);
   });

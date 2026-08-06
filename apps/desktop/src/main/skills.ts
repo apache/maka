@@ -59,12 +59,9 @@ export {
   buildSkillsPromptFragmentWithReport,
   loadSkillInstructions,
   parseSkillFrontMatter,
-  MAX_SKILL_BODY_CHARS,
   MAX_SKILL_TOOL_BODY_CHARS,
-  MAX_SKILLS_PROMPT_CHARS,
-  SKILL_SEARCH_TOOL_NAME,
 } from '@maka/runtime';
-export type { LoadSkillInstructionsResult, LoadedSkillInstructions, SkillRuntimeStatus } from '@maka/runtime';
+export type { SkillRuntimeStatus } from '@maka/runtime';
 
 export type { SkillSourceType, SkillValidationStatus, ManagedSkillUpdateStatus };
 export type SkillValidationCode = SkillLockValidationCode;

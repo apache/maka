@@ -253,6 +253,54 @@ describe('runtime event backfill', () => {
     });
   });
 
+  test('backfills nested CodeMode tool rows without making them model-visible', () => {
+    const identity = {
+      origin: 'code_mode' as const,
+      modelVisibility: 'hidden' as const,
+      parentToolCallId: 'exec-1',
+      parentOperationId: 'exec-op-1',
+    };
+    const result = backfillRuntimeEventsFromStoredMessages({
+      run,
+      messages: [
+        {
+          type: 'tool_call',
+          id: 'nested-1',
+          turnId: 'turn-1',
+          ts: 120,
+          toolName: 'Read',
+          args: {},
+          ...identity,
+        },
+        {
+          type: 'tool_result',
+          id: 'nested-result-1',
+          turnId: 'turn-1',
+          ts: 130,
+          toolUseId: 'nested-1',
+          isError: false,
+          content: { kind: 'text', text: 'ok' },
+          ...identity,
+        },
+      ],
+      newId: nextIds(),
+      now: () => 999,
+    });
+
+    const toolEvents = result.events.filter(
+      (event) =>
+        event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
+    );
+    expect(toolEvents).toHaveLength(2);
+    for (const event of toolEvents) {
+      expect(event).toMatchObject({ origin: 'code_mode', modelVisibility: 'hidden' });
+      expect(event.refs).toMatchObject({
+        parentToolCallId: 'exec-1',
+        parentOperationId: 'exec-op-1',
+      });
+    }
+  });
+
   test('backfills only low-risk RuntimeEvents from legacy StoredMessage rows', () => {
     const messages: StoredMessage[] = [
       {

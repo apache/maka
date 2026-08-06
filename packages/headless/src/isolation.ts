@@ -1,9 +1,13 @@
 import type { StorageRef } from '@maka/core';
 import {
   isPathInside,
+  type BackgroundTaskStopper,
   type EffectiveProductToolSurface,
   type ProductToolSurfaceIdentity,
+  type PtyControlWriter,
+  type RuntimeResourceReader,
   type ShellPlan,
+  type ShellRunLauncher,
 } from '@maka/runtime';
 import { isAbsolute } from 'node:path';
 import type { Config, Task } from './contracts.js';
@@ -121,6 +125,47 @@ export const ISOLATED_HEADLESS_TOOL_NAMES = [
 ] as const;
 
 /**
+ * Managed shell sessions an executor can own, when its processes are LOCAL to
+ * the headless process.
+ *
+ * `IsolatedToolExecutor.exec` is deliberately stateless: one command in, one
+ * completed result out. That is the whole contract a remote bridge can honour,
+ * and it is why a model that needs an interactive or long-lived process today
+ * has to detach it with `nohup … &` and lose every handle on it.
+ *
+ * ShellRunProcessManager already owns the missing half — background runs, PTY
+ * screens, stdin writes, ref reads, termination — but it spawns inside the
+ * calling process, so only an executor whose workspace IS that process can
+ * expose it. The in-container Harbor cell is exactly that case; the Harbor HTTP
+ * bridge is not, and leaves this undefined.
+ */
+export interface IsolatedShellSessions
+  extends ShellRunLauncher,
+    RuntimeResourceReader,
+    BackgroundTaskStopper,
+    PtyControlWriter {
+  /**
+   * Environment for managed shell processes. REQUIRED, not optional: a launch
+   * that carries no env makes ShellRunProcessManager fall back to the headless
+   * process's own `process.env`, which in a Harbor cell holds the provider
+   * credentials the cell uses to call the model. `exec` strips those through
+   * childProcessEnv; managed launches must be handed the same stripped env.
+   */
+  readonly commandEnv: NodeJS.ProcessEnv;
+  /**
+   * The executor's own default command timeout, so a managed foreground command
+   * is not killed earlier than the same operator's `exec` commands were.
+   */
+  readonly defaultCommandTimeoutMs?: number;
+  /**
+   * Terminates every still-live managed session. Called once when the agent
+   * phase ends so no managed process survives into grading, and so PTY children
+   * are not orphaned by the cell process exiting.
+   */
+  terminateAll(): Promise<void>;
+}
+
+/**
  * Executes agent-visible shell commands outside the host credential process.
  *
  * Implementations can be a Harbor/Terminal-Bench environment, a Docker
@@ -143,6 +188,11 @@ export interface IsolatedToolExecutor {
    * the contract and no dialect sentence is added.
    */
   shell?: ShellPlan;
+  /**
+   * Present only when this executor's processes run in the headless process, so
+   * the runtime's managed shell can own them. See IsolatedShellSessions.
+   */
+  shellSessions?: IsolatedShellSessions;
   /**
    * Optional native file operations for executors that can address their
    * external workspace without shelling through exec. If omitted,
@@ -228,6 +278,31 @@ export interface HeadlessBackendContext extends Partial<HeadlessSessionCapabilit
   heavyTaskSelfCheck?: HeavyTaskSelfCheckRecorder;
   /** Present only when heavy-task mode is enabled for compact public evidence capture. */
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
+}
+
+/**
+ * Ends the agent phase's managed processes.
+ *
+ * Every headless orchestrator has to enforce the same rule — nothing the model
+ * left managed may still be running when the workspace is graded, and no PTY
+ * child may outlive the process that spawned it — so the rule is written once
+ * here and triggered from each orchestrator rather than remembered three times.
+ *
+ * Call it at the agent-to-verification handoff AND from the enclosing finally:
+ * the handoff covers the normal path, the finally covers the thrown one, and
+ * terminateAll is idempotent. Processes the model deliberately detached are not
+ * managed and are untouched — some tasks are graded against a service the agent
+ * was asked to leave running.
+ */
+export async function endManagedShellSessions(
+  isolation: RealBackendIsolation | undefined,
+): Promise<void> {
+  try {
+    await isolation?.toolExecutor?.shellSessions?.terminateAll();
+  } catch {
+    // Best-effort: reaping is cleanup, and failing it must not mask the run's
+    // own outcome or replace a real error on the throwing path.
+  }
 }
 
 export function validateRealBackendIsolation(isolation: RealBackendIsolation | undefined): void {

@@ -5,6 +5,7 @@ import {
   buildImmutableRuntimePrefix,
   type ImmutableRuntimePrefixV1,
 } from '@maka/core/runtime-boundary';
+import { canonicalToolArgsHash } from '@maka/core';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 
@@ -108,6 +109,84 @@ describe('runtime resume phase 0 projection', () => {
       replayEvents.map((event) => event.id),
       ['user-1', 'system-1'],
     );
+  });
+
+  test('never replays hidden nested CodeMode operations on resume', () => {
+    const nestedCall = {
+      ...callEvent('nested-call', 'nested-1', 'Read', {}),
+      origin: 'code_mode' as const,
+      modelVisibility: 'hidden' as const,
+    };
+    const nestedResult = {
+      ...responseEvent('nested-result', 'nested-1', 'Read', { ok: true }, false),
+      origin: 'code_mode' as const,
+      modelVisibility: 'hidden' as const,
+    };
+    const events = [textEvent('user-1', 'user', 'inspect'), nestedCall, nestedResult];
+
+    assert.deepEqual(projectToolOperationsFromRuntimeEvents(events), []);
+    assert.deepEqual(
+      buildResumeReplayRuntimeEvents(events).map((event) => event.id),
+      ['user-1'],
+    );
+    assert.equal(buildResumePlanFromRuntimeEvents(events).disposition, 'safe_replay');
+  });
+
+  test('blocks resume when a hidden nested CodeMode operation is still indeterminate', () => {
+    const initial = textEvent('user-1', 'user', 'run the workflow');
+    initial.actions = { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } };
+    const outerCall = {
+      ...callEvent('outer-call', 'exec-1', 'exec', { code: 'await tools.Read({})' }),
+      refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
+    };
+    const outerDispatch = dispatchEvent({
+      id: 'outer-dispatch',
+      operationId: 'outer-op',
+      toolCallId: 'exec-1',
+      toolName: 'exec',
+      args: { code: 'await tools.Read({})' },
+    });
+    const outerResponse = {
+      ...responseEvent('outer-response', 'exec-1', 'exec', { status: 'interrupted' }, true),
+      refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
+    };
+    const nestedCall = {
+      ...callEvent('nested-call', 'nested-1', 'Read', {}),
+      origin: 'code_mode' as const,
+      modelVisibility: 'hidden' as const,
+      refs: {
+        operationId: 'nested-op',
+        toolCallId: 'nested-1',
+        parentOperationId: 'outer-op',
+        parentToolCallId: 'exec-1',
+      },
+    };
+    const nestedDispatch = dispatchEvent({
+      id: 'nested-dispatch',
+      operationId: 'nested-op',
+      toolCallId: 'nested-1',
+      toolName: 'Read',
+      args: {},
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      parentOperationId: 'outer-op',
+      parentToolCallId: 'exec-1',
+    });
+
+    const plan = buildResumePlanFromRuntimeEvents([
+      initial,
+      outerCall,
+      outerDispatch,
+      outerResponse,
+      nestedCall,
+      nestedDispatch,
+    ]);
+
+    assert.equal(plan.disposition, 'blocked');
+    assert.equal(plan.requiresVerification, true);
+    assert.ok(plan.directive);
+    assert.ok(plan.diagnostics.some((diagnostic) => diagnostic.code === 'pending_tool_result'));
+    assert.deepEqual(plan.rejectionReasons, ['dangling_tool_state']);
   });
 
   test('blocks replay on unmatched tool results rather than inventing provider history', () => {
@@ -705,6 +784,41 @@ function responseEvent(
     content: { kind: 'function_response', id: toolCallId, name, result, isError },
     author: 'tool',
     refs: { toolCallId },
+  });
+}
+
+function dispatchEvent(input: {
+  id: string;
+  operationId: string;
+  toolCallId: string;
+  toolName: string;
+  args: unknown;
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentOperationId?: string;
+  parentToolCallId?: string;
+}): RuntimeEvent {
+  return base({
+    id: input.id,
+    author: 'system',
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.modelVisibility ? { modelVisibility: input.modelVisibility } : {}),
+    actions: {
+      toolDispatch: {
+        protocol: 't1_after_preflight_v1',
+        operationId: input.operationId,
+        providerToolCallId: input.toolCallId,
+        toolName: input.toolName,
+        canonicalArgsHash: canonicalToolArgsHash(input.toolName, input.args),
+        recoveryMode: 'never_auto_retry',
+      },
+    },
+    refs: {
+      operationId: input.operationId,
+      toolCallId: input.toolCallId,
+      ...(input.parentOperationId ? { parentOperationId: input.parentOperationId } : {}),
+      ...(input.parentToolCallId ? { parentToolCallId: input.parentToolCallId } : {}),
+    },
   });
 }
 

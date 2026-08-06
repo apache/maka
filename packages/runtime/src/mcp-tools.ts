@@ -77,8 +77,24 @@ export function buildMcpTools(
       categoryHint: options.categoryHint ?? 'network_send',
       ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
       parameters: jsonSchema(descriptor.inputSchema),
-      impl: async (args: unknown, context) =>
-        callTool(asArguments(args), {
+      impl: async (args: unknown, context) => {
+        // Managed network authority applies equally to Direct and nested CodeMode dispatch.
+        if (
+          context.executionBoundary?.kind === 'managed' &&
+          context.executionBoundary.profile.network.kind !== 'enabled'
+        ) {
+          if (!context.requestSandboxBoundary) {
+            throw new Error('MCP network access requires sandbox boundary approval');
+          }
+          const settlement = await context.requestSandboxBoundary(
+            { network: { enabled: true } },
+            `Call MCP tool ${descriptor.serverId}/${descriptor.name}.`,
+          );
+          if (settlement.request.status !== 'approved') {
+            throw new Error('MCP network access denied');
+          }
+        }
+        return callTool(asArguments(args), {
           signal: context.abortSignal,
           timeoutMs: options.callTimeoutMs,
           context: {
@@ -87,7 +103,8 @@ export function buildMcpTools(
             toolCallId: context.toolCallId,
             cwd: context.cwd,
           },
-        }),
+        });
+      },
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),
     } satisfies MakaTool;
   });

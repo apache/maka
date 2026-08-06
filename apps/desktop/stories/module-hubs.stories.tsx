@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect } from 'storybook/test';
+import { expect, userEvent } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
@@ -157,6 +157,24 @@ const DISABLED_SKILLS: SkillEntry[] = [
     runtimeStatus: 'disabled',
   },
 ];
+
+// Enough installed Skills that the list genuinely scrolls at the story's
+// viewport — the #2236 regression surface (the view switch scrolling away
+// with the list) only exists when the list is taller than its container.
+const LONG_LIST_SKILLS: SkillEntry[] = Array.from({ length: 40 }, (_, index) => ({
+  ref: `workspace:maka:skill-long-${index}`,
+  id: `skill-long-${index}`,
+  name: `long-list-skill-${index}`,
+  description: '长列表占位技能，用于滚动契约。',
+  path: `~/.maka/skills/skill-long-${index}`,
+  declaredTools: ['Bash'],
+  sourceType: 'workspace',
+  scope: 'workspace',
+  contextStatus: 'advertised',
+  manageable: true,
+  enabled: true,
+  runtimeStatus: 'enabled',
+}));
 
 const BUNDLED_SKILLS: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']> = [
   {
@@ -560,6 +578,10 @@ function ModuleSurface(props: {
   return (
     <div
       data-maka-e2e-fixture="true"
+      // The detail panel's height contract hangs off `.maka-shell-astryx`
+      // (shell-layout.css); without the shell class the panel grows with
+      // content and nothing inside the page ever scrolls on its own.
+      className="app maka-shell-astryx"
       style={{
         background: 'var(--surface-canvas)',
         display: 'flex',
@@ -583,6 +605,7 @@ function ModuleSurface(props: {
 function ExtensionsSkillsSurface(props: {
   skills?: SkillEntry[];
   bundledSkillCatalog?: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']>;
+  onSetSkillEnabled?: ComponentProps<typeof SkillsPage>['onSetSkillEnabled'];
   onUpdateManagedSkill?: ComponentProps<typeof SkillsPage>['onUpdateManagedSkill'];
 }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.extensions;
@@ -608,7 +631,7 @@ function ExtensionsSkillsSurface(props: {
           skillId === UPDATE_AVAILABLE_PREVIEW.skill.id ? UPDATE_AVAILABLE_PREVIEW : null
         )}
         onUpdateManagedSkill={props.onUpdateManagedSkill ?? (async () => true)}
-        onSetSkillEnabled={noop}
+        onSetSkillEnabled={props.onSetSkillEnabled ?? noop}
         onSetSkillPinned={noop}
         onDeleteSkill={noop}
       />
@@ -693,20 +716,6 @@ async function waitForStoryButton(
   throw new Error('Story action button did not render');
 }
 
-async function waitForStoryMenuItem(
-  canvasElement: HTMLElement,
-  predicate: (menuItem: HTMLElement) => boolean,
-): Promise<HTMLElement> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const menuItem = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>('[role="menuitem"]'),
-    ).find(predicate);
-    if (menuItem) return menuItem;
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
-  }
-  throw new Error('Story menu item did not render');
-}
-
 async function waitForStorySelector<T extends Element>(
   canvasElement: HTMLElement,
   selector: string,
@@ -732,9 +741,29 @@ export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
 };
 
-// Real path: sidebar → 扩展 → 技能, with several installed Skills.
+// Real path: sidebar → 扩展 → 技能, with several installed Skills. The play
+// also locks the search contract: filtering, the match-count summary and the
+// clear affordance.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    const search = await waitForStorySelector<HTMLInputElement>(
+      canvasElement,
+      'input[placeholder="搜索技能"]',
+    );
+    await userEvent.type(search, 'git');
+    await waitForStoryText(canvasElement, '1 个匹配');
+    await waitForStoryText(canvasElement, 'git-flow');
+    await expect(canvasElement.textContent).not.toContain('docs-screenshot');
+
+    const clear = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '清空搜索',
+    );
+    clear.click();
+    await waitForStoryText(canvasElement, 'docs-screenshot');
+    await expect(canvasElement.textContent).toContain('release-notes');
+  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
@@ -743,6 +772,7 @@ export const ExtensionsSkillsBundled: Story = {
 };
 
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
+// The review flow lives in the inspector now: select the row, then 查看更新.
 export const ExtensionsSkillsUpdateAvailable: Story = {
   render: function Render() {
     const [updateInput, setUpdateInput] = useState<unknown>(null);
@@ -762,16 +792,15 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const moreActions = await waitForStoryButton(
+    const row = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.getAttribute('aria-label') === 'release-checklist 的更多操作',
+      (candidate) => candidate.textContent?.includes('release-checklist') === true,
     );
-    moreActions.click();
+    row.click();
 
-    const storyDocument = canvasElement.ownerDocument.documentElement;
-    const viewUpdate = await waitForStoryMenuItem(
-      storyDocument,
-      (candidate) => candidate.textContent?.includes('查看更新') === true,
+    const viewUpdate = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '查看更新',
     );
     viewUpdate.click();
 
@@ -804,6 +833,101 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
   },
 };
 
+// Real path: sidebar → 扩展 → 技能 → click an installed row, which opens the
+// inspector where every per-skill control now lives. Wide only: below 1024px
+// the page trades the panel for a dialog.
+export const ExtensionsSkillsInspector: Story = {
+  render: function Render() {
+    const [enabledInput, setEnabledInput] = useState<unknown>(null);
+    return (
+      <>
+        <ExtensionsSkillsSurface
+          skills={INSTALLED_SKILLS}
+          onSetSkillEnabled={(skillId, enabled) => setEnabledInput({ skillId, enabled })}
+        />
+        <output data-testid="skills-enabled-input" hidden>
+          {enabledInput ? JSON.stringify(enabledInput) : ''}
+        </output>
+      </>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('git-flow') === true,
+    );
+    row.click();
+    await waitForStoryText(canvasElement, '固定到技能上下文');
+    await waitForStoryText(canvasElement, '声明工具');
+
+    // The enable toggle must address the skill by its scope-qualified ref —
+    // the same addressing pin/open/delete use — because an id can name more
+    // than one skill across user/project/workspace scopes.
+    const enableSwitch = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[role="switch"]',
+    );
+    enableSwitch.click();
+    const enabledOutput = await waitForStorySelector<HTMLOutputElement>(
+      canvasElement,
+      '[data-testid="skills-enabled-input"]',
+    );
+    await waitForStoryText(enabledOutput, 'workspace:maka:skill-git-flow');
+    await expect(JSON.parse(enabledOutput.textContent ?? '')).toEqual({
+      skillId: 'workspace:maka:skill-git-flow',
+      enabled: false,
+    });
+
+    // The inspector's resize handle carries an absolutely positioned hit
+    // strip; a vendor translate bug once shifted it half its height upward,
+    // over the toolbar, swallowing the view switch's clicks. The strip must
+    // stay inside the content row — below the toolbar. Same selector as the
+    // CSS fix: the strip is the handle child that is not the pill, regardless
+    // of the order the vendor renders its children in.
+    const hitStrip = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '.maka-module-page .astryx-resize-handle > :not(.astryx-resize-handle-pill)',
+    );
+    const toolbar = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '.maka-module-page-bar',
+    );
+    await expect(hitStrip.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      toolbar.getBoundingClientRect().bottom - 1,
+    );
+  },
+};
+
+// Real path: sidebar → 扩展 → 技能, scrolling a long installed list.
+// Regression contract for #2236: the view switch rides the fixed header, so
+// scrolling the list must not move it. Rows scroll; the switch stays put.
+export const ExtensionsSkillsScrollContainment: Story = {
+  render: () => <ExtensionsSkillsSurface skills={LONG_LIST_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    const viewSwitch = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="技能视图"]',
+    );
+    const rows = await waitForStorySelector<HTMLElement>(
+      canvasElement,
+      '[aria-label="技能列表"]',
+    );
+    // The scroller is whichever ancestor of the rows actually overflows —
+    // asserting through the DOM, not through a class name the layout could
+    // rename.
+    let scroller: HTMLElement | null = rows;
+    while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+      scroller = scroller.parentElement;
+    }
+    if (!scroller) throw new Error('Skills list never overflows any ancestor');
+    const before = viewSwitch.getBoundingClientRect().top;
+    scroller.scrollTop = 600;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+    await expect(scroller.scrollTop).toBeGreaterThan(0);
+    await expect(viewSwitch.getBoundingClientRect().top).toBe(before);
+  },
+};
+
 // Real path: sidebar → 扩展 → 技能, with an installed Skill disabled.
 export const ExtensionsSkillsDisabled: Story = {
   render: () => <ExtensionsSkillsSurface skills={DISABLED_SKILLS} />,
@@ -820,9 +944,9 @@ export const ExtensionsMcpSetupRequired: Story = {
   decorators: [withEmptyMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStorySelector<HTMLButtonElement>(
+    const installed = await waitForStoryButton(
       canvasElement,
-      '[data-tab-value="installed"]',
+      (candidate) => candidate.textContent?.trim() === '已安装',
     );
     installed.click();
     await waitForStoryText(canvasElement, '还没有安装 MCP');
@@ -833,17 +957,67 @@ export const ExtensionsMcpSetupRequired: Story = {
 export const ExtensionsMcpMarketplace: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const market = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '市场',
+    );
+    market.click();
+    await waitForStoryText(canvasElement, 'Slack');
+  },
 };
 
-// Real path: sidebar → 扩展 → MCP, with connected and disabled servers.
+// Real path: sidebar → 扩展 → MCP, with connected and disabled servers. The
+// play also locks the search contract: a discovered tool name keeps the
+// server that offers it, and the clear affordance restores the list.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = canvasElement.querySelector<HTMLButtonElement>('[data-tab-value="installed"]');
-    if (!installed) throw new Error('Configured MCP story did not render the installed tab');
+    const installed = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '已安装',
+    );
     installed.click();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await waitForStoryText(canvasElement, 'filesystem');
+
+    const search = await waitForStorySelector<HTMLInputElement>(
+      canvasElement,
+      'input[placeholder="搜索 MCP…"]',
+    );
+    await userEvent.type(search, 'read_file');
+    await waitForStoryText(canvasElement, '1 个匹配');
+    await expect(canvasElement.textContent).toContain('filesystem');
+    await expect(canvasElement.textContent).not.toContain('linear-remote');
+
+    const clear = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '清空搜索',
+    );
+    clear.click();
+    await waitForStoryText(canvasElement, 'linear-remote');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → click a server row, which opens the
+// inspector where the enable switch, 测试, 编辑 and 删除 now live.
+export const ExtensionsMcpInspector: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const installed = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '已安装',
+    );
+    installed.click();
+    await waitForStoryText(canvasElement, 'filesystem');
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('filesystem') === true,
+    );
+    row.click();
+    await waitForStoryText(canvasElement, '测试');
+    await waitForStoryText(canvasElement, 'read_file');
   },
 };
 
@@ -861,16 +1035,23 @@ export const ExtensionsMcpEditor: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to connect.
+// Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to
+// connect: the failure leads the row, the detail lives in the inspector.
 export const ExtensionsMcpConnectionFailed: Story = {
   decorators: [withFailedMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStorySelector<HTMLButtonElement>(
+    const installed = await waitForStoryButton(
       canvasElement,
-      '[data-tab-value="installed"]',
+      (candidate) => candidate.textContent?.trim() === '已安装',
     );
     installed.click();
+    await waitForStoryText(canvasElement, '连接失败');
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('team-tools') === true,
+    );
+    row.click();
     await waitForStoryText(canvasElement, '连接超时，请检查服务器地址或网络代理。');
   },
 };

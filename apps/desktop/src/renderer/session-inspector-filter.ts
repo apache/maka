@@ -1,3 +1,7 @@
+import {
+  type InspectorCopy,
+  inspectorStepKindLabel,
+} from './locales/conversation-copy.js';
 import type { InspectorPanelModel, InspectorStepRow, InspectorTurnRow } from './session-inspector-panel-model.js';
 
 /**
@@ -13,9 +17,13 @@ import type { InspectorPanelModel, InspectorStepRow, InspectorTurnRow } from './
  * dead surface with tests that guard nothing; they come back when the controls
  * that drive them are designed.
  *
- * Free text matches what each row renders — the step kind, its label, its
- * detail, its recovery disposition — plus the turn's own id, matched against
- * the turn. It deliberately does **not** reach into event bodies: that is
+ * Free text matches what each row renders, in the language it renders in: the
+ * localized name, qualifier and recovery of a step, and the turn's own display
+ * name. It takes the copy for that reason — the trace's raw identifiers
+ * (`semantic_compact`, `allow`, `turn-7`) are not on screen, so matching them
+ * would answer a reader who typed what they saw with silence.
+ *
+ * It deliberately does **not** reach into event bodies: that is
  * `searchRuntimeEventHistory`'s job, and shipping every tool result into the
  * renderer to imitate it would multiply a payload this panel is already asked
  * to bound, with silent truncation as the only way out. A filter that quietly
@@ -50,6 +58,7 @@ export function isEmptyInspectorFilter(filter: InspectorFilter | undefined): boo
 export function applyInspectorFilter(
   model: InspectorPanelModel,
   filter: InspectorFilter | undefined,
+  copy: InspectorCopy,
 ): FilteredInspectorModel {
   if (isEmptyInspectorFilter(filter)) {
     return { ...model, filtered: false, hiddenTurns: 0, hiddenSteps: 0 };
@@ -61,13 +70,14 @@ export function applyInspectorFilter(
   const turns: InspectorTurnRow[] = [];
   for (const turn of model.turns) {
     if (active.failedOnly && !turn.failed) continue;
-    const steps = turn.steps.filter((step) => matchesStep(step, query));
+    const steps = turn.steps.filter((step) => matchesStep(step, query, copy));
     // A turn with no matching step is still kept when the filter is about the
-    // turn itself: its id matched, or there is no text query at all and it
-    // already passed the outcome gate above. Dropping it would answer "where is
-    // turn-7" — or "show me what failed", for a turn that failed before it
+    // turn itself: its own name matched, or there is no text query at all and
+    // it already passed the outcome gate above. Dropping it would answer "where
+    // is turn 7" — or "show me what failed", for a turn that failed before it
     // recorded a step — with silence.
-    const turnMatches = query === undefined ? true : turn.turnId.toLowerCase().includes(query);
+    const turnMatches =
+      query === undefined ? true : turnSearchText(turn, copy).includes(query);
     if (steps.length === 0 && !turnMatches) continue;
     hiddenSteps += turn.steps.length - steps.length;
     turns.push({ ...turn, steps });
@@ -86,22 +96,36 @@ export function applyInspectorFilter(
   };
 }
 
-function matchesStep(step: InspectorStepRow, query: string | undefined): boolean {
+function matchesStep(step: InspectorStepRow, query: string | undefined, copy: InspectorCopy): boolean {
   // The turn-level gate is applied by the caller; repeating it here would be a
   // second place to keep in step with it.
   if (query === undefined || query === '') return true;
-  return stepSearchText(step).includes(query);
+  return stepSearchText(step, copy).includes(query);
 }
 
 /**
- * Exactly the fields this row renders — the filter's reach is what you see.
+ * Exactly the text this row draws — the filter's reach is what you see.
  *
- * Turn-level text is deliberately absent: folding a turn's failure message into
- * every step's haystack would make one match retain steps that explain nothing
- * about it. The turn's own id is matched against the turn, where it belongs.
+ * Turn-level text is deliberately absent: folding a turn's failure into every
+ * step's haystack would make one match retain steps that explain nothing about
+ * it. The turn's own name is matched against the turn, where it belongs.
  */
-function stepSearchText(step: InspectorStepRow): string {
-  return [step.kind, step.label, step.detail, step.recovered]
+function stepSearchText(step: InspectorStepRow, copy: InspectorCopy): string {
+  return [
+    step.label ?? inspectorStepKindLabel(copy, step.kind),
+    step.detail,
+    step.callKind !== undefined ? copy.callKind(step.callKind) : undefined,
+    step.decision !== undefined ? copy.permissionDecision(step.decision) : undefined,
+    step.recovered !== undefined ? copy.recoveredAs(step.recovered) : undefined,
+  ]
+    .filter((part): part is string => typeof part === 'string')
+    .join(' ')
+    .toLowerCase();
+}
+
+/** The turn's display name, plus the failure it announces beside it. */
+function turnSearchText(turn: InspectorTurnRow, copy: InspectorCopy): string {
+  return [copy.turnLabel(turn.index), turn.failed ? copy.turnFailure(turn.failureCode ?? '') : undefined]
     .filter((part): part is string => typeof part === 'string')
     .join(' ')
     .toLowerCase();

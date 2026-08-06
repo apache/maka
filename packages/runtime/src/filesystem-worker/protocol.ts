@@ -120,6 +120,7 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
       ok: z.literal(true),
       path: z.string(),
       bytes: z.number().int().nonnegative(),
+      diff: z.string().optional(),
     })
     .strict(),
   z
@@ -131,6 +132,7 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
       matchedVia: z.enum(['exact', 'line-trimmed', 'whitespace', 'escape']),
       startLine: z.number().int().positive(),
       endLine: z.number().int().positive(),
+      diff: z.string().optional(),
     })
     .strict(),
   z
@@ -144,6 +146,7 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
       bytesAfter: z.number().int().nonnegative().optional(),
       byteDelta: z.number().int(),
       changed: z.boolean(),
+      diff: z.string().optional(),
     })
     .strict(),
   z.object({ kind: z.literal('glob'), files: z.array(z.string()) }).strict(),

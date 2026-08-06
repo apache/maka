@@ -41,8 +41,20 @@ async function openCatalog(page: Page, options: { category: string; search: stri
   // The catalog level lands on its search field before anything else is
   // touched: it is what a user arrives here to do, and the shared route-focus
   // hook is what puts them there.
-  await expect(catalog.getByPlaceholder('搜索服务商')).toBeFocused();
-  await catalog.getByRole('combobox', { name: '分类', exact: true }).click();
+  const search = catalog.getByPlaceholder('搜索服务商');
+  const category = catalog.getByRole('combobox', { name: '分类', exact: true });
+  await expect(search).toBeFocused();
+  const searchIcon = search.locator('xpath=..').locator('svg').first();
+  await expect(searchIcon).toHaveCSS('width', '16px');
+  await expect(searchIcon).toHaveCSS('height', '16px');
+  // These are independent filters, not one composite toolbar: ordinary Tab
+  // order must move between them in both directions.
+  await page.keyboard.press('Tab');
+  await expect(category).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(search).toBeFocused();
+  await expect(catalog.getByRole('toolbar')).toHaveCount(0);
+  await category.click();
   await page.getByRole('option', { name: options.category, exact: true }).click();
   await catalog.getByPlaceholder('搜索服务商').fill(options.search);
   return catalog;

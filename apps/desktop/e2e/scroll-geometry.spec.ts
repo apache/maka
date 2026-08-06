@@ -254,6 +254,106 @@ test('returning to the session after visiting skills re-settles the new transcri
   expectHonestClimb(await climbToTop(page));
 });
 
+// A switched-to transcript must be AT its latest turn the first time it is
+// painted, not travel there. Astryx positions the first fill of its scroller
+// instantly and springs every later growth, and that one-shot belongs to the
+// hook instance — ChatSurfaceLayout mounts once for the whole shell, so it is
+// spent on whichever session was open at boot. Every switch afterwards arrived
+// as "later growth" (mount window, fill chunks, warm-up inflation) and the
+// scroller spring-flew ~10k px over ~1.2s in front of the reader.
+//
+// Sampled per frame rather than polled: the regression is an animation, and a
+// poll reads it as a sequence of positions that each look reasonable.
+test('a session switch lands on the latest turn instead of flying to it', async ({ longTranscriptWindow: page }) => {
+  await expect(page.locator('.maka-turn')).toHaveCount(24);
+  await settleGeometry(page, { pinned: true });
+
+  // Leave for another seeded session, so returning is a real session switch
+  // rather than a section change. Fixture windows don't pass OS hit-testing —
+  // dispatch clicks.
+  await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
+  await page.getByText('模型管理与工具调用示例').first().dispatchEvent('click');
+  await expect(page.locator('[data-turn-id^="long-transcript-turn"]')).toHaveCount(0);
+
+  const watchPromise = page.evaluate(
+    () =>
+      new Promise<{ maxDistance: number; growthSteps: number; frames: number }>((resolve, reject) => {
+        const root = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement;
+        const heights = new Set<number>();
+        let maxDistance = 0;
+        let frames = 0;
+        let settled = false;
+        // Assigned below; `fail` and the watchdog reference each other, and
+        // neither runs before both exist.
+        let watchdog = 0;
+        const deadline = performance.now() + 30_000;
+        const fail = (why: string) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(watchdog);
+          reject(new Error(`${why} (frames=${frames}, heights=${heights.size}, maxDistance=${maxDistance})`));
+        };
+        // Watchdog off the frame clock, like climbToTop's: the deadline below
+        // is only reached if frames keep arriving, so a compositor that stops
+        // ticking would otherwise hang here until the 60s test timeout, whose
+        // "Target page closed" says nothing about what the scroller did.
+        watchdog = window.setTimeout(() => fail('The frame clock stopped while watching the arrival'), 35_000);
+        const finish = (result: { maxDistance: number; growthSteps: number; frames: number }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(watchdog);
+          resolve(result);
+        };
+        const sample = () => {
+          // Both exits set `settled`, so neither leaves this loop running in a
+          // page that is about to close.
+          if (settled) return;
+          const turns = root.querySelectorAll('[data-turn-id^="long-transcript-turn"]').length;
+          if (turns > 0) {
+            frames += 1;
+            heights.add(root.scrollHeight);
+            maxDistance = Math.max(
+              maxDistance,
+              Math.round(root.scrollHeight - root.scrollTop - root.clientHeight),
+            );
+          }
+          // The arrival is over when the warm-up says the geometry settled and
+          // the pin has handed following back to Astryx.
+          const arrived =
+            turns > 0 &&
+            root.dataset.turnWarmup === 'settled' &&
+            root.dataset.arrivalPin !== 'pinned';
+          if (arrived) {
+            finish({ maxDistance, growthSteps: heights.size, frames });
+            return;
+          }
+          if (performance.now() > deadline) {
+            fail('The transcript never finished arriving');
+            return;
+          }
+          requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }),
+  );
+
+  await page.getByText('超长会话滚动几何').first().dispatchEvent('click');
+  const watch = await watchPromise;
+  const diagnostics = JSON.stringify(watch);
+  // The document has to have grown under the watch for the distance below to
+  // mean anything: the mount window, the idle fill chunks and the warm-up each
+  // move it, and a run that observed one height measured nothing.
+  expect(watch.growthSteps, diagnostics).toBeGreaterThanOrEqual(3);
+  // And the watch has to have looked BETWEEN those steps. A run whose frames
+  // all landed on a change never observed a quiet frame — which is precisely
+  // where a spring mid-flight would be caught — so the flush assertion below
+  // would be reading only the moments the document moved.
+  expect(watch.frames, diagnostics).toBeGreaterThan(watch.growthSteps);
+  // Flush in EVERY frame the transcript existed, not merely once it settled.
+  // Sub-pixel scrollTop leaves the rounded distance on 1 (see settleGeometry).
+  expect(watch.maxDistance, diagnostics).toBeLessThanOrEqual(2);
+});
+
 // The empty surface is back here as a live metric, unlike the flush contract
 // the header notes moved out to static CSS. What centres the hero is the
 // ABSENCE of Astryx's push-to-bottom spacer, and the rule that collapses it
@@ -413,7 +513,14 @@ test('progressive fill preserves the reading anchor while earlier turns mount', 
           // The wheel fast path unlocks unconditionally while the spring is
           // animating, and a dispatched WheelEvent reaches that listener
           // even though fixture windows swallow real wheel input.
-          root.dispatchEvent(
+          //
+          // Dispatched at the message list, not the scroller root: the arrival
+          // pin's eager release requires the gesture to have started inside the
+          // transcript, and a wheel targeting the root is not that. It would
+          // still release through the upward write below, but only on a scroll
+          // event that no growth shares a rendering update with — a coin flip
+          // under CPU throttling, and this loop only gets 20 of them.
+          (root.querySelector('.maka-chat-message-list') ?? root).dispatchEvent(
             new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }),
           );
           root.scrollTop = Math.max(0, (root.scrollHeight - root.clientHeight) / 2);

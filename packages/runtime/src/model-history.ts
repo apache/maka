@@ -50,6 +50,7 @@ import {
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';
+import { projectFileWriteToolResultForModel } from './file-tool-model-output.js';
 
 export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
 
@@ -93,6 +94,7 @@ export type RuntimeEventReplayDiagnosticCode =
   | 'terminal_fact_diagnostic_only'
   | 'error_content_diagnostic_only'
   | 'empty_text_skipped'
+  | 'model_hidden_skipped'
   | 'signed_thinking_in_tool_turn_skipped'
   | 'unmatched_tool_result'
   | 'unmatched_tool_call'
@@ -284,6 +286,7 @@ export function collectToolActivityTurnIds(events: readonly RuntimeEvent[]): Set
   const ids = new Set<string>();
   for (const event of events) {
     if (isPartialRuntimeEvent(event)) continue;
+    if (event.modelVisibility === 'hidden') continue;
     const kind = event.content?.kind;
     if ((kind === 'function_call' || kind === 'function_response') && event.turnId) {
       ids.add(event.turnId);
@@ -335,6 +338,7 @@ export function buildRuntimeEventModelReplayPlan(
   const unpairedToolTurnIds = new Set<string>();
   for (const event of events) {
     if (isPartialRuntimeEvent(event)) continue;
+    if (event.modelVisibility === 'hidden') continue;
     if (event.content?.kind === 'function_call' && event.turnId) {
       if (event.refs?.stepId) pairedToolTurnIds.add(event.turnId);
       else unpairedToolTurnIds.add(event.turnId);
@@ -348,6 +352,17 @@ export function buildRuntimeEventModelReplayPlan(
     if (isPartialRuntimeEvent(event)) {
       diagnostics.push(
         diagnostic(event, 'partial_skipped', 'partial RuntimeEvent skipped for model replay'),
+      );
+      continue;
+    }
+
+    if (event.modelVisibility === 'hidden') {
+      diagnostics.push(
+        diagnostic(
+          event,
+          'model_hidden_skipped',
+          'explicitly model-hidden RuntimeEvent skipped for model replay',
+        ),
       );
       continue;
     }
@@ -596,6 +611,11 @@ export function buildRuntimeEventModelReplayPlan(
         }
         if (!invalidResultMessage && event.content.name === 'Bash') {
           normalizedResult = projectBashToolResultForModel(normalizedResult);
+        } else if (!invalidResultMessage) {
+          normalizedResult = projectFileWriteToolResultForModel(
+            event.content.name,
+            normalizedResult,
+          );
         }
         if (invalidResultMessage) {
           const call = callsById.get(event.content.id);

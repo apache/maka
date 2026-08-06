@@ -50,7 +50,6 @@ import {
   buildHarborCellContextBudgetBackendOptions,
   buildHarborCellContextBudgetPolicySnapshot,
   buildHarborCellTaskLedgerExperimentPolicy,
-  buildHarborCellToolResultArchiveResourceReader,
   type RunHarborCellEnv,
   harborCellMaxStepsFromEnv,
   harborCellSoftTimeoutMsFromEnv,
@@ -388,7 +387,10 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
   readonly sessionId: string;
   stopCalls = 0;
 
-  constructor(sessionId: string) {
+  constructor(
+    sessionId: string,
+    private readonly terminalClaimed?: () => void,
+  ) {
     this.sessionId = sessionId;
   }
 
@@ -410,7 +412,13 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
       ts: Date.now(),
       stopReason: 'end_turn',
     };
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    // Resuming here proves the runtime accepted the terminal event: the
+    // post-terminal drain pulls the next value only after the previous one
+    // was processed, so by now the terminal claim is taken. A deadline the
+    // test fires from this hook is late by construction (#2221), where the
+    // old shape made it late by racing a 1100ms sleep against a 1000ms
+    // timer and lost on loaded runners.
+    this.terminalClaimed?.();
   }
 
   async stop(): Promise<void> {
@@ -1285,16 +1293,23 @@ describe('runHarborCell', () => {
   test('does not report deadline settlement after normal completion already claimed the terminal state', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       let backend: TerminalClaimBeforeDeadlineBackend | undefined;
+      let claimReached!: () => void;
+      const terminalClaimed = new Promise<void>((resolve) => {
+        claimReached = resolve;
+      });
       const result = await runHarborCell({
         config,
         instruction: 'finish before the deadline',
         cwd: workspaceDir,
         outputDir,
         storageRoot,
-        settleAfterMs: 1_000,
+        // The deadline this test cares about is one that lands after normal
+        // completion claimed the terminal state, so fire it from the claim
+        // itself instead of hoping a wall-clock budget loses the race.
+        settleSignal: terminalClaimed,
         registerBackends: (registry) => {
           registry.register('fake', (ctx) => {
-            backend = new TerminalClaimBeforeDeadlineBackend(ctx.sessionId);
+            backend = new TerminalClaimBeforeDeadlineBackend(ctx.sessionId, claimReached);
             return backend;
           });
         },
@@ -3504,13 +3519,13 @@ describe('runHarborCell', () => {
       assert.equal(backendInput.contextBudget?.archiveRetrieval?.enabled, true);
       assert.equal(backendInput.contextBudget?.archiveRetrieval?.mode, 'history_search_gated');
       assert.equal(backendInput.contextBudget?.archiveRetrieval?.maxResults, 1);
-      assert.ok(backendInput.archiveToolResult, 'expected archive writer');
-      assert.ok(backendInput.readToolResultArchive, 'expected archive reader');
+      const archive = backendInput.toolResultArchive;
+      assert.ok(archive, 'expected the archive capability');
 
       const serializedResult = JSON.stringify({ body: 'large tool result' });
       const bodySha256 = createHash('sha256').update(serializedResult).digest('hex');
       const originalBytes = Buffer.byteLength(serializedResult, 'utf8');
-      const archived = await backendInput.archiveToolResult({
+      const archived = await archive.services.archiveToolResult({
         sessionId: 'session-1',
         runtimeEventId: 'rt-result',
         turnId: 'turn-old',
@@ -3530,7 +3545,7 @@ describe('runHarborCell', () => {
         /"runtimeEventId":"rt-result"/,
       );
 
-      const read = await backendInput.readToolResultArchive({
+      const read = await archive.services.readToolResultArchive({
         kind: 'maka.archived_tool_result',
         rewriteVersion: 1,
         artifactId: archived.artifactId,
@@ -3592,10 +3607,9 @@ describe('runHarborCell', () => {
       assert.equal(backendInput.contextBudget?.archiveRetrieval?.enabled, true);
       assert.equal(backendInput.contextBudget?.archiveRetrieval?.mode, undefined);
       assert.ok(
-        backendInput.archiveToolResult,
-        'expected archive writer for the placeholder producer',
+        backendInput.toolResultArchive,
+        'eager hydration needs a placeholder producer and a reader, which arrive together',
       );
-      assert.ok(backendInput.readToolResultArchive, 'expected archive reader for eager hydration');
     });
   });
 
@@ -3637,8 +3651,7 @@ describe('runHarborCell', () => {
         }
       ).input;
       assert.equal(backendInput.contextBudget, undefined);
-      assert.equal(backendInput.archiveToolResult, undefined);
-      assert.equal(backendInput.readToolResultArchive, undefined);
+      assert.equal(backendInput.toolResultArchive, undefined);
     });
   });
 
@@ -3651,14 +3664,21 @@ describe('runHarborCell', () => {
         MAKA_STORAGE_ROOT: storageRoot,
       });
 
+      const archive = buildHarborCellContextBudgetBackendOptions({
+        MAKA_OUTPUT_DIR: outputDir,
+      }).toolResultArchive;
       assert.ok(
-        buildHarborCellContextBudgetBackendOptions({ MAKA_OUTPUT_DIR: outputDir })
-          .archiveToolResult,
-        'the default Harbor output dir resolves an archive dir, so the writer is on',
+        archive,
+        'the default Harbor output dir resolves an archive dir, so this cell archives',
       );
-      assert.ok(
+      // The decoder is no longer part of the product binding: it travels with the
+      // capability and the backend advertises it. The cell can therefore no longer
+      // arrive at a state where it archives and the tool is missing (#2025).
+      assert.equal(archive.archiveReadTool.name, 'ArchiveRead');
+      assert.equal(
         context.productToolSurface?.tools.some((tool) => tool.name === 'ArchiveRead'),
-        'archived placeholders instruct the model to call ArchiveRead, so it must be bound',
+        false,
+        'ArchiveRead is a runtime protocol tool, not one of the host-bound product tools',
       );
     });
   });
@@ -3675,9 +3695,9 @@ describe('runHarborCell', () => {
       const context = await runHarborCellCapturingBackendContext(env);
 
       assert.equal(
-        buildHarborCellContextBudgetBackendOptions(env).archiveToolResult,
+        buildHarborCellContextBudgetBackendOptions(env).toolResultArchive,
         undefined,
-        'context budget off disables the archive writer',
+        'context budget off means this cell archives nothing at all',
       );
       assert.equal(
         context.productToolSurface?.tools.some((tool) => tool.name === 'ArchiveRead'),
@@ -3696,7 +3716,9 @@ describe('runHarborCell', () => {
         MAKA_STORAGE_ROOT: storageRoot,
       };
       const context = await runHarborCellCapturingBackendContext(env);
-      const archiveToolResult = buildHarborCellContextBudgetBackendOptions(env).archiveToolResult;
+      const archiveToolResult =
+        buildHarborCellContextBudgetBackendOptions(env).toolResultArchive?.services
+          .archiveToolResult;
       assert.ok(archiveToolResult);
 
       const serializedResult = JSON.stringify({ body: 'archived tool output' });
@@ -3718,9 +3740,11 @@ describe('runHarborCell', () => {
       });
       assert.ok(archived?.artifactId);
 
-      const archiveRead = context.productToolSurface?.tools.find(
-        (tool) => tool.name === 'ArchiveRead',
-      );
+      // The decoder comes from the same capability as the writer above, so this
+      // is the whole #2025 round trip: what the cell archived is what the tool
+      // its placeholders name reads back.
+      const archiveRead =
+        buildHarborCellContextBudgetBackendOptions(env).toolResultArchive?.archiveReadTool;
       assert.ok(archiveRead);
       const output = (await archiveRead.impl(
         {
@@ -3749,10 +3773,10 @@ describe('runHarborCell', () => {
   test('Harbor archive resource reader refuses every way a ref can fail to match', async () => {
     await withDirs(async ({ outputDir }) => {
       const env: RunHarborCellEnv = { MAKA_OUTPUT_DIR: outputDir };
-      const archiveToolResult = buildHarborCellContextBudgetBackendOptions(env).archiveToolResult;
-      const reader = buildHarborCellToolResultArchiveResourceReader(env);
-      assert.ok(archiveToolResult);
-      assert.ok(reader);
+      const archive = buildHarborCellContextBudgetBackendOptions(env).toolResultArchive;
+      assert.ok(archive);
+      const { archiveToolResult } = archive.services;
+      const reader = archive.services;
 
       const serializedResult = JSON.stringify({ body: 'archived' });
       const bodySha256 = sha256(serializedResult);

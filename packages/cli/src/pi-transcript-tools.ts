@@ -3,6 +3,7 @@ import {
   formatQuietJsonValue,
   formatToolInvocationLine,
   isActiveShellRunStatus,
+  countDiffLineStats,
   ptyTuiTerminalRows,
   ptyTuiTerminalView,
   readWriteStdinInputPreview,
@@ -11,7 +12,7 @@ import {
 } from '@maka/core';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { ansi, disc } from './tui-ansi.js';
-import { colorDiff, diffLineKind } from './tui-diff.js';
+import { colorDiff } from './tui-diff.js';
 import {
   collapseToSingleLine,
   fitLine,
@@ -311,15 +312,9 @@ function compactTerminalSummary(
 function compactDiffSummary(
   content: Extract<ToolResultContent, { kind: 'file_diff' }>,
 ): CompactToolSummary {
-  let adds = 0;
-  let dels = 0;
-  for (const line of content.diff.split('\n')) {
-    const kind = diffLineKind(line);
-    if (kind === 'add') adds += 1;
-    else if (kind === 'del') dels += 1;
-  }
+  const { additions, deletions } = countDiffLineStats(content.diff);
   // The path is already the card's input summary; the tally is the outcome.
-  return { text: `${ansi.green(`+${adds}`)} ${ansi.red(`-${dels}`)}`, protect: true };
+  return { text: `${ansi.green(`+${additions}`)} ${ansi.red(`-${deletions}`)}`, protect: true };
 }
 
 /**
@@ -668,6 +663,8 @@ function renderShellRunResult(
 }
 
 function renderDiffResult(diff: string, width: number): string[] {
+  // The structural parse drops the `---`/`+++` file headers the card already
+  // names; the copyable ledger keeps them.
   return renderIndented(colorDiff(limitText(diff, 12_000)), width, 2);
 }
 

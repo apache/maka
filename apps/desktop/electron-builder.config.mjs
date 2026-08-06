@@ -47,6 +47,10 @@ export default {
       to: 'licenses/git/LICENSE.txt',
     },
     {
+      from: 'resources/licenses/git/SOURCE_OFFER.txt',
+      to: 'licenses/git/SOURCE_OFFER.txt',
+    },
+    {
       from: '../../NOTICE',
       to: 'licenses/maka/NOTICE',
     },
@@ -95,7 +99,9 @@ export default {
       to: 'licenses/renderer/MINGCUTE_APACHE_LICENSE.txt',
     },
     {
-      from: 'node_modules/simple-icons/LICENSE.md',
+      // Vendored copy of the installed tarball's LICENSE (CC0-1.0): the
+      // package hoists to different node_modules depths across majors.
+      from: 'resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       to: 'licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     },
   ],

@@ -3,8 +3,10 @@ import { open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
 import {
+  createToolResultArchiveCapability,
   isPathInside,
   stableToolResultArchiveArtifactId,
+  type ToolResultArchiveCapability,
   type ToolArtifactRecorderInput,
   type ToolResultArchiveReaderInput,
   type ToolResultArchiveReadResult,
@@ -15,11 +17,12 @@ import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stor
 
 export interface HostExecutionArtifactServices {
   recordToolArtifacts(event: ToolArtifactRecorderInput): Promise<void>;
-  archiveToolResult(event: ToolResultArchiveRecorderInput): Promise<{ artifactId: string }>;
-  readToolResultArchive(event: ToolResultArchiveReaderInput): Promise<ToolResultArchiveReadResult>;
-  readArchivedToolResultResource(
-    event: ToolResultArchiveResourceReadInput,
-  ): Promise<ToolResultArchiveReadResult>;
+  /**
+   * One archive authority over the session artifact store (#2026). All three
+   * reads and the writer address the same store, so the host has no way to hand
+   * out half of it.
+   */
+  toolResultArchive: ToolResultArchiveCapability;
 }
 
 export function createHostExecutionArtifactServices(input: {
@@ -35,62 +38,66 @@ export function createHostExecutionArtifactServices(input: {
     }
   };
 
-  const services: HostExecutionArtifactServices = {
-    recordToolArtifacts: async (event: ToolArtifactRecorderInput) => {
-      for (const candidate of event.candidates) {
-        let content = candidate.content;
-        if (content === undefined && candidate.sourcePath) {
-          content = (await readBoundedSourceFile(event.cwd, candidate.sourcePath)) ?? undefined;
-        }
-        if (content === undefined || contentBytes(content) > MAX_ATTACHMENT_BYTES) continue;
-        await runWrite(() =>
-          input.artifacts.create({
-            sessionId: event.sessionId,
-            turnId: event.turnId,
-            name: candidate.name,
-            kind: candidate.kind,
-            content,
-            ...(candidate.mimeType ? { mimeType: candidate.mimeType } : {}),
-            source: candidate.source ?? 'tool_result',
-            ...(candidate.summary ? { summary: candidate.summary } : {}),
-          }),
-        );
+  const recordToolArtifacts = async (event: ToolArtifactRecorderInput): Promise<void> => {
+    for (const candidate of event.candidates) {
+      let content = candidate.content;
+      if (content === undefined && candidate.sourcePath) {
+        content = (await readBoundedSourceFile(event.cwd, candidate.sourcePath)) ?? undefined;
       }
-    },
-    archiveToolResult: (event: ToolResultArchiveRecorderInput) =>
-      runWrite(async () => {
-        const artifactId = stableToolResultArchiveArtifactId(event);
-        const existing = await input.artifacts.getInSession(event.sessionId, artifactId);
-        if (existing.record?.status === 'live') {
-          const read = await readArchive(input.artifacts, {
-            artifactId,
-            sessionId: event.sessionId,
-            bodySha256: event.bodySha256,
-            originalBytes: event.originalBytes,
-            maxBytes: event.originalBytes,
-          });
-          if (!read.ok) {
-            throw new Error(`Tool result archive identity conflict: ${read.reason}`);
-          }
-          return { artifactId };
-        }
-        const artifact = await input.artifacts.create({
-          id: artifactId,
+      if (content === undefined || contentBytes(content) > MAX_ATTACHMENT_BYTES) continue;
+      await runWrite(() =>
+        input.artifacts.create({
           sessionId: event.sessionId,
           turnId: event.turnId,
-          name: `archived-${event.toolName}-${event.runtimeEventId}.json`,
-          kind: 'file',
-          content: event.serializedResult,
-          mimeType: 'application/json',
-          source: 'tool_result_archive',
-          summary: `Archived ${event.toolName} tool result for context budget replay`,
-        });
-        return { artifactId: artifact.id };
-      }),
-    readToolResultArchive: (event: ToolResultArchiveReaderInput) =>
-      readArchive(input.artifacts, event),
-    readArchivedToolResultResource: (event: ToolResultArchiveResourceReadInput) =>
-      readArchive(input.artifacts, event),
+          name: candidate.name,
+          kind: candidate.kind,
+          content,
+          ...(candidate.mimeType ? { mimeType: candidate.mimeType } : {}),
+          source: candidate.source ?? 'tool_result',
+          ...(candidate.summary ? { summary: candidate.summary } : {}),
+        }),
+      );
+    }
+  };
+
+  const services: HostExecutionArtifactServices = {
+    recordToolArtifacts,
+    toolResultArchive: createToolResultArchiveCapability({
+      archiveToolResult: (event: ToolResultArchiveRecorderInput) =>
+        runWrite(async () => {
+          const artifactId = stableToolResultArchiveArtifactId(event);
+          const existing = await input.artifacts.getInSession(event.sessionId, artifactId);
+          if (existing.record?.status === 'live') {
+            const read = await readArchive(input.artifacts, {
+              artifactId,
+              sessionId: event.sessionId,
+              bodySha256: event.bodySha256,
+              originalBytes: event.originalBytes,
+              maxBytes: event.originalBytes,
+            });
+            if (!read.ok) {
+              throw new Error(`Tool result archive identity conflict: ${read.reason}`);
+            }
+            return { artifactId };
+          }
+          const artifact = await input.artifacts.create({
+            id: artifactId,
+            sessionId: event.sessionId,
+            turnId: event.turnId,
+            name: `archived-${event.toolName}-${event.runtimeEventId}.json`,
+            kind: 'file',
+            content: event.serializedResult,
+            mimeType: 'application/json',
+            source: 'tool_result_archive',
+            summary: `Archived ${event.toolName} tool result for context budget replay`,
+          });
+          return { artifactId: artifact.id };
+        }),
+      readToolResultArchive: (event: ToolResultArchiveReaderInput) =>
+        readArchive(input.artifacts, event),
+      readArchivedToolResultResource: (event: ToolResultArchiveResourceReadInput) =>
+        readArchive(input.artifacts, event),
+    }),
   };
   return Object.freeze(services);
 }

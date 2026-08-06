@@ -1,20 +1,19 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import {
-  assertDeepSweFullTaskSet,
-  assertDeepSweFullTaskTreeFingerprint,
-  assertTerminalBench21TaskSet,
-  assertTerminalBench21TaskTreeFingerprint,
+  assertFrozenTaskSet,
+  assertFrozenTaskTreeFingerprint,
   buildHarnessAbResumeFingerprint,
   buildHarnessAbRunManifest,
-  DEEP_SWE_FULL_TASK_IDS,
-  DEEP_SWE_FULL_TASK_TREE_FINGERPRINT,
-  DEEP_SWE_SUBSET_30_TASK_IDS,
   deterministicHarnessTaskOrder,
   HARNESS_MAKA_CONTEXT_BUDGET,
-  TERMINAL_BENCH_2_1_TASK_IDS,
-  TERMINAL_BENCH_2_1_TASK_TREE_FINGERPRINT,
 } from '../harness-ab-manifest.js';
+import { BENCHMARK_IDENTITY, MOUNTED_DIST_DIR } from './benchmark-identity.js';
+
+const TERMINAL_BENCH_2_1 = BENCHMARK_IDENTITY.terminalBench21;
+const DEEP_SWE_FULL = BENCHMARK_IDENTITY.deepSwe.full113;
 
 describe('harness A/B manifest', () => {
   test('freezes tool-result pruning on and semantic compact off for Maka', () => {
@@ -175,12 +174,16 @@ describe('harness A/B manifest', () => {
   });
 
   test('rejects an arbitrary 89-task source that is not Terminal-Bench 2.1', () => {
+    const expected = TERMINAL_BENCH_2_1.taskIds;
+    assert.equal(expected.length, 89);
     assert.doesNotThrow(() =>
-      assertTerminalBench21TaskSet([...TERMINAL_BENCH_2_1_TASK_IDS].reverse()),
+      assertFrozenTaskSet('Terminal-Bench 2.1', expected, [...expected].reverse()),
     );
     assert.throws(
       () =>
-        assertTerminalBench21TaskSet(
+        assertFrozenTaskSet(
+          'Terminal-Bench 2.1',
+          expected,
           Array.from({ length: 89 }, (_, index) => `task-${String(index + 1).padStart(2, '0')}`),
         ),
       /Terminal-Bench 2\.1 task set mismatch.*missing: adaptive-rejection-sampler.*unexpected: task-01/,
@@ -188,40 +191,92 @@ describe('harness A/B manifest', () => {
   });
 
   test('rejects task contents outside the frozen official revision', () => {
+    const expected = TERMINAL_BENCH_2_1.taskTreeFingerprint;
     assert.doesNotThrow(() =>
-      assertTerminalBench21TaskTreeFingerprint(TERMINAL_BENCH_2_1_TASK_TREE_FINGERPRINT),
+      assertFrozenTaskTreeFingerprint('Terminal-Bench 2.1', expected, expected),
     );
     assert.throws(
-      () => assertTerminalBench21TaskTreeFingerprint(`sha256:${'0'.repeat(64)}`),
+      () =>
+        assertFrozenTaskTreeFingerprint('Terminal-Bench 2.1', expected, `sha256:${'0'.repeat(64)}`),
       /Terminal-Bench 2\.1 task tree fingerprint mismatch/,
     );
   });
 
+  test('keeps the benchmark identity out of the build output a graded arm mounts', () => {
+    // The whole reason this data does not live in `src`. An arm executes this
+    // package's `dist`, so a revision, an upstream URL or a task-tree
+    // fingerprint compiled into it is readable from inside the container being
+    // scored — which is how the #1970 run turned a task into a lookup at the
+    // pinned revision. The path-level mount checks in `agent-repo-mount.test.ts`
+    // cannot see this: they inspect declared paths, never what the files
+    // contain.
+    //
+    // Two boundaries, because they are two different things. The retrieval keys
+    // — revision, upstream URL, tree fingerprint — must be absent from every
+    // mounted file, compiled tests included. A single task id is not a
+    // retrieval key (the arm is handed its own task id anyway), so those are
+    // held out of the shipped modules, where a complete list could accumulate,
+    // rather than out of test fixtures that name one task each.
+    const retrievalKeys = [
+      TERMINAL_BENCH_2_1.revision,
+      TERMINAL_BENCH_2_1.upstreamRepositoryUrl,
+      TERMINAL_BENCH_2_1.taskTreeFingerprint,
+      BENCHMARK_IDENTITY.deepSwe.revision,
+      BENCHMARK_IDENTITY.deepSwe.upstreamRepositoryUrl,
+      BENCHMARK_IDENTITY.deepSwe.subset30.taskTreeFingerprint,
+      DEEP_SWE_FULL.taskTreeFingerprint,
+    ];
+    const taskIds = [...TERMINAL_BENCH_2_1.taskIds, ...DEEP_SWE_FULL.taskIds];
+
+    // Every mounted file, not every compiled module: a source map would carry
+    // the whole of `src` in `sourcesContent` and walk straight past a filter
+    // that only knows about `.js`.
+    const compiled = readdirSync(MOUNTED_DIST_DIR, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => join(entry.parentPath, entry.name));
+    assert.ok(compiled.length > 0, 'the build output was not found');
+
+    for (const file of compiled) {
+      const text = readFileSync(file, 'utf8');
+      for (const needle of retrievalKeys) {
+        assert.ok(!text.includes(needle), `${file} names the benchmark (${needle})`);
+      }
+      if (file.includes(`${sep}__tests__${sep}`)) continue;
+      for (const needle of taskIds) {
+        assert.ok(!text.includes(needle), `${file} names a benchmark task (${needle})`);
+      }
+    }
+  });
+
   test('freezes the full DeepSWE leaderboard set as the superset of the discriminative subset', () => {
-    assert.equal(DEEP_SWE_FULL_TASK_IDS.length, 113);
-    assert.equal(new Set(DEEP_SWE_FULL_TASK_IDS).size, 113);
-    for (const taskId of DEEP_SWE_SUBSET_30_TASK_IDS) {
-      assert.ok(
-        DEEP_SWE_FULL_TASK_IDS.includes(taskId),
-        `subset task missing from full: ${taskId}`,
-      );
+    const full = DEEP_SWE_FULL.taskIds;
+    assert.equal(full.length, 113);
+    assert.equal(new Set(full).size, 113);
+    for (const taskId of BENCHMARK_IDENTITY.deepSwe.subset30.taskIds) {
+      assert.ok(full.includes(taskId), `subset task missing from full: ${taskId}`);
     }
 
-    assert.doesNotThrow(() => assertDeepSweFullTaskSet([...DEEP_SWE_FULL_TASK_IDS]));
+    assert.doesNotThrow(() => assertFrozenTaskSet('DeepSWE full-113', full, [...full]));
     assert.throws(
-      () => assertDeepSweFullTaskSet(DEEP_SWE_FULL_TASK_IDS.slice(1)),
+      () => assertFrozenTaskSet('DeepSWE full-113', full, full.slice(1)),
       /DeepSWE full-113 task set mismatch.*missing: /,
     );
     assert.throws(
-      () => assertDeepSweFullTaskSet([...DEEP_SWE_FULL_TASK_IDS, 'task-01']),
+      () => assertFrozenTaskSet('DeepSWE full-113', full, [...full, 'task-01']),
       /DeepSWE full-113 task set mismatch.*unexpected: task-01/,
     );
 
+    const fingerprint = DEEP_SWE_FULL.taskTreeFingerprint;
     assert.doesNotThrow(() =>
-      assertDeepSweFullTaskTreeFingerprint(DEEP_SWE_FULL_TASK_TREE_FINGERPRINT),
+      assertFrozenTaskTreeFingerprint('DeepSWE full-113', fingerprint, fingerprint),
     );
     assert.throws(
-      () => assertDeepSweFullTaskTreeFingerprint(`sha256:${'0'.repeat(64)}`),
+      () =>
+        assertFrozenTaskTreeFingerprint(
+          'DeepSWE full-113',
+          fingerprint,
+          `sha256:${'0'.repeat(64)}`,
+        ),
       /DeepSWE full-113 task tree fingerprint mismatch/,
     );
   });

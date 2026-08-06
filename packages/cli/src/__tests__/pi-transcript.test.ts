@@ -3987,6 +3987,12 @@ describe('Maka Pi TUI transcript', () => {
     // Green (32) around the added line, red (31) around the removed line.
     assert.match(raw, /\x1b\[32m\+added line\x1b\[39m/);
     assert.match(raw, /\x1b\[31m-removed line\x1b\[39m/);
+    // The `---`/`+++` file headers repeat the path the card already shows;
+    // the hunk header stays as the only line-number anchor.
+    const expanded = stripAnsi(raw);
+    assert.doesNotMatch(expanded, /--- a\/file\.ts/);
+    assert.doesNotMatch(expanded, /\+\+\+ b\/file\.ts/);
+    assert.match(expanded, /@@ -1 \+1 @@/);
   });
 
   test('caps long terminal output to head and tail lines when expanded', () => {

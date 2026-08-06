@@ -185,3 +185,20 @@ recorded runtime identity differs therefore fail closed and require an explicit 
 rebaseline, or compatible-runtime retention policy. V1 does not silently migrate them and does not ship
 multiple runtime generations. A versioned `resources/git-runtime/<identity>` layout is a possible future
 carrier, but adopting it requires an owner and retention/patching policy rather than a directory rename.
+
+### Source distribution and license boundary
+
+Bundled Git remains a separate command-line program; Maka invokes it through a process boundary, so
+Maka's own Apache-2.0 license is unchanged. Binary redistribution still creates GPLv2 obligations for
+the Git program itself. The release pipeline therefore owns two independent artifacts:
+
+1. `prepare:bundled-git-source` materializes commit-addressed source archives and a checksum manifest
+   for the upstream revisions used by Dugite native;
+2. every packaged application carries `licenses/git/SOURCE_OFFER.txt`, which promises complete
+   corresponding source on request for at least three years.
+
+The source-materials archive is a convenience artifact, not an unsupported claim that a short list of
+upstream tarballs is necessarily the complete corresponding source for every platform toolchain. The
+written offer is the fail-safe for build scripts and indirect platform dependencies. A release is not
+publishable unless the binary artifacts, source-materials archive, source-offer text, and their hashes
+are all present. The release owner must retain the ability to honor requests for the full offer period.

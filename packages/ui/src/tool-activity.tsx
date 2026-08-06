@@ -1,5 +1,10 @@
 import { useEffect, useRef, type ComponentType } from 'react';
-import { isInFlightToolStatus, type ToolResultContent, type UiLocale } from '@maka/core';
+import {
+  countDiffLineStats,
+  isInFlightToolStatus,
+  type ToolResultContent,
+  type UiLocale,
+} from '@maka/core';
 import {
   Check,
   Clock,
@@ -295,6 +300,7 @@ export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
     stats: outcomeWord(item, locale),
+    ...diffStats(itemDiffs(item)),
     resultDetail: (
       <ToolDetailReveal>
         <ToolCallDetail item={item} />
@@ -306,7 +312,36 @@ export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
   // from in-flight status latches, since the prop is uncontrolled and the
   // timeline key is stable (see timelineEntryKey). Cost: the collapsed header
   // projects the last call, which can settle before a parallel sibling.
-  return <ChatToolCalls calls={calls} />;
+  //
+  // A group's own +/- is the whole turn's, not the last call's: a run of five
+  // Edits collapses to one line, and "what did this turn change" is the
+  // question that line has to answer. Per-call counts stay on the rows inside.
+  return <ChatToolCalls calls={calls} {...diffStats(items.flatMap(itemDiffs))} />;
+}
+
+/**
+ * Green `+N` / red `-N`, from the shared structural parse. One diff for a row,
+ * every diff in the run for the collapsed group header. Zero stays unpainted,
+ * so a run that changed no file leaves the header as it was rather than
+ * wearing a "0 changes" badge.
+ */
+function diffStats(diffs: string[]): { additions?: number; deletions?: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const diff of diffs) {
+    const stats = countDiffLineStats(diff);
+    additions += stats.additions;
+    deletions += stats.deletions;
+  }
+  return {
+    ...(additions > 0 ? { additions } : {}),
+    ...(deletions > 0 ? { deletions } : {}),
+  };
+}
+
+/** The diff a tool call produced, if it produced one. */
+function itemDiffs(item: ToolActivityItem): string[] {
+  return item.result?.kind === 'file_diff' ? [item.result.diff] : [];
 }
 
 function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {

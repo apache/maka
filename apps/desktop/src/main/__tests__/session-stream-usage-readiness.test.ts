@@ -1,3 +1,4 @@
+import { createToolResultArchiveCapability } from '@maka/runtime';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -80,8 +81,7 @@ test('the first Desktop backend waits for canonical telemetry readiness', async 
       toolAvailability: { economy: false, groups: [] },
       sandboxDiagnosticsProvider: createSandboxDiagnosticsProvider({ platform: 'win32' }),
       persistToolArtifacts: async () => {},
-      persistArchivedToolResult: async () => {},
-      readArchivedToolResult: async () => undefined,
+      toolResultArchive: testDesktopToolResultArchive(),
       runtimeCommitStore: undefined,
       planStore,
       safeSendToRenderer: () => {},
@@ -134,4 +134,12 @@ function factoryContext(root: string): BackendFactoryContext {
     store: { appendMessage: async () => {} } as unknown as BackendFactoryContext['store'],
     tools: [],
   };
+}
+
+function testDesktopToolResultArchive() {
+  return createToolResultArchiveCapability({
+    archiveToolResult: async () => undefined,
+    readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+    readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
+  });
 }

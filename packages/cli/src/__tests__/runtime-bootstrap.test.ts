@@ -43,6 +43,7 @@ import {
   isMakaClaudeSubscriptionCloakEnabled,
   resolveCliStreamConnectTimeoutMs,
 } from '../runtime-bootstrap.js';
+import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 function modelCallAttemptFixture(): ModelCallAttempt {
   return {
@@ -1364,7 +1365,11 @@ async function withWorkspace(fn: (workspaceRoot: string) => Promise<void>): Prom
 }
 
 async function waitFor<T>(read: () => T | undefined | Promise<T | undefined>): Promise<T> {
-  const deadline = Date.now() + 3_000;
+  // Same budget policy as the shared TUI waitFor (#2221): the wait returns as
+  // soon as the read yields a value, so the floor only bounds a failing
+  // report, and CI runners get the scaled budget instead of losing
+  // scheduling races.
+  const deadline = Date.now() + Math.max(3_000, WAIT_BUDGET_MS);
   while (Date.now() < deadline) {
     const value = await read();
     if (value !== undefined) return value;

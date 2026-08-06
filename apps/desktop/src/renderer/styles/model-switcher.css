@@ -32,55 +32,19 @@
   max-width: 100%;
 }
 
-/* Quiet ghost trigger for the chat surface's project picker — the one
-   remaining Selector in the composer footer. Astryx Selector's default is a
-   bordered field, which reads as an input asking to be filled in rather than
-   as a chip carrying a current value; product owns this className only on
-   chat pickers — Settings ModelPicker does not set it.
-   Geometry mirrors .maka-composer-model-chip. */
-.maka-workspace-picker.astryx-selector {
-  font: var(--maka-text-label);
-  padding-block: 0;
-  padding-inline: var(--space-2);
-  border-color: transparent;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  box-shadow: none;
-  color: var(--foreground-secondary);
-  transition:
-    background-color var(--duration-base) var(--ease-out-strong),
-    color var(--duration-base) var(--ease-out-strong);
-}
-
-/* Sizes to the project name rather than holding a column width: it is the last
-   control in a row that already wraps, so a fixed width would spend space the
-   model chip beside it needs. The cap is what keeps a long directory name from
-   pushing the send button off the row. */
-.maka-workspace-picker.astryx-selector {
-  width: max-content;
+/* The project picker's trigger is now a ghost-button DropdownMenu like the
+   model and thinking chips beside it (workspace-picker.tsx), so resting,
+   hover, focus, disabled and tooltip chrome all derive from Astryx Button —
+   no field overlay needed here.
+   Geometry sizes to the project name rather than holding the model pair's
+   column width: it is the last control in a row that already wraps, so a
+   fixed width would spend space the model chip beside it needs. The cap is
+   what keeps a long directory name from pushing the send button off the
+   row. */
+.maka-workspace-picker {
   min-width: 0;
   max-width: min(280px, 60vw);
   flex: 0 0 auto;
-}
-
-.maka-workspace-picker.astryx-selector:hover:not([aria-disabled="true"]) {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.maka-workspace-picker.astryx-selector:focus-within {
-  border-color: transparent;
-  background: var(--state-hover-bg);
-  box-shadow: none;
-  color: var(--foreground);
-}
-
-.maka-workspace-picker.astryx-selector[aria-disabled="true"] {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
 }
 
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */

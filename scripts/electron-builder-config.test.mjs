@@ -25,8 +25,12 @@ test('the desktop release config is valid for the installed electron-builder', a
 test('an unknown release option is rejected rather than ignored', async () => {
   const config = await loadConfig();
 
+  // electron-builder 26.15 flattens ajv oneOf errors, so the message no
+  // longer names the offending property — it reports the enclosing path
+  // ("configuration.win should be one of these"). The contract that still
+  // matters is that an unknown option rejects at all.
   await assert.rejects(
     validateConfiguration({ ...config, win: { ...config.win, sign: false } }, { add: () => {} }),
-    /unknown property 'sign'/,
+    /(?:Error: )?Invalid configuration object\. electron-builder \d+\.\d+\.\d+ has been initialized using a configuration object that does not match the API schema\.\n - configuration\.win/,
   );
 });

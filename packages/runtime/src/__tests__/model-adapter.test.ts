@@ -521,6 +521,11 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(adapter.mapFinishReason('error'), 'error');
     assert.equal(adapter.mapFinishReason('tool-calls'), 'end_turn');
     assert.equal(adapter.mapFinishReason('provider-new-reason'), 'end_turn');
+    // Not the same as a new reason: these two are the SDK saying it cannot name
+    // why the stream stopped, which is what a dropped upstream connection looks
+    // like from here.
+    assert.equal(adapter.mapFinishReason('other'), 'error');
+    assert.equal(adapter.mapFinishReason('unknown'), 'error');
   });
 
   test('projects the final provider error inside an AI SDK retry wrapper', () => {

@@ -13,6 +13,50 @@ import {
 import { AgentRun } from '../agent-run.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
 
+test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-tool-mode-'));
+  try {
+    const store = createSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+
+    assert.throws(
+      () =>
+        new AgentRun({
+          sessionId: session.id,
+          header: session,
+          userInput: { turnId: 'turn-invalid-mode', text: 'invalid', toolMode: 'typo' as never },
+          runStore,
+          runtimeEventStore,
+          store,
+          newId: () => 'unused',
+          now: () => 1,
+          recordSessionMessages: false,
+          hooks: {
+            reserveRun: async () => {
+              throw new Error('reserveRun should not be called');
+            },
+            unregisterRun: () => {},
+            updateHeader: async () => session,
+            updateStatus: async () => {},
+            appendTurnState: async () => {},
+          },
+        }),
+      /invalid tool mode/i,
+    );
+    assert.deepEqual(await runStore.listSessionRuns(session.id), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('does not re-append atomically committed tool facts through the generic event lane', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-atomic-tool-boundary-'));
   try {

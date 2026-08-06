@@ -261,6 +261,7 @@ function toTraceAttempt(attempt: ModelCallAttempt): TraceModelAttempt {
       ? { cacheReadInputTokens: attempt.cacheReadInputTokens }
       : {}),
     ...(attempt.reasoningTokens !== undefined ? { reasoningTokens: attempt.reasoningTokens } : {}),
+    ...(attempt.contextWindow !== undefined ? { contextWindow: attempt.contextWindow } : {}),
     ...(attempt.costUsd !== undefined ? { costUsd: attempt.costUsd } : {}),
     costBasis: attempt.costBasis,
     usageBasis: attempt.usageBasis,

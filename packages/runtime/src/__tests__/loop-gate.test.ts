@@ -241,13 +241,20 @@ function makeComputerFailureTool(impl: string[], failureClass?: 'ambiguous_targe
 }
 
 let callSeq = 0;
-function call(h: Harness, t: MakaTool, args: unknown, turnId = 'turn-1'): Promise<unknown> {
+function call(
+  h: Harness,
+  t: MakaTool,
+  args: unknown,
+  turnId = 'turn-1',
+  origin: 'provider' | 'code_mode' = 'provider',
+): Promise<unknown> {
   return h.runtime
     .settleToolCall({
       tool: t,
       turnId,
       toolCallId: `tc-${++callSeq}`,
       input: args,
+      origin,
       abortSignal: new AbortController().signal,
       eventSink: {
         push: (event) => h.pushed.push(event),
@@ -260,6 +267,19 @@ function call(h: Harness, t: MakaTool, args: unknown, turnId = 'turn-1'): Promis
 }
 
 describe('loop-gate for repeated identical FAILING tool calls', () => {
+  test('keeps nested CodeMode failures out of the provider loop-gate streak', async () => {
+    const h = makeHarness();
+    const t = makeFailingTool('Read', h.impl);
+    const args = { path: 'README.md' };
+
+    await call(h, t, args, 'turn-1', 'code_mode');
+    await call(h, t, args, 'turn-1', 'code_mode');
+    const providerResult = await call(h, t, args, 'turn-1', 'provider');
+
+    assert.deepEqual(providerResult, { error: 'boom' });
+    assert.equal(h.impl.length, 3);
+  });
+
   test('runs the first N-1 identical failing calls then blocks the Nth (and keeps blocking)', async () => {
     const h = makeHarness();
     const t = makeFailingTool('Edit', h.impl, 'edit failed');

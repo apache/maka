@@ -18,7 +18,7 @@ import {
   type HeadlessStorageWriter,
 } from './headless-storage.js';
 import type { HeadlessBackendContext, RealBackendIsolation } from './isolation.js';
-import { validateRealBackendIsolation } from './isolation.js';
+import { endManagedShellSessions, validateRealBackendIsolation } from './isolation.js';
 import {
   freezeSubmittedWorkspace,
   prepareScoringWorkspace,
@@ -214,6 +214,10 @@ export async function runExperimentWithStorage(
       // Event consumption drives the runtime to its terminal invocation.
     }
     await sessionCapabilities.settle(session.id);
+    // Agent phase ends here: nothing still managed may be running while the
+    // verifier observes the workspace. The enclosing finally repeats this for
+    // the throwing path.
+    await endManagedShellSessions(deps.realBackendIsolation);
 
     const status = invocation?.status ?? 'failed';
     const runnerCompleted = status === 'completed';
@@ -305,12 +309,16 @@ export async function runExperimentWithStorage(
     }
   } finally {
     try {
-      await graphCoordinator?.close();
+      await endManagedShellSessions(deps.realBackendIsolation);
     } finally {
       try {
-        graphControlStore?.close();
+        await graphCoordinator?.close();
       } finally {
-        await workspace.cleanup();
+        try {
+          graphControlStore?.close();
+        } finally {
+          await workspace.cleanup();
+        }
       }
     }
   }

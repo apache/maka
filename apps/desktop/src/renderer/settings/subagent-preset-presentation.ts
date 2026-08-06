@@ -1,8 +1,8 @@
 import {
-  connectionEnabledModelIds,
   type LlmConnection,
   type SubagentPreset,
 } from '@maka/core';
+import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import type { StatusTone } from './settings-status-badge.js';
 
 /**

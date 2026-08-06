@@ -235,6 +235,8 @@ function mapBackendSessionEvent(
         ...base,
         role: 'model',
         author: 'agent',
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+        ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
         content: {
           kind: 'function_call',
           id: event.toolUseId,
@@ -250,6 +252,12 @@ function mapBackendSessionEvent(
         refs: {
           toolCallId: event.toolUseId,
           ...(event.operationId !== undefined ? { operationId: event.operationId } : {}),
+          ...(event.parentToolCallId !== undefined
+            ? { parentToolCallId: event.parentToolCallId }
+            : {}),
+          ...(event.parentOperationId !== undefined
+            ? { parentOperationId: event.parentOperationId }
+            : {}),
           ...(event.stepId !== undefined ? { stepId: event.stepId } : {}),
         },
       };
@@ -275,7 +283,17 @@ function mapBackendSessionEvent(
         partial: true,
         role: 'tool',
         author: 'tool',
-        refs: { toolCallId: event.toolUseId },
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+        ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
+        refs: {
+          toolCallId: event.toolUseId,
+          ...(event.parentToolCallId !== undefined
+            ? { parentToolCallId: event.parentToolCallId }
+            : {}),
+          ...(event.parentOperationId !== undefined
+            ? { parentOperationId: event.parentOperationId }
+            : {}),
+        },
       };
     case 'tool_progress':
       return {
@@ -283,7 +301,17 @@ function mapBackendSessionEvent(
         partial: true,
         role: 'tool',
         author: 'tool',
-        refs: { toolCallId: event.toolUseId },
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+        ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
+        refs: {
+          toolCallId: event.toolUseId,
+          ...(event.parentToolCallId !== undefined
+            ? { parentToolCallId: event.parentToolCallId }
+            : {}),
+          ...(event.parentOperationId !== undefined
+            ? { parentOperationId: event.parentOperationId }
+            : {}),
+        },
       };
     case 'tool_result': {
       const name = memory.toolNameByUseId.get(event.toolUseId) ?? '';
@@ -291,6 +319,8 @@ function mapBackendSessionEvent(
         ...base,
         role: 'tool',
         author: 'tool',
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+        ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
         content: {
           kind: 'function_response',
           id: event.toolUseId,
@@ -307,6 +337,12 @@ function mapBackendSessionEvent(
         refs: {
           toolCallId: event.toolUseId,
           ...(event.operationId !== undefined ? { operationId: event.operationId } : {}),
+          ...(event.parentToolCallId !== undefined
+            ? { parentToolCallId: event.parentToolCallId }
+            : {}),
+          ...(event.parentOperationId !== undefined
+            ? { parentOperationId: event.parentOperationId }
+            : {}),
         },
       };
       if (event.durationMs !== undefined) {
@@ -681,6 +717,7 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
         runId: ctx.runId,
         turnId: ctx.turnId,
         ...(input.orchestration !== undefined ? { orchestration: input.orchestration } : {}),
+        ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
         // The persisted head anchor: mid-turn capacity compaction keeps this
         // event verbatim and needs its exact ledger identity for coverage.
         ...(ctx.request.initialRuntimeEvent !== undefined

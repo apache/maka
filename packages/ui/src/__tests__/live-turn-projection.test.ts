@@ -314,6 +314,63 @@ describe('applyLiveTurnEvent', () => {
     });
   });
 
+  it('retains live nested tool activity identity', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'tool_start',
+      id: 'event-1',
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolUseId: 'nested-1',
+      toolName: 'Read',
+      args: { path: 'README.md' },
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      parentToolCallId: 'exec-1',
+      parentOperationId: 'exec-operation-1',
+      ts: 100,
+    });
+
+    assert.deepEqual(projection.steps[0]?.tools[0], {
+      toolUseId: 'nested-1',
+      toolName: 'Read',
+      stepId: 'step-1',
+      status: 'pending',
+      args: { path: 'README.md' },
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      parentToolCallId: 'exec-1',
+      parentOperationId: 'exec-operation-1',
+    });
+  });
+
+  it('retains nested identity when a tool result arrives before its start', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'tool_result',
+      id: 'event-1',
+      turnId: 'turn-1',
+      toolUseId: 'nested-1',
+      isError: false,
+      content: { kind: 'text', text: 'ok' },
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      parentToolCallId: 'exec-1',
+      parentOperationId: 'exec-operation-1',
+      ts: 100,
+    });
+
+    assert.deepEqual(projection.steps[0]?.tools[0], {
+      toolUseId: 'nested-1',
+      toolName: 'Tool',
+      status: 'completed',
+      args: undefined,
+      result: { kind: 'text', text: 'ok' },
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      parentToolCallId: 'exec-1',
+      parentOperationId: 'exec-operation-1',
+    });
+  });
+
   it('maps cancelled terminal tool_result to interrupted, not errored', () => {
     const started = applyLiveTurnEvent(undefined, {
       type: 'tool_start',

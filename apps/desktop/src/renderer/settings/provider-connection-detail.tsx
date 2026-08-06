@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Banner, Divider, Grid, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
-import { PROVIDER_DEFAULTS } from '@maka/core';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
   Button,
   RelativeTime,

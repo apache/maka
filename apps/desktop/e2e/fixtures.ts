@@ -338,7 +338,7 @@ export const test = base.extend<{
       use,
     );
   },
-  // Overflowing rail: boots the e2e-fixture `overflowing-rail` fixture — 60
+  // Overflowing rail: boots the e2e-fixture `overflowing-rail` fixture — 90
   // short turns — and opens it as the active session. Same readiness contract
   // as the two above. Used by the prompt-rail spec to exercise the rail once it
   // is past its cap and scrolling independently of the transcript.

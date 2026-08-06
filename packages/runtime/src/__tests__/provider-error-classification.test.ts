@@ -4,9 +4,28 @@ import { createJsonErrorResponseHandler } from '@ai-sdk/provider-utils';
 import { RetryError } from 'ai';
 import { z } from 'zod/v4';
 
-import { classifyError, errorPresentationFromClass } from '../provider-error-classification.js';
+import {
+  classifyError,
+  errorPresentationFromClass,
+  providerRetryMetadata,
+} from '../provider-error-classification.js';
 
 describe('Provider error classification', () => {
+  test('retries incremental Responses transport failures with stable classification', () => {
+    const websocketFailure = Object.assign(new Error('closed before completion'), {
+      name: 'OpenAiResponsesTransportError',
+      code: 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
+    });
+    const missingContinuation = Object.assign(new Error('continuation unavailable'), {
+      name: 'OpenAiResponsesTransportError',
+      code: 'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
+    });
+
+    assert.equal(classifyError(websocketFailure), 'Network');
+    assert.deepEqual(providerRetryMetadata(websocketFailure), { retryable: true });
+    assert.deepEqual(providerRetryMetadata(missingContinuation), { retryable: true });
+  });
+
   test('classifies provider context-length overflow errors as ContextLength', () => {
     const overflow = (message: string, extra: Record<string, unknown> = {}) =>
       classifyError(Object.assign(new Error(message), { name: 'AI_APICallError', ...extra }));

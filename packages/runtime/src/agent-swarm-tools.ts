@@ -181,6 +181,7 @@ export function buildAgentSwarmTool(
     parameters: agentSwarmInputSchema(definitions, profiles),
     executionSemantics: 'exclusive_step',
     categoryHint: 'subagent',
+    nesting: 'direct_only',
     impl: async (input, ctx) => {
       const prepared = await prepareAgentSwarmInput(input, ctx, definitions);
       if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildSession) {
@@ -471,6 +472,27 @@ function traceAgentSwarm(
   });
 }
 
+/**
+ * Why a call was refused for its child selector, and what would work instead.
+ *
+ * The two failures read very differently to a model and shared one sentence:
+ * "Provide exactly one of subagent_id or legacy profile." It named neither which
+ * mistake this was, nor a single value that would have been accepted. A model
+ * that got two of three items right and slipped on the third was told only that
+ * — and the field list `formatToolArgsViolationText` appends is the *top-level*
+ * one, which is not where the violation was (`path: ["items", 2]`). So name the
+ * mistake, and name both ways out: the preset ids live behind `agent_list`, and
+ * the legacy profiles are a closed set this schema already knows.
+ */
+function childSelectorIssueMessage(bothSet: boolean, profiles: readonly string[]): string {
+  const waysOut =
+    `Set subagent_id to a user-approved preset id from agent_list, ` +
+    `or profile to one of: ${profiles.join(', ')}.`;
+  return bothSet
+    ? `subagent_id and profile are both set; exactly one of them selects the child. ${waysOut}`
+    : `Neither subagent_id nor profile is set, so no child is selected. ${waysOut}`;
+}
+
 function agentSwarmInputSchema(
   definitions: readonly AgentDefinition[],
   profiles: ReturnType<typeof agentProfilesForDefinitions>,
@@ -509,7 +531,7 @@ function agentSwarmInputSchema(
       if (Boolean(input.profile) === Boolean(input.subagent_id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Provide exactly one of subagent_id or legacy profile.',
+          message: childSelectorIssueMessage(Boolean(input.profile), profiles),
         });
         return;
       }
@@ -650,7 +672,10 @@ function agentSwarmInputSchema(
       if (Boolean(input.profile) === Boolean(input.subagent_id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'String items require exactly one of subagent_id or legacy profile.',
+          message: `String items share one selector for the whole batch. ${childSelectorIssueMessage(
+            Boolean(input.profile),
+            profiles,
+          )}`,
         });
       }
       if (!input.prompt_template.includes(AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER)) {

@@ -34,6 +34,7 @@ import {
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import { DEFAULT_TOOL_MODE, type ToolMode } from '@maka/core/tool-mode';
 import {
   AgentRun,
   ContinuationStartCommitError,
@@ -789,6 +790,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       parentTurnId: continuation.sourceTurnId,
     };
     const effectiveOrchestration = effectiveOrchestrationForRun(sourceRun, header);
+    const effectiveToolMode = effectiveToolModeForRun(sourceRun);
     const claimedAt = this.deps.now();
     const targetRunHeader = continuationTargetRunHeaderForExecution({
       continuation,
@@ -796,6 +798,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       userInput,
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
+      effectiveToolMode,
       claimedAt,
     });
     const claim = continuationClaimForExecution(continuation, claimedAt, targetRunHeader);
@@ -848,6 +851,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
       claimedRunHeader: claim.targetRunHeader,
+      effectiveToolMode,
       continuationFailpoint: this.deps.continuationFailpoint,
       commitContinuationStart: async (startedAt) => {
         const source = claim.boundary.segments.at(-1)!;
@@ -1287,6 +1291,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw new Error('Child retry continuation requires AgentRunStore and RuntimeEventStore');
     }
     const sourceRun = await this.deps.runStore.readRun(sessionId, continuation.sourceRunId);
+    const effectiveToolMode = effectiveToolModeForRun(sourceRun);
     let durableAdmission:
       | {
           claimedRunHeader: AgentRunHeader;
@@ -1316,6 +1321,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         userInput,
         workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
         effectiveOrchestration,
+        effectiveToolMode,
         claimedAt,
       });
       const claim = continuationClaimForExecution(continuation, claimedAt, targetRunHeader);
@@ -1414,6 +1420,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       now: this.deps.now,
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
+      effectiveToolMode,
       ...(durableAdmission ?? {}),
       recordSessionMessages: false,
       hooks: {
@@ -1653,6 +1660,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         ...(begin.backendInput.orchestration
           ? { orchestration: begin.backendInput.orchestration }
           : {}),
+        ...(begin.backendInput.toolMode ? { toolMode: begin.backendInput.toolMode } : {}),
         text: input.text,
         ...(input.voiceAudio ? { voiceAudio: input.voiceAudio } : {}),
         ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
@@ -1825,7 +1833,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 : (() => {
                     throw new Error('Durable continuation is missing its start admission');
                   })(),
-              { orchestration: run.effectiveOrchestration },
+              { orchestration: run.effectiveOrchestration, toolMode: run.toolMode },
             ),
             {
               source: this.deps.runtimeSource ?? 'desktop',
@@ -1835,6 +1843,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         : runLegacyProviderRetry(runner, continuation, {
             source: this.deps.runtimeSource ?? 'desktop',
             orchestration: run.effectiveOrchestration,
+            toolMode: run.toolMode,
             abortSignal: abortController.signal,
           })
     ).then(
@@ -3435,9 +3444,17 @@ function continuationTargetRunHeaderForExecution(input: {
   userInput: UserMessageInput;
   workspaceIdentity: string;
   effectiveOrchestration: EffectiveOrchestration;
+  effectiveToolMode: ToolMode;
   claimedAt: number;
 }): AgentRunHeader {
-  const { continuation, sessionHeader, userInput, effectiveOrchestration, claimedAt } = input;
+  const {
+    continuation,
+    sessionHeader,
+    userInput,
+    effectiveOrchestration,
+    effectiveToolMode,
+    claimedAt,
+  } = input;
   if (!continuation.claimId || !continuation.boundary) {
     throw new RuntimeContinuationRevalidationError(
       'source_identity_changed',
@@ -3461,6 +3478,7 @@ function continuationTargetRunHeaderForExecution(input: {
     orchestrationMode: effectiveOrchestration.mode,
     orchestrationSource: effectiveOrchestration.source,
     agentSwarmAuthorization: effectiveOrchestration.agentSwarmAuthorization,
+    toolMode: effectiveToolMode,
     createdAt: claimedAt,
     updatedAt: claimedAt,
     ...(userInput.parentRunId ? { parentRunId: userInput.parentRunId } : {}),
@@ -3756,6 +3774,10 @@ function effectiveOrchestrationForRun(
     };
   }
   return resolveEffectiveOrchestration(session.orchestrationMode, undefined);
+}
+
+function effectiveToolModeForRun(run: AgentRunHeader): ToolMode {
+  return run.toolMode ?? DEFAULT_TOOL_MODE;
 }
 
 async function interactionResumeAllowed(

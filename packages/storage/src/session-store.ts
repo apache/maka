@@ -647,15 +647,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   async readHeader(sessionId: string): Promise<SessionHeader> {
-    const header = await this.readHeaderSnapshot(sessionId);
-    return this.lockConnectionAfterFirstUserMessage(header);
+    return this.readHeaderSnapshot(sessionId);
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
-    const messages = await this.readMessagesSnapshot(sessionId);
-    const header = (await this.metadata.read(sessionId)).header;
-    await this.lockConnectionAfterFirstUserMessage(header, messages);
-    return messages;
+    return this.readMessagesSnapshot(sessionId);
   }
 
   async listTurns(sessionId: string): Promise<TurnRecord[]> {
@@ -846,16 +842,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     // a concurrent close cannot race an in-flight migration.
     await this.ensureReady();
     this.metadata.close();
-  }
-
-  private async lockConnectionAfterFirstUserMessage(
-    header: SessionHeader,
-    knownMessages?: StoredMessage[],
-  ): Promise<SessionHeader> {
-    if (header.connectionLocked) return header;
-    const messages = knownMessages ?? (await this.metadata.readMessages(header.id));
-    if (!messages.some((message) => message.type === 'user')) return header;
-    return this.updateHeader(header.id, { connectionLocked: true });
   }
 
   private async ensureCatalogProjectionReadable(): Promise<void> {

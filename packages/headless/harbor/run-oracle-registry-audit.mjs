@@ -25,10 +25,8 @@ import {
   pinHarnessOracleTaskEnvironment,
   planHarnessOracleRegistryAudit,
 } from '#harness-oracle-registry';
-import {
-  assertTerminalBench21TaskSet,
-  assertTerminalBench21TaskTreeFingerprint,
-} from '#harness-ab-manifest';
+import { assertFrozenTaskSet, assertFrozenTaskTreeFingerprint } from '#harness-ab-manifest';
+import { TERMINAL_BENCH_2_1 } from './benchmark-identity.mjs';
 import { resolveHarnessOracleBaseImageDigest } from './run-harness-ab.mjs';
 
 const AUDIT_PLAN_SCHEMA_VERSION = 1;
@@ -48,8 +46,16 @@ async function planCommand(args) {
   const repoRoot = repoRootFromArgs(args);
   const tasksRoot = requiredArg(args, 'tasks-root');
   const tasks = await discoverCachedHarborTasks(tasksRoot);
-  assertTerminalBench21TaskSet(tasks.map((task) => task.id));
-  assertTerminalBench21TaskTreeFingerprint(await fingerprintFixedPromptTaskTree(tasks));
+  assertFrozenTaskSet(
+    'Terminal-Bench 2.1',
+    TERMINAL_BENCH_2_1.taskIds,
+    tasks.map((task) => task.id),
+  );
+  assertFrozenTaskTreeFingerprint(
+    'Terminal-Bench 2.1',
+    TERMINAL_BENCH_2_1.taskTreeFingerprint,
+    await fingerprintFixedPromptTaskTree(tasks),
+  );
   const auditTasks = await currentAuditTasks(repoRoot, tasks);
   const previous = args.previous ? await readSnapshot(args.previous) : null;
   const plan = planHarnessOracleRegistryAudit(auditTasks, previous);

@@ -1,3 +1,4 @@
+import { createToolResultArchiveCapability } from '@maka/runtime';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
@@ -586,8 +587,7 @@ function makeFactoryDeps(
     desktopSessionSkillHosts: new Map(),
     sandboxDiagnosticsProvider: { resolve: async () => undefined },
     persistToolArtifacts: async () => {},
-    persistArchivedToolResult: async () => undefined,
-    readArchivedToolResult: async () => undefined,
+    toolResultArchive: testDesktopToolResultArchive(),
     runtimeCommitStore: undefined,
     safeSendToRenderer: () => {},
     emitSessionsChanged: () => {},
@@ -611,4 +611,12 @@ async function backendInput(
   };
   const backend = await factory(context);
   return (backend as unknown as { input: AiSdkBackendInput }).input;
+}
+
+function testDesktopToolResultArchive() {
+  return createToolResultArchiveCapability({
+    archiveToolResult: async () => undefined,
+    readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+    readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
+  });
 }

@@ -19,7 +19,10 @@ const REQUIRED_ASSET_NOTICE_MARKERS = [
   'apps/desktop/src/renderer/settings/provider-brand-marks.tsx',
 ];
 const REQUIRED_ASSET_LICENSE_FILES = [
-  'apps/desktop/node_modules/simple-icons/LICENSE.md',
+  // Vendored from the installed simple-icons tarball (CC0-1.0); the package
+  // hoists to different node_modules depths across majors, so the notice
+  // generator and the packager read the static copy instead.
+  'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
   'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
@@ -56,6 +59,7 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.2.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.3.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
@@ -68,6 +72,9 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
+  // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the
+  // repo root; the per-package tarball ships no license file.
+  ['proxy-agent-negotiate@1.1.0', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
 ]);
 

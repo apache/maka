@@ -322,6 +322,7 @@ export function pruneStaleToolResultsBeforeCompact(
     const content = event.content;
     if (
       event.partial ||
+      event.modelVisibility === 'hidden' ||
       content?.kind !== 'function_response' ||
       (content.providerExecuted === true && content.providerOutput !== undefined) ||
       protectedTurnIds.has(turnKey(event))
@@ -412,6 +413,7 @@ export function collectStaleToolResultArchiveCandidates(
     const content = event.content;
     if (
       event.partial ||
+      event.modelVisibility === 'hidden' ||
       content?.kind !== 'function_response' ||
       (content.providerExecuted === true && content.providerOutput !== undefined) ||
       protectedTurnIds.has(turnKey(event)) ||

@@ -34,14 +34,14 @@ jobs:
 
     steps:
       - name: Check out the dispatched commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
@@ -136,7 +136,7 @@ jobs:
         run: npm run verify:windows-x64 -- "${{ steps.release.outputs.exe }}"
 
       - name: Upload the verified release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.platform }}
           path: |
@@ -149,10 +149,56 @@ jobs:
         if: always() && matrix.platform == 'macos'
         run: rm -f "${{ runner.temp }}/AuthKey_Maka.p8"
 
+  source:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the dispatched commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install pinned dependency metadata
+        run: npm ci --ignore-scripts
+
+      - name: Materialize bundled Git source materials
+        run: npm run prepare:bundled-git-source
+
+      - name: Archive and hash source materials
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          archive_dir="apps/desktop/release-sources"
+          archive_name="Maka-${version}-bundled-git-source.tar.gz"
+          archive="${archive_dir}/${archive_name}"
+          tar -C apps/desktop/release-sources/bundled-git -czf "$archive" .
+          (cd "$archive_dir" && sha256sum "$archive_name" > "${archive_name}.sha256")
+
+      - name: Upload verified source assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-source
+          path: |
+            apps/desktop/release-sources/Maka-*-bundled-git-source.tar.gz
+            apps/desktop/release-sources/Maka-*-bundled-git-source.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     # One draft release carries both platforms, so it is created once, after
     # every platform has been packaged and verified.
-    needs: build
+    needs: [build, source]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -161,13 +207,13 @@ jobs:
 
     steps:
       - name: Check out the dispatched commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download the verified release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-*
           path: release-assets
@@ -185,6 +231,8 @@ jobs:
           Before publishing, download these draft assets on another Apple Silicon Mac and on a Windows x64 machine, and complete .github/RELEASE_CHECKLIST.md.
 
           The Windows build is unsigned: SmartScreen warns on first launch, and the download has to be checked against its .sha256 file.
+
+          Bundled Git source materials and their checksum are attached to this draft. The packaged applications also carry the GPLv2 license and written source offer.
 
           Known limitation: Computer Use is not included in this release."
 

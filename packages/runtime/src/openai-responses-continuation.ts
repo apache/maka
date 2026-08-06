@@ -13,6 +13,38 @@ export interface OpenAiResponsesContinuationPlan {
   previousResponseId?: string;
 }
 
+/**
+ * Recover the provider step from Maka's durable replay after its client tool
+ * calls have settled. The replay is authoritative: unlike `sdk.response.messages`
+ * it has the exact provider-option placement that the next Runtime request will
+ * carry.
+ *
+ * Fail closed when request shaping means the durable projection no longer has
+ * the sent request as an exact prefix, or when the expected tool-result tail is
+ * absent. Either case simply disables continuation for the next request.
+ */
+export function persistedOpenAiResponsesStepMessages(
+  requestMessages: readonly ModelMessage[],
+  replayedMessages: readonly ModelMessage[],
+  settledToolCallIds: readonly string[],
+): ModelMessage[] | undefined {
+  if (replayedMessages.length <= requestMessages.length + settledToolCallIds.length) {
+    return undefined;
+  }
+  for (let index = 0; index < requestMessages.length; index += 1) {
+    if (!isDeepStrictEqual(replayedMessages[index], requestMessages[index])) return undefined;
+  }
+
+  const appended = replayedMessages.slice(requestMessages.length);
+  const responseLength = appended.length - settledToolCallIds.length;
+  for (let index = 0; index < settledToolCallIds.length; index += 1) {
+    const message = appended[responseLength + index];
+    if (!isToolResultMessageFor(message, settledToolCallIds[index]!)) return undefined;
+  }
+  const responseMessages = appended.slice(0, responseLength);
+  return responseMessages.length > 0 ? responseMessages : undefined;
+}
+
 export function planOpenAiResponsesContinuation(
   messages: readonly ModelMessage[],
   baseline: OpenAiResponsesSemanticBaseline | undefined,
@@ -49,4 +81,11 @@ export function mergeOpenAiResponsesProviderOptions(
       ...(previousResponseId === undefined ? {} : { previousResponseId }),
     },
   };
+}
+
+function isToolResultMessageFor(message: ModelMessage | undefined, toolCallId: string): boolean {
+  return (
+    message?.role === 'tool' &&
+    message.content.some((part) => part.type === 'tool-result' && part.toolCallId === toolCallId)
+  );
 }

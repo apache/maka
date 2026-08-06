@@ -19,6 +19,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { EphemeralVoiceAudio } from '@maka/core/voice';
+import type { ToolMode } from '@maka/core/tool-mode';
 
 // ============================================================================
 // InvocationSource
@@ -80,6 +81,8 @@ export interface InvocationRequest {
   turnId: string;
   /** Trusted effective orchestration snapshot for this invocation. */
   orchestration?: EffectiveOrchestration;
+  /** Trusted effective tool protocol snapshot for this invocation. */
+  toolMode?: ToolMode;
   text: string;
   /** Operation-owned raw audio, excluded from every durable projection. */
   voiceAudio?: EphemeralVoiceAudio;

@@ -221,6 +221,172 @@ describe('builtin file tools use the sandboxed worker', () => {
   });
 });
 
+describe('file tools surface a file_diff result', () => {
+  const DIFF = ['--- a/a.ts', '+++ b/a.ts', '@@ -1,2 +1,2 @@', ' keep', '-old', '+new'].join('\n');
+
+  function toolsWithWorkerResult(result: Record<string, unknown>) {
+    return buildBuiltinTools({
+      filesystemWorker: { execute: async () => result as never },
+      sandboxPlatform: 'darwin',
+    });
+  }
+
+  test('Edit returns a file_diff content when the worker reports a diff', async () => {
+    const cwd = await temporaryDirectory('maka-edit-diff-');
+    const tools = toolsWithWorkerResult({
+      kind: 'edit',
+      ok: true,
+      path: 'a.ts',
+      replacements: 1,
+      matchedVia: 'exact',
+      startLine: 1,
+      endLine: 2,
+      diff: DIFF,
+    });
+
+    const result = await runTool(
+      tools,
+      'Edit',
+      { path: 'a.ts', old_string: 'old', new_string: 'new' },
+      cwd,
+    );
+
+    assert.deepEqual(result, { kind: 'file_diff', paths: ['a.ts'], diff: DIFF });
+  });
+
+  test('Edit keeps the fact summary when the worker reports no diff', async () => {
+    const cwd = await temporaryDirectory('maka-edit-nodiff-');
+    const tools = toolsWithWorkerResult({
+      kind: 'edit',
+      ok: true,
+      path: 'a.ts',
+      replacements: 1,
+      matchedVia: 'exact',
+      startLine: 1,
+      endLine: 2,
+    });
+
+    const result = await runTool(
+      tools,
+      'Edit',
+      { path: 'a.ts', old_string: 'old', new_string: 'new' },
+      cwd,
+    );
+
+    assert.deepEqual(result, {
+      ok: true,
+      path: 'a.ts',
+      replacements: 1,
+      matchedVia: 'exact',
+      startLine: 1,
+      endLine: 2,
+    });
+  });
+
+  test('Write returns a file_diff content when the worker reports a diff', async () => {
+    const cwd = await temporaryDirectory('maka-write-diff-');
+    const tools = toolsWithWorkerResult({
+      kind: 'write',
+      ok: true,
+      path: 'new.md',
+      bytes: 12,
+      diff: ['--- /dev/null', '+++ b/new.md', '@@ -0,0 +1,2 @@', '+alpha', '+beta'].join('\n'),
+    });
+
+    const result = await runTool(tools, 'Write', { path: 'new.md', content: 'alpha\nbeta\n' }, cwd);
+
+    assert.deepEqual(result, {
+      kind: 'file_diff',
+      paths: ['new.md'],
+      diff: ['--- /dev/null', '+++ b/new.md', '@@ -0,0 +1,2 @@', '+alpha', '+beta'].join('\n'),
+    });
+  });
+
+  test('Write degrades to a file_write descriptor when the worker reports no diff', async () => {
+    const cwd = await temporaryDirectory('maka-write-nodiff-');
+    const tools = toolsWithWorkerResult({
+      kind: 'write',
+      ok: true,
+      path: 'huge.bin',
+      bytes: 70000,
+    });
+
+    const result = await runTool(tools, 'Write', { path: 'huge.bin', content: 'x' }, cwd);
+
+    assert.deepEqual(result, { kind: 'file_write', path: 'huge.bin', bytes: 70000 });
+  });
+
+  test('FormatJson returns a file_diff content and never leaks the diff as json', async () => {
+    const cwd = await temporaryDirectory('maka-format-diff-');
+    const tools = toolsWithWorkerResult({
+      kind: 'format_json',
+      ok: true,
+      valid: true,
+      path: 'data.json',
+      bytesBefore: 12,
+      bytesAfter: 20,
+      byteDelta: 8,
+      changed: true,
+      diff: DIFF,
+    });
+
+    const result = await runTool(tools, 'FormatJson', { path: 'data.json' }, cwd);
+
+    assert.deepEqual(result, { kind: 'file_diff', paths: ['data.json'], diff: DIFF });
+  });
+
+  test('the model output for an edit is a bounded summary, not the diff', async () => {
+    const tools = buildBuiltinTools();
+    const tool = tools.find((candidate) => candidate.name === 'Edit');
+    if (!tool) throw new Error('Edit tool missing');
+    if (!tool.toModelOutput) throw new Error('Edit toModelOutput missing');
+
+    const output = await tool.toModelOutput({
+      toolCallId: 'tool-1',
+      input: { path: 'a.ts', old_string: 'old', new_string: 'new' },
+      output: { kind: 'file_diff', paths: ['a.ts'], diff: DIFF },
+    });
+
+    assert.deepEqual(output, { type: 'text', value: 'Edited a.ts (+1 -1)' });
+  });
+
+  test('the model output counts additions whose content starts with ++', async () => {
+    const tools = buildBuiltinTools();
+    const tool = tools.find((candidate) => candidate.name === 'Edit');
+    if (!tool?.toModelOutput) throw new Error('Edit toModelOutput missing');
+
+    const output = await tool.toModelOutput({
+      toolCallId: 'tool-1',
+      input: { path: 'a.ts', old_string: 'let i = 0;', new_string: 'let i = 0;\n++i;' },
+      output: {
+        kind: 'file_diff',
+        paths: ['a.ts'],
+        diff: '@@ -1,1 +1,2 @@\n let i = 0;\n+++i;',
+      },
+    });
+
+    assert.deepEqual(output, { type: 'text', value: 'Edited a.ts (+1 -0)' });
+  });
+
+  test('the model output for a new-file write names it created with its line count', async () => {
+    const tools = buildBuiltinTools();
+    const tool = tools.find((candidate) => candidate.name === 'Write');
+    if (!tool?.toModelOutput) throw new Error('Write toModelOutput missing');
+
+    const output = await tool.toModelOutput({
+      toolCallId: 'tool-1',
+      input: { path: 'new.md', content: 'alpha\nbeta\n' },
+      output: {
+        kind: 'file_diff',
+        paths: ['new.md'],
+        diff: '--- /dev/null\n+++ b/new.md\n@@ -0,0 +1,2 @@\n+alpha\n+beta',
+      },
+    });
+
+    assert.deepEqual(output, { type: 'text', value: 'Created new.md (+2)' });
+  });
+});
+
 async function runTool(
   tools: ReturnType<typeof buildBuiltinTools>,
   name: string,

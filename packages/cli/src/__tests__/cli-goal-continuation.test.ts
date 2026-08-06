@@ -8,6 +8,7 @@ import {
   type GoalTurnOutcome,
 } from '@maka/runtime';
 import { CliGoalContinuation } from '../cli-goal-continuation.js';
+import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -18,7 +19,10 @@ function deferred<T>() {
 }
 
 async function waitFor(condition: () => boolean, message: string): Promise<void> {
-  const deadline = Date.now() + 1_000;
+  // Same budget policy as the shared TUI waitFor (#2221): the wait returns as
+  // soon as the condition holds, so the floor only bounds a failing report,
+  // and CI runners get the scaled budget instead of losing scheduling races.
+  const deadline = Date.now() + Math.max(1_000, WAIT_BUDGET_MS);
   while (!condition()) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise<void>((resolve) => setImmediate(resolve));

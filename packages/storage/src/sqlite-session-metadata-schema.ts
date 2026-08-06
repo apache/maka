@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 21;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 22;
 
 export const SQLITE_AGENT_GRAPH_CONTROL_TABLES = [
   'agent_graph_intent_claims',
@@ -826,6 +826,28 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX project_aliases_by_project
       ON project_aliases(project_id, alias);
+  `,
+  ],
+  [
+    22,
+    `
+    UPDATE session_metadata
+    SET
+      payload_json = json_set(payload_json, '$.connectionLocked', json('true')),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      )
+    WHERE
+      json_extract(payload_json, '$.connectionLocked') = 0
+      AND EXISTS (
+        SELECT 1
+        FROM session_messages messages
+        WHERE
+          messages.session_id = session_metadata.session_id
+          AND messages.message_type = 'user'
+      );
   `,
   ],
 ]);

@@ -4,12 +4,23 @@
 // list. Splitting it out of the orchestration module keeps node:child_process and
 // the shell plumbing in one place.
 import { exec as nodeExec } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
-import { defaultShellPlan, runShellWithBoundedTail, type MakaTool } from '@maka/runtime';
+import {
+  defaultShellPlan,
+  runShellWithBoundedTail,
+  ShellRunProcessManager,
+  type MakaTool,
+} from '@maka/runtime';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { numericEnv, type RunHarborCellEnv } from './headless-run-env.js';
-import type { IsolatedCommandResult, IsolatedToolExecutor } from './isolation.js';
+import type {
+  IsolatedCommandResult,
+  IsolatedShellSessions,
+  IsolatedToolExecutor,
+} from './isolation.js';
 import { isSensitiveEnvName } from './provider-env.js';
+import { createTaskShellRunStore } from './task-shell-run-store.js';
 import {
   buildIsolatedHeadlessTools,
   FRAMED_FILE_TOOL_MAX_TRANSPORT_BYTES,
@@ -130,6 +141,11 @@ export function createHarborCellLocalToolExecutor(
   const shell = defaultShellPlan();
   return {
     shell,
+    // The cell's own process IS the task workspace, so the runtime's managed
+    // shell can own long-lived and interactive processes here. Deliberately
+    // absent from createHarborHttpToolExecutor: spawning there would put the
+    // process on the host beside the credentials, not in the task container.
+    shellSessions: createTaskShellSessions(childEnv, defaultTimeoutMs),
     exec: async ({ command, cwd, timeoutMs, boundedTail }, control) => {
       if (boundedTail) {
         // Bash opted in: stream into a bounded tail (shared with the in-process
@@ -184,6 +200,29 @@ export function createHarborCellLocalToolExecutor(
         };
       }
     },
+  };
+}
+
+function createTaskShellSessions(
+  commandEnv: NodeJS.ProcessEnv,
+  defaultCommandTimeoutMs: number,
+): IsolatedShellSessions {
+  const manager = new ShellRunProcessManager({
+    store: createTaskShellRunStore(),
+    newId: randomUUID,
+    now: Date.now,
+  });
+  return {
+    commandEnv,
+    defaultCommandTimeoutMs,
+    runForegroundBash: (input) => manager.runForegroundBash(input),
+    runBackgroundBash: (input) => manager.runBackgroundBash(input),
+    readRuntimeResource: (sessionId, ref, abortSignal) =>
+      manager.readRuntimeResource(sessionId, ref, abortSignal),
+    stopBackgroundTask: (sessionId, ref, abortSignal) =>
+      manager.stopBackgroundTask(sessionId, ref, abortSignal),
+    writeStdin: (input) => manager.writeStdin(input),
+    terminateAll: () => manager.terminateAll(),
   };
 }
 

@@ -183,11 +183,10 @@ export function PlanReminderInspector(props: {
         <StackItem size="fill" />
         <Button
           size="sm"
-          variant="ghost"
+          variant="destructive"
           label={key('delete') ? copy.page.deleting : copy.page.delete}
           isDisabled={pending}
           onClick={props.onDelete}
-          style={{ color: 'var(--destructive-text)' }}
         />
       </HStack>
     </VStack>

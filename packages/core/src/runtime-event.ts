@@ -24,16 +24,11 @@ import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './int
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import type { TurnOrigin } from './runtime-inputs.js';
 import type { UserQuestionRequest } from './user-question.js';
-import type {
-  CacheMissInputSource,
-  ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-} from './usage-stats/types.js';
 import {
   defineObjectShape,
   hasExactShape,
   isFiniteNumber,
+  isOptionalMember,
   isOptionalString,
   isRecord,
   isStringArray,
@@ -43,7 +38,7 @@ import {
   isPermissionRequestPayload,
   isUserQuestionRequest,
 } from './interaction-record-schema.js';
-import { isTokenUsageFields } from './usage-record-schema.js';
+import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
 import { isToolRecoveryFactEnvelope, type ToolRecoveryFactEnvelope } from './tool-recovery-fact.js';
 import {
   isRuntimeEventWorkspaceFactEnvelope,
@@ -108,6 +103,14 @@ export const TERMINAL_RUNTIME_EVENT_STATUSES: readonly RuntimeEventStatus[] = [
 export function isRuntimeEventStatus(value: unknown): value is RuntimeEventStatus {
   return typeof value === 'string' && (RUNTIME_EVENT_STATUSES as readonly string[]).includes(value);
 }
+
+/** Execution surface that produced a fact; absent on legacy ledgers. */
+export const RUNTIME_EVENT_ORIGINS = ['provider', 'code_mode'] as const;
+export type RuntimeEventOrigin = (typeof RUNTIME_EVENT_ORIGINS)[number];
+
+/** Explicit provider-history policy; absent means visible. */
+export const RUNTIME_EVENT_MODEL_VISIBILITIES = ['visible', 'hidden'] as const;
+export type RuntimeEventModelVisibility = (typeof RUNTIME_EVENT_MODEL_VISIBILITIES)[number];
 
 export function isTerminalRuntimeEventStatus(value: unknown): boolean {
   return (
@@ -207,32 +210,7 @@ export type RuntimeEventContentKind = (typeof RUNTIME_EVENT_CONTENT_KINDS)[numbe
  * Token usage carried as a runtime action rather than a content payload.
  * Mirrors TokenUsageEvent / TokenUsageMessage so projections can map 1:1.
  */
-export interface RuntimeEventTokenUsage {
-  input: number;
-  output: number;
-  cacheHitInput?: number;
-  cacheMissInput?: number;
-  cacheWriteInput?: number;
-  cacheMissInputSource?: CacheMissInputSource;
-  reasoning?: number;
-  total?: number;
-  rawFinishReason?: string;
-  /** Number of provider runtime/tool-loop steps represented by this usage. */
-  runtimeSteps?: number;
-  /** Backward-compatible alias for cacheHitInput. */
-  cacheRead?: number;
-  /** Backward-compatible alias for cacheWriteInput. */
-  cacheCreation?: number;
-  costUsd?: number;
-  systemPromptHash?: string;
-  contextRemaining?: number;
-  prefixHash?: string;
-  prefixChangeReason?: PrefixChangeReason;
-  requestShapeHash?: string;
-  requestShapeChangeReason?: PrefixChangeReason;
-  promptSegments?: PromptSegmentEstimate[];
-  contextBudget?: ContextBudgetDiagnostic;
-}
+export interface RuntimeEventTokenUsage extends TokenUsageFields {}
 
 /**
  * Permission decision attached to an event. Runtime history may retain the
@@ -356,6 +334,10 @@ export interface RuntimeEventRefs {
   artifactId?: string;
   /** Runtime-owned durable identity for one tool side-effect boundary. */
   operationId?: string;
+  /** Provider tool-call id of the enclosing exec operation. */
+  parentToolCallId?: string;
+  /** Runtime-owned durable identity of the enclosing exec operation. */
+  parentOperationId?: string;
   /**
    * Assistant step id for a function_call event: the id of the step's
    * text/thinking messages (their `providerEventId`). Model replay pairs a
@@ -418,6 +400,10 @@ export interface RuntimeEvent {
 
   role: RuntimeEventRole;
   author: RuntimeEventAuthor;
+  /** Execution surface that produced this fact; absent on legacy ledgers. */
+  origin?: RuntimeEventOrigin;
+  /** Explicit provider-history policy; absent means visible for legacy compatibility. */
+  modelVisibility?: RuntimeEventModelVisibility;
   /** Lifecycle assertion; omitted on ordinary in-flight content events. */
   status?: RuntimeEventStatus;
 
@@ -426,9 +412,46 @@ export interface RuntimeEvent {
   refs?: RuntimeEventRefs;
 }
 
+/**
+ * Every key a RuntimeEvent envelope may carry. TypeScript forces this list to
+ * cover the interface, so it moves whenever the interface does — which makes it
+ * the thing anything re-implementing the envelope check must be pinned to.
+ *
+ * The Harbor trajectory exporter re-implements it in Python and drifted: it
+ * never learned `origin` or `modelVisibility`, so once the runtime started
+ * emitting them every event failed the check and all 89 cells of a benchmark
+ * run exported a one-line summary instead of a trajectory. The shared
+ * validation corpus was supposed to catch that and could not — it exercised
+ * the keys someone thought to write cases for, and those two were never among
+ * them. `runtime-event.test.ts` now holds the corpus to this list.
+ */
+export function runtimeEventEnvelopeKeys(): readonly string[] {
+  return [...RUNTIME_EVENT_SHAPE.allowed];
+}
+
+/**
+ * Every value each closed-domain envelope key may hold.
+ *
+ * Pinning the corpus to the key list closed one half of the drift the Harbor
+ * exporter fell through: a key nobody wrote a case for. The other half is a
+ * value nobody wrote a case for — the exporter spells these domains out again
+ * in Python, and a member added here that no case carries would leave the two
+ * disagreeing about what is valid with nothing red. Only the closed domains
+ * appear; `branch` is free text and has nothing to enumerate.
+ */
+export function runtimeEventEnvelopeValueDomains(): Readonly<Record<string, readonly string[]>> {
+  return {
+    role: RUNTIME_EVENT_ROLES,
+    author: RUNTIME_EVENT_AUTHORS,
+    origin: RUNTIME_EVENT_ORIGINS,
+    modelVisibility: RUNTIME_EVENT_MODEL_VISIBILITIES,
+    status: RUNTIME_EVENT_STATUSES,
+  };
+}
+
 const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
   ['id', 'invocationId', 'runId', 'sessionId', 'turnId', 'ts', 'partial', 'role', 'author'],
-  ['branch', 'status', 'content', 'actions', 'refs'],
+  ['branch', 'origin', 'modelVisibility', 'status', 'content', 'actions', 'refs'],
 );
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
@@ -543,6 +566,7 @@ const RUNTIME_TOKEN_USAGE_SHAPE = defineObjectShape<RuntimeEventTokenUsage>()(
     'requestShapeChangeReason',
     'promptSegments',
     'contextBudget',
+    'providerRequestTraceId',
   ],
 );
 const RUNTIME_REFS_SHAPE = defineObjectShape<RuntimeEventRefs>()(
@@ -555,6 +579,8 @@ const RUNTIME_REFS_SHAPE = defineObjectShape<RuntimeEventRefs>()(
     'providerRequestTraceId',
     'artifactId',
     'operationId',
+    'parentToolCallId',
+    'parentOperationId',
     'stepId',
     'sourceInvocationId',
     'sourceRunId',
@@ -582,6 +608,8 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     typeof value.partial !== 'boolean' ||
     !isRuntimeEventRole(value.role) ||
     !isRuntimeEventAuthor(value.author) ||
+    !isOptionalMember(value.origin, RUNTIME_EVENT_ORIGINS) ||
+    !isOptionalMember(value.modelVisibility, RUNTIME_EVENT_MODEL_VISIBILITIES) ||
     (value.status !== undefined && !isRuntimeEventStatus(value.status)) ||
     (value.content !== undefined && !isRuntimeEventContent(value.content)) ||
     (value.actions !== undefined && !isRuntimeEventActions(value.actions)) ||
@@ -861,6 +889,8 @@ function isRuntimeEventRefs(value: unknown): value is RuntimeEventRefs {
       value.providerRequestTraceId,
       value.artifactId,
       value.operationId,
+      value.parentToolCallId,
+      value.parentOperationId,
       value.stepId,
       value.sourceInvocationId,
       value.sourceRunId,
@@ -901,6 +931,7 @@ export function isPartialRuntimeEvent(event: RuntimeEvent): boolean {
  * filtering (partial chunks are never replayed into the next model call).
  */
 export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean {
+  if (event.modelVisibility === 'hidden') return false;
   const content = event.content;
   if (!content) return false;
   switch (content.kind) {

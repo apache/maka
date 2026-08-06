@@ -1,164 +1,24 @@
-/* Keep search compact so it does not compete with the page title. */
-.maka-skill-search {
-  width: min(280px, 30vw);
-  min-width: 0;
-}
+/* Skills page-specific bits.
+   The skeleton (Astryx Layout: header, toolbar, content, resizable inspector)
+   lives in the shared ModulePage primitive; rows are Astryx List/ListItem.
+   What is left here is the collision-slug treatment, the search summary text,
+   and the update-review diff the design system does not model. */
 
-/* Astryx owns control and row geometry. This stylesheet only arranges the
-   Skills product surfaces and the update-diff content Astryx does not model. */
-.maka-skill-library {
-  width: min(100%, 900px);
-  margin-inline: auto;
-  min-height: 0;
-  overflow: auto;
-  display: grid;
-  align-content: start;
-  gap: var(--space-3);
-}
-
-.maka-skill-tool-summary-hidden {
-  display: none;
-}
-
-.maka-skill-tabs-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.maka-skill-market-controls,
-.maka-skill-filter-actions,
-.maka-skill-library-controls,
-.maka-skill-library-exceptions {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.maka-skill-market-controls,
-.maka-skill-library-controls {
-  flex: 0 0 auto;
-}
-
-.maka-skill-filter-actions,
-.maka-skill-library-exceptions {
-  flex-wrap: wrap;
-}
-
-.maka-skill-market-select {
-  min-width: 0;
-}
-
-.maka-skill-market,
-.maka-skill-installed {
-  min-width: 0;
-  display: grid;
-  gap: var(--space-2);
-}
-
-.maka-skill-section-row {
-  min-width: 0;
-}
-
-.maka-skill-section-label {
-  font: var(--maka-text-heading-5);
-  color: var(--foreground-secondary);
-  letter-spacing: var(--tracking-widest);
-  text-transform: uppercase;
-}
-
-.maka-skill-catalog-list,
-.maka-skill-library-list {
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.maka-skill-catalog-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-  gap: var(--space-2);
-}
-
-.maka-skill-catalog-item,
-.maka-skill-library-item {
-  min-width: 0;
-}
-
-.maka-skill-catalog-details,
-.maka-skill-library-details {
-  min-width: 0;
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.maka-skill-catalog-details > span,
-.maka-skill-library-details > span,
-.maka-skill-library-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.maka-skill-catalog-details > span,
-.maka-skill-library-details > span {
-  white-space: nowrap;
-}
-
-.maka-skill-library-list {
-  overflow: hidden;
-  display: grid;
-  align-content: start;
-  border: var(--border-width-hairline) solid var(--foreground-8);
-  border-radius: var(--radius-control);
-  background: var(--background);
-}
-
-.maka-skill-library-item + .maka-skill-library-item {
-  border-top: var(--border-width-hairline) solid var(--foreground-8);
-}
-
-.maka-skill-library-item[data-context-status='shadowed'],
-.maka-skill-library-item[data-context-status='budget'] {
-  opacity: var(--opacity-pending);
-}
-
-.maka-skill-library-label {
+.maka-skill-row-label {
   display: inline-flex;
   align-items: baseline;
   max-width: 100%;
+  min-width: 0;
   white-space: nowrap;
 }
 
-.maka-skill-library-slug {
+.maka-skill-row-slug {
   margin-inline-start: var(--space-1-5);
   color: var(--muted-foreground);
 }
 
-.maka-skill-library-supporting {
-  color: var(--muted-foreground);
-}
-
-.maka-skill-library-exceptions:empty {
-  display: none;
-}
-
-.maka-skill-installed-empty {
-  align-self: stretch;
-}
-
-.maka-skill-governance-review {
-  --maka-skill-diff-preview-max-block: calc(var(--space-16) * 4);
+.maka-skill-inspector {
   min-width: 0;
-  display: grid;
-  gap: var(--space-2);
-  border: var(--border-width-hairline) solid var(--foreground-8);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  padding: var(--space-3);
 }
 
 .maka-skill-governance-summary {
@@ -197,9 +57,12 @@
 }
 
 .maka-skill-diff-grid {
+  --maka-skill-diff-preview-max-block: calc(var(--space-16) * 4);
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Single column: the diff review only renders inside the 280–420px
+     inspector, where side-by-side columns would crush both panes. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
 }
 
@@ -227,32 +90,4 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   padding: var(--space-2);
-}
-
-.maka-skill-governance-actions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-@media (max-width: 820px) {
-  .maka-skill-search {
-    width: min(100%, 280px);
-  }
-
-  .maka-skill-tabs-bar {
-    align-items: stretch;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .maka-skill-market-controls {
-    flex-wrap: wrap;
-  }
-
-  .maka-skill-catalog-list,
-  .maka-skill-diff-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }

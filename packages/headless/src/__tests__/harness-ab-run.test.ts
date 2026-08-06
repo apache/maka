@@ -221,6 +221,56 @@ describe('runHarnessAbComparison', () => {
     }
   });
 
+  test('retries an infra-failed cell whose task id carries a dot', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-dotted-retry-'));
+    try {
+      const promptPath = join(dir, 'empty-system-prompt.txt');
+      await writeFile(promptPath, '', 'utf8');
+      let failingAttempts = 0;
+      const calls: string[] = [];
+      const failingArm = harnessArm('maka', calls);
+      failingArm.harborRunner = async () => {
+        failingAttempts += 1;
+        throw new Error('container failed after launch');
+      };
+      const input = {
+        runId: 'glm-harness-ab',
+        runRoot: dir,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        systemPromptPath: promptPath,
+        resumeFingerprint: 'sha256:manifest',
+        evaluationTasks: [
+          { id: 'install-windows-3.11', path: '/tasks/install-windows-3.11' },
+          { id: 'plain', path: '/tasks/plain' },
+        ],
+        arms: [failingArm, harnessArm('opencode', calls)] as const,
+      };
+
+      await runHarnessAbComparison(input);
+      assert.equal(failingAttempts, 2);
+
+      // The written round id normalizes the dot, so that is what an operator
+      // reads back out of results.jsonl and feeds to the retry.
+      await runHarnessAbComparison({
+        ...input,
+        retryAdjudicatedInfraRoundIdsOnce: ['ab-maka-r0-install-windows-3-11'],
+      });
+      assert.equal(failingAttempts, 3);
+
+      // An operator recovering a sweep hands over a batch of ids. Naming only
+      // the first offender makes fixing a list of typos one round-trip each.
+      await assert.rejects(
+        runHarnessAbComparison({
+          ...input,
+          retryAdjudicatedInfraRoundIdsOnce: ['ab-maka-r0-nope', 'ab-maka-r0-also-nope'],
+        }),
+        /unknown round ab-maka-r0-nope, ab-maka-r0-also-nope/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('continues the frozen schedule after a terminal cell infrastructure failure', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-resilient-schedule-'));
     try {

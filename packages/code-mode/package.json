@@ -1,0 +1,24 @@
+{
+  "name": "@maka/code-mode",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Capability-less interpreter for bounded agent tool orchestration.",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:dist": "node --test \"dist/**/*.test.js\"",
+    "test": "npm run clean && npm run build && npm run test:dist"
+  },
+  "dependencies": {
+    "acorn": "^8.18.0",
+    "typescript": "5.9.3"
+  }
+}

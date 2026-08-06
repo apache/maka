@@ -17,6 +17,7 @@ import {
   isRecord,
 } from './record-schema.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
+import { isToolMode, type ToolMode } from './tool-mode.js';
 
 export const AGENT_RUN_STATUSES = [
   'created',
@@ -141,6 +142,8 @@ export interface AgentRunHeader {
   orchestrationSource?: EffectiveOrchestrationSource;
   /** Narrow authority for the parent agent_swarm envelope. */
   agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
+  /** Effective tool protocol for this run. Optional on legacy runs. */
+  toolMode?: ToolMode;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -453,6 +456,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'orchestrationMode',
     'orchestrationSource',
     'agentSwarmAuthorization',
+    'toolMode',
   ],
 );
 
@@ -485,6 +489,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
     (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
     !(value.automationId !== undefined && value.goalId !== undefined) &&
+    (value.toolMode === undefined || isToolMode(value.toolMode)) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&

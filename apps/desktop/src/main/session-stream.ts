@@ -25,8 +25,6 @@ import type {
   SessionActivityRegistry,
   SessionManager,
   ToolArtifactRecorderInput,
-  ToolResultArchiveReaderInput,
-  ToolResultArchiveRecorderInput,
   buildPricingLookup,
 } from '@maka/runtime';
 import type { createSqliteModelCallLedger } from '@maka/storage';
@@ -69,8 +67,7 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
   sandboxDiagnosticsProvider: AssembledTools['sandboxDiagnosticsProvider'];
   persistToolArtifacts: ToolArtifactPersistence['persistToolArtifacts'];
-  persistArchivedToolResult: ToolArtifactPersistence['persistArchivedToolResult'];
-  readArchivedToolResult: ToolArtifactPersistence['readArchivedToolResult'];
+  toolResultArchive: ToolArtifactPersistence['toolResultArchive'];
   runtimeCommitStore: RuntimeCommitStore;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
@@ -98,8 +95,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
     desktopSessionSkillHosts,
     sandboxDiagnosticsProvider,
     persistToolArtifacts,
-    persistArchivedToolResult,
-    readArchivedToolResult,
+    toolResultArchive,
     runtimeCommitStore,
     safeSendToRenderer,
     emitSessionsChanged,
@@ -329,8 +325,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
             : event,
         ),
       recordToolArtifacts: (event: ToolArtifactRecorderInput) => persistToolArtifacts(ctx.header.cwd, event),
-      archiveToolResult: (event: ToolResultArchiveRecorderInput) => persistArchivedToolResult(event),
-      readToolResultArchive: (event: ToolResultArchiveReaderInput) => readArchivedToolResult(event),
+      toolResultArchive,
       readAttachmentBytes: createAttachmentByteReader({ artifactStore, sessionId: ctx.sessionId }),
       ...(runtimeCommitStore
         ? { runtimeCommitSink: runtimeCommitStore }

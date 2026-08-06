@@ -62,11 +62,16 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { EphemeralVoiceAudio } from '@maka/core/voice';
+import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
 import type { PlanToolResult } from './plan-tools.js';
+import {
+  bindToolResultArchiveDecoder,
+  type ToolResultArchiveCapability,
+} from './tool-result-archive-capability.js';
 import {
   YIELD_AGENT_GRAPH_TOOL_NAME,
   type YieldAgentGraphToolResult,
@@ -83,6 +88,7 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
+import { DEFAULT_CODE_MODE_LIMITS, executeCodeCell } from '@maka/code-mode';
 import type {
   AudioPart,
   JSONValue,
@@ -96,6 +102,9 @@ import type {
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
+import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
+import Ajv2019 from 'ajv/dist/2019.js';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
@@ -107,8 +116,10 @@ import {
   ToolRuntime,
   formatSyntheticToolErrorText,
   formatToolArgsViolationText,
+  isRuntimeCommitBoundaryError,
   type MakaTool,
   type MakaToolContext,
+  type DurableSessionEventSink,
   type ToolRuntimeInput,
 } from './tool-runtime.js';
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
@@ -120,6 +131,8 @@ import {
   type ModelStreamResult,
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
+import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
+import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import {
   composeRequestProjection,
   type RequestProjection,
@@ -175,7 +188,11 @@ import {
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
-import { ToolAvailabilityRuntime, type ToolAvailabilityConfig } from './tool-availability.js';
+import {
+  ToolAvailabilityRuntime,
+  type ToolAvailabilityConfig,
+  type ToolAvailabilityPlan,
+} from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
 import {
@@ -197,7 +214,6 @@ import {
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
   type ContextBudgetPolicy,
-  type ToolResultArchiveReader,
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
@@ -413,6 +429,165 @@ export type {
 
 export const INVALID_TOOL_NAME = 'invalid';
 
+function projectToolModePlan(
+  plan: ToolAvailabilityPlan,
+  toolMode: ToolMode,
+  execTool: MakaTool,
+): ToolAvailabilityPlan {
+  if (toolMode === 'direct') return plan;
+  const withExec = (names: readonly string[]): string[] =>
+    [...new Set([...names, execTool.name])].sort((a, b) => a.localeCompare(b));
+  const invalid = plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME);
+  const visible = [
+    ...plan.providerTools.filter((tool) => tool.name !== INVALID_TOOL_NAME),
+    execTool,
+  ].sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    ...plan,
+    providerTools: [...visible, ...invalid],
+    activeTools: withExec(plan.activeTools),
+    ...(plan.projectActiveTools
+      ? {
+          projectActiveTools: (options) => ({
+            activeTools: withExec(plan.projectActiveTools?.(options).activeTools ?? []),
+          }),
+        }
+      : {}),
+    currentRepairToolNames: () => withExec(plan.currentRepairToolNames()),
+    diagnostics: (activeTools, visibleToolSchemaChars) => {
+      const baseActive = activeTools.filter((name) => name !== execTool.name);
+      const baseChars = toolSchemaCharsForDiagnostics(plan.providerTools, baseActive);
+      const diagnostic = plan.diagnostics(baseActive, baseChars);
+      if (!diagnostic) return undefined;
+      const execSchemaChars = Math.max(0, visibleToolSchemaChars - baseChars);
+      return {
+        ...diagnostic,
+        visibleToolCount: (diagnostic.visibleToolCount ?? baseActive.length) + 1,
+        fullToolCount:
+          (diagnostic.fullToolCount ?? baseActive.length + (diagnostic.hiddenToolCount ?? 0)) + 1,
+        visibleToolSchemaChars,
+        fullToolSchemaChars:
+          (diagnostic.fullToolSchemaChars ??
+            baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
+      };
+    },
+  };
+}
+
+function nestableToolSnapshot(
+  providerTools: readonly MakaTool[],
+  activeToolNames: readonly string[],
+): ReadonlyMap<string, MakaTool> {
+  const active = new Set(activeToolNames);
+  return new Map(
+    providerTools
+      .filter(
+        (tool) =>
+          active.has(tool.name) &&
+          tool.name !== INVALID_TOOL_NAME &&
+          tool.name !== 'exec' &&
+          tool.nesting !== 'direct_only',
+      )
+      .map((tool) => [tool.name, tool] as const),
+  );
+}
+
+const codeModeJsonSchemaOptions = {
+  allErrors: true,
+  strict: false,
+  validateFormats: false,
+} as const;
+const codeModeDraft7Validator = new Ajv(codeModeJsonSchemaOptions);
+const codeModeDraft2019Validator = new Ajv2019(codeModeJsonSchemaOptions);
+const codeModeDraft2020Validator = new Ajv2020(codeModeJsonSchemaOptions);
+const codeModeCompiledSchemas = new WeakMap<object, ValidateFunction>();
+
+async function validateCodeModeToolInput(tool: MakaTool, input: unknown): Promise<unknown> {
+  const parameters = tool.parameters as {
+    safeParseAsync?: (
+      value: unknown,
+    ) => Promise<{ success: true; data: unknown } | { success: false; error: unknown }>;
+    safeParse?: (
+      value: unknown,
+    ) => { success: true; data: unknown } | { success: false; error: unknown };
+    validate?: (
+      value: unknown,
+    ) =>
+      | { success: true; value: unknown }
+      | { success: false; error: unknown }
+      | Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
+    jsonSchema?: unknown;
+  };
+  const parserResult = parameters.safeParseAsync
+    ? await parameters.safeParseAsync(input)
+    : parameters.safeParse?.(input);
+  if (parserResult) {
+    if (parserResult.success) return parserResult.data;
+    throw invalidCodeModeToolArguments(tool.name, parserResult.error);
+  }
+
+  if (parameters.validate) {
+    const validationResult = await parameters.validate(input);
+    if (validationResult.success) return validationResult.value;
+    throw invalidCodeModeToolArguments(tool.name, validationResult.error);
+  }
+
+  const schema = await parameters.jsonSchema;
+  const validator = compileCodeModeJsonSchema(schema ?? tool.parameters);
+  if (!validator || validator(input)) return input;
+  throw invalidCodeModeToolArguments(tool.name, validator.errors);
+}
+
+function compileCodeModeJsonSchema(schema: unknown): ValidateFunction | undefined {
+  if (typeof schema === 'boolean') return codeModeDraft2020Validator.compile(schema);
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return undefined;
+  const cached = codeModeCompiledSchemas.get(schema);
+  if (cached) return cached;
+  const declaredDialect = (schema as { readonly $schema?: unknown }).$schema;
+  const dialect = typeof declaredDialect === 'string' ? declaredDialect : '';
+  const validator = dialect.includes('draft-07')
+    ? codeModeDraft7Validator
+    : dialect.includes('2019-09')
+      ? codeModeDraft2019Validator
+      : codeModeDraft2020Validator;
+  const schemaForCompile = dialect.startsWith('https://json-schema.org/draft-07/schema')
+    ? { ...schema, $schema: dialect.replace('https://', 'http://') }
+    : schema;
+  const compiled = validator.compile(schemaForCompile as AnySchema);
+  codeModeCompiledSchemas.set(schema, compiled);
+  return compiled;
+}
+
+function invalidCodeModeToolArguments(toolName: string, error: unknown): Error {
+  return new Error(`Invalid arguments for tool "${toolName}": ${schemaErrorSummary(error)}`);
+}
+
+function schemaErrorSummary(error: unknown): string {
+  if (error && typeof error === 'object' && Array.isArray((error as { issues?: unknown }).issues)) {
+    const issues = (error as { issues: Array<{ path?: unknown; message?: unknown }> }).issues;
+    return issues
+      .slice(0, 5)
+      .map((issue) => {
+        const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
+        const message = typeof issue.message === 'string' ? issue.message : 'invalid value';
+        return path ? `${path}: ${message}` : message;
+      })
+      .join('; ')
+      .slice(0, 1000);
+  }
+  if (Array.isArray(error)) {
+    return (error as ErrorObject[])
+      .slice(0, 5)
+      .map((issue) => {
+        const path = issue.instancePath || issue.schemaPath;
+        return `${path || 'input'} ${issue.message ?? 'is invalid'}`;
+      })
+      .join('; ')
+      .slice(0, 1000);
+  }
+  return 'input does not match the declared schema';
+}
+
 function joinPromptFragments(fragments: readonly (string | undefined)[]): string | undefined {
   const joined = fragments
     .map((fragment) => fragment?.trim())
@@ -450,8 +625,6 @@ export type {
   SynthesisCacheWriter,
   SynthesisCacheWriteInput,
   SynthesisCacheWriteResult,
-  ToolResultArchiveRecorder,
-  ToolResultArchiveRecorderInput,
 } from './ai-sdk-compaction-contract.js';
 
 export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
@@ -514,6 +687,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   shellRunContextSummary?: () => string | undefined | Promise<string | undefined>;
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
+  /** Test seam for the adapter-owned incremental Responses transport. */
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
   /** Optional fire-and-forget telemetry hook. Tool implementations remain unaware. */
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
@@ -596,12 +771,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    */
   supportsVision?: boolean;
   maxProviderImageRequestBytes?: number;
-  /**
-   * Optional archive reader for replay-only stale tool-result retrieval. The
-   * runtime never mutates persisted RuntimeEvents; successful reads hydrate
-   * the current model request only.
-   */
-  readToolResultArchive?: ToolResultArchiveReader;
 }
 
 export interface SystemPromptContext {
@@ -722,6 +891,7 @@ class TurnScope {
    * so a provider request never carries an unpersisted steering directive.
    */
   injectedSteeringMessages: ModelMessage[] = [];
+  codeModeTools: ReadonlyMap<string, MakaTool> | undefined;
 
   constructor(
     readonly turnId: string,
@@ -784,6 +954,9 @@ export class AiSdkBackend implements AgentBackend {
       providerOptions: input.providerOptions,
       newId: this.newId,
       now: this.now,
+      ...(input.openAiResponsesTransportState
+        ? { openAiResponsesTransportState: input.openAiResponsesTransportState }
+        : {}),
     });
     this.compaction = new AiSdkCompaction({
       input,
@@ -799,7 +972,9 @@ export class AiSdkBackend implements AgentBackend {
         this.appendTurnTailPrompt(content, turnTailPrompt),
     });
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
-      input.tools,
+      // The archive decoder is a runtime protocol tool, not a host binding:
+      // this session's placeholders name it, so this session advertises it.
+      bindToolResultArchiveDecoder(input.tools, input.toolResultArchive),
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
@@ -848,6 +1023,26 @@ export class AiSdkBackend implements AgentBackend {
       runtimeCommitSink: input.runtimeCommitSink,
       recordToolArtifacts: input.recordToolArtifacts,
     });
+  }
+
+  private createCodeModeExecTool(
+    scope: TurnScope,
+    eventSink: DurableSessionEventSink,
+  ): MakaTool<{ code: string }> {
+    return {
+      name: 'exec',
+      description: [
+        'Execute a bounded orchestration cell over the active tools.',
+        'Use tools.<name>(args), await dependent calls, and Promise.all for independent calls.',
+        'There is no console, process, filesystem, network, timer, eval, import, or cross-cell state.',
+        'Terminate by returning a plain-data value. Unsupported syntax returns a structured diagnostic.',
+      ].join(' '),
+      parameters: z.object({ code: z.string().max(DEFAULT_CODE_MODE_LIMITS.maxSourceBytes) }),
+      executionSemantics: 'exclusive_step',
+      nesting: 'direct_only',
+      recoveryMode: 'never_auto_retry',
+      impl: (args, context) => this.executeCodeModeCell(scope, eventSink, args.code, context),
+    };
   }
 
   // --------------------------------------------------------------------------
@@ -915,6 +1110,7 @@ export class AiSdkBackend implements AgentBackend {
 
     const midTurnState = this.compaction.buildMidTurnCapacityCompactState(input);
     const queue = new AsyncEventQueue<SessionEvent>();
+    const codeModeExecTool = this.createCodeModeExecTool(scope, queue);
 
     // One AssistantMessage is flushed per provider step (not per turn), so the
     // ledger records the text↔tool timeline at step granularity and each step's
@@ -1044,7 +1240,7 @@ export class AiSdkBackend implements AgentBackend {
     let lastStepInputTokens: number | undefined;
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
-    let rawFinishReason: string | undefined;
+    let streamedFinishReason: string | undefined;
     let runtimeSteps = 0;
     let requestShapeForTelemetry: RequestShapeDiagnostic | undefined;
     let promptSegmentsForTelemetry: PromptSegmentEstimate[] = [];
@@ -1122,9 +1318,22 @@ export class AiSdkBackend implements AgentBackend {
         : scope.orchestration.mode === 'graph'
           ? new Set(['view_agent_graph', 'update_agent_graph', 'yield_agent_graph', 'agent_output'])
           : new Set<string>();
-    const plan = this.toolAvailabilityRuntime.prepare(
-      (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
-      requiredOrchestrationTools,
+    const requestedToolMode: unknown =
+      input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;
+    if (!isToolMode(requestedToolMode)) {
+      throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
+    }
+    const toolMode = requestedToolMode;
+    if (toolMode === 'code_mode' && this.input.tools.some((tool) => tool.name === 'exec')) {
+      throw new Error('Tool name "exec" is reserved for Code Mode.');
+    }
+    const plan = projectToolModePlan(
+      this.toolAvailabilityRuntime.prepare(
+        (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
+        requiredOrchestrationTools,
+      ),
+      toolMode,
+      codeModeExecTool,
     );
     const providerTools = plan.providerTools;
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
@@ -1561,6 +1770,10 @@ export class AiSdkBackend implements AgentBackend {
             stepThinking.length === 0 &&
             stepSignature === undefined;
           for (;;) {
+            scope.codeModeTools =
+              toolMode === 'code_mode'
+                ? nestableToolSnapshot(providerTools, activeToolsForRequest)
+                : undefined;
             result = await this.modelAdapter.startStream({
               model,
               messages: attemptMessages,
@@ -1629,7 +1842,7 @@ export class AiSdkBackend implements AgentBackend {
                   }
                 }
                 if (event.kind === 'finish' || event.kind === 'step-finish') {
-                  rawFinishReason = event.finishReason ?? rawFinishReason;
+                  streamedFinishReason = event.finishReason ?? streamedFinishReason;
                 }
                 if (event.kind === 'text-start') {
                   stepTextPartStartOffset = stepText.length;
@@ -1876,8 +2089,13 @@ export class AiSdkBackend implements AgentBackend {
           // stream without a trailing `finish-step` for the last step.
           await flushStep();
 
-          finishReason = (await result.finishReason.catch(() => 'stop')) ?? 'stop';
-          rawFinishReason = rawFinishReason ?? finishReason;
+          // The settled promise reports only the SDK's unified enum; the stream
+          // events carry what the provider itself said, which is strictly more
+          // specific and is already what telemetry prefers below. Reading the
+          // same value here keeps the turn's outcome and its record from
+          // disagreeing about why the stream ended.
+          finishReason =
+            streamedFinishReason ?? (await result.finishReason.catch(() => 'stop')) ?? 'stop';
           await queue.waitUntilConsumedThroughCurrent();
 
           if (returnedToolCalls.length > 0) {
@@ -1959,6 +2177,27 @@ export class AiSdkBackend implements AgentBackend {
               const settlement = settlements[index];
               if (toolCall && settlement) {
                 settledModelOutputs.set(toolCall.toolCallId, settlement.modelOutput);
+              }
+            }
+
+            const continuationWillRun =
+              (this.maxSteps === undefined || runtimeSteps < this.maxSteps) &&
+              !scope.loopStopRequested &&
+              !scope.aborted;
+            if (
+              continuationWillRun &&
+              this.modelAdapter.continuationResponsePending(scope.turnId)
+            ) {
+              const persistedProjection = await loadDurableTurnProjection();
+              const responseMessages = persistedOpenAiResponsesStepMessages(
+                attemptMessages,
+                persistedProjection,
+                returnedToolCalls.map((toolCall) => toolCall.toolCallId),
+              );
+              if (responseMessages) {
+                this.modelAdapter.recordContinuationResponse(scope.turnId, responseMessages);
+              } else {
+                this.modelAdapter.clearContinuation(scope.turnId);
               }
             }
           }
@@ -2128,7 +2367,29 @@ export class AiSdkBackend implements AgentBackend {
           (this.maxSteps !== undefined && finishReason === 'tool-calls'
             ? 'step_limit'
             : this.mapFinishReason(finishReason));
-        trace.modelStreamCompleted(stopReason);
+        if (stopReason === 'error') {
+          // Reaching a failed terminal without anything having been thrown.
+          // Every other `stopReason: 'error'` here comes out of the catch below
+          // with an error event and a failed trace behind it, and the session's
+          // `lastError` and the request ledger are fed by exactly those. Ending
+          // the turn failed while the telemetry still reads `success` is the
+          // same blindness this branch exists to remove.
+          //
+          // Two different things arrive here and the message says which: the
+          // provider stopping the stream on its own policy, and a stop nothing
+          // named at all.
+          const err = new Error(
+            finishReason === 'content-filter'
+              ? 'Provider stopped the stream on a content filter'
+              : `Provider stream ended without finishing (${finishReason})`,
+          );
+          streamStatus = 'error';
+          streamErrorClass = this.modelAdapter.classifyError(err);
+          queue.push(this.makeErrorEvent(turnId, err));
+          trace.modelStreamFailed(streamErrorClass, err, priorReplayFailureTrace(priorReplay));
+        } else {
+          trace.modelStreamCompleted(stopReason);
+        }
         queue.push({
           type: 'complete',
           id: this.newId(),
@@ -2261,6 +2522,66 @@ export class AiSdkBackend implements AgentBackend {
       if (!drainedNormally) turnAbortController.abort();
       await pumpDone.catch(() => {});
     }
+  }
+
+  private async executeCodeModeCell(
+    scope: TurnScope,
+    eventSink: DurableSessionEventSink,
+    code: string,
+    context: MakaToolContext,
+  ): Promise<unknown> {
+    const snapshot = new Map(scope.codeModeTools);
+    let nestedOutputBytes = 0;
+    let nestedOutputLimitExceeded = false;
+    const nestedEventSink: DurableSessionEventSink = {
+      push: (event) => {
+        if (event.type === 'tool_output_delta') {
+          const nextBytes = new TextEncoder().encode(event.chunk).byteLength;
+          if (
+            nestedOutputLimitExceeded ||
+            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_LIMITS.maxOutputBytes
+          ) {
+            nestedOutputLimitExceeded = true;
+            return;
+          }
+          nestedOutputBytes += nextBytes;
+        }
+        eventSink.push(event);
+      },
+      pushAndWaitUntilConsumed: (event) => eventSink.pushAndWaitUntilConsumed(event),
+    };
+    return executeCodeCell({
+      code,
+      signal: context.abortSignal,
+      tools: [...snapshot.values()].map((tool) => ({
+        name: tool.name,
+      })),
+      isFatalToolError: isRuntimeCommitBoundaryError,
+      callTool: async (name, input, signal) => {
+        const tool = snapshot.get(name);
+        if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
+        const parsedInput = await validateCodeModeToolInput(tool, input);
+        const settlement = await scope.toolRuntime.settleToolCallRaw({
+          tool,
+          turnId: context.turnId,
+          toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
+          input: parsedInput,
+          abortSignal: signal,
+          eventSink: nestedEventSink,
+          origin: 'code_mode',
+          parentToolCallId: context.toolCallId,
+          ...(context.operationId ? { parentOperationId: context.operationId } : {}),
+          maxResultBytes: DEFAULT_CODE_MODE_LIMITS.maxResultBytes,
+        });
+        if (settlement.providerError !== undefined) {
+          throw new Error(settlement.providerError);
+        }
+        if (nestedOutputLimitExceeded) {
+          throw new Error('Code Mode nested output byte limit exceeded');
+        }
+        return settlement.result;
+      },
+    });
   }
 
   private handlePlanToolResult(
@@ -2729,7 +3050,7 @@ export class AiSdkBackend implements AgentBackend {
       const retrieval = await retrieveArchivedToolResultsForReplay(
         runtimeContext,
         contextBudget?.archiveRetrieval,
-        this.input.readToolResultArchive,
+        this.input.toolResultArchive?.services.readToolResultArchive,
         {
           sessionId: this.sessionId,
           charsPerToken: contextBudget?.charsPerToken,

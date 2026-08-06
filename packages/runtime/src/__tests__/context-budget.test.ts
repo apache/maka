@@ -9,6 +9,7 @@ import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   applyRuntimeEventContextBudget,
   buildHistoryCompactBlockFromSummary,
+  collectStaleToolResultArchiveCandidates,
   buildSynthesisCacheBlocksFromHydratedArchives,
   deserializeToolResultArchive,
   mergeContextBudgetDiagnostic,
@@ -26,6 +27,31 @@ import { historyCompactBlockToCompactionBoundary } from '../compaction-boundary.
 import { estimateRuntimeEventChars } from '../context-budget-helpers.js';
 
 describe('context-budget archive retrieval', () => {
+  test('does not archive hidden nested tool results', () => {
+    const hiddenResult = toolResult('hidden-result', 'turn-old', 'hidden-tool', {
+      text: 'DO_NOT_ARCHIVE_NESTED_RESULT'.repeat(20),
+    });
+    hiddenResult.modelVisibility = 'hidden';
+    const visibleResult = toolResult('visible-result', 'turn-old', 'visible-tool', {
+      text: 'archive this result'.repeat(20),
+    });
+
+    const candidates = collectStaleToolResultArchiveCandidates([hiddenResult, visibleResult], {
+      staleToolResultPrune: {
+        enabled: true,
+        maxResultEstimatedTokens: 1,
+        minRecentTurnsFull: 0,
+      },
+      charsPerToken: 1,
+      minRecentTurns: 0,
+    });
+
+    assert.deepEqual(
+      candidates.map((candidate) => candidate.runtimeEventId),
+      ['visible-result'],
+    );
+  });
+
   test('counts provider-native replay payloads and never archives only their display projection', () => {
     const rawProviderOutput = [{ encryptedContent: 'x'.repeat(10_000) }];
     const event = {
@@ -1051,6 +1077,45 @@ describe('context-budget synthesis cache', () => {
     assert.equal(tooSmall.blocks.length, 0);
     assert.deepEqual(tooSmall.skippedReasonCounts, { max_block_tokens: 1 });
   });
+
+  test('does not synthesize hidden archived nested results', () => {
+    const hiddenBody = { text: 'DO_NOT_REPLAY_HIDDEN_ARCHIVE' };
+    const hiddenSerialized = serializeToolResultForArchive(hiddenBody);
+    const hiddenEvent = {
+      ...toolResult('hidden-synthesis-result', 'turn-hidden', 'hidden-synthesis-tool', hiddenBody),
+      modelVisibility: 'hidden' as const,
+    };
+    const result = buildSynthesisCacheBlocksFromHydratedArchives({
+      sessionId: 'session-1',
+      query: 'hidden archive',
+      hydratedRuntimeEvents: [hiddenEvent],
+      retrievedArchiveRefs: [
+        {
+          kind: 'archived_tool_result' as const,
+          sessionId: 'session-1',
+          turnId: 'turn-hidden',
+          runtimeEventId: hiddenEvent.id,
+          toolCallId: 'hidden-synthesis-tool',
+          toolName: 'Read',
+          artifactId: 'hidden-artifact',
+          bodySha256: sha256(hiddenSerialized),
+          originalEstimatedTokens: hiddenSerialized.length,
+          originalBytes: utf8Bytes(hiddenSerialized),
+          placeholderReason: 'stale_tool_result_pruned_before_compact' as const,
+        },
+      ],
+      archiveRetrievalMode: 'history_search_gated',
+      limits: {
+        maxBlocks: 1,
+        maxBlockEstimatedTokens: 1024,
+        maxEstimatedTokens: 1024,
+        charsPerToken: 4,
+      },
+    });
+
+    assert.deepEqual(result.blocks, []);
+    assert.equal(result.skippedReasonCounts?.source_missing, 1);
+  });
 });
 
 describe('context-budget history compact', () => {
@@ -1549,6 +1614,33 @@ describe('context-budget history compact', () => {
     assert.deepEqual(boundary.coverage.runtimeEventIds, ['old-1', 'old-2']);
     assert.deepEqual(boundary.preservedAnchor?.tailTurnIds, ['turn-3']);
     assert.equal(boundary.validationStatus, 'valid');
+  });
+
+  test('excludes hidden events from compact summaries and coverage', () => {
+    const hidden = {
+      ...textEvent('hidden-nested', 'turn-1', 'DO_NOT_REPLAY_NESTED_ARGUMENT'),
+      modelVisibility: 'hidden' as const,
+    };
+    const result = applyRuntimeEventHistoryCompact(
+      [
+        textEvent('visible-old', 'turn-1', 'visible prior context'),
+        hidden,
+        textEvent('visible-recent', 'turn-2', 'visible recent context'),
+      ],
+      {
+        enabled: true,
+        highWaterRatio: 0.001,
+        minRecentTurns: 0,
+        maxSummaryEstimatedTokens: 1_000,
+      },
+      1,
+      5_000,
+      { charsPerToken: 1, maxHistoryEstimatedTokens: 5_000 },
+    );
+
+    assert.equal(result.blocks.length, 1);
+    assert.doesNotMatch(result.blocks[0]?.summary ?? '', /DO_NOT_REPLAY_NESTED_ARGUMENT/);
+    assert.equal(result.blocks[0]?.coverage.runtimeEventIds.includes(hidden.id), false);
   });
 
   test('selects a loaded compact block instead of rebuilding the folded region', () => {

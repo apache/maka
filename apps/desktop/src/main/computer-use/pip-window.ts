@@ -749,9 +749,6 @@ export function createComputerUsePipController(
 // the code moves. The forwarding line is what makes this a move rather than a
 // change; it comes out in a later cut, not this one.
 export {
-  defaultCreateWindow,
-  defaultDistDir,
-  defaultResolveBounds,
   pipBoundsForAnchor,
   pipDisplaySize,
   pipWindowOptions,

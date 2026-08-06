@@ -31,6 +31,49 @@ export interface ToolLedgerIssue {
   toolCallId?: string;
 }
 
+/**
+ * The ledger refused a CANDIDATE event because that event was wrong — the store
+ * itself is healthy and still readable. The distinction decides what a run may
+ * do next: when the ledger can no longer be trusted the run latches its store
+ * unavailable and fails closed, but latching it for a bad candidate costs the
+ * run its own terminal write, which is how one refused append left a run stuck
+ * at `running` with no terminal event at all (#2234). This error is always a
+ * producer bug: something emitted a fact the ledger's invariants forbid.
+ *
+ * It deliberately does NOT cover a ledger that is already corrupt. That refusal
+ * rejects well-formed candidates because of damage elsewhere in the workspace,
+ * so "the store is healthy" is false and the run must keep failing closed —
+ * see `ToolLedgerCorruptionError`, which is a plain durability failure and is
+ * classified as one.
+ */
+export class ToolLedgerRejectionError extends Error {
+  readonly name = 'ToolLedgerRejectionError';
+
+  constructor(
+    readonly code: ToolLedgerRejectionCode,
+    readonly eventId: string,
+  ) {
+    super(`Tool ledger transition rejected: ${code} at ${eventId}`);
+  }
+}
+
+/**
+ * The ledger the store already holds is corrupt, so it refuses writes that have
+ * nothing wrong with them. Unlike `ToolLedgerRejectionError` this is not a
+ * producer bug and the store is not usable: nothing the run emits next can be
+ * trusted to land, so it stays on the fail-closed path.
+ */
+export class ToolLedgerCorruptionError extends Error {
+  readonly name = 'ToolLedgerCorruptionError';
+
+  constructor(
+    readonly code: ToolLedgerRejectionCode,
+    readonly eventId: string,
+  ) {
+    super(`Tool ledger is corrupt: ${code} at ${eventId}`);
+  }
+}
+
 export interface ToolLedgerScanOperation {
   toolCallId: string;
   toolName?: string;
@@ -67,16 +110,19 @@ export type ToolLedgerTransitionKind =
   | 't2_outcome'
   | 'recovery_bundle';
 
+/** Every reason the ledger has for refusing a candidate event. */
+export type ToolLedgerRejectionCode =
+  | ToolLedgerIssueCode
+  | 'semantic_lane_conflict'
+  | 'reserved_tool_boundary_fact'
+  | 'reserved_recovery_fact'
+  | 'transition_shape_conflict';
+
 export type ToolLedgerTransitionValidation =
   | { ok: true }
   | {
       ok: false;
-      code:
-        | ToolLedgerIssueCode
-        | 'semantic_lane_conflict'
-        | 'reserved_tool_boundary_fact'
-        | 'reserved_recovery_fact'
-        | 'transition_shape_conflict';
+      code: ToolLedgerRejectionCode;
       eventId: string;
       operationId?: string;
       toolCallId?: string;
@@ -443,7 +489,13 @@ function matchesLaneEnvelope(
         event.role === 'system' &&
         event.author === 'system' &&
         hasOnlyKeys(event.actions, ['toolDispatch']) &&
-        hasOnlyKeys(event.refs, ['operationId', 'toolCallId'])
+        (hasOnlyKeys(event.refs, ['operationId', 'toolCallId']) ||
+          hasOnlyKeys(event.refs, [
+            'operationId',
+            'toolCallId',
+            'parentToolCallId',
+            'parentOperationId',
+          ]))
       );
     case 'reconcile_result':
     case 'recovery_decision':

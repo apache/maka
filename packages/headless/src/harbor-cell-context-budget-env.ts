@@ -8,13 +8,12 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import type {
-  ContextBudgetPolicy,
-  ToolResultArchiveReader,
-  ToolResultArchiveReadFailureReason,
-  ToolResultArchiveReadResult,
-  ToolResultArchiveRecorder,
-  ToolResultArchiveResourceReader,
+import {
+  createToolResultArchiveCapability,
+  type ContextBudgetPolicy,
+  type ToolResultArchiveCapability,
+  type ToolResultArchiveReadFailureReason,
+  type ToolResultArchiveReadResult,
 } from '@maka/runtime';
 import type { HarborCellContextBudgetPolicySnapshot } from './cell-output.js';
 import {
@@ -26,8 +25,13 @@ import {
 
 export interface HarborCellContextBudgetBackendOptions {
   contextBudget?: ContextBudgetPolicy;
-  archiveToolResult?: ToolResultArchiveRecorder;
-  readToolResultArchive?: ToolResultArchiveReader;
+  /**
+   * Present exactly when `MAKA_TOOL_RESULT_ARCHIVE_DIR` resolves. Writer, replay
+   * reader, ref reader and the `ArchiveRead` decoder come from that one resolved
+   * directory, so the cell cannot archive into a directory it cannot read back
+   * out of — which is what #2025 actually was.
+   */
+  toolResultArchive?: ToolResultArchiveCapability;
 }
 
 export interface HarborCellTaskLedgerExperimentPolicy {
@@ -443,8 +447,7 @@ export function buildHarborCellContextBudgetBackendOptions(
 
   const archiveDir = harborCellToolResultArchiveDir(env);
   if (!archiveDir) return { contextBudget };
-  return {
-    contextBudget,
+  const toolResultArchive = createToolResultArchiveCapability({
     archiveToolResult: async (input) => {
       await mkdir(archiveDir, { recursive: true });
       const artifactId = harborCellToolResultArchiveArtifactId(input);
@@ -469,25 +472,13 @@ export function buildHarborCellContextBudgetBackendOptions(
         runtimeEventId: input.runtimeEventId,
         toolCallId: input.toolCallId,
       }),
-  };
-}
-
-/**
- * Ref-addressed reader backing the `ArchiveRead` tool. Unlike replay hydration it
- * has no runtime event identity to check — a `maka://archive/...` ref only carries
- * artifact id, hash, and size — and it must never synthesize one to satisfy the
- * stricter path.
- */
-export function buildHarborCellToolResultArchiveResourceReader(
-  env: RunHarborCellEnv = process.env,
-): ToolResultArchiveResourceReader | undefined {
-  normalizeHarborCellContextEnv(env);
-  const archiveDir = harborCellToolResultArchiveDir(env);
-  if (!archiveDir) return undefined;
-  return {
+    // The ref-addressed read has no runtime event identity to check — a
+    // `maka://archive/...` ref only carries artifact id, hash, and size — and it
+    // must never synthesize one to satisfy the stricter path above.
     readArchivedToolResultResource: async (input) =>
       readHarborCellArchivedToolResult(archiveDir, input),
-  };
+  });
+  return { contextBudget, toolResultArchive };
 }
 
 async function readHarborCellArchivedToolResult(
@@ -836,9 +827,9 @@ function semanticCompactModeEnv(
 }
 
 /**
- * Sole authority for whether a cell archives tool results, and where. Both the
- * writer and every reader derive from it, so the model can never be told to call
- * `ArchiveRead` for a run that archives nothing — nor archive what it cannot read.
+ * Sole authority for whether a cell archives tool results, and where. The whole
+ * capability derives from it, so a cell can never archive into a directory it
+ * cannot read back out of.
  */
 function harborCellToolResultArchiveDir(env: RunHarborCellEnv): string | undefined {
   if (env.MAKA_CONTEXT_BUDGET === 'off') return undefined;

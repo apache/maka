@@ -9,6 +9,28 @@ import {
 } from '@maka/core';
 import type { RunHarborCellEnv } from './headless-run-env.js';
 
+/**
+ * The protocol a connection actually carries, given what was advertised.
+ *
+ * Only two providers let an advertised protocol pick the wire: GitHub Copilot,
+ * where the account discovers it, and the Kimi Coding Plan, which is sold as
+ * two protocols against one account. Everywhere else the model's own catalog
+ * entry decides, and an advertised value is dropped.
+ *
+ * Anything deciding what wire the Maka runtime will dial has to apply this same
+ * rule, or it decides about a connection the runtime will never build. The
+ * proxy resolves its SSE parser that way (`providerProxyUsageProtocol`), and
+ * honouring the override where the runtime drops it is the same wrong-wire
+ * failure — a proxy parsing Chat while the runtime dials Responses records
+ * every request interrupted with no usage.
+ */
+export function selectedModelApiProtocol(
+  provider: ProviderType,
+  advertised: ModelInfo['apiProtocol'],
+): ModelInfo['apiProtocol'] {
+  return provider === 'github-copilot' || provider === 'kimi-coding-plan' ? advertised : undefined;
+}
+
 export interface ProviderCredentialEnv {
   apiKeys: readonly string[];
   apiKeyFile: string;
@@ -218,8 +240,7 @@ function connectionFromEnv(
   if (provider === 'github-copilot' && !modelApiProtocol) {
     throw new Error('GitHub Copilot requires an account-discovered model protocol');
   }
-  const selectedApiProtocol =
-    provider === 'github-copilot' || provider === 'kimi-coding-plan' ? modelApiProtocol : undefined;
+  const selectedApiProtocol = selectedModelApiProtocol(provider, modelApiProtocol);
   return {
     slug: values.MAKA_LLM_CONNECTION_SLUG ?? provider,
     name: defaults.label,
@@ -237,7 +258,7 @@ function connectionFromEnv(
   };
 }
 
-function modelApiProtocolFromEnv(value: string | undefined): ModelInfo['apiProtocol'] {
+export function modelApiProtocolFromEnv(value: string | undefined): ModelInfo['apiProtocol'] {
   if (value === 'openai-chat' || value === 'openai-responses' || value === 'anthropic-messages')
     return value;
   return undefined;

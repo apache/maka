@@ -28,7 +28,6 @@ import { loadNativeBundleIcon, resolveAppBundle } from './app-bundle.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
-  isDragGrantPermission,
   startScreenRecordingOnboarding,
   type DragGrantPermissionId,
   type PermissionOverlayController,
@@ -313,5 +312,3 @@ export function registerPermissionOverlayIpc(deps: PermissionOverlayIpcDeps): vo
     return deps.controller.start(id);
   });
 }
-
-export { isDragGrantPermission };

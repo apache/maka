@@ -44,6 +44,24 @@ function realConnection(overrides: Partial<LlmConnection> = {}): LlmConnection {
   } as LlmConnection;
 }
 
+function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
+  return {
+    id: 's1',
+    name: 'Session',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'a',
+    connectionLocked: true,
+    model: 'claude-sonnet-4-5-20250929',
+    permissionMode: 'ask',
+    ...overrides,
+  };
+}
+
 function fakeDeps(overrides: Partial<OnboardingServiceDeps> = {}): OnboardingServiceDeps {
   const milestones: OnboardingMilestone[] = [];
   return {
@@ -72,6 +90,48 @@ function fakeDeps(overrides: Partial<OnboardingServiceDeps> = {}): OnboardingSer
 }
 
 describe('createOnboardingService.getSnapshot', () => {
+  it('pins the complete renderer projection for every physical session', async () => {
+    const service = createOnboardingService(fakeDeps({
+      listConnections: async () => [realConnection({ slug: 'a' })],
+      getDefaultSlug: async () => 'a',
+      listSessions: async () => [
+        session(),
+        session({ id: 's2', llmConnectionSlug: 'removed' }),
+      ],
+      getMilestones: async () => [{ id: 'initial_onboarding', completedAt: 1 }],
+      hasCredential: async () => true,
+    }));
+
+    const snapshot = await service.getSnapshot();
+    assert.deepEqual({
+      chatModelChoices: snapshot.chatModelChoices,
+      sessionSendOutcomes: snapshot.sessionSendOutcomes,
+    }, {
+      chatModelChoices: [{
+        connectionSlug: 'a',
+        providerType: 'anthropic',
+        providerLabel: 'Anthropic',
+        model: 'claude-sonnet-4-5-20250929',
+        label: 'Claude Sonnet 4.5',
+        connectionName: 'Anthropic Live',
+        isDefault: true,
+        thinkingLevels: ['off'],
+      }],
+      sessionSendOutcomes: {
+        s1: { kind: 'ready' },
+        s2: {
+          kind: 'blocked',
+          reason: 'connection_missing',
+          connectionLocked: true,
+        },
+      },
+    });
+    assert.deepEqual(
+      Object.keys(snapshot.sessionSendOutcomes).sort(),
+      snapshot.sessions.map((item) => item.id).sort(),
+    );
+  });
+
   it('returns derived OnboardingState + sanitized milestones together', async () => {
     const service = createOnboardingService(
       fakeDeps({
@@ -86,6 +146,27 @@ describe('createOnboardingService.getSnapshot', () => {
     assert.deepEqual(snapshot.milestones, [
       { id: 'first_chat_sent', completedAt: 1_700_000_000_000 },
     ]);
+    assert.equal(snapshot.chatModelChoices[0]?.providerLabel, 'Anthropic');
+    assert.equal(snapshot.chatModelChoices[0]?.isDefault, true);
+  });
+
+  it('projects session send readiness again after connection credentials change', async () => {
+    let hasCredential = true;
+    const service = createOnboardingService(fakeDeps({
+      listConnections: async () => [realConnection({ slug: 'a' })],
+      getDefaultSlug: async () => 'a',
+      listSessions: async () => [session()],
+      getMilestones: async () => [{ id: 'initial_onboarding', completedAt: 1 }],
+      hasCredential: async () => hasCredential,
+    }));
+
+    assert.deepEqual((await service.getSnapshot()).sessionSendOutcomes.s1, { kind: 'ready' });
+    hasCredential = false;
+    assert.deepEqual((await service.getSnapshot()).sessionSendOutcomes.s1, {
+      kind: 'blocked',
+      reason: 'missing_api_key',
+      connectionLocked: true,
+    });
   });
 
   it('keeps physical revision summaries in the snapshot for version navigation', async () => {

@@ -44,7 +44,7 @@
    column is, so the box has to outlive it. */
 .maka-workbar-motion {
   flex: 0 0 auto;
-  width: var(--maka-session-workbar-width, 400px);
+  width: var(--maka-session-workbar-width, 480px);
   min-height: 0;
   overflow: hidden;
   /* The canvas gutter between the two plates, and it belongs to this one: it
@@ -90,7 +90,7 @@
 }
 
 .maka-session-workbar {
-  width: var(--maka-session-workbar-width, 400px);
+  width: var(--maka-session-workbar-width, 480px);
   /* Load-bearing during the collapse, not just a resize clamp: it is what keeps
      the column at full width inside a box narrowing to zero. */
   min-width: 320px;
@@ -131,8 +131,8 @@
 
 /* Session trace (#1625): a read-only causal timeline in the workbar.
 
-   Banner, EmptyState, MetadataList, Badge and Text carry everything they can;
-   this rule set is the timeline's own geometry. It used to reach for a
+   Banner, EmptyState, Heading and Text carry everything they can; this rule
+   set is the timeline's own geometry. It used to reach for a
    `--maka-space-*` / `--maka-color-*` vocabulary that the token sheet never
    declared, so every value here silently resolved to its hard-coded fallback
    and the panel drifted off the product scale. */
@@ -161,36 +161,403 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
 }
 
+.maka-inspector-turns {
+  gap: var(--space-4);
+}
+
+/* A causal record drawn as a timeline rather than as hairline-separated
+   blocks: a rule between turns says "these are different rows", where what a
+   reader needs is "these happened in this order, and these steps belong to
+   that turn". The dot marks the turn, the line carries its steps, and the
+   turn's own totals close it — the same startContent-dot shape the Astryx IDE
+   template's History list uses. */
 .maka-inspector-turn {
-  border-top: var(--border-width-hairline) solid var(--border);
-  padding-top: var(--space-2);
+  position: relative;
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  /* The head sits one step further from its steps than the steps sit from
+     each other; at the same 4px it read as the first row of its own list. */
+  gap: var(--space-2);
+}
+
+/* The rail, drawn from under the dot through the gap to the next turn, so the
+   timeline is one line rather than a column of stumps. It is the panel's only
+   strong vertical, which is why it reads from `--border-strong` rather than
+   the 12% wash it used to use. */
+.maka-inspector-turn::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: var(--space-3);
+  bottom: calc(-1 * var(--space-4));
+  width: var(--border-width-hairline);
+  background: var(--border-strong);
+}
+
+.maka-inspector-turn:last-child::before {
+  bottom: var(--space-2);
+}
+
+.maka-inspector-turn-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  position: relative;
+}
+
+/* The node. Positioned off the head's own text box so it stays on the first
+   line however the header wraps. */
+.maka-inspector-turn-head::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--space-4));
+  top: calc(0.5lh - 3px);
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--foreground-secondary);
+}
+
+.maka-inspector-turn[data-failed='true'] .maka-inspector-turn-head::before {
+  background: var(--destructive);
+}
+
+/* Three tiers on the head line and nothing else: the turn, the exception, the
+   measurement. Failure is red text at the label's own size — a filled chip
+   out-shouted the label it qualifies, and the rail's dot has already flagged
+   the row from the margin. */
+.maka-inspector-turn-label {
+  flex: 0 0 auto;
+}
+
+.maka-inspector-turn-failure {
+  font: var(--maka-text-label);
+  color: var(--destructive-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.maka-inspector-turn-meta {
+  margin-left: auto;
+  font: var(--maka-text-body);
+  color: var(--muted-foreground);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.maka-inspector-turn-cost {
+  color: var(--foreground-secondary);
 }
 
 .maka-inspector-steps {
-  padding-left: var(--space-3);
+  gap: var(--space-1);
 }
 
+/* A step is one line with a left half that says what happened and a right half
+   that says how long — the two things a reader compares down the column.
+   No icon: the five glyphs this row used to carry each restated a word that
+   was already printed beside them (`read`, `compaction`, `error`), so they
+   bought nothing and cost the eye a column of noise. */
 .maka-inspector-step {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+}
+
+.maka-inspector-step-text {
+  display: flex;
   flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font: var(--maka-text-body);
 }
 
-.maka-inspector-step-kind {
-  text-transform: lowercase;
+/* Rank by ink, not by weight or size: the whole panel is on three sizes —
+   20px for the figures a reader came for, 16px for the two section titles,
+   14px for every fact — and inside the 14px tier, colour alone says which
+   half of the row is the fact. A 12px tier used to carry six different roles
+   here; six roles at one size is not a rank, it is small print. */
+.maka-inspector-step-label {
+  color: var(--foreground-secondary);
 }
 
-.maka-inspector-step[data-failed='true'] {
+.maka-inspector-step-detail {
+  color: var(--muted-foreground);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A recovery is not trivia about the step, it is the reason the run survived,
+   so it carries the exception tint rather than the qualifier grey. */
+.maka-inspector-step-recovered {
+  color: var(--warning-text);
+}
+
+.maka-inspector-step-meta {
+  margin-left: auto;
+  font: var(--maka-text-body);
+  color: var(--muted-foreground);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.maka-inspector-step[data-failed='true'] .maka-inspector-step-label {
   color: var(--destructive-text);
 }
 
-.maka-inspector-cost {
+/* One overview section: a title line the eye can land on, then its content.
+   The sections are what keep two different measurements apart — one call's
+   prompt above, the whole session's totals below. */
+.maka-inspector-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+/* Every other section head is text against text, where baselines are the
+   right join. This one holds a boxed input, and a control box baseline-aligned
+   against a 16px title always sits a pixel or two wrong. */
+.maka-inspector-timeline-head {
+  align-items: center;
+}
+
+/* The failure count, doing double duty as the filter that isolates them. It
+   is stated in the exception ink it reports on, and pressing it tints the
+   ground rather than adding a second control to the line. */
+.maka-inspector-failed-filter {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-pill);
+  font: var(--maka-text-body);
+  color: var(--destructive-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.maka-inspector-failed-filter[aria-pressed='true'] {
+  background: var(--muted);
+}
+
+/* The query field sits at the far end of the title line and shrinks before it
+   pushes. Its width is left to the component: a `flex-basis` here resolves
+   against the field's own inner axis and squares it off. */
+.maka-inspector-search {
+  margin-left: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Astryx's own heading tier, not a shrunk one. The properties panel in the
+   Astryx IDE template is the reference for this whole surface: a level-3
+   heading over body-sized facts and room to breathe — an inspector is read,
+   not scanned like a status bar.
+
+   A model id can be longer than the line, so this one title wraps rather than
+   pushing its readout off the panel. */
+.maka-inspector-section-title {
+  color: var(--foreground);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.maka-inspector-section-readout {
+  margin-left: auto;
+  font: var(--maka-text-body);
+  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
+
+/* The readout carries the tier too, so a full window is legible from the line
+   that states it rather than only from the colour of the bands below. */
+.maka-inspector-section-head[data-level='warning'] .maka-inspector-section-readout {
+  color: var(--warning-text);
+}
+
+.maka-inspector-section-head[data-level='error'] .maka-inspector-section-readout {
+  color: var(--destructive-text);
+}
+
+/* The context window drawn as bands. Colour is the join between the track and
+   its legend, so both read it from the same `data-segment` rules below and a
+   band can never mean one thing in the bar and another in the list. */
+/* The free band paints nothing: the track IS the empty window, so the bar
+   reads as a prompt growing into its ceiling rather than as three rival
+   categories, one of which happens to be 90% of the session. The band still
+   occupies its share of the flex, which is what keeps the used bands
+   proportional. No seams either — at 8px tall a 2px gap is a quarter of the
+   bar, and the two prompt bands are already a tone apart. */
+.maka-inspector-context-track {
+  --maka-context-fill: var(--accent);
+  display: flex;
+  height: var(--space-2);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--muted);
+}
+
+.maka-inspector-context-track[data-level='warning'] {
+  --maka-context-fill: var(--warning);
+}
+
+.maka-inspector-context-track[data-level='error'] {
+  --maka-context-fill: var(--destructive);
+}
+
+.maka-inspector-context-band {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.maka-inspector-context-swatch {
+  --maka-context-fill: var(--accent);
+  width: var(--space-1-5);
+  height: var(--space-1-5);
+  border-radius: var(--radius-pill);
+  flex: 0 0 auto;
+}
+
+.maka-inspector-context-swatch[data-level='warning'] {
+  --maka-context-fill: var(--warning);
+}
+
+.maka-inspector-context-swatch[data-level='error'] {
+  --maka-context-fill: var(--destructive);
+}
+
+.maka-inspector-context-band[data-segment='fresh'],
+.maka-inspector-context-band[data-segment='used'],
+.maka-inspector-context-swatch[data-segment='fresh'],
+.maka-inspector-context-swatch[data-segment='used'] {
+  background: var(--maka-context-fill);
+}
+
+/* Cache hit is the same fill at lower weight, not a second hue: it is a part
+   of the prompt, not a rival category. The weight is set where it still reads
+   as filled on the dark canvas — a lighter mix drops below the free band there
+   and inverts what the bar is saying. */
+.maka-inspector-context-band[data-segment='cacheRead'],
+.maka-inspector-context-swatch[data-segment='cacheRead'] {
+  background: color-mix(in oklch, var(--maka-context-fill) 55%, transparent);
+}
+
+.maka-inspector-context-band[data-segment='free'] {
+  background: transparent;
+}
+
+/* A ring, not a filled dot: headroom is the absence of the other two, and a
+   third solid swatch implied a third comparable category. */
+.maka-inspector-context-swatch[data-segment='free'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border-strong);
+}
+
+/* The three headline figures, across the column rather than down it.
+   A 480px panel of label-then-value rows leaves its whole right half empty and
+   still reads as cramped, because every row is the same weight; giving the
+   three figures a reader actually came for their own band fills the width with
+   the thing that deserves it and lets everything below stay quiet. */
+.maka-inspector-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.maka-inspector-stat dt {
+  font: var(--maka-text-body);
+  color: var(--muted-foreground);
+  margin-bottom: 2px;
+}
+
+.maka-inspector-stat dd {
+  margin: 0;
+  font: var(--maka-text-heading-1);
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* The overview's data grid, on the IDE template's `metadataCompact` rhythm
+   (row space-1, column space-3) at body type: these facts are the content of
+   the panel, not its chrome. Only a qualifier steps down to supporting. */
+.maka-inspector-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  margin: 0;
+  font: var(--maka-text-body);
+}
+
+.maka-inspector-grid-row {
+  display: contents;
+}
+
+.maka-inspector-grid dt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--foreground-secondary);
+  white-space: nowrap;
+}
+
+.maka-inspector-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+
+/* The figure is the one thing in the row worth full-strength ink. */
+.maka-inspector-grid-value {
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+/* What the filter is currently hiding — the only line left that comments on
+   the view rather than reporting the session. */
+.maka-inspector-meta {
+  margin: 0;
+  font: var(--maka-text-body);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The coverage notice, demoted twice over: it lives inside the record rather
+   than above it, and only its icon carries the exception ink. Two wrapped
+   lines of warning-coloured text out-shouted the failures it merely comments
+   on — the tint belongs on the exception, not on the disclaimer. */
+.maka-inspector-coverage-note {
+  font: var(--maka-text-body);
+  color: var(--muted-foreground);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1-5);
+  margin: 0;
+}
+
+.maka-inspector-coverage-note > svg {
+  align-self: center;
+  flex: 0 0 auto;
+  color: var(--warning-text);
+}
+
+/* The seam between "where the session stands" and "what it did" is the 24px
+   the block rhythm already gives it. It used to be a hairline plus two
+   stacked 8px paddings — 32px nobody chose, and a rule doing the job that
+   proximity does better in a panel with no other boxes. */
+.maka-inspector-raw {
+  min-width: 0;
+}
+
 
 .maka-session-workbar .maka-browser-panel,
 .maka-session-workbar .maka-artifact-pane {

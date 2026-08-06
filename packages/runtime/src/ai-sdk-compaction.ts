@@ -944,7 +944,7 @@ export class AiSdkCompaction {
         for (const candidate of candidates) {
           const bodySha256 = sha256(candidate.serializedResult);
           const archived = await Promise.resolve(
-            this.input.archiveToolResult?.({
+            this.input.toolResultArchive?.services.archiveToolResult({
               ...candidate,
               sessionId: this.sessionId,
               bodySha256,
@@ -1013,7 +1013,7 @@ export class AiSdkCompaction {
         archivedPlaceholders,
         archiveToolResult: async (candidate) => {
           return await Promise.resolve(
-            this.input.archiveToolResult?.({
+            this.input.toolResultArchive?.services.archiveToolResult({
               ...candidate,
               sessionId: this.sessionId,
               runtimeEventId: candidate.runtimeEventId ?? activeToolResultArchiveKey(candidate),

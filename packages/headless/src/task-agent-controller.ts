@@ -60,6 +60,7 @@ import {
 import { observeHeavyTaskWorkspace } from './heavy-task-workspace-observation.js';
 import type { HeadlessBackendContext } from './isolation.js';
 import {
+  endManagedShellSessions,
   taskIsolationFacts,
   toolExecutorIdentity,
   validateRealBackendIsolation,
@@ -619,6 +620,11 @@ export async function runTaskOnceWithStorage(
       }
     }
 
+    // Agent phase ends here: nothing still managed may be running while the
+    // verifier observes the workspace. The enclosing finally repeats this for
+    // the throwing path.
+    await endManagedShellSessions(deps.realBackendIsolation);
+
     await appendTaskEvent(taskRunStore, taskRunId, {
       type: 'task_run_verifying',
       id: newId(),
@@ -795,12 +801,16 @@ export async function runTaskOnceWithStorage(
     };
   } finally {
     try {
-      await graphCoordinator?.close();
+      await endManagedShellSessions(deps.realBackendIsolation);
     } finally {
       try {
-        graphControlStore?.close();
+        await graphCoordinator?.close();
       } finally {
-        await workspace.cleanup();
+        try {
+          graphControlStore?.close();
+        } finally {
+          await workspace.cleanup();
+        }
       }
     }
   }

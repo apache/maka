@@ -167,6 +167,7 @@ export function backfillRuntimeEventsFromStoredMessages(
           id: newId(),
           role: 'model',
           author: 'agent',
+          ...storedToolActivityIdentity(message),
           content: {
             kind: 'function_call',
             id: message.id,
@@ -186,6 +187,12 @@ export function backfillRuntimeEventsFromStoredMessages(
           refs: {
             storedMessageId: message.id,
             toolCallId: message.id,
+            ...(message.parentToolCallId !== undefined
+              ? { parentToolCallId: message.parentToolCallId }
+              : {}),
+            ...(message.parentOperationId !== undefined
+              ? { parentOperationId: message.parentOperationId }
+              : {}),
             ...(message.stepId !== undefined ? { stepId: message.stepId } : {}),
           },
         });
@@ -216,6 +223,7 @@ export function backfillRuntimeEventsFromStoredMessages(
           id: newId(),
           role: 'tool',
           author: 'tool',
+          ...storedToolActivityIdentity(call),
           content: {
             kind: 'function_response',
             id: message.toolUseId,
@@ -232,7 +240,16 @@ export function backfillRuntimeEventsFromStoredMessages(
           ...(message.durationMs !== undefined
             ? { actions: { stateDelta: { durationMs: message.durationMs } } }
             : {}),
-          refs: { storedMessageId: message.id, toolCallId: message.toolUseId },
+          refs: {
+            storedMessageId: message.id,
+            toolCallId: message.toolUseId,
+            ...(call.parentToolCallId !== undefined
+              ? { parentToolCallId: call.parentToolCallId }
+              : {}),
+            ...(call.parentOperationId !== undefined
+              ? { parentOperationId: call.parentOperationId }
+              : {}),
+          },
         });
         break;
       }
@@ -319,6 +336,16 @@ export function backfillRuntimeEventsFromStoredMessages(
   }
 
   return { events, diagnostics };
+}
+
+function storedToolActivityIdentity(message: {
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+}): Pick<RuntimeEvent, 'origin' | 'modelVisibility'> {
+  return {
+    ...(message.origin !== undefined ? { origin: message.origin } : {}),
+    ...(message.modelVisibility !== undefined ? { modelVisibility: message.modelVisibility } : {}),
+  };
 }
 
 function recoveryState(now: () => number, message: StoredMessage): Record<string, unknown> {

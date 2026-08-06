@@ -14,6 +14,7 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary, PermissionMode, PermissionProfile } from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
+import { createUnifiedDiff } from './unified-diff.js';
 import { withFileWriteLock } from './file-write-lock.js';
 import type {
   FilesystemWorkerClient,
@@ -213,8 +214,35 @@ function createWorkspaceFilesystemExecutor(
             label: 'Write',
             scope,
           });
+          // Read-before-write: an overwrite's diff is what tells the reader
+          // what was lost. Only a missing file means the whole content is
+          // new — an unreadable or binary existing file leaves the previous
+          // state unknown, and claiming `--- /dev/null` would report the
+          // file as created.
+          let previous: 'new' | 'unknown' | string;
+          try {
+            const read = await workspace.readFile({ cwd, path });
+            previous = 'bytes' in read ? 'unknown' : read.content;
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            previous = code === 'ENOENT' || code === 'ENOTDIR' ? 'new' : 'unknown';
+          }
           const written = await workspace.writeFile({ cwd, path, content: operation.content });
-          return { kind: 'write', ok: true, path: written.path, bytes: written.bytes };
+          const diff =
+            previous === 'unknown'
+              ? undefined
+              : createUnifiedDiff(
+                  written.path,
+                  previous === 'new' ? undefined : previous,
+                  operation.content,
+                );
+          return {
+            kind: 'write',
+            ok: true,
+            path: written.path,
+            bytes: written.bytes,
+            ...(diff !== undefined ? { diff } : {}),
+          };
         }
         case 'edit': {
           const { path } = await workspace.resolveExistingPath({
@@ -232,6 +260,7 @@ function createWorkspaceFilesystemExecutor(
             operation.path,
           );
           await workspace.writeFile({ cwd, path, content: edited.content });
+          const diff = createUnifiedDiff(path, read.content, edited.content);
           return {
             kind: 'edit',
             ok: true,
@@ -240,6 +269,7 @@ function createWorkspaceFilesystemExecutor(
             matchedVia: edited.matchedVia,
             startLine: edited.startLine,
             endLine: edited.endLine,
+            ...(diff !== undefined ? { diff } : {}),
           };
         }
         case 'format_json': {
@@ -275,6 +305,8 @@ function createWorkspaceFilesystemExecutor(
             path,
             content: formatted,
           });
+          const diff =
+            formatted === original ? undefined : createUnifiedDiff(path, original, formatted);
           return {
             kind: 'format_json',
             ok: true,
@@ -284,6 +316,7 @@ function createWorkspaceFilesystemExecutor(
             bytesAfter,
             byteDelta: bytesAfter - bytesBefore,
             changed: formatted !== original,
+            ...(diff !== undefined ? { diff } : {}),
           };
         }
         case 'glob': {

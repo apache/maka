@@ -247,6 +247,11 @@ export function PersonalizationSettingsPage(props: {
         />
 
         <SettingsField>
+          {/* No fixed height style: it lands as inline style on the wrapper,
+              which pins the visible box while the inner textarea keeps its
+              native `resize: vertical` — dragging then moves only the grip.
+              `rows` owns the default height; the wrapper follows the
+              textarea, so user resizing works. */}
           <TextArea
             value={assistantTone}
             onChange={(value) => {
@@ -261,10 +266,6 @@ export function PersonalizationSettingsPage(props: {
             label={copy.assistantTone}
             description={copy.assistantToneHelp}
             width="100%"
-            style={{
-              boxSizing: 'border-box',
-              height: 'calc(var(--space-16) + var(--space-5))',
-            }}
           />
         </SettingsField>
       </SettingsSection>

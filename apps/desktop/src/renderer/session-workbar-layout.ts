@@ -1,6 +1,12 @@
 import { safeLocalStorageGet } from './browser-storage.js';
 
-export const SESSION_WORKBAR_DEFAULT_WIDTH = 400;
+/**
+ * 480 rather than the original 400: the trace tab's overview is a two-column
+ * data grid, and at 400 its figures had to be squeezed against their labels
+ * before the qualifier column had room. The stored width still wins, so only
+ * a reader who never dragged the handle sees the change.
+ */
+export const SESSION_WORKBAR_DEFAULT_WIDTH = 480;
 export const SESSION_WORKBAR_MIN_WIDTH = 320;
 export const SESSION_WORKBAR_MAX_WIDTH = 600;
 // 'quote' is a transient tab that only exists while a quote side-panel excerpt

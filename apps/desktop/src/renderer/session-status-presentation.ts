@@ -33,7 +33,6 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
 export { presentSessionStatus } from '@maka/ui';
 export { describeBlockedReason } from '@maka/ui';
-export type { SessionStatusPresentation, SessionStatusTone } from '@maka/ui';
 
 /**
  * Session-level "blocked" is only worth interrupting the user when

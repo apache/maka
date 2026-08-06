@@ -1,4 +1,4 @@
-import type { ChatConfigurationReason, UiCatalog, UiLocale } from '@maka/core';
+import type { ChatConfigurationReason, ModelCallKind, UiCatalog, UiLocale } from '@maka/core';
 
 export interface DesktopConversationCopy {
   actions: {
@@ -67,27 +67,65 @@ export interface DesktopConversationCopy {
     retry: string;
     empty: string;
     costUnavailable: string;
-    /** Labels for the totals strip; each names the figure beside it. */
+    /** Labels for the two headline figures the trace always states. */
     totals: {
       duration: string;
-      calls: string;
-      retries: string;
-      compactions: string;
       cost: string;
     };
-    coveragePartial: string;
-    coverageAbsent: string;
-    unreadable: string;
-    turnsMissing: string;
-    turnsShort: string;
-    recovered: string;
-    turnFailed: string;
+    /**
+     * The coverage notice, composed with its own breakdown: the separators
+     * belong to the language, not to the layout, so a Chinese sentence gets
+     * `：` and `、` where an English one gets `:` and `,`.
+     */
+    coveragePartial: (parts: readonly string[]) => string;
+    coverageAbsent: (parts: readonly string[]) => string;
+    /** Each states its own count, so English can say "1 turn" and not "1 turns". */
+    unreadable: (count: number) => string;
+    turnsMissing: (count: number) => string;
+    turnsShort: (count: number) => string;
+    /**
+     * Names a step whose kind IS its identity — a compaction, an error, a
+     * permission prompt with no tool attached. Rows that carry a real
+     * identifier (a model id, a tool name) print that instead.
+     */
+    stepKind: { permission: string; compaction: string; error: string };
+    /** Why a model was called, when the reason was not the turn itself. */
+    callKind: (kind: string) => string;
+    /** How a permission request was answered. */
+    permissionDecision: (decision: string) => string;
+    /** What a tool that failed was recovered as. */
+    recoveredAs: (disposition: string) => string;
+    /** Attempts beyond the first, in words rather than as `×N`. */
+    retries: (count: number) => string;
+    /**
+     * What ended the turn badly, in words. The trace's codes are engineering
+     * vocabulary (`tool_failed`, `turn_aborted`); this is the sentence a
+     * reader gets, with a plain fallback for a code nobody has named yet.
+     */
+    turnFailure: (code: string) => string;
     filterLabel: string;
     filterPlaceholder: string;
-    filterFailedOnly: string;
-    filterClear: string;
+    /** The failure count that doubles as the "only failures" toggle. */
+    filterFailedOnly: (count: number) => string;
     noMatches: string;
-    hiddenByFilter: string;
+    hiddenByFilter: (count: number) => string;
+    /** Display name of one turn in the raw record: 第 N 轮 / Turn N. */
+    turnLabel: (index: number) => string;
+    /** Summary above the raw timeline. */
+    overview: {
+      context: string;
+      /** Names the bands of the context bar, in the bar's own order. */
+      segment: {
+        cacheRead: string;
+        fresh: string;
+        used: string;
+        free: string;
+      };
+      /** The three figures a reader opens this tab for, as headline stats. */
+      cacheHit: string;
+      /** Heading over the causal record. */
+      timelineTab: string;
+    };
   };
   quoteCompanion: {
     /** Read-only exploration hint shown in the empty companion panel. */
@@ -142,6 +180,73 @@ export interface DesktopConversationCopy {
   };
 }
 
+/**
+ * The trace's own enums, in words.
+ *
+ * Every one of these reaches the panel as a raw identifier — `history_compact`,
+ * `parked`, `tool_failed` — because the projection records facts, not prose.
+ * Turning them into a sentence is a copy decision, so it happens here, once.
+ *
+ * The call-kind tables are typed against the core union, so a kind added to the
+ * runtime fails this file at compile time instead of reaching a Chinese panel
+ * as `daily_review`. The runtime fallthrough stays for data written by an older
+ * schema, which the type system cannot reach.
+ */
+type CallKindCopy = Record<Exclude<ModelCallKind, 'main'>, string>;
+
+const ZH_CALL_KIND: CallKindCopy = {
+  semantic_compact: '语义压缩',
+  history_compact: '历史压缩',
+  goal_evaluation: '目标评估',
+  session_title: '生成会话标题',
+  session_recap: '会话回顾',
+  daily_review: '每日回顾',
+};
+
+const EN_CALL_KIND: CallKindCopy = {
+  semantic_compact: 'Semantic compaction',
+  history_compact: 'History compaction',
+  goal_evaluation: 'Goal evaluation',
+  session_title: 'Session title',
+  session_recap: 'Session recap',
+  daily_review: 'Daily review',
+};
+
+const ZH_PERMISSION_DECISION: Record<string, string> = { allow: '已允许', deny: '已拒绝' };
+const EN_PERMISSION_DECISION: Record<string, string> = { allow: 'Allowed', deny: 'Denied' };
+
+const ZH_RECOVERED: Record<string, string> = { completed: '已完成', parked: '已搁置' };
+
+// `turn_failed` and `error` are the codes the projection falls back to when it
+// cannot attribute the failure to a step; both reach this panel, so both are
+// named rather than left to the generic wording.
+const ZH_TURN_FAILURE: Record<string, string> = {
+  tool_failed: '工具失败',
+  model_call_failed: '模型调用失败',
+  turn_aborted: '本轮中止',
+  turn_cancelled: '本轮取消',
+  turn_failed: '本轮失败',
+  error: '运行出错',
+};
+
+const EN_TURN_FAILURE: Record<string, string> = {
+  tool_failed: 'Tool failed',
+  model_call_failed: 'Model call failed',
+  turn_aborted: 'Turn aborted',
+  turn_cancelled: 'Turn cancelled',
+  turn_failed: 'Turn failed',
+  error: 'Run error',
+};
+
+/** Trailing breakdown for the coverage notice, in each language's punctuation. */
+function zhDetail(parts: readonly string[]): string {
+  return parts.length > 0 ? `：${parts.join('、')}` : '';
+}
+
+function enDetail(parts: readonly string[]): string {
+  return parts.length > 0 ? `: ${parts.join(', ')}` : '';
+}
+
 const COPY = {
   zh: {
     actions: { stopFailedTitle: '停止失败', stopFailedFallback: '会话操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新会话列表失败', refreshSessionsFailedFallback: '刷新会话列表失败，请稍后重试。', conversationErrorTitle: '对话出错', conversationErrorFallback: '对话运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新会话 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原对话仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '对话操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原会话使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取对话失败' },
@@ -172,27 +277,39 @@ const COPY = {
       loadFailed: '追踪读取失败',
       retry: '重试',
       empty: '这个会话还没有可追踪的活动',
-      costUnavailable: '费用不可得',
+      costUnavailable: '费用未知',
       totals: {
         duration: '总耗时',
-        calls: '模型调用',
-        retries: '重试',
-        compactions: '上下文压缩',
         cost: '花费',
       },
-      coveragePartial: '部分调用没有记录，下面的数字是下界',
-      coverageAbsent: '该后端不上报逐次调用明细',
-      unreadable: '条记录无法解析',
-      turnsMissing: '轮没有记录',
-      turnsShort: '轮记录数少于步数',
-      recovered: '已恢复',
-      turnFailed: '本轮失败',
+      coveragePartial: (parts) => `部分调用没有留下记录，下面的数字只少不多${zhDetail(parts)}`,
+      coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
+      unreadable: (count) => `${count} 条记录读不出来`,
+      turnsMissing: (count) => `${count} 轮没有调用记录`,
+      turnsShort: (count) => `${count} 轮的调用记录不全`,
+      stepKind: { permission: '权限', compaction: '上下文压缩', error: '错误' },
+      callKind: (kind) => ZH_CALL_KIND[kind as keyof CallKindCopy] ?? kind,
+      permissionDecision: (decision) => ZH_PERMISSION_DECISION[decision] ?? decision,
+      recoveredAs: (disposition) => `已恢复：${ZH_RECOVERED[disposition] ?? disposition}`,
+      retries: (count) => `重试 ${count} 次`,
+      turnFailure: (code) => ZH_TURN_FAILURE[code] ?? '本轮失败',
       filterLabel: '筛选追踪',
       filterPlaceholder: '按工具、模型或轮次筛选',
-      filterFailedOnly: '仅失败',
-      filterClear: '清除筛选',
-      noMatches: '没有匹配的步骤——这个会话本身是有内容的',
-      hiddenByFilter: '项被筛选隐藏',
+      filterFailedOnly: (count) => `${count} 轮失败`,
+      noMatches: '没有匹配的记录',
+      hiddenByFilter: (count) => `已隐藏 ${count} 项`,
+      turnLabel: (index) => `第 ${index} 轮`,
+      overview: {
+        context: '上下文窗口',
+        segment: {
+          cacheRead: '缓存命中',
+          fresh: '缓存未命中',
+          used: '已占用',
+          free: '剩余',
+        },
+        cacheHit: '缓存命中率',
+        timelineTab: '时间轴',
+      },
     },
     quoteCompanion: {
       hint: '这里的追问会带上主对话的完整上下文：只做解释和只读探索，不会改动文件，也不写回主对话。在主对话里继续选中文本追问，会加进这个侧栏。',
@@ -262,27 +379,41 @@ const COPY = {
       loadFailed: 'Could not read the trace',
       retry: 'Retry',
       empty: 'Nothing to trace in this session yet',
-      costUnavailable: 'cost unavailable',
+      costUnavailable: 'cost unknown',
       totals: {
         duration: 'Duration',
-        calls: 'Model calls',
-        retries: 'Retries',
-        compactions: 'Compactions',
         cost: 'Cost',
       },
-      coveragePartial: 'Some calls have no record; the numbers below are a floor',
-      coverageAbsent: 'This backend does not report per-call detail',
-      unreadable: 'unreadable records',
-      turnsMissing: 'turns with no record',
-      turnsShort: 'turns short of their step count',
-      recovered: 'recovered',
-      turnFailed: 'Turn failed',
+      coveragePartial: (parts) =>
+        `Some calls left no record, so the numbers below only undercount${enDetail(parts)}`,
+      coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
+      unreadable: (count) => `${count} record${count === 1 ? '' : 's'} could not be read`,
+      turnsMissing: (count) => `${count} turn${count === 1 ? '' : 's'} with no call record`,
+      turnsShort: (count) =>
+        `${count} turn${count === 1 ? '' : 's'} with an incomplete call record`,
+      stepKind: { permission: 'Permission', compaction: 'Context compaction', error: 'Error' },
+      callKind: (kind) => EN_CALL_KIND[kind as keyof CallKindCopy] ?? kind,
+      permissionDecision: (decision) => EN_PERMISSION_DECISION[decision] ?? decision,
+      recoveredAs: (disposition) => `recovered as ${disposition}`,
+      retries: (count) => `${count} retr${count === 1 ? 'y' : 'ies'}`,
+      turnFailure: (code) => EN_TURN_FAILURE[code] ?? 'Turn failed',
       filterLabel: 'Filter the trace',
       filterPlaceholder: 'Filter by tool, model or turn',
-      filterFailedOnly: 'Failed only',
-      filterClear: 'Clear filter',
-      noMatches: 'Nothing matches this filter — the session itself is not empty',
-      hiddenByFilter: 'hidden by the filter',
+      filterFailedOnly: (count) => `${count} failed turn${count === 1 ? '' : 's'}`,
+      noMatches: 'Nothing matches this filter',
+      hiddenByFilter: (count) => `${count} hidden by the filter`,
+      turnLabel: (index) => `Turn ${index}`,
+      overview: {
+        context: 'Context window',
+        segment: {
+          cacheRead: 'Cache hit',
+          fresh: 'Cache miss',
+          used: 'Used',
+          free: 'Remaining',
+        },
+        cacheHit: 'Cache hit rate',
+        timelineTab: 'Timeline',
+      },
     },
     quoteCompanion: {
       hint: 'Questions here carry the full context of the main conversation: read-only exploration and explanation, no file changes, and nothing is written back to the main conversation. Select more text in the main transcript to add it to this side panel.',
@@ -327,4 +458,21 @@ const COPY = {
 
 export function getDesktopConversationCopy(locale: UiLocale): DesktopConversationCopy {
   return COPY[locale];
+}
+
+export type InspectorCopy = DesktopConversationCopy['inspector'];
+
+/**
+ * The name a step falls back to when it has no identifier of its own. A model
+ * call and a tool call always carry one, so they never reach here.
+ *
+ * It lives beside the words rather than in the panel because the filter needs
+ * the same string: what the reader searches has to be what the reader sees, and
+ * that correspondence breaks the moment two places decide the wording.
+ */
+export function inspectorStepKindLabel(copy: InspectorCopy, kind: string): string {
+  if (kind === 'permission') return copy.stepKind.permission;
+  if (kind === 'compaction') return copy.stepKind.compaction;
+  if (kind === 'error') return copy.stepKind.error;
+  return kind;
 }

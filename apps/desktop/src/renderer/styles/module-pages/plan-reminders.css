@@ -9,9 +9,14 @@
   min-width: 168px;
 }
 
+/* The countdown is the row's third tier, under the title and its description.
+   `color="secondary"` put it on the description's own level, so the row read
+   as two equal lines plus a trailing value at the same weight — the tier that
+   made "when" scannable without competing with "what" was gone. */
 .maka-plan-countdown {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  color: var(--muted-foreground);
 }
 
 .maka-plan-search-summary {

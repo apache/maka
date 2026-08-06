@@ -4,8 +4,7 @@ import { createAutomationStore } from '@maka/storage';
 
 // The kind-aware fire gate lives in @maka/runtime so the desktop and CLI hosts
 // share one definition and cannot diverge. Re-exported for existing importers.
-export { evaluateAutomationCanFire, HEARTBEAT_IDLE_STATUSES } from '@maka/runtime';
-export type { CanFireSessionHeader, EvaluateAutomationCanFireDeps } from '@maka/runtime';
+export { evaluateAutomationCanFire } from '@maka/runtime';
 
 /**
  * Unified Automation wiring for the desktop main process.

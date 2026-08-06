@@ -5,48 +5,22 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import { build } from 'esbuild';
-import type { LlmConnection } from '@maka/core';
+import type { ChatModelChoice, LlmConnection, SessionSummary } from '@maka/core';
+import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import {
+  normalizeActiveChatModel,
+  pickNewChatModel,
+} from '../../renderer/shell-chat-model-selection.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
 type ModelCatalogChoicesModule = {
   buildCatalogRecommendedDefaultModel(providerType: LlmConnection['providerType']): string;
-  buildCatalogChatModelChoices(connections: readonly LlmConnection[]): Array<{
-    connectionSlug: string;
-    providerType: string;
-    model: string;
-    label: string;
-    connectionName?: string;
-  }>;
-  pickCatalogDefaultChatModel(connection: LlmConnection):
-    | { llmConnectionSlug: string; model: string }
-    | undefined;
-  pickNewChatModel(input: {
-    pending: { llmConnectionSlug: string; model: string } | null;
-    activationCandidate?: { llmConnectionSlug: string; model: string };
-    catalogDefault: { llmConnectionSlug: string; model: string } | undefined;
-    choices: Array<{
-      connectionSlug: string;
-      providerType: LlmConnection['providerType'];
-      model: string;
-      label: string;
-    }>;
-  }): { llmConnectionSlug: string; model: string } | undefined;
   buildCatalogDailyReviewModelOptions(
     connections: readonly LlmConnection[],
     currentModelKey: string,
   ): Array<readonly [string, string]>;
-  buildCatalogModelChoices(connection: LlmConnection): Array<{
-    id: string;
-    displayName?: string;
-    source: string;
-    recommendedRank?: number;
-    lifecycle: string;
-    docsUrl?: string;
-    availability: string;
-    unavailableReason: string;
-    isDefault: boolean;
-  }>;
 };
 
 let modulePromise: Promise<ModelCatalogChoicesModule> | undefined;
@@ -92,8 +66,57 @@ function choiceIdentity(choice: {
 }
 
 describe('model catalog picker helpers', () => {
-  it('uses the first offered model when no user or workspace preference exists', async () => {
-    const { pickNewChatModel } = await importModelCatalogChoices();
+  it('keeps the first offered Codex model when replacing an unsupported stored model', () => {
+    const choices: ChatModelChoice[] = [
+      {
+        connectionSlug: 'codex-account',
+        providerType: 'openai-codex',
+        providerLabel: 'OpenAI OAuth',
+        model: 'first-offered',
+        label: 'First offered',
+        isDefault: false,
+        thinkingLevels: [],
+      },
+      {
+        connectionSlug: 'codex-account',
+        providerType: 'openai-codex',
+        providerLabel: 'OpenAI OAuth',
+        model: 'later-default',
+        label: 'Later default',
+        isDefault: true,
+        thinkingLevels: [],
+      },
+    ];
+    const session: SessionSummary = {
+      id: 'session-1',
+      name: 'Legacy Codex session',
+      isFlagged: false,
+      isArchived: false,
+      labels: [],
+      hasUnread: false,
+      status: 'active',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'codex-account',
+      connectionLocked: true,
+      model: 'gpt-5-codex',
+      permissionMode: 'ask',
+    };
+
+    assert.equal(
+      normalizeActiveChatModel(
+        session,
+        connection({
+          slug: 'codex-account',
+          providerType: 'openai-codex',
+          defaultModel: 'gpt-5-codex',
+        }),
+        choices,
+      ),
+      'first-offered',
+    );
+  });
+
+  it('uses the first offered model when no user or workspace preference exists', () => {
     assert.deepEqual(
       pickNewChatModel({
         pending: null,
@@ -102,8 +125,11 @@ describe('model catalog picker helpers', () => {
           {
             connectionSlug: 'opencode-free',
             providerType: 'opencode-free',
+            providerLabel: 'OpenCode Zen',
             model: 'mimo-v2.5-free',
             label: 'MiMo V2.5 Free',
+            isDefault: true,
+            thinkingLevels: [],
           },
         ],
       }),
@@ -111,8 +137,7 @@ describe('model catalog picker helpers', () => {
     );
   });
 
-  it('uses the readiness-checked activation candidate before an unverified first choice', async () => {
-    const { pickNewChatModel } = await importModelCatalogChoices();
+  it('uses the readiness-checked activation candidate before an unverified first choice', () => {
     assert.deepEqual(
       pickNewChatModel({
         pending: null,
@@ -125,14 +150,20 @@ describe('model catalog picker helpers', () => {
           {
             connectionSlug: 'missing-key-first',
             providerType: 'anthropic',
+            providerLabel: 'Anthropic',
             model: 'unusable-model',
             label: 'Unusable',
+            isDefault: true,
+            thinkingLevels: [],
           },
           {
             connectionSlug: 'ready-second',
             providerType: 'opencode-free',
+            providerLabel: 'OpenCode Zen',
             model: 'ready-model',
             label: 'Ready',
+            isDefault: true,
+            thinkingLevels: [],
           },
         ],
       }),
@@ -140,9 +171,8 @@ describe('model catalog picker helpers', () => {
     );
   });
 
-  it('offers the normalized fallback for legacy Codex-only inventory', async () => {
-    const { buildCatalogChatModelChoices } = await importModelCatalogChoices();
-    const choices = buildCatalogChatModelChoices([
+  it('offers the normalized fallback for legacy Codex-only inventory', () => {
+    const choices = buildChatModelChoices([
       connection({
         slug: 'codex-account',
         providerType: 'openai-codex',
@@ -157,9 +187,7 @@ describe('model catalog picker helpers', () => {
     ]);
   });
 
-  it('projects enabled models across wired providers without collapsing provider identities', async () => {
-    const { buildCatalogChatModelChoices, buildCatalogModelChoices } =
-      await importModelCatalogChoices();
+  it('projects enabled models across wired providers without collapsing provider identities', () => {
     const openrouter = connection({
       slug: 'openrouter-main',
       providerType: 'openrouter',
@@ -173,15 +201,15 @@ describe('model catalog picker helpers', () => {
       modelSource: 'fetched',
     });
     assert.deepEqual(
-      buildCatalogChatModelChoices([openrouter]).map((choice) => choice.model),
+      buildChatModelChoices([openrouter]).map((choice) => choice.model),
       ['openrouter/auto', 'anthropic/claude-sonnet-4.6'],
     );
     assert.deepEqual(
-      buildCatalogModelChoices(openrouter).map((choice) => choice.id),
+      buildConnectionModelCatalogEntries({ connection: openrouter }).map((choice) => choice.id),
       ['openrouter/auto', 'anthropic/claude-sonnet-4.6', 'openai/gpt-5.5'],
     );
 
-    const choices = buildCatalogChatModelChoices([
+    const choices = buildChatModelChoices([
       connection({
         slug: 'ollama-cloud',
         providerType: 'ollama-cloud',
@@ -231,9 +259,8 @@ describe('model catalog picker helpers', () => {
     ]);
   });
 
-  it('keeps API connection labels while redacting OAuth account identities', async () => {
-    const { buildCatalogChatModelChoices } = await importModelCatalogChoices();
-    const choices = buildCatalogChatModelChoices([
+  it('keeps API connection labels while redacting OAuth account identities', () => {
+    const choices = buildChatModelChoices([
       connection({
         slug: 'openrouter',
         name: 'Openrouter',
@@ -351,12 +378,7 @@ describe('model catalog picker helpers', () => {
   });
 
   it('derives canonical defaults, exact provider ids, and missing-default state', async () => {
-    const {
-      buildCatalogChatModelChoices,
-      buildCatalogModelChoices,
-      buildCatalogRecommendedDefaultModel,
-      pickCatalogDefaultChatModel,
-    } = await importModelCatalogChoices();
+    const { buildCatalogRecommendedDefaultModel } = await importModelCatalogChoices();
     assert.deepEqual(
       [
         'deepseek',
@@ -391,7 +413,7 @@ describe('model catalog picker helpers', () => {
       modelSource: 'fetched',
     });
     assert.deepEqual(
-      buildCatalogModelChoices(zenmux).map(({ id, source, isDefault }) => ({
+      buildConnectionModelCatalogEntries({ connection: zenmux }).map(({ id, source, isDefault }) => ({
         id,
         source,
         isDefault,
@@ -401,36 +423,19 @@ describe('model catalog picker helpers', () => {
         { id: 'moonshotai/kimi-k2.7-code', source: 'provider_api', isDefault: false },
       ],
     );
-    assert.deepEqual(buildCatalogChatModelChoices([zenmux]).map(choiceIdentity), [
+    assert.deepEqual(buildChatModelChoices([zenmux]).map(choiceIdentity), [
       'zenmux:zenmux:moonshotai/kimi-k2.5',
       'zenmux:zenmux:moonshotai/kimi-k2.7-code',
     ]);
-    assert.deepEqual(pickCatalogDefaultChatModel(zenmux), {
-      llmConnectionSlug: 'zenmux',
-      model: 'moonshotai/kimi-k2.5',
-    });
-    assert.deepEqual(
-      pickCatalogDefaultChatModel(
-        connection({
-          slug: 'openai-api',
-          providerType: 'openai',
-          defaultModel: '  gpt-4o-mini  ',
-          models: [{ id: 'gpt-4o-mini' }],
-          modelSource: 'fetched',
-        }),
-      ),
-      { llmConnectionSlug: 'openai-api', model: 'gpt-4o-mini' },
-    );
-
-    const missingDefault = buildCatalogModelChoices(
-      connection({
+    const missingDefault = buildConnectionModelCatalogEntries({
+      connection: connection({
         slug: 'openai-api',
         providerType: 'openai',
         defaultModel: 'gpt-5',
         models: [{ id: 'gpt-4o-mini' }],
         modelSource: 'fetched',
       }),
-    );
+    });
     assert.deepEqual(
       missingDefault.map(({ id, availability, unavailableReason, isDefault }) => ({
         id,
@@ -454,14 +459,14 @@ describe('model catalog picker helpers', () => {
       ],
     );
     assert.equal(
-      buildCatalogModelChoices(
-        connection({
+      buildConnectionModelCatalogEntries({
+        connection: connection({
           slug: 'deepseek-api',
           providerType: 'deepseek',
           defaultModel: 'deepseek-v4-flash',
           modelSource: 'fallback',
         }),
-      ).filter((choice) => choice.source === 'static_catalog').length,
+      }).filter((choice) => choice.source === 'static_catalog').length,
       4,
     );
   });

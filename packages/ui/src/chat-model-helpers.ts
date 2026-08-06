@@ -20,47 +20,9 @@
  * harness (URI-encoded delimiters, malformed input fall-through).
  */
 
-import { PROVIDER_DEFAULTS, type ProviderType, type UiLocale } from '@maka/core';
+import type { ChatModelChoice, ProviderType, UiLocale } from '@maka/core';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-
-export interface ChatModelChoice {
-  connectionSlug: string;
-  providerType: ProviderType;
-  model: string;
-  label: string;
-  /**
-   * User-chosen connection label — ONLY for non-OAuth providers (`api_key` /
-   * `none` auth), where `connection.name` is a plain label the user typed in
-   * Settings when adding the connection (e.g. "OpenRouter", "My Together AI
-   * key"). Must stay `undefined` for `claude-subscription` /
-   * `openai-codex` / `gemini-cli`, whose `connection.name` embeds the
-   * OAuth account email (PR-CHAT-CHROME-FIX-0) — those three keep falling
-   * back to the leak-safe provider label in `modelMenuGroups`. Callers
-   * populate this field; `@maka/ui` doesn't know about `LlmConnection` and
-   * can't enforce the guard itself.
-   */
-  connectionName?: string;
-}
-
-/**
- * Short, leak-safe provider labels for menu headings. UI display copy lives in
- * the UI layer (not `@maka/core`). `satisfies` keeps it exhaustive over
- * `ProviderType`. models.dev-backed providers fall through to the shared
- * registry label so this UI does not become another provider fact table.
- */
-const STATIC_PROVIDER_SHORT_LABEL: Partial<Record<ProviderType, string>> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  deepseek: 'DeepSeek',
-  moonshot: 'Moonshot',
-  ollama: 'Ollama',
-  'kimi-coding-plan': 'Kimi',
-  'zai-coding-plan': 'Z.AI',
-  MiniMax: 'MiniMax',
-  'openai-codex': 'OpenAI OAuth',
-  'gemini-cli': 'Gemini CLI',
-};
+export type { ChatModelChoice } from '@maka/core';
 
 export interface ModelMenuGroup {
   connectionSlug: string;
@@ -89,13 +51,12 @@ export interface ModelMenuGroup {
  */
 export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = 'zh'): ModelMenuGroup[] {
   const copy = getSharedUiCopy(locale).providers;
-  const providerShortLabel: Partial<Record<ProviderType, string>> = {
-    ...STATIC_PROVIDER_SHORT_LABEL,
+  const localizedLabels: Partial<Record<ProviderType, string>> = {
     'MiniMax-cn': copy.minimaxChina,
     'openai-compatible': copy.custom,
     'claude-subscription': copy.claudeSubscription,
   };
-  const bySlug = new Map<string, { connectionSlug: string; providerType: ProviderType; connectionName?: string; choices: ChatModelChoice[] }>();
+  const bySlug = new Map<string, { connectionSlug: string; providerType: ProviderType; providerLabel: string; connectionName?: string; choices: ChatModelChoice[] }>();
   for (const choice of choices) {
     const group = bySlug.get(choice.connectionSlug);
     if (group) {
@@ -104,6 +65,7 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = '
       bySlug.set(choice.connectionSlug, {
         connectionSlug: choice.connectionSlug,
         providerType: choice.providerType,
+        providerLabel: choice.providerLabel,
         connectionName: choice.connectionName,
         choices: [choice],
       });
@@ -131,7 +93,7 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale = '
         choices: group.choices,
       };
     }
-    const label = providerShortLabel[group.providerType] ?? PROVIDER_DEFAULTS[group.providerType].label;
+    const label = localizedLabels[group.providerType] ?? group.providerLabel;
     const ambiguous = (connectionsPerType.get(group.providerType) ?? 0) > 1;
     return {
       connectionSlug: group.connectionSlug,

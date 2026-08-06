@@ -26,6 +26,7 @@ import {
   type ToolResultContent,
 } from '@maka/core';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
+import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -62,8 +63,6 @@ import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
 import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
 import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
-import { buildArchiveReadTool } from './archive-read-tool.js';
-import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
 import {
@@ -144,7 +143,6 @@ export interface BuildBuiltinToolsOptions {
       abortSignal: AbortSignal,
     ): Promise<ToolResultContent>;
   };
-  archiveResources?: ToolResultArchiveResourceReader;
   backgroundTasks?: BackgroundTaskStopper;
   ptyControls?: PtyControlWriter;
   executor?: WorkspaceExecutor;
@@ -298,7 +296,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
   const tools: MakaTool[] = [
     ...bashTools,
     ...backgroundTools,
-    ...(options.archiveResources ? [buildArchiveReadTool(options.archiveResources)] : []),
     {
       name: 'Read',
       activityKind: 'read',
@@ -383,8 +380,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         });
         if (result.kind !== 'write')
           throw internalFilesystemWriteFailure('Write', 'the file was written');
-        return { ok: result.ok, path: result.path, bytes: result.bytes };
+        if (result.diff !== undefined)
+          return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
+        return { kind: 'file_write' as const, path: result.path, bytes: result.bytes };
       },
+      toModelOutput: ({ output }) => fileWriteToolResultToModelOutput('Write', output),
     },
     {
       name: 'Edit',
@@ -417,6 +417,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             'the edit was applied',
             'a different old_string will not help',
           );
+        if (result.diff !== undefined)
+          return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
         return {
           ok: result.ok,
           path: result.path,
@@ -426,6 +428,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           endLine: result.endLine,
         };
       },
+      toModelOutput: ({ output }) => fileWriteToolResultToModelOutput('Edit', output),
     },
     {
       name: 'FormatJson',
@@ -461,11 +464,14 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         if (result.kind !== 'format_json') {
           throw internalFilesystemWriteFailure('FormatJson', 'the file was rewritten');
         }
+        if (result.diff !== undefined)
+          return { kind: 'file_diff' as const, paths: [result.path], diff: result.diff };
         // The discriminator is how the backends name their results to each
         // other; the model is owed the payload, as with every other file tool.
         const { kind: _kind, ...diagnostic } = result;
         return diagnostic;
       },
+      toModelOutput: ({ output }) => fileWriteToolResultToModelOutput('FormatJson', output),
     },
     {
       name: 'Glob',

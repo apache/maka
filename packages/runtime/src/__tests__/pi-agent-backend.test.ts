@@ -15,6 +15,36 @@ import {
 } from '../pi-agent-backend.js';
 
 describe('PiAgentBackend skeleton', () => {
+  test('rejects Code Mode instead of forwarding it to the Pi transport', async () => {
+    let transportCalls = 0;
+    const backend = new PiAgentBackend({
+      sessionId: 'session-1',
+      header: header({ permissionMode: 'execute' }),
+      appendMessage: async () => undefined,
+      transport: {
+        async *send() {
+          transportCalls += 1;
+          yield { type: 'complete' };
+        },
+      },
+      newId: nextId('id'),
+      now: nextNow(2_000),
+    });
+
+    await assert.rejects(
+      drain(
+        backend.send({
+          turnId: 'turn-1',
+          text: 'inspect',
+          context: [],
+          toolMode: 'code_mode',
+        }),
+      ),
+      /does not support.*code_mode/i,
+    );
+    assert.equal(transportCalls, 0);
+  });
+
   test('normalizes fake transport text and tool frames to Maka events and storage records', async () => {
     const messages: StoredMessage[] = [];
     const backend = new PiAgentBackend({

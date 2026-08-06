@@ -831,7 +831,9 @@ function projectToolOperations(
 ): ToolOperation[] {
   const callsByEventId = new Map(
     events.flatMap((event) =>
-      event.content?.kind === 'function_call' ? [[event.id, event.content] as const] : [],
+      event.content?.kind === 'function_call' && event.modelVisibility !== 'hidden'
+        ? [[event.id, event.content] as const]
+        : [],
     ),
   );
   return recovery.decisions.flatMap((decision) => {
@@ -873,7 +875,12 @@ export function buildResumePlanFromRuntimeEvents(
   const sourceRuntimeEventHighWater = events.length;
   const diagnostics = collectResumeDiagnostics(events, operations, options, recovery);
   const rejectionReasons = deriveRejectionReasons(diagnostics);
-  const requiresVerification = operations.some((operation) => operation.status === 'indeterminate');
+  // Hidden nested calls stay out of the model-facing operation projection, but
+  // an unresolved one still represents a possible side effect and must block
+  // automatic replay of the enclosing execution.
+  const requiresVerification =
+    operations.some((operation) => operation.status === 'indeterminate') ||
+    hasHiddenIndeterminateOperation(events, recovery);
   const disposition: ResumePlanDisposition =
     rejectionReasons.length === 0 && !requiresVerification && !recovery.hasCorruption
       ? 'safe_replay'
@@ -898,6 +905,7 @@ export function buildResumeReplayRuntimeEvents(events: readonly RuntimeEvent[]):
 
   for (const event of events) {
     if (isPartialRuntimeEvent(event)) continue;
+    if (event.modelVisibility === 'hidden') continue;
     const content = event.content;
     if (!content) {
       replayEvents.push(event);
@@ -1326,8 +1334,23 @@ function collectResumeDiagnostics(
     });
   }
 
+  const eventsById = new Map(events.map((event) => [event.id, event] as const));
+  for (const decision of recovery.decisions) {
+    if (decision.status !== 'indeterminate' || !decision.callRuntimeEventId) continue;
+    const callEvent = eventsById.get(decision.callRuntimeEventId);
+    if (callEvent?.modelVisibility !== 'hidden') continue;
+    diagnostics.push({
+      code: 'pending_tool_result',
+      message: 'hidden nested tool call has no matching committed function_response',
+      eventId: decision.callRuntimeEventId,
+      toolCallId: decision.toolCallId,
+      ...(decision.toolName ? { toolName: decision.toolName } : {}),
+    });
+  }
+
   for (const event of events) {
     if (isPartialRuntimeEvent(event)) continue;
+    if (event.modelVisibility === 'hidden') continue;
     const content = event.content;
     if (content?.kind !== 'function_response') continue;
     const operation = operationsById.get(content.id);
@@ -1357,6 +1380,19 @@ function collectResumeDiagnostics(
   }
 
   return diagnostics;
+}
+
+function hasHiddenIndeterminateOperation(
+  events: readonly RuntimeEvent[],
+  recovery: RuntimeRecoveryResolution,
+): boolean {
+  const eventsById = new Map(events.map((event) => [event.id, event] as const));
+  return recovery.decisions.some(
+    (decision) =>
+      decision.status === 'indeterminate' &&
+      decision.callRuntimeEventId !== undefined &&
+      eventsById.get(decision.callRuntimeEventId)?.modelVisibility === 'hidden',
+  );
 }
 
 function deriveRejectionReasons(

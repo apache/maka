@@ -254,6 +254,199 @@ describe('filesystem worker operations', () => {
     assert.equal(response.ok, false);
     if (!response.ok) assert.equal(response.error.code, 'path_changed');
   });
+
+  test('returns a unified diff for an applied edit', async () => {
+    const root = await temporaryDirectory('maka-worker-edit-diff-');
+    const target = join(root, 'file.ts');
+    await writeFile(target, 'one\ntwo\nthree\nfour\nfive\n', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'edit', cwd: root, path: target, oldString: 'three', newString: 'THREE' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'edit');
+    if (response.result.kind !== 'edit') return;
+    assert.equal(
+      response.result.diff,
+      [
+        `--- a/${target}`,
+        `+++ b/${target}`,
+        '@@ -1,5 +1,5 @@',
+        ' one',
+        ' two',
+        '-three',
+        '+THREE',
+        ' four',
+        ' five',
+      ].join('\n'),
+    );
+  });
+
+  test('returns the whole content as additions when writing a new file', async () => {
+    const root = await temporaryDirectory('maka-worker-write-new-');
+    const target = join(root, 'new.md');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: target, content: 'alpha\nbeta\n' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'write');
+    if (response.result.kind !== 'write') return;
+    assert.equal(
+      response.result.diff,
+      ['--- /dev/null', `+++ b/${target}`, '@@ -0,0 +1,2 @@', '+alpha', '+beta'].join('\n'),
+    );
+  });
+
+  test('returns a unified diff when overwriting an existing file', async () => {
+    const root = await temporaryDirectory('maka-worker-write-over-');
+    const target = join(root, 'existing.md');
+    await writeFile(target, 'alpha\nold\nomega\n', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: target, content: 'alpha\nnew\nomega\n' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'write');
+    if (response.result.kind !== 'write') return;
+    assert.equal(
+      response.result.diff,
+      [
+        `--- a/${target}`,
+        `+++ b/${target}`,
+        '@@ -1,3 +1,3 @@',
+        ' alpha',
+        '-old',
+        '+new',
+        ' omega',
+      ].join('\n'),
+    );
+  });
+
+  test('returns a unified diff when FormatJson normalizes a file', async () => {
+    const root = await temporaryDirectory('maka-worker-format-diff-');
+    const target = join(root, 'data.json');
+    await writeFile(target, '{"b":1,"a":2}', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'format_json', cwd: root, path: target, sortKeys: false },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'format_json');
+    if (response.result.kind !== 'format_json') return;
+    assert.equal(response.result.changed, true);
+    assert.equal(
+      response.result.diff,
+      [
+        `--- a/${target}`,
+        `+++ b/${target}`,
+        '@@ -1,1 +1,4 @@',
+        '-{"b":1,"a":2}',
+        '+{',
+        '+  "b": 1,',
+        '+  "a": 2',
+        '+}',
+      ].join('\n'),
+    );
+  });
+
+  test('omits the diff when the content is too large to diff cheaply', async () => {
+    const root = await temporaryDirectory('maka-worker-huge-');
+    const target = join(root, 'huge.ts');
+    const before = Array.from({ length: 900 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n';
+    await writeFile(target, before, 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        {
+          kind: 'edit',
+          cwd: root,
+          path: target,
+          oldString: 'const v0 = 0;',
+          newString: 'const v0 = -1;',
+        },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'edit');
+    if (response.result.kind !== 'edit') return;
+    assert.equal(response.result.diff, undefined);
+  });
+
+  test('omits the diff when FormatJson leaves the file unchanged', async () => {
+    const root = await temporaryDirectory('maka-worker-format-same-');
+    const target = join(root, 'data.json');
+    await writeFile(target, '{\n  "a": 1\n}', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'format_json', cwd: root, path: target, sortKeys: false },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'format_json');
+    if (response.result.kind !== 'format_json') return;
+    assert.equal(response.result.changed, false);
+    assert.equal(response.result.diff, undefined);
+  });
+
+  test('reports no diff — not a new-file diff — when an existing file cannot be read', async () => {
+    const root = await temporaryDirectory('maka-worker-unreadable-');
+    const target = join(root, 'locked.md');
+    await writeFile(target, 'secret\n', { mode: 0o222 });
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: target, content: 'replacement\n' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'write');
+    if (response.result.kind !== 'write') return;
+    // The write landed, but what was there before is unknown — claiming
+    // `--- /dev/null` would report the file as created.
+    assert.equal(response.result.diff, undefined);
+  });
+
+  test('reports no diff when overwriting an image', async () => {
+    const root = await temporaryDirectory('maka-worker-image-write-');
+    const target = join(root, 'pixel.png');
+    await writeFile(target, ONE_PIXEL_PNG);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: target, content: 'not an image anymore\n' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'write');
+    if (response.result.kind !== 'write') return;
+    assert.equal(response.result.diff, undefined);
+  });
 });
 
 function requestFor(

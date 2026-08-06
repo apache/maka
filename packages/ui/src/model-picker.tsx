@@ -55,6 +55,9 @@ export function ModelPicker(props: ModelPickerProps) {
     [props.groups, props.leadingOption],
   );
 
+  // size=md matches the other settings-row selectors. Settings is the only
+  // production host since the composer footer moved to ghost DropdownMenus,
+  // so the size is a fact of the component, not a prop.
   return (
     <div className="maka-model-picker-root">
       <Selector
@@ -64,7 +67,7 @@ export function ModelPicker(props: ModelPickerProps) {
         value={props.value}
         hasSearch
         searchPlaceholder={props.searchPlaceholder ?? copy.searchPlaceholder}
-        size="sm"
+        size="md"
         placement="above"
         isDisabled={props.disabled}
         isLoading={props.loading}

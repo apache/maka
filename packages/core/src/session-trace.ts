@@ -59,6 +59,12 @@ export interface TraceModelAttempt {
   cacheReadInputTokens?: number;
   reasoningTokens?: number;
   /**
+   * The context window the call was metered against, frozen at call time.
+   * Passed through so a reader can set the prompt size against the ceiling it
+   * was actually run under, rather than against whatever a catalog says today.
+   */
+  contextWindow?: number;
+  /**
    * Absent when the record carries no price. Never rendered as zero: a call
    * nobody could price and a call that was free are different facts, and the
    * canonical record keeps them apart (#1679).
@@ -337,6 +343,7 @@ const MODEL_ATTEMPT_SHAPE = defineObjectShape<TraceModelAttempt>()(
     'outputTokens',
     'cacheReadInputTokens',
     'reasoningTokens',
+    'contextWindow',
     'costUsd',
   ],
 );
@@ -492,6 +499,7 @@ function isModelAttempt(value: unknown): value is TraceModelAttempt {
       value.outputTokens,
       value.cacheReadInputTokens,
       value.reasoningTokens,
+      value.contextWindow,
       value.costUsd,
     ].every(isOptionalNonnegativeNumber) &&
     isOptionalString(value.finishReason) &&

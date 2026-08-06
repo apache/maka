@@ -295,9 +295,11 @@ export function buildSynthesisCacheBlocksFromHydratedArchives(
   input: BuildSynthesisCacheBlocksInput,
 ): BuildSynthesisCacheBlocksResult {
   const skippedReasonCounts: Record<string, number> = {};
+  const eventsById = new Map(input.hydratedRuntimeEvents.map((event) => [event.id, event]));
   const archiveRefs = input.retrievedArchiveRefs.filter(
     (ref): ref is Extract<SynthesisSourceRef, { kind: 'archived_tool_result' }> =>
-      ref.kind === 'archived_tool_result',
+      ref.kind === 'archived_tool_result' &&
+      eventsById.get(ref.runtimeEventId)?.modelVisibility !== 'hidden',
   );
   if (archiveRefs.length === 0) {
     increment(skippedReasonCounts, 'source_missing');
@@ -455,7 +457,9 @@ function buildSynthesisArchiveExcerpts(
     )
     .map((ref) => {
       const event = eventsById.get(ref.runtimeEventId);
-      if (event?.content?.kind !== 'function_response') return undefined;
+      if (event?.modelVisibility === 'hidden' || event?.content?.kind !== 'function_response') {
+        return undefined;
+      }
       if (isArchivedToolResultPlaceholder(event.content.result)) return undefined;
       const serialized = serializeToolResultForArchive(event.content.result);
       return {

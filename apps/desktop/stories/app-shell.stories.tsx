@@ -38,14 +38,20 @@ const modelChoices: ChatModelChoice[] = [
   {
     connectionSlug: 'anthropic-main',
     providerType: 'anthropic',
+    providerLabel: 'Anthropic',
     model: 'claude-sonnet-4-5',
     label: 'Claude Sonnet 4.5',
+    isDefault: true,
+    thinkingLevels: [],
   },
   {
     connectionSlug: 'openai-main',
     providerType: 'openai',
+    providerLabel: 'OpenAI',
     model: 'gpt-5.1',
     label: 'GPT-5.1',
+    isDefault: true,
+    thinkingLevels: [],
   },
 ];
 
@@ -471,6 +477,28 @@ export const NewChatComposer: Story = {
         newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
+      }}
+    />
+  ),
+};
+
+// Real path: 新任务 → 切换项目 → 项目 picker 处于 pending（切换中）。
+// Production passes `pending: projectPickerPending` while a project switch is
+// in flight; the trigger locks with a spinner and every menu row disables,
+// matching the model switcher's mid-switch treatment.
+export const NewChatComposerProjectPending: Story = {
+  render: () => (
+    <ComposedShell
+      session={null}
+      chat={{ messages: [] }}
+      composer={{
+        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        onPickNewChatModel: noop,
+        onOpenModelSettings: noop,
+        workspacePicker: {
+          ...baseComposerProps.workspacePicker!,
+          pending: true,
+        },
       }}
     />
   ),

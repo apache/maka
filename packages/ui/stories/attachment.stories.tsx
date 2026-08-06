@@ -37,7 +37,7 @@ type ComposerProps = ComponentProps<typeof Composer>;
 type ChatViewProps = ComponentProps<typeof ChatView>;
 
 const modelChoices: ChatModelChoice[] = [
-  { connectionSlug: 'anthropic-main', providerType: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+  { connectionSlug: 'anthropic-main', providerType: 'anthropic', providerLabel: 'Anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', isDefault: true, thinkingLevels: [] },
 ];
 
 function noop() {

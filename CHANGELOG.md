@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+## 0.1.6 - 2026-08-06
+
+### Highlights
+
+- Extended Runtime Host with a Bot adapter (#2192), candidate composition
+  (#2194), and complete opt-in parity (#2216): restored the Desktop Computer Use
+  capability (#2233) and its presentation parity (#2254), and resolved OAuth
+  tokens for connection effects (#2246).
+- Added restricted CodeMode execution in the runtime (#1648), and made
+  Edit/Write/FormatJson emit `file_diff` results for both renderers (#2264) so
+  tool output renders consistently across Desktop and CLI.
+- Bundled and verified a hermetic Git runtime for managed workspaces (#2199),
+  and gated managed workspace reads behind owner-bound Runtime Host execution
+  (#2129).
+- Implemented the Session Bundle filesystem codec in storage (#2013).
+- Rebuilt the tool detail panel as one surface with one type scale and real diff
+  colours (#2227), kept it visible during live turns (#2244), kept tool-call
+  groups collapsed until the reader opens them (#2226), and kept composer
+  model/thinking pickers mounted mid-turn, unified as ghost menus (#2230).
+- Pinned the prompt anchor rail to the Astryx chat scrollport (#2161) and gave
+  it motion (#2215), dropped the branch picker and rebuilt the project picker on
+  Selector (#2217), and localized the Astryx chrome adopted since #1795 (#2202).
+- Let the Maka benchmark arm run where its competitors run (#2177), bound
+  managed shell sessions to the in-container tool surface (#2258), and recorded
+  the four-arm Terminal-Bench 2.1 comparison (#2208).
+- Pinned GitHub Actions and configured Dependabot (#2212), added a non-blocking
+  Windows baseline lane (#2173), and bumped the AI SDK while re-porting the
+  tool-call tracker patch (#2193).
+
+### Performance
+
+- Streamed OpenAI Responses incrementally (#2238), coalesced partial stream
+  persistence (#2157), mounted a switched-to transcript progressively (#2191),
+  and seeded transcript geometry before progressive fill (#2237).
+
+### Reliability and developer experience
+
+- Enforced swarm failure boundaries (#2203), kept PTY tool results JSON-safe
+  (#2209), replayed provider-facing MCP arguments (#2243), preserved reasoning
+  across provider steps (#2249), and made the tool-result archive capability
+  indivisible (#2255).
+- Preserved a new task across renderer reloads (#2174), exposed thinking levels
+  for discovered Codex OAuth models (#2250), completed the macOS quit lifecycle
+  (#2251), cleared the "New messages" indicator at the bottom and per
+  conversation (#2211), and replaced the unhealthy opencode-free bootstrap model
+  (#2166).
+- Repaired the five regressions from the 定时任务 rebuild (#2261).
+- Kept modal dialogs out of the window drag region (#2210), drew the reasoning
+  chevron from the Astryx icon registry (#2228), preserved Astryx List
+  accessible names (#2225), stripped ATX heading markers from quote chip display
+  (#2214), dropped the dead `[data-trow]` chat rules (#2231), landed a
+  switched-to session at its latest turn instead of flying there (#2239), and
+  bounded progressive fill idle so long transcripts settle (#2259).
+- Aligned the Models header and back button (#2198), and aligned the Settings
+  chat-defaults column with a resizable assistant-tone textarea (#2256).
+- Made attachment drop readiness atomic in e2e (#2229), and extracted the shared
+  `sanitizeUnicodeText` into core (#2190).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
 ## 0.1.5 - 2026-08-05
 
 ### Highlights

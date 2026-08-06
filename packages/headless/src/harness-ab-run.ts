@@ -1,5 +1,5 @@
 import { buildRunManifestFingerprint } from './ab-manifest.js';
-import { runArmCohort } from './ab-run.js';
+import { buildAbRoundId, runArmCohort } from './ab-run.js';
 import { withAbRunLock } from './ab-run-lock.js';
 import type { AbComparisonSummary, ArmCohortResult } from './ab-types.js';
 import { isEvaluatedOutcome, summarizeAbComparison } from './ab-summary.js';
@@ -142,13 +142,22 @@ async function executeHarnessArmCohort(input: RunHarnessArmCohortInput): Promise
   if (retryRoundIds.size !== (input.retryAdjudicatedInfraRoundIdsOnce?.length ?? 0)) {
     throw new Error('adjudicated infra retry round ids must be unique');
   }
+  // Build the candidates with the same helper the cohort writes with. Spelling
+  // the id out here instead let the two drift: `buildAbRoundId` normalizes `.`
+  // to `-`, so a retry naming a task whose id carries a dot was rejected as
+  // unknown — and because the check throws rather than skips, one dotted task
+  // took the whole retry batch down with it.
   const validRoundIds = new Set(
-    input.evaluationTasks.flatMap((task) => input.arms.map((arm) => `ab-${arm.id}-r0-${task.id}`)),
+    input.evaluationTasks.flatMap((task) =>
+      input.arms.map((arm) => buildAbRoundId(undefined, arm.id, 0, task.id)),
+    ),
   );
-  for (const roundId of retryRoundIds) {
-    if (!validRoundIds.has(roundId)) {
-      throw new Error(`adjudicated infra retry names unknown round ${roundId}`);
-    }
+  // Report every unknown id at once. An operator recovering a sweep hands over
+  // a batch of them, and failing on the first turns one typo into as many
+  // round-trips as there are mistakes.
+  const unknownRoundIds = [...retryRoundIds].filter((roundId) => !validRoundIds.has(roundId));
+  if (unknownRoundIds.length > 0) {
+    throw new Error(`adjudicated infra retry names unknown round ${unknownRoundIds.join(', ')}`);
   }
   const preexistingEventIds = new Set(
     (await readFixedPromptWal(input.resultsJsonlPath))

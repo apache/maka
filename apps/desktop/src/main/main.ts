@@ -4,7 +4,13 @@ import { resolveDesktopRuntimeOwner } from './desktop-runtime-owner.js';
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.
-app.setName('Maka');
+//
+// Safe-by-default isolation: a dev build must not share the released app's
+// userData root. Electron derives userData from the app name, so a distinct
+// dev name yields a distinct root (and thus a distinct runtime-host rootId,
+// socket/pipe namespace, and single-instance lock) without touching any
+// path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
+app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
 
 // E2E isolation: redirect userData BEFORE the single-instance lock so the
 // lock judges the throwaway dir, not the real user data — otherwise a

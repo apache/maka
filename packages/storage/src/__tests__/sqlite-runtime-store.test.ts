@@ -9,6 +9,8 @@ import {
   canonicalToolArgsHash,
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
   type RuntimeEvent,
@@ -223,6 +225,80 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  // These two pin the ERROR CLASS, not the message. AgentRun exempts exactly
+  // one class from the store-unavailable latch (`ToolLedgerRejectionError`), so
+  // the class is a behavioural contract between storage and runtime — and both
+  // messages are byte-identical to the plain `Error` strings they replaced, so
+  // a regression to `throw new Error(...)` would leave every message-matching
+  // assertion in this suite green while the exemption silently stopped working.
+  it('rejects an inadmissible candidate with ToolLedgerRejectionError, naming the code', async () => {
+    await withStore(async (store) => {
+      // Untagged, so it takes the generic lane — a tagged response is a
+      // reserved boundary fact and never reaches the transition check. This is
+      // the exact shape #2234 produced: a result with no call to answer.
+      const orphan = functionResponseEvent({
+        id: 'orphan-response-event',
+        ts: 11,
+        refs: { toolCallId: 'provider-call-1' },
+      });
+      await assert.rejects(
+        store.appendRuntimeEvent(orphan.sessionId, orphan.runId, orphan),
+        (error: unknown) =>
+          error instanceof ToolLedgerRejectionError &&
+          error.code === 'orphan_response' &&
+          error.eventId === 'orphan-response-event',
+      );
+    });
+  });
+
+  it('reports pre-existing damage as ToolLedgerCorruptionError, even from another session', async () => {
+    await withStore(async (store, dbPath) => {
+      store.close();
+
+      // Seed damage the store would never have written itself, in a session
+      // this run never touches: the health scan has no WHERE clause, so one
+      // damaged operation anywhere in the workspace is what a later append meets.
+      const raw = new DatabaseSync(dbPath);
+      const stranded = functionResponseEvent({
+        id: 'stranded-response',
+        sessionId: 'some-other-session',
+        invocationId: 'some-other-invocation',
+        runId: 'some-other-run',
+        ts: 5,
+      });
+      raw
+        .prepare(`
+          INSERT INTO runtime_events
+            (event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind,
+             payload_json, committed_at)
+          VALUES (?, ?, ?, ?, ?, 1, 'function_response', ?, 5)
+        `)
+        .run(
+          stranded.id,
+          stranded.sessionId,
+          stranded.invocationId,
+          stranded.runId,
+          stranded.turnId,
+          JSON.stringify(stranded),
+        );
+      raw.close();
+
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        const healthy = functionCallEvent();
+        await assert.rejects(
+          reopened.appendRuntimeEvent(healthy.sessionId, healthy.runId, healthy),
+          (error: unknown) =>
+            error instanceof ToolLedgerCorruptionError &&
+            !(error instanceof ToolLedgerRejectionError) &&
+            error.code === 'orphan_response',
+        );
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
   it('commits function_call, dispatch fact, and operation projection atomically in T1', async () => {
     await withStore(async (store) => {
       const call = functionCallEvent();
@@ -267,6 +343,44 @@ describe('SqliteRuntimeStore', () => {
         (await store.listUnsettledToolOperations()).map((operation) => operation.operationId),
         ['operation-1'],
       );
+    });
+  });
+
+  it('commits nested T1 events with parent operation linkage', async () => {
+    await withStore(async (store) => {
+      const parentRefs = {
+        parentToolCallId: 'exec-call-1',
+        parentOperationId: 'exec-operation-1',
+      } as const;
+      const call = functionCallEvent({
+        refs: {
+          operationId: 'operation-1',
+          toolCallId: 'provider-call-1',
+          ...parentRefs,
+        },
+      });
+      const dispatch = toolDispatchEvent({
+        refs: {
+          operationId: 'operation-1',
+          toolCallId: 'provider-call-1',
+          ...parentRefs,
+        },
+      });
+
+      const result = await store.commitToolPrepared({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_prepared',
+        runtimeEvent: call,
+        dispatchRuntimeEvent: dispatch,
+        providerToolCallId: 'provider-call-1',
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 10,
+      });
+
+      assert.equal(result.created, true);
+      assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), [call, dispatch]);
     });
   });
 

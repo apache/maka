@@ -10,6 +10,7 @@
 export * from './mcp.js';
 export * from './collaboration.js';
 export * from './orchestration.js';
+export * from './tool-mode.js';
 export * from './swarm-command.js';
 export * from './graph-command.js';
 export * from './plan.js';
@@ -259,12 +260,15 @@ export type {
   GenericToolLedgerAppendValidation,
   ToolLedgerLane,
   ToolLedgerLaneValidation,
+  ToolLedgerRejectionCode,
   ToolLedgerScanOperation,
   ToolLedgerScanResult,
   ToolLedgerTransitionKind,
   ToolLedgerTransitionValidation,
 } from './tool-ledger-scanner.js';
 export {
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
   scanToolLedger,
   validateGenericToolLedgerAppend,
   validateToolLedgerEventLane,
@@ -399,6 +403,8 @@ export {
   thinkingVariantsForModel,
 } from './model-thinking.js';
 
+export type { ChatModelChoice } from './chat-model-choice.js';
+
 // agent-run.ts
 export type {
   AgentRunEvent,
@@ -505,6 +511,12 @@ export {
   type QuietPreview,
   type ToolInvocationInput,
 } from './tool-quiet-preview.js';
+export {
+  countDiffLineStats,
+  parseUnifiedDiffRows,
+  type UnifiedDiffRow,
+  type UnifiedDiffRowKind,
+} from './unified-diff.js';
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
@@ -512,6 +524,12 @@ export {
   SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
+  assertShellRunIdentifier,
+  assertShellRunPatch,
+  assertShellRunSessionId,
+  nextShellRunRecord,
+  normalizeShellRunRecord,
+  shellRunNotFoundError,
   isShellOutput,
   isActiveShellRunStatus,
   isShellRunId,

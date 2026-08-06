@@ -1,27 +1,25 @@
 // packages/ui/src/primitives/page-header.tsx
 //
-// PageHeader — the one shared header shell for the two coexisting
-// page-header dialects the app grew independently:
+// PageHeader — the shared header shell for the SETTINGS intro dialect:
 //
-//   1. MODULE pages (as='h2'): the 技能 / 定时任务 hero — a big 2em
-//      semibold title, an optional lede line, and a right-aligned actions
-//      cluster (search box + primary CTA + refresh). Previously hand-rolled
-//      as `.maka-module-main-header` (h2+p+.maka-module-main-actions) and
-//      `.maka-plan-hero` (.maka-plan-heading > h2+p + .maka-plan-top-actions).
+//   SETTINGS intros (as='h3', or as='h2' for the About hero): the smaller
+//      Permission / Health / Voice / About page intro cards — a body-tier
+//      semibold title, a lede, and a trailing quieter META cluster
+//      (RelativeTime + refresh Button) or a leading feature ICON + trailing
+//      BADGE chip. Previously `.settingsPermissionIntro`,
+//      `.settingsHealthIntro`, `.settingsAboutHero`.
 //
-//   2. SETTINGS intros (as='h3'): the smaller Permission / Health / Voice /
-//      About page intro cards — a body-tier semibold title, a lede,
-//      and a trailing quieter META cluster (RelativeTime + refresh Button)
-//      or a leading feature ICON + trailing BADGE chip. Previously
-//      `.settingsPermissionIntro`, `.settingsHealthIntro`,
-//      `.settingsAboutHero`.
+//   The MODULE-page dialect this primitive also used to serve (the
+//   `.maka-module-main-header` hero) is retired: 技能 / MCP / 定时任务 /
+//   每日回顾 moved onto the ModulePage primitive, whose Astryx Layout header
+//   owns title + meta + actions.
 //
 // Layout & typography strategy: the shell is styled with portable semantic
 // utilities, but every call site KEEPS its existing wrapper class (passed via
 // `className`) so the wrapper CSS — which already owns the surface chrome
 // (card border/background/radius, flex vs grid layout, gap, mobile
-// breakpoints) and the per-slot typography (`.maka-module-main-header h2`,
-// `.settingsPermissionIntro p`, …) — keeps governing the visuals unchanged.
+// breakpoints) and the per-slot typography (`.settingsPermissionIntro h3`,
+// `.settingsAboutHero p`, …) — keeps governing the visuals unchanged.
 // The primitive only converges the STRUCTURE (slot order, title/subtitle/
 // eyebrow/badge/icon/actions/meta arrangement). Slots expose `data-slot`
 // hooks so contracts that used to pin the old `h2`/`p` direct children can
@@ -48,10 +46,10 @@ export interface PageHeaderProps {
    */
   badge?: ReactNode;
   /**
-   * Title heading level + scale. 'h2' = module hero scale, 'h3' = settings
-   * intro scale. Defaults to 'h2'. The exact font-size/weight is left to the
-   * wrapper CSS (`.maka-module-main-header h2`, `.settingsPermissionIntro h3`,
-   * …); this only picks the semantic tag.
+   * Title heading level + scale. 'h2' = the About hero scale, 'h3' = the
+   * settings intro scale. Defaults to 'h2'. The exact font-size/weight is
+   * left to the wrapper CSS (`.settingsAboutHero h2`,
+   * `.settingsPermissionIntro h3`, …); this only picks the semantic tag.
    */
   as?: 'h2' | 'h3';
   /** Id applied to the title element (aria-labelledby targets). */

@@ -42,6 +42,25 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('appending the first user message locks the session before any read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-heal-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessage(session.id, {
+        type: 'user',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 10,
+        text: 'legacy message',
+      });
+      assert.equal((await store.readHeaderSnapshot(session.id)).connectionLocked, true);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('commits message and catalog projection atomically', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-atomic-'));
     const store = createSessionStore(root);

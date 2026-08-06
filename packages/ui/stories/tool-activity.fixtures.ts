@@ -374,6 +374,90 @@ export const shellCommandSurfaceItems = [
   }),
 ] satisfies ToolActivityItem[];
 
+/**
+ * What the runtime now produces for real Edit/Write calls (#2232): no
+ * `diff --git` preamble, straight `---`/`+++` headers; `/dev/null` for a
+ * created file. The collapsed rows are where the green `+N` / red `-N`
+ * stats show.
+ */
+const editDiffResult = {
+  kind: 'file_diff',
+  paths: ['packages/ui/src/tool-activity.tsx'],
+  diff: [
+    '--- a/packages/ui/src/tool-activity.tsx',
+    '+++ b/packages/ui/src/tool-activity.tsx',
+    '@@ -286,7 +286,8 @@',
+    '   const calls: ChatToolCallItem[] = items.map((item) => ({',
+    '     key: item.toolUseId,',
+    '     name: resolveToolDisplayName(item, locale),',
+    '     status: astryxToolStatus(item),',
+    '+    ...(item.result?.kind === \'file_diff\' ? diffRowStats(item.result.diff) : {}),',
+    '     duration: formatDuration(item.durationMs) ?? undefined,',
+    '     stats: outcomeWord(item, locale),',
+    '     resultDetail: (',
+  ].join('\n'),
+} satisfies ToolResultContent;
+
+const writeNewFileDiffResult = {
+  kind: 'file_diff',
+  paths: ['docs/tool-result-diff.md'],
+  diff: [
+    '--- /dev/null',
+    '+++ b/docs/tool-result-diff.md',
+    '@@ -0,0 +1,4 @@',
+    '+# Tool result diffs',
+    '+',
+    '+Edit/Write/FormatJson carry a unified diff in their tool result,',
+    '+rendered by FileDiffPreview on desktop and renderDiffResult in the TUI.',
+  ].join('\n'),
+} satisfies ToolResultContent;
+
+const writeOverwriteDiffResult = {
+  kind: 'file_diff',
+  paths: ['.maka/config.json'],
+  diff: [
+    '--- a/.maka/config.json',
+    '+++ b/.maka/config.json',
+    '@@ -1,5 +1,5 @@',
+    ' {',
+    '   "theme": "dark",',
+    '-  "model": "glm-5",',
+    '+  "model": "glm-5.1",',
+    '   "telemetry": false',
+    ' }',
+  ].join('\n'),
+} satisfies ToolResultContent;
+
+export const editWriteDiffItems = [
+  toolItem({
+    toolUseId: 'edit-diff',
+    toolName: 'Edit',
+    intent: 'Pass diff stats to the tool row.',
+    status: 'completed',
+    args: { path: 'packages/ui/src/tool-activity.tsx' },
+    result: editDiffResult,
+    durationMs: 220,
+  }),
+  toolItem({
+    toolUseId: 'write-new-diff',
+    toolName: 'Write',
+    intent: 'Document the diff result kind.',
+    status: 'completed',
+    args: { path: 'docs/tool-result-diff.md' },
+    result: writeNewFileDiffResult,
+    durationMs: 160,
+  }),
+  toolItem({
+    toolUseId: 'write-overwrite-diff',
+    toolName: 'Write',
+    intent: 'Bump the configured model version.',
+    status: 'completed',
+    args: { path: '.maka/config.json' },
+    result: writeOverwriteDiffResult,
+    durationMs: 140,
+  }),
+] satisfies ToolActivityItem[];
+
 export const fileDiffAndWebSearchItems = [
   toolItem({
     toolUseId: 'file-diff',

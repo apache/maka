@@ -25,12 +25,7 @@ import type {
   ShellRunTerminalStatus,
 } from './shell-run.js';
 export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
-import type {
-  CacheMissInputSource,
-  ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-} from './usage-stats/types.js';
+import { type TokenUsageFields } from './usage-record-schema.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 export const TOOL_OUTPUT_STREAMS = ['stdout', 'stderr'] as const;
@@ -414,6 +409,17 @@ interface BaseEvent {
   ts: number;
 }
 
+interface ToolActivityIdentity {
+  /** Execution surface that produced this tool activity. */
+  origin?: 'provider' | 'code_mode';
+  /** Provider-history projection policy for this activity. */
+  modelVisibility?: 'visible' | 'hidden';
+  /** Enclosing exec provider call, for nested CodeMode activity. */
+  parentToolCallId?: string;
+  /** Enclosing exec durable operation, for nested CodeMode activity. */
+  parentOperationId?: string;
+}
+
 export type SessionEvent =
   | TextDeltaEvent
   | TextCompleteEvent
@@ -470,7 +476,7 @@ export interface ThinkingCompleteEvent extends BaseEvent {
   providerOptions?: Record<string, unknown>;
 }
 
-export interface ToolStartEvent extends BaseEvent {
+export interface ToolStartEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_start';
   toolUseId: string;
   toolName: string;
@@ -505,7 +511,7 @@ export type ToolOutputStream = (typeof TOOL_OUTPUT_STREAMS)[number];
  * monotonic per toolCallId/toolUseId so renderers can de-dupe and repair
  * event/result races without relying on arrival order.
  */
-export interface ToolOutputDeltaEvent extends BaseEvent {
+export interface ToolOutputDeltaEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_output_delta';
   sessionId: string;
   toolCallId: string;
@@ -518,13 +524,13 @@ export interface ToolOutputDeltaEvent extends BaseEvent {
   createdAt: number;
 }
 
-export interface ToolProgressEvent extends BaseEvent {
+export interface ToolProgressEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_progress';
   toolUseId: string;
   chunk: string | { kind: 'stdout' | 'stderr'; text: string };
 }
 
-export interface ToolResultEvent extends BaseEvent {
+export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_result';
   toolUseId: string;
   /** Runtime-owned durable tool-operation identity (Phase 2). */
@@ -929,34 +935,8 @@ export interface PlanStep {
   complexity?: 'low' | 'medium' | 'high';
 }
 
-export interface TokenUsageEvent extends BaseEvent {
+export interface TokenUsageEvent extends BaseEvent, TokenUsageFields {
   type: 'token_usage';
-  input: number;
-  output: number;
-  cacheHitInput?: number;
-  cacheMissInput?: number;
-  cacheWriteInput?: number;
-  cacheMissInputSource?: CacheMissInputSource;
-  reasoning?: number;
-  total?: number;
-  rawFinishReason?: string;
-  /** Number of provider runtime/tool-loop steps represented by this usage. */
-  runtimeSteps?: number;
-  /** Backward-compatible alias for cacheHitInput. */
-  cacheRead?: number;
-  /** Backward-compatible alias for cacheWriteInput. */
-  cacheCreation?: number;
-  costUsd?: number;
-  systemPromptHash?: string;
-  contextRemaining?: number;
-  prefixHash?: string;
-  prefixChangeReason?: PrefixChangeReason;
-  requestShapeHash?: string;
-  requestShapeChangeReason?: PrefixChangeReason;
-  promptSegments?: PromptSegmentEstimate[];
-  contextBudget?: ContextBudgetDiagnostic;
-  /** Links this aggregate to per-physical-request AgentRun trace rows. */
-  providerRequestTraceId?: string;
 }
 
 /**

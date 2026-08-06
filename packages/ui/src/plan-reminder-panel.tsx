@@ -466,21 +466,38 @@ export function PlanReminderPanel(props: {
                  list item. The leading StatusDot also fixes the alignment the
                  old hand-held 40px switch placeholder kept getting wrong. */
               <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.listAriaLabel}>
-                {sortedReminders.map((reminder) => (
+                {sortedReminders.map((reminder) => {
+                  // `triggered` is a plain "it ran" record, not a health
+                  // signal — only blocked and failed earn the row's attention.
+                  const runException = reminder.lastRun && reminder.lastRun.status !== 'triggered'
+                    ? reminder.lastRun
+                    : null;
+                  return (
                   <ListItem
                     key={reminder.id}
                     label={reminder.title}
-                    /* An exceptional lifecycle state leads the line as TEXT,
-                       not only as the dot's colour: the dot sits outside the
-                       row's button, so tabbing a row would otherwise announce
-                       no state at all, and colour alone fails WCAG 1.4.1.
+                    /* An exceptional state leads the line as TEXT, not only as
+                       the dot's colour: the dot sits outside the row's button,
+                       so tabbing a row would otherwise announce no state at
+                       all, and colour alone fails WCAG 1.4.1.
                        待触发 stays silent — it is the normal case, and naming
                        it on every row is the noise this list is built to
-                       avoid. */
+                       avoid.
+
+                       A failed or blocked LAST RUN counts as exceptional here
+                       even while the reminder's own lifecycle reads
+                       `scheduled`: those are two different questions ("is it
+                       still on?" vs "did it work?"), and a delivery that
+                       failed is exactly what someone scanning this page came
+                       to find. Reporting only the lifecycle made a broken
+                       reminder and a healthy one identical on the row, so the
+                       page could only be read by opening every entry. */
                     description={[
-                      reminder.status === 'scheduled'
-                        ? null
-                        : planReminderStatusLabel(reminder.status, locale),
+                      runException
+                        ? runStatusLabel(runException.status, locale)
+                        : reminder.status === 'scheduled'
+                          ? null
+                          : planReminderStatusLabel(reminder.status, locale),
                       formatPlanRecurrence(reminder, locale),
                       reminder.nextRunAt
                         ? copy.page.nextRun(formatReminderTime(reminder.nextRunAt, locale))
@@ -490,8 +507,12 @@ export function PlanReminderPanel(props: {
                     ].filter(Boolean).join(' · ')}
                     startContent={(
                       <StatusDot
-                        variant={planReminderStatusDotVariant(reminder.status)}
-                        label={planReminderStatusLabel(reminder.status, locale)}
+                        variant={runException
+                          ? planRunStatusDotVariant(runException.status)
+                          : planReminderStatusDotVariant(reminder.status)}
+                        label={runException
+                          ? runStatusLabel(runException.status, locale)
+                          : planReminderStatusLabel(reminder.status, locale)}
                       />
                     )}
                     endContent={typeof reminder.nextRunAt === 'number' ? (
@@ -504,7 +525,8 @@ export function PlanReminderPanel(props: {
                       selectedReminderId === reminder.id ? null : reminder.id,
                     )}
                   />
-                ))}
+                  );
+                })}
               </List>
             )}
           </div>

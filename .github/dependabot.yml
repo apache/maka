@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+    # packages/code-mode depends on the typescript JS API (transpileModule,
+    # ScriptTarget, …) at runtime; the 6.0+ native compiler removed those
+    # exports, so the package stays pinned to 5.9. The workspace root already
+    # compiles on 7.x, so ignoring >=6 only affects that runtime pin.
+    ignore:
+      - dependency-name: 'typescript'
+        versions:
+          - '>=6.0.0'
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10

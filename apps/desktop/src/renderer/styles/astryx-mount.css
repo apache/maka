@@ -33,11 +33,11 @@
   color: inherit;
 }
 
-/* Palette seam for Astryx value controls.
+/* Palette seam for the composer footer's Astryx popover surfaces.
 
    The Astryx neutral theme lives on the app Theme wrapper, closer to these
-   controls than Maka's palette tokens on <html>, so a Selector left alone
-   paints from the neutral defaults: `--color-text-primary` resolves to
+   controls than Maka's palette tokens on <html>, so a Selector or menu left
+   alone paints from the neutral defaults: `--color-text-primary` resolves to
    light-dark(#171717, #fafafa) rather than the product foreground. That is
    invisible in isolation and obvious side by side — before this seam covered
    the workspace picker, its options came out in #171717 next to the model
@@ -46,14 +46,22 @@
 
    One rule, listed per seam, rather than a copy per control: a second block
    would be a second authority, and the two would drift the first time the
-   palette changes. Every Maka surface that mounts an Astryx value control
-   belongs on this selector list.
+   palette changes. Every Maka surface that mounts an Astryx value control or
+   menu popover belongs on this selector list — the model pair's DropdownMenus
+   and the project picker's both read these tokens through their wrapper.
 
    Verified against the live app per the note above, not reasoned about: the
-   two seams' option rows now report identical computed color, weight, size and
-   padding. */
+   seams' option rows now report identical computed color, weight, size and
+   padding.
+
+   The session trace panel is on the list for the same reason, measured the
+   same way: its Astryx pieces (Text, Heading) reported #262626 / #737373
+   beside product-token figures in the very same rows, which is what a dense
+   instrument panel cannot absorb — every value there is meant to be compared
+   with the value beside it. */
 .maka-model-selection-controls,
-.maka-composer-workspace {
+.maka-composer-workspace,
+.maka-inspector-panel {
   --color-background-surface: var(--background);
   --color-background-popover: var(--background-elevated);
   --color-text-primary: var(--foreground);

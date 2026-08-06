@@ -324,54 +324,47 @@
   min-width: 0;
 }
 
-.maka-workspace-picker-option {
-  min-width: 0;
-}
-
 /* Cap the open menu at the window. Astryx gives the popover
-   `min-width: anchor-size(width)` and no ceiling, and the option labels are not
+   `min-width: anchor-size(width)` and no ceiling, and the item labels are not
    truncated, so one long project name grows the shrink-to-fit popover past the
-   right edge of a narrow window — where the pinned actions go with it and there
-   is no way to scroll them back. Same cap the DropdownMenu this replaced
-   carried. */
-.maka-composer-workspace [role="listbox"] {
+   right edge of a narrow window — where the actions go with it and there is no
+   way to scroll them back. Same cap the model menus carry
+   (`.maka-composer-quiet-menu`), expressed in the workspace's own tokens.
+
+   The panel itself must not scroll: the catalogue scrolls inside its own
+   region below, and the actions after it must stay put. Astryx caps the menu
+   at 300px with `overflow-y: auto`, which scrolls the actions too and chains
+   overscroll to the page behind the popover — lift both so the only scroller
+   in this menu is the catalogue region. */
+.maka-composer-workspace [role="menu"] {
   max-width: min(320px, calc(100vw - var(--space-6)));
+  max-height: none;
+  overflow: visible;
 }
 
-/* Pin "add project" / "no project" to the bottom of the open menu so only the
-   project catalogue scrolls. Astryx `Selector` scrolls its whole list as one
-   region and exposes no footer slot, so the two rows are stuck here — as one
-   box, because `workspace-picker.tsx` puts them in a section and Selector
-   renders that as a single `role="group"`. Sticking the box rather than its
-   rows is what keeps this one rule: the box is as tall as whatever it holds, so
-   a search that matches one action pins one row. Sticking the rows meant
-   declaring the block's height in CSS, and a search that filtered one action
-   out then left a backdrop taller than the rows, covering — and swallowing the
-   clicks of — the catalogue rows behind it.
-
-   The group's own background is what hides the scrolled rows, and it sits below
-   its options rather than on them, so Astryx keeps painting the hover and
-   keyboard-highlight tints on the rows themselves. An opaque colour on the rows
-   would win the cascade (this file's `components` layer sits after
-   `astryx-components`) and silently kill both states.
-
-   `padding-bottom` restores the list's own bottom padding, which the sticky box
-   parks on top of; without it the pinned rows sit flush against the popover's
-   bottom edge while the first row keeps its inset. */
-.maka-composer-workspace [role="listbox"] > [role="group"] {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  padding-bottom: var(--space-1);
-  background: var(--color-background-popover);
-  border-radius: 0 0 var(--radius-container) var(--radius-container);
+/* The catalogue's own scroll region — the ONLY thing that scrolls in this
+   menu. `max-height` is the budget the whole popover used to share (224px of
+   catalogue + two action rows ≈ the old 300px ceiling); `overscroll-behavior:
+   contain` stops the wheel from chaining past the catalogue's ends into the
+   page behind the popover, which is what dragged the sticky-pinned actions
+   along before. `scrollbar-gutter: stable` keeps the row width constant when
+   the scrollbar appears. */
+.maka-workspace-picker-scroll {
+  max-height: 224px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
 }
 
-/* The rule between catalogue and actions, drawn by the box that is always
-   there. `:not(:first-child)` covers first run and a search that matches no
-   project: with nothing above it, the group would open the menu with a rule
-   dividing nothing. */
-.maka-composer-workspace [role="listbox"] > [role="group"]:not(:first-child) {
+/* The rule between catalogue and actions, drawn by the group's own top border.
+   `:not(:first-child)` covers first run — no projects yet — where the group
+   would open the menu with a rule dividing nothing. Nothing scrolls under the
+   group, so it needs no background of its own: the menu surface shows through
+   and Astryx keeps painting its hover and keyboard-highlight tints on the
+   rows. */
+.maka-composer-workspace [role="menu"] > [role="group"]:not(:first-child) {
   border-top: 1px solid var(--border);
 }
 

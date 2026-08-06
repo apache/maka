@@ -1,39 +1,71 @@
+// apps/desktop/src/renderer/mcp-page.tsx
+//
+// The MCP module page, on the shared ModulePage shell (Astryx Layout, the
+// vendor's incident-console archetype) — the same surface as 技能 and
+// 定时任务:
+//
+// - header: title, a live count line, 添加 MCP and refresh;
+// - toolbar (the header's last row, fixed): the hub switch, the 市场 /
+//   已安装 SegmentedControl and search;
+// - content: dense Astryx List rows — the market's card grid is gone, brand
+//   marks ride the rows;
+// - inspector: selecting an installed row opens it, and every per-server
+//   control (enable / test / edit / delete) plus the connection
+//   diagnostics live there.
+//
+// Layout owns scroll containment, so the view switch stays put while rows
+// scroll — the same contract as the Skills page (#2236).
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
-import { Banner, Card, Collapsible, EmptyState, Item, Tab, TabList } from '@astryxdesign/core';
 import {
+  Banner,
   Button,
-  Badge,
+  Divider,
+  EmptyState,
+  Heading,
+  HStack,
   IconButton,
-  PageHeader,
-  RadioList,
-  RadioListItem,
-  Selector,
-  type ModuleHubHeader,
+  List,
+  ListItem,
+  SegmentedControl,
+  SegmentedControlItem,
+  StackItem,
+  StatusDot,
   Switch,
-  TextArea,
+  Text,
   TextInput,
-  useMountedRef,
-  useToast,
-  useUiLocale,
-} from '@maka/ui';
+  Toolbar,
+  VStack,
+} from '@astryxdesign/core';
 import {
   Dialog,
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
+import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
+import {
+  ModulePage,
+  RadioList,
+  RadioListItem,
+  Selector,
+  TextArea,
+  useMountedRef,
+  useRovingRowFocus,
+  useToast,
+  useUiLocale,
+  type ModuleHubHeader,
+} from '@maka/ui';
 import {
   FileCode,
   Globe,
   Loader2,
-  Pencil,
   Plug,
   Plus,
   RefreshCcw,
   Search,
   Terminal,
-  Trash2,
   X,
 } from '@maka/ui/icons';
 import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-catalog';
@@ -68,6 +100,7 @@ const EMPTY_CONFIG: McpConfigFile = { version: 1, mcpServers: {} };
 const MIN_INSTALL_INDICATOR_MS = 500;
 
 type InstallPhase = 'installing' | 'cancelling';
+type McpTab = 'market' | 'installed';
 
 export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
@@ -78,14 +111,30 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const [editor, setEditor] = useState<EditorState>(null);
   const [editorErrors, setEditorErrors] = useState<McpEditorErrors>({});
   const [editorOpen, setEditorOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'market' | 'installed'>('market');
+  const [activeTab, setActiveTab] = useState<McpTab>('market');
   const [query, setQuery] = useState('');
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
   const [installPhases, setInstallPhases] = useState<Record<string, InstallPhase>>({});
   const cancelledInstalls = useRef(new Set<string>());
   const editorSessionRef = useRef(0);
   const mounted = useMountedRef();
   const toast = useToast();
+  // Set when a remove starts, consumed once the row has actually left the
+  // list — which only happens when the config write lands.
+  const rowsContainerRef = useRef<HTMLDivElement | null>(null);
+  const focusRowAfterRemovalRef = useRef<number | null>(null);
+  // One tab stop for the whole installed list, same keyboard contract as the
+  // skills and 定时任务 pages: without it, reaching the inspector from row
+  // k of N costs N−k presses.
+  const rovingRows = useRovingRowFocus(rowsContainerRef);
+
+  function switchTab(next: McpTab) {
+    // The selection belongs to the view it was made in; carrying it across
+    // the switch would reopen the inspector without a user action on return.
+    setSelectedServerId(null);
+    setActiveTab(next);
+  }
 
   async function reload() {
     setBusy((current) => current ?? 'load');
@@ -124,6 +173,28 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     return [serverId, endpointFor(server), ...status?.tools.map((tool) => tool.name) ?? []]
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
+
+  // Derived, not stored: whatever hides the row — deletion, a filter, a
+  // view switch — closes the inspector without a reconciliation step.
+  const selectedServer = activeTab === 'installed'
+    ? installedEntries.find(([serverId]) => serverId === selectedServerId) ?? null
+    : null;
+
+  // Synchronising focus with the DOM once the list it points into has been
+  // re-rendered — an external system, which is what an Effect is for.
+  useEffect(() => {
+    const index = focusRowAfterRemovalRef.current;
+    if (index == null) return;
+    focusRowAfterRemovalRef.current = null;
+    // A frame later, not now: the confirm dialog is still closing, and the
+    // focus it hands back lands on the 删除 button being removed.
+    const frame = requestAnimationFrame(() => {
+      const rows = rowsContainerRef.current?.querySelectorAll<HTMLElement>('li button');
+      if (!rows?.length) return;
+      rows[Math.min(index, rows.length - 1)]?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [config]);
 
   function openEditor(next: Exclude<EditorState, null>) {
     const session = ++editorSessionRef.current;
@@ -223,7 +294,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (!mounted.current) return;
       setConfig(next);
       closeEditor();
-      setActiveTab('installed');
+      switchTab('installed');
       toast.success(copy.toast.saved, copy.toast.savedDetail);
     } catch (error) {
       if (mounted.current) toast.error(copy.errors.save, settingsActionErrorMessage(error, locale));
@@ -245,7 +316,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       if (!mounted.current) return;
       setConfig(next);
       closeEditor();
-      setActiveTab('installed');
+      switchTab('installed');
       toast.success(copy.toast.imported, copy.toast.importedDetail(Object.keys(imported.mcpServers).length));
     } catch (error) {
       if (mounted.current) toast.error(copy.errors.import, settingsActionErrorMessage(error, locale));
@@ -288,12 +359,19 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       confirmLabel: copy.remove.confirm, cancelLabel: copy.remove.cancel, destructive: true,
     });
     if (!confirmed || !mounted.current) return;
+    // The 删除 button is about to unmount with the whole inspector, and
+    // nothing else would claim focus — hand it to the row that takes the
+    // deleted one's place.
+    focusRowAfterRemovalRef.current = installedEntries.findIndex(([id]) => id === serverId);
     setBusy(`remove:${serverId}`);
     try {
       const next = await window.maka.mcp.remove(serverId);
       if (!mounted.current) return;
       setConfig(next);
       setStatuses((current) => current.filter((status) => status.serverId !== serverId));
+      // Drop the id too — keeping it would reopen the inspector if a server
+      // with the same id is added back later, without any user action.
+      setSelectedServerId((current) => (current === serverId ? null : current));
       toast.success(copy.toast.removed);
     } catch (error) {
       if (mounted.current) toast.error(copy.errors.remove, settingsActionErrorMessage(error, locale));
@@ -302,15 +380,168 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     }
   }
 
+  const connectionErrorCount = statuses.filter((status) => status.error).length;
+  const searchSummary = normalizedQuery ? (
+    <div className="maka-module-search-summary" role="status" aria-live="polite">
+      <span>{copy.page.searchMatches(activeTab === 'market' ? marketEntries.length : installedEntries.length)}</span>
+      <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
+    </div>
+  ) : null;
+
+  const marketPanel = (
+    <div className="maka-module-page-panel">
+      {searchSummary}
+      {marketEntries.length === 0 ? (
+        <EmptyState
+          icon={<Search />}
+          title={copy.page.noMarket}
+          description={copy.page.noMarketDetail(query)}
+          actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
+        />
+      ) : (
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.market}>
+          {marketEntries.map((entry) => {
+            const installed = Boolean(config.mcpServers[entry.id]);
+            return (
+              <ListItem
+                key={entry.id}
+                data-maka-contract="mcp-market-row"
+                label={entry.name}
+                description={[
+                  entry.description,
+                  [entry.category, entry.platform === 'darwin' ? copy.card.macOnly : null, entry.setupLabel]
+                    .filter(Boolean)
+                    .join(' · '),
+                ].filter(Boolean).join(' · ')}
+                startContent={(
+                  <span
+                    className="maka-mcp-market-icon"
+                    data-brand={entry.id}
+                    data-logo={hasMcpBrandMark(entry.id) ? 'true' : undefined}
+                    aria-hidden="true"
+                  >
+                    <McpBrandMark entry={entry} />
+                  </span>
+                )}
+                endContent={installed ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      const server = config.mcpServers[entry.id];
+                      if (server) openEdit(entry.id, server);
+                    }}
+                    label={copy.card.manage}
+                  />
+                ) : (
+                  <McpInstallButton
+                    entry={entry}
+                    copy={copy}
+                    phase={installPhases[entry.id]}
+                    onInstall={() => void installCatalogEntry(entry)}
+                    onCancel={() => void cancelCatalogInstall(entry)}
+                  />
+                )}
+              />
+            );
+          })}
+        </List>
+      )}
+    </div>
+  );
+
+  const installedPanel = (
+    <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
+      {/* Selecting a row moves no focus, so nothing else would tell a screen
+          reader that the details opened. This says so, politely. */}
+      <p className="maka-visually-hidden" role="status" aria-live="polite">
+        {selectedServer ? copy.detail.inspectorOpened(selectedServer[0]) : ''}
+      </p>
+      {searchSummary}
+      {busy === 'load' ? (
+        <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
+      ) : entries.length === 0 ? (
+        <EmptyState
+          icon={<Plug />}
+          title={copy.page.noInstalled}
+          description={copy.page.noInstalledDetail}
+          actions={<Button variant="primary" label={copy.page.browseMarket} onClick={() => switchTab('market')} />}
+        />
+      ) : installedEntries.length === 0 ? (
+        <EmptyState
+          icon={<Search />}
+          title={copy.page.noInstalledMatch}
+          description={copy.page.noInstalledMatchDetail(query)}
+          actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
+        />
+      ) : (
+        /* Selectable, otherwise inert rows: the switch, test, edit and
+           delete controls that used to ride the row now live in the
+           inspector — no interactive elements inside an interactive list
+           item. */
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.installed}>
+          {installedEntries.map(([serverId, server]) => {
+            const status = statusById.get(serverId);
+            const state = presentStatus(status, server.enabled !== false, copy);
+            const endpoint = endpointFor(server);
+            const transportLabel = isMcpStdioConfig(server)
+              ? copy.page.localStdio
+              : server.transport ?? 'auto';
+            return (
+              <ListItem
+                key={serverId}
+                label={serverId}
+                description={(
+                  <span className="maka-mcp-row-description" data-maka-contract="mcp-server-description">
+                    {/* Exceptional state leads as TEXT; the healthy label
+                        rides the dot's accessible name only. */}
+                    {state.exception ? <span>{state.label} · </span> : null}
+                    <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
+                    {state.tone === 'success' ? <span> · {state.label}</span> : null}
+                  </span>
+                )}
+                startContent={(
+                  <StatusDot
+                    variant={mcpStatusDotVariant(state)}
+                    label={state.label}
+                  />
+                )}
+                isSelected={selectedServerId === serverId}
+                onClick={() => setSelectedServerId(
+                  selectedServerId === serverId ? null : serverId,
+                )}
+              />
+            );
+          })}
+        </List>
+      )}
+    </div>
+  );
+
   return (
-    <main className="maka-main detailPane maka-module-main maka-mcp-page agents-chat-panel" data-maka-contract="module-main" data-module="mcp" aria-label={props.hubHeader?.title ?? 'MCP'}>
-      <PageHeader
-        className="maka-module-main-header"
-        as="h2"
+    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="mcp" data-maka-contract="module-main" aria-label={props.hubHeader?.title ?? 'MCP'}>
+      <ModulePage
         title={props.hubHeader?.title ?? 'MCP'}
-        subtitle={props.hubHeader?.subtitle ?? copy.page.subtitle}
-        badge={props.hubHeader?.badge}
-        headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
+        meta={[
+          copy.page.metaInstalled(entries.length),
+          connectionErrorCount > 0 ? copy.page.metaErrors(connectionErrorCount) : null,
+        ].filter(Boolean).join(' · ')}
+        inspectorLabel={copy.detail.label}
+        inspectorAutoSaveId="maka-mcp-inspector"
+        onInspectorDismiss={() => setSelectedServerId(null)}
+        inspector={selectedServer ? (
+          <McpServerInspector
+            serverId={selectedServer[0]}
+            server={selectedServer[1]}
+            status={statusById.get(selectedServer[0])}
+            busy={busy}
+            copy={copy}
+            onToggle={(enabled) => void toggle(selectedServer[0], selectedServer[1], enabled)}
+            onEdit={() => openEdit(selectedServer[0], selectedServer[1])}
+            onTest={() => void testServer(selectedServer[0])}
+            onRemove={() => void remove(selectedServer[0])}
+          />
+        ) : undefined}
         actions={
           <div
             className="maka-module-main-actions"
@@ -319,55 +550,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             aria-label={copy.page.actionsAria}
           >
             <Button variant="primary" onClick={() => openManual()} icon={<Plus aria-hidden="true" />} label={copy.page.add} />
-          </div>
-        }
-      />
-
-      <section className="maka-mcp-workspace" aria-label={copy.page.workspaceAria}>
-        {busy !== 'load' && entries.length === 0 ? (
-          <Banner
-            className="maka-mcp-setup"
-            status="info"
-            icon={<Plug aria-hidden="true" />}
-            title={copy.page.setupTitle}
-            description={copy.page.setupDescription}
-          />
-        ) : null}
-
-        <div className="maka-mcp-browser">
-          <div className="maka-mcp-command-bar" role="toolbar" aria-label={copy.page.toolbarAria}>
-            <div className="maka-mcp-tabs">
-              <TabList
-                value={activeTab}
-                onChange={(value) => setActiveTab(value as typeof activeTab)}
-                hasDivider
-                aria-label={copy.page.categoriesAria}
-              >
-                <Tab
-                  value="market"
-                  label={copy.page.market}
-                  endContent={<span>{catalog.length}</span>}
-                />
-                <Tab
-                  value="installed"
-                  label={copy.page.installed}
-                  endContent={<span>{entries.length}</span>}
-                />
-              </TabList>
-            </div>
-            <div className="maka-mcp-search">
-              <TextInput
-                value={query}
-                onChange={setQuery}
-                placeholder={copy.page.searchPlaceholder}
-                label={copy.page.searchAria}
-                isLabelHidden
-                startIcon={<Search aria-hidden="true" />}
-                width="100%"
-              />
-            </div>
             <IconButton
-              className="maka-mcp-refresh"
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
               tooltip={copy.page.refresh}
@@ -376,81 +559,53 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               icon={<RefreshCcw aria-hidden="true" />}
             />
           </div>
-
-          {activeTab === 'market' ? (
-            <div className="maka-mcp-tab-panel">
-              {marketEntries.length > 0 ? (
-              <div className="maka-mcp-market-grid" role="list">
-                {marketEntries.map((entry) => (
-                  <McpCatalogCard
-                    key={entry.id}
-                    entry={entry}
-                    copy={copy}
-                    installed={Boolean(config.mcpServers[entry.id])}
-                    phase={installPhases[entry.id]}
-                    onInstall={() => void installCatalogEntry(entry)}
-                    onCancel={() => void cancelCatalogInstall(entry)}
-                    onManage={() => {
-                      const installed = config.mcpServers[entry.id];
-                      if (installed) openEdit(entry.id, installed);
-                    }}
-                  />
-                ))}
-              </div>
-            ) : (
-              <EmptyState
-                icon={<Search />}
-                title={copy.page.noMarket}
-                description={copy.page.noMarketDetail(query)}
-                actions={<Button variant="primary" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
-                className="maka-mcp-empty"
-              />
+        }
+        toolbar={(
+          <div className="maka-module-page-bar">
+            {props.hubHeader?.badge}
+            <Toolbar
+              size="sm"
+              label={copy.page.toolbarAria}
+              startContent={(
+                <SegmentedControl
+                  value={activeTab}
+                  onChange={(value) => {
+                    if (value !== 'market' && value !== 'installed') return;
+                    switchTab(value);
+                  }}
+                  label={copy.page.categoriesAria}
+                  size="sm"
+                >
+                  <SegmentedControlItem value="market" label={copy.page.market} />
+                  <SegmentedControlItem value="installed" label={copy.page.installed} />
+                </SegmentedControl>
               )}
-            </div>
-          ) : null}
-
-          {activeTab === 'installed' ? (
-            <div className="maka-mcp-tab-panel">
-              {busy === 'load' ? (
-              <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
-            ) : entries.length === 0 ? (
-              <EmptyState
-                icon={<Plug />}
-                title={copy.page.noInstalled}
-                description={copy.page.noInstalledDetail}
-                actions={<Button variant="primary" label={copy.page.browseMarket} onClick={() => setActiveTab('market')} />}
-                className="maka-mcp-empty"
-              />
-            ) : installedEntries.length > 0 ? (
-              <Card className="maka-mcp-server-list" padding={0} role="list">
-                {installedEntries.map(([serverId, server]) => (
-                  <McpServerRow
-                    key={serverId}
-                    serverId={serverId}
-                    server={server}
-                    status={statusById.get(serverId)}
-                    busy={busy}
-                    copy={copy}
-                    onToggle={(enabled) => void toggle(serverId, server, enabled)}
-                    onEdit={() => openEdit(serverId, server)}
-                    onTest={() => void testServer(serverId)}
-                    onRemove={() => void remove(serverId)}
-                  />
-                ))}
-              </Card>
-            ) : (
-              <EmptyState
-                icon={<Search />}
-                title={copy.page.noInstalledMatch}
-                description={copy.page.noInstalledMatchDetail(query)}
-                actions={<Button variant="primary" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
-                className="maka-mcp-empty"
-              />
+              endContent={(
+                <TextInput
+                  value={query}
+                  onChange={setQuery}
+                  placeholder={copy.page.searchPlaceholder}
+                  label={copy.page.searchAria}
+                  isLabelHidden
+                  width={220}
+                />
               )}
-            </div>
-          ) : null}
-        </div>
-      </section>
+            />
+          </div>
+        )}
+      >
+        {busy !== 'load' && entries.length === 0 ? (
+          <div className="maka-module-page-panel">
+            <Banner
+              status="info"
+              icon={<Plug aria-hidden="true" />}
+              title={copy.page.setupTitle}
+              description={copy.page.setupDescription}
+            />
+          </div>
+        ) : null}
+        {activeTab === 'market' ? marketPanel : installedPanel}
+      </ModulePage>
 
       {editor && (
         <McpEditorDialog
@@ -499,75 +654,35 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   );
 }
 
-function McpCatalogCard(props: {
+function McpInstallButton(props: {
   entry: McpCatalogEntry;
   copy: McpCopy;
-  installed: boolean;
   phase?: InstallPhase;
   onInstall(): void;
   onCancel(): void;
-  onManage(): void;
 }) {
   const installing = props.phase === 'installing';
   const cancelling = props.phase === 'cancelling';
   return (
-    <Card
-      className="maka-mcp-market-card"
-      minHeight={104}
-      padding={0}
-      role="listitem"
-      data-maka-contract="mcp-market-card"
-    >
-      <Item
-        className="maka-mcp-market-item"
-        align="center"
-        density="spacious"
-        startContent={(
-          <div
-            className="maka-mcp-market-icon"
-            data-brand={props.entry.id}
-            data-logo={hasMcpBrandMark(props.entry.id) ? 'true' : undefined}
-            aria-hidden="true"
-          >
-            <McpBrandMark entry={props.entry} />
-          </div>
-        )}
-        label={props.entry.name}
-        description={(
-          <span className="maka-mcp-market-copy">
-            <span>{props.entry.description}</span>
-            <small>
-              {props.entry.category}
-              {props.entry.platform === 'darwin' ? ` · ${props.copy.card.macOnly}` : ''}
-              {props.entry.setupLabel ? ` · ${props.entry.setupLabel}` : ''}
-            </small>
-          </span>
-        )}
-        endContent={props.installed ? (
-          <Button size="sm" variant="secondary" onClick={props.onManage} label={props.copy.card.manage} />
-        ) : (
-          <IconButton
-            className="maka-mcp-install-button"
-            size="sm"
-            variant="ghost"
-            label={cancelling ? props.copy.card.cancellingAria(props.entry.name) : installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
-            tooltip={cancelling ? props.copy.card.cancelling : installing ? props.copy.card.cancel : props.copy.card.install}
-            onClick={installing ? props.onCancel : props.onInstall}
-            isDisabled={cancelling}
-            icon={props.phase ? (
-              <span className="maka-mcp-install-icon" data-phase={props.phase}>
-                <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
-                <X className="maka-mcp-install-cancel" aria-hidden="true" />
-              </span>
-            ) : <Plus aria-hidden="true" />}
-          />
-        )}
-      />
-    </Card>
+    <IconButton
+      className="maka-mcp-install-button"
+      size="sm"
+      variant="ghost"
+      label={cancelling ? props.copy.card.cancellingAria(props.entry.name) : installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
+      tooltip={cancelling ? props.copy.card.cancelling : installing ? props.copy.card.cancel : props.copy.card.install}
+      onClick={installing ? props.onCancel : props.onInstall}
+      isDisabled={cancelling}
+      icon={props.phase ? (
+        <span className="maka-mcp-install-icon" data-phase={props.phase}>
+          <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
+          <X className="maka-mcp-install-cancel" aria-hidden="true" />
+        </span>
+      ) : <Plus aria-hidden="true" />}
+    />
   );
 }
 
-function McpServerRow(props: {
+function McpServerInspector(props: {
   serverId: string;
   server: McpServerConfig;
   status?: McpServerStatus;
@@ -578,83 +693,110 @@ function McpServerRow(props: {
   onTest(): void;
   onRemove(): void;
 }) {
-  const state = presentStatus(props.status, props.server.enabled !== false, props.copy);
-  const endpoint = endpointFor(props.server);
-  const transportLabel = isMcpStdioConfig(props.server)
-    ? props.copy.page.localStdio
-    : props.server.transport ?? 'auto';
+  const { serverId, server, status, copy } = props;
+  const state = presentStatus(status, server.enabled !== false, copy);
+  const endpoint = endpointFor(server);
+  const transportLabel = isMcpStdioConfig(server)
+    ? copy.page.localStdio
+    : server.transport ?? 'auto';
   return (
-    // Astryx ListItem does not accept children. Keep this semantic wrapper so
-    // the summary Item and its expandable diagnostics form one list item.
-    <div className="maka-mcp-server-row" role="listitem">
-      <Item
-        className="maka-mcp-server-summary"
-        align="start"
-        density="spacious"
-        descriptionLines={1}
-        label={(
-          <span className="maka-mcp-server-heading">
-            <span>{props.serverId}</span>
-            {/* Status-color restraint (#651): a healthy / expected server stays
-                neutral — its label rides plain muted text. Only an error /
-                unavailable server raises a toned Badge. */}
-            {state.exception ? <Badge variant={state.tone} label={state.label} /> : null}
-          </span>
-        )}
-        description={(
-          <span className="maka-mcp-server-description" data-maka-contract="mcp-server-description">
-            {!state.exception ? <span>{state.label} · </span> : null}
-            <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
-          </span>
-        )}
-        endContent={(
-          <div className="maka-mcp-server-controls">
-            <Switch
-              value={props.server.enabled !== false}
-              onChange={props.onToggle}
-              isDisabled={props.busy === `toggle:${props.serverId}`}
-              label={props.copy.row.enabledAria(props.serverId)}
-              isLabelHidden
-            />
-            <div className="maka-mcp-server-actions">
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={props.onTest}
-                isDisabled={props.busy === `test:${props.serverId}`}
-                icon={<RefreshCcw aria-hidden="true" />}
-                label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
-              />
-              <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
-              <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
-            </div>
-          </div>
-        )}
-      />
-      {props.status?.error ? (
+    <VStack className="maka-mcp-inspector" gap={4}>
+      <VStack gap={2}>
+        <HStack gap={2} vAlign="center" wrap="wrap">
+          <StatusDot variant={mcpStatusDotVariant(state)} label={state.label} />
+          <Text type="supporting" color="secondary">{state.label}</Text>
+        </HStack>
+        <Heading level={2}>{serverId}</Heading>
+        <Text type="body" color="secondary" className="maka-mcp-inspector-endpoint">
+          <code>{endpoint}</code>
+        </Text>
+      </VStack>
+
+      <HStack gap={3} vAlign="center">
+        <StackItem size="fill">
+          <Switch
+            value={server.enabled !== false}
+            onChange={props.onToggle}
+            isDisabled={props.busy === `toggle:${serverId}`}
+            label={copy.detail.enabled}
+          />
+        </StackItem>
+      </HStack>
+
+      <HStack gap={2} wrap="wrap">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={props.onTest}
+          isDisabled={props.busy === `test:${serverId}`}
+          icon={<RefreshCcw aria-hidden="true" />}
+          label={props.busy === `test:${serverId}` ? copy.row.testing : copy.row.test}
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={props.onEdit}
+          label={copy.row.edit}
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={props.onRemove}
+          isDisabled={props.busy === `remove:${serverId}`}
+          label={copy.row.delete}
+          style={{ color: 'var(--destructive-text)' }}
+        />
+      </HStack>
+
+      {status?.error ? (
         <Banner
-          className="maka-mcp-server-error"
           status="error"
           title={state.label}
-          description={props.status.error}
+          description={status.error}
         />
       ) : null}
-      {(props.status?.tools.length || props.status?.stderrTail?.length) ? (
-        <Collapsible
-          className="maka-mcp-server-details"
-          defaultIsOpen={false}
-          trigger={props.status?.tools.length ? props.copy.row.tools(props.status.tools.length) : props.copy.row.diagnostics}
-        >
-          {props.status?.tools.length ? (
-            <div className="maka-mcp-tool-list">{props.status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
-          ) : null}
-          {props.status?.stderrTail?.length ? <pre>{props.status.stderrTail.join('\n')}</pre> : null}
-        </Collapsible>
+
+      <Divider />
+
+      <MetadataList columns="single" label={{ position: 'start', width: 88 }}>
+        <MetadataListItem label={copy.detail.transport}>
+          <Text type="body">{transportLabel}</Text>
+        </MetadataListItem>
+        <MetadataListItem label={copy.detail.endpoint}>
+          <Text type="body"><code>{endpoint}</code></Text>
+        </MetadataListItem>
+        <MetadataListItem label={copy.detail.statusLabel}>
+          <Text type="body">{state.label}</Text>
+        </MetadataListItem>
+      </MetadataList>
+
+      {status?.tools.length ? (
+        <>
+          <Divider />
+          <VStack gap={2}>
+            <Text type="supporting" color="secondary">
+              {copy.detail.toolsLabel} · {copy.row.tools(status.tools.length)}
+            </Text>
+            <div className="maka-mcp-tool-list">{status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
+          </VStack>
+        </>
       ) : null}
-    </div>
+      {status?.stderrTail?.length ? (
+        <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
+      ) : null}
+    </VStack>
   );
 }
 
+function mcpStatusDotVariant(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }): 'accent' | 'warning' | 'error' | 'neutral' {
+  // A failed connection is the one exceptional state; connected is the one
+  // live state worth the accent. Connecting is transient and indistinguishable
+  // from it by colour alone, so it stays neutral with the quiet states.
+  if (state.tone === 'error') return 'error';
+  if (state.tone === 'warning') return 'warning';
+  if (state.tone === 'success') return 'accent';
+  return 'neutral';
+}
 function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;
   isOpen: boolean;

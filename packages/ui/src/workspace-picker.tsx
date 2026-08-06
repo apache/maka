@@ -19,28 +19,35 @@
  * a layout jump on every new task, paid to avoid one chip disappearing from the
  * end of a row.
  *
- * Built on Astryx `Selector`, the same primitive as the model picker, because
- * picking a project IS choosing a value: one selection out of a catalogue,
- * with a current one. It used to be a `DropdownMenu` — an action menu — which
- * it could only be because the catalogue and the actions (add, relink, no
- * project) shared one surface. That choice was visible: menu items came out at
- * weight 400 in `#171717` next to the model list's weight 500 in the theme's
- * oklch foreground, two dropdowns from one library that did not read as
- * relatives. The actions are now ordinary options after a divider, following
- * `ModelPicker`'s `leadingOption` precedent for product values that are not
- * catalogue entries.
+ * Built on the composer footer's ghost-button DropdownMenu family — the same
+ * primitive as the model, thinking, ＋ and permission controls beside it —
+ * because this row is a toolbar, and toolbar members share one Button chrome:
+ * resting, hover, focus, and disabled states plus the tooltip all derive from
+ * Astryx Button instead of a product overlay restyling a form field. It used
+ * to be an Astryx Selector (rebuilt onto it in #2217, when the model picker
+ * beside it was one too); #2230 moved the model and thinking pickers onto the
+ * ghost-menu family, and this control followed once the row had one toolbar
+ * convention left. Search died with the Selector, matching the model menu's
+ * precedent: the menu keeps Astryx's first-character typeahead over printable
+ * keys, which for CJK labels means arrow traversal in practice — IME input
+ * does not produce the keydown events typeahead listens for. The catalogue
+ * scrolls inside its own region, and the two actions after it sit outside the
+ * scroller, so the wheel can never carry them away. The trigger's tooltip
+ * came back with the Button: Selector had no slot for it, so the current git
+ * branch rode in the accessible name alone.
  *
- * The current git branch rides along in the trigger's accessible name only.
- * Switching branches is the agent's job — see the commit that removed the
- * branch picker.
+ * The current git branch rides in the trigger's tooltip and accessible name
+ * only — the open menu's own name is the short trigger label, an Astryx
+ * behaviour the model menu shares. Switching branches is the agent's job —
+ * see the commit that removed the branch picker.
  *
  * Purely presentational: a value control fed by host-injected props.
  */
 
 import type { ProjectRecord } from '@maka/core';
-import { Selector, SelectorOption, type SelectorOptionData, type SelectorOptionType } from '@astryxdesign/core/Selector';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { useMemo } from 'react';
-import { AlertTriangle, FolderOpen, Plus, X } from './icons.js';
+import { AlertTriangle, Check, FolderOpen, Plus, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -56,13 +63,6 @@ export interface WorkspacePickerModel {
   onSelectNoProject(): void;
 }
 
-/**
- * Sentinel option values for the two entries that are not projects. Namespaced
- * so they can never collide with a real project id.
- */
-const ADD_PROJECT_VALUE = 'maka:workspace/add-project';
-const NO_PROJECT_VALUE = 'maka:workspace/no-project';
-
 export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }) {
   const wp = props.workspacePicker;
   const copy = getConversationCopy(useUiLocale()).workspace;
@@ -72,104 +72,95 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
     [wp.projects],
   );
 
-  // Catalogue first, then the two actions — which stay pinned to the menu's
-  // bottom edge while only the catalogue scrolls, so "add a project" never
-  // falls under the fold on a long list. Selector scrolls its whole list as one
-  // region and has no footer slot, so the pinning is done in CSS; what makes it
-  // one rule instead of a stack of them is the section, which Selector renders
-  // as a single `role="group"` box. `composer.css` sticks that box, and its
-  // height is whatever it actually contains — so a search that matches only one
-  // action pins exactly that row.
-  //
-  // Both actions carry an icon so every row shares one text axis. Without them
-  // the two labels started at the icon column while the projects' text started
-  // past it, which read as a broken list rather than as a separate group.
-  const options = useMemo<SelectorOptionType[]>(
-    () => [
-      ...wp.projects.map((project): SelectorOptionData => ({
-        value: project.id,
-        label: project.name,
-      })),
-      // The rule that separates the catalogue from the actions is the group's
-      // own top border, not a divider option: a divider would scroll away with
-      // the catalogue while the group stayed, and it would need suppressing on
-      // first run — no projects yet — where it would divide nothing. The border
-      // is on the box that is always there, and CSS drops it when the group is
-      // the list's first child.
-      {
-        type: 'section',
-        options: [
-          { value: ADD_PROJECT_VALUE, label: copy.addProject },
-          // Codex names this row "work without a project", which says the act
-          // rather than the empty value. Not adopted: Selector paints the
-          // trigger from the selected option's own label, with no slot to
-          // shorten it, so that phrasing would also become the label sitting in
-          // the composer footer — a seven-character negative sentence beside
-          // the model name. The × carries the same "deliberate, not missing"
-          // meaning at trigger length.
-          { value: NO_PROJECT_VALUE, label: copy.noProject },
-        ],
-      },
-    ],
-    [wp.projects, copy.addProject, copy.noProject],
-  );
+  // A project switch is in flight: lock the trigger and every row, like the
+  // model switcher beside it — an aria-disabled DropdownMenu trigger still
+  // opens on ArrowDown, so the lock must ride on the items too.
+  const locked = wp.pending === true;
 
   return (
-    <Selector
-      label={copy.chooseAriaLabel(wp.label ?? copy.current, wp.branch ?? undefined)}
-      isLabelHidden
-      options={options}
-      // `null` means "no project", which is a real choice here rather than the
-      // absence of one, so it maps to its own option instead of the placeholder.
-      value={wp.selectedProjectId ?? NO_PROJECT_VALUE}
-      // Always searchable, like the model picker: a threshold would make the
-      // menu change shape as the catalogue grows, so the same control would
-      // answer the keyboard differently on different days.
-      hasSearch
-      searchPlaceholder={copy.searchPlaceholder}
-      size="sm"
-      // The trigger sits in the composer footer, at the bottom of the window,
-      // so the menu opens upward like every other control in that row.
+    <DropdownMenu
       placement="above"
-      isDisabled={wp.pending === true}
-      startIcon={<FolderOpen size={13} aria-hidden="true" />}
-      className="maka-workspace-picker"
-      changeAction={(value: string) => {
-        if (value === ADD_PROJECT_VALUE) {
-          wp.onAdd();
-          return;
-        }
-        if (value === NO_PROJECT_VALUE) {
-          wp.onSelectNoProject();
-          return;
-        }
-        // A project whose directory has moved cannot be selected until it is
-        // pointed at a path again, so its row relinks instead of switching.
-        if (unavailable.has(value)) wp.onRelink(value);
-        else wp.onSelectProject(value);
+      hasChevron={false}
+      className="maka-composer-quiet-menu"
+      button={{
+        label: wp.label ?? copy.choose,
+        icon: <FolderOpen size={13} aria-hidden="true" />,
+        variant: 'ghost',
+        size: 'sm',
+        isDisabled: locked,
+        isLoading: locked,
+        tooltip: copy.chooseTitle(wp.branch ?? undefined),
+        className: 'maka-workspace-picker',
+        'aria-label': copy.chooseAriaLabel(wp.label ?? copy.current, wp.branch ?? undefined),
       }}
-      renderOption={(option: SelectorOptionData) => (
-        <SelectorOption
-          className={
-            option.value === ADD_PROJECT_VALUE || option.value === NO_PROJECT_VALUE
-              ? 'maka-workspace-picker-option maka-workspace-picker-option-pinned'
-              : 'maka-workspace-picker-option'
-          }
-          icon={
-            option.value === ADD_PROJECT_VALUE
-              ? <Plus size={13} aria-hidden="true" />
-              : option.value === NO_PROJECT_VALUE
-                ? <X size={13} aria-hidden="true" />
-                : unavailable.has(option.value)
-                  ? <AlertTriangle size={13} aria-hidden="true" />
-                  : <FolderOpen size={13} aria-hidden="true" />
-          }
-          label={option.label ?? option.value}
-          endContent={unavailable.has(option.value) ? (
-            <span className="maka-workspace-picker-status">{copy.relink}</span>
-          ) : undefined}
+    >
+      {/* Catalogue first, in its own scroll region — the only thing that
+          scrolls. The two actions sit AFTER it in normal flow, so they are
+          outside the scroller entirely and cannot be carried along by it: the
+          old sticky-pinned box moved with the panel when overscroll chained
+          to the page behind the menu. The region renders only when there is a
+          catalogue; on first run the actions group is the menu's first child
+          and the CSS drops the divider that separates the two. */}
+      {wp.projects.length > 0 ? (
+        <div className="maka-workspace-picker-scroll">
+          {wp.projects.map((project) => {
+            const missing = unavailable.has(project.id);
+            return (
+              <DropdownMenuItem
+                key={project.id}
+                icon={
+                  missing ? (
+                    <AlertTriangle size={13} aria-hidden="true" />
+                  ) : (
+                    <FolderOpen size={13} aria-hidden="true" />
+                  )
+                }
+                label={project.name}
+                // A project whose directory has moved cannot be selected until
+                // it is pointed at a path again, so its row relinks instead of
+                // switching. The current project wears the same plain check as
+                // the model and thinking menus' current values.
+                endContent={
+                  missing ? (
+                    <span className="maka-workspace-picker-status">{copy.relink}</span>
+                  ) : project.id === wp.selectedProjectId ? (
+                    <Check size={14} aria-hidden="true" />
+                  ) : undefined
+                }
+                isDisabled={locked}
+                onClick={() => {
+                  if (missing) wp.onRelink(project.id);
+                  else wp.onSelectProject(project.id);
+                }}
+              />
+            );
+          })}
+        </div>
+      ) : null}
+      {/* Both actions carry an icon so every row shares one text axis. Without
+          them the two labels started at the icon column while the projects'
+          text started past it, which read as a broken list rather than as a
+          separate group. The × also says what its row means: not using a
+          project is a deliberate way to work, not a missing setting. */}
+      <div role="group">
+        <DropdownMenuItem
+          icon={<Plus size={13} aria-hidden="true" />}
+          label={copy.addProject}
+          isDisabled={locked}
+          onClick={() => {
+            wp.onAdd();
+          }}
         />
-      )}
-    />
+        <DropdownMenuItem
+          icon={<X size={13} aria-hidden="true" />}
+          label={copy.noProject}
+          endContent={wp.selectedProjectId === null ? <Check size={14} aria-hidden="true" /> : undefined}
+          isDisabled={locked}
+          onClick={() => {
+            wp.onSelectNoProject();
+          }}
+        />
+      </div>
+    </DropdownMenu>
   );
 }

@@ -64,10 +64,14 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
       reason: 'stale_tool_result_pruned_before_compact' as const,
       bodySha256,
     };
-    const archived = await services.archiveToolResult(archiveInput);
-    assert.deepEqual(await services.archiveToolResult(archiveInput), archived);
+    const archived = await services.toolResultArchive.services.archiveToolResult(archiveInput);
+    assert.ok(archived, 'the host archive writer always reports where it stored the body');
     assert.deepEqual(
-      await services.readToolResultArchive({
+      await services.toolResultArchive.services.archiveToolResult(archiveInput),
+      archived,
+    );
+    assert.deepEqual(
+      await services.toolResultArchive.services.readToolResultArchive({
         ...archiveInput,
         kind: 'maka.archived_tool_result',
         artifactId: archived.artifactId,

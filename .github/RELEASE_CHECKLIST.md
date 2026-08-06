@@ -19,7 +19,9 @@ Windows needs no secrets while the build is unsigned: electron-builder skips sig
 1. Confirm the intended commit is on `main`, CI is green, and `apps/desktop/package.json` contains a version that has never been released.
 2. In GitHub Actions, run `Release desktop` against `main`.
 3. Confirm every workflow step passes on both platforms and a draft release named `v<version>` exists.
-4. Confirm the draft records the intended commit SHA and contains the macOS DMG, ZIP, `latest-mac.yml`, the Windows `.exe`, ZIP, `latest.yml`, and a `.sha256` file for the DMG, the `.exe`, and the Windows ZIP.
+4. Confirm the draft records the intended commit SHA and contains the macOS DMG, ZIP, `latest-mac.yml`, the Windows `.exe`, ZIP, `latest.yml`, the bundled Git source-materials archive, and matching `.sha256` files.
+5. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json` and `README.txt` are present, every manifest archive is present, and the manifest pins the expected Dugite native release.
+6. Confirm the packaged applications contain `licenses/git/LICENSE.txt`, `NOTICE.txt`, and `SOURCE_OFFER.txt`.
 
 ## Acceptance on another Apple Silicon Mac
 

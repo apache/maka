@@ -578,8 +578,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           sessionId: input.context.sessionId,
         }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
-        archiveToolResult: input.executionArtifacts.archiveToolResult,
-        readToolResultArchive: input.executionArtifacts.readToolResultArchive,
+        toolResultArchive: input.executionArtifacts.toolResultArchive,
         loadHistoryCompactCheckpoint: input.context.loadHistoryCompactCheckpoint,
         summarizeHistoryCompact: buildLlmHistorySummarizer({
           resolveModel: () =>

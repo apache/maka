@@ -15,17 +15,7 @@ import type {
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelFactory } from './model-adapter.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
-
-export type ToolResultArchiveRecorderInput = (
-  | StaleToolResultArchiveCandidate
-  | (ActiveToolResultArchiveCandidate & { runtimeEventId: string })
-) & {
-  sessionId: string;
-  bodySha256: string;
-};
-export type ToolResultArchiveRecorder = (
-  input: ToolResultArchiveRecorderInput,
-) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
+import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
 
 export interface SynthesisCacheLoadInput {
   sessionId: string;
@@ -153,11 +143,13 @@ export interface AiSdkCompactionCapabilities {
   /** Optional prior-history budget. Keeps whole turns to preserve tool-call/result pairs. */
   contextBudget?: ContextBudgetPolicy;
   /**
-   * Optional archive writer for replay-only stale tool-result pruning. The
-   * runtime rewrites only candidates whose original body has been durably
-   * archived by this callback.
+   * The whole tool-result archive authority (#2026): the writer that durably
+   * stores a pruned body, the replay reader that hydrates it back, the
+   * ref-addressed reader, and the `ArchiveRead` decoder the placeholder names.
+   * Absent means this session archives nothing, which is a valid state — but
+   * it can no longer mean "archives without a way back".
    */
-  archiveToolResult?: ToolResultArchiveRecorder;
+  toolResultArchive?: ToolResultArchiveCapability;
   /** Optional best-effort source-bearing synthesis cache loader. */
   loadSynthesisCache?: SynthesisCacheLoader;
   /** Optional best-effort source-bearing synthesis cache writer. */

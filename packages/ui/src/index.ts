@@ -76,6 +76,13 @@ export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // CSS stay at the call site; the primitive converges STRUCTURE only.
 export { PageHeader } from './primitives/page-header.js';
 export type { PageHeaderProps } from './primitives/page-header.js';
+// ModulePage — the ONE shell every module page renders into (Astryx Layout,
+// incident-console archetype). Born in this package for 定时任务 / 每日回顾;
+// exported so the renderer-owned MCP page renders the same surface.
+export { ModulePage, type ModulePageProps } from './primitives/module-page.js';
+// One tab stop per module-page row list; the MCP page (renderer-owned) uses
+// the same hook the skills and plan-reminder panels do.
+export { useRovingRowFocus, type RovingRowFocusProps } from './use-roving-row-focus.js';
 // #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
 export * from './astryx-i18n.js';
 

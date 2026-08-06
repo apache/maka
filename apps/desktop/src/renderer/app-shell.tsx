@@ -19,13 +19,13 @@ import type {
 import {
   collapseSessionRevisions,
   filterLinkedSessionTree,
-  hasSettledInitialOnboarding,
   isLinkedSubagentSession,
   parseGraphCommand,
   parseSwarmCommand,
   projectRevisionLinkedSessionTree,
   resolveUiLocale,
 } from '@maka/core';
+import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   AutomationsPage,
   DailyReviewPage,
@@ -335,7 +335,6 @@ function AppShellContent({
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({ toastApi, uiLocale });
   const {
     connections,
-    connectionsRevision,
     defaultConnection,
     setConnections,
     setDefaultConnection,
@@ -652,11 +651,11 @@ function AppShellContent({
   });
   // Surface a credential-lifecycle alert directly in the chat header when
   // the active session's connection is in `needs_reauth` / `error` or has
-  // been deleted entirely with no usable default. We skip the async hasSecret
-  // fetch here — the composer-adjacent notice is a hard-block surface;
-  // AccountSettingsPage remains the authoritative detailed view. Model /
-  // thinking selection + the hard-only health notice live in useShellChatModel
-  // (pure derivation of the connection list + active session);
+  // been deleted entirely with no usable default. Main resolves credential
+  // presence into the onboarding snapshot; a connection event starts an async
+  // snapshot pull, so the notice keeps the previous outcome only until that
+  // pull completes. Model / thinking selection + the hard-only health notice
+  // live in useShellChatModel (pure derivation of the snapshot + active session);
   // openSettingsSection is injected so the notice can wrap the derived click
   // target.
   const {
@@ -678,14 +677,13 @@ function AppShellContent({
   } = useShellChatModel({
     uiLocale,
     connections,
-    connectionsRevision,
+    snapshotChoices: onboarding.snapshot?.chatModelChoices,
+    sessionSendOutcome: activeSession
+      ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
+      : undefined,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
     activeSession,
-    // Only trust the loaded transcript once the active session's
-    // messages finished loading; during the load the list may still be
-    // empty or carry the previous session.
-    activeSessionHasUserMessage: !messageLoadPending && messages.some((message) => message.type === 'user'),
     persistedComposerDefaults,
     openSettingsSection,
   });
@@ -2238,6 +2236,14 @@ function AppShellContent({
                 />
               ) : null}
               <ChatSurfaceLayout
+                // #2205: Astryx ChatLayout owns the new-message indicator and
+                // the scroll lock, and neither is keyed to a conversation. A
+                // session switch must reset both without remounting the layout —
+                // a remount would drop an in-progress composer draft. Passing
+                // the active session id as conversationKey makes ChatLayout
+                // re-lock the scroll and clear the new-message baseline on every
+                // switch (undefined while no session is selected).
+                conversationKey={activeId}
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>

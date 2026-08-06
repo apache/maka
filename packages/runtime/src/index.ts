@@ -412,8 +412,6 @@ export type {
   SynthesisCacheWriter,
   SynthesisCacheWriteInput,
   SynthesisCacheWriteResult,
-  ToolResultArchiveRecorder,
-  ToolResultArchiveRecorderInput,
   SemanticCompactBlockRecorder,
 } from './ai-sdk-compaction-contract.js';
 export { PiAgentBackend, normalizePiAgentFrame } from './pi-agent-backend.js';
@@ -424,8 +422,14 @@ export type {
   PiAgentTransport,
 } from './pi-agent-backend.js';
 
-export { buildBuiltinTools } from './builtin-tools.js';
-export { buildArchiveReadTool } from './archive-read-tool.js';
+export { buildBuiltinTools, classifyRuntimeResourceRef } from './builtin-tools.js';
+export { createToolResultArchiveCapability } from './tool-result-archive-capability.js';
+export type {
+  ToolResultArchiveCapability,
+  ToolResultArchiveRecorder,
+  ToolResultArchiveRecorderInput,
+  ToolResultArchiveServices,
+} from './tool-result-archive-capability.js';
 export { queryTavily } from './tavily-search.js';
 export { buildWebSearchTool } from './web-search-tool.js';
 export type {

@@ -57,7 +57,6 @@ export interface DesktopToolAssemblyDeps {
   shellRuns: ShellRunProcessManager;
   artifactStore: ArtifactStore;
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
-  readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   /**
    * The power-assertion controller, so a Computer Use run holds the machine
@@ -108,7 +107,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     shellRuns,
     artifactStore,
     snapshotReadImage,
-    readArchivedToolResultResource,
     getWorkspacePrivacyContext,
     resolveDesktopSkillHost,
   } = deps;
@@ -186,7 +184,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       shellRuns,
       runtimeResources: shellRuns,
       attachmentResources,
-      archiveResources: { readArchivedToolResultResource },
       backgroundTasks: shellRuns,
       ptyControls: shellRuns,
       snapshotImage: snapshotReadImage,
@@ -257,7 +254,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   const childAgentTools = buildChildAgentTools([
     ...buildDesktopBuiltinTools({
       attachmentResources,
-      archiveResources: { readArchivedToolResultResource },
       snapshotImage: snapshotReadImage,
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? {

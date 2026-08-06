@@ -6,7 +6,12 @@
    the 默认模型 picker rendered at ~103px while its neighbour 默认权限模式 —
    which carries no width rule — expanded to 320px. Two adjacent rows in the
    same card staggered their controls by 200px. An explicit width gives both a
-   real column; max-width keeps it from overflowing a narrow settings pane. */
+   real column; max-width keeps it from overflowing a narrow settings pane.
+   This only works because neither component passes Selector's `width` prop:
+   that prop sizes the OUTER field, and a fixed field around a 260px trigger
+   re-staggers the column by the difference (the 默认权限模式 width={320}
+   regression did exactly that). The field wraps the trigger, so sizing the
+   trigger here sizes the whole control. */
 .settingsRows .settingsModelPickerTrigger,
 .settingsRows .permissionModeSelector {
   width: 260px;

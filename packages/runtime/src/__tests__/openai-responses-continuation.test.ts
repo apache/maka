@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 
 import {
   mergeOpenAiResponsesProviderOptions,
+  persistedOpenAiResponsesStepMessages,
   planOpenAiResponsesContinuation,
 } from '../openai-responses-continuation.js';
 import type { ModelMessage } from '../model-protocol.js';
@@ -25,6 +26,62 @@ const tool = (toolCallId: string, value: string): ModelMessage => ({
 });
 
 describe('OpenAI Responses semantic continuation', () => {
+  test('uses Maka persisted reasoning shape as the next continuation baseline', () => {
+    const requestMessages = [user('fix it')];
+    const reasoningOptions = { openai: { itemId: 'reasoning-1' } };
+    const persistedResponse: ModelMessage = {
+      role: 'assistant',
+      content: [
+        { type: 'reasoning', text: 'inspect first', providerOptions: reasoningOptions },
+        {
+          type: 'tool-call',
+          toolCallId: 'call-1',
+          toolName: 'shell',
+          input: { command: 'pwd' },
+        },
+      ],
+      // Durable replay hoists the reasoning item metadata to the message.
+      providerOptions: reasoningOptions,
+    };
+    const result = tool('call-1', '/workspace');
+    const responseMessages = persistedOpenAiResponsesStepMessages(
+      requestMessages,
+      [...requestMessages, persistedResponse, result],
+      ['call-1'],
+    );
+
+    assert.deepEqual(responseMessages, [persistedResponse]);
+    assert.deepEqual(
+      planOpenAiResponsesContinuation(
+        [...requestMessages, persistedResponse, result],
+        responseMessages ? { requestMessages, responseMessages, responseId: 'resp-1' } : undefined,
+      ),
+      { messages: [result], previousResponseId: 'resp-1' },
+    );
+  });
+
+  test('fails closed when the persisted request prefix or tool-result tail changed', () => {
+    const requestMessages = [user('fix it')];
+    const response = assistant('calling shell');
+
+    assert.equal(
+      persistedOpenAiResponsesStepMessages(
+        requestMessages,
+        [user('changed'), response, tool('call-1', 'ok')],
+        ['call-1'],
+      ),
+      undefined,
+    );
+    assert.equal(
+      persistedOpenAiResponsesStepMessages(
+        requestMessages,
+        [...requestMessages, response, tool('other-call', 'ok')],
+        ['call-1'],
+      ),
+      undefined,
+    );
+  });
+
   test('sends only messages after the exact prior request and response', () => {
     const priorRequest = [user('fix it')];
     const priorResponse = [assistant('calling shell')];

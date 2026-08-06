@@ -49,8 +49,10 @@ import {
   type ProviderTokenUsage,
   type ProviderUpstreamCredentialResolver,
 } from './provider-auth-proxy.js';
+export { modelIdForProvider } from './harness-agent-registry.js';
 import {
   harnessAgentImportPath,
+  modelIdForProvider,
   providerProxyClientAuthMode,
   providerProxyClientBaseUrl,
   providerProxyUpstreamAuthMode,
@@ -1422,7 +1424,7 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
         : { apiKeyFile: apiKeyFile! }),
       clientAuthMode: providerProxyClientAuthMode(agent, provider, apiProtocol),
       upstreamAuthMode: providerProxyUpstreamAuthMode(agent, provider, apiProtocol),
-      usageProtocol: providerProxyUsageProtocol(agent, provider, apiProtocol),
+      usageProtocol: providerProxyUsageProtocol(agent, provider, apiProtocol, options.model),
     });
     return {
       env:
@@ -1909,11 +1911,6 @@ export function isBudgetExhaustedError(
  * ("openai-compatible" routing "anthropic/claude-sonnet-4-5"). The cell's
  * parseModelSpec preserves whatever it receives when a provider is set, so the
  * stripping must happen here. */
-export function modelIdForProvider(model: string, provider: string): string {
-  const prefix = `${provider}/`;
-  return model.startsWith(prefix) ? model.slice(prefix.length) : model;
-}
-
 export function modelForOpenCode(model: string, provider: string): string {
   return model.includes('/') ? model : `${provider}/${model}`;
 }

@@ -19,6 +19,8 @@ import {
   stableJsonStringify,
   TOOL_BOUNDARY_PROTOCOL_V1,
   TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
   WORKSPACE_AUTHORITY_SESSION_ID,
   WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
   validateGenericToolLedgerAppend,
@@ -2189,9 +2191,7 @@ export class SqliteRuntimeStore
       expectedTransition,
     });
     if (!validation.ok) {
-      throw new Error(
-        `Tool ledger transition rejected: ${validation.code} at ${validation.eventId}`,
-      );
+      throw new ToolLedgerRejectionError(validation.code, validation.eventId);
     }
   }
 
@@ -2203,9 +2203,12 @@ export class SqliteRuntimeStore
     const health = this.toolLedgerHealth!;
     if (health.decodeFailure) throw health.decodeFailure.error;
     if (health.issue) {
-      throw new Error(
-        `Tool ledger transition rejected: ${health.issue.code} at ${health.issue.eventId}`,
-      );
+      // Pre-existing damage, not a bad candidate. Note the reach of "refused":
+      // this gate is only ever consulted for tool-bearing events, so a damaged
+      // ledger refuses tool facts and takes everything else. Callers that treat
+      // this as "the store is gone" are overreading it — see the note on the
+      // latch in `AgentRun.enqueueRuntimeEventStore`.
+      throw new ToolLedgerCorruptionError(health.issue.code, health.issue.eventId);
     }
   }
 

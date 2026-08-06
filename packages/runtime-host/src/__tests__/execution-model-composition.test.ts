@@ -33,6 +33,7 @@ import {
   agentGraphIdForRootSession,
   buildParentAgentTools,
   SESSION_RECAP_INSTRUCTION,
+  createToolResultArchiveCapability,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -1188,10 +1189,14 @@ test('production Host executes a durable runnable child with an exact tool ceili
       'web_research',
       'implementation',
     ]);
-    assert.deepEqual(toolNames(requests[2]?.body), ['Glob', 'Grep', 'Read']);
+    // A child now carries the archive decoder alongside its allowlist (#2026).
+    // Its own placeholders name `ArchiveRead`, so the ceiling that governs
+    // agent-permission tools cannot be the thing that decides whether the child
+    // can read back a result the runtime itself pruned.
+    assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
-    assert.deepEqual(toolNames(requests[4]?.body), ['WebSearch']);
-    assert.deepEqual(toolNames(requests[5]?.body), ['WebSearch']);
+    assert.deepEqual(toolNames(requests[4]?.body), ['ArchiveRead', 'WebSearch']);
+    assert.deepEqual(toolNames(requests[5]?.body), ['ArchiveRead', 'WebSearch']);
     assert.ok(toolNames(requests[6]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -1398,6 +1403,7 @@ test('production Host publishes and retires an implementation child patch', asyn
       'implementation',
     ]);
     assert.deepEqual(toolNames(requests[2]?.body), [
+      'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
@@ -2570,9 +2576,11 @@ function backendCreationFixture(input: {
     artifacts: {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
-      archiveToolResult: async () => ({ artifactId: 'fixture-tool-result-archive' }),
-      readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
-      readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
+      toolResultArchive: createToolResultArchiveCapability({
+        archiveToolResult: async () => ({ artifactId: 'fixture-tool-result-archive' }),
+        readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
+        readArchivedToolResultResource: async () => ({ ok: false, reason: 'not_found' }),
+      }),
     },
     usage: {
       pricing: {
@@ -2919,7 +2927,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 3) {
-    assert.deepEqual(toolNames(body), ['Glob', 'Grep', 'Read']);
+    assert.deepEqual(toolNames(body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
     return;
   }
@@ -2934,7 +2942,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 5) {
-    assert.deepEqual(toolNames(body), ['WebSearch']);
+    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebSearch']);
     respondProviderToolCall(response, streamRequestIndex, 'WebSearch', {
       query: 'latest hosted web result',
       limit: 1,
@@ -2942,12 +2950,20 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'child_agent' && streamRequestIndex === 6) {
-    assert.deepEqual(toolNames(body), ['WebSearch']);
+    assert.deepEqual(toolNames(body), ['ArchiveRead', 'WebSearch']);
     respondProviderText(response, WEB_RESEARCH_CHILD_RESULT_TEXT);
     return;
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 3) {
-    assert.deepEqual(toolNames(body), ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write']);
+    assert.deepEqual(toolNames(body), [
+      'ArchiveRead',
+      'Bash',
+      'Edit',
+      'Glob',
+      'Grep',
+      'Read',
+      'Write',
+    ]);
     respondProviderToolCall(response, streamRequestIndex, 'Write', {
       path: 'implementation.txt',
       content: 'HOSTED_IMPLEMENTATION_PATCH_SENTINEL\n',

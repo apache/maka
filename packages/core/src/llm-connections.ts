@@ -6,6 +6,7 @@
  */
 
 import type { BackendKind } from './session.js';
+import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
@@ -21,6 +22,7 @@ import {
 } from './provider-registry.js';
 
 export type { BackendKind } from './session.js';
+export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
@@ -283,8 +285,6 @@ export interface ConnectionTestResult {
   statusCode?: number;
   errorClass?: ConnectionTestErrorClass;
 }
-
-export const CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS = new Set(['gpt-5-codex']);
 
 export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
 

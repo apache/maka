@@ -249,6 +249,34 @@ export interface PlanReminderFormSeed {
   deliveryChatId: string;
 }
 
+/**
+ * Absolute time for a one-tap reminder preset.
+ *
+ * "Next Monday" means the NEXT one: `((8 - day) % 7) || 7` never returns 0, so
+ * asking on a Monday schedules seven days out rather than nine hours ago. The
+ * two morning presets pin 09:00 local and clear the smaller fields, so the
+ * time a user gets is the one the label promised regardless of when they
+ * asked.
+ */
+export function planReminderPresetRunAt(
+  preset: 'ten-minutes' | 'one-hour' | 'tomorrow-morning' | 'next-monday',
+  now: number = Date.now(),
+): number {
+  if (preset === 'ten-minutes') return now + 10 * 60 * 1000;
+  if (preset === 'one-hour') return now + 60 * 60 * 1000;
+  const date = new Date(now);
+  if (preset === 'tomorrow-morning') {
+    date.setDate(date.getDate() + 1);
+    date.setHours(9, 0, 0, 0);
+    return date.getTime();
+  }
+  const day = date.getDay();
+  const daysUntilNextMonday = ((8 - day) % 7) || 7;
+  date.setDate(date.getDate() + daysUntilNextMonday);
+  date.setHours(9, 0, 0, 0);
+  return date.getTime();
+}
+
 /** Blank create-mode seed (one hour from now, no recurrence, local delivery). */
 export function createPlanReminderFormSeed(now: number = Date.now()): PlanReminderFormSeed {
   return {

@@ -89,6 +89,8 @@ export interface ModelAdapterInput {
   providerOptions?: Record<string, unknown>;
   newId: () => string;
   now: () => number;
+  /** Test seam; production adapters own one state instance for their lifetime. */
+  openAiResponsesTransportState?: OpenAiResponsesTransportState;
 }
 
 export interface CompactSummaryRequest {
@@ -144,7 +146,7 @@ interface ProviderMiddlewareStreamInput {
 export class ModelAdapter {
   private readonly runtime: ResolvedModelRuntime;
   private readonly openAiChatReasoningTransportState: OpenAiChatReasoningTransportState;
-  private readonly openAiResponsesTransportState = createOpenAiResponsesTransportState();
+  private readonly openAiResponsesTransportState: OpenAiResponsesTransportState;
 
   constructor(private readonly input: ModelAdapterInput) {
     this.runtime = resolveModelRuntime(input.connection, input.modelId);
@@ -153,6 +155,8 @@ export class ModelAdapter {
         ? this.runtime.reasoningReplay.requestField
         : 'observed',
     );
+    this.openAiResponsesTransportState =
+      input.openAiResponsesTransportState ?? createOpenAiResponsesTransportState();
   }
 
   runtimeEventReplaySupport(): ModelAdapterRuntimeEventReplaySupport {
@@ -324,9 +328,8 @@ export class ModelAdapter {
             response?.id &&
             openAiResponsesTransportState.canRecordSemantic(continuation.lane, response.id)
           ) {
-            openAiResponsesTransportState.recordSemantic(continuation.lane, {
+            openAiResponsesTransportState.recordSemanticRequest(continuation.lane, {
               requestMessages: structuredClone(continuation.requestMessages),
-              responseMessages: structuredClone(response.messages ?? []),
               responseId: response.id,
             });
           } else {
@@ -354,6 +357,18 @@ export class ModelAdapter {
 
   endContinuation(lane: string): void {
     this.openAiResponsesTransportState.endLane(lane);
+  }
+
+  recordContinuationResponse(lane: string, responseMessages: readonly ModelMessage[]): void {
+    this.openAiResponsesTransportState.recordSemanticResponse(lane, responseMessages);
+  }
+
+  continuationResponsePending(lane: string): boolean {
+    return this.openAiResponsesTransportState.hasPendingSemantic(lane);
+  }
+
+  clearContinuation(lane: string): void {
+    this.openAiResponsesTransportState.clearSemantic(lane);
   }
 
   dispose(): void {
@@ -459,6 +474,25 @@ export class ModelAdapter {
         return 'error';
       case 'tool-calls':
         return 'end_turn';
+      // The SDK's own two names for "the stream stopped and nothing named why".
+      // An upstream that drops the connection mid-answer lands here: it yields
+      // no error part and throws nothing, so these are the only signal that it
+      // happened. Calling them `end_turn` asserts the model said its piece —
+      // the one thing we know we cannot claim. A benchmark cell recorded
+      // `status: completed` on exactly this shape while its agent was still
+      // mid-task, caught only because the proxy noticed the terminal SSE event
+      // never arrived.
+      //
+      // These are reached when nothing else named the stop: the SDK buckets
+      // every reason it does not recognize into `other` too, and
+      // `translateChunk` forwards the provider's own spelling in that case, so
+      // a genuinely new reason arrives here as itself and takes the tolerant
+      // default below. A provider spelling its reason `other` is
+      // indistinguishable from the bucket and lands here; the ambiguity is
+      // real and this resolves it toward the safe answer.
+      case 'other':
+      case 'unknown':
+        return 'error';
       default:
         return 'end_turn';
     }
@@ -556,6 +590,8 @@ interface AiSdkStreamChunk {
   isError?: boolean;
   usage?: AiSdkUsageLike;
   finishReason?: unknown;
+  /** What the provider itself called it, before the SDK bucketed it. */
+  rawFinishReason?: unknown;
   error?: unknown;
   /** Provider-specific metadata; carries the Anthropic reasoning signature. */
   providerMetadata?: unknown;
@@ -570,13 +606,27 @@ interface SdkStreamResult {
   stream: AsyncIterable<AiSdkStreamChunk>;
   usage: Promise<AiSdkUsageLike | undefined>;
   finishReason: Promise<unknown>;
-  request: PromiseLike<{
-    messages?: ModelMessage[];
-  }>;
   response: PromiseLike<{
     id: string;
-    messages?: ModelMessage[];
   }>;
+}
+
+/**
+ * The finish reason to forward, preferring what the provider actually said.
+ *
+ * The SDK splits the reason in two: a closed unified enum, and the provider's
+ * own spelling. Unified is the right thing to forward — `runtime-runner` and
+ * the backend compare against `'tool-calls'`, which is a name only the SDK
+ * uses. Except when unified is `other`, which is not a reason but the SDK
+ * declining to name one; there it hides the only distinction that matters
+ * downstream. `other` with a provider spelling is a model that stopped for a
+ * reason we have no case for — an ordinary finished turn. `other` with nothing
+ * behind it is a stream that died without anyone saying so.
+ */
+function chunkFinishReason(chunk: AiSdkStreamChunk): string | undefined {
+  const unified = rawFinishReasonString(chunk.finishReason);
+  if (unified !== 'other' && unified !== 'unknown') return unified;
+  return rawFinishReasonString(chunk.rawFinishReason) ?? unified;
 }
 
 /**
@@ -691,8 +741,10 @@ function translateChunk(
     // compatibility — handled as a step boundary, not a text carrier.
     case 'finish-step':
     case 'step-finish': {
-      const finishReason = rawFinishReasonString(chunk.finishReason);
-      const usage = normalizeAiSdkUsage(chunk.usage, { rawFinishReason: chunk.finishReason });
+      const finishReason = chunkFinishReason(chunk);
+      // The same value the turn's outcome is decided from, so the record and
+      // the outcome cannot name different reasons for the same stream.
+      const usage = normalizeAiSdkUsage(chunk.usage, { rawFinishReason: finishReason });
       return [
         {
           kind: 'step-finish',
@@ -702,7 +754,7 @@ function translateChunk(
       ];
     }
     case 'finish': {
-      const finishReason = rawFinishReasonString(chunk.finishReason);
+      const finishReason = chunkFinishReason(chunk);
       return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
     }
     case 'reasoning-start':
@@ -849,16 +901,6 @@ function errorClassFromFailureKind(kind: ModelFailureKind): string {
     case 'unknown':
       return 'Other';
   }
-}
-
-function normalizeRequestMetadata(
-  metadata:
-    | {
-        messages?: ModelMessage[];
-      }
-    | undefined,
-): ModelRequestMetadata | undefined {
-  return metadata?.messages === undefined ? undefined : { messages: metadata.messages };
 }
 
 type TokenCountBreakdown = {

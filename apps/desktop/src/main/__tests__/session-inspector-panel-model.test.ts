@@ -107,7 +107,6 @@ describe('inspector panel model', () => {
 
     const step = model.turns[0]?.steps[0];
     assert.equal(step?.label, 'claude-test');
-    assert.equal(step?.costUsd, undefined, 'no price is not a zero price');
     assert.equal(step?.retries, undefined, 'a single attempt is not a retry');
   });
 
@@ -153,6 +152,50 @@ describe('inspector panel model', () => {
     assert.equal(tool?.failed, true);
     assert.equal(permission?.failed, false, 'a later step is not implicated by sequence');
     assert.equal(model.turns[0]?.failureCode, 'tool_failed');
+  });
+
+  it('leaves the naming of kind-only steps to the panel', () => {
+    // A compaction and an error have no identifier of their own. Baking
+    // `label: 'compaction'` here would ship an English word to every locale
+    // from a file that has no business choosing words.
+    const model = deriveInspectorPanelModel(
+      trace({
+        turns: [
+          {
+            turnId: 'turn-1',
+            runId: 'run-1',
+            startedAt: 1_000,
+            endedAt: 2_000,
+            durationMs: 1_000,
+            totals: emptyTraceTotals(),
+            steps: [
+              {
+                kind: 'compaction',
+                id: 'compaction-1',
+                turnId: 'turn-1',
+                runId: 'run-1',
+                startedAt: 1_000,
+                checkpointId: 'checkpoint-1',
+              } satisfies TraceStep,
+              {
+                kind: 'error',
+                id: 'error-1',
+                turnId: 'turn-1',
+                runId: 'run-1',
+                startedAt: 1_500,
+                message: 'sandbox denied the write',
+              } satisfies TraceStep,
+            ],
+          },
+        ],
+      }),
+    );
+
+    const [compaction, error] = model.turns[0]!.steps;
+    assert.equal(compaction?.label, undefined);
+    assert.equal(compaction?.detail, undefined, 'the checkpoint id is not a reader-facing fact');
+    assert.equal(error?.label, undefined);
+    assert.equal(error?.detail, 'sandbox denied the write', 'the message is already words');
   });
 
   it('reports an empty model for a session with no turns', () => {

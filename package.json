@@ -1,6 +1,6 @@
 {
   "name": "maka",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "Apache-2.0",
   "private": true,
   "engines": {
@@ -9,6 +9,7 @@
   "packageManager": "npm@11.12.1",
   "type": "module",
   "workspaces": [
+    "packages/code-mode",
     "packages/core",
     "packages/storage",
     "packages/mcp",
@@ -31,13 +32,13 @@
     "test:dist": "npm run test:scripts:full && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
     "test:dist:serial": "npm run test:scripts:full && node scripts/run-workspace-tests-parallel.mjs --serial",
     "test:fast": "npm run build:test && npm run test:scripts && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
-    "test:scripts": "node --test scripts/electron-builder-config.test.mjs scripts/sync-model-metadata.test.mjs scripts/fixture-env.test.mjs scripts/electron-lifecycle.test.mjs scripts/check-story-annotations.test.mjs scripts/check-dead-css.test.mjs scripts/build-astryx-theme.test.mjs scripts/ci-test-plan.test.mjs scripts/run-headless-tests.test.mjs scripts/run-workspace-tests-parallel.test.mjs scripts/storybook-visual-smoke.test.mjs scripts/cu-e2e-scenarios.test.mjs scripts/cu-report-sanitize.test.mjs scripts/computer-use-provenance.test.mjs scripts/cu-trace-analyse.test.mjs scripts/prepare-bundled-git.test.mjs scripts/windows-test-inventory.test.mjs scripts/windows-smoke.test.mjs scripts/windows-baseline-workflow.test.mjs apps/desktop/scripts/dev-app-runtime.test.mjs",
+    "test:scripts": "node --test scripts/electron-builder-config.test.mjs scripts/sync-model-metadata.test.mjs scripts/fixture-env.test.mjs scripts/electron-lifecycle.test.mjs scripts/check-story-annotations.test.mjs scripts/check-dead-css.test.mjs scripts/build-astryx-theme.test.mjs scripts/ci-test-plan.test.mjs scripts/run-headless-tests.test.mjs scripts/run-workspace-tests-parallel.test.mjs scripts/storybook-visual-smoke.test.mjs scripts/cu-e2e-scenarios.test.mjs scripts/cu-report-sanitize.test.mjs scripts/computer-use-provenance.test.mjs scripts/cu-trace-analyse.test.mjs scripts/prepare-bundled-git.test.mjs scripts/prepare-bundled-git-source.test.mjs scripts/windows-test-inventory.test.mjs scripts/windows-smoke.test.mjs scripts/windows-baseline-workflow.test.mjs scripts/code-mode-build-order.test.mjs apps/desktop/scripts/dev-app-runtime.test.mjs",
     "test:scripts:extended": "node --test scripts/cu-provider-matrix.test.mjs scripts/cu-process-restart-harness.test.mjs scripts/cu-real-model-launcher.test.mjs scripts/macos-arm64-release.test.mjs scripts/windows-x64-release.test.mjs scripts/measure-session-bundle.test.mjs",
     "test:scripts:full": "npm run test:scripts && npm run test:scripts:extended",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",
     "dev:full": "npm run build && npm --workspace @maka/desktop run start",
-    "build": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/headless run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build",
-    "build:test": "npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/headless run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test",
+    "build": "npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/headless run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build",
+    "build:test": "npm run clean && npm --workspace @maka/code-mode run build && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/headless run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test",
     "clean": "node scripts/clean-build.mjs",
     "rebuild": "npm run clean && npm run build",
     "check:stale": "node scripts/check-stale-dist.mjs",
@@ -58,6 +59,7 @@
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && node scripts/windows-smoke.mjs",
     "prepare:bundled-git": "node scripts/prepare-bundled-git.mjs",
+    "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs",
     "e2e:computer-use-real": "node scripts/cu-real-ax-model-e2e-launcher.mjs",
     "e2e:computer-use-process-restart": "MAKA_CU_AX_MODEL_SCENARIO=restart-recovery node scripts/cu-real-ax-model-e2e-launcher.mjs",
     "e2e:computer-use-process-restart-soak": "node scripts/cu-process-restart-e2e-launcher.mjs",
@@ -77,10 +79,10 @@
     "e2e:computer-use-real-runtime": "node scripts/cu-real-runtime-model-e2e.mjs"
   },
   "devDependencies": {
-    "@astryxdesign/cli": "0.2.0",
-    "@astryxdesign/core": "0.2.0",
-    "@biomejs/biome": "2.5.4",
-    "@types/node": "^25.0.0",
+    "@astryxdesign/cli": "0.3.0",
+    "@astryxdesign/core": "0.3.0",
+    "@biomejs/biome": "2.5.6",
+    "@types/node": "^26.1.2",
     "dugite": "3.2.2",
     "knip": "^6.26.0",
     "patch-package": "8.0.1",
@@ -91,5 +93,10 @@
     "@jackwener/opencli@1.8.4": true,
     "dugite@3.2.2": true,
     "node-pty@1.2.0-beta.14": true
+  },
+  "overrides": {
+    "@astryxdesign/core": {
+      "react-dom": "19.2.8"
+    }
   }
 }

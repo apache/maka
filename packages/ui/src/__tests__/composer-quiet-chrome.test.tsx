@@ -131,7 +131,15 @@ describe('composer quiet chrome', () => {
       permissionMode: 'ask' as const,
     };
     const choices = [
-      { connectionSlug: 'fake', providerType: 'anthropic' as const, model: 'fake', label: 'fake' },
+      {
+        connectionSlug: 'fake',
+        providerType: 'anthropic' as const,
+        providerLabel: 'Anthropic',
+        model: 'fake',
+        label: 'fake',
+        isDefault: true,
+        thinkingLevels: ['off', 'high'] as const,
+      },
     ];
     const thinkingProps = {
       activeThinkingLevels: ['off', 'high'] as ('off' | 'high')[],

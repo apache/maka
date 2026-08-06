@@ -80,7 +80,9 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(written).toMatchObject({ ok: true, path: target });
+      expect(written).toMatchObject({ kind: 'file_diff', paths: [target] });
+      expect((written as { diff: string }).diff).toContain('--- /dev/null');
+      expect((written as { diff: string }).diff).toContain('+hello');
       expect(await readFile(target, 'utf8')).toBe('hello');
 
       const read = await runTool(toolNamed(tools, 'Read'), { path: target }, cwd, BYPASS);
@@ -92,7 +94,9 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(edited).toMatchObject({ ok: true, replacements: 1 });
+      expect(edited).toMatchObject({ kind: 'file_diff', paths: [target] });
+      expect((edited as { diff: string }).diff).toContain('-hello');
+      expect((edited as { diff: string }).diff).toContain('+bye');
       expect(await readFile(target, 'utf8')).toBe('bye');
 
       await writeFile(join(outside, 'data.json'), '{"b":1,"a":2}', 'utf8');
@@ -102,7 +106,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(formatted).toMatchObject({ ok: true, valid: true, changed: true });
+      expect(formatted).toMatchObject({ kind: 'file_diff' });
 
       const globbed = (await runTool(
         toolNamed(tools, 'Glob'),
@@ -216,7 +220,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         MANAGED,
       );
-      expect(result).toMatchObject({ ok: true, path: target });
+      expect(result).toMatchObject({ kind: 'file_write', path: target, bytes: 1 });
       expect(calls).toHaveLength(1);
       // The worker decided; nothing was written by the host backend.
       await assert.rejects(readFile(target, 'utf8'));

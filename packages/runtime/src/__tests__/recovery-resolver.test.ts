@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { canonicalToolArgsHash } from '@maka/core';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { resolveRuntimeRecovery } from '../recovery-resolver.js';
+import {
+  buildInterruptedCodeModeOutcomeCommits,
+  resolveRuntimeRecovery,
+} from '../recovery-resolver.js';
 
 describe('RecoveryResolver', () => {
   it('proves a new-protocol call without dispatch was never dispatched', () => {
@@ -44,6 +47,107 @@ describe('RecoveryResolver', () => {
     ]);
     assert.equal(resolution.hasCorruption, false);
     assert.equal(resolution.requiresReconciliation, true);
+  });
+
+  it('builds an interrupted outcome only for the outer exec operation', () => {
+    const outerCall = event({
+      id: 'outer-call',
+      role: 'model',
+      author: 'agent',
+      origin: 'provider',
+      modelVisibility: 'visible',
+      content: { kind: 'function_call', id: 'exec-1', name: 'exec', args: { code: 'work()' } },
+      refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
+    });
+    const outerDispatch = dispatchFor({
+      id: 'outer-dispatch',
+      operationId: 'outer-op',
+      toolCallId: 'exec-1',
+      toolName: 'exec',
+      args: { code: 'work()' },
+    });
+    const nestedCall = event({
+      id: 'nested-call',
+      role: 'model',
+      author: 'agent',
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      content: { kind: 'function_call', id: 'nested-1', name: 'Read', args: {} },
+      refs: {
+        operationId: 'nested-op',
+        toolCallId: 'nested-1',
+        parentOperationId: 'outer-op',
+        parentToolCallId: 'exec-1',
+      },
+    });
+    const nestedDispatch = dispatchFor({
+      id: 'nested-dispatch',
+      operationId: 'nested-op',
+      toolCallId: 'nested-1',
+      toolName: 'Read',
+      args: {},
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      parentOperationId: 'outer-op',
+      parentToolCallId: 'exec-1',
+    });
+
+    const commits = buildInterruptedCodeModeOutcomeCommits(
+      [initialEvent('t1_after_preflight_v1'), outerCall, outerDispatch, nestedCall, nestedDispatch],
+      50,
+      'code_mode',
+    );
+
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0]?.operationId, 'outer-op');
+    assert.equal(commits[0]?.runtimeEvent.content?.kind, 'function_response');
+    assert.equal(
+      commits[0]?.runtimeEvent.content?.kind === 'function_response'
+        ? commits[0].runtimeEvent.content.isError
+        : false,
+      true,
+    );
+    assert.deepEqual(
+      commits[0]?.runtimeEvent.content?.kind === 'function_response'
+        ? commits[0].runtimeEvent.content.result
+        : undefined,
+      {
+        kind: 'json',
+        value: {
+          kind: 'code_mode',
+          status: 'interrupted',
+          message: 'Code Mode execution was interrupted by runtime recovery.',
+        },
+      },
+    );
+  });
+
+  it('does not infer Code Mode recovery from a custom direct exec name', () => {
+    const commits = buildInterruptedCodeModeOutcomeCommits(
+      [
+        initialEvent('t1_after_preflight_v1'),
+        event({
+          id: 'direct-exec-call',
+          role: 'model',
+          author: 'agent',
+          origin: 'provider',
+          modelVisibility: 'visible',
+          content: { kind: 'function_call', id: 'exec-1', name: 'exec', args: {} },
+          refs: { operationId: 'direct-exec-op', toolCallId: 'exec-1' },
+        }),
+        dispatchFor({
+          id: 'direct-exec-dispatch',
+          operationId: 'direct-exec-op',
+          toolCallId: 'exec-1',
+          toolName: 'exec',
+          args: {},
+        }),
+      ],
+      50,
+      'direct',
+    );
+
+    assert.deepEqual(commits, []);
   });
 
   it('treats a matching response without dispatch as a completed pre-T1 result', () => {
@@ -263,6 +367,40 @@ function toolDispatchEvent(overrides: { toolName?: string } = {}): RuntimeEvent 
       },
     },
     refs: { operationId: 'operation-1', toolCallId: 'call-1' },
+  });
+}
+
+function dispatchFor(input: {
+  id: string;
+  operationId: string;
+  toolCallId: string;
+  toolName: string;
+  args: unknown;
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentOperationId?: string;
+  parentToolCallId?: string;
+}): RuntimeEvent {
+  return event({
+    id: input.id,
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.modelVisibility ? { modelVisibility: input.modelVisibility } : {}),
+    actions: {
+      toolDispatch: {
+        protocol: 't1_after_preflight_v1',
+        operationId: input.operationId,
+        providerToolCallId: input.toolCallId,
+        toolName: input.toolName,
+        canonicalArgsHash: canonicalToolArgsHash(input.toolName, input.args),
+        recoveryMode: 'never_auto_retry',
+      },
+    },
+    refs: {
+      operationId: input.operationId,
+      toolCallId: input.toolCallId,
+      ...(input.parentOperationId ? { parentOperationId: input.parentOperationId } : {}),
+      ...(input.parentToolCallId ? { parentToolCallId: input.parentToolCallId } : {}),
+    },
   });
 }
 

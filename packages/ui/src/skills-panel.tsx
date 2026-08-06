@@ -1,743 +1,71 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+// packages/ui/src/skills-panel.tsx
+//
+// The Skills module page, on the shared ModulePage shell (Astryx Layout,
+// the vendor's incident-console archetype) — the same surface as 定时任务:
+//
+// - header: title, a live count line, and one overflow menu of page actions;
+// - toolbar (the header's last row, fixed): the hub switch, the 市场 / 内置 /
+//   已安装 SegmentedControl, search, and the market's category/sort filters;
+// - content: dense Astryx List rows, not cards;
+// - inspector: selecting an installed row opens it, and every per-skill
+//   action lives there (skill-inspector.tsx).
+//
+// Layout owns scroll containment, so the view switch can never scroll away
+// with the list — the bug this page used to ship (#2236) is unrepresentable
+// in this structure.
+
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
+import { useRovingRowFocus } from './use-roving-row-focus.js';
 import {
   Blocks,
   BookOpen,
   Download,
-  FileEdit,
   FolderOpen,
   Loader2,
   MoreHorizontal,
-  Pin,
-  PinOff,
   RefreshCcw,
   Search,
-  Trash2,
 } from './icons.js';
 import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import {
-  Badge,
   Button as UiButton,
   EmptyState,
   IconButton,
-  Item,
-  Switch,
-  Tab,
-  TabList,
+  List,
+  ListItem,
+  SegmentedControl,
+  SegmentedControlItem,
+  Selector,
+  StatusDot,
+  TextInput,
+  Toolbar,
 } from '@astryxdesign/core';
+import type { SelectorOptionData } from '@astryxdesign/core/Selector';
 import {
   DropdownMenu,
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
-import { PageHeader } from './primitives/page-header.js';
-import { TextInput } from '@astryxdesign/core';
+import { ModulePage } from './primitives/module-page.js';
+import { CapabilityAuditStrip, capabilityAuditIssues } from './capability-audit-strip.js';
+import { SkillInspector } from './skill-inspector.js';
 import {
-  Selector,
-  type SelectorOptionData,
-} from '@astryxdesign/core/Selector';
-import { SectionHeader } from './primitives/section-header.js';
-import { CapabilityAuditStrip } from './capability-audit-strip.js';
+  formatSkillLibraryDescription,
+  formatSkillStatusLabel,
+  skillExceptionalStateLabel,
+  skillStatusDotLabel,
+  skillStatusDotVariant,
+} from './skill-status.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type { BundledSkillCatalogEntry, ManagedSkillCategory, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from './module-panel-types.js';
-import { getSkillsCopy, type SkillsCopy } from './skills-copy.js';
+import { getSkillsCopy } from './skills-copy.js';
 import { useUiLocale } from './locale-context.js';
 import { useToast } from './toast.js';
 
-// 市场 tab client-side filter/sort controls. Both are pure renderer
-// state — the managed-source list itself is fetched once over IPC.
 const MARKET_CATEGORY_ALL = '__all__';
 type MarketSort = 'name' | 'recent';
-
-const SKILL_UPDATE_PREVIEW_MAX_LINES = 80;
-
-function SkillLibraryPanel(props: {
-  skills?: SkillEntry[];
-  onRefreshSkills?(): void | Promise<void>;
-  onOpenSkill?(skillId: string): void | Promise<void>;
-  onUseSkill?(skillId: string, skillName: string): void;
-  onImportManagedSkillSource?(): void | Promise<void>;
-  onInstallManagedSkill?(sourceId: string): void | Promise<void>;
-  onPreviewManagedSkillUpdate?(skillId: string): Promise<ManagedSkillUpdatePreview | null>;
-  onUpdateManagedSkill?(skillId: string, options?: { force?: boolean; expectedCurrentSha256?: string; expectedSourceSha256?: string }): boolean | Promise<boolean>;
-  onSetSkillEnabled?(skillId: string, enabled: boolean): void | Promise<void>;
-  onSetSkillPinned?(skillRef: string, pinned: boolean): void | Promise<void>;
-  onDeleteSkill?(skillRef: string): void | Promise<void>;
-  actionBusy?: boolean;
-  refreshPending?: boolean;
-  openingSkillId?: string | null;
-  installingSourceId?: string | null;
-  updatingSkillId?: string | null;
-  togglingSkillId?: string | null;
-  searchQuery?: string;
-  /** Clears the module-header search box (owned by the outer panel). */
-  onClearSearch?: () => void;
-  managedSkillSources?: ManagedSkillSourceEntry[];
-  bundledSkillCatalog?: BundledSkillCatalogEntry[];
-  onInstallBundledSkill?(id: string): void | Promise<void>;
-  installingBundledId?: string | null;
-}) {
-  const copy = getSkillsCopy(useUiLocale());
-  const toast = useToast();
-  const skillLibraryMountedRef = useMountedRef();
-  const marketCategories = Object.keys(copy.categories) as ManagedSkillCategory[];
-  const skillCount = props.skills?.length ?? 0;
-  // Designer audit P1-5: land on skills the user can actually run, not the
-  // marketplace — every market card is still 即将上线, and leading with
-  // things you can't install undermines trust in the whole page.
-  const [activeSkillTab, setActiveSkillTab] = useState<'market' | 'builtin' | 'installed'>(() => {
-    const skills = props.skills ?? [];
-    // Land on 已安装 when the user already has skills in the workspace;
-    // otherwise open on 内置, the always-populated shipped catalog.
-    if (skills.length > 0) return 'installed';
-    return 'builtin';
-  });
-  const [updatePreview, setUpdatePreview] = useState<ManagedSkillUpdatePreview | null>(null);
-  const [reviewingSkillId, setReviewingSkillId] = useState<string | null>(null);
-  async function requestDeleteSkill(skill: SkillEntry) {
-    if (!props.onDeleteSkill) return;
-    const ref = skill.ref ?? skill.id;
-    const confirmed = await toast.confirm({
-      title: copy.row.confirmDeleteAriaLabel(skill.name),
-      description: copy.row.deleteDescription,
-      confirmLabel: copy.row.delete,
-      cancelLabel: copy.row.cancel,
-      destructive: true,
-    });
-    if (!confirmed || !skillLibraryMountedRef.current) return;
-    await props.onDeleteSkill(ref);
-  }
-
-  // Menu items close their Astryx layer synchronously. Defer actions that open
-  // another layer (the update review or destructive confirmation) by one frame
-  // so focus returns to the menu trigger before the next surface takes it.
-  function runAfterMenuClose(action: () => void) {
-    window.requestAnimationFrame(() => {
-      if (skillLibraryMountedRef.current) action();
-    });
-  }
-  const [marketCategory, setMarketCategory] = useState<ManagedSkillCategory | typeof MARKET_CATEGORY_ALL>(MARKET_CATEGORY_ALL);
-  const [marketSort, setMarketSort] = useState<MarketSort>('name');
-  const normalizedSkillQuery = props.searchQuery?.trim().toLowerCase() ?? '';
-  const filteredSkills = (props.skills ?? []).filter((skill) => {
-    if (!normalizedSkillQuery) return true;
-    return `${skill.id} ${skill.name} ${skill.description ?? ''} ${skill.path}`.toLowerCase().includes(normalizedSkillQuery);
-  });
-  // 内置 = the shipped catalog (install-on-demand cards); 已安装 = everything
-  // actually present in the workspace, regardless of source. A skill installed
-  // from the 内置 catalog therefore shows as 已安装 on its catalog card AND as a
-  // manageable (toggle/open) row under 已安装 — the same dual surface the 市场
-  // install flow already has.
-  const bundledCatalog = props.bundledSkillCatalog ?? [];
-  const bundledCatalogFiltered = bundledCatalog.filter((entry) => {
-    if (!normalizedSkillQuery) return true;
-    return `${entry.id} ${entry.name} ${entry.description} ${entry.category}`.toLowerCase().includes(normalizedSkillQuery);
-  });
-  const installedSkills = filteredSkills;
-  const contextCounts = (props.skills ?? []).reduce(
-    (counts, skill) => {
-      if (skill.kind === 'discovery_diagnostic') return counts;
-      counts.discovered += 1;
-      const status = skill.contextStatus ?? (skill.enabled ? 'advertised' : 'disabled');
-      if (status === 'advertised') counts.advertised += 1;
-      if (status === 'budget') counts.omitted += 1;
-      if (status === 'shadowed') counts.shadowed += 1;
-      return counts;
-    },
-    { discovered: 0, advertised: 0, omitted: 0, shadowed: 0 },
-  );
-  // Collision-only slug reveal: the slug normally lives in the row tooltip,
-  // but when two visible skills share a display name (e.g. repeated starter
-  // templates from old builds) the rows become indistinguishable — surface
-  // the slug inline exactly for those rows.
-  const skillNameCounts = new Map<string, number>();
-  for (const skill of filteredSkills) {
-    if (skill.kind === 'discovery_diagnostic') continue;
-    skillNameCounts.set(skill.name, (skillNameCounts.get(skill.name) ?? 0) + 1);
-  }
-  const allManagedSources = props.managedSkillSources ?? [];
-  // 市场 tab: managed sources are the marketplace catalog. Search (shared
-  // header field), category dropdown, and sort are all pure client-side —
-  // the list is fetched once over IPC. Sort 最近 (order preserved from the
-  // IPC list, which main already sorts by name) vs 名称 (explicit A→Z).
-  const marketSources = useMemo(() => {
-    const filtered = allManagedSources.filter((source) => {
-      if (marketCategory !== MARKET_CATEGORY_ALL && source.category !== marketCategory) return false;
-      if (!normalizedSkillQuery) return true;
-      return `${source.id} ${source.name} ${source.description} ${source.category}`.toLowerCase().includes(normalizedSkillQuery);
-    });
-    if (marketSort === 'name') {
-      return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
-    }
-    return filtered;
-  }, [allManagedSources, marketCategory, marketSort, normalizedSkillQuery]);
-  const skillListEmptyTitle = normalizedSkillQuery ? copy.installed.emptySearchTitle : copy.installed.emptyTitle;
-  const skillListEmptyBody = normalizedSkillQuery
-    ? copy.installed.emptySearchBody
-    : `${copy.installed.emptyBodyBeforeCode} SKILL.md ${copy.installed.emptyBodyAfterCode}`;
-  async function reviewManagedSkillUpdate(skill: SkillEntry) {
-    if (!props.onPreviewManagedSkillUpdate || reviewingSkillId !== null) return;
-    setReviewingSkillId(skill.id);
-    try {
-      const preview = await props.onPreviewManagedSkillUpdate(skill.id);
-      if (preview) setUpdatePreview(preview);
-    } finally {
-      setReviewingSkillId(null);
-    }
-  }
-
-  async function applyManagedSkillUpdate(preview: ManagedSkillUpdatePreview) {
-    if (!props.onUpdateManagedSkill) return;
-    const force = preview.skill.managedUpdateStatus === 'local_modified';
-    const updated = await props.onUpdateManagedSkill(preview.skill.id, {
-      ...(force ? { force: true } : {}),
-      expectedCurrentSha256: preview.expectedCurrentSha256,
-      expectedSourceSha256: preview.expectedSourceSha256,
-    });
-    if (updated) setUpdatePreview(null);
-  }
-
-  const categoryOptions: SelectorOptionData[] = [
-    { value: MARKET_CATEGORY_ALL, label: copy.market.categoryAll },
-    ...marketCategories.map((category) => ({
-      value: category,
-      label: copy.categories[category],
-    })),
-  ];
-  const sortOptions: SelectorOptionData[] = [
-    { value: 'name', label: copy.market.sortName },
-    { value: 'recent', label: copy.market.sortRecent },
-  ];
-  const marketControls = activeSkillTab === 'market' && allManagedSources.length > 0 ? (
-    <div className="maka-skill-market-controls" role="group" aria-label={copy.market.controls}>
-      <div className="maka-skill-market-select">
-        <Selector
-          value={marketCategory}
-          options={categoryOptions}
-          onChange={(value) => setMarketCategory(value as ManagedSkillCategory | typeof MARKET_CATEGORY_ALL)}
-          label={copy.market.categoryFilter}
-          isLabelHidden
-          width="100%"
-        />
-      </div>
-      <div className="maka-skill-market-select">
-        <Selector
-          value={marketSort}
-          options={sortOptions}
-          onChange={(value) => setMarketSort(value as MarketSort)}
-          label={copy.market.sortAriaLabel}
-          isLabelHidden
-          width="100%"
-        />
-      </div>
-    </div>
-  ) : null;
-
-  const tabs = (
-    <div className="maka-skill-tabs-bar">
-      <TabList
-        value={activeSkillTab}
-        onChange={(value) => setActiveSkillTab(value as typeof activeSkillTab)}
-        hasDivider
-        aria-label={copy.tabs.ariaLabel}
-      >
-        {([
-          ['market', copy.tabs.market, allManagedSources.length],
-          ['builtin', copy.tabs.builtin, bundledCatalog.length],
-          ['installed', copy.tabs.installed, installedSkills.length],
-        ] as const).map(([tab, label, count]) => (
-          <Tab
-            key={tab}
-            value={tab}
-            label={label}
-            endContent={<span>{count}</span>}
-          />
-        ))}
-      </TabList>
-      {/* Marketplace launch: real client-side category + sort controls on
-          the tab row's right side (market tab only). The old static 全部 /
-          排序：热门 pills were dead chrome; these drive marketSources. */}
-      {marketControls}
-    </div>
-  );
-
-  const market = (
-    <section className="maka-skill-market" aria-label={copy.market.ariaLabel}>
-      <SectionHeader
-        className="maka-skill-section-row"
-        title={<span className="maka-skill-section-label">{copy.market.official}</span>}
-        action={
-          <div className="maka-skill-filter-actions" role="group" aria-label={copy.market.sourceActions}>
-            <UiButton
-              variant="secondary"
-              size="sm"
-              onClick={props.onImportManagedSkillSource}
-              isDisabled={!props.onImportManagedSkillSource || props.actionBusy}
-              label={copy.market.importLocal}
-            />
-          </div>
-        }
-      />
-      {allManagedSources.length === 0 ? (
-        <EmptyState
-          icon={<BookOpen />}
-          title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
-          description={normalizedSkillQuery
-            ? copy.market.emptySearchBody
-            : copy.market.emptyBody}
-          actions={normalizedSkillQuery && props.onClearSearch
-            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
-            : undefined}
-          className="maka-skill-installed-empty"
-        />
-      ) : marketSources.length === 0 ? (
-        <EmptyState
-          icon={<Search />}
-          title={copy.market.emptySearchTitle}
-          description={copy.market.emptyFilterBody}
-          actions={(
-            <UiButton
-              variant="ghost"
-              size="sm"
-              label={copy.market.clearFilters}
-              onClick={() => {
-                setMarketCategory(MARKET_CATEGORY_ALL);
-                props.onClearSearch?.();
-              }}
-            />
-          )}
-          className="maka-skill-installed-empty"
-        />
-      ) : (
-        <ul className="maka-skill-catalog-list">
-          {marketSources.map((source) => {
-            const installed = (props.skills ?? []).some((skill) => skill.id === source.id);
-            const installing = props.installingSourceId === source.id;
-            const description = source.description || copy.market.sourceFallback;
-            return (
-              <Item
-                key={source.id}
-                as="li"
-                align="start"
-                className="maka-skill-catalog-item"
-                startContent={<Blocks size={18} aria-hidden="true" />}
-                label={source.name}
-                description={(
-                  <span className="maka-skill-catalog-details">
-                    <span>{description}</span>
-                    <span><code>{source.id}</code> · {copy.categories[source.category]} · {installed ? copy.install.installed : copy.install.notInstalled}</span>
-                  </span>
-                )}
-                endContent={(
-                  <IconButton
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => props.onInstallManagedSkill?.(source.id)}
-                    isDisabled={installed || props.actionBusy || !props.onInstallManagedSkill}
-                    label={copy.install.action(source.name)}
-                    tooltip={installed ? copy.install.installedTitle : copy.install.action(source.name)}
-                    icon={installing ? <Loader2 size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-                  />
-                )}
-              />
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-
-  const builtinCatalog = (
-    <section className="maka-skill-market" aria-label={copy.builtin.ariaLabel}>
-      <SectionHeader
-        className="maka-skill-section-row"
-        title={<span className="maka-skill-section-label">{copy.builtin.title}</span>}
-      />
-      {bundledCatalog.length === 0 ? (
-        <EmptyState
-          icon={<Blocks />}
-          title={copy.builtin.emptyTitle}
-          description={copy.builtin.emptyBody}
-          className="maka-skill-installed-empty"
-        />
-      ) : bundledCatalogFiltered.length === 0 ? (
-        <EmptyState
-          icon={<Search />}
-          title={copy.builtin.noMatchTitle}
-          description={copy.builtin.noMatchBody}
-          actions={props.onClearSearch
-            ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={props.onClearSearch} />
-            : undefined}
-          className="maka-skill-installed-empty"
-        />
-      ) : (
-        <ul className="maka-skill-catalog-list">
-          {bundledCatalogFiltered.map((entry) => {
-            const installing = props.installingBundledId === entry.id;
-            const description = entry.description || copy.builtin.fallback;
-            return (
-              <Item
-                key={entry.id}
-                as="li"
-                align="start"
-                className="maka-skill-catalog-item"
-                startContent={<Blocks size={18} aria-hidden="true" />}
-                label={entry.name}
-                description={(
-                  <span className="maka-skill-catalog-details">
-                    <span>{description}</span>
-                    <span><code>{entry.id}</code> · {copy.categories[entry.category]} · {entry.installed ? copy.install.installed : copy.install.notInstalled}</span>
-                  </span>
-                )}
-                endContent={(
-                  <IconButton
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => props.onInstallBundledSkill?.(entry.id)}
-                    isDisabled={entry.installed || props.actionBusy || !props.onInstallBundledSkill}
-                    label={copy.install.action(entry.name)}
-                    tooltip={entry.installed ? copy.install.installedTitle : copy.install.action(entry.name)}
-                    icon={installing ? <Loader2 size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-                  />
-                )}
-              />
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-
-  const skillList = (list: SkillEntry[], emptyTitle: string, emptyBody: string, label: string) => (
-    <section className="maka-skill-installed" aria-label={label}>
-      {list.length === 0 ? (
-        <EmptyState
-          icon={<Blocks />}
-          title={emptyTitle}
-          description={emptyBody}
-          actions={(
-            props.onRefreshSkills
-              ? <UiButton variant="ghost" label={props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh} onClick={props.onRefreshSkills} isDisabled={props.actionBusy} />
-              : undefined
-          )}
-          className="maka-skill-installed-empty"
-        />
-      ) : (
-        <>
-          <SectionHeader
-            className="maka-skill-section-row"
-            title={<span className="maka-skill-section-label">{label}</span>}
-            count={copy.installed.count(list.length)}
-            subtitle={`${copy.context.title}: ${copy.context.summary(
-              contextCounts.discovered,
-              contextCounts.advertised,
-              contextCounts.omitted,
-              contextCounts.shadowed,
-            )}`}
-          />
-          <ul className="maka-skill-library-list" aria-label={copy.installed.listAriaLabel}>
-            {list.map((skill) => {
-              const isDiscoveryDiagnostic = skill.kind === 'discovery_diagnostic';
-              const skillRef = skill.ref ?? skill.id;
-              const contextStatus = skill.contextStatus ?? (skill.enabled ? 'advertised' : 'disabled');
-              const tools = skill.declaredTools ?? [];
-              const toolsLabel = tools.length > 0 ? tools.join(', ') : '';
-              const displayName = isDiscoveryDiagnostic
-                ? copy.context.discoverySource(skill.scope ?? 'custom', skill.source ?? 'custom')
-                : skill.name;
-              const description =
-                isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
-                  ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
-                  : formatSkillLibraryDescription(skill, copy);
-              const statusLabel = formatSkillStatusLabel(skill, copy);
-              const runtimeLabel = formatSkillRuntimeLabel(skill, copy);
-              const contextLabel = `${isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
-                ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
-                : copy.context.decision[contextStatus]}${!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}`;
-              const contextNeedsAttention = isDiscoveryDiagnostic || (contextStatus !== 'advertised' && contextStatus !== 'disabled');
-              const sourceStatusNeedsAttention = !isDiscoveryDiagnostic && skillSourceStatusNeedsAttention(skill);
-              const supportingMeta = [
-                skill.scope ? copy.context.scope[skill.scope] : null,
-                contextNeedsAttention ? null : contextLabel,
-                !isDiscoveryDiagnostic && !sourceStatusNeedsAttention ? statusLabel : null,
-              ].filter((value): value is string => Boolean(value));
-              const opening = props.openingSkillId === skillRef;
-              const updating = props.updatingSkillId === skill.id;
-              const toggling = props.togglingSkillId === skillRef;
-              const reviewing = reviewingSkillId === skill.id;
-              const reviewableManagedUpdate = skill.managedUpdateStatus === 'update_available' || skill.managedUpdateStatus === 'local_modified';
-              const canToggleSkill =
-                !isDiscoveryDiagnostic &&
-                Boolean(props.onSetSkillEnabled) &&
-                skill.runtimeStatus !== 'state_error' &&
-                contextStatus !== 'invalid';
-              const hoverText = isDiscoveryDiagnostic
-                ? `${displayName}\n\n${description}\n${skill.path}`
-                : tools.length > 0
-                  ? copy.row.hoverWithTools(skill.id, runtimeLabel, statusLabel, toolsLabel)
-                  : copy.row.hover(skill.id, runtimeLabel, statusLabel);
-              const hasContextualActions = !isDiscoveryDiagnostic && Boolean(
-                props.onOpenSkill
-                || props.onSetSkillPinned
-                || (reviewableManagedUpdate && props.onPreviewManagedSkillUpdate)
-                || (props.onDeleteSkill && skill.manageable !== false),
-              );
-              return (
-                <Item
-                  key={skillRef}
-                  as="li"
-                  align="start"
-                  className="maka-skill-library-item"
-                  data-runtime-status={skill.runtimeStatus}
-                  data-context-status={contextStatus}
-                  startContent={<Blocks size={18} aria-hidden="true" />}
-                  label={(
-                    <span className="maka-skill-library-label" title={hoverText}>
-                      {displayName}
-                      {!isDiscoveryDiagnostic && (skillNameCounts.get(skill.name) ?? 0) > 1 && (
-                        <code className="maka-skill-library-slug">{skill.id}</code>
-                      )}
-                    </span>
-                  )}
-                  description={(
-                    <span className="maka-skill-library-details">
-                      {description ? <span>{description}</span> : null}
-                      {supportingMeta.length > 0 ? (
-                        <span className="maka-skill-library-supporting">{supportingMeta.join(' · ')}</span>
-                      ) : null}
-                      <span className="maka-skill-library-exceptions">
-                      {skill.runtimeStatus === 'state_error' && (
-                        <Badge variant="warning" className="maka-skill-library-runtime-label" data-status={skill.runtimeStatus} label={runtimeLabel} />
-                      )}
-                      {skill.needsReview && (
-                        <Badge
-                          variant="warning"
-                          className="maka-skill-library-review-label"
-                          label={copy.context.needsReview}
-                        />
-                      )}
-                      {contextNeedsAttention && (
-                        <Badge
-                          variant="warning"
-                          className="maka-skill-library-context-exception"
-                          data-status={contextStatus}
-                          label={contextLabel}
-                        />
-                      )}
-                      {sourceStatusNeedsAttention && (
-                        <Badge variant="warning" className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'} label={statusLabel} />
-                      )}
-                      {opening && <span>{copy.row.opening}</span>}
-                      {updating && <span>{copy.row.updating}</span>}
-                      {toggling && <span>{copy.row.toggling}</span>}
-                      {reviewing && <span>{copy.row.reviewing}</span>}
-                      </span>
-                    </span>
-                  )}
-                  endContent={!isDiscoveryDiagnostic ? (
-                    <div className="maka-skill-library-controls">
-                      {props.onUseSkill && skill.enabled && contextStatus !== 'shadowed' ? (
-                        <UiButton
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => props.onUseSkill?.(skill.id, skill.name)}
-                          isDisabled={props.actionBusy}
-                          aria-label={copy.row.useAriaLabel(skill.name)}
-                          label={copy.row.use}
-                        />
-                      ) : null}
-                      <Switch
-                        value={skill.enabled}
-                        isDisabled={props.actionBusy || !canToggleSkill}
-                        label={skill.enabled ? copy.row.disableAriaLabel(skill.name) : copy.row.enableAriaLabel(skill.name)}
-                        isLabelHidden
-                        disabledMessage={skill.runtimeStatus === 'state_error'
-                          ? copy.row.stateErrorTitle
-                          : undefined}
-                        onChange={(next) => props.onSetSkillEnabled?.(skillRef, next)}
-                      />
-                      {hasContextualActions ? (
-                        <DropdownMenu
-                          placement="below"
-                          button={{
-                            label: copy.row.actionsAriaLabel(skill.name),
-                            icon: <MoreHorizontal size={16} aria-hidden="true" />,
-                            isIconOnly: true,
-                            variant: 'ghost',
-                            size: 'sm',
-                            isDisabled: props.actionBusy,
-                          }}
-                        >
-                          {props.onOpenSkill ? (
-                            <DropdownMenuItem
-                              icon={opening ? <Loader2 size={14} aria-hidden="true" /> : <FileEdit size={14} aria-hidden="true" />}
-                              label={opening ? copy.row.opening : copy.row.openTitle}
-                              onClick={() => runAfterMenuClose(() => void props.onOpenSkill?.(skillRef))}
-                            />
-                          ) : null}
-                          {props.onSetSkillPinned ? (
-                            <DropdownMenuItem
-                              icon={skill.pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
-                              label={skill.pinned ? copy.row.unpinTitle : copy.row.pinTitle}
-                              isDisabled={skill.runtimeStatus === 'state_error' || contextStatus === 'invalid'}
-                              onClick={() => runAfterMenuClose(() => void props.onSetSkillPinned?.(skillRef, !skill.pinned))}
-                            />
-                          ) : null}
-                          {reviewableManagedUpdate && props.onPreviewManagedSkillUpdate ? (
-                            <DropdownMenuItem
-                              icon={<Download size={14} aria-hidden="true" />}
-                              label={reviewing ? copy.row.reviewing : skill.managedUpdateStatus === 'local_modified' ? copy.row.viewDiff : copy.row.viewUpdate}
-                              isDisabled={reviewingSkillId !== null}
-                              onClick={() => runAfterMenuClose(() => void reviewManagedSkillUpdate(skill))}
-                            />
-                          ) : null}
-                          {props.onDeleteSkill && skill.manageable !== false ? (
-                            <DropdownMenuItem
-                              icon={<Trash2 size={14} aria-hidden="true" />}
-                              label={copy.row.delete}
-                              onClick={() => runAfterMenuClose(() => void requestDeleteSkill(skill))}
-                              style={{ color: 'var(--destructive-text)' }}
-                            />
-                          ) : null}
-                        </DropdownMenu>
-                      ) : null}
-                    </div>
-                  ) : undefined}
-                />
-              );
-            })}
-          </ul>
-        </>
-      )}
-    </section>
-  );
-
-  const updateReview = updatePreview ? (
-    <section className="maka-skill-governance-review" aria-label={copy.review.ariaLabel}>
-      <SectionHeader
-        className="maka-skill-section-row"
-        title={<span className="maka-skill-section-label">{copy.review.title}</span>}
-        count={formatSkillStatusLabel(updatePreview.skill, copy)}
-      />
-      <div className="maka-skill-governance-summary">
-        <span>{updatePreview.skill.name}</span>
-        <span>{updatePreview.skill.managedSourceId ? copy.review.source(updatePreview.skill.managedSourceId) : copy.review.managedSource}</span>
-        <span>{updatePreview.skill.hasManagedBaseline ? copy.review.hasBaseline : copy.review.missingBaseline}</span>
-        <span>{copy.review.lineTransition(updatePreview.summary.currentLineCount, updatePreview.summary.sourceLineCount)}</span>
-        <span>{copy.review.changedLines(updatePreview.summary.changedLineCount)}</span>
-      </div>
-      {updatePreview.skill.managedUpdateStatus === 'local_modified' && (
-        <p className="maka-skill-governance-warning">
-          {copy.review.warning}
-        </p>
-      )}
-      <div className="maka-skill-diff-grid">
-        <div>
-          <span>{copy.review.workspace}</span>
-          <pre>{previewText(updatePreview.currentContent)}</pre>
-        </div>
-        <div>
-          <span>{copy.review.sourceVersion}</span>
-          <pre>{previewText(updatePreview.sourceContent)}</pre>
-        </div>
-      </div>
-      <div className="maka-skill-governance-actions">
-        <UiButton
-          variant="ghost"
-          size="sm"
-          onClick={() => setUpdatePreview(null)}
-          isDisabled={props.actionBusy}
-          label={copy.review.cancel}
-        />
-        <UiButton
-          variant="secondary"
-          size="sm"
-          onClick={() => void applyManagedSkillUpdate(updatePreview)}
-          isDisabled={props.actionBusy || !props.onUpdateManagedSkill}
-          label={updatePreview.skill.managedUpdateStatus === 'local_modified' ? copy.review.overwrite : copy.review.update}
-        />
-      </div>
-    </section>
-  ) : null;
-
-  return (
-    <div className="maka-skill-library" aria-busy={props.actionBusy ? 'true' : undefined}>
-      {tabs}
-      {activeSkillTab === 'market' ? market : null}
-      {activeSkillTab === 'builtin' ? builtinCatalog : null}
-      {activeSkillTab === 'installed' ? (
-        <div>
-          {skillList(installedSkills, skillListEmptyTitle, skillListEmptyBody, copy.installed.sectionLabel)}
-          {updateReview}
-        </div>
-      ) : null}
-      {props.skills && props.skills.length > 0 ? (
-        <span className="maka-skill-tool-summary-hidden" aria-hidden="true">
-          {copy.installed.summary(skillCount, new Set((props.skills ?? []).flatMap((skill) => skill.declaredTools ?? [])).size)}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function formatSkillLibraryDescription(skill: SkillEntry, copy: SkillsCopy): string | undefined {
-  const raw = skill.description?.trim();
-  if (!raw) return undefined;
-  if (/[\u3400-\u9fff]/.test(raw)) return raw;
-
-  const source = `${skill.id} ${skill.name} ${raw}`.toLowerCase();
-  if (source.includes('docx') || source.includes('word') || source.includes('google docs')) {
-    return copy.description.document;
-  }
-  if (source.includes('ppt') || source.includes('powerpoint') || source.includes('slide') || source.includes('presentation')) {
-    return copy.description.presentation;
-  }
-  if (source.includes('spreadsheet') || source.includes('excel') || source.includes('csv') || source.includes('xlsx')) {
-    return copy.description.spreadsheet;
-  }
-  if (source.includes('image') || source.includes('photo') || source.includes('bitmap')) {
-    return copy.description.image;
-  }
-  if (source.includes('browser') || source.includes('chrome') || source.includes('web target')) {
-    return copy.description.browser;
-  }
-  if (source.includes('macos') || source.includes('swiftui') || source.includes('appkit')) {
-    return copy.description.macos;
-  }
-  return copy.description.fallback;
-}
-
-function formatSkillStatusLabel(skill: SkillEntry, copy: SkillsCopy): string {
-  if (skill.validationStatus === 'metadata_error') return copy.status.metadataError;
-  if (skill.sourceType === 'managed') {
-    return copy.status.managed[skill.managedUpdateStatus ?? 'up_to_date'];
-  }
-  if (skill.userModified) return copy.status.modified;
-  if (skill.sourceType === 'bundled') return copy.status.bundled;
-  return copy.status.local;
-}
-
-function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): string {
-  if (skill.runtimeStatus === 'state_error') return copy.status.stateError;
-  return skill.enabled ? copy.status.enabled : copy.status.disabled;
-}
-
-function skillSourceStatusNeedsAttention(skill: SkillEntry): boolean {
-  if (skill.validationStatus && skill.validationStatus !== 'ok') return true;
-  if (skill.userModified) return true;
-  if (skill.sourceType !== 'managed') return false;
-  return skill.managedUpdateStatus !== undefined
-    && skill.managedUpdateStatus !== 'not_managed'
-    && skill.managedUpdateStatus !== 'up_to_date';
-}
-
-function previewText(content: string): string {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const clipped = lines.slice(0, SKILL_UPDATE_PREVIEW_MAX_LINES).join('\n');
-  return lines.length > SKILL_UPDATE_PREVIEW_MAX_LINES ? `${clipped}\n...` : clipped;
-}
-
-
+type SkillTab = 'market' | 'builtin' | 'installed';
 
 export function SkillsModuleMain(props: {
   skills?: SkillEntry[];
@@ -760,17 +88,56 @@ export function SkillsModuleMain(props: {
   onSetSkillPinned?(skillRef: string, pinned: boolean): void | Promise<void>;
   onDeleteSkill?(skillRef: string): void | Promise<void>;
 }) {
-  const copy = getSkillsCopy(useUiLocale());
-  const [pendingSkillAction, setPendingSkillAction] = useState<string | null>(null);
+  const locale = useUiLocale();
+  const copy = getSkillsCopy(locale);
+  const toast = useToast();
+  const mountedRef = useMountedRef();
+  const skills = props.skills ?? [];
+
+  // Designer audit P1-5: land on skills the user can actually run, not the
+  // marketplace — every market card is still 即将上线, and leading with
+  // things you can't install undermines trust in the whole page.
+  const [activeSkillTab, setActiveSkillTab] = useState<SkillTab>(() => (
+    skills.length > 0 ? 'installed' : 'builtin'
+  ));
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
-  const skillActionMountedRef = useMountedRef();
+  const [marketCategory, setMarketCategory] = useState<ManagedSkillCategory | typeof MARKET_CATEGORY_ALL>(MARKET_CATEGORY_ALL);
+  const [marketSort, setMarketSort] = useState<MarketSort>('name');
+  const [selectedSkillRef, setSelectedSkillRef] = useState<string | null>(null);
+  const [updatePreview, setUpdatePreview] = useState<ManagedSkillUpdatePreview | null>(null);
+  const [pendingSkillAction, setPendingSkillAction] = useState<string | null>(null);
   const pendingSkillActionRef = useRef<string | null>(null);
+  // Set when a delete starts, consumed once the row has actually left the
+  // list — which only happens when the main process pushes the new set back.
+  const rowsContainerRef = useRef<HTMLDivElement | null>(null);
+  const focusRowAfterRemovalRef = useRef<number | null>(null);
+  // One tab stop for the whole installed list: without it, reaching the
+  // inspector from row k of N costs N−k presses, because the inspector
+  // renders after the list and every row is its own stop.
+  const rovingRows = useRovingRowFocus(rowsContainerRef);
 
   useEffect(() => {
     return () => {
       pendingSkillActionRef.current = null;
     };
   }, []);
+
+  // Synchronising focus with the DOM once the list it points into has been
+  // re-rendered — an external system, which is what an Effect is for.
+  useEffect(() => {
+    const index = focusRowAfterRemovalRef.current;
+    if (index == null) return;
+    focusRowAfterRemovalRef.current = null;
+    // A frame later, not now: the confirm dialog is still closing, and Astryx
+    // restores focus to ITS trigger — the 删除 button being removed — on the
+    // way out. Claiming focus before that lands means losing it again.
+    const frame = requestAnimationFrame(() => {
+      const rows = rowsContainerRef.current?.querySelectorAll<HTMLElement>('li button');
+      if (!rows?.length) return;
+      rows[Math.min(index, rows.length - 1)]?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.skills]);
 
   async function runSkillAction<Result>(
     actionKey: string,
@@ -784,7 +151,7 @@ export function SkillsModuleMain(props: {
     } finally {
       if (pendingSkillActionRef.current === actionKey) {
         pendingSkillActionRef.current = null;
-        if (skillActionMountedRef.current) setPendingSkillAction(null);
+        if (mountedRef.current) setPendingSkillAction(null);
       }
     }
   }
@@ -802,40 +169,369 @@ export function SkillsModuleMain(props: {
     action: (() => void | Promise<void>) | undefined,
   ) {
     window.requestAnimationFrame(() => {
-      if (skillActionMountedRef.current) void runSkillAction(actionKey, action);
+      if (mountedRef.current) void runSkillAction(actionKey, action);
     });
   }
 
+  async function requestDeleteSkill(skill: SkillEntry) {
+    if (!props.onDeleteSkill) return;
+    const ref = skill.ref ?? skill.id;
+    const confirmed = await toast.confirm({
+      title: copy.row.confirmDeleteAriaLabel(skill.name),
+      description: copy.row.deleteDescription,
+      confirmLabel: copy.row.delete,
+      cancelLabel: copy.row.cancel,
+      destructive: true,
+    });
+    if (!confirmed || !mountedRef.current) return;
+    // The 删除 button is about to unmount with the whole inspector, and
+    // nothing else would claim focus — it would fall to `body`, dropping a
+    // keyboard user at the top of the document. Hand it to the row that
+    // takes the deleted one's place.
+    focusRowAfterRemovalRef.current = filteredSkills.findIndex(
+      (entry) => (entry.ref ?? entry.id) === ref,
+    );
+    await runSkillAction(`delete:${ref}`, () => props.onDeleteSkill?.(ref));
+    // Drop the selection too — keeping it would reopen the inspector if a
+    // skill with the same ref is installed again later, unasked.
+    if (mountedRef.current) {
+      setSelectedSkillRef((current) => (current === ref ? null : current));
+    }
+  }
+
+  async function reviewManagedSkillUpdate(skill: SkillEntry) {
+    if (!props.onPreviewManagedSkillUpdate) return;
+    const preview = await runSkillAction(`managed:review:${skill.id}`, () => props.onPreviewManagedSkillUpdate?.(skill.id));
+    if (preview) setUpdatePreview(preview);
+  }
+
+  async function applyManagedSkillUpdate(preview: ManagedSkillUpdatePreview) {
+    if (!props.onUpdateManagedSkill) return;
+    const force = preview.skill.managedUpdateStatus === 'local_modified';
+    const updated = await runSkillAction(`managed:update:${preview.skill.id}`, () => props.onUpdateManagedSkill?.(preview.skill.id, {
+      ...(force ? { force: true } : {}),
+      expectedCurrentSha256: preview.expectedCurrentSha256,
+      expectedSourceSha256: preview.expectedSourceSha256,
+    }));
+    if (updated) setUpdatePreview(null);
+  }
+
+  // ── Derived views ────────────────────────────────────────────────────
+  const normalizedSkillQuery = skillSearchQuery.trim().toLowerCase();
+  const filteredSkills = skills.filter((skill) => {
+    if (!normalizedSkillQuery) return true;
+    return `${skill.id} ${skill.name} ${skill.description ?? ''} ${skill.path}`.toLowerCase().includes(normalizedSkillQuery);
+  });
+  const bundledCatalog = props.bundledSkillCatalog ?? [];
+  const bundledCatalogFiltered = bundledCatalog.filter((entry) => {
+    if (!normalizedSkillQuery) return true;
+    return `${entry.id} ${entry.name} ${entry.description} ${entry.category}`.toLowerCase().includes(normalizedSkillQuery);
+  });
+  const allManagedSources = props.managedSkillSources ?? [];
+  const marketSources = useMemo(() => {
+    const filtered = allManagedSources.filter((source) => {
+      if (marketCategory !== MARKET_CATEGORY_ALL && source.category !== marketCategory) return false;
+      if (!normalizedSkillQuery) return true;
+      return `${source.id} ${source.name} ${source.description} ${source.category}`.toLowerCase().includes(normalizedSkillQuery);
+    });
+    if (marketSort === 'name') {
+      return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return filtered;
+  }, [allManagedSources, marketCategory, marketSort, normalizedSkillQuery]);
+
+  // Derived, not stored: whatever hides the row — deletion, a filter, a
+  // view switch — closes the inspector without a reconciliation step, and
+  // the panel always reads the freshest copy of the skill.
+  const selectedSkill = activeSkillTab === 'installed'
+    ? filteredSkills.find((skill) => (skill.ref ?? skill.id) === selectedSkillRef) ?? null
+    : null;
+
+  // Collision-only slug reveal: when two visible skills share a display name
+  // the rows become indistinguishable — surface the slug inline exactly for
+  // those rows.
+  const skillNameCounts = new Map<string, number>();
+  for (const skill of filteredSkills) {
+    if (skill.kind === 'discovery_diagnostic') continue;
+    skillNameCounts.set(skill.name, (skillNameCounts.get(skill.name) ?? 0) + 1);
+  }
+
+  const updateAvailableCount = skills.filter(
+    (skill) => skill.managedUpdateStatus === 'update_available' || skill.managedUpdateStatus === 'local_modified',
+  ).length;
+  const auditReport = props.auditReport ?? deriveCapabilityAuditReport({ skills });
   const skillActionBusy = pendingSkillAction !== null;
   const canRefreshSkillData = Boolean(
     props.onRefreshSkills
     || props.onRefreshManagedSkillSources
     || props.onRefreshBundledSkillCatalog,
   );
-  const auditReport = props.auditReport ?? deriveCapabilityAuditReport({ skills: props.skills ?? [] });
-  return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" aria-label={props.hubHeader?.title ?? copy.page.title}>
-      <PageHeader
-        className="maka-module-main-header"
-        as="h2"
-        title={props.hubHeader?.title ?? copy.page.title}
-        subtitle={props.hubHeader?.subtitle ?? copy.page.subtitle}
-        badge={props.hubHeader?.badge}
-        headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
-        actions={
-        <div className="maka-module-main-actions" role="group" aria-label={copy.page.actions}>
-          <div className="maka-skill-search">
-            <TextInput
-              label={copy.page.search}
-              isLabelHidden
-              width="100%"
-              startIcon={<Search size={15} aria-hidden="true" />}
-              value={skillSearchQuery}
-              onChange={(value) => setSkillSearchQuery(value.slice(0, 120))}
-              placeholder={copy.page.search}
+
+  const categoryOptions: SelectorOptionData[] = [
+    { value: MARKET_CATEGORY_ALL, label: copy.market.categoryAll },
+    ...(Object.keys(copy.categories) as ManagedSkillCategory[]).map((category) => ({
+      value: category,
+      label: copy.categories[category],
+    })),
+  ];
+  const sortOptions: SelectorOptionData[] = [
+    { value: 'name', label: copy.market.sortName },
+    { value: 'recent', label: copy.market.sortRecent },
+  ];
+
+  // ── Catalog rows (市场 / 内置): one job each — install. ──────────────
+  function catalogInstallButton(key: string, name: string, installing: boolean, installed: boolean, onInstall?: () => void) {
+    return (
+      <IconButton
+        key={key}
+        variant="secondary"
+        size="sm"
+        onClick={onInstall}
+        isDisabled={installed || skillActionBusy || !onInstall}
+        label={copy.install.action(name)}
+        tooltip={installed ? copy.install.installedTitle : copy.install.action(name)}
+        icon={installing ? <Loader2 size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
+      />
+    );
+  }
+
+  const searchSummary = normalizedSkillQuery ? (
+    <div className="maka-module-search-summary" role="status" aria-live="polite">
+      <span>{copy.page.searchMatches(
+        activeSkillTab === 'market'
+          ? marketSources.length
+          : activeSkillTab === 'builtin'
+            ? bundledCatalogFiltered.length
+            : filteredSkills.length,
+      )}</span>
+      <UiButton variant="ghost" size="sm" onClick={() => setSkillSearchQuery('')} label={copy.market.clearSearch} />
+    </div>
+  ) : null;
+
+  const marketPanel = (
+    <div className="maka-module-page-panel">
+      {searchSummary}
+      {allManagedSources.length === 0 ? (
+        <EmptyState
+          icon={<BookOpen />}
+          title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
+          description={normalizedSkillQuery ? copy.market.emptySearchBody : copy.market.emptyBody}
+        />
+      ) : marketSources.length === 0 ? (
+        <EmptyState
+          icon={<Search />}
+          title={copy.market.emptySearchTitle}
+          description={copy.market.emptyFilterBody}
+          actions={(
+            <UiButton
+              variant="ghost"
+              size="sm"
+              label={copy.market.clearFilters}
+              onClick={() => {
+                setMarketCategory(MARKET_CATEGORY_ALL);
+                setSkillSearchQuery('');
+              }}
             />
-          </div>
-          {props.onOpenSkillsFolder || canRefreshSkillData ? (
+          )}
+        />
+      ) : (
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.market.ariaLabel}>
+          {marketSources.map((source) => {
+            const installed = skills.some((skill) => skill.id === source.id);
+            return (
+              <ListItem
+                key={source.id}
+                label={source.name}
+                description={[source.description || copy.market.sourceFallback, installed ? copy.install.installed : null]
+                  .filter(Boolean)
+                  .join(' · ')}
+                startContent={<Blocks size={18} aria-hidden="true" />}
+                endContent={catalogInstallButton(
+                  source.id,
+                  source.name,
+                  pendingSkillAction === `source:install:${source.id}`,
+                  installed,
+                  props.onInstallManagedSkill ? () => void runSkillAction(`source:install:${source.id}`, () => props.onInstallManagedSkill?.(source.id)) : undefined,
+                )}
+              />
+            );
+          })}
+        </List>
+      )}
+    </div>
+  );
+
+  const builtinPanel = (
+    <div className="maka-module-page-panel">
+      {searchSummary}
+      {bundledCatalog.length === 0 ? (
+        <EmptyState
+          icon={<Blocks />}
+          title={copy.builtin.emptyTitle}
+          description={copy.builtin.emptyBody}
+        />
+      ) : bundledCatalogFiltered.length === 0 ? (
+        <EmptyState
+          icon={<Search />}
+          title={copy.builtin.noMatchTitle}
+          description={copy.builtin.noMatchBody}
+          actions={<UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />}
+        />
+      ) : (
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.builtin.ariaLabel}>
+          {bundledCatalogFiltered.map((entry) => (
+            <ListItem
+              key={entry.id}
+              label={entry.name}
+              description={entry.description || copy.builtin.fallback}
+              startContent={<Blocks size={18} aria-hidden="true" />}
+              endContent={catalogInstallButton(
+                entry.id,
+                entry.name,
+                pendingSkillAction === `bundled:install:${entry.id}`,
+                entry.installed,
+                props.onInstallBundledSkill ? () => void runSkillAction(`bundled:install:${entry.id}`, () => props.onInstallBundledSkill?.(entry.id)) : undefined,
+              )}
+            />
+          ))}
+        </List>
+      )}
+    </div>
+  );
+
+  const installedEmptyBody = `${copy.installed.emptyBodyBeforeCode} SKILL.md ${copy.installed.emptyBodyAfterCode}`;
+  const installedPanel = (
+    <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
+      {/* Selecting a row moves no focus — a mouse user did not ask to leave
+          the list — so nothing else would tell a screen reader that the
+          details opened. This says so, politely, after whatever the
+          activation itself announced. */}
+      <p className="maka-visually-hidden" role="status" aria-live="polite">
+        {selectedSkill ? copy.detail.inspectorOpened(selectedSkill.name) : ''}
+      </p>
+      {searchSummary}
+      {skills.length === 0 ? (
+        <EmptyState
+          icon={<Blocks />}
+          title={normalizedSkillQuery ? copy.installed.emptySearchTitle : copy.installed.emptyTitle}
+          description={normalizedSkillQuery ? copy.installed.emptySearchBody : installedEmptyBody}
+          actions={(
+            props.onRefreshSkills
+              ? <UiButton variant="ghost" label={pendingSkillAction === 'refresh' ? copy.installed.refreshPending : copy.installed.refresh} onClick={() => void runSkillAction('refresh', refreshSkillData)} isDisabled={skillActionBusy} />
+              : undefined
+          )}
+        />
+      ) : filteredSkills.length === 0 ? (
+        <EmptyState
+          icon={<Search />}
+          title={copy.installed.emptySearchTitle}
+          description={copy.installed.emptySearchBody}
+          actions={<UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />}
+        />
+      ) : (
+        /* Selectable, otherwise inert rows: every control that used to ride
+           the row now lives in the inspector — no interactive elements
+           inside an interactive list item. */
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.installed.listAriaLabel}>
+          {filteredSkills.map((skill) => {
+            const isDiscoveryDiagnostic = skill.kind === 'discovery_diagnostic';
+            const skillRef = skill.ref ?? skill.id;
+            if (isDiscoveryDiagnostic) {
+              return (
+                <ListItem
+                  key={skillRef}
+                  label={copy.context.discoverySource(skill.scope ?? 'custom', skill.source ?? 'custom')}
+                  description={skill.discoveryDiagnosticReason
+                    ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
+                    : undefined}
+                  startContent={(
+                    <StatusDot
+                      variant="warning"
+                      label={skill.discoveryDiagnosticReason
+                        ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
+                        : copy.context.needsReview}
+                    />
+                  )}
+                />
+              );
+            }
+            const exceptional = skillExceptionalStateLabel(skill, copy);
+            const description = [
+              exceptional,
+              formatSkillLibraryDescription(skill, copy),
+              skill.scope ? copy.context.scope[skill.scope] : null,
+              // The leading label already carries an exceptional source
+              // state; repeating it as trailing meta would say it twice.
+              exceptional ? null : formatSkillStatusLabel(skill, copy),
+            ].filter((value): value is string => Boolean(value)).join(' · ');
+            return (
+              <ListItem
+                key={skillRef}
+                label={(
+                  <span className="maka-skill-row-label">
+                    {skill.name}
+                    {(skillNameCounts.get(skill.name) ?? 0) > 1 && (
+                      <code className="maka-skill-row-slug">{skill.id}</code>
+                    )}
+                  </span>
+                )}
+                description={description}
+                startContent={(
+                  <StatusDot
+                    variant={skillStatusDotVariant(skill)}
+                    label={skillStatusDotLabel(skill, copy)}
+                  />
+                )}
+                isSelected={selectedSkillRef === skillRef}
+                onClick={() => setSelectedSkillRef(
+                  selectedSkillRef === skillRef ? null : skillRef,
+                )}
+              />
+            );
+          })}
+        </List>
+      )}
+    </div>
+  );
+
+  return (
+    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="skills" aria-label={props.hubHeader?.title ?? copy.page.title}>
+      <ModulePage
+        title={props.hubHeader?.title ?? copy.page.title}
+        meta={[
+          copy.page.metaInstalled(skills.length),
+          updateAvailableCount > 0 ? copy.page.metaUpdates(updateAvailableCount) : null,
+        ].filter(Boolean).join(' · ')}
+        inspectorLabel={copy.detail.label}
+        inspectorAutoSaveId="maka-skill-inspector"
+        onInspectorDismiss={() => setSelectedSkillRef(null)}
+        inspector={selectedSkill ? (
+          <SkillInspector
+            skill={selectedSkill}
+            busy={skillActionBusy}
+            opening={pendingSkillAction === `open:${selectedSkill.ref ?? selectedSkill.id}`}
+            reviewing={pendingSkillAction === `managed:review:${selectedSkill.id}`}
+            updatePreview={updatePreview && updatePreview.skill.id === selectedSkill.id ? updatePreview : null}
+            onUse={props.onUseSkill ? () => props.onUseSkill?.(selectedSkill.id, selectedSkill.name) : undefined}
+            onSetEnabled={props.onSetSkillEnabled
+              ? (enabled) => void runSkillAction(`runtime:set:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillEnabled?.(selectedSkill.ref ?? selectedSkill.id, enabled))
+              : undefined}
+            onTogglePinned={props.onSetSkillPinned
+              ? () => void runSkillAction(`runtime:pin:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onSetSkillPinned?.(selectedSkill.ref ?? selectedSkill.id, !selectedSkill.pinned))
+              : undefined}
+            onOpen={props.onOpenSkill
+              ? () => void runSkillAction(`open:${selectedSkill.ref ?? selectedSkill.id}`, () => props.onOpenSkill?.(selectedSkill.ref ?? selectedSkill.id))
+              : undefined}
+            onPreviewUpdate={props.onPreviewManagedSkillUpdate ? () => void reviewManagedSkillUpdate(selectedSkill) : undefined}
+            onApplyUpdate={props.onUpdateManagedSkill && updatePreview ? () => void applyManagedSkillUpdate(updatePreview) : undefined}
+            onCancelUpdate={() => setUpdatePreview(null)}
+            onDelete={props.onDeleteSkill && selectedSkill.manageable !== false
+              ? () => void requestDeleteSkill(selectedSkill)
+              : undefined}
+          />
+        ) : undefined}
+        actions={
+          props.onOpenSkillsFolder || props.onImportManagedSkillSource || canRefreshSkillData ? (
             <DropdownMenu
               button={{
                 label: copy.page.moreActions,
@@ -852,6 +548,13 @@ export function SkillsModuleMain(props: {
                   onClick={() => runPageActionAfterMenuClose('folder', props.onOpenSkillsFolder)}
                 />
               ) : null}
+              {props.onImportManagedSkillSource ? (
+                <DropdownMenuItem
+                  icon={<Download size={14} aria-hidden="true" />}
+                  label={copy.market.importLocal}
+                  onClick={() => runPageActionAfterMenuClose('source:import', props.onImportManagedSkillSource)}
+                />
+              ) : null}
               {canRefreshSkillData ? (
                 <DropdownMenuItem
                   icon={<RefreshCcw size={14} aria-hidden="true" />}
@@ -860,37 +563,80 @@ export function SkillsModuleMain(props: {
                 />
               ) : null}
             </DropdownMenu>
-          ) : null}
-        </div>
+          ) : undefined
         }
-      />
-      <CapabilityAuditStrip report={auditReport} />
-      <SkillLibraryPanel
-        skills={props.skills}
-        managedSkillSources={props.managedSkillSources}
-        bundledSkillCatalog={props.bundledSkillCatalog}
-        onRefreshSkills={canRefreshSkillData ? () => runSkillAction('refresh', refreshSkillData) : undefined}
-        onOpenSkill={props.onOpenSkill ? (skillId) => runSkillAction(`open:${skillId}`, () => props.onOpenSkill?.(skillId)) : undefined}
-        onImportManagedSkillSource={props.onImportManagedSkillSource ? () => runSkillAction('source:import', props.onImportManagedSkillSource) : undefined}
-        onInstallManagedSkill={props.onInstallManagedSkill ? (sourceId) => runSkillAction(`source:install:${sourceId}`, () => props.onInstallManagedSkill?.(sourceId)) : undefined}
-        onInstallBundledSkill={props.onInstallBundledSkill ? (id) => runSkillAction(`bundled:install:${id}`, () => props.onInstallBundledSkill?.(id)) : undefined}
-        onPreviewManagedSkillUpdate={props.onPreviewManagedSkillUpdate}
-        onUpdateManagedSkill={props.onUpdateManagedSkill ? async (skillId, options) =>
-          (await runSkillAction(`managed:update:${skillId}`, () => props.onUpdateManagedSkill?.(skillId, options))) === true : undefined}
-        onSetSkillEnabled={props.onSetSkillEnabled ? (skillId, enabled) => runSkillAction(`runtime:set:${skillId}`, () => props.onSetSkillEnabled?.(skillId, enabled)) : undefined}
-        onSetSkillPinned={props.onSetSkillPinned ? (skillRef, pinned) => runSkillAction(`runtime:pin:${skillRef}`, () => props.onSetSkillPinned?.(skillRef, pinned)) : undefined}
-        onDeleteSkill={props.onDeleteSkill ? (skillId) => runSkillAction(`delete:${skillId}`, () => props.onDeleteSkill?.(skillId)) : undefined}
-        onUseSkill={props.onUseSkill}
-        actionBusy={skillActionBusy}
-        refreshPending={pendingSkillAction === 'refresh'}
-        openingSkillId={pendingSkillAction?.startsWith('open:') ? pendingSkillAction.slice('open:'.length) : null}
-        installingSourceId={pendingSkillAction?.startsWith('source:install:') ? pendingSkillAction.slice('source:install:'.length) : null}
-        installingBundledId={pendingSkillAction?.startsWith('bundled:install:') ? pendingSkillAction.slice('bundled:install:'.length) : null}
-        updatingSkillId={pendingSkillAction?.startsWith('managed:update:') ? pendingSkillAction.slice('managed:update:'.length) : null}
-        togglingSkillId={pendingSkillAction?.startsWith('runtime:set:') ? pendingSkillAction.slice('runtime:set:'.length) : null}
-        searchQuery={skillSearchQuery}
-        onClearSearch={() => setSkillSearchQuery('')}
-      />
+        toolbar={(
+          <div className="maka-module-page-bar">
+            {props.hubHeader?.badge}
+            <Toolbar
+              size="sm"
+              label={copy.page.toolbarAria}
+              startContent={(
+                <SegmentedControl
+                  value={activeSkillTab}
+                  onChange={(value) => {
+                    if (value !== 'market' && value !== 'builtin' && value !== 'installed') return;
+                    // The selection belongs to the view it was made in;
+                    // carrying it across would reopen the inspector without
+                    // a user action on return.
+                    setSelectedSkillRef(null);
+                    setActiveSkillTab(value);
+                  }}
+                  label={copy.tabs.ariaLabel}
+                  size="sm"
+                >
+                  <SegmentedControlItem value="market" label={copy.tabs.market} />
+                  <SegmentedControlItem value="builtin" label={copy.tabs.builtin} />
+                  <SegmentedControlItem value="installed" label={copy.tabs.installed} />
+                </SegmentedControl>
+              )}
+              endContent={(
+                <>
+                  <TextInput
+                    label={copy.page.search}
+                    isLabelHidden
+                    width={220}
+                    value={skillSearchQuery}
+                    onChange={(value) => setSkillSearchQuery(value.slice(0, 120))}
+                    placeholder={copy.page.search}
+                  />
+                  {activeSkillTab === 'market' && allManagedSources.length > 0 ? (
+                    <>
+                      <Selector
+                        value={marketCategory}
+                        options={categoryOptions}
+                        onChange={(value) => setMarketCategory(value as ManagedSkillCategory | typeof MARKET_CATEGORY_ALL)}
+                        label={copy.market.categoryFilter}
+                        isLabelHidden
+                        width={172}
+                      />
+                      <Selector
+                        value={marketSort}
+                        options={sortOptions}
+                        onChange={(value) => setMarketSort(value as MarketSort)}
+                        label={copy.market.sortAriaLabel}
+                        isLabelHidden
+                        width={148}
+                      />
+                    </>
+                  ) : null}
+                </>
+              )}
+            />
+          </div>
+        )}
+      >
+        {/* The audit strip reports by exception (null when healthy), so its
+            panel only exists when it has something to say. */}
+        {capabilityAuditIssues(auditReport, locale).length > 0 ? (
+          <div className="maka-module-page-panel">
+            <CapabilityAuditStrip report={auditReport} />
+          </div>
+        ) : null}
+        {activeSkillTab === 'market' ? marketPanel : null}
+        {activeSkillTab === 'builtin' ? builtinPanel : null}
+        {activeSkillTab === 'installed' ? installedPanel : null}
+      </ModulePage>
     </main>
   );
 }

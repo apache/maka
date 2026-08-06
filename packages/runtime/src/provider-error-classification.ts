@@ -40,6 +40,11 @@ export interface ProviderRetryMetadata {
 }
 
 const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
+const OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR = 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR';
+const RUNTIME_RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR,
+  'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
+]);
 
 function providerErrorTarget(error: unknown): unknown {
   return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
@@ -82,6 +87,8 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   const target = providerErrorTarget(error);
   const evidence = normalizeErrorEvidence(target);
   if (!evidence) return { retryable: false };
+
+  if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
 
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyError(target);
@@ -294,6 +301,7 @@ export function classifyError(error: unknown): string {
   if (!evidence) return 'Other';
   const { text, statusCode, code, structuredCodes } = evidence;
   if (text.includes('abort')) return 'Abort';
+  if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'Network';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
   if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')

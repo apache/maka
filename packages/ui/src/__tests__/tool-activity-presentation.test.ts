@@ -449,11 +449,127 @@ describe('tool activity presentation', () => {
     }));
 
     const kinds = Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]);
-    assert.deepEqual(kinds, ['meta', 'meta', 'meta', 'meta', 'hunk', 'ctx', 'del', 'add']);
+    // `index` and the `---`/`+++` file headers are hidden: the heading already
+    // names the path. The `diff --git` separator stays — it is the only
+    // in-body boundary between files in a multi-file diff.
+    assert.deepEqual(kinds, ['meta', 'ctx', 'del', 'add']);
+    assert.doesNotMatch(markup, /index 1111111/);
+    assert.doesNotMatch(markup, /--- a\/packages/);
+    assert.doesNotMatch(markup, /\+\+\+ b\/packages/);
+    // Every content row carries its line number: new-side for ctx/add,
+    // old-side for del; the hunk header feeds the counters and is not a row.
+    assert.deepEqual(diffGutterNumbers(markup), ['', '1', '2', '2']);
     // The heading is the changed path, in the same surface a command uses.
     assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
     assert.match(markup, /class="maka-tool-output-command"[^>]*>packages\/ui\/src\/tool-activity\.tsx</);
     assert.doesNotMatch(markup, /astryx-codeblock/);
+  });
+
+  // The marker used to sit inline at the head of the line's text: it ate the
+  // first column, so an addition's indentation stopped lining up with the
+  // context around it, and it was flush against the code — `+# Tool result
+  // diffs` reads as one token. It is a column of its own now.
+  it('gives the +/- marker its own column so the code keeps its indentation', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: {
+        kind: 'file_diff',
+        paths: ['x.md'],
+        diff: ['@@ -1,2 +1,2 @@', '   kept', '-# old', '+# new'].join('\n'),
+      },
+    }));
+
+    assert.deepEqual(diffMarkers(markup), ['', '-', '+']);
+    // Two spaces of source indentation on the context line, and neither
+    // changed line carries its sign into the code.
+    assert.deepEqual(diffCodeText(markup), ['  kept', '# old', '# new']);
+  });
+
+  // Every line painted one flat colour before this: Astryx's CodeBlock
+  // highlights a whole buffer in one language, and a diff is neither. The
+  // tokenizer underneath it is line-local, which is what a diff can use.
+  it('colours the code beside the marker in the language the path names', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: {
+        kind: 'file_diff',
+        paths: ['x.ts'],
+        diff: ['@@ -1,2 +1,2 @@', ' const kept = 1;', '-const removed = 2;', '+const added = 3;'].join('\n'),
+      },
+    }));
+
+    // Keywords, numbers and the identifiers between them are separate spans —
+    // the whole point is that a line is no longer one colour.
+    assert.match(markup, /class="astryx-token-keyword">const</);
+    assert.match(markup, /class="astryx-token-number">3</);
+    // Splitting into spans must not add or drop a character of source.
+    assert.deepEqual(diffCodeText(markup), ['const kept = 1;', 'const removed = 2;', 'const added = 3;']);
+  });
+
+  // The rows are tokenized as one joined buffer, and the JS block-comment
+  // pattern (`/\*[\s\S]*?\*\/`) matches across newlines — so a row that opens
+  // `/*` returns a token reaching into the rows below it. The row's own text
+  // has to survive that intact; a colour is the only thing allowed to be lost.
+  it('keeps a row text intact when a token runs past the end of its line', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: {
+        kind: 'file_diff',
+        paths: ['x.ts'],
+        diff: ['@@ -1,3 +1,3 @@', '+/* opened here', ' const kept = 1;', '+*/'].join('\n'),
+      },
+    }));
+
+    assert.deepEqual(diffCodeText(markup), ['/* opened here', 'const kept = 1;', '*/']);
+  });
+
+  // A wrong colouring is worse than none: an extension the tokenizer does not
+  // know, and a diff whose paths disagree, both render plain.
+  it('leaves a diff plain when the language is unknown or ambiguous', () => {
+    const diff = ['@@ -1,1 +1,1 @@', '-const removed = 2;', '+const added = 3;'].join('\n');
+    const unknown = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: { kind: 'file_diff', paths: ['notes.rst'], diff },
+    }));
+    const ambiguous = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: { kind: 'file_diff', paths: ['x.ts', 'y.py'], diff },
+    }));
+
+    assert.doesNotMatch(unknown, /astryx-token-/);
+    assert.doesNotMatch(ambiguous, /astryx-token-/);
+    assert.deepEqual(diffCodeText(unknown), ['const removed = 2;', 'const added = 3;']);
+  });
+
+  it('resumes line numbering from each hunk header', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: {
+        kind: 'file_diff',
+        paths: ['x.ts'],
+        diff: [
+          '@@ -10,3 +10,3 @@',
+          ' kept',
+          '-old',
+          '+new',
+          ' tail',
+          '@@ -20,1 +20,2 @@',
+          '-gone',
+          '+first',
+          '+second',
+        ].join('\n'),
+      },
+    }));
+
+    assert.deepEqual(
+      Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]),
+      ['ctx', 'del', 'add', 'ctx', 'del', 'add', 'add'],
+    );
+    assert.deepEqual(diffGutterNumbers(markup), ['10', '11', '11', '12', '20', '20', '21']);
+    assert.doesNotMatch(markup, /@@/);
+  });
+
+  it('describes a file_write result with its path and byte count', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: { kind: 'file_write', path: 'huge.bin', bytes: 70000 },
+    }));
+
+    assert.match(markup, /Wrote 70000 bytes to huge\.bin/);
+    assert.doesNotMatch(markup, /\[file_write\]/);
   });
 
   // `---`/`+++` only mark a file when the marker is followed by a path. Testing
@@ -479,7 +595,7 @@ describe('tool activity presentation', () => {
     }));
     assert.deepEqual(
       Array.from(markup.matchAll(/data-line="(\w+)"/g)).map((m) => m[1]),
-      ['hunk', 'del', 'add'],
+      ['del', 'add'],
     );
   });
 
@@ -652,6 +768,27 @@ describe('tool activity presentation', () => {
     });
   });
 });
+
+function diffGutterNumbers(markup: string): string[] {
+  return Array.from(markup.matchAll(/maka-tool-diff-gutter"[^>]*>([^<]*)</g)).map((m) => m[1]);
+}
+
+function diffMarkers(markup: string): string[] {
+  return Array.from(markup.matchAll(/maka-tool-diff-marker">([^<]*)</g)).map((m) => m[1]);
+}
+
+/** The rendered source of each row, with the syntax spans flattened back out. */
+function diffCodeText(markup: string): string[] {
+  return Array.from(markup.matchAll(/maka-tool-diff-code">(.*?)<\/span>\n/gs)).map((m) =>
+    m[1]
+      .replace(/<[^>]*>/g, '')
+      .replace(/&quot;/g, '"')
+      .replace(/&#x27;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&'),
+  );
+}
 
 function pipeOutput(stdout = '', stderr = '') {
   return {

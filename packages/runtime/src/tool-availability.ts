@@ -248,6 +248,7 @@ export class ToolAvailabilityRuntime {
       parameters: z.object({
         group: groupSchema.describe('The capability group to load.'),
       }),
+      nesting: 'direct_only',
       impl: ({ group }: { group: string }) => {
         const found = this.groups.find((candidate) => candidate.id === group);
         if (!found) {

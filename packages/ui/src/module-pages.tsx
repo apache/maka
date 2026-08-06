@@ -25,7 +25,7 @@ const PlanReminderPanel = lazy(() => import('./plan-reminder-panel.js').then((mo
 /** Skills renders its own <main> inside the lazy chunk, so its fallback must too. */
 function ModulePageFallback(props: { label: string; message: string }) {
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" aria-label={props.label}>
+    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" aria-label={props.label}>
       <ModulePanelFallback message={props.message} />
     </main>
   );

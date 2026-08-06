@@ -4,6 +4,7 @@ import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
   denseMixedResultItems,
+  editWriteDiffItems,
   errorsAndPermissionDeniedItems,
   shellCommandSurfaceItems,
 } from './tool-activity.fixtures.js';
@@ -136,12 +137,40 @@ export const ShellCommandSurface: Story = {
   render: (args) => <ToolDetailBoard items={args.items} width={860} />,
 };
 
+// Real path: an Edit or Write settles in a turn (#2232) — the collapsed row
+// carries green +N / red -N counted from the result's diff, and expanding the
+// row renders the diff itself in the shared panel.
+export const EditWriteDiffRows: Story = {
+  args: { items: editWriteDiffItems },
+  render: (args) => <ToolRowBoard items={args.items} width={860} />,
+};
+
+// Real path: same settled Edit/Write call, its row expanded — the detail panel
+// renders the result's diff with the line-number gutter.
+export const EditWriteDiffDetails: Story = {
+  args: { items: editWriteDiffItems },
+  render: (args) => <ToolDetailBoard items={args.items} width={860} />,
+};
+
 // Real path: a contiguous run of tool calls in one turn — the grouped surface the
 // state boards above never show, since they render one row per trow. Astryx's
 // collapsed header projects the last call alone, so this is where to look at what a
 // mixed-outcome group costs in density.
 export const ContiguousGroup: Story = {
   args: { items: errorsAndPermissionDeniedItems },
+  render: (args) => (
+    <Board width={860}>
+      <ToolTrow items={args.items} />
+    </Board>
+  ),
+};
+
+// Real path: several edits in one turn, which is the shape a coding turn takes
+// most often and the one where the counts used to disappear — the collapsed
+// header projected the last call and dropped every per-row `+N`/`-N` with it.
+// The header now carries the run's total; expand it to see the rows it sums.
+export const ContiguousDiffGroup: Story = {
+  args: { items: editWriteDiffItems },
   render: (args) => (
     <Board width={860}>
       <ToolTrow items={args.items} />

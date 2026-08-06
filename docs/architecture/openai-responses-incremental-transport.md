@@ -10,10 +10,15 @@ The optimization must never change the logical request. A continuation is eligib
 current Maka message list is exactly:
 
 1. the previous request messages;
-2. followed by the previous SDK response messages;
+2. followed by Maka's durable replay projection of the previous provider step;
 3. followed by at least one new message.
 
 Otherwise the adapter sends the complete request and starts a new continuation chain.
+
+The provider response id is observed at the adapter boundary, but the semantic response messages
+are not copied from `sdk.response.messages`. After client tools settle durably, the Runtime reloads
+that step from the event ledger and completes the continuation baseline with the same projection
+the next request will use. A projection mismatch fails closed to a full request.
 
 ## 2. Ownership and lifecycle
 
@@ -22,6 +27,11 @@ Otherwise the adapter sends the complete request and starts a new continuation c
 - The OpenAI Responses transport owns the matching WebSocket and wire request/response state.
 - The session id supplies a stable `prompt_cache_key`; an explicit caller value wins.
 - Durable history remains complete. Only the provider-bound wire projection is incremental.
+- Each active lane retains at most one full wire request/output baseline and one semantic
+  request/response baseline until the turn ends. These snapshots are intentionally not byte-capped:
+  image-heavy requests can retain several megabytes for the turn so an HTTP retry can reconstruct
+  complete history. `endLane`/`close` synchronously releases them; adding a byte cap would trade that
+  recovery guarantee for lower peak memory and requires a separate policy decision.
 
 ## 3. Failure matrix
 
@@ -30,11 +40,13 @@ Otherwise the adapter sends the complete request and starts a new continuation c
 | First request or message-prefix mismatch | Full request over WebSocket |
 | Request options/model/tools changed | Full request; replace the chain baseline |
 | Missing/stale response id | Clear the chain; Runtime retry starts from durable full history |
-| WebSocket connect failure | Full HTTP request; disable continuation for that turn |
-| Socket closes or stream fails | Clear the chain; normal Runtime retry starts from full history |
+| WebSocket connect failure | Full HTTP request; suppress new socket attempts for five minutes across turns |
+| Cooldown expires on a lane that temporarily used HTTP | Retry WebSocket with full history, then resume delta continuation on that socket |
+| Socket closes or stream fails | Clear the chain, start the retry cooldown, and let Runtime retry from full history |
+| `response.incomplete` for a reason other than output-token truncation | Surface a provider failure instead of a silent successful turn |
 | Same turn attempts concurrent requests | Full HTTP request for the contender |
 | Abort/cancel | Close the socket and clear the chain |
-| Configured network proxy | WebSocket uses the same immutable proxy snapshot and bypass list |
+| Model fetch carries an immutable network-proxy snapshot | WebSocket uses the same proxy and bypass list; direct legacy fetch wiring has no proxy snapshot to inherit |
 | OAuth subscription or Chat Completions model | Existing transport, unchanged |
 
 ## 4. Test plan
@@ -43,7 +55,15 @@ Otherwise the adapter sends the complete request and starts a new continuation c
 - Unit-test stable cache-key merging without overwriting explicit provider options.
 - Exercise a local WebSocket server to verify connection reuse, `previous_response_id`, delta-only
   input, and SSE translation.
+- Exercise the complete adapter/backend loop so a reasoning step is persisted, replayed, and used
+  as the next delta baseline rather than comparing against the SDK response representation.
 - Verify WebSocket setup failure reconstructs and sends a complete HTTP request.
+- Verify mid-stream close, binary frames, and stale continuation state are retryable; abort remains
+  non-retryable and does not start the cross-turn cooldown.
+- Verify busy-lane HTTP fallback, non-truncation incomplete responses, and idle-socket protocol
+  errors without fixed-duration sleeps.
+- Verify the failure cooldown survives turn cleanup, expires deterministically, and does not evict
+  an already healthy concurrent lane; a lane used during cooldown recovers after expiry.
 - Run Runtime typecheck and focused tests, then the repository validation appropriate to the diff.
 
 ## 5. Observability and rollout
@@ -57,10 +77,8 @@ transports remain on their refresh-aware HTTP path.
 ## 6. Verification outcome
 
 - Runtime TypeScript build passes.
-- Focused continuation, WebSocket, existing Responses HTTP, model-adapter, and scoped-network tests:
-  60 passed.
+- Focused continuation, adapter/backend contract, WebSocket failure, and provider-classification
+  tests: 34 passed.
 - HTTP proxy behavior is exercised end-to-end through an authenticated local CONNECT proxy.
 - SOCKS5 selection and shared bypass-list routing are covered at the transport boundary.
-- A Runtime-wide run passed 3,150 tests before repository dependency patches were applied; the 27
-  patch-dependent failures pass after applying the patches. One unrelated pre-existing macOS
-  sandbox assertion remains environment-sensitive (`/usr/local` executable-root ordering).
+- Runtime-wide verification: 3,217 tests, 3,208 passed, 9 skipped, 0 failed.

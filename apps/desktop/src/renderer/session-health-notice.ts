@@ -4,11 +4,9 @@
  * #1038 — the notice answers exactly one question: "will the next send
  * fail for a recoverable connection/session reason, and where should the
  * user go?". The answer comes from `projectSessionSendOutcome` — the
- * same core projection the main-process send gate delegates to — fed
- * with renderer-side facts: the connection list, the default slug, a
- * `connections:hasSecret` probe, and `connectionLocked` on the session
- * summary. The notice and the send path cannot disagree, because they
- * decide from the same code over the same facts:
+ * same core projection the main-process send gate delegates to, already
+ * resolved by main and carried in the onboarding snapshot. The renderer
+ * only maps that authoritative outcome to copy:
  *
  *   - `ready` / `rebind` → no notice (silent rebind stays silent, #1032).
  *   - `blocked` → destructive notice whose copy names the failing
@@ -24,7 +22,6 @@
  */
 
 import {
-  projectSessionSendOutcome,
   type LlmConnection,
   type SessionSendProjection,
   type SessionSendProjectionSession,
@@ -41,16 +38,10 @@ export interface SessionHealthNoticeInput {
    * exactly as stored.
    */
   session: SessionSendProjectionSession | undefined;
-  /** Every persisted connection — the projection's rebind walk reads all of them. */
+  /** Main-process projection from the latest onboarding snapshot. */
+  outcome: SessionSendProjection | undefined;
+  /** Persisted connections are used only to name a blocked session's own connection. */
   connections: readonly LlmConnection[];
-  defaultSlug: string | null;
-  /**
-   * Secret presence per slug from the `connections:hasSecret` probe.
-   * Unknown (probe in flight) is treated as present so a destructive
-   * notice never flashes before the first probe lands; a genuine block
-   * simply appears one tick later.
-   */
-  hasSecret(slug: string): boolean;
   /**
    * The session's own connection's most recent credential test result.
    * Advisory reminder only — never interpreted as a send block (E4).
@@ -76,15 +67,8 @@ export interface SessionHealthNotice {
 export function deriveSessionHealthNotice(
   input: SessionHealthNoticeInput,
 ): SessionHealthNotice | undefined {
-  const { session } = input;
-  if (!session) return undefined;
-
-  const outcome = projectSessionSendOutcome({
-    session,
-    connections: input.connections,
-    defaultSlug: input.defaultSlug,
-    hasSecret: input.hasSecret,
-  });
+  const { session, outcome } = input;
+  if (!session || !outcome) return undefined;
 
   if (outcome.kind === 'blocked') return blockedNotice(outcome, input);
   if (outcome.kind === 'rebind') return undefined;

@@ -24,7 +24,12 @@
 // inspector. The only lines on the page are the list's own row dividers, which
 // say where a row ends; a header rule and a panel rule would only restate a
 // boundary the layout already draws, and this app separates columns tonally
-// (DESIGN.md, One Working Plane) rather than with hairlines.
+// (DESIGN.md, One Working Plane) rather than with hairlines. The inspector's
+// own surface IS that tonal step — see `.maka-module-page .astryx-layout-panel`
+// in module-shell.css. Until it was painted this paragraph described an
+// intention rather than the page: the panel inherited the content column's
+// white, so the columns were separated neither tonally nor by a line, and the
+// inspector read as loose content instead of a region beside the list.
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Dialog, DialogHeader, HStack, Heading, StackItem, Text, VStack } from '@astryxdesign/core';

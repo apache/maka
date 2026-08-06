@@ -145,7 +145,11 @@ export function buildSmokeJobConfig(input: {
     throw new Error(`unknown profile "${profileName}". Available profiles: ${names}`);
   }
 
-  const taskPattern = overrides.taskPattern || defaults.taskPattern || '*sqlite-with-gcov';
+  // No literal default: the manifest always carries one, and spelling a task
+  // name here compiles a Terminal-Bench task id into the build output a graded
+  // arm mounts. `harness-ab-manifest.test.ts` holds that shut.
+  const taskPattern = overrides.taskPattern || defaults.taskPattern;
+  if (!taskPattern) throw new Error('smoke manifest defaults must carry a taskPattern');
   const datasetName = overrides.datasetName || defaults.dataset?.name || 'terminal-bench-sample';
   const datasetVersion = overrides.datasetVersion || defaults.dataset?.version || '2.0';
   const nTasks = overrides.nTasks ?? null;

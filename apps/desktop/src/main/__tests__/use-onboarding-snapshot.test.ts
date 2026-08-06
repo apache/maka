@@ -31,6 +31,8 @@ const READY_SNAPSHOT: OnboardingSnapshot = {
   sessions: [],
   connections: [],
   defaultSlug: null,
+  chatModelChoices: [],
+  sessionSendOutcomes: {},
 };
 
 const NEEDS_CONNECTION_SNAPSHOT: OnboardingSnapshot = {
@@ -39,6 +41,8 @@ const NEEDS_CONNECTION_SNAPSHOT: OnboardingSnapshot = {
   sessions: [],
   connections: [],
   defaultSlug: null,
+  chatModelChoices: [],
+  sessionSendOutcomes: {},
 };
 
 describe('getOnboardingActivationCandidate', () => {

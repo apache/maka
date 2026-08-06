@@ -1,64 +1,13 @@
-.maka-mcp-page {
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: start;
-}
-
-.maka-mcp-workspace {
-  width: min(100%, 900px);
-  min-height: 0;
-  margin-inline: auto;
-  display: grid;
-  align-self: start;
-  align-content: start;
-  gap: var(--space-4);
-}
-
-.maka-mcp-browser {
-  min-height: 0;
-  display: grid;
-  align-content: start;
-  gap: var(--space-3);
-}
-
-.maka-mcp-command-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.maka-mcp-search {
-  width: min(320px, 38vw);
-  margin-bottom: var(--space-2);
-  margin-inline-start: auto;
-  flex: 0 0 auto;
-}
-
-.maka-mcp-tabs {
-  min-width: 0;
-}
-
-.maka-mcp-tab-panel {
-  min-height: 0;
-}
-
-.maka-mcp-market-grid {
-  min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
-  align-content: start;
-  gap: var(--space-3);
-  overflow: auto;
-}
-
-.maka-mcp-market-card {
-  display: grid;
-  min-width: 0;
-  overflow: hidden;
-}
+/* MCP page-specific bits.
+   The skeleton (Astryx Layout: header, toolbar, content, resizable inspector)
+   lives in the shared ModulePage primitive; rows are Astryx List/ListItem.
+   What is left here is the brand tiles, the install button's phase swap, the
+   row endpoint's truncation, the inspector's diagnostics, and the editor
+   dialog's own layout. */
 
 .maka-mcp-market-icon {
-  width: 44px;
-  height: 44px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border-radius: var(--radius-control);
@@ -67,7 +16,7 @@
 }
 
 .maka-mcp-market-icon span {
-  font: var(--maka-text-heading-3);
+  font: var(--maka-text-heading-5);
   letter-spacing: var(--tracking-normal);
 }
 
@@ -97,25 +46,6 @@
    light foreground instead of vanishing on the dark neutral plate. */
 .dark .maka-mcp-market-icon .maka-mcp-brand-mark[data-contrast="low"] {
   fill: currentColor;
-}
-
-.maka-mcp-market-copy {
-  min-width: 0;
-  display: grid;
-  align-content: start;
-  gap: var(--space-1);
-}
-
-.maka-mcp-market-copy small {
-  font: inherit;
-  color: var(--muted-foreground);
-}
-
-.maka-mcp-market-copy > span {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .maka-mcp-install-icon {
@@ -153,39 +83,10 @@
   opacity: 0;
 }
 
-.maka-mcp-server-list {
-  min-height: 0;
-  display: grid;
-  align-self: start;
-  align-content: start;
-  overflow: hidden;
-}
-
-.maka-mcp-server-row {
-  min-width: 0;
-  list-style: none;
-  border-bottom: var(--border-width-hairline) solid var(--border);
-}
-
-.maka-mcp-server-row:last-child {
-  border-bottom: 0;
-}
-
-.maka-mcp-server-heading,
-.maka-mcp-server-controls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.maka-mcp-server-heading > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-mcp-server-description {
+/* The row description is one truncating line: transport, then the endpoint
+   in mono, then the live tool count. The title on the code keeps the full
+   endpoint one hover away. */
+.maka-mcp-row-description {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -193,62 +94,43 @@
   white-space: nowrap;
 }
 
-/* Two inherited sizes hid under one family-only rule: the tool chips and the
-   error <pre> sit in 14px card body, the description code sits in the 12px
-   description. Naming a role forces that split into the open. */
-.maka-mcp-tool-list code,
-.maka-mcp-server-details pre {
-  font: var(--maka-text-code);
-}
-
-.maka-mcp-server-description code {
+.maka-mcp-row-description code {
   font: var(--maka-text-supporting);
 }
 
-.maka-mcp-server-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
+.maka-mcp-inspector {
+  min-width: 0;
 }
 
-.maka-mcp-server-error {
-  margin: 0 var(--space-3) var(--space-3);
-}
-
-.maka-mcp-server-details {
-  font: var(--maka-text-supporting);
-  margin: 0 var(--space-3) var(--space-3);
-  color: var(--muted-foreground);
+.maka-mcp-inspector-endpoint {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .maka-mcp-tool-list {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1-5);
-  margin-top: var(--space-2);
 }
 
 .maka-mcp-tool-list code {
+  font: var(--maka-text-code);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-control);
   background: var(--muted);
   color: var(--foreground-secondary);
 }
 
-.maka-mcp-server-details pre {
+.maka-mcp-stderr {
+  font: var(--maka-text-code);
   max-height: 132px;
-  margin: var(--space-2) 0 0;
+  margin: 0;
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
   background: oklch(from var(--destructive) l c h / 0.06);
   color: var(--destructive-text);
   white-space: pre-wrap;
-}
-
-/* Product layout around the Astryx EmptyState. */
-.maka-mcp-empty {
-  align-self: start;
 }
 
 .maka-mcp-loading {
@@ -317,74 +199,4 @@
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-top: var(--border-width-hairline) solid var(--border);
-}
-
-/* The persistent navigation rail leaves the module less room than the window
-   width suggests. Collapse both header rows before their min-content width can
-   push the centered workspace off the right edge. */
-@media (max-width: 860px) {
-  .maka-mcp-page > .maka-module-main-header {
-    display: grid;
-  }
-
-  .maka-mcp-page > .maka-module-main-header .maka-module-main-actions {
-    justify-content: flex-start;
-  }
-
-  .maka-mcp-command-bar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-  }
-
-  .maka-mcp-tabs {
-    grid-column: 1 / -1;
-  }
-
-  .maka-mcp-search {
-    grid-column: 1;
-    grid-row: 2;
-    width: 100%;
-    margin-inline-start: 0;
-  }
-
-  .maka-mcp-refresh {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
-  .maka-mcp-server-summary {
-    flex-wrap: wrap;
-  }
-
-  .maka-mcp-server-summary > span:last-child {
-    width: 100%;
-    margin-inline-start: 0;
-    justify-content: flex-end;
-  }
-
-  .maka-mcp-server-controls {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .maka-mcp-server-actions {
-    justify-content: flex-end;
-  }
-}
-
-@media (max-width: 560px) {
-  .maka-mcp-primary-fields {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-mcp-install-spinner {
-    animation: none;
-  }
-
-  .maka-mcp-install-cancel {
-    transition-duration: 0.01ms;
-  }
 }

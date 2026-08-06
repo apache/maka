@@ -14,6 +14,10 @@ export interface ToolOutputDeltaEmitterInput {
   newId: () => string;
   now: () => number;
   push: (event: ToolOutputDeltaEvent) => void;
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentToolCallId?: string;
+  parentOperationId?: string;
 }
 
 export interface ToolOutputDeltaEmitter {
@@ -48,6 +52,14 @@ export function createToolOutputDeltaEmitter(
         chunk,
         redacted: redacted !== raw,
         createdAt: now,
+        ...(input.origin !== undefined ? { origin: input.origin } : {}),
+        ...(input.modelVisibility !== undefined ? { modelVisibility: input.modelVisibility } : {}),
+        ...(input.parentToolCallId !== undefined
+          ? { parentToolCallId: input.parentToolCallId }
+          : {}),
+        ...(input.parentOperationId !== undefined
+          ? { parentOperationId: input.parentOperationId }
+          : {}),
       });
     }
   }

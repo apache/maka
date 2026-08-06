@@ -10,17 +10,19 @@ import { emptyTraceTotals, type SessionTrace, type TraceStep, type TraceTotals }
 export interface InspectorStepRow {
   id: string;
   kind: TraceStep['kind'];
-  /** Primary label: tool name, model id, or the kind for structural steps. */
-  label: string;
-  detail?: string;
-  durationMs?: number;
   /**
-   * Absent when nothing priced this step. The panel renders "cost unavailable"
-   * rather than `$0`, because a call nobody could price and a free call are
-   * different facts.
+   * The identifier this row is about — a model id, a tool name. Absent when
+   * the row has no identifier of its own and its kind IS the label; naming it
+   * is the panel's job, in the reader's language, not this file's in English.
    */
-  costUsd?: number;
-  status?: string;
+  label?: string;
+  /** Free text the trace already carries in words — an error message. */
+  detail?: string;
+  /** Why this call was made, when it was not the turn's own request. */
+  callKind?: string;
+  /** How a permission request was answered. */
+  decision?: string;
+  durationMs?: number;
   /** Retries beyond the first attempt of one logical call. */
   retries?: number;
   /**
@@ -33,14 +35,12 @@ export interface InspectorStepRow {
 
 export interface InspectorTurnRow {
   turnId: string;
-  startedAt: number;
+  /** 1-based position in the session's turn order — the display name. */
+  index: number;
   durationMs: number;
   totals: TraceTotals;
   failed: boolean;
   failureCode?: string;
-  failureMessage?: string;
-  /** The step the failure is attributed to, when the trace named one. */
-  attributedToStepId?: string;
   steps: InspectorStepRow[];
 }
 
@@ -66,17 +66,13 @@ export interface InspectorPanelModel {
 export function deriveInspectorPanelModel(trace: SessionTrace | undefined): InspectorPanelModel {
   if (!trace) return { turns: [], totals: emptyTraceTotals(), empty: true };
 
-  const turns = trace.turns.map<InspectorTurnRow>((turn) => ({
+  const turns = trace.turns.map<InspectorTurnRow>((turn, index) => ({
     turnId: turn.turnId,
-    startedAt: turn.startedAt,
+    index: index + 1,
     durationMs: turn.durationMs,
     totals: turn.totals,
     failed: turn.failure !== undefined,
     ...(turn.failure?.code !== undefined ? { failureCode: turn.failure.code } : {}),
-    ...(turn.failure?.message !== undefined ? { failureMessage: turn.failure.message } : {}),
-    ...(turn.failure?.attributedToStepId !== undefined
-      ? { attributedToStepId: turn.failure.attributedToStepId }
-      : {}),
     steps: turn.steps.map((step) => toStepRow(step, turn.failure?.attributedToStepId)),
   }));
 
@@ -104,10 +100,11 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
       id: step.id,
       kind: step.kind,
       label: step.modelId,
-      detail: step.callKind,
+      // 'main' is what almost every call is, so printing it on every row says
+      // nothing; a compaction or a title call beside it is the fact worth a
+      // second column.
+      ...(step.callKind !== 'main' ? { callKind: step.callKind } : {}),
       durationMs: step.durationMs,
-      ...(step.costUsd !== undefined ? { costUsd: step.costUsd } : {}),
-      status: step.status,
       ...(step.attempts.length > 1 ? { retries: step.attempts.length - 1 } : {}),
       failed,
     };
@@ -120,7 +117,6 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
       // The recovery that happened, never the policy every dispatch declares.
       ...(step.recovered ? { recovered: step.recovered.disposition } : {}),
       ...(step.durationMs !== undefined ? { durationMs: step.durationMs } : {}),
-      status: step.status,
       failed,
     };
   }
@@ -128,21 +124,18 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
     return {
       id: step.id,
       kind: step.kind,
-      label: step.toolName ?? 'permission',
-      detail: step.decision,
+      ...(step.toolName !== undefined ? { label: step.toolName } : {}),
+      decision: step.decision,
       failed: false,
     };
   }
   if (step.kind === 'compaction') {
-    return {
-      id: step.id,
-      kind: step.kind,
-      label: 'compaction',
-      ...(step.checkpointId !== undefined ? { detail: step.checkpointId } : {}),
-      failed: false,
-    };
+    // No label and no detail: the kind is the whole fact. The checkpoint id is
+    // an internal handle a reader cannot act on, and it is in the run ledger
+    // for anyone who can.
+    return { id: step.id, kind: step.kind, failed: false };
   }
-  return { id: step.id, kind: step.kind, label: 'error', detail: step.message, failed: true };
+  return { id: step.id, kind: step.kind, detail: step.message, failed: true };
 }
 
 function coverageNotice(trace: SessionTrace): InspectorCoverageNotice | undefined {

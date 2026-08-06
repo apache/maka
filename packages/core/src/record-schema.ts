@@ -61,6 +61,19 @@ export function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
 
+/**
+ * An absent value, or one the given domain contains. Taking the domain as an
+ * argument rather than spelling its members out at the call site is what lets a
+ * value domain be enumerated: a check written as a chain of `!==` comparisons
+ * is invisible to anything that wants to know what the field may hold.
+ */
+export function isOptionalMember<T extends string>(
+  value: unknown,
+  domain: readonly T[],
+): value is T | undefined {
+  return value === undefined || (domain as readonly string[]).includes(value as string);
+}
+
 export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }

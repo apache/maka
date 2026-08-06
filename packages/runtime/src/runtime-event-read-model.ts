@@ -766,6 +766,7 @@ function projectFunctionCall(
     // rebuilt from the runtime event log lose the tool↔step association and
     // the UI timeline falls back to legacy tools-before-text ordering.
     ...(event.refs?.stepId ? { stepId: event.refs.stepId } : {}),
+    ...toolActivityIdentity(event),
     args: event.content.args,
     ...(event.content.providerOptions !== undefined
       ? { providerOptions: structuredClone(event.content.providerOptions) }
@@ -877,8 +878,27 @@ function projectFunctionResponse(
     ...(numberStateDelta(event, 'durationMs') !== undefined
       ? { durationMs: numberStateDelta(event, 'durationMs') }
       : {}),
+    ...toolActivityIdentity(event),
   });
   return true;
+}
+
+function toolActivityIdentity(event: RuntimeEvent): {
+  origin?: 'provider' | 'code_mode';
+  modelVisibility?: 'visible' | 'hidden';
+  parentToolCallId?: string;
+  parentOperationId?: string;
+} {
+  return {
+    ...(event.origin !== undefined ? { origin: event.origin } : {}),
+    ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
+    ...(event.refs?.parentToolCallId !== undefined
+      ? { parentToolCallId: event.refs.parentToolCallId }
+      : {}),
+    ...(event.refs?.parentOperationId !== undefined
+      ? { parentOperationId: event.refs.parentOperationId }
+      : {}),
+  };
 }
 
 function projectPermissionDecision(

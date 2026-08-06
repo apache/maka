@@ -407,6 +407,7 @@ export function buildAgentGraphSupervisorTools(
       'Inspect the durable graph. Use mode=latest without a cursor for the current view; use mode=page only with a nextCursor returned by an earlier view.',
     parameters: viewSchema,
     categoryHint: 'read',
+    nesting: 'direct_only',
     recoveryMode: 'replay_safe',
     impl: async (toolInput) => {
       const view = await readToolGraphView(
@@ -428,6 +429,7 @@ export function buildAgentGraphSupervisorTools(
       'Adjust the graph durably. Always set operation. For new work set operation=add_work, target_kind=new_agent, agent_id, and replacement_mode=none; unrelated provider-filled optional fields are ignored.',
     parameters: updateSchema,
     categoryHint: 'subagent',
+    nesting: 'direct_only',
     recoveryMode: 'idempotent',
     impl: async (toolInput, context) => {
       const request = compileAgentGraphScheduleUpdate({
@@ -462,6 +464,7 @@ export function buildAgentGraphSupervisorTools(
     categoryHint: 'subagent',
     recoveryMode: 'replay_safe',
     executionSemantics: 'exclusive_step',
+    nesting: 'direct_only',
     impl: async ({ reason }) => {
       const permit = input.prepareYieldPermit?.();
       try {

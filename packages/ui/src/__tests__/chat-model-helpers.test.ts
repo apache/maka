@@ -4,7 +4,14 @@ import type { ProviderType } from '@maka/core';
 import { modelMenuGroups, type ChatModelChoice } from '../chat-model-helpers.js';
 
 function choice(connectionSlug: string, providerType: ProviderType, model: string, label = model): ChatModelChoice {
-  return { connectionSlug, providerType, model, label };
+  const labels: Partial<Record<ProviderType, string>> = {
+    'openai-codex': 'OpenAI OAuth',
+    'openai-compatible': '自定义',
+    openai: 'OpenAI',
+    deepseek: 'DeepSeek',
+  };
+  const providerLabel = labels[providerType] ?? providerType[0]!.toUpperCase() + providerType.slice(1);
+  return { connectionSlug, providerType, providerLabel, model, label, isDefault: true, thinkingLevels: [] };
 }
 
 test('single connection per provider: heading is just the short label', () => {
@@ -87,6 +94,13 @@ test('blank connectionName falls back to the provider label', () => {
     { ...choice('gateway', 'openai-compatible', 'some/model'), connectionName: '   ' },
   ]);
   assert.equal(groups[0]?.heading, '自定义');
+});
+
+test('localized provider headings override the snapshot fallback label', () => {
+  const groups = modelMenuGroups([
+    { ...choice('claude', 'claude-subscription', 'claude-opus-4-8'), providerLabel: 'Claude Subscription' },
+  ], 'zh');
+  assert.equal(groups[0]?.heading, 'Claude 订阅');
 });
 
 test('unnamed connection keeps slug disambiguation even when a sibling is named', () => {

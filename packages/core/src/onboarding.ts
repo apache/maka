@@ -32,6 +32,7 @@ import {
 } from './connection-readiness.js';
 import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
 import type { SessionSummary } from './session.js';
+export { hasSettledInitialOnboarding } from './onboarding-milestone.js';
 
 // ============================================================================
 // OnboardingState (derived; never persisted)
@@ -326,11 +327,3 @@ function isValidTimestamp(value: unknown): value is number {
  * onboarding is a one-time guide, not a gate that revives when
  * the user deletes all sessions.
  */
-export function hasSettledInitialOnboarding(
-  milestones: ReadonlyArray<OnboardingMilestone>,
-): boolean {
-  return milestones.some(
-    (m) =>
-      m.id === 'initial_onboarding' && (m.completedAt !== undefined || m.skippedAt !== undefined),
-  );
-}

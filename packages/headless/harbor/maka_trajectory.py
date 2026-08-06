@@ -1013,6 +1013,8 @@ def _is_runtime_event(event: dict[str, Any]) -> bool:
         "partial",
         "role",
         "author",
+        "origin",
+        "modelVisibility",
         "status",
         "content",
         "actions",
@@ -1037,6 +1039,14 @@ def _is_runtime_event(event: dict[str, Any]) -> bool:
     ):
         return False
     if "branch" in event and not isinstance(event["branch"], str):
+        return False
+    if "origin" in event and not _is_string_choice(
+        event["origin"], {"provider", "code_mode"}
+    ):
+        return False
+    if "modelVisibility" in event and not _is_string_choice(
+        event["modelVisibility"], {"visible", "hidden"}
+    ):
         return False
     if "status" in event and not _is_string_choice(
         event["status"], _TERMINAL_STATUSES | {"streaming"}

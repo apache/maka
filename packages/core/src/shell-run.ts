@@ -1,3 +1,5 @@
+import * as nodeUtil from 'node:util';
+
 export const SHELL_RUN_STATUSES = [
   'starting',
   'running',
@@ -264,6 +266,241 @@ export function isValidShellRunState(value: {
     default:
       return false;
   }
+}
+
+/**
+ * Store-independent ShellRun invariants.
+ *
+ * Every ShellRunStore has to enforce the same shape, patch, and transition
+ * rules — the SQLite store persists across processes, the headless in-memory
+ * store lives for one benchmark task — and ShellRunProcessManager reads those
+ * rules back as behaviour (monotonic revisions, immutable terminal outcomes).
+ * They live here so a second store is a storage-medium change, not a second
+ * copy of the state machine.
+ */
+const SHELL_RUN_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+const SHELL_RUN_PATCH_KEYS: ReadonlySet<string> = new Set([
+  'status',
+  'exitCode',
+  'failureMessage',
+  'updatedAt',
+  'completedAt',
+  'observedAt',
+  'output',
+]);
+
+const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
+  'shellRunId',
+  'sessionId',
+  'sourceRunId',
+  'sourceTurnId',
+  'sourceToolCallId',
+  'cwd',
+  'command',
+  'status',
+  'startedAt',
+  'updatedAt',
+  'completedAt',
+  'timeoutMs',
+  'exitCode',
+  'failureMessage',
+  'sandboxExecution',
+  'sandboxEscalation',
+  'revision',
+  'observedAt',
+  'output',
+]);
+
+export function assertShellRunSessionId(value: string): void {
+  if (!SHELL_RUN_SESSION_ID_PATTERN.test(value)) throw new Error('Invalid session id');
+}
+
+export function assertShellRunIdentifier(value: string): void {
+  if (!isShellRunId(value)) throw new Error('Invalid shell run id');
+}
+
+export function shellRunNotFoundError(shellRunId: string): Error & { code?: string } {
+  const error = new Error(`ShellRun does not exist: ${shellRunId}`) as Error & { code?: string };
+  error.code = 'ENOENT';
+  return error;
+}
+
+export function normalizeShellRunRecord(
+  value: unknown,
+  sessionId: string,
+  shellRunId: string,
+): ShellRunRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Invalid ShellRun record for ${shellRunId}: expected an object`);
+  }
+  const record = value as Partial<ShellRunRecord>;
+  const requiredStrings = [
+    record.shellRunId,
+    record.sessionId,
+    record.sourceTurnId,
+    record.sourceToolCallId,
+    record.cwd,
+    record.command,
+  ];
+  const optionalStrings = [record.sourceRunId, record.failureMessage];
+  const valid =
+    hasOnlyKeys(record, SHELL_RUN_RECORD_KEYS) &&
+    requiredStrings.every((item) => typeof item === 'string') &&
+    isShellRunSourceToolCallId(record.sourceToolCallId) &&
+    record.sessionId === sessionId &&
+    record.shellRunId === shellRunId &&
+    isShellRunStatus(record.status) &&
+    isFiniteNumber(record.startedAt) &&
+    isFiniteNumber(record.updatedAt) &&
+    isPositiveInteger(record.revision) &&
+    isShellOutput(record.output) &&
+    (record.completedAt === undefined || isFiniteNumber(record.completedAt)) &&
+    (record.timeoutMs === undefined || isFiniteNumber(record.timeoutMs)) &&
+    (record.exitCode === undefined || isFiniteNumber(record.exitCode)) &&
+    (record.observedAt === undefined || isFiniteNumber(record.observedAt)) &&
+    isShellRunSandboxExecution(record.sandboxExecution) &&
+    isShellRunSandboxEscalation(record.sandboxEscalation, record.sandboxExecution) &&
+    optionalStrings.every((item) => item === undefined || typeof item === 'string');
+  if (!valid) {
+    throw new Error(`Invalid ShellRun record for ${shellRunId}: malformed fields`);
+  }
+  if (!isValidShellRunState(record)) {
+    throw new Error(`Invalid ShellRun record for ${shellRunId}: inconsistent state fields`);
+  }
+  return canonicalShellRunRecord(record as ShellRunRecord);
+}
+
+export function assertShellRunPatch(patch: ShellRunPatch): void {
+  for (const key of Object.keys(patch)) {
+    if (!SHELL_RUN_PATCH_KEYS.has(key)) {
+      throw new Error(`ShellRun field is immutable: ${key}`);
+    }
+  }
+}
+
+/**
+ * Applies a validated patch and returns the next record, or `current` unchanged
+ * when the patch is a no-op. The revision only advances on a real change, which
+ * is what callers use to tell a durable write from a redundant one.
+ */
+export function nextShellRunRecord(current: ShellRunRecord, patch: ShellRunPatch): ShellRunRecord {
+  assertShellRunPatch(patch);
+  const { sessionId, shellRunId } = current;
+  if (patch.output && patch.output.mode !== current.output.mode) {
+    throw new Error(`ShellRun output mode is immutable: ${current.output.mode}`);
+  }
+  const effectivePatch =
+    current.observedAt !== undefined && Object.hasOwn(patch, 'observedAt')
+      ? { ...patch, observedAt: current.observedAt }
+      : patch;
+  const candidate = normalizeShellRunRecord(
+    { ...current, ...effectivePatch, sessionId, shellRunId, revision: current.revision },
+    sessionId,
+    shellRunId,
+  );
+  if (!isValidShellRunStatusTransition(current.status, candidate.status)) {
+    throw new Error(`Invalid ShellRun status transition: ${current.status} -> ${candidate.status}`);
+  }
+  if (
+    isTerminalShellRunStatus(current.status) &&
+    (candidate.completedAt !== current.completedAt ||
+      candidate.exitCode !== current.exitCode ||
+      candidate.failureMessage !== current.failureMessage)
+  ) {
+    throw new Error(`ShellRun terminal outcome is immutable: ${current.status}`);
+  }
+  if (nodeUtil.isDeepStrictEqual(candidate, current)) return current;
+  return normalizeShellRunRecord(
+    { ...candidate, revision: current.revision + 1 },
+    sessionId,
+    shellRunId,
+  );
+}
+
+function isShellRunSandboxExecution(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!hasOnlyKeys(value, new Set(['type', 'enforced']))) return false;
+  const execution = value as Record<string, unknown>;
+  return (
+    (execution.type === 'none' ||
+      execution.type === 'macos-seatbelt' ||
+      execution.type === 'linux') &&
+    typeof execution.enforced === 'boolean' &&
+    execution.enforced === (execution.type !== 'none')
+  );
+}
+
+function isShellRunSandboxEscalation(value: unknown, execution: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!hasOnlyKeys(value, new Set(['commandHash', 'unsandboxed']))) return false;
+  const escalation = value as Record<string, unknown>;
+  const sandbox = execution as { type?: unknown; enforced?: unknown } | undefined;
+  return (
+    typeof escalation.commandHash === 'string' &&
+    escalation.commandHash.length > 0 &&
+    escalation.unsandboxed === true &&
+    sandbox?.type === 'none' &&
+    sandbox.enforced === false
+  );
+}
+
+function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
+  return {
+    shellRunId: record.shellRunId,
+    sessionId: record.sessionId,
+    ...(record.sourceRunId !== undefined ? { sourceRunId: record.sourceRunId } : {}),
+    sourceTurnId: record.sourceTurnId,
+    sourceToolCallId: record.sourceToolCallId,
+    cwd: record.cwd,
+    command: record.command,
+    status: record.status,
+    startedAt: record.startedAt,
+    updatedAt: record.updatedAt,
+    ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
+    ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs } : {}),
+    ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
+    ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
+    ...(record.sandboxExecution !== undefined
+      ? { sandboxExecution: { ...record.sandboxExecution } }
+      : {}),
+    ...(record.sandboxEscalation !== undefined
+      ? { sandboxEscalation: { ...record.sandboxEscalation } }
+      : {}),
+    revision: record.revision,
+    ...(record.observedAt !== undefined ? { observedAt: record.observedAt } : {}),
+    output: canonicalShellOutput(record.output),
+  };
+}
+
+function canonicalShellOutput(output: ShellOutput): ShellOutput {
+  if (output.mode === 'pipes') {
+    return {
+      mode: 'pipes',
+      stdout: output.stdout,
+      stderr: output.stderr,
+      ...(output.latestStream !== undefined ? { latestStream: output.latestStream } : {}),
+      stdoutTruncated: output.stdoutTruncated,
+      stderrTruncated: output.stderrTruncated,
+      redacted: output.redacted,
+    };
+  }
+  return {
+    mode: 'pty',
+    screen: output.screen,
+    scrollback: output.scrollback,
+    ...(output.lastAlternateScreen !== undefined
+      ? { lastAlternateScreen: output.lastAlternateScreen }
+      : {}),
+    cols: output.cols,
+    rows: output.rows,
+    cursor: { ...output.cursor },
+    alternateScreen: output.alternateScreen,
+    truncated: output.truncated,
+    redacted: output.redacted,
+  };
 }
 
 function hasOnlyKeys(value: object, allowed: ReadonlySet<string>): boolean {

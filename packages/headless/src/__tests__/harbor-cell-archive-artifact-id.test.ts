@@ -69,7 +69,7 @@ async function archiveToolResult(
   const originalBytes = Buffer.byteLength(serializedResult, 'utf8');
   const recorder = buildHarborCellContextBudgetBackendOptions({
     MAKA_CONTEXT_TOOL_RESULT_ARCHIVE_DIR: archiveDir,
-  }).archiveToolResult;
+  }).toolResultArchive?.services.archiveToolResult;
   assert.ok(recorder);
 
   const archived = await recorder({

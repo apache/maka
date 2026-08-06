@@ -50,6 +50,38 @@ describe('continuation replay segment', () => {
     );
   });
 
+  it('excludes hidden nested events from continuation replay context', () => {
+    const identity = runtimeIdentity();
+    const result = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(identity, [
+        {
+          eventSeq: 1,
+          event: {
+            ...textEvent('user-1', 'user', identity),
+            actions: {
+              runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' },
+            },
+          },
+        },
+        {
+          eventSeq: 2,
+          event: {
+            ...textEvent('hidden-nested-result', 'tool', identity),
+            modelVisibility: 'hidden',
+          },
+        },
+      ]),
+      providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    });
+
+    assert.equal(result.kind, 'replayable');
+    if (result.kind !== 'replayable') return;
+    assert.deepEqual(
+      result.plan.segment.replayRuntimeEvents.map((event) => event.id),
+      ['user-1'],
+    );
+  });
+
   it('trims every model-visible item when a real continuation segment has no stable anchor', () => {
     const identity = runtimeIdentity();
     const digest = `sha256:${'a'.repeat(64)}` as const;

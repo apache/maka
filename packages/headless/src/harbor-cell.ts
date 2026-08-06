@@ -32,7 +32,6 @@ import {
   type SynthesisCacheArtifactStore,
   type SynthesisCacheLoader,
   type SynthesisCacheWriter,
-  type ToolResultArchiveResourceReader,
   type TurnStartOptions,
 } from '@maka/runtime';
 import {
@@ -65,7 +64,7 @@ import {
   type HeadlessStorageWriter,
 } from './headless-storage.js';
 import type { HeadlessBackendContext, RealBackendIsolation } from './isolation.js';
-import { validateRealBackendIsolation } from './isolation.js';
+import { endManagedShellSessions, validateRealBackendIsolation } from './isolation.js';
 import { PiCliJsonTransport } from './pi-cli-json-transport.js';
 import { providerFromEnv, resolveHarborCellAiSdkEnv } from './provider-env.js';
 import { backendNeedsIsolation } from './runner.js';
@@ -90,7 +89,6 @@ import {
   buildHarborCellContextBudgetBackendOptions,
   buildHarborCellContextBudgetPolicySnapshot,
   buildHarborCellTaskLedgerExperimentPolicy,
-  buildHarborCellToolResultArchiveResourceReader,
 } from './harbor-cell-context-budget-env.js';
 import {
   buildHarborCellAiSdkTools,
@@ -108,7 +106,6 @@ export {
   buildHarborCellContextBudgetBackendOptions,
   buildHarborCellContextBudgetPolicySnapshot,
   buildHarborCellTaskLedgerExperimentPolicy,
-  buildHarborCellToolResultArchiveResourceReader,
   type HarborCellContextEnvKey,
   type HarborCellContextBudgetBackendOptions,
   type HarborCellTaskLedgerExperimentPolicy,
@@ -147,16 +144,18 @@ export interface RunHarborCellInput {
     context: HeadlessBackendContext,
   ) => void | Promise<void>;
   realBackendIsolation?: RealBackendIsolation;
-  /**
-   * Ref-addressed archive reader backing `ArchiveRead`. Must be supplied whenever
-   * the backend also archives tool results, since pruned results are replaced by
-   * placeholders that tell the model to call `ArchiveRead`.
-   */
-  archiveResources?: ToolResultArchiveResourceReader;
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   continuationPolicy?: HarborCellContinuationPolicy;
   taskToolSummaryEnabled?: boolean;
   settleAfterMs?: number;
+  /**
+   * Deterministic trigger for the same settlement the settleAfterMs timer
+   * arms. A wall-clock budget cannot encode an ordering guarantee, so a test
+   * about "deadline fires before/after completion" resolves this promise at
+   * the exact point in the run it means, instead of hoping a fixed number of
+   * milliseconds lands on the right side of the race (#2221).
+   */
+  settleSignal?: Promise<void>;
   now?: () => number;
   newId?: () => string;
   /** Resume one already-materialized session instead of creating a fresh session. */
@@ -360,7 +359,6 @@ export async function runHarborCellWithStorage(
     {
       agentTools: config.agentTools,
       snapshotImage: createReadImageSnapshotter(storage.artifactStore),
-      ...(input.archiveResources ? { archiveResources: input.archiveResources } : {}),
     },
   );
   const registerBackends =
@@ -440,19 +438,23 @@ export async function runHarborCellWithStorage(
   let deadlineReached = false;
   let settlementError: unknown;
   let settlementAttempt: Promise<void> | undefined;
+  let settlementClosed = false;
+  const armDeadlineSettlement = () => {
+    if (settlementClosed || deadlineReached) return;
+    deadlineReached = true;
+    settlementAttempt = sessionCapabilities
+      .settle(session.id, {
+        source: 'benchmark_deadline',
+      })
+      .catch((error) => {
+        settlementError = error;
+      });
+  };
   const settlementTimer =
     input.settleAfterMs === undefined
       ? undefined
-      : setTimeout(() => {
-          deadlineReached = true;
-          settlementAttempt = sessionCapabilities
-            .settle(session.id, {
-              source: 'benchmark_deadline',
-            })
-            .catch((error) => {
-              settlementError = error;
-            });
-        }, input.settleAfterMs);
+      : setTimeout(armDeadlineSettlement, input.settleAfterMs);
+  if (input.settleSignal) void input.settleSignal.then(armDeadlineSettlement);
 
   const continuationPolicy = input.continuationPolicy ?? {
     enabled: false,
@@ -498,7 +500,16 @@ export async function runHarborCellWithStorage(
     if (isStorageRootAuthorityError(error)) throw error;
     sendMessageError = error;
   } finally {
+    settlementClosed = true;
     if (settlementTimer) clearTimeout(settlementTimer);
+    // The agent phase is over here, and grading runs after this process exits.
+    // Anything the model left managed — a background build, a PTY it never
+    // closed — has to die now: it cannot influence verification, and a PTY
+    // child outliving this process would be an orphan nobody can reap.
+    // Processes the model deliberately detached (`nohup … &`) are NOT managed
+    // and deliberately survive, because some tasks are graded against a
+    // service the agent was asked to leave running.
+    await endManagedShellSessions(input.realBackendIsolation);
     try {
       if (settlementAttempt) {
         await settlementAttempt;
@@ -768,7 +779,6 @@ export async function runHarborCellFromEnv(
   const continuationPolicy = buildHarborCellContinuationPolicy(resolvedEnv);
   const economyTaskMode = economyTaskModeFromEnv(resolvedEnv.MAKA_ECONOMY_TASK_MODE);
   const taskLedgerExperimentPolicy = buildHarborCellTaskLedgerExperimentPolicy(resolvedEnv);
-  const archiveResources = buildHarborCellToolResultArchiveResourceReader(resolvedEnv);
   const maxSteps = harborCellMaxStepsFromEnv(resolvedEnv);
   const settleAfterMs = harborCellSoftTimeoutMsFromEnv(resolvedEnv);
   const reasoningEffort = reasoningEffortFromEnv(resolvedEnv.MAKA_REASONING_EFFORT);
@@ -866,9 +876,6 @@ export async function runHarborCellFromEnv(
       ...(contextBudgetPolicy ? { contextBudgetPolicy } : {}),
       ...(continuationPolicy ? { continuationPolicy } : {}),
       ...(taskLedgerExperimentPolicy ? { taskToolSummaryEnabled: true } : {}),
-      // Gated on the same resolved archive dir as the writer wired into the backend,
-      // so a cell can never archive a result it cannot read back.
-      ...(archiveResources ? { archiveResources } : {}),
       ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
       ...(registerBackends ? { registerBackends } : {}),
       ...(backendNeedsIsolation(backend)

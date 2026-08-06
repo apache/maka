@@ -160,10 +160,44 @@ describe('AgentSwarm adapter', () => {
     );
 
     assert.equal(starts, 0);
-    assert.match(
-      String((result as { error?: unknown }).error),
-      /Provide exactly one of subagent_id or legacy profile/,
+    const refusal = String((result as { error?: unknown }).error);
+    assert.match(refusal, /Neither subagent_id nor profile is set, so no child is selected/);
+    // The refusal has to carry both ways out, or a model can only guess: the
+    // preset ids are behind agent_list and the legacy profiles are a closed set.
+    assert.match(refusal, /a user-approved preset id from agent_list/);
+    assert.match(refusal, /profile to one of: [^.]*\blocal_read\b/);
+  });
+
+  test('rejects an item that sets both selectors, and says which mistake it is', async () => {
+    let starts = 0;
+    const runtime = buildRuntime(async () => {
+      starts += 1;
+      return childResult(starts);
+    });
+
+    const result = await executeTool(
+      runtime,
+      buildAgentSwarmTool(),
+      {
+        items: [
+          {
+            item_id: 'both-selectors',
+            task: 'Inspect runtime validation.',
+            profile: LOCAL_READ_AGENT_PROFILE,
+            subagent_id: 'reviewer',
+          },
+        ],
+      },
+      new AbortController(),
     );
+
+    assert.equal(starts, 0);
+    const refusal = String((result as { error?: unknown }).error);
+    // The opposite mistake must not read as the same sentence — a model told
+    // "neither is set" while it set both learns nothing it can act on.
+    assert.match(refusal, /subagent_id and profile are both set/);
+    assert.doesNotMatch(refusal, /Neither subagent_id nor profile is set/);
+    assert.match(refusal, /a user-approved preset id from agent_list/);
   });
 
   test('accepts prompt_template with string items and rejects ambiguous template input', () => {

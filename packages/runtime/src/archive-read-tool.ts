@@ -7,6 +7,8 @@ import {
   type ToolResultArchiveResourceReader,
 } from './tool-result-archive-resource.js';
 
+export const ARCHIVE_READ_TOOL_NAME = 'ArchiveRead';
+
 export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): MakaTool {
   const parameters = z
     .object({
@@ -58,7 +60,7 @@ export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): M
     });
   const providerSchema = zodSchema(parameters);
   return {
-    name: 'ArchiveRead',
+    name: ARCHIVE_READ_TOOL_NAME,
     displayName: 'Read archived result',
     activityKind: 'read',
     description:

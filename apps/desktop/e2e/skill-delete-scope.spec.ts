@@ -33,13 +33,14 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   // unconditionally and let Playwright wait for it. Sampling `isVisible()`
   // first only added a branch that could skip the click on a slow mount and
   // then hunt for the row on the wrong tab.
-  await page.getByRole('button', { name: '已安装' }).click();
+  await page.getByRole('radio', { name: '已安装' }).click();
 
-  const row = page.locator('.maka-skill-library-list li').filter({ hasText: 'User Only' });
-  await expect(row).toHaveCount(1);
+  const row = page.getByRole('button', { name: /User Only/ });
+  await expect(row).toBeVisible();
+  await row.click();
 
-  await row.getByRole('button', { name: 'User Only 的更多操作' }).click();
-  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+  const inspector = page.getByRole('complementary', { name: '技能详情' });
+  await inspector.getByRole('button', { name: '删除', exact: true }).click();
 
   // Opening the confirmation alone must not touch disk.
   await access(skillDir);
@@ -47,8 +48,12 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   const confirm = page.getByRole('alertdialog', { name: '确认删除 User Only' });
   await confirm.getByRole('button', { name: '删除', exact: true }).click();
 
-  await expect(row).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /User Only/ })).toHaveCount(0);
   await expect.poll(() => access(skillDir).then(() => 'present', () => 'gone')).toBe('gone');
+
+  // Focus moves to the row that took the deleted one's place — not to body,
+  // which would drop a keyboard user at the top of the document.
+  await expect(page.locator('.maka-module-page-rows > li button:focus')).toHaveCount(1);
 });
 
 test('offers no delete for a project-scope skill', async ({ invocableSkillsWindow: page }) => {
@@ -60,11 +65,11 @@ test('offers no delete for a project-scope skill', async ({ invocableSkillsWindo
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
 
-  await page.getByRole('button', { name: '已安装' }).click();
+  await page.getByRole('radio', { name: '已安装' }).click();
 
-  const projectRow = page.locator('.maka-skill-library-list li').filter({ hasText: 'Project Only' });
-  await expect(projectRow).toHaveCount(1);
-  await projectRow.getByRole('button', { name: 'Project Only 的更多操作' }).click();
-  const menu = page.getByRole('menu', { name: 'Project Only 的更多操作' });
-  await expect(menu.getByRole('menuitem', { name: '删除', exact: true })).toHaveCount(0);
+  const projectRow = page.getByRole('button', { name: /Project Only/ });
+  await expect(projectRow).toBeVisible();
+  await projectRow.click();
+  const inspector = page.getByRole('complementary', { name: '技能详情' });
+  await expect(inspector.getByRole('button', { name: '删除', exact: true })).toHaveCount(0);
 });

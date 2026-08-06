@@ -692,9 +692,7 @@ const updateService = createAppUpdateService({
 const {
   persistToolArtifacts,
   snapshotReadImage,
-  persistArchivedToolResult,
-  readArchivedToolResult,
-  readArchivedToolResultResource,
+  toolResultArchive,
 } = createToolArtifactPersistence({ artifactStore, storeReadImage, safeSendToRenderer });
 
 const {
@@ -727,7 +725,6 @@ const {
   shellRuns,
   artifactStore,
   snapshotReadImage,
-  readArchivedToolResultResource,
   getWorkspacePrivacyContext,
   resolveDesktopSkillHost,
 });
@@ -903,8 +900,7 @@ backends.register('ai-sdk', createAiSdkBackendFactory({
   desktopSessionSkillHosts,
   sandboxDiagnosticsProvider,
   persistToolArtifacts,
-  persistArchivedToolResult,
-  readArchivedToolResult,
+  toolResultArchive,
   runtimeCommitStore: runtimePersistence.runtimeCommitStore,
   safeSendToRenderer,
   emitSessionsChanged,
@@ -934,7 +930,10 @@ const runtime = new SessionManager({
   runStore,
   runtimeEventStore,
   ...(runtimePersistence.runtimeCommitStore
-    ? { toolBoundaryProtocol: runtimePersistence.runtimeCommitStore.toolBoundaryProtocol }
+    ? {
+        runtimeCommitSink: runtimePersistence.runtimeCommitStore,
+        toolBoundaryProtocol: runtimePersistence.runtimeCommitStore.toolBoundaryProtocol,
+      }
     : {}),
   shellRuns,
   backends,

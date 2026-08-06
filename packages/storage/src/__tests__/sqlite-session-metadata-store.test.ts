@@ -29,6 +29,74 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('migration locks only legacy sessions that already contain a user message', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-migration-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const store = createSqliteSessionMetadataStore(path);
+      await store.create(fullHeader({ id: 'with-user', connectionLocked: false }));
+      await store.create(fullHeader({ id: 'assistant-only', connectionLocked: false }));
+      store.close();
+
+      const legacy = new DatabaseSync(path);
+      legacy
+        .prepare(`
+        INSERT INTO session_messages(
+          session_id, sequence, message_id, message_type, message_ts, record_json
+        ) VALUES (?, 0, ?, ?, 1, ?)
+      `)
+        .run(
+          'with-user',
+          'user-1',
+          'user',
+          JSON.stringify({
+            type: 'user',
+            id: 'user-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'hello',
+          }),
+        );
+      legacy
+        .prepare(`
+        INSERT INTO session_messages(
+          session_id, sequence, message_id, message_type, message_ts, record_json
+        ) VALUES (?, 0, ?, ?, 1, ?)
+      `)
+        .run(
+          'assistant-only',
+          'assistant-1',
+          'assistant',
+          JSON.stringify({
+            type: 'assistant',
+            id: 'assistant-1',
+            turnId: 'turn-1',
+            ts: 1,
+            text: 'preview',
+            modelId: 'fake-model',
+          }),
+        );
+      legacy
+        .prepare(`
+        UPDATE session_metadata_schema
+        SET version = ?
+        WHERE scope = 'session_metadata'
+      `)
+        .run(21);
+      legacy.close();
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal((await migrated.read('with-user')).header.connectionLocked, true);
+        assert.equal((await migrated.read('assistant-only')).header.connectionLocked, false);
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('round-trips every SessionHeader field and reopens the same schema', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-'));
     const path = join(root, 'state.sqlite');

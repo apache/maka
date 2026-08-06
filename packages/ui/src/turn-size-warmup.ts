@@ -27,12 +27,30 @@ export interface WarmupScheduler {
   requestFrame(callback: () => void): () => void;
 }
 
-function defaultScheduler(): WarmupScheduler | undefined {
+/**
+ * Upper bound on how long idle-chunked work (turn-size warm-up, progressive
+ * transcript fill) may wait for a free main-thread slice. Without a deadline,
+ * bare `requestIdleCallback` can starve under sustained layout/paint load —
+ * CI observed a 90-turn fill stuck mid-window for >10s while the count still
+ * crept up four at a time. The timeout forces each step to run even when the
+ * browser never reports idle; when the thread is free, rIC still fires early.
+ *
+ * 100ms is long enough not to stampede short frames under light load, and
+ * short enough that a 20-step fill of a long session still completes in a
+ * couple of seconds of worst-case scheduling alone.
+ */
+const BROWSER_IDLE_TIMEOUT_MS = 100;
+
+/**
+ * Default browser scheduler shared by warm-up and progressive mount. Returns
+ * `undefined` when `requestAnimationFrame` is missing (SSR / no window).
+ */
+export function createBrowserWarmupScheduler(): WarmupScheduler | undefined {
   if (typeof requestAnimationFrame !== 'function') return undefined;
   return {
     requestIdle: typeof requestIdleCallback === 'function'
       ? (callback) => {
-        const id = requestIdleCallback(callback);
+        const id = requestIdleCallback(callback, { timeout: BROWSER_IDLE_TIMEOUT_MS });
         return () => cancelIdleCallback(id);
       }
       : (callback) => {
@@ -76,7 +94,7 @@ export function createTurnSizeWarmup(options: {
    */
   onSettled?: () => void;
 }): () => void {
-  const scheduler = options.scheduler ?? defaultScheduler();
+  const scheduler = options.scheduler ?? createBrowserWarmupScheduler();
   if (!scheduler) return () => {};
   const chunkSize = options.chunkSize ?? 16;
   // Bottom-up queue. The live-streaming tail is already forced visible by CSS

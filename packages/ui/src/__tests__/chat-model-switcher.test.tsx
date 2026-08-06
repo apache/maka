@@ -27,9 +27,33 @@ const SESSION: SessionSummary = {
 };
 
 const CHOICES: ChatModelChoice[] = [
-  { connectionSlug: 'anthropic-main', providerType: 'anthropic', model: 'claude-opus-4-1', label: 'Claude Opus 4.1' },
-  { connectionSlug: 'anthropic-main', providerType: 'anthropic', model: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
-  { connectionSlug: 'openai-main', providerType: 'openai', model: 'gpt-5', label: 'GPT-5' },
+  {
+    connectionSlug: 'anthropic-main',
+    providerType: 'anthropic',
+    providerLabel: 'Anthropic',
+    model: 'claude-opus-4-1',
+    label: 'Claude Opus 4.1',
+    isDefault: false,
+    thinkingLevels: [],
+  },
+  {
+    connectionSlug: 'anthropic-main',
+    providerType: 'anthropic',
+    providerLabel: 'Anthropic',
+    model: 'claude-sonnet-4',
+    label: 'Claude Sonnet 4',
+    isDefault: true,
+    thinkingLevels: ['off', 'high'],
+  },
+  {
+    connectionSlug: 'openai-main',
+    providerType: 'openai',
+    providerLabel: 'OpenAI',
+    model: 'gpt-5',
+    label: 'GPT-5',
+    isDefault: true,
+    thinkingLevels: [],
+  },
 ];
 
 describe('ChatModelSwitcher menu', () => {

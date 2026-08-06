@@ -190,7 +190,9 @@ export function buildContinuationReplaySegment(input: {
   const trimmedSuffixEventIds = input.prefix.events
     .filter((event) => trimmedIds.has(event.id))
     .map((event) => event.id);
-  const replayRuntimeEvents = input.prefix.events.filter((event) => !trimmedIds.has(event.id));
+  const replayRuntimeEvents = input.prefix.events.filter(
+    (event) => event.modelVisibility !== 'hidden' && !trimmedIds.has(event.id),
+  );
   const providerItems = modelPlan.items.filter((item) => !trimmedIds.has(item.eventId));
 
   return {

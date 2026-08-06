@@ -1654,6 +1654,50 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(legacyCall && 'stepId' in legacyCall).toBe(false);
   });
 
+  test('retains nested CodeMode identity on tool rows used by the UI read model', () => {
+    const identity = {
+      origin: 'code_mode' as const,
+      modelVisibility: 'hidden' as const,
+      refs: {
+        toolCallId: 'nested-1',
+        parentToolCallId: 'exec-1',
+        parentOperationId: 'exec-op-1',
+      },
+    };
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          ...identity,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: 'nested-1', name: 'Read', args: {} },
+        }),
+        ev({
+          ...identity,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'nested-1',
+            name: 'Read',
+            result: { kind: 'text', text: 'ok' },
+          },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toHaveLength(2);
+    for (const message of out.messages) {
+      expect(message).toMatchObject({
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        parentToolCallId: 'exec-1',
+        parentOperationId: 'exec-op-1',
+      });
+    }
+  });
+
   test('projects tool_call activityKind from runtime state for replay', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

@@ -526,7 +526,14 @@ test('createPierTaskRunner withholds the repo tree from a competitor arm', async
       return mounts.filter((mount) => mount.target.startsWith('/opt/maka-agent'));
     };
 
-    assert.ok((await repoMountsFor('maka')).some((mount) => mount.target === '/opt/maka-agent'));
+    // Maka executes out of its build outputs, not the repo root: a root mount
+    // is what let it read docs/eval and the verifier source in the #2245 run.
+    const maka = await repoMountsFor('maka');
+    assert.ok(maka.every((mount) => mount.target !== '/opt/maka-agent'));
+    assert.ok(
+      maka.some((mount) => mount.target === '/opt/maka-agent/packages/headless/dist'),
+      'maka must receive the build output it executes',
+    );
 
     // Pier shares agent-repo-mount with the Harbor runner precisely so this
     // cannot regress in one executor while the other stays fixed.

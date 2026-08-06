@@ -24,6 +24,7 @@ export function buildAskUserQuestionTool(): MakaTool<
     parameters: z.object({
       questions: z.array(questionSchema).min(1).max(3),
     }),
+    nesting: 'direct_only',
     impl: ({ questions }, context) => {
       // Unreachable from any ToolRuntime-driven call: ToolRuntime injects
       // `askUserQuestion` into every tool context unconditionally, so this

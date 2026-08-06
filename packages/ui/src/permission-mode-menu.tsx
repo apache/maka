@@ -115,7 +115,7 @@ export function PermissionModeSelect(props: {
         >
           <DropdownMenuRadioGroup
             value={selectedValue}
-            aria-label={ariaLabel}
+            label={ariaLabel}
             onChange={(value) => {
               void props.onSelect(value as ChatDefaultPermissionMode);
             }}
@@ -149,7 +149,6 @@ export function PermissionModeSelect(props: {
       disabledMessage={props.disabledReason}
       aria-description={meta.hint}
       placement="below"
-      width={320}
       className={cn('permissionModeSelector', props.className)}
       renderOption={(option) => (
         <SelectorOption

@@ -1305,7 +1305,12 @@ export class SqliteSessionMetadataStore {
             entry.json,
           );
         }
-        this.updateCatalogProjectionSync(normalized.id, projection, false);
+        // Align with appendMessages' connection-lock semantics: a session
+        // with any user message is treated as connection-locked, even when
+        // the legacy header did not record it.
+        const lockConnection =
+          !normalized.connectionLocked && encoded.some(({ message }) => message.type === 'user');
+        this.updateCatalogProjectionSync(normalized.id, projection, false, lockConnection);
       }
       return 'imported';
     });
@@ -1340,7 +1345,10 @@ export class SqliteSessionMetadataStore {
       return { message: canonical, json };
     });
     this.transaction(() => {
-      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      const lockConnection =
+        !record.header.connectionLocked && encoded.some(({ message }) => message.type === 'user');
       const row = this.db
         .prepare(
           'SELECT COALESCE(MAX(sequence), -1) AS last_sequence FROM session_messages WHERE session_id = ?',
@@ -1370,7 +1378,7 @@ export class SqliteSessionMetadataStore {
         );
         sequence += 1;
       }
-      this.updateCatalogProjectionSync(sessionId, projection, false);
+      this.updateCatalogProjectionSync(sessionId, projection, false, lockConnection);
     });
   }
 
@@ -3182,6 +3190,7 @@ export class SqliteSessionMetadataStore {
     sessionId: string,
     projection: SessionCatalogMessageProjection,
     replacePreview: boolean,
+    lockConnection = false,
   ): void {
     const current = this.readRecordSync(sessionId);
     if (!current) throw new SessionNotFoundError(sessionId);
@@ -3189,6 +3198,7 @@ export class SqliteSessionMetadataStore {
     this.updateHeaderSync(
       sessionId,
       {
+        ...(lockConnection ? { connectionLocked: true } : {}),
         ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
       },
       {

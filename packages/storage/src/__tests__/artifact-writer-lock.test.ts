@@ -13,12 +13,19 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
-import { openHeadlessArtifactStoreForWrite } from '../artifact-stores.js';
-import { createSqliteArtifactStore, type CreateArtifactInput } from '../artifact-store.js';
+import {
+  openHeadlessArtifactStoreForWrite as openHeadlessArtifactStoreForWriteRaw,
+  type HeadlessArtifactStoreWriter,
+} from '../artifact-stores.js';
+import {
+  type ArtifactStore,
+  type CreateArtifactInput,
+  createSqliteArtifactStore,
+} from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import { createHeadlessRootLease, resolveStorageRoot } from '../root-authority.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
@@ -27,7 +34,38 @@ import { createSessionStore } from '../session-store.js';
 const TEST_TIMEOUT_MS = 15_000;
 const OPERATION_TIMEOUT_MS = 5_000;
 const COMPETING_PAYLOAD_BYTES = 4 * 1024 * 1024;
-const createArtifactStore = createSqliteArtifactStore;
+// Windows does not permit replacing or deleting a directory while SQLite has files open in it.
+// These tests exercise POSIX root-replacement semantics; Windows coverage verifies cleanup after
+// every owner is closed instead.
+const SKIP_OPEN_SQLITE_ROOT_REPLACEMENT = process.platform === 'win32';
+const artifactStoreClosersByRoot = new Map<string, Set<() => void>>();
+
+function createArtifactStore(root: string): ArtifactStore {
+  const store = createSqliteArtifactStore(root);
+  const closers = artifactStoreClosersByRoot.get(root) ?? new Set<() => void>();
+  closers.add(() => store.close?.());
+  artifactStoreClosersByRoot.set(root, closers);
+  return store;
+}
+
+async function openHeadlessArtifactStoreForWrite(
+  lease: Parameters<typeof openHeadlessArtifactStoreForWriteRaw>[0],
+): Promise<HeadlessArtifactStoreWriter> {
+  const store = await openHeadlessArtifactStoreForWriteRaw(lease);
+  const root = lease.canonicalPath;
+  const closers = artifactStoreClosersByRoot.get(root) ?? new Set<() => void>();
+  closers.add(() => store.close());
+  artifactStoreClosersByRoot.set(root, closers);
+  return store;
+}
+
+function closeArtifactStoresUnder(root: string): void {
+  for (const [storeRoot, closers] of artifactStoreClosersByRoot) {
+    if (storeRoot !== root && !storeRoot.startsWith(`${root}${sep}`)) continue;
+    artifactStoreClosersByRoot.delete(storeRoot);
+    for (const close of [...closers].reverse()) close();
+  }
+}
 
 test('public Store mutation waits for a child-held writer lock and preserves metadata', {
   timeout: TEST_TIMEOUT_MS,
@@ -176,6 +214,7 @@ test('mutations spanning initial root marking remain serialized by the bootstrap
 
 test('public mutation rejects an unmarked replacement installed while waiting for bootstrap', {
   timeout: TEST_TIMEOUT_MS,
+  skip: SKIP_OPEN_SQLITE_ROOT_REPLACEMENT,
 }, async () => {
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
@@ -245,6 +284,7 @@ test('public mutation through a retargeted alias stays bound to its verified can
 
 test('admitted lease-bound mutations reject a replacement root without modifying it', {
   timeout: TEST_TIMEOUT_MS,
+  skip: SKIP_OPEN_SQLITE_ROOT_REPLACEMENT,
 }, async () => {
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
@@ -289,6 +329,7 @@ test('admitted lease-bound mutations reject a replacement root without modifying
 
 test('lease-bound mutation does not rebuild a root deleted while waiting for the writer lock', {
   timeout: TEST_TIMEOUT_MS,
+  skip: SKIP_OPEN_SQLITE_ROOT_REPLACEMENT,
 }, async () => {
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
@@ -633,6 +674,7 @@ async function withTemporaryDirectory(run: (root: string) => Promise<void>): Pro
   try {
     await run(root);
   } finally {
+    closeArtifactStoresUnder(root);
     await rm(root, { recursive: true, force: true });
   }
 }

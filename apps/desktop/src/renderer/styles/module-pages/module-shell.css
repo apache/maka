@@ -1,65 +1,8 @@
-/* PR-UI-ALIGN-2: the module pages (技能 / 定时任务 / 每日回顾) breathe with a
-   single generous padding layer on the content-area card — ~24px like 参考实现,
-   not the old cramped 12px. Inner wrappers (plan-shell etc.) no longer re-pad. */
-.maka-module-main {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: var(--space-4);
-  padding: var(--space-16) var(--space-6) var(--space-6);
-  overflow: auto;
-}
-
-/* The skills module stacks THREE direct children (header, capability
-   audit strip, library) but the shared template only defines two rows,
-   so the strip landed in the minmax(0,1fr) row, collapsed to ~0 height,
-   and its caption bled over the banner below. Give any module main that
-   hosts the strip directly a third row. */
-.maka-module-main:has(> .maka-capability-audit-strip) {
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
-.maka-module-main-header {
-  width: min(100%, 900px);
-  margin-inline: auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-/* Module page titles use the display scale. Negative letter-spacing keeps
-   page-level headings compact at that size.
-
-   A deliberate override of Astryx's own guidance, which reserves display for
-   hero, marketing and data-callout text and says not to use it for document
-   headings. Every heading role in the ladder is weight 600 and tops out at
-   20px, so matching this title on weight would drop it from 25px to 20px —
-   level with the section headings underneath it, collapsing the one size step
-   that makes a page title read as one. Display keeps the size and gives up the
-   weight, which is the trade the vendor's own reasoning endorses at this size
-   (large text needs less weight). Same call at .settingsPageHeader h2;
-   nothing else in the renderer uses display outside a
-   real hero. */
-.maka-module-main-header h2 {
-  font: var(--maka-text-display-2);
-  margin: 0;
-  color: var(--foreground);
-  letter-spacing: var(--tracking-normal);
-}
-
-.maka-module-main-header p {
-  font: var(--maka-text-body);
-  margin: var(--space-1) 0 0;
-  color: var(--foreground-secondary);
-}
-
-/* Keep the lede a readable measure. The header is a flex row, so without a
-   cap the subtitle stretches to the full 900px clamp and outruns the title. */
-.maka-module-main-header [data-slot="page-header-content"] {
-  max-width: 560px;
-}
+/* The module pages (技能 / MCP / 定时任务 / 每日回顾) all render the shared
+   ModulePage primitive (Astryx Layout) via data-page-shell="layout" — the
+   hand-rolled grid + overflow this file used to own is retired, and with it
+   the scroll-containment bug class behind #2236. What remains here is the
+   layout shell and the shared page bar. */
 
 /* ── Astryx Layout page shell ──────────────────────────────────────────
    计划提醒 / 每日回顾 render an Astryx `Layout` (header / content / end
@@ -79,6 +22,37 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+}
+
+/* The inspector's own surface — the tonal step module-page.tsx says this app
+   separates columns with. It was the one column claiming that treatment
+   without carrying it: the panel painted nothing and inherited the content
+   column's white, so it read as loose content on the page rather than as a
+   region beside it (owner msg `1158e599`).
+
+   `--muted`, not `--color-background-surface`: measured, that token resolves
+   to the same pure white as `--background` here, so it would have been a
+   no-op against a white content column. `--muted` is the app's inset step and
+   is the one that actually produces a difference on this plate.
+
+   Scoped to the module page so it cannot reach the session panel on the left,
+   which is a different Astryx Layout panel with its own canvas tone. Styling
+   the vendor's semantic class follows the same precedent as the sidenav
+   override in shell-layout.css. */
+.maka-module-page .astryx-layout-panel {
+  background: var(--muted);
+}
+
+/* The ResizeHandle's wider hit area is absolutely positioned with a vendor
+   bug: it gets the pill's translateY(-50%) centering without the pill's
+   top:50%, so the full-height strip lands shifted half its height upward —
+   over the page header, where it swallows the toolbar's clicks (技能 / MCP
+   with the inspector open; 定时任务 has the same latent strip). Drop the
+   stray translate. The !important is load-bearing: the vendor injects the
+   transform unlayered with :not(#\#) escalation, which beats any layered
+   product rule. */
+.maka-module-page .astryx-resize-handle > :not(.astryx-resize-handle-pill) {
+  transform: none !important;
 }
 
 /* The page's one control bar: module switch on the left, this page's view +
@@ -146,17 +120,6 @@
   min-width: 0;
 }
 
-.maka-module-hub-heading {
-  align-items: center;
-  column-gap: var(--space-2);
-  row-gap: var(--space-2);
-}
-
-.maka-module-hub-selector {
-  flex: none;
-  white-space: nowrap;
-}
-
 .maka-module-main-actions {
   display: inline-flex;
   align-items: center;
@@ -165,15 +128,20 @@
   flex-wrap: wrap;
 }
 
+/* One shared search-result line across module pages: count on the left,
+   clear affordance on the right. */
+.maka-module-search-summary {
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1-5);
+  color: var(--muted-foreground);
+}
+
 @media (max-width: 820px) {
-  .maka-module-main {
-    padding: var(--space-4);
-  }
-
-  .maka-module-main-header {
-    display: grid;
-  }
-
   .maka-module-main-actions {
     justify-content: flex-start;
   }

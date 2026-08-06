@@ -37,7 +37,6 @@ import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provi
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 export type { ConnectionsBridge } from './provider-panel-shared';
-export { ProviderLogo, providerDisplay } from './provider-display';
 
 /**
  * Where the panel is. Four levels, one container, one back affordance:

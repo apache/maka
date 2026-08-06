@@ -123,6 +123,7 @@ describe('fetchProviderModels', () => {
   test('Fireworks bounds account concurrency while preserving normal pagination', async () => {
     let activeModelRequests = 0;
     let maxActiveModelRequests = 0;
+    const initialModelResponses: Array<() => void> = [];
     const server = await startJsonServer((request, response) => {
       const url = new URL(request.url ?? '', 'http://test.local');
       if (url.pathname === '/v1/accounts') {
@@ -136,7 +137,7 @@ describe('fetchProviderModels', () => {
 
       activeModelRequests += 1;
       maxActiveModelRequests = Math.max(maxActiveModelRequests, activeModelRequests);
-      setTimeout(() => {
+      const respondWithModels = () => {
         activeModelRequests -= 1;
         const account = url.pathname.match(/^\/v1\/accounts\/([^/]+)\/models$/)?.[1] ?? 'unknown';
         const pageToken = url.searchParams.get('pageToken');
@@ -144,7 +145,15 @@ describe('fetchProviderModels', () => {
           models: [{ name: `accounts/${account}/models/${pageToken ?? 'first'}` }],
           ...(account === 'team-0' && !pageToken ? { nextPageToken: 'second' } : {}),
         });
-      }, 10);
+      };
+      if (initialModelResponses.length < 4) {
+        initialModelResponses.push(respondWithModels);
+        if (initialModelResponses.length === 4) {
+          for (const respond of initialModelResponses) respond();
+        }
+        return;
+      }
+      respondWithModels();
     });
 
     const models = await fetchProviderModels(fireworksConnection(server.url), 'fireworks-key');

@@ -1,5 +1,7 @@
-import { PROVIDER_DEFAULTS, type ProviderType } from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
+import { type ModelRuntimeWire, resolveModelRuntime } from '@maka/runtime/model-runtime';
 import type { ProviderAuthProxyMode, ProviderUsageProtocol } from './provider-auth-proxy.js';
+import { modelApiProtocolFromEnv, selectedModelApiProtocol } from './provider-env.js';
 
 export type HarnessAgentId =
   | 'maka'
@@ -68,10 +70,21 @@ export function providerProxyUpstreamAuthMode(
     : 'bearer';
 }
 
+/**
+ * The model id as the provider itself spells it, with the catalog's `provider/`
+ * prefix removed. This is what the runtime dials with, so it is also the only
+ * spelling any provider-facing decision may be made on.
+ */
+export function modelIdForProvider(model: string, provider: string): string {
+  const prefix = `${provider}/`;
+  return model.startsWith(prefix) ? model.slice(prefix.length) : model;
+}
+
 export function providerProxyUsageProtocol(
   agent: HarnessAgentId,
   provider: string,
   apiProtocol?: string,
+  modelId?: string,
 ): ProviderUsageProtocol | undefined {
   if (agent === 'codex') return 'openai-responses-sse';
   if (agent === 'claude-code') return 'anthropic-sse';
@@ -79,9 +92,58 @@ export function providerProxyUsageProtocol(
   if (provider === 'kimi-coding-plan' && apiProtocol === 'openai-chat') return 'openai-chat-sse';
   if (provider === 'kimi-coding-plan' && apiProtocol === 'anthropic-messages')
     return 'anthropic-sse';
+  // The Maka arm dials whatever wire its own runtime resolves, so that runtime
+  // is the authority here — the adapter kind is a guess, and a guess that
+  // drifts is not a gap but a wrong number: when deepseek-v4-flash moved to
+  // Responses, a proxy still parsing Chat SSE never saw `[DONE]`, recorded
+  // every request `interrupted` with no usage, and the runner threw each
+  // graded cell away as an infra failure.
+  //
+  // Which model is not optional information for the Maka arm: without it there
+  // is nothing to ask the runtime and the answer silently degrades back to the
+  // guess. Say so rather than returning a plausible wrong number. The id is
+  // normalized here so a caller passing the catalog spelling cannot resolve a
+  // different wire than the one the runtime dials — `resolveModelRuntime`
+  // does not recognize `deepseek/deepseek-v4-flash` and falls back to Chat.
+  if (agent === 'maka') {
+    if (!modelId) throw new Error('providerProxyUsageProtocol: the maka arm requires a model id');
+    const wire = makaRuntimeWire(provider, modelIdForProvider(modelId, provider), apiProtocol);
+    if (wire) return usageProtocolForWire(wire);
+  }
   const definition = providerDefinition(provider);
   if (definition?.runtimeAdapter.kind === 'anthropic') return 'anthropic-sse';
   if (definition?.runtimeAdapter.kind === 'openai-compatible') return 'openai-chat-sse';
+  return undefined;
+}
+
+function makaRuntimeWire(
+  provider: string,
+  modelId: string,
+  apiProtocol?: string,
+): ModelRuntimeWire | null {
+  if (!providerDefinition(provider)) return null;
+  // The connection the runtime will actually build, not one this side invents:
+  // an advertised protocol only reaches the model entry for the providers whose
+  // connections carry it, and `selectedModelApiProtocol` is where that is
+  // decided. Honouring it here where the runtime drops it would resolve a wire
+  // nothing dials — the wrong-number failure this whole path exists to remove.
+  const advertised = selectedModelApiProtocol(
+    provider as ProviderType,
+    modelApiProtocolFromEnv(apiProtocol),
+  );
+  return resolveModelRuntime(
+    {
+      providerType: provider as ProviderType,
+      ...(advertised ? { models: [{ id: modelId, apiProtocol: advertised }] } : {}),
+    },
+    modelId,
+  ).wire;
+}
+
+function usageProtocolForWire(wire: ModelRuntimeWire): ProviderUsageProtocol | undefined {
+  if (wire === 'anthropic-messages') return 'anthropic-sse';
+  if (wire === 'openai-chat') return 'openai-chat-sse';
+  if (wire === 'openai-responses') return 'openai-responses-sse';
   return undefined;
 }
 

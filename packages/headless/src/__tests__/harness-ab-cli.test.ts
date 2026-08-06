@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
-import { TERMINAL_BENCH_2_1_TASK_IDS } from '../harness-ab-manifest.js';
+import { BENCHMARK_IDENTITY } from './benchmark-identity.js';
 import { buildHarborJobConfig } from '../harbor-task-runner.js';
 
 const execFileAsync = promisify(execFile);
@@ -231,6 +231,81 @@ test('harness A/B selects one named task only with an explicit run identity', as
   assert.equal(manifest.metadata.order.pilotTaskCount, 1);
   assert.equal(manifest.maxConcurrency, 1);
   assert.equal(manifest.maxConcurrentAttempts, 1);
+});
+
+test('harness A/B resumes a run at a different concurrency', async () => {
+  // Pacing is not identity, and the layer that decides identity is the manifest
+  // gate: it compares the whole manifest, pacing included, and refuses with
+  // "A/B run manifest does not match existing run id". Recovering three
+  // infra-failed cells out of an 89-task sweep therefore meant reproducing the
+  // sweep's concurrency number, on pain of not recovering the data at all —
+  // while the arms, the model and the task order were identical.
+  const { buildHarnessAbManifest, buildHarnessAbRunInput, resolveHarnessAbManifestForRun } =
+    await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-resume-pace-'));
+  try {
+    const manifestPath = join(dir, 'run-manifest.json');
+    const taskIds = ['bn-fit-modify', 'write-compressor'];
+    const base = {
+      subjectFingerprint: 'subject',
+      taskSourceFingerprint: 'tasks',
+      toolchainFingerprint: 'tools',
+      taskIds,
+    };
+    const sweep = buildHarnessAbManifest({ ...base, pairConcurrency: 2 });
+    const recovery = buildHarnessAbManifest({ ...base, pairConcurrency: 1 });
+    assert.notEqual(sweep.fingerprint, recovery.fingerprint);
+
+    const created = await resolveHarnessAbManifestForRun({
+      manifestPath,
+      proposedManifest: sweep,
+      retryRoundIds: [],
+    });
+    assert.equal(created.fingerprint, sweep.fingerprint);
+
+    const resumed = await resolveHarnessAbManifestForRun({
+      manifestPath,
+      proposedManifest: recovery,
+      retryRoundIds: [],
+    });
+    // Same run: the operator gets the run they were resuming, still recording
+    // the pace it was created with.
+    assert.equal(resumed.fingerprint, sweep.fingerprint);
+    assert.equal(resumed.maxConcurrency, 2);
+
+    // And the pace the operator asked for is the pace that runs. The gate hands
+    // back the run's original manifest, so reading pace from it would let the
+    // resume pass and then silently run at the old pace.
+    const runInput = buildHarnessAbRunInput({
+      runId: 'run',
+      runRoot: dir,
+      resultsJsonlPath: join(dir, 'results.jsonl'),
+      systemPromptPath: join(dir, 'prompt.txt'),
+      manifest: resumed,
+      evaluationTasks: [],
+      arms: [],
+      executionPolicy: { pairConcurrency: 1, armExecution: 'parallel' },
+      retryAdjudicatedInfraRoundIdsOnce: [],
+    });
+    assert.equal(resumed.maxConcurrency, 2);
+    assert.equal(runInput.pairConcurrency, 1);
+
+    // Identity itself still holds. A different task set is a different run.
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: buildHarnessAbManifest({
+          ...base,
+          taskIds: ['bn-fit-modify', 'adaptive-rejection-sampler'],
+          pairConcurrency: 2,
+        }),
+        retryRoundIds: [],
+      }),
+      /A\/B run manifest does not match existing run id/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('harness A/B selects an explicit task subset in one resumable run', async () => {
@@ -717,7 +792,11 @@ test('harness CLI freezes the synchronized DeepSeek three-way composition', asyn
     manifest.arms.map(
       (arm: { metadata?: { config?: { transport?: string } } }) => arm.metadata?.config?.transport,
     ),
-    ['openai-chat', 'openai-responses', 'anthropic-messages'],
+    // The Maka arm records the wire its runtime actually dials: deepseek-v4-flash
+    // resolves to Responses, so a manifest claiming Chat here would describe a
+    // run that never happened — and the proxy parsing it that way measured none
+    // of it.
+    ['openai-responses', 'openai-responses', 'anthropic-messages'],
   );
   assert.equal(manifest.maxConcurrentAttempts, 6);
   assert.equal(
@@ -1335,7 +1414,7 @@ test('harness A/B CLI rejects modified task contents before reading credentials'
   const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-cli-'));
   try {
     const tasksRoot = join(dir, 'tasks');
-    for (const id of TERMINAL_BENCH_2_1_TASK_IDS) {
+    for (const id of BENCHMARK_IDENTITY.terminalBench21.taskIds) {
       const taskDir = join(tasksRoot, `hash-${id}`, id);
       await mkdir(taskDir, { recursive: true });
       await writeFile(join(taskDir, 'task.toml'), '[agent]\ntimeout_sec = 900\n', 'utf8');

@@ -1,15 +1,14 @@
 import { MAX_READ_IMAGE_BYTES, type BackendKind, type StorageRef } from '@maka/core';
-import type {
-  EffectiveProductToolSurface,
-  MakaTool,
-  ToolResultArchiveResourceReader,
-} from '@maka/runtime';
+import type { EffectiveProductToolSurface, MakaTool } from '@maka/runtime';
 import {
   assertProductBindingCatalogClean,
   bashToolShellGuidance,
-  buildArchiveReadTool,
   buildForegroundBashTool,
+  buildManagedBashTool,
   buildParentAgentTools,
+  buildStopBackgroundTaskTool,
+  buildWriteStdinTool,
+  classifyRuntimeResourceRef,
   computeEditedSource,
   isSupportedImagePath,
   projectEffectiveProductToolSurface,
@@ -36,12 +35,6 @@ import {
 
 export interface BuildIsolatedHeadlessToolsOptions {
   agentTools?: boolean;
-  /**
-   * Ref-addressed archive reader. Supplying it binds `ArchiveRead`, which pruned
-   * tool results name explicitly in their placeholders. Pass it whenever the host
-   * also archives tool results, or the model is told to call a tool it does not have.
-   */
-  archiveResources?: ToolResultArchiveResourceReader;
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
   heavyTaskProgress?: HeavyTaskProgressRecorder;
   heavyTaskSelfCheck?: HeavyTaskSelfCheckRecorder;
@@ -99,18 +92,26 @@ export function buildIsolatedHeadlessProductToolSurface(
   executor: IsolatedToolExecutor,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'archiveResources' | 'heavyTaskEvidence' | 'snapshotImage'
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
   > = {},
 ): EffectiveProductToolSurface {
   const productTools = [
     buildIsolatedBashTool(executor, options),
+    // Bound together with the managed Bash that produces their refs: a model
+    // told to run something in the background must be able to observe, write
+    // to, and stop it, or it is better off never starting it.
+    ...(executor.shellSessions
+      ? [
+          buildStopBackgroundTaskTool(executor.shellSessions),
+          buildWriteStdinTool(executor.shellSessions),
+        ]
+      : []),
     buildIsolatedReadTool(executor, options),
     buildIsolatedWriteTool(executor, options),
     buildIsolatedEditTool(executor, options),
     buildIsolatedGlobTool(executor, options),
     buildIsolatedGrepTool(executor, options),
     ...buildParentAgentTools(),
-    ...(options.archiveResources ? [buildArchiveReadTool(options.archiveResources)] : []),
   ];
   assertProductBindingCatalogClean(
     'headless',
@@ -135,7 +136,7 @@ export function buildHeadlessProductToolSurfaceForBackend(
   executor: IsolatedToolExecutor | undefined,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'archiveResources' | 'heavyTaskEvidence' | 'snapshotImage'
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
   > = {},
 ): EffectiveProductToolSurface | undefined {
   if (!headlessBackendBindsMakaProductTools(backend) || !executor) return undefined;
@@ -161,16 +162,67 @@ export function buildIsolatedHeadlessSupplementalTools(
   return tools;
 }
 
+const ISOLATED_BASH_LEAD =
+  'Run a shell command in the isolated headless task workspace. ' +
+  'Use it for inspection, builds, and task-local generation; prefer Read/Grep/Write/Edit for exact file operations and preserve required deliverables.';
+
 export function buildIsolatedBashTool(
   executor: IsolatedToolExecutor,
   options: Pick<BuildIsolatedHeadlessToolsOptions, 'heavyTaskEvidence'> = {},
 ): MakaTool {
+  const sessions = executor.shellSessions;
+  if (sessions) {
+    return buildManagedBashTool(sessions, {
+      lead: ISOLATED_BASH_LEAD,
+      ...(executor.shell ? { shell: executor.shell } : {}),
+      // No in-process sandbox manager exists behind an external isolation
+      // boundary, so there is no authority for the model to declare.
+      declareSandboxBoundary: false,
+      // Same resolver as the unmanaged path: a command must not be killed at a
+      // different time depending on which isolation mode ran it.
+      defaultTimeoutMs: (command) =>
+        cleanupCommandTimeoutMs(command) ?? sessions.defaultCommandTimeoutMs,
+      // The only reason this hook exists: ShellRunProcessManager falls back to
+      // the headless process's own env when a launch carries none, and in a
+      // Harbor cell that env holds the provider credentials. The executor's
+      // stripped env is the same one `exec` uses.
+      transformCommand: ({ ctx }) => ({ cwd: ctx.cwd, env: sessions.commandEnv }),
+      ...(options.heavyTaskEvidence
+        ? {
+            afterResult: async (input, result, ctx) => {
+              // Only a foreground result carries a completed command's output,
+              // which is what the Bash evidence contract describes. A background
+              // launch has produced none yet, and reading its ref later yields a
+              // live task's screen — neither a file read nor a finished command —
+              // so nothing is recorded for it on either call.
+              if (result.kind !== 'terminal' || result.output.mode !== 'pipes') return;
+              await options.heavyTaskEvidence?.recordToolEvidence(
+                {
+                  name: 'Bash',
+                  input: {
+                    command: input.command,
+                    cwd: input.cwd,
+                    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+                  },
+                  result: {
+                    exitCode: result.exitCode ?? 1,
+                    stdout: result.output.stdout,
+                    stderr: result.output.stderr,
+                    stdoutTruncated: result.output.stdoutTruncated,
+                    stderrTruncated: result.output.stderrTruncated,
+                    ...(result.status === 'timed_out' ? { timedOut: true } : {}),
+                  },
+                },
+                ctx,
+              );
+            },
+          }
+        : {}),
+    });
+  }
   const guidance = executor.shell ? bashToolShellGuidance(executor.shell) : '';
   return buildForegroundBashTool({
-    description:
-      'Run a shell command in the isolated headless task workspace. ' +
-      'Use it for inspection, builds, and task-local generation; prefer Read/Grep/Write/Edit for exact file operations and preserve required deliverables.' +
-      (guidance ? ` ${guidance}` : ''),
+    description: ISOLATED_BASH_LEAD + (guidance ? ` ${guidance}` : ''),
     defaultTimeoutMs: cleanupCommandTimeoutMs,
     emitReturnedOutput: true,
     execute: async ({ command, cwd, timeoutMs, ctx }) => {
@@ -203,17 +255,54 @@ export function buildIsolatedReadTool(
   executor: IsolatedToolExecutor,
   options: Pick<BuildIsolatedHeadlessToolsOptions, 'heavyTaskEvidence' | 'snapshotImage'> = {},
 ): MakaTool {
+  const sessions = executor.shellSessions;
+  const offsetField = z.number().int().nonnegative().optional();
+  const limitField = z.number().int().positive().optional();
   return {
     name: 'Read',
     description:
-      'Read a text file or view a PNG, JPEG, GIF, or WebP image from the isolated headless task workspace. Use Read on screenshots when visual inspection is needed.',
-    parameters: z.object({
-      path: z.string(),
-      offset: z.number().int().nonnegative().optional(),
-      limit: z.number().int().positive().optional(),
-    }),
-    impl: async ({ path, offset, limit }, ctx) => {
+      'Read a text file or view a PNG, JPEG, GIF, or WebP image from the isolated headless task workspace. Use Read on screenshots when visual inspection is needed.' +
+      (sessions
+        ? ' Read a background task with ref instead of path to see its current output or terminal screen.'
+        : ''),
+    // The ref field only appears when something can return a ref. Without
+    // managed sessions the schema stays byte-for-byte what it was.
+    parameters: sessions
+      ? z
+          .object({
+            path: z.string().optional(),
+            ref: z
+              .string()
+              .optional()
+              .describe('A background task ref returned by Bash; provide it instead of path'),
+            offset: offsetField,
+            limit: limitField,
+          })
+          .superRefine((value, ctx) => {
+            if ((value.path === undefined) === (value.ref === undefined)) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['path'],
+                message: 'Provide exactly one of path or ref',
+              });
+            }
+          })
+      : z.object({ path: z.string(), offset: offsetField, limit: limitField }),
+    impl: async (rawInput, ctx) => {
+      const { offset, limit } = rawInput;
+      const ref = 'ref' in rawInput ? rawInput.ref : undefined;
+      if (ref !== undefined) {
+        if (!sessions) throw new Error('Runtime resources are not available in this toolset');
+        if (classifyRuntimeResourceRef(ref) !== 'runtime') {
+          throw new Error(`Unsupported runtime resource ref: ${ref}`);
+        }
+        // Not recorded as heavy-task evidence: that contract describes a file
+        // read (cwd + path + content), and a live task's screen is neither.
+        return await sessions.readRuntimeResource(ctx.sessionId, ref, ctx.abortSignal);
+      }
       const { cwd } = ctx;
+      if (rawInput.path === undefined) throw new Error('Read requires path or ref');
+      const path = rawInput.path;
       const normalizedPath = normalizeWorkspacePath(path, cwd, 'Read path');
       const input = { cwd, path: normalizedPath, offset, limit };
       if (isSupportedImagePath(normalizedPath)) {

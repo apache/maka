@@ -1,2 +1,2 @@
-export type { CredentialKind, CredentialStore } from '@maka/storage';
-export { CREDENTIAL_SCHEMA_VERSION, createFileCredentialStore } from '@maka/storage';
+export type { CredentialStore } from '@maka/storage';
+export { createFileCredentialStore } from '@maka/storage';

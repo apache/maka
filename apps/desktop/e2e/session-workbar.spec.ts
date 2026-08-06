@@ -23,8 +23,9 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expect(resize).toHaveAttribute('aria-valuemax', '600');
   await resize.focus();
   await resize.press('ArrowLeft');
-  await expect(resize).toHaveAttribute('aria-valuenow', '410');
-  await expect(workbar).toHaveCSS('width', '410px');
+  // 480 default (session-workbar-layout.ts) + the hook's 10px keyboard step.
+  await expect(resize).toHaveAttribute('aria-valuenow', '490');
+  await expect(workbar).toHaveCSS('width', '490px');
 
   // The seam is the canvas between two plates, and it is asserted as a GAP,
   // not as a colour. Comparing the workbar's tone to another surface is what
@@ -65,8 +66,8 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await page.mouse.down();
   await page.mouse.move(box.x - 20.5, y, { steps: 2 });
   await page.mouse.up();
-  await expect(workbar).toHaveCSS('width', '431px');
-  await expect(resize).toHaveAttribute('aria-valuenow', '431');
+  await expect(workbar).toHaveCSS('width', '511px');
+  await expect(resize).toHaveAttribute('aria-valuenow', '511');
 
   // Cmd+Tab mid-drag and release outside the app: Astryx only ends a drag on
   // pointerup/pointercancel, so without a blur guard the listeners survive and
@@ -77,7 +78,7 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await page.evaluate(() => window.dispatchEvent(new Event('blur')));
   await page.mouse.move(box.x - 200, y, { steps: 2 });
   await page.mouse.up();
-  await expect(workbar).toHaveCSS('width', '431px');
+  await expect(workbar).toHaveCSS('width', '511px');
   await expect(page.locator('body')).toHaveCSS('user-select', 'auto');
 
   // Which key the width lands on is the load-bearing decision of #1861 and the
@@ -87,7 +88,7 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   // `autoSaveId` would orphan the user's stored width silently.
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem('maka-session-workbar-width-v1')))
-    .toBe('431');
+    .toBe('511');
   expect(
     await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('astryx-resizable:'))),
   ).toEqual([]);
@@ -136,7 +137,7 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expand.click();
   await expect(workbar).toBeVisible();
   // The width the drag above landed on, restored rather than reset.
-  await expect(motion).toHaveCSS('width', '431px');
+  await expect(motion).toHaveCSS('width', '511px');
   await tabs.getByRole('button', { name: /文件/ }).click();
   await expect(workbar.getByText('暂无生成文件')).toBeVisible();
 
@@ -198,6 +199,6 @@ test('the column stays mounted for the whole slide, every time', async ({
   await collapseOnce();
   await page.getByRole('button', { name: '展开会话工作栏' }).click();
   await expect(page.getByRole('complementary', { name: '会话工作栏' })).toBeVisible();
-  await expect(motion).toHaveCSS('width', '400px');
+  await expect(motion).toHaveCSS('width', '480px');
   await collapseOnce();
 });

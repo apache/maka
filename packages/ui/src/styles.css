@@ -502,9 +502,51 @@
    belongs to the panel, not to the shared class. */
 .maka-tool-output-panel .maka-tool-diff-body {
   font: var(--maka-text-code);
+  /* The `font` shorthand resets `font-variant-ligatures`, and this rule
+     outranks the `none` the shared class declares — so the panel's diff was
+     the one code surface in the app rendering `===` as `⩶` and `=>` as `⇒`.
+     Every other `font: var(--maka-text-code)` rule restates it for the same
+     reason; this one had not. */
   padding-block: 0;
+  font-variant-ligatures: none;
 }
 .maka-tool-diff-line { display: block; padding-inline: var(--space-2); white-space: pre; }
+.maka-tool-diff-gutter {
+  display: inline-block;
+  box-sizing: content-box;
+  text-align: right;
+  padding-right: var(--space-2);
+  margin-right: var(--space-1);
+  border-right: 1px solid var(--border);
+  color: var(--muted-foreground);
+  user-select: none;
+}
+/* The marker column: two character cells, the sign and a blank, so an
+   addition's code starts in the same place as the context line above it and
+   the sign is not crowding the first token. `ch` rather than a px gap because
+   this sits in a monospace body — one more cell keeps the code on the same
+   grid the file itself is written on, where 4px would leave it between two.
+   The column keeps the line's tint colour — the sign is what the colour is
+   naming — while `.maka-tool-diff-code` hands the code back to syntax
+   colouring. Every row gets the cell, including the markerless ones: a
+   `\ No newline at end of file` that hugged column 0 while the code beside it
+   did not was the same misalignment on a different row. */
+.maka-tool-diff-marker {
+  display: inline-block;
+  width: 2ch;
+}
+/* Neutral base under the `astryx-token-*` spans. Without it an added line's
+   uncoloured text would stay green and a deleted line's red, which is the
+   flat single-tint reading the tokens exist to break up; the row's background
+   tint and its marker carry add/del on their own.
+
+   This is also what brings context lines up from `--foreground-secondary` to
+   full foreground, which is deliberate rather than collateral: once a context
+   line's keywords and strings are syntax-coloured, dimming only the text
+   between them reads as damage, not as de-emphasis. The row's flat background
+   is what says "unchanged" now. */
+.maka-tool-diff-code { color: var(--foreground); }
+.maka-tool-diff-line[data-line="meta"] .maka-tool-diff-code { color: inherit; }
 .maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
 .maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {

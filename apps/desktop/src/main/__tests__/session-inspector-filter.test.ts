@@ -5,6 +5,7 @@ import {
   applyInspectorFilter,
   isEmptyInspectorFilter,
 } from '../../renderer/session-inspector-filter.js';
+import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import type {
   InspectorPanelModel,
   InspectorStepRow,
@@ -24,7 +25,7 @@ function step(overrides: Partial<InspectorStepRow> = {}): InspectorStepRow {
 function turn(overrides: Partial<InspectorTurnRow> = {}): InspectorTurnRow {
   return {
     turnId: 'turn-1',
-    startedAt: 1_000,
+    index: 1,
     durationMs: 500,
     totals: emptyTraceTotals(),
     failed: false,
@@ -37,6 +38,7 @@ function model(turns: InspectorTurnRow[], totals: TraceTotals = emptyTraceTotals
   return { turns, totals, empty: turns.length === 0 };
 }
 
+const copy = getDesktopConversationCopy('zh').inspector;
 describe('inspector filter', () => {
   it('treats an absent or blank filter as no filter at all', () => {
     assert.equal(isEmptyInspectorFilter(undefined), true);
@@ -45,7 +47,7 @@ describe('inspector filter', () => {
     assert.equal(isEmptyInspectorFilter({ failedOnly: true }), false);
 
     const source = model([turn()]);
-    const result = applyInspectorFilter(source, undefined);
+    const result = applyInspectorFilter(source, undefined, copy);
     assert.equal(result.filtered, false);
     assert.deepEqual(result.turns, source.turns);
   });
@@ -58,7 +60,7 @@ describe('inspector filter', () => {
       }),
     ]);
 
-    const byTool = applyInspectorFilter(source, { query: 'bash' });
+    const byTool = applyInspectorFilter(source, { query: 'bash' }, copy);
     assert.deepEqual(
       byTool.turns[0]?.steps.map((entry) => entry.id),
       ['a'],
@@ -66,17 +68,17 @@ describe('inspector filter', () => {
     );
     assert.equal(byTool.hiddenSteps, 1);
 
-    const byModel = applyInspectorFilter(source, { query: 'GPT' });
+    const byModel = applyInspectorFilter(source, { query: 'GPT' }, copy);
     assert.deepEqual(byModel.turns[0]?.steps.map((entry) => entry.id), ['b']);
   });
 
-  it('keeps a turn whose id matches even when it has no steps at all', () => {
+  it('keeps a turn whose display name matches even when it has no steps at all', () => {
     // The zero-step path is the one worth pinning: with steps present, the step
     // haystack could carry the match instead and the branch would never run.
-    const source = model([turn({ turnId: 'turn-a', steps: [] })]);
-    const result = applyInspectorFilter(source, { query: 'turn-a' });
+    const source = model([turn({ turnId: 'turn-a', index: 7, steps: [] })]);
+    const result = applyInspectorFilter(source, { query: '第 7 轮' }, copy);
 
-    assert.equal(result.turns.length, 1, 'answering "where is turn-a" with silence is wrong');
+    assert.equal(result.turns.length, 1, 'answering "where is 第 7 轮" with silence is wrong');
     assert.equal(result.hiddenTurns, 0);
     assert.equal(result.turns[0]?.steps.length, 0);
   });
@@ -88,7 +90,7 @@ describe('inspector filter', () => {
       turn({ turnId: 'ok' }),
       turn({ turnId: 'bad', failed: true, steps: [] }),
     ]);
-    const result = applyInspectorFilter(source, { failedOnly: true });
+    const result = applyInspectorFilter(source, { failedOnly: true }, copy);
 
     assert.deepEqual(
       result.turns.map((entry) => entry.turnId),
@@ -96,20 +98,22 @@ describe('inspector filter', () => {
     );
   });
 
-  it('does not let one turn-level failure message retain every step', () => {
+  it('does not let the turn\'s own failure retain every step under it', () => {
     // Turn text belongs to the turn. Folding it into each step's haystack made
     // a single match keep steps that explain nothing about it.
     const source = model([
       turn({
         turnId: 'turn-a',
         failed: true,
-        failureMessage: 'disk full',
+        failureCode: 'tool_failed',
         steps: [step({ id: 'a', label: 'Bash' }), step({ id: 'b', label: 'claude' })],
       }),
     ]);
 
-    const result = applyInspectorFilter(source, { query: 'disk full' });
-    assert.equal(result.turns.length, 0, 'no rendered row explains that phrase');
+    const result = applyInspectorFilter(source, { query: '工具失败' }, copy);
+    assert.equal(result.turns.length, 1, 'the turn announces it, so the turn matches');
+    assert.equal(result.turns[0]?.steps.length, 0, 'no step renders that phrase');
+    assert.equal(result.hiddenSteps, 2);
   });
 
   it('failed-only drops whole turns that succeeded', () => {
@@ -118,7 +122,7 @@ describe('inspector filter', () => {
       turn({ turnId: 'bad', failed: true, failureCode: 'tool_failed' }),
     ]);
 
-    const result = applyInspectorFilter(source, { failedOnly: true });
+    const result = applyInspectorFilter(source, { failedOnly: true }, copy);
     assert.deepEqual(result.turns.map((entry) => entry.turnId), ['bad']);
     assert.equal(result.hiddenTurns, 1);
   });
@@ -127,7 +131,7 @@ describe('inspector filter', () => {
     // "Nothing matches your filter" and "this session did nothing" are
     // different claims, and only the panel can tell the reader which it is.
     const source = model([turn()]);
-    const result = applyInspectorFilter(source, { query: 'no-such-thing' });
+    const result = applyInspectorFilter(source, { query: 'no-such-thing' }, copy);
 
     assert.equal(result.turns.length, 0);
     assert.equal(result.filtered, true);
@@ -135,13 +139,35 @@ describe('inspector filter', () => {
     assert.equal(result.empty, false, 'the session still happened');
   });
 
+  it('searches the words on screen, not the identifiers behind them', () => {
+    // The panel renders `语义压缩` and `已允许`; the trace records
+    // `semantic_compact` and `allow`. A reader types what they see.
+    const source = model([
+      turn({
+        steps: [
+          step({ id: 'a', label: 'claude', callKind: 'semantic_compact' }),
+          step({ id: 'b', kind: 'permission', label: 'Bash', decision: 'allow' }),
+        ],
+      }),
+    ]);
+
+    assert.equal(applyInspectorFilter(source, { query: '语义压缩' }, copy).turns[0]?.steps.length, 1);
+    assert.equal(applyInspectorFilter(source, { query: '已允许' }, copy).turns[0]?.steps.length, 1);
+  });
+
+  it('names a step by its kind when it has no identifier, and finds it by that name', () => {
+    const source = model([turn({ steps: [step({ id: 'c', kind: 'compaction', label: undefined })] })]);
+
+    assert.equal(applyInspectorFilter(source, { query: '上下文压缩' }, copy).turns[0]?.steps.length, 1);
+  });
+
   it('leaves session totals alone so a filtered view cannot restate the bill', () => {
     // Totals answer "what did this session cost". Recomputing them per filter
     // would produce a number that is true of nothing.
     const totals: TraceTotals = { ...emptyTraceTotals(), modelAttempts: 4, costUsd: 0.2 };
-    const source = model([turn({ steps: [step({ costUsd: 0.05 })] })], totals);
+    const source = model([turn()], totals);
 
-    const result = applyInspectorFilter(source, { query: 'no-such-thing' });
+    const result = applyInspectorFilter(source, { query: 'no-such-thing' }, copy);
     assert.deepEqual(result.totals, totals);
   });
 });
