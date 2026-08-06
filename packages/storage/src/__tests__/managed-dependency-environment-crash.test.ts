@@ -9,18 +9,26 @@ import test from 'node:test';
 import {
   computeManagedDependencyEnvironmentIdentity,
   createManagedDependencyEnvironmentAuthority,
+  createManagedDependencyEnvironmentProducerCapability,
   type ManagedDependencyEnvironmentFailpoint,
 } from '../managed-dependency-environment.js';
 
 const execFileAsync = promisify(execFile);
+const producerCapability = createManagedDependencyEnvironmentProducerCapability(
+  `sha256:${'a'.repeat(64)}`,
+);
 const childEntrypoint = fileURLToPath(
   new URL('./fixtures/managed-dependency-environment-crash-child.js', import.meta.url),
 );
 
 for (const failpoint of [
+  'during_environment_provision',
   'after_environment_receipt_durable',
   'after_environment_publish',
-] as const satisfies readonly ManagedDependencyEnvironmentFailpoint[]) {
+] as const satisfies readonly (
+  | ManagedDependencyEnvironmentFailpoint
+  | 'during_environment_provision'
+)[]) {
   test(`converges after process exit at ${failpoint}`, async (t) => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-crash-'));
     t.after(() => rm(storageRoot, { recursive: true, force: true }));
@@ -40,6 +48,7 @@ for (const failpoint of [
     const authority = await createManagedDependencyEnvironmentAuthority({
       storageRoot,
       producer: {
+        capability: producerCapability,
         packageManagerName: 'npm',
         packageManagerVersion: '11.12.1',
         nodeRuntime: {
@@ -86,6 +95,8 @@ function dependencySource() {
     nodeAbi: '137',
     platform: process.platform,
     arch: process.arch,
+    producerRuntimeIdentitySha256: producerCapability.runtimeIdentitySha256,
+    producerPolicyIdentitySha256: producerCapability.policyIdentitySha256,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
 }

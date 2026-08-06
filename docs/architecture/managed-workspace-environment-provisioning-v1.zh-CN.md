@@ -63,6 +63,8 @@ nodeVersion
 nodeAbi
 platform
 arch
+producerRuntimeIdentitySha256
+producerPolicyIdentitySha256
 policyVersion
 artifactRoot
 ```
@@ -71,7 +73,7 @@ v1 不新增 durable worktree-environment binding 行。Owner 在一次 admissio
 `baselineTreeOid + environmentId lease`，然后把 cwd 与 dependency root 只放进 owner-token 保护的 active scope。
 `baselineTreeOid` 不进入共享 artifact receipt，否则两个依赖完全相同、只改了业务源码的 baseline 会被错误地禁止复用同一 environment。
 
-`environmentId` 对上述决定内容与执行兼容性的字段做 domain-separated canonical hash。时间、绝对 source path、sessionId 和 worktreeId 不进入 identity，因此同一平台上相同依赖状态可以共享；平台、架构、Node ABI 或 policy 不同则不能共享。
+`environmentId` 对上述决定内容与执行兼容性的字段做 domain-separated canonical hash。producer runtime identity 同时绑定已验证 bundled npm manifest 的完整 runtime tree digest、Node executable digest、Node version/ABI 和 platform/arch；producer policy identity 来自精确的 hermetic capability profile。时间、绝对 source path、sessionId 和 worktreeId 不进入 identity，因此同一平台上相同依赖状态可以共享；平台、架构、Node ABI、producer runtime 或 policy 不同则不能共享。
 
 ### 2.3 原子性边界
 
@@ -80,7 +82,8 @@ v1 不新增 durable worktree-environment binding 行。Owner 在一次 admissio
 ```text
 compute identity
   -> acquire environmentId lease
-  -> provision into Maka-owned staging directory
+  -> provision into Maka-owned staging project
+     (write staging package.json/package-lock.json; never receive or write worktree path)
   -> verify producer result and write receipt
   -> fsync files/receipt where supported
   -> atomic rename staging -> environments/<environmentId>
@@ -101,6 +104,8 @@ dependency_environment_v1(
   package manager name + exact version,
   Node version + ABI,
   platform + arch,
+  verified producer runtime tree digest,
+  hermetic producer policy digest,
   environment policy version
 )
 ```
@@ -116,6 +121,11 @@ dependency_environment_v1(
 - v1 默认软配额为 2 GiB；receipt 记录内容字节数，每次 acquire 更新 artifact 的最后租用时间，release 后按 LRU
   删除未租用 artifact，active lease 与本次刚释放的 artifact 不得删除。配额是缓存治理，不进入 environment identity；
   `.staging` 由新 owner 启动时独立清理。
+- artifact cache 可以被不同 baseline 复用；workspace-specific binding 则只存在于一次 owner-bound execution scope 中，组合
+  `baselineTreeOid + environmentId lease`，两者不是同一个概念，也不新增 durable binding 表。
+- v1 的 lease/GC 依附于持有 OS 级独占 storage-root write lock 的 `ManagedWorkspaceOwner`。同一 storage root 不允许第二个
+  Desktop/CLI writer owner 同时进入，因此不会出现另一个合法 owner 跨进程删除 active artifact；未来若允许多 writer，必须先把
+  lease/GC 升级成跨进程协议，不能复用当前进程内计数。
 
 ## 4. Owner-bound logical binding
 
@@ -153,6 +163,21 @@ M1.3 不宣称能物理阻止用户修改 app-data 中的 artifact。owner 在�
 
 生产 producer 必须绑定可验证的 package-manager runtime。M1.3 随 Desktop release 打包固定的 npm 12.0.2
 JavaScript runtime，并用全量文件 inventory、逐文件 SHA-256、Node version/ABI 与 platform/arch 共同确定 authority：
+
+producer 不是一个可任意扩展的通用函数。authority 只接受精确的 `hermetic_dependency_builder_v1` capability：
+
+```text
+network: registry_https_only
+filesystem: maka_owned_staging_only
+secrets: none
+childProcess: verified_runtime_only
+lifecycleScripts: disabled
+```
+
+该 capability 的 policy digest 与 bundled runtime tree digest 同时进入 environment identity 和 durable receipt。新增 producer
+必须定义新的显式 capability/policy identity 并单独证明其网络、文件系统、secret 与 child-process 边界；不能在现有 capability
+下加入 `curl`、`git clone`、任意 shell 或系统 package manager fallback。这里的 capability 是 admission contract；实际生产路径仍只
+组装经过完整 manifest 验证的 bundled npm producer，不把类型声明冒充操作系统 sandbox。
 
 - M1.3 authority/binding 不得调用系统 package manager；
 - 测试 producer 只能用于 production-shaped fixture，不能成为默认生产 fallback；
@@ -216,7 +241,7 @@ managed_dependency_environment_busy
 | publish rename 前后 | 最多一个 canonical artifact |
 | logical binding/scope 签发前后 | 无 durable half-binding；新进程必须重新 acquire artifact |
 | scope 签发前进程退出 | 无 durable half-scope |
-| 两进程同时 provision 同 identity | 一个 publish；另一个 reopen 同 artifact |
+| 第二个 Desktop/CLI writer 同时打开同一 storage root | 在 root-owner OS lock 处失败，不进入 provision/GC |
 | source checkout 有 `node_modules` | 永不读取、复制或链接它 |
 | 伪造/过期/cross-owner scope | worker dispatch 前 fail closed |
 | 用户修改 shared artifact | 所有新 admission fail closed，保留现场供诊断 |

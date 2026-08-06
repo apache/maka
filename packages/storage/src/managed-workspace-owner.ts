@@ -30,6 +30,7 @@ import {
 } from './managed-workspace-worker-bridge-internal.js';
 import {
   computeManagedDependencyEnvironmentIdentity,
+  createManagedDependencyEnvironmentProducerCapability,
   createManagedDependencyEnvironmentAuthority,
   type ManagedDependencyEnvironmentAuthority,
   type ManagedDependencyEnvironmentProducer,
@@ -134,6 +135,8 @@ export type {
   ManagedWorkspaceReadOnlyResult,
   VerifiedGitRuntimeInput,
 };
+
+export { createManagedDependencyEnvironmentProducerCapability };
 
 const owners = new WeakMap<InteractiveRootOwner, object>();
 
@@ -571,6 +574,8 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         nodeAbi: this.dependencyProducer.nodeRuntime.abi,
         platform: this.dependencyProducer.nodeRuntime.platform,
         arch: this.dependencyProducer.nodeRuntime.arch,
+        producerRuntimeIdentitySha256: this.dependencyProducer.capability.runtimeIdentitySha256,
+        producerPolicyIdentitySha256: this.dependencyProducer.capability.policyIdentitySha256,
         policyVersion: 'managed_dependency_environment_v1',
       });
       return await this.dependencyAuthority.acquire(identity, { manifestBytes, lockfileBytes });

@@ -6,7 +6,13 @@ import { test } from 'node:test';
 import {
   computeManagedDependencyEnvironmentIdentity,
   createManagedDependencyEnvironmentAuthority,
+  createManagedDependencyEnvironmentProducerCapability,
 } from '../managed-dependency-environment.js';
+
+const FIXTURE_PRODUCER_RUNTIME_IDENTITY = `sha256:${'a'.repeat(64)}` as const;
+const FIXTURE_PRODUCER_CAPABILITY = createManagedDependencyEnvironmentProducerCapability(
+  FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+);
 
 test('computes one shared environment identity for equivalent dependency inputs', () => {
   const input = {
@@ -20,6 +26,8 @@ test('computes one shared environment identity for equivalent dependency inputs'
     nodeAbi: '137',
     platform: 'linux' as const,
     arch: 'x64' as const,
+    producerRuntimeIdentitySha256: `sha256:${'1'.repeat(64)}` as const,
+    producerPolicyIdentitySha256: `sha256:${'2'.repeat(64)}` as const,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
 
@@ -38,12 +46,49 @@ test('computes one shared environment identity for equivalent dependency inputs'
     first.environmentId,
     computeManagedDependencyEnvironmentIdentity({ ...input, platform: 'darwin' }).environmentId,
   );
+  assert.notEqual(
+    first.environmentId,
+    computeManagedDependencyEnvironmentIdentity({
+      ...input,
+      producerRuntimeIdentitySha256: `sha256:${'3'.repeat(64)}`,
+    }).environmentId,
+  );
+  assert.notEqual(
+    first.environmentId,
+    computeManagedDependencyEnvironmentIdentity({
+      ...input,
+      producerPolicyIdentitySha256: `sha256:${'4'.repeat(64)}`,
+    }).environmentId,
+  );
+});
+
+test('rejects a producer that does not declare the exact hermetic capability', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-capability-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    createManagedDependencyEnvironmentAuthority({
+      storageRoot,
+      producer: {
+        capability: {
+          ...FIXTURE_PRODUCER_CAPABILITY,
+          network: 'unrestricted' as never,
+        },
+        packageManagerName: 'npm',
+        packageManagerVersion: '11.12.1',
+        nodeRuntime: fixtureNodeRuntime(),
+        async provision() {},
+      },
+    }),
+    /producer capability is invalid/u,
+  );
 });
 
 test('rejects a published environment whose dependency content was modified', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-tamper-'));
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
   const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
     packageManagerName: 'npm' as const,
     packageManagerVersion: '11.12.1',
     nodeRuntime: fixtureNodeRuntime(),
@@ -63,6 +108,8 @@ test('rejects a published environment whose dependency content was modified', as
     nodeAbi: '137',
     platform: process.platform,
     arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
   const identity = computeManagedDependencyEnvironmentIdentity(identityInput);
@@ -84,6 +131,7 @@ test('rejects a receipt with fields outside the v1 envelope', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-receipt-'));
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
   const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
     packageManagerName: 'npm' as const,
     packageManagerVersion: '11.12.1',
     nodeRuntime: fixtureNodeRuntime(),
@@ -102,6 +150,8 @@ test('rejects a receipt with fields outside the v1 envelope', async (t) => {
     nodeAbi: '137',
     platform: process.platform,
     arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
   const identity = computeManagedDependencyEnvironmentIdentity(source);
@@ -124,6 +174,7 @@ test('publishes one Maka-owned artifact for concurrent equivalent acquisitions',
   const authority = await createManagedDependencyEnvironmentAuthority({
     storageRoot,
     producer: {
+      capability: FIXTURE_PRODUCER_CAPABILITY,
       packageManagerName: 'npm',
       packageManagerVersion: '11.12.1',
       nodeRuntime: fixtureNodeRuntime(),
@@ -149,6 +200,8 @@ test('publishes one Maka-owned artifact for concurrent equivalent acquisitions',
     nodeAbi: '137',
     platform: process.platform,
     arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
   const identity = computeManagedDependencyEnvironmentIdentity(identityInput);
@@ -177,6 +230,7 @@ test('collects the least-recently-used unleased environment under the cache quot
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
   let provisionCalls = 0;
   const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
     packageManagerName: 'npm' as const,
     packageManagerVersion: '11.12.1',
     nodeRuntime: fixtureNodeRuntime(),
@@ -201,6 +255,8 @@ test('collects the least-recently-used unleased environment under the cache quot
     nodeAbi: '137',
     platform: process.platform,
     arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
   const firstIdentity = computeManagedDependencyEnvironmentIdentity(source);

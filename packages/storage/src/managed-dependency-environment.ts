@@ -21,6 +21,17 @@ const MANAGED_DEPENDENCY_TREE_DOMAIN = 'maka.managed_dependency_environment.tree
 const RECEIPT_FILE = 'environment-receipt.json';
 const DEPENDENCY_ROOT_NAME = 'node_modules';
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const MANAGED_DEPENDENCY_PRODUCER_POLICY_DOMAIN =
+  'maka.managed_dependency_environment.producer_policy.v1\0';
+const MANAGED_DEPENDENCY_PRODUCER_POLICY_V1 = Object.freeze({
+  protocolVersion: 1 as const,
+  kind: 'hermetic_dependency_builder_v1' as const,
+  network: 'registry_https_only' as const,
+  filesystem: 'maka_owned_staging_only' as const,
+  secrets: 'none' as const,
+  childProcess: 'verified_runtime_only' as const,
+  lifecycleScripts: 'disabled' as const,
+});
 const RECEIPT_KEYS = [
   'protocolVersion',
   'environmentId',
@@ -34,6 +45,8 @@ const RECEIPT_KEYS = [
   'nodeAbi',
   'platform',
   'arch',
+  'producerRuntimeIdentitySha256',
+  'producerPolicyIdentitySha256',
   'policyVersion',
   'dependencyRootName',
   'contentTreeSha256',
@@ -53,6 +66,8 @@ export interface ComputeManagedDependencyEnvironmentIdentityInput {
   readonly nodeAbi: string;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
+  readonly producerRuntimeIdentitySha256: `sha256:${string}`;
+  readonly producerPolicyIdentitySha256: `sha256:${string}`;
   readonly policyVersion: 'managed_dependency_environment_v1';
 }
 
@@ -69,7 +84,21 @@ export interface ManagedDependencyEnvironmentIdentityV1 {
   readonly nodeAbi: string;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
+  readonly producerRuntimeIdentitySha256: `sha256:${string}`;
+  readonly producerPolicyIdentitySha256: `sha256:${string}`;
   readonly policyVersion: 'managed_dependency_environment_v1';
+}
+
+export interface ManagedDependencyEnvironmentProducerCapabilityV1 {
+  readonly protocolVersion: 1;
+  readonly kind: 'hermetic_dependency_builder_v1';
+  readonly runtimeIdentitySha256: `sha256:${string}`;
+  readonly policyIdentitySha256: `sha256:${string}`;
+  readonly network: 'registry_https_only';
+  readonly filesystem: 'maka_owned_staging_only';
+  readonly secrets: 'none';
+  readonly childProcess: 'verified_runtime_only';
+  readonly lifecycleScripts: 'disabled';
 }
 
 export interface ManagedDependencyEnvironmentProducerInput {
@@ -80,6 +109,7 @@ export interface ManagedDependencyEnvironmentProducerInput {
 }
 
 export interface ManagedDependencyEnvironmentProducer {
+  readonly capability: ManagedDependencyEnvironmentProducerCapabilityV1;
   readonly packageManagerName: ManagedDependencyPackageManager;
   readonly packageManagerVersion: string;
   readonly nodeRuntime: {
@@ -89,6 +119,19 @@ export interface ManagedDependencyEnvironmentProducer {
     readonly arch: string;
   };
   provision(input: ManagedDependencyEnvironmentProducerInput): Promise<void>;
+}
+
+export function createManagedDependencyEnvironmentProducerCapability(
+  runtimeIdentitySha256: `sha256:${string}`,
+): ManagedDependencyEnvironmentProducerCapabilityV1 {
+  if (!SHA256_PATTERN.test(runtimeIdentitySha256)) {
+    throw new TypeError('Managed dependency producer runtime identity must be a SHA-256 digest');
+  }
+  return Object.freeze({
+    ...MANAGED_DEPENDENCY_PRODUCER_POLICY_V1,
+    runtimeIdentitySha256,
+    policyIdentitySha256: managedDependencyProducerPolicyIdentity(),
+  });
 }
 
 export interface CreateManagedDependencyEnvironmentAuthorityInput {
@@ -144,6 +187,8 @@ export function computeManagedDependencyEnvironmentIdentity(
   assertIdentityText(input.nodeAbi, 'nodeAbi');
   assertIdentityText(input.platform, 'platform');
   assertIdentityText(input.arch, 'arch');
+  assertSha256(input.producerRuntimeIdentitySha256, 'producerRuntimeIdentitySha256');
+  assertSha256(input.producerPolicyIdentitySha256, 'producerPolicyIdentitySha256');
 
   const canonicalIdentity = JSON.stringify({
     manifestPath,
@@ -156,6 +201,8 @@ export function computeManagedDependencyEnvironmentIdentity(
     nodeAbi: input.nodeAbi,
     platform: input.platform,
     arch: input.arch,
+    producerRuntimeIdentitySha256: input.producerRuntimeIdentitySha256,
+    producerPolicyIdentitySha256: input.producerPolicyIdentitySha256,
     policyVersion: input.policyVersion,
   });
   const environmentId = sha256(
@@ -178,6 +225,8 @@ export function computeManagedDependencyEnvironmentIdentity(
     nodeAbi: input.nodeAbi,
     platform: input.platform,
     arch: input.arch,
+    producerRuntimeIdentitySha256: input.producerRuntimeIdentitySha256,
+    producerPolicyIdentitySha256: input.producerPolicyIdentitySha256,
     policyVersion: input.policyVersion,
   });
 }
@@ -185,6 +234,7 @@ export function computeManagedDependencyEnvironmentIdentity(
 export async function createManagedDependencyEnvironmentAuthority(
   input: CreateManagedDependencyEnvironmentAuthorityInput,
 ): Promise<ManagedDependencyEnvironmentAuthority> {
+  assertProducerCapability(input.producer.capability);
   const canonicalStorageRoot = await realpath(input.storageRoot).catch(async () => {
     await mkdir(input.storageRoot, { recursive: true });
     return await realpath(input.storageRoot);
@@ -215,7 +265,10 @@ export async function createManagedDependencyEnvironmentAuthority(
         identity.nodeVersion !== input.producer.nodeRuntime.version ||
         identity.nodeAbi !== input.producer.nodeRuntime.abi ||
         identity.platform !== input.producer.nodeRuntime.platform ||
-        identity.arch !== input.producer.nodeRuntime.arch
+        identity.arch !== input.producer.nodeRuntime.arch ||
+        identity.producerRuntimeIdentitySha256 !==
+          input.producer.capability.runtimeIdentitySha256 ||
+        identity.producerPolicyIdentitySha256 !== input.producer.capability.policyIdentitySha256
       ) {
         throw new Error('Managed dependency producer does not match the requested identity');
       }
@@ -468,6 +521,10 @@ function decodeReceipt(value: unknown): ManagedDependencyEnvironmentReceiptV1 {
     typeof receipt.nodeAbi !== 'string' ||
     typeof receipt.platform !== 'string' ||
     typeof receipt.arch !== 'string' ||
+    typeof receipt.producerRuntimeIdentitySha256 !== 'string' ||
+    !SHA256_PATTERN.test(receipt.producerRuntimeIdentitySha256) ||
+    typeof receipt.producerPolicyIdentitySha256 !== 'string' ||
+    !SHA256_PATTERN.test(receipt.producerPolicyIdentitySha256) ||
     receipt.policyVersion !== 'managed_dependency_environment_v1'
   ) {
     throw new Error('Invalid dependency receipt');
@@ -533,6 +590,8 @@ function sameIdentity(
     receipt.nodeAbi === identity.nodeAbi &&
     receipt.platform === identity.platform &&
     receipt.arch === identity.arch &&
+    receipt.producerRuntimeIdentitySha256 === identity.producerRuntimeIdentitySha256 &&
+    receipt.producerPolicyIdentitySha256 === identity.producerPolicyIdentitySha256 &&
     receipt.policyVersion === identity.policyVersion
   );
 }
@@ -580,5 +639,37 @@ function normalizeTrackedPath(value: string, field: string): string {
 function assertIdentityText(value: string, field: string): void {
   if (!value || value.includes('\0')) {
     throw new TypeError(`${field} must be non-empty text without NUL bytes`);
+  }
+}
+
+function assertSha256(value: string, field: string): void {
+  if (!SHA256_PATTERN.test(value)) {
+    throw new TypeError(`${field} must be a SHA-256 digest`);
+  }
+}
+
+function managedDependencyProducerPolicyIdentity(): `sha256:${string}` {
+  return sha256(
+    Buffer.concat([
+      Buffer.from(MANAGED_DEPENDENCY_PRODUCER_POLICY_DOMAIN, 'utf8'),
+      Buffer.from(JSON.stringify(MANAGED_DEPENDENCY_PRODUCER_POLICY_V1), 'utf8'),
+    ]),
+  );
+}
+
+function assertProducerCapability(
+  capability: ManagedDependencyEnvironmentProducerCapabilityV1,
+): void {
+  const expected = createManagedDependencyEnvironmentProducerCapability(
+    capability.runtimeIdentitySha256,
+  );
+  if (
+    Object.keys(capability).sort().join('\0') !== Object.keys(expected).sort().join('\0') ||
+    Object.entries(expected).some(
+      ([key, value]) =>
+        capability[key as keyof ManagedDependencyEnvironmentProducerCapabilityV1] !== value,
+    )
+  ) {
+    throw new Error('Managed dependency producer capability is invalid');
   }
 }

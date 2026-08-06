@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -26,7 +26,7 @@ test('runs the exact bundled npm runtime with scripts disabled', async (t) => {
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
     cacheRoot: fixture.cacheRoot,
-    nodeExecutablePath: process.execPath,
+    nodeExecutablePath: fixture.nodeExecutablePath,
   });
   assert.deepEqual(producer.nodeRuntime, {
     version: process.versions.node,
@@ -34,6 +34,13 @@ test('runs the exact bundled npm runtime with scripts disabled', async (t) => {
     platform: process.platform,
     arch: process.arch,
   });
+  assert.equal(producer.capability.kind, 'hermetic_dependency_builder_v1');
+  assert.match(producer.capability.runtimeIdentitySha256, /^sha256:[0-9a-f]{64}$/u);
+  assert.notEqual(producer.capability.runtimeIdentitySha256, fixture.runtimeIdentitySha256);
+  assert.equal(producer.capability.network, 'registry_https_only');
+  assert.equal(producer.capability.filesystem, 'maka_owned_staging_only');
+  assert.equal(producer.capability.secrets, 'none');
+  assert.equal(producer.capability.childProcess, 'verified_runtime_only');
   const stagingRoot = join(fixture.root, 'staging');
   const outputRoot = join(stagingRoot, 'node_modules');
   await mkdir(outputRoot, { recursive: true });
@@ -63,7 +70,7 @@ test('revalidates the complete npm runtime before every provision', async (t) =>
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
     cacheRoot: fixture.cacheRoot,
-    nodeExecutablePath: process.execPath,
+    nodeExecutablePath: fixture.nodeExecutablePath,
   });
   await writeFile(fixture.cliPath, 'throw new Error("tampered");\n', 'utf8');
   const outputRoot = join(fixture.root, 'tampered-staging', 'node_modules');
@@ -80,13 +87,36 @@ test('revalidates the complete npm runtime before every provision', async (t) =>
   );
 });
 
+test('rejects Node runtime drift before provisioning', async (t) => {
+  const fixture = await bundledNpmFixture();
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const producer = await resolveBundledNpmDependencyProducer({
+    resourcesRoot: fixture.resourcesRoot,
+    cacheRoot: fixture.cacheRoot,
+    nodeExecutablePath: fixture.nodeExecutablePath,
+  });
+  await writeFile(fixture.nodeExecutablePath, 'tampered node runtime\n', 'utf8');
+  const outputRoot = join(fixture.root, 'node-tampered-staging', 'node_modules');
+  await mkdir(outputRoot, { recursive: true });
+
+  await assert.rejects(
+    producer.provision({
+      identity: dependencyIdentity(),
+      outputRoot,
+      manifestBytes: Buffer.from('{"packageManager":"npm@12.0.2"}\n'),
+      lockfileBytes: Buffer.from('{"lockfileVersion":3,"packages":{}}\n'),
+    }),
+    /Node runtime integrity mismatch/u,
+  );
+});
+
 test('rejects registry dependency entries without lockfile integrity evidence', async (t) => {
   const fixture = await bundledNpmFixture();
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
     cacheRoot: fixture.cacheRoot,
-    nodeExecutablePath: process.execPath,
+    nodeExecutablePath: fixture.nodeExecutablePath,
   });
   const outputRoot = join(fixture.root, 'unsafe-staging', 'node_modules');
   await mkdir(outputRoot, { recursive: true });
@@ -118,6 +148,8 @@ function dependencyIdentity() {
     nodeAbi: process.versions.modules ?? 'unknown',
     platform: process.platform,
     arch: process.arch,
+    producerRuntimeIdentitySha256: `sha256:${'4'.repeat(64)}` as const,
+    producerPolicyIdentitySha256: `sha256:${'5'.repeat(64)}` as const,
     policyVersion: 'managed_dependency_environment_v1' as const,
   };
 }
@@ -128,6 +160,9 @@ async function bundledNpmFixture() {
   const npmRoot = join(resourcesRoot, 'npm');
   const cliPath = join(npmRoot, 'bin', 'npm-cli.js');
   const cacheRoot = join(root, 'cache');
+  const nodeExecutablePath = join(root, process.platform === 'win32' ? 'node.exe' : 'node');
+  await copyFile(process.execPath, nodeExecutablePath);
+  if (process.platform !== 'win32') await chmod(nodeExecutablePath, 0o755);
   await mkdir(join(npmRoot, 'bin'), { recursive: true });
   await writeFile(join(npmRoot, 'LICENSE'), 'Artistic-2.0 fixture\n');
   await writeFile(
@@ -175,6 +210,7 @@ async function bundledNpmFixture() {
     ],
     files,
   });
+  const runtimeIdentitySha256 = sha256(Buffer.from(identity));
   await writeFile(
     join(resourcesRoot, 'bundled-npm.json'),
     `${JSON.stringify({
@@ -195,11 +231,18 @@ async function bundledNpmFixture() {
       runtimeRootRelativePath: 'npm',
       cliRelativePath: 'npm/bin/npm-cli.js',
       files,
-      runtimeIdentitySha256: sha256(Buffer.from(identity)),
+      runtimeIdentitySha256,
       distributionReady: true,
     })}\n`,
   );
-  return { root, resourcesRoot, cacheRoot, cliPath };
+  return {
+    root,
+    resourcesRoot,
+    cacheRoot,
+    cliPath,
+    nodeExecutablePath,
+    runtimeIdentitySha256,
+  };
 }
 
 function sha256(value: Uint8Array): `sha256:${string}` {

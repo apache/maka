@@ -4,11 +4,12 @@ import { createHash } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { afterEach, before, test } from 'node:test';
 import {
+  createManagedDependencyEnvironmentProducerCapability,
   ManagedWorkspaceOwnerError,
   openManagedWorkspaceOwner,
   type ManagedWorkspaceExecutionHandle,
@@ -29,6 +30,9 @@ const {
 } = managedWorkspaceExecutionAuthorityTestSupport;
 let gitExecutablePath: string;
 let gitExecutableSha256: `sha256:${string}`;
+const fixtureDependencyProducerCapability = createManagedDependencyEnvironmentProducerCapability(
+  `sha256:${'a'.repeat(64)}`,
+);
 
 before(async () => {
   gitExecutablePath = await findGitExecutable();
@@ -265,6 +269,7 @@ test('provisions one Maka-owned dependency environment without reading source no
         expectedSha256: gitExecutableSha256,
       },
       dependencyEnvironmentProducer: {
+        capability: fixtureDependencyProducerCapability,
         packageManagerName: 'npm',
         packageManagerVersion: '11.12.1',
         nodeRuntime: {
@@ -275,6 +280,11 @@ test('provisions one Maka-owned dependency environment without reading source no
         },
         async provision(input) {
           provisionCalls += 1;
+          await writeFile(
+            join(dirname(input.outputRoot), 'producer-staging-only.txt'),
+            'must never enter the managed worktree\n',
+            'utf8',
+          );
           await mkdir(join(input.outputRoot, 'fixture-package'), { recursive: true });
           await writeFile(
             join(input.outputRoot, 'fixture-package', 'index.js'),
@@ -295,6 +305,9 @@ test('provisions one Maka-owned dependency environment without reading source no
       runtimeStore,
       openRequest(sourceRoot),
     );
+    const managedWorktreePath = inspectManagedWorkspaceExecutionHandleInternal(
+      accepted.executionHandle,
+    ).binding.worktreePath;
 
     for (let index = 0; index < 2; index += 1) {
       const content = await owner.withManagedWorkspaceExecution(
@@ -316,6 +329,11 @@ test('provisions one Maka-owned dependency environment without reading source no
     }
 
     assert.equal(provisionCalls, 1);
+    assert.equal(
+      await git(managedWorktreePath, 'status', '--porcelain=v1', '--untracked-files=all'),
+      '',
+    );
+    assert.equal(existsSync(join(managedWorktreePath, 'producer-staging-only.txt')), false);
     await owner.close();
   } finally {
     runtimeStore.close();
@@ -341,6 +359,7 @@ test('revalidates managed worktree drift after dependency provisioning and befor
         expectedSha256: gitExecutableSha256,
       },
       dependencyEnvironmentProducer: {
+        capability: fixtureDependencyProducerCapability,
         packageManagerName: 'npm',
         packageManagerVersion: '11.12.1',
         nodeRuntime: {
@@ -409,6 +428,7 @@ test('rejects dependency provisioning when the canonical tree tracks node_module
         expectedSha256: gitExecutableSha256,
       },
       dependencyEnvironmentProducer: {
+        capability: fixtureDependencyProducerCapability,
         packageManagerName: 'npm',
         packageManagerVersion: '11.12.1',
         nodeRuntime: {

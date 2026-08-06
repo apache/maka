@@ -8,10 +8,12 @@ import type {
   ManagedDependencyEnvironmentProducer,
   ManagedDependencyEnvironmentProducerInput,
 } from '@maka/storage/managed-workspace-owner';
+import { createManagedDependencyEnvironmentProducerCapability } from '@maka/storage/managed-workspace-owner';
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_NPM_VERSION = '12.0.2';
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const PRODUCER_RUNTIME_IDENTITY_DOMAIN = 'maka.bundled_npm.producer_runtime.v1\0';
 const MANIFEST_KEYS = [
   'schemaVersion',
   'protocol',
@@ -43,7 +45,11 @@ export async function resolveBundledNpmDependencyProducer(
   const cacheRoot = await ensureCanonicalDirectory(input.cacheRoot);
   const nodeExecutablePath = normalize(await realpath(input.nodeExecutablePath));
   await requireRegularFile(nodeExecutablePath, 'Node runtime');
+  const nodeExecutableSha256 = await sha256File(nodeExecutablePath);
   const nodeRuntime = await inspectNodeRuntime(nodeExecutablePath);
+  if ((await sha256File(nodeExecutablePath)) !== nodeExecutableSha256) {
+    throw new Error('Bundled npm Node runtime changed during identity inspection');
+  }
   if (!isBundledNpmNodeVersionSupported(nodeRuntime.version)) {
     throw new Error(`Bundled npm does not support Node ${nodeRuntime.version}`);
   }
@@ -65,13 +71,21 @@ export async function resolveBundledNpmDependencyProducer(
   assertWithin(resourcesRoot, npmRoot, 'Bundled npm root');
   assertWithin(npmRoot, cliPath, 'Bundled npm CLI');
   await verifyRuntime(npmRoot, manifest);
+  const producerRuntimeIdentitySha256 = computeProducerRuntimeIdentity({
+    npmRuntimeIdentitySha256: manifest.runtimeIdentitySha256,
+    nodeExecutableSha256,
+    nodeRuntime,
+  });
 
   return Object.freeze({
+    capability: createManagedDependencyEnvironmentProducerCapability(producerRuntimeIdentitySha256),
     packageManagerName: 'npm' as const,
     packageManagerVersion: manifest.npmVersion,
     nodeRuntime,
     async provision(provisionInput: ManagedDependencyEnvironmentProducerInput) {
       await verifyRuntime(npmRoot, manifest);
+      // Keep the executable proof immediately adjacent to the owned spawn.
+      await verifyNodeRuntime(nodeExecutablePath, nodeExecutableSha256);
       await provisionWithNpm({
         input: provisionInput,
         nodeExecutablePath,
@@ -80,6 +94,39 @@ export async function resolveBundledNpmDependencyProducer(
       });
     },
   });
+}
+
+function computeProducerRuntimeIdentity(input: {
+  readonly npmRuntimeIdentitySha256: `sha256:${string}`;
+  readonly nodeExecutableSha256: `sha256:${string}`;
+  readonly nodeRuntime: ManagedDependencyEnvironmentProducer['nodeRuntime'];
+}): `sha256:${string}` {
+  return sha256(
+    Buffer.concat([
+      Buffer.from(PRODUCER_RUNTIME_IDENTITY_DOMAIN, 'utf8'),
+      Buffer.from(
+        JSON.stringify({
+          npmRuntimeIdentitySha256: input.npmRuntimeIdentitySha256,
+          nodeExecutableSha256: input.nodeExecutableSha256,
+          nodeVersion: input.nodeRuntime.version,
+          nodeAbi: input.nodeRuntime.abi,
+          platform: input.nodeRuntime.platform,
+          arch: input.nodeRuntime.arch,
+        }),
+        'utf8',
+      ),
+    ]),
+  );
+}
+
+async function verifyNodeRuntime(
+  nodeExecutablePath: string,
+  expectedSha256: `sha256:${string}`,
+): Promise<void> {
+  await requireRegularFile(nodeExecutablePath, 'Node runtime');
+  if ((await sha256File(nodeExecutablePath)) !== expectedSha256) {
+    throw new Error('Bundled npm Node runtime integrity mismatch');
+  }
 }
 
 export function isBundledNpmNodeVersionSupported(version: string): boolean {
