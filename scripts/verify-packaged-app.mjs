@@ -302,6 +302,7 @@ export async function assertPackagedResources(
     'bundled-tools.json',
     'bundled-git.json',
     join('licenses', 'git', 'LICENSE.txt'),
+    join('licenses', 'git', 'SOURCE_OFFER.txt'),
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
