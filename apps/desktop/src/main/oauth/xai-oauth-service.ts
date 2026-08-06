@@ -334,6 +334,28 @@ export class XaiOAuthService {
     resolveCode: (value: { code: string; state: string }) => void,
     rejectCode: (error: Error) => void,
   ): Promise<Server> {
+    // The port is fixed, and the previous login's server releases it
+    // asynchronously (disposePending cannot await inside a finally). A
+    // fresh login racing that close sees EADDRINUSE for a few milliseconds,
+    // so retry briefly instead of failing the whole flow (#2197).
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        return await this.listenOnce(expectedState, resolveCode, rejectCode);
+      } catch (error) {
+        lastError = error;
+        if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+    }
+    throw lastError;
+  }
+
+  private async listenOnce(
+    expectedState: string,
+    resolveCode: (value: { code: string; state: string }) => void,
+    rejectCode: (error: Error) => void,
+  ): Promise<Server> {
     return await new Promise<Server>((resolve, reject) => {
       const server = createServer((request, response) =>
         this.handleCallback(request, response, expectedState, resolveCode, rejectCode),
@@ -355,6 +377,12 @@ export class XaiOAuthService {
     resolveCode: (value: { code: string; state: string }) => void,
     rejectCode: (error: Error) => void,
   ): void {
+    // One callback is this server's whole life; a kept-alive socket only
+    // outlives it into disposePending's closeAllConnections, and that
+    // destroy is an RST a pooled client can trip over on its next request
+    // to the same port (#2197: the next login's fetch died on it). Close
+    // the connection with the response instead.
+    response.setHeader('Connection', 'close');
     let url: URL;
     try {
       url = new URL(request.url ?? '', XAI_REDIRECT_URI);
