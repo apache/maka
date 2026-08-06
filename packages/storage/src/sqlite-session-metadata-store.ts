@@ -1311,6 +1311,20 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  /**
+   * Cheap existence probe used by the legacy importer before reading a
+   * transcript: an id already present in SQLite (live or tombstoned) is
+   * skipped without opening or parsing its file. Read-only; safe on every
+   * launch.
+   */
+  async hasSession(sessionId: string): Promise<boolean> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.readTransaction(
+      () => this.readRecordSync(sessionId) !== undefined || this.hasTombstone(sessionId),
+    );
+  }
+
   async appendMessages(
     sessionId: string,
     messages: readonly StoredMessage[],

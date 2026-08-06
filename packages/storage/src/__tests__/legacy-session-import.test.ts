@@ -116,6 +116,24 @@ test('is idempotent: a second run skips the already-imported session without dup
   });
 });
 
+test('a second run skips without re-reading the transcript', async () => {
+  await withWorkspace(async ({ sessions, workspace }) => {
+    await seedLegacySession(workspace, 'legacy-a1b2c3d4e5f6', 'normal-session.jsonl');
+
+    const first = await importLegacySessionsOnce(sessions, workspace);
+    assert.equal(first.imported, 1);
+
+    // Corrupt the transcript on disk: a re-read would now fail the file, so
+    // a skipped result pins that the probe runs BEFORE the file read.
+    await writeFile(
+      join(workspace, 'sessions', 'legacy-a1b2c3d4e5f6', 'session.jsonl'),
+      '{ this is not valid json anymore',
+    );
+    const second = await importLegacySessionsOnce(sessions, workspace);
+    assert.deepEqual(second, { imported: 0, skipped: 1, failed: 0, failures: [] });
+  });
+});
+
 test('a corrupt transcript is skipped as failed while other sessions still import', async () => {
   await withWorkspace(async ({ sessions, workspace }) => {
     await seedLegacySession(workspace, 'legacy-a1b2c3d4e5f6', 'normal-session.jsonl');

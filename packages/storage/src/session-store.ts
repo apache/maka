@@ -231,6 +231,11 @@ export interface SessionAuthorityStore extends SessionStore {
     header: SessionHeader,
     messages: readonly StoredMessage[],
   ): Promise<'imported' | 'existing'>;
+  /**
+   * Cheap existence probe used by the legacy importer to skip ids already in
+   * SQLite before reading their transcripts.
+   */
+  hasSession(sessionId: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
     cursor: SessionCatalogPageCursor | undefined,
@@ -428,6 +433,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
     // metadata store is created in the constructor and importSession only
     // touches it).
     return this.metadata.importSession(header, messages, projectSessionCatalogMessages(messages));
+  }
+
+  async hasSession(sessionId: string): Promise<boolean> {
+    // Same rationale as importSession: no ensureReady gate — the importer
+    // drives the migration and must not await its own latch.
+    return this.metadata.hasSession(sessionId);
   }
 
   async createSubagent(

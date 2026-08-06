@@ -39,8 +39,10 @@ import { normalizeSessionHeader, type SessionAuthorityStore } from './session-st
  * - Idempotency is the session id's primary key: `importSession` is
  *   `INSERT OR IGNORE`, so re-runs (and concurrent first launches, e.g. a CLI
  *   pre-check store racing the TUI/desktop store) converge on one winner with
- *   no create claims, fingerprints, or probes — the losing process sees
- *   `existing` and skips without reading the transcript.
+ *   no create claims or fingerprints. A cheap `hasSession` probe runs BEFORE
+ *   the file read, so every launch of an upgraded install pays a directory
+ *   listing plus per-id existence checks and never re-reads an imported
+ *   transcript.
  * - The decoded header is validated through `normalizeSessionHeader` BEFORE
  *   the write, so a malformed header fails the file without persisting
  *   anything.
@@ -112,6 +114,17 @@ export async function importLegacySessionsOnce(
   for (const sessionId of sessionDirs) {
     const transcriptPath = join(sessionsDir, sessionId, LEGACY_TRANSCRIPT_FILE);
     try {
+      // Idempotency probe BEFORE the file read: an id already known to
+      // SQLite — imported by an earlier run, created by the user, or claimed
+      // by a concurrent first-launch process — is skipped without opening or
+      // parsing its transcript, so every launch of an upgraded install pays
+      // only a directory listing plus per-id existence checks. importSession
+      // remains the authority on idempotency (a race between this probe and
+      // the write converges on one winner via the primary key).
+      if (await store.hasSession(sessionId)) {
+        result.skipped += 1;
+        continue;
+      }
       const outcome = await importLegacySessionFile(store, sessionId, transcriptPath);
       if (outcome === 'imported') {
         result.imported += 1;
