@@ -5,11 +5,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type { SessionHeader } from '@maka/core';
-import {
-  acquireOperationalStateDatabase,
-  resetIncompatibleOperationalStateDatabase,
-} from '../operational-state-store.js';
+import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
+import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '../sqlite-session-metadata-schema.js';
+import { SQLITE_USAGE_SCHEMA_VERSION } from '../sqlite-usage-schema.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 test('shares one operational database and produces an online backup', async () => {
@@ -55,7 +54,6 @@ test('preserves operational state when every schema is current', async () => {
     lease.database.exec("INSERT INTO compatibility_sentinel(value) VALUES ('preserved')");
     lease.close();
 
-    assert.equal(resetIncompatibleOperationalStateDatabase(root), false);
     const reopened = acquireOperationalStateDatabase(root);
     assert.equal(
       (
@@ -71,32 +69,189 @@ test('preserves operational state when every schema is current', async () => {
   }
 });
 
-test('clears operational state instead of migrating an incompatible schema', async (context) => {
-  for (const version of [SQLITE_RUNTIME_SCHEMA_VERSION - 1, SQLITE_RUNTIME_SCHEMA_VERSION + 1]) {
-    await context.test(`schema ${version}`, async () => {
-      const root = await mkdtemp(join(tmpdir(), 'maka-operational-incompatible-'));
-      const databasePath = join(root, 'runtime.sqlite');
-      try {
-        const lease = acquireOperationalStateDatabase(root);
-        lease.close();
-        const database = new DatabaseSync(databasePath);
-        database.exec(`PRAGMA user_version = ${version}`);
-        database.close();
+test('migrates older operational state without losing sessions or messages', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-upgrade-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    const metadata = createSqliteSessionMetadataStore(databasePath, { databaseLease: lease });
+    await metadata.importSession(
+      sessionHeader(),
+      [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 3, text: 'keep me' }],
+      { lastMessageAt: 3, lastMessagePreview: 'keep me' },
+    );
+    metadata.close();
 
-        assert.equal(resetIncompatibleOperationalStateDatabase(root), true);
-        const rebuilt = acquireOperationalStateDatabase(root);
-        assert.equal(
-          (rebuilt.database.prepare('PRAGMA user_version').get() as { user_version: number })
-            .user_version,
-          SQLITE_RUNTIME_SCHEMA_VERSION,
-        );
-        rebuilt.close();
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
+    const database = new DatabaseSync(databasePath);
+    rewindRuntimeSchema(database);
+    database
+      .prepare(`UPDATE operational_schema_migrations SET version = ? WHERE scope = 'runtime'`)
+      .run(SQLITE_RUNTIME_SCHEMA_VERSION - 1);
+    database.close();
+
+    const reopenedLease = acquireOperationalStateDatabase(root);
+    assert.equal(
+      (reopenedLease.database.prepare('PRAGMA user_version').get() as { user_version: number })
+        .user_version,
+      SQLITE_RUNTIME_SCHEMA_VERSION,
+    );
+    const reopened = createSqliteSessionMetadataStore(databasePath, {
+      databaseLease: reopenedLease,
     });
+    try {
+      assert.equal((await reopened.read('session-1')).header.name, 'Session');
+      assert.deepEqual(await reopened.readMessages('session-1'), [
+        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 3, text: 'keep me' },
+      ]);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
+
+test('rejects a newer scope before migrating an older scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-mixed-version-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.close();
+
+    const database = new DatabaseSync(databasePath);
+    rewindRuntimeSchema(database);
+    database
+      .prepare(`UPDATE operational_schema_migrations SET version = ? WHERE scope = 'usage'`)
+      .run(SQLITE_USAGE_SCHEMA_VERSION + 1);
+    database.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /Operational schema usage is newer than supported/,
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.equal(
+        (preserved.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION - 1,
+      );
+    } finally {
+      preserved.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects newer session metadata before migrating older runtime state', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-newer-metadata-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.close();
+
+    const database = new DatabaseSync(databasePath);
+    rewindRuntimeSchema(database);
+    database
+      .prepare(`UPDATE session_metadata_schema SET version = ? WHERE scope = 'session_metadata'`)
+      .run(SQLITE_SESSION_METADATA_SCHEMA_VERSION + 1);
+    database.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /Operational schema session_metadata is newer than supported/,
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.equal(
+        (preserved.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION - 1,
+      );
+    } finally {
+      preserved.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects an unknown operational schema without changing the database', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-unknown-scope-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.close();
+
+    const database = new DatabaseSync(databasePath);
+    database
+      .prepare(
+        `INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES (?, ?, ?)`,
+      )
+      .run('future_scope', 1, 1);
+    database.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /Operational schema future_scope is unknown to this Maka build/,
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const row = preserved
+        .prepare(
+          `SELECT scope, version, applied_at FROM operational_schema_migrations WHERE scope = ?`,
+        )
+        .get('future_scope') as { scope: string; version: number; applied_at: number };
+      assert.equal(row.scope, 'future_scope');
+      assert.equal(row.version, 1);
+      assert.equal(row.applied_at, 1);
+    } finally {
+      preserved.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects an invalid registered schema version before migrating', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-invalid-version-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    lease.close();
+
+    const database = new DatabaseSync(databasePath);
+    rewindRuntimeSchema(database);
+    database
+      .prepare(`UPDATE operational_schema_migrations SET version = ? WHERE scope = 'usage'`)
+      .run(1.5);
+    database.close();
+
+    assert.throws(
+      () => acquireOperationalStateDatabase(root),
+      /Operational schema usage has invalid version 1.5/,
+    );
+
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.equal(
+        (preserved.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION - 1,
+      );
+    } finally {
+      preserved.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function rewindRuntimeSchema(database: DatabaseSync): void {
+  database.exec('DROP TABLE runtime_session_event_ordinals');
+  database.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
+}
 
 function sessionHeader(): SessionHeader {
   return {

@@ -77,7 +77,6 @@ import {
   createMcpConfigStore,
   createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
-  resetIncompatibleOperationalStateDatabase,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
@@ -223,10 +222,6 @@ if (e2eFixture) {
     app.exit(0);
     await new Promise<never>(() => {});
   }
-}
-
-if (resetIncompatibleOperationalStateDatabase(workspaceRoot)) {
-  console.warn('[startup] cleared incompatible operational state');
 }
 
 async function confirmDesktopStorageRootRepair(): Promise<boolean> {
