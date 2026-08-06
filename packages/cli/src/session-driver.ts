@@ -114,10 +114,14 @@ export interface MakaPreparedSessionTurn {
   sessionId: string;
   turnId: string;
   events: AsyncIterable<SessionEvent>;
-  /** Atomic transcript paired with an externally discovered live Turn. */
-  messages?: StoredMessage[];
-  /** Authoritative Session metadata refreshed at external Turn adoption. */
+  /** Authoritative Session metadata available when the Turn was attached. */
   summary?: SessionSummary;
+}
+
+/** A live Turn discovered externally together with its atomic Session context. */
+export interface MakaAttachedSessionTurn extends MakaPreparedSessionTurn {
+  messages: StoredMessage[];
+  summary: SessionSummary;
 }
 
 export interface MakaPreparePromptOptions {
@@ -179,7 +183,7 @@ export interface MakaSessionDriver {
    */
   rewindToTurn(turnId: string): Promise<MakaSessionRewindResult>;
   /** Observe Turns started by another Client or by the Runtime Host scheduler. */
-  subscribeStartedTurns?(listener: (turn: MakaPreparedSessionTurn) => void): () => void;
+  subscribeStartedTurns?(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   /** Observe interactions resolved by another Client so local prompts can retire. */
   subscribeResolvedInteractions?(
     listener: (sessionId: string, requestId: string) => void,

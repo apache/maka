@@ -1197,6 +1197,40 @@ test('submit retries use keyed receipts and durable proof while old-Epoch rich c
   if (!reclaimedConflict.ok) assert.equal(reclaimedConflict.error.code, 'operation_conflict');
 });
 
+test('old-Epoch durable proof ignores structured content key order', async () => {
+  const fixture = createFixture();
+  const messageId = 'ordered-content';
+  const content: MessageContent = {
+    text: '/skill:vision inspect the image',
+    attachments: [attachment('ordered-content', 'proof.png')],
+    inlineReferences: [{ kind: 'skill', value: '/skill:vision', label: 'Vision', start: 0 }],
+  };
+  fixture.receipts.set(
+    messageId,
+    sourceReceipt(messageId, content, 'next_turn', 'turn_started', 'durable-turn', content),
+  );
+
+  const reordered: MessageContent = {
+    inlineReferences: [{ start: 0, label: 'Vision', value: '/skill:vision', kind: 'skill' }],
+    attachments: [
+      {
+        ref: { relativePath: 'attachments/ordered-content.png', kind: 'workspace_file' },
+        bytes: 10,
+        mimeType: 'image/png',
+        name: 'proof.png',
+        kind: 'image',
+      },
+    ],
+    text: '/skill:vision inspect the image',
+  };
+
+  assert.equal(messageContentDigest(reordered), messageContentDigest(content));
+  assert.deepEqual(await submitContent(fixture, messageId, reordered, 'next_turn', 'old-epoch'), {
+    ok: true,
+    result: { disposition: 'turn_started', turnId: 'durable-turn' },
+  });
+});
+
 test('old-Epoch steering proof compares ordered quote provenance before reporting ambiguity', async () => {
   const fixture = createFixture();
   const messageId = 'old-steer';

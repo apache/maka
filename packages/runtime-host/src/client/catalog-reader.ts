@@ -1,4 +1,5 @@
 import type {
+  ConnectionCatalogCursor,
   ConnectionCatalogPageItem,
   ConnectionCatalogQueryResult,
   SessionCatalogFilter,
@@ -46,30 +47,25 @@ export class RuntimeHostCatalogReadError extends Error {
 export async function readRuntimeHostConnectionCatalog(
   connection: RuntimeHostConnection,
 ): Promise<RuntimeHostConnectionCatalogSnapshot> {
-  for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
-    const first = await connection.request('connection.catalog.query', { kind: 'start' });
-    if (first.kind !== 'page') continue;
-    const items = [...first.items];
-    const cursors = new Set<string>();
-    let page = first;
-    let retry = false;
-    while (page.nextCursor !== null) {
-      const cursor = uniqueCursor('connection', cursors, page.nextCursor);
-      const next = await connection.request('connection.catalog.query', {
+  const { first, pages } = await collectStablePages(
+    'connection',
+    async () => {
+      const result = await connection.request('connection.catalog.query', { kind: 'start' });
+      return result.kind === 'page' ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('connection.catalog.query', {
         kind: 'continue',
-        revision: first.revision,
+        revision,
         cursor,
       });
-      if (next.kind !== 'page' || next.revision !== first.revision) {
-        retry = true;
-        break;
-      }
-      items.push(...next.items);
-      page = next;
-    }
-    if (!retry) return assembleConnectionCatalog(first, items);
-  }
-  throw new RuntimeHostCatalogReadError('connection', 'unstable');
+      return result.kind === 'page' ? result : null;
+    },
+  );
+  return assembleConnectionCatalog(
+    first,
+    pages.flatMap((page) => page.items),
+  );
 }
 
 export async function readRuntimeHostSkillCatalog(
@@ -77,66 +73,54 @@ export async function readRuntimeHostSkillCatalog(
   context: SkillCatalogLocalContext,
   view: SkillCatalogView,
 ): Promise<RuntimeHostSkillCatalogSnapshot> {
-  for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
-    const first = await connection.request('skill.catalog.query', { kind: 'start', context, view });
-    if (first.kind !== 'page' || first.view !== view) continue;
-    const items = [...first.items];
-    const cursors = new Set<string>();
-    let page = first;
-    let retry = false;
-    while (page.nextCursor !== null) {
-      const cursor = uniqueCursor('skill', cursors, page.nextCursor);
-      const next = await connection.request('skill.catalog.query', {
+  const { first, pages } = await collectStablePages(
+    'skill',
+    async () => {
+      const result = await connection.request('skill.catalog.query', {
+        kind: 'start',
+        context,
+        view,
+      });
+      return result.kind === 'page' && result.view === view ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('skill.catalog.query', {
         kind: 'continue',
         context,
         view,
-        revision: first.revision,
+        revision,
         cursor,
       });
-      if (next.kind !== 'page' || next.view !== view || next.revision !== first.revision) {
-        retry = true;
-        break;
-      }
-      items.push(...next.items);
-      page = next;
-    }
-    if (!retry) return { revision: first.revision, view, items };
-  }
-  throw new RuntimeHostCatalogReadError('skill', 'unstable');
+      return result.kind === 'page' && result.view === view ? result : null;
+    },
+  );
+  return { revision: first.revision, view, items: pages.flatMap((page) => page.items) };
 }
 
 export async function readRuntimeHostSessions(
   connection: RuntimeHostConnection,
   filter?: SessionCatalogFilter,
 ): Promise<SessionCatalogItem[]> {
-  for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
-    const first = await connection.request('session.catalog.query', {
-      kind: 'list_start',
-      ...(filter ? { filter } : {}),
-    });
-    if (first.kind !== 'page') continue;
-    const sessions = [...first.sessions];
-    const cursors = new Set<string>();
-    let page = first;
-    let retry = false;
-    while (page.nextCursor !== null) {
-      const cursor = uniqueCursor('session', cursors, page.nextCursor);
-      const next = await connection.request('session.catalog.query', {
+  const { pages } = await collectStablePages(
+    'session',
+    async () => {
+      const result = await connection.request('session.catalog.query', {
+        kind: 'list_start',
+        ...(filter ? { filter } : {}),
+      });
+      return result.kind === 'page' ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('session.catalog.query', {
         kind: 'list_continue',
-        revision: first.revision,
+        revision,
         cursor,
         ...(filter ? { filter } : {}),
       });
-      if (next.kind !== 'page' || next.revision !== first.revision) {
-        retry = true;
-        break;
-      }
-      sessions.push(...next.sessions);
-      page = next;
-    }
-    if (!retry) return sessions;
-  }
-  throw new RuntimeHostCatalogReadError('session', 'unstable');
+      return result.kind === 'page' ? result : null;
+    },
+  );
+  return pages.flatMap((page) => page.sessions);
 }
 
 export async function readRuntimeHostResources(
@@ -145,38 +129,61 @@ export async function readRuntimeHostResources(
 ): Promise<
   Extract<OperationOutput<'runtime.resource.query'>, { kind: 'page' }>['resources'][number][]
 > {
+  const { pages } = await collectStablePages(
+    'runtime_resource',
+    async () => {
+      const result = await connection.request('runtime.resource.query', {
+        kind: 'list_start',
+        sessionId,
+      });
+      return result.kind === 'page' && result.sessionId === sessionId ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('runtime.resource.query', {
+        kind: 'list_continue',
+        sessionId,
+        revision,
+        cursor,
+      });
+      return result.kind === 'page' && result.sessionId === sessionId ? result : null;
+    },
+  );
+  return pages.flatMap((page) => page.resources);
+}
+
+interface StableCatalogPage {
+  readonly revision: string | number;
+  readonly nextCursor: string | ConnectionCatalogCursor | null;
+}
+
+async function collectStablePages<Page extends StableCatalogPage>(
+  catalog: RuntimeHostCatalogReadError['catalog'],
+  readFirst: () => Promise<Page | null>,
+  readNext: (
+    revision: Page['revision'],
+    cursor: NonNullable<Page['nextCursor']>,
+  ) => Promise<Page | null>,
+): Promise<{ first: Page; pages: Page[] }> {
   for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
-    const first = await connection.request('runtime.resource.query', {
-      kind: 'list_start',
-      sessionId,
-    });
-    if (first.kind !== 'page' || first.sessionId !== sessionId) continue;
-    const resources = [...first.resources];
+    const first = await readFirst();
+    if (!first) continue;
+    const pages = [first];
     const cursors = new Set<string>();
     let page = first;
     let retry = false;
     while (page.nextCursor !== null) {
-      const cursor = uniqueCursor('runtime_resource', cursors, page.nextCursor);
-      const next = await connection.request('runtime.resource.query', {
-        kind: 'list_continue',
-        sessionId,
-        revision: first.revision,
-        cursor,
-      });
-      if (
-        next.kind !== 'page' ||
-        next.sessionId !== sessionId ||
-        next.revision !== first.revision
-      ) {
+      const cursor = uniqueCursor(catalog, cursors, page.nextCursor);
+      const next = await readNext(first.revision, cursor);
+      if (!next || next.revision !== first.revision) {
         retry = true;
         break;
       }
-      resources.push(...next.resources);
+      pages.push(next);
       page = next;
     }
-    if (!retry) return resources;
+    if (!retry) return { first, pages };
   }
-  throw new RuntimeHostCatalogReadError('runtime_resource', 'unstable');
+  throw new RuntimeHostCatalogReadError(catalog, 'unstable');
 }
 
 function uniqueCursor<T>(

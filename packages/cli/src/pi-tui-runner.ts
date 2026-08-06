@@ -59,6 +59,7 @@ import {
 import type { CliGoalTurnHost } from './cli-goal-continuation.js';
 import {
   inspectSessionResumeAvailability,
+  type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
   type MakaSessionDriver,
   type MakaSessionSwitchResult,
@@ -259,9 +260,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
   let unbindGoalHost: (() => void) | undefined;
-  let pendingAttachedTurn: MakaPreparedSessionTurn | undefined;
+  type AttachedTurnContext =
+    | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
+    | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
+  let pendingAttachedTurn: AttachedTurnContext | undefined;
   const resolvedInteractionIds = new Set<string>();
-  let startAttachedTurn: ((turn: MakaPreparedSessionTurn) => void) | undefined;
+  let startAttachedTurn: ((attached: AttachedTurnContext) => void) | undefined;
   const startPendingAttachedTurn = () => {
     if (busy || turnRunning) return;
     const attached = pendingAttachedTurn;
@@ -350,8 +354,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const unsubscribeStartedTurns =
     input.driver.subscribeStartedTurns?.((turn) => {
       if (closed) return;
-      if (busy || turnRunning || !startAttachedTurn) pendingAttachedTurn = turn;
-      else startAttachedTurn(turn);
+      const attached = { kind: 'external', turn } as const;
+      if (busy || turnRunning || !startAttachedTurn) pendingAttachedTurn = attached;
+      else startAttachedTurn(attached);
     }) ?? (() => {});
   const unsubscribeResolvedInteractions =
     input.driver.subscribeResolvedInteractions?.((sessionId, requestId) => {
@@ -1038,7 +1043,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   // Runs one agent turn through the shared activity/drain lifecycle. Shared by
   // user submits, queued follow-ups, and coordinator-owned goal injections.
-  function runAgentTurn(request: MakaPiTuiTurnRequest): Promise<GoalTurnOutcome> {
+  function runAgentTurn(
+    request: MakaPiTuiTurnRequest,
+    authoritativeAttachedTurn?: MakaAttachedSessionTurn,
+  ): Promise<GoalTurnOutcome> {
     busy = true;
     const activity = beginActivity();
     turnRunning = true;
@@ -1079,7 +1087,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (request.kind !== 'attached') appendUserPrompt(state, request.prompt);
         requestRender();
       },
-      onPrepared: (turn) => {
+      onPrepared: async (turn) => {
+        if (authoritativeAttachedTurn) {
+          adoptSessionMetadata(authoritativeAttachedTurn.summary);
+          replaceTranscriptWithStoredMessages(state, authoritativeAttachedTurn.messages);
+          shellRunHydration.reset();
+          if (input.listShellRunUpdates) {
+            await shellRunHydration.hydrate(authoritativeAttachedTurn.sessionId);
+          }
+          shellRunElapsedTicker.sync();
+          requestRender();
+          return;
+        }
         if (turn.summary) adoptSessionMetadata(turn.summary);
       },
       onEvent: (event) => {
@@ -1244,16 +1263,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     refreshEditorCwd?.(cwd);
   };
 
-  startAttachedTurn = (turn) => {
+  startAttachedTurn = (attached) => {
     if (closed || turnRunning) return;
-    if (turn.summary) adoptSessionMetadata(turn.summary);
-    if (turn.messages) {
-      replaceTranscriptWithStoredMessages(state, turn.messages);
-      shellRunHydration.reset();
-      shellRunElapsedTicker.sync();
-      requestRender();
-    }
-    void runAgentTurn({ kind: 'attached', turn });
+    void runAgentTurn(
+      { kind: 'attached', turn: attached.turn },
+      attached.kind === 'external' ? attached.turn : undefined,
+    );
   };
 
   try {
@@ -1350,7 +1365,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       await shellRunHydration.hydrate(summary.id);
     }
     shellRunElapsedTicker.sync();
-    pendingAttachedTurn = activeTurn;
+    pendingAttachedTurn = activeTurn ? { kind: 'adopted', turn: activeTurn } : undefined;
   };
 
   // The driver validates the durable cwd before adopting the resumed session.

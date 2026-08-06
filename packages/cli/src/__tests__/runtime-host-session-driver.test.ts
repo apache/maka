@@ -15,7 +15,8 @@ import type {
   SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { createRuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
-import type { MakaPreparedSessionTurn } from '../session-driver.js';
+import type { MakaAttachedSessionTurn } from '../session-driver.js';
+import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
   test('atomically joins an active turn without losing output produced during transcript load', async () => {
@@ -118,7 +119,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const initial = await driver.switchSession('session-1');
     assert.ok(initial.activeTurn);
-    const started = deferred<MakaPreparedSessionTurn>();
+    const started = deferred<MakaAttachedSessionTurn>();
     driver.subscribeStartedTurns!((turn) => started.resolve(turn));
 
     first.push({
@@ -147,7 +148,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const attached = await Promise.race([
       started.promise,
-      delay(100).then(() => assert.fail('Timed out waiting for successor turn')),
+      delay(WAIT_BUDGET_MS).then(() => assert.fail('Timed out waiting for successor turn')),
     ]);
     assert.deepEqual(attached.messages, [
       userMessage('turn-2', 'Follow up'),
@@ -184,7 +185,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    const started = deferred<MakaPreparedSessionTurn>();
+    const started = deferred<MakaAttachedSessionTurn>();
     driver.subscribeStartedTurns!((turn) => started.resolve(turn));
 
     first.push({
@@ -252,7 +253,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    const started: MakaPreparedSessionTurn[] = [];
+    const started: MakaAttachedSessionTurn[] = [];
     driver.subscribeStartedTurns!((turn) => started.push(turn));
 
     first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
@@ -327,7 +328,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    const started: MakaPreparedSessionTurn[] = [];
+    const started: MakaAttachedSessionTurn[] = [];
     driver.subscribeStartedTurns!((turn) => started.push(turn));
 
     first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
@@ -965,7 +966,7 @@ async function nextEvent(events: AsyncIterable<unknown>): Promise<any> {
   const iterator = events[Symbol.asyncIterator]();
   const result = await Promise.race([
     iterator.next(),
-    delay(100).then(() => assert.fail('Timed out waiting for Session event')),
+    delay(WAIT_BUDGET_MS).then(() => assert.fail('Timed out waiting for Session event')),
   ]);
   assert.equal(result.done, false);
   return result.value;
@@ -985,7 +986,8 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = Date.now() + WAIT_BUDGET_MS;
+  while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setImmediate(resolve));
   }

@@ -29,6 +29,7 @@ import {
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
+  MakaAttachedSessionTurn,
   MakaSessionMoveResult,
   MakaSessionDriver,
   MakaSessionRewindResult,
@@ -2656,7 +2657,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => driver.steerCalls === 1);
 
     driver.endTurn();
-    await delay(20);
+    await waitFor(() => driver.completedTurns === 1);
     assert.deepEqual(driver.prompts, ['start']);
     driver.releaseAdmission({ kind: 'fallback' });
     await waitForUpTo(() => driver.prompts.length === 2, 1_000);
@@ -6375,19 +6376,24 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
       terminal,
+      listShellRunUpdates: (sessionId) => driver.listShellRunUpdates(sessionId),
     });
 
     terminal.input('first');
     terminal.input('\r');
     await waitFor(() => terminal.progressStates.at(-1) === true);
     driver.publishSuccessor();
-    await delay(20);
+    driver.probeFirstTurn();
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('First still active'));
+    assert.equal(driver.successorPulls, 0);
     assert.equal(plainTerminalOutput(terminal.output()).includes('Second answer'), false);
 
     driver.finishFirstTurn();
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Second answer'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(4s · 2 lines)'));
     await waitFor(() => terminal.progressStates.at(-1) === false);
     assert.deepEqual(driver.prompts, ['first']);
+    assert.deepEqual(driver.shellRunReads, ['session-1']);
 
     terminal.input('/exit');
     terminal.input('\r');
@@ -6864,6 +6870,7 @@ class FallbackSteeringDriver implements MakaSessionDriver {
   readonly steered: string[] = [];
   readonly queuedMessages: string[] = [];
   stopCalls = 0;
+  completedTurns = 0;
   /** Enqueue calls that report `fallback` before the owner "appears". */
   steerFallbacks = Number.POSITIVE_INFINITY;
   queueFallbacks = Number.POSITIVE_INFINITY;
@@ -6941,6 +6948,7 @@ class FallbackSteeringDriver implements MakaSessionDriver {
         ts: 2,
         stopReason: 'user_stop',
       };
+      this.completedTurns += 1;
       return;
     }
     yield {
@@ -6950,6 +6958,7 @@ class FallbackSteeringDriver implements MakaSessionDriver {
       ts: 1,
       stopReason: 'end_turn',
     };
+    this.completedTurns += 1;
   }
 
   /** Next endTurn() finishes the turn as aborted instead of end_turn. */
@@ -7848,17 +7857,37 @@ class ActiveResumeDriver extends SlashCommandDriver {
 }
 
 class HostSuccessorDriver extends SlashCommandDriver {
-  #startedTurnListener: ((turn: MakaPreparedSessionTurn) => void) | undefined;
+  #startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  readonly #probeFirst = deferred<void>();
   #finishFirst: (() => void) | undefined;
+  successorPulls = 0;
+  readonly shellRunReads: string[] = [];
 
   override async *promptEvents(_prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
+    await this.#probeFirst.promise;
+    yield {
+      type: 'text_delta',
+      id: 'text-delta-first',
+      turnId,
+      messageId: 'assistant-first',
+      ts: 1,
+      text: 'First still active',
+    };
+    yield {
+      type: 'text_complete',
+      id: 'text-complete-first',
+      turnId,
+      messageId: 'assistant-first',
+      ts: 2,
+      text: 'First still active',
+    };
     await new Promise<void>((resolve) => {
       this.#finishFirst = resolve;
     });
-    yield { type: 'complete', id: 'complete-first', turnId, ts: 1, stopReason: 'end_turn' };
+    yield { type: 'complete', id: 'complete-first', turnId, ts: 3, stopReason: 'end_turn' };
   }
 
-  subscribeStartedTurns(listener: (turn: MakaPreparedSessionTurn) => void): () => void {
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
     this.#startedTurnListener = listener;
     return () => {
       if (this.#startedTurnListener === listener) this.#startedTurnListener = undefined;
@@ -7867,14 +7896,45 @@ class HostSuccessorDriver extends SlashCommandDriver {
 
   publishSuccessor(): void {
     const turnId = 'turn-second';
+    const driver = this;
     this.#startedTurnListener?.({
       sessionId: this.getSessionId()!,
       turnId,
       messages: [
         storedUserMessage('user-second', turnId, 'Second question'),
+        {
+          type: 'tool_call',
+          id: 'tool-bg',
+          turnId,
+          ts: 1,
+          toolName: 'Bash',
+          args: { command: 'build' },
+        },
+        {
+          type: 'tool_result',
+          id: 'result-bg',
+          turnId,
+          ts: 2,
+          toolUseId: 'tool-bg',
+          isError: false,
+          content: {
+            kind: 'shell_run',
+            ref: 'maka://runtime/background-tasks/bg-successor',
+            mode: 'pipes',
+            status: 'running',
+            cwd: '/repo',
+            cmd: 'build',
+            startedAt: 1_000,
+            updatedAt: 2_000,
+            revision: 2_000,
+            output: pipeOutput('starting\n'),
+          },
+        },
         storedAssistantMessage('assistant-second', turnId, 'Second'),
       ],
+      summary: fakeSessionSummary(this.getSessionId()!),
       events: (async function* () {
+        driver.successorPulls += 1;
         yield {
           type: 'text_delta',
           id: 'delta-second',
@@ -7892,6 +7952,36 @@ class HostSuccessorDriver extends SlashCommandDriver {
         } satisfies SessionEvent;
       })(),
     });
+  }
+
+  probeFirstTurn(): void {
+    this.#probeFirst.resolve();
+  }
+
+  listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]> {
+    this.shellRunReads.push(sessionId);
+    return Promise.resolve([
+      {
+        sessionId,
+        ownership: { kind: 'local' },
+        sourceTurnId: 'turn-second',
+        sourceToolCallId: 'tool-bg',
+        result: {
+          kind: 'shell_run',
+          ref: 'maka://runtime/background-tasks/bg-successor',
+          mode: 'pipes',
+          status: 'completed',
+          cwd: '/repo',
+          cmd: 'build',
+          startedAt: 1_000,
+          updatedAt: 5_000,
+          completedAt: 5_000,
+          exitCode: 0,
+          revision: 5_000,
+          output: pipeOutput('starting\ndone\n'),
+        },
+      },
+    ]);
   }
 
   finishFirstTurn(): void {
