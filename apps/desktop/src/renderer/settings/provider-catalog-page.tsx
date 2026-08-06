@@ -82,6 +82,12 @@ export function ProviderCatalogPage(props: {
       <Toolbar
         label={copy.categoriesAria}
         gap={2}
+        // Suppress the Toolbar's automatic "← → to navigate" keyboard hint.
+        // This toolbar has only two controls (search + category selector);
+        // arrow-key navigation between them is not a meaningful interaction,
+        // and the hint's CSS anchor positioning renders at a broken offset
+        // inside the settings panel layout.
+        onFocus={(e) => e.preventDefault()}
         startContent={(
           <TextInput
             value={query}
