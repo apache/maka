@@ -7,8 +7,8 @@ import type { RootExecutionDescriptor } from '@maka/core/agent-run';
 import { createSqliteAgentRunStore, type AdmitRootTurnInput } from '../agent-run-store.js';
 
 test('Agent Graph supervisor admission durably binds wake identity and Graph orchestration', async () => {
-  await withTempRoot(async (root) => {
-    const store = createSqliteAgentRunStore(root);
+  await withTempRoot(async (_root, openStore) => {
+    const store = openStore();
     const admitted = await store.admitRootTurn(admissionInput());
 
     assert.equal(admitted.kind, 'admitted');
@@ -18,7 +18,7 @@ test('Agent Graph supervisor admission durably binds wake identity and Graph orc
       source: 'host_api',
     });
 
-    const reopened = createSqliteAgentRunStore(root);
+    const reopened = openStore();
     assert.deepEqual(
       await reopened.readRootTurnAdmission('root-session', 'supervisor-turn'),
       admitted.admission,
@@ -27,8 +27,8 @@ test('Agent Graph supervisor admission durably binds wake identity and Graph orc
 });
 
 test('Agent Graph supervisor admission rejects malformed identity and non-Graph orchestration', async () => {
-  await withTempRoot(async (root) => {
-    const store = createSqliteAgentRunStore(root);
+  await withTempRoot(async (_root, openStore) => {
+    const store = openStore();
     await assert.rejects(
       () =>
         store.admitRootTurn(
@@ -95,11 +95,22 @@ function admissionInput(overrides: Partial<AdmitRootTurnInput> = {}): AdmitRootT
   };
 }
 
-async function withTempRoot(run: (root: string) => Promise<void>): Promise<void> {
+async function withTempRoot(
+  run: (
+    root: string,
+    openStore: () => ReturnType<typeof createSqliteAgentRunStore>,
+  ) => Promise<void>,
+): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-graph-supervisor-admission-'));
+  const stores: ReturnType<typeof createSqliteAgentRunStore>[] = [];
   try {
-    await run(root);
+    await run(root, () => {
+      const store = createSqliteAgentRunStore(root);
+      stores.push(store);
+      return store;
+    });
   } finally {
+    for (const store of stores.reverse()) store.close?.();
     await rm(root, { recursive: true, force: true });
   }
 }
