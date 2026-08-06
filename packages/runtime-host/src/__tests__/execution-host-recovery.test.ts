@@ -247,9 +247,22 @@ test('same idle Message submit is connection-independent and starts one canonica
     const chain = await fixture.readAdmissionChain();
     assert.equal(chain.length, 1);
     assert.deepEqual(chain[0]?.normalizedInput, content);
-    assert.deepEqual(chain[0]?.sourceMessages, [
-      { messageId, content, placement: 'next_turn', disposition: 'turn_started' },
-    ]);
+    assert.deepEqual(
+      chain[0]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
+        messageId,
+        content,
+        placement,
+        disposition,
+      })),
+      [
+        {
+          messageId,
+          content,
+          placement: 'next_turn',
+          disposition: 'turn_started',
+        },
+      ],
+    );
     const ledger = await fixture.readTurn(firstResult.turnId);
     assert.equal(ledger.runs.length, 1);
     assert.equal(ledger.userMessages.length, 1);

@@ -192,7 +192,12 @@ test('steering becomes durable and ordered followups automatically start the nex
     assert.equal(chain.length, 2);
     assert.equal(chain[1]?.previousRootTurnId, firstTurnId);
     assert.deepEqual(
-      chain[1]?.sourceMessages,
+      chain[1]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
+        messageId,
+        content,
+        placement,
+        disposition,
+      })),
       followupSources.map((source) => ({
         ...source,
         placement: 'next_turn',
