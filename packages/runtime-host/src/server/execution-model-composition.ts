@@ -39,6 +39,7 @@ import {
   listRunnableBuiltinAgentDefinitions,
   projectEffectiveProductToolSurface,
   recordToolInvocation,
+  routeWebFetchTools,
   routeWebSearchTools,
   resolveProjectGitInfo,
   resolveSelectedModelContextWindow,
@@ -361,7 +362,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         : [];
     const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
     const webSearchRouting = {
-      tools: candidateHostTools,
+      tools: routeWebFetchTools(candidateHostTools, runtimePolicySnapshot.policy.privacy),
       settings: runtimePolicySnapshot.policy.webSearch,
       connection: target.connection,
       model: target.model,
@@ -371,13 +372,13 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     const boundTools = input.context.tools
       ? routeWebSearchTools({
           ...webSearchRouting,
-          tools: input.context.tools,
+          tools: routeWebFetchTools(input.context.tools, runtimePolicySnapshot.policy.privacy),
         })
       : undefined;
     const routedChildTools = input.childTools
       ? routeWebSearchTools({
           ...webSearchRouting,
-          tools: input.childTools,
+          tools: routeWebFetchTools(input.childTools, runtimePolicySnapshot.policy.privacy),
         })
       : undefined;
     const parentAgentTools = routedChildTools

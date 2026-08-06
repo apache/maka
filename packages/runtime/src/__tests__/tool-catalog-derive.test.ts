@@ -323,6 +323,11 @@ describe('buildHostCapabilitiesFromBinding', () => {
 });
 
 describe('buildDeferredToolGroupsFromCatalog', () => {
+  it('keeps WebFetch cataloged but outside deferred groups', () => {
+    assert.doesNotThrow(() => assertProductBindingCatalogClean('runtime-host', ['WebFetch']));
+    assert.deepEqual(buildDeferredToolGroupsFromCatalog('runtime-host', ['WebFetch']), []);
+  });
+
   it('includes only supported deferred surfaces that have bound members', () => {
     const groups = buildDeferredToolGroupsFromCatalog('desktop', [
       'Read',

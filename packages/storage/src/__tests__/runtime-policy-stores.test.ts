@@ -1857,6 +1857,31 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('resolves WebFetch independently of the WebSearch feature gate', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const resolved = await stores.operations.resolveWebFetchExecution();
+
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind !== 'ready') return;
+      assert.equal(resolved.networkProxy.enabled, false);
+      assert.deepEqual(resolved.secretMaterial, {});
+    });
+  });
+
+  test('blocks WebFetch while privacy mode is active', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const policy = await stores.runtimePolicy.mutate({
+        expectedRevision: 0,
+        operation: { kind: 'set_privacy', value: { incognitoActive: true } },
+      });
+      assert.equal(policy.kind, 'committed');
+
+      assert.deepEqual(await stores.operations.resolveWebFetchExecution(), {
+        kind: 'privacy_mode',
+      });
+    });
+  });
+
   test('keeps provider-native WebSearch outside the client search credential resolver', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const policy = await stores.runtimePolicy.mutate({

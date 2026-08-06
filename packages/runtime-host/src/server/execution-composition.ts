@@ -117,6 +117,7 @@ import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
 } from './web-search-tool.js';
+import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
 import {
   createRuntimeHostWorkspaceExecutionComposition,
@@ -292,7 +293,13 @@ export async function createExecutionRuntimeHostComposition(
     const webSearchService = createHostWebSearchService({
       policy: runtimePolicyStores.operations,
     });
-    const hostTools = [createHostWebSearchToolFromService(webSearchService)];
+    const webFetchService = createHostWebFetchService({
+      policy: runtimePolicyStores.operations,
+    });
+    const hostTools = [
+      createHostWebSearchToolFromService(webSearchService),
+      createHostWebFetchToolFromService(webFetchService),
+    ];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,

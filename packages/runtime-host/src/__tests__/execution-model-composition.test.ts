@@ -763,6 +763,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
+      'WebFetch',
       'WebSearch',
       'Write',
       'WriteStdin',

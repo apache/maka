@@ -71,6 +71,7 @@ import {
   type ResolveExecutionConnectionResult,
   type ResolveNetworkProxyExecutionInput,
   type ResolveNetworkProxyExecutionResult,
+  type ResolveWebFetchExecutionResult,
   type ResolveWebSearchExecutionInput,
   type ResolveWebSearchExecutionResult,
 } from './operations.js';
@@ -656,6 +657,38 @@ export class RuntimePolicyCoordinator {
                   secret: secretOverride,
                 },
         },
+      });
+    });
+  }
+
+  resolveWebFetchExecution(): Promise<ResolveWebFetchExecutionResult> {
+    return this.inLane(async (root) => {
+      const policy = (await this.policy.read(root)).policy;
+      if (policy.privacy.incognitoActive) {
+        return deepFreeze({ kind: 'privacy_mode' as const });
+      }
+      const proxyLocator = requiresNetworkProxyCredential(policy.networkProxy)
+        ? networkProxyCredentialLocator()
+        : null;
+      if (!proxyLocator) {
+        return deepFreeze({
+          kind: 'ready' as const,
+          networkProxy: structuredClone(policy.networkProxy),
+          secretMaterial: {},
+        });
+      }
+      const vault = await this.vault.read(root);
+      const credential = findCredential(vault, proxyLocator);
+      if (!credential) {
+        return deepFreeze({
+          kind: 'credential_not_configured' as const,
+          status: credentialStatus(vault, proxyLocator),
+        });
+      }
+      return deepFreeze({
+        kind: 'ready' as const,
+        networkProxy: structuredClone(policy.networkProxy),
+        secretMaterial: { networkProxy: credentialMaterial(credential) },
       });
     });
   }

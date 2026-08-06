@@ -69,6 +69,15 @@ export type ResolveNetworkProxyExecutionResult =
       readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
     };
 
+export type ResolveWebFetchExecutionResult =
+  | { readonly kind: 'privacy_mode' }
+  | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
+  | {
+      readonly kind: 'ready';
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+      readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
+    };
+
 export type OAuthCredentialLocator = Omit<
   Extract<CredentialLocator, { scope: 'connection' }>,
   'kind'
@@ -199,6 +208,7 @@ export interface RuntimePolicyOperationCoordinator {
   resolveWebSearchExecution(
     input?: ResolveWebSearchExecutionInput,
   ): Promise<ResolveWebSearchExecutionResult>;
+  resolveWebFetchExecution(): Promise<ResolveWebFetchExecutionResult>;
   resolveNetworkProxyExecution(
     input?: ResolveNetworkProxyExecutionInput,
   ): Promise<ResolveNetworkProxyExecutionResult>;

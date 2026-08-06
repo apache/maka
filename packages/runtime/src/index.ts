@@ -433,6 +433,17 @@ export type {
 } from './tool-result-archive-capability.js';
 export { queryTavily } from './tavily-search.js';
 export { buildWebSearchTool } from './web-search-tool.js';
+export {
+  buildWebFetchTool,
+  routeWebFetchTools,
+  WEB_FETCH_MODEL_OUTPUT_MAX_BYTES,
+  type WebFetchExecutor,
+} from './web-fetch-tool.js';
+export {
+  createLocalWebFetchExecutor,
+  WEB_FETCH_RESPONSE_MAX_BYTES,
+  WEB_FETCH_TIMEOUT_MS,
+} from './local-web-fetch.js';
 export type {
   BuildBuiltinToolsOptions,
   MakaTool as BuiltinMakaTool,

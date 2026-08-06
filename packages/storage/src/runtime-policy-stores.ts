@@ -54,6 +54,7 @@ export type {
   ResolveNetworkProxyExecutionResult,
   ResolveWebSearchExecutionInput,
   ResolveWebSearchExecutionResult,
+  ResolveWebFetchExecutionResult,
   UnavailableProviderActionAvailability,
 } from './runtime-policy/operations.js';
 
@@ -208,6 +209,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
       resolveWebSearchExecution: (input) => coordinator.resolveWebSearchExecution(input),
+      resolveWebFetchExecution: () => coordinator.resolveWebFetchExecution(),
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       beginInteractiveOAuthLogin: (connectionId) =>

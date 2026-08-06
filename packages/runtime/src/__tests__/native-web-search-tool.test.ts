@@ -133,3 +133,28 @@ test('root surfaces may add native search without widening scoped child tools', 
   });
   assert.deepEqual(child, []);
 });
+
+test('the WebSearch feature gate leaves WebFetch available', () => {
+  const webFetch = {
+    name: 'WebFetch',
+    description: 'Read a URL',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+
+  const routed = routeWebSearchTools({
+    tools: [webFetch],
+    settings: { enabled: false, defaultProvider: 'model' },
+    connection: {
+      slug: 'deepseek',
+      providerType: 'deepseek',
+      defaultModel: 'deepseek-v4-flash',
+    },
+    model: 'deepseek-v4-flash',
+  });
+
+  assert.deepEqual(
+    routed.map((tool) => tool.name),
+    ['WebFetch'],
+  );
+});
