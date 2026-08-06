@@ -4,6 +4,7 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 
 const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
 const IPC_CONNECTION_SECRET_MAX_LENGTH = 4096;
@@ -51,10 +52,15 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     ? undefined
     : normalizeConnectionApiKeyForIpc(input.apiKey, 'apiKey');
   const slug = normalizeConnectionSlugForIpc(input.slug, 'connection slug');
+  const relayModelProfiles =
+    input.relayModelProfiles === undefined
+      ? undefined
+      : normalizeRelayModelProfiles(input.relayModelProfiles);
   const normalized = {
     ...input,
     slug,
     ...(apiKey === undefined ? {} : { apiKey }),
+    ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
   } as CreateConnectionInput;
   return normalizeConnectionBaseUrlForIpc(normalized);
 }

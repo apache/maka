@@ -24,6 +24,7 @@ import {
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
+import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
   codecError,
@@ -174,6 +175,31 @@ export class ConnectionCatalogDocumentOwner {
       ...(changes.baseUrl === undefined ? {} : { baseUrl: changes.baseUrl }),
       enabled: changes.enabled,
       enabledModelIds: changes.enabledModelIds,
+      // Profile-table semantics, in order:
+      //  - the store invariant: profiles exist only for enabled models, so a
+      //    selection change prunes whatever no longer qualifies (disabling a
+      //    model deletes its profile);
+      //  - a table replaces wholesale — it wins even over an endpoint change
+      //    in the same update, because a writer submitting a new endpoint and
+      //    a new table declares that the table belongs to the new endpoint
+      //    (config import does exactly this);
+      //  - null clears;
+      //  - absent leaves the stored table alone, except that an endpoint
+      //    change retires it: declarations are endpoint-keyed like the model
+      //    inventory, and the old table must not outlive the relay it
+      //    described.
+      ...(changes.relayModelProfiles === undefined
+        ? endpointChanged || previous.relayModelProfiles === undefined
+          ? {}
+          : {
+              relayModelProfiles: pruneRelayModelProfiles(
+                previous.relayModelProfiles,
+                changes.enabledModelIds,
+              ),
+            }
+        : changes.relayModelProfiles === null
+          ? {}
+          : { relayModelProfiles: changes.relayModelProfiles }),
       models: endpointChanged ? [] : previous.models,
       ...(endpointChanged || previous.modelSource === undefined
         ? {}
@@ -278,8 +304,18 @@ export class ConnectionCatalogDocumentOwner {
     const defaultTarget = currentDefaultTarget
       ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
       : current.defaultTarget;
+    // A refresh is a new enabledModelIds authority on the same endpoint:
+    // profiles keyed by a model the refresh dropped would violate the
+    // subset invariant, and this write path bypasses the canonical decoder,
+    // so prune here or the persisted document is un-loadable on next read.
+    const relayModelProfiles = pruneRelayModelProfiles(
+      previous.relayModelProfiles,
+      reconciled.enabledModelIds,
+    );
+    const { relayModelProfiles: _staleProfiles, ...previousWithoutProfiles } = previous;
     const discovered: ConnectionCatalogEntry = {
-      ...previous,
+      ...previousWithoutProfiles,
+      ...(relayModelProfiles ? { relayModelProfiles } : {}),
       revision: nextRevision(previous.revision),
       enabledModelIds: reconciled.enabledModelIds,
       models: result.models,

@@ -92,7 +92,17 @@ const connectionsBridge: ConnectionsBridge = {
   },
   async update(slug, patch) {
     const current = connections.find((c) => c.slug === slug)!;
-    return { ...current, ...patch, updatedAt: NOW };
+    return {
+      ...current,
+      ...patch,
+      // Tri-state relayModelProfiles (null clears) never stores null on a
+      // connection — clear maps to absent.
+      relayModelProfiles:
+        patch.relayModelProfiles === undefined
+          ? current.relayModelProfiles
+          : (patch.relayModelProfiles ?? undefined),
+      updatedAt: NOW,
+    };
   },
   async delete() {
     /* noop */

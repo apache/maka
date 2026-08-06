@@ -192,6 +192,10 @@ function accountConnectionChanges(
     ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
     enabled,
     enabledModelIds: [...enabledModelIds],
+    // Account (OAuth) connections never declare relay capabilities, and the
+    // omission is the point: with tri-state update semantics an absent key
+    // leaves the stored table untouched, so this path can never clobber
+    // declarations another writer made.
   };
 }
 

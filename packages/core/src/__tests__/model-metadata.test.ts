@@ -80,6 +80,39 @@ describe('model-metadata vision capability', () => {
     assert.equal(resolveModelVisionSupport('openai', granted, 'some-unlisted-model'), true);
   });
 
+  it('lets a user declaration outrank every other signal, in both directions', () => {
+    // Declared vision wins over stored capabilities, generated metadata, and
+    // the provider default — the relay user knows what the backing model is,
+    // none of the inferred sources can.
+    const stored: ModelInfo[] = [
+      { id: 'my-reasoner', capabilities: { vision: true } },
+      { id: 'claude-opus-6', capabilities: { vision: true } },
+    ];
+    assert.equal(
+      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', false),
+      false,
+    );
+    assert.equal(
+      resolveModelVisionSupport('openai-compatible', stored, 'claude-opus-6', false),
+      false,
+    );
+    assert.equal(
+      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', true),
+      true,
+    );
+    // anthropic defaults claude-* to vision; an explicit declaration still wins.
+    assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-6', false), false);
+    // undefined declaration means "no opinion": the old chain decides.
+    assert.equal(
+      resolveModelVisionSupport('openai-compatible', stored, 'my-reasoner', undefined),
+      true,
+    );
+    assert.equal(
+      resolveModelVisionSupport('openai-compatible', undefined, 'some-unlisted-model', undefined),
+      false,
+    );
+  });
+
   it('publishes the Kimi Coding Plan K3 limits and effort levels from models.dev', () => {
     assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
       displayName: 'Kimi K3',

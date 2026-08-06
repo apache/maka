@@ -195,6 +195,54 @@ function connection(): LlmConnection {
   };
 }
 
+describe('declared relay context window', () => {
+  test('a user declaration outranks the relay /models report and metadata', () => {
+    const relay: LlmConnection = {
+      slug: 'my-relay',
+      name: 'My Relay',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example/v1',
+      defaultModel: 'reasoner-32k',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+      models: [{ id: 'reasoner-32k', contextWindow: 8_192 }],
+      relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
+    };
+    const policy = buildDefaultContextBudgetPolicy(relay, { env: {}, modelId: 'reasoner-32k' });
+    // Declared 131_072 wins: reserve 131_072/4 caps at 16_384. The fetched
+    // 8_192 row would have yielded 8_192 − 2_048, and no declaration at all
+    // would have fallen to the 32_000 unknown-model default.
+    assert.equal(policy?.maxHistoryEstimatedTokens, 131_072 - 16_384);
+    // Clearing the declaration falls back to the fetched row's window.
+    const undeclared: LlmConnection = { ...relay, relayModelProfiles: undefined };
+    const fallback = buildDefaultContextBudgetPolicy(undeclared, {
+      env: {},
+      modelId: 'reasoner-32k',
+    });
+    assert.equal(fallback?.maxHistoryEstimatedTokens, 8_192 - 2_048);
+  });
+
+  test('the same table is inert on non-relay providers', () => {
+    // Declarations are an openai-compatible feature; a profiles table riding
+    // along on another provider (stale import, provider flip) must not shadow
+    // that provider's stored rows or metadata.
+    const other: LlmConnection = {
+      slug: 'other',
+      name: 'Other',
+      providerType: 'openai',
+      defaultModel: 'reasoner-32k',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+      models: [{ id: 'reasoner-32k', contextWindow: 8_192 }],
+      relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
+    };
+    const policy = buildDefaultContextBudgetPolicy(other, { env: {}, modelId: 'reasoner-32k' });
+    assert.equal(policy?.maxHistoryEstimatedTokens, 8_192 - 2_048);
+  });
+});
+
 function agentPlanConnection(): LlmConnection {
   return {
     slug: 'volcengine-agent-plan',

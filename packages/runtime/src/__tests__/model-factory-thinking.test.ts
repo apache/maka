@@ -596,6 +596,88 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       { openai: { store: false, forceReasoning: true, reasoningEffort: 'high' } },
     );
   });
+
+  test('custom relay connections use per-model declared levels under the camelCase slug namespace', () => {
+    const declared: LlmConnection = {
+      ...conn('openai-compatible', 'my-relay'),
+      baseUrl: 'https://relay.example/v1',
+      relayModelProfiles: {
+        'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
+      },
+    };
+    // Declared levels land under the provider-options key derived from the
+    // connection slug. The SDK's canonical key for a dashed provider name is
+    // its camelCase alias — using the raw form still works but returns a
+    // `deprecated` warning on every call. ('off' cannot appear in a
+    // declaration — see DECLARABLE_RELAY_THINKING_LEVELS — so no off→'none'
+    // mapping for relays is asserted here.)
+    assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'high'), {
+      myRelay: { reasoningEffort: 'high' },
+    });
+    assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'max'), {
+      myRelay: { reasoningEffort: 'max' },
+    });
+    // Levels outside the declaration stay gated off, and undeclared
+    // connections emit nothing (prior behaviour).
+    assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'xhigh'), {});
+    assert.deepEqual(
+      buildProviderOptions(conn('openai-compatible', 'my-relay'), 'any-model', 'high'),
+      {},
+    );
+  });
+
+  test('declared relay levels reach the actual chat-completions request body', async () => {
+    // Intermediate providerOptions objects matching does not prove the wire
+    // carries the effort — this capture asserts the SDK's camelCase slug key
+    // is accepted AND translated into the body with zero deprecations.
+    const bodies: Record<string, unknown>[] = [];
+    const captureFetch: typeof globalThis.fetch = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 1,
+          model: 'dsv4-flash',
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: 'ok' },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const declared: LlmConnection = {
+      ...conn('openai-compatible', 'my-relay'),
+      baseUrl: 'https://relay.example/v1',
+      relayModelProfiles: {
+        'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
+      },
+    };
+    const model = getAIModel({
+      connection: declared,
+      apiKey: 'relay-key',
+      modelId: 'dsv4-flash',
+      fetch: captureFetch,
+    });
+    const result = await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(declared, 'dsv4-flash', 'high'),
+    });
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0]?.reasoning_effort, 'high');
+    // The raw dashed slug as a providerOptions key is deprecated by the SDK:
+    // the camelCase alias must carry no such warning.
+    assert.equal(
+      (result.warnings ?? []).some((warning) => warning.type === 'deprecated'),
+      false,
+      JSON.stringify(result.warnings),
+    );
+  });
 });
 
 test('models without a real off wire do not expose off', () => {

@@ -12,6 +12,8 @@ import {
   type LlmConnection,
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
+import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
+import { relayProfilesForStorage } from './relay-profile-store.js';
 
 export interface ConnectionStore {
   list(): Promise<LlmConnection[]>;
@@ -74,6 +76,11 @@ class FileConnectionStore implements ConnectionStore {
       const now = Date.now();
       const baseUrl = persistedBaseUrl(input.providerType, input.baseUrl);
       const defaultModel = input.defaultModel || defaults.fallbackModels[0] || '';
+      const relayModelProfiles = relayProfilesForStorage(
+        input.providerType,
+        input.relayModelProfiles,
+        connectionEnabledModelIds({ defaultModel }),
+      );
       const next: LlmConnection = {
         slug: input.slug,
         name: input.name || defaults.label,
@@ -88,6 +95,7 @@ class FileConnectionStore implements ConnectionStore {
         createdAt: now,
         updatedAt: now,
         ...(input.extras ? { extras: input.extras } : {}),
+        ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
       };
       file.connections.push(next);
       claimVacantWorkspaceDefault(file, next);
@@ -178,13 +186,18 @@ class FileConnectionStore implements ConnectionStore {
         defaultModel = reconciled.defaultModel;
         enabledModelIds = reconciled.enabledModelIds;
       }
+      // Endpoint-keyed semantics, matching the catalog document store: the
+      // comparison must be between the CANONICALIZED endpoints — a patch
+      // restating the current endpoint (or its equivalent) is not a move.
+      const nextBaseUrl =
+        patch.baseUrl !== undefined
+          ? persistedBaseUrl(current.providerType, patch.baseUrl)
+          : current.baseUrl;
+      const endpointChanged = nextBaseUrl !== current.baseUrl;
       const next: LlmConnection = {
         ...current,
         name: patch.name ?? current.name,
-        baseUrl:
-          patch.baseUrl !== undefined
-            ? persistedBaseUrl(current.providerType, patch.baseUrl)
-            : current.baseUrl,
+        baseUrl: nextBaseUrl,
         defaultModel,
         enabled: patch.enabled ?? current.enabled,
         enabledModelIds,
@@ -207,6 +220,24 @@ class FileConnectionStore implements ConnectionStore {
             ? undefined
             : current.lastTestMessage,
         extras: patch.extras ?? current.extras,
+        // Profiles only ever describe enabled models of THIS endpoint on a
+        // relay connection: an explicit table passes the same gate+prune
+        // every write shape applies (a new table in a moving update declares
+        // itself bound to the NEW endpoint, matching the catalog store);
+        // an untouched one retires with the old endpoint — declarations
+        // belong to the relay that answered for them, and a model id that
+        // coincides across endpoints is a different model — and only then
+        // is pruned against the selection just computed.
+        relayModelProfiles:
+          patch.relayModelProfiles === undefined
+            ? endpointChanged
+              ? undefined
+              : pruneRelayModelProfiles(current.relayModelProfiles, enabledModelIds)
+            : relayProfilesForStorage(
+                current.providerType,
+                patch.relayModelProfiles,
+                enabledModelIds,
+              ),
         updatedAt: Date.now(),
       };
       file.connections[index] = next;
@@ -251,14 +282,23 @@ class FileConnectionStore implements ConnectionStore {
       const now = Date.now();
       // save() is a full-replace write; route it through persistedBaseUrl too,
       // or a caller handing back defaults.baseUrl (e.g. OAuth sync) pins the
-      // connection to the current default.
+      // connection to the current default. Profiles come from the same
+      // gate+prune as create/update — snapshot semantics must not bypass
+      // either profile invariant.
       const baseUrl = persistedBaseUrl(connection.providerType, connection.baseUrl);
-      const { baseUrl: _omit, ...rest } = connection;
+      const { baseUrl: _omit, relayModelProfiles: _rawProfiles, ...rest } = connection;
+      const enabledModelIds = connectionEnabledModelIds(connection);
+      const relayModelProfiles = relayProfilesForStorage(
+        connection.providerType,
+        connection.relayModelProfiles,
+        enabledModelIds,
+      );
       const next: LlmConnection = {
         ...rest,
         ...(baseUrl ? { baseUrl } : {}),
         enabled: connection.enabled ?? true,
-        enabledModelIds: connectionEnabledModelIds(connection),
+        enabledModelIds,
+        ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
         createdAt: connection.createdAt ?? now,
         updatedAt: connection.updatedAt ?? now,
       };

@@ -8,6 +8,7 @@ import {
   createGenesisExecutionBoundary,
   DEEP_RESEARCH_SESSION_LABEL,
   DEEP_RESEARCH_SESSION_NAME,
+  type RelayModelProfile,
   type SessionHeader,
 } from '@maka/core';
 import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
@@ -237,6 +238,85 @@ test('creation rejects reserved execution labels before claiming a Session ident
   });
   assert.equal(createAttempts, 0);
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('creation on a relay connection honours declared levels via the catalog projection', async () => {
+  // The catalog entry carries the typed relayModelProfiles projection (never
+  // the extras bag), so a declared relay level passes the gate — and what
+  // passes is exactly what execution rebuilds the runtime connection from.
+  let createAttempts = 0;
+  let persistedThinkingLevel: unknown;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'openai-compatible',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      relayModelProfiles: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        createAttempts += 1;
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      cwd: process.cwd(),
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
+      thinkingLevel: 'low',
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(createAttempts, 1);
+  assert.equal(persistedThinkingLevel, 'low');
+});
+
+test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {
+  // Undeclared relay models resolve no variants — accepting an unverifiable
+  // level would be worse than rejecting it, because the wire could never
+  // honour what the catalog cannot see.
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'openai-compatible',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('Unverifiable thinking levels must be rejected before persistence');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      cwd: process.cwd(),
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
+      thinkingLevel: 'low',
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message: 'Session model does not support thinking level low',
+    },
+  });
+  assert.equal(createAttempts, 0);
 });
 
 test('creation rejects explore permission without a declared mode', async () => {
@@ -524,6 +604,7 @@ function createFixture(
     readonly stores?: Partial<CatalogStores>;
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
+    readonly connection?: FixtureConnection;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -558,7 +639,7 @@ function createFixture(
     },
     ...options.stores,
   };
-  const runtimePolicy = runtimePolicyFixture();
+  const runtimePolicy = runtimePolicyFixture(options.connection ?? {});
   const manager: ConfigurationAuthority = {
     transitionSessionConfiguration: async (_sessionId, input) => {
       header = {
@@ -602,17 +683,27 @@ function createFixture(
   };
 }
 
-function runtimePolicyFixture(): RuntimePolicy {
+type FixtureConnection = {
+  readonly providerType?: 'openai' | 'openai-compatible';
+  readonly enabledModelIds?: readonly string[];
+  readonly models?: readonly { id: string }[];
+  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+};
+
+function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
   const policy = createDefaultRuntimePolicy();
   const connection = {
     connectionId: 'connection-1',
     revision: 1,
     slug: 'test',
     name: 'Test',
-    providerType: 'openai' as const,
+    providerType: overrides.providerType ?? ('openai' as const),
     enabled: true,
-    enabledModelIds: ['model-1'],
-    models: [{ id: 'model-1' }],
+    enabledModelIds: overrides.enabledModelIds ?? ['model-1'],
+    models: overrides.models ?? [{ id: 'model-1' }],
+    ...(overrides.relayModelProfiles === undefined
+      ? {}
+      : { relayModelProfiles: overrides.relayModelProfiles }),
   };
   return {
     connectionCatalog: {

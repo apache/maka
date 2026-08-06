@@ -360,7 +360,10 @@ function connectionBasis(connection: ConnectionCatalogEntry): ConnectionVersionB
 function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCatalogPageItem[] {
   const items: ConnectionCatalogPageItem[] = [];
   for (const [connectionIndex, connection] of snapshot.connections.entries()) {
-    const { enabledModelIds, models, ...header } = connection;
+    // Profiles ride on their enabled_model_id item, never in one header
+    // table: a header item is atomic to the paginator, so a long declaration
+    // list would make the whole connection unreadable.
+    const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
     items.push({
       kind: 'connection',
       connectionIndex,
@@ -369,7 +372,14 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       modelCount: models.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
-      items.push({ kind: 'enabled_model_id', connectionIndex, itemIndex, modelId });
+      const relayProfile = relayModelProfiles?.[modelId];
+      items.push({
+        kind: 'enabled_model_id',
+        connectionIndex,
+        itemIndex,
+        modelId,
+        ...(relayProfile === undefined ? {} : { relayProfile }),
+      });
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });

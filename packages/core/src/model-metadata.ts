@@ -160,11 +160,14 @@ const VISION_BY_DEFAULT_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderT
 /**
  * Resolve whether a model accepts image input for the send path.
  *
- * Stored `connection.models` win when they declare `vision` explicitly
- * (provider-fetched facts). But `model-fetcher` stores bare `{ id }` entries
- * for many providers, and older connections predate any enrichment — so when
- * `vision` is unknown we fall back to the generated models.dev snapshot and
- * access-path-specific in-repo overrides.
+ * A user declaration (`declaredVision`, from the relay connection's
+ * `relayModelProfiles[modelId].vision`) wins over everything below:
+ * for custom relays the user is the only one who actually knows the backing
+ * model. Absent a declaration, stored `connection.models` win when they
+ * declare `vision` explicitly (provider-fetched facts). But `model-fetcher`
+ * stores bare `{ id }` entries for many providers, and older connections
+ * predate any enrichment — so when `vision` is unknown we fall back to the
+ * generated models.dev snapshot and access-path-specific in-repo overrides.
  *
  * Unknown then resolves to false — the send path stays fail-closed for
  * text-only models — with one exception: an unlisted Claude on one of
@@ -176,7 +179,9 @@ export function resolveModelVisionSupport(
   providerType: ProviderType,
   models: readonly ModelInfo[] | undefined,
   modelId: string,
+  declaredVision?: boolean,
 ): boolean {
+  if (declaredVision !== undefined) return declaredVision;
   const stored = models?.find((entry) => entry.id === modelId);
   if (stored?.capabilities?.vision !== undefined) {
     return stored.capabilities.vision === true;

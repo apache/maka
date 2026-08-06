@@ -160,6 +160,12 @@ function createBridge(input: {
       const updated: LlmConnection = {
         ...current,
         ...patch,
+        // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);
+        // a stored connection never carries null — clear maps to absent.
+        relayModelProfiles:
+          patch.relayModelProfiles === undefined
+            ? current.relayModelProfiles
+            : (patch.relayModelProfiles ?? undefined),
         updatedAt: NOW,
       };
       connections = connections.map((connection) => connection.slug === slug ? updated : connection);

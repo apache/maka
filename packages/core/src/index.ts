@@ -398,10 +398,21 @@ export {
 } from './tool-result-record-schema.js';
 
 // model-thinking.ts
-export type { ThinkingLevel } from './model-thinking.js';
+export type {
+  ConnectionThinkingContext,
+  RelayModelProfile,
+  RelayModelProfiles,
+  ThinkingLevel,
+} from './model-thinking.js';
 export {
+  DECLARABLE_RELAY_THINKING_LEVELS,
+  normalizeRelayModelProfiles,
+  pruneRelayModelProfiles,
+  relayModelProfile,
   THINKING_LEVELS,
   isThinkingLevel,
+  resolveThinkingLevel,
+  thinkingVariantsForConnection,
   thinkingVariantsForModel,
 } from './model-thinking.js';
 
