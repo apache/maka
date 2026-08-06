@@ -14,6 +14,23 @@
   border-radius: var(--radius-element);
   background: var(--color-background-popover);
   -webkit-app-region: no-drag;
+  /* The hook already waits for the selection to settle before rendering this;
+     the fade keeps that arrival from reading as a pop. Short enough not to
+     add to the wait the user has already served. */
+  animation: maka-quote-actions-in 120ms var(--ease-standard, ease-out);
+}
+
+@keyframes maka-quote-actions-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-quote-actions {
+    animation: none;
+  }
 }
 
 /* The quote lives as a transient tab inside the session workbar (not a second

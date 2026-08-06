@@ -2541,7 +2541,7 @@ function AppShellContent({
                     ? (input) => {
                         const quote: QuoteRef = {
                           text: input.text,
-                          ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
+                          sourceTurnId: input.turnId,
                         };
                         // Accumulate onto the open panel for this session rather
                         // than spawning a new one; otherwise start a fresh panel.
