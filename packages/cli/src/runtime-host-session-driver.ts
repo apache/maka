@@ -898,7 +898,7 @@ class RuntimeHostSessionChannel {
     } finally {
       if (this.#startedTurnBarrier === turnId) {
         this.#startedTurnBarrier = undefined;
-        this.#flushStartedTurns();
+        if (!this.#closing) this.#flushStartedTurns();
       }
     }
   }
@@ -977,6 +977,7 @@ class RuntimeHostSessionChannel {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    this.#pendingStartedTurns.clear();
     for (const queue of this.#turns.values()) queue.finish();
     await this.#subscription.close();
   }

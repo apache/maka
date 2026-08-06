@@ -277,6 +277,90 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('a retired intermediate channel cannot republish its buffered successor', async () => {
+    const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const refreshFirst = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+      'subscription-refresh-1',
+    );
+    const refreshSecondFromFirst = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-2', 'run-2') }),
+      Promise.resolve([]),
+      'subscription-refresh-2-first',
+    );
+    const secondTranscript = deferred<StoredMessage[]>();
+    const second = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 3, rootTurn: runningTurn('turn-2', 'run-2') }),
+      secondTranscript.promise,
+      'subscription-2',
+    );
+    const refreshSecondFromSecond = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-2', 'run-2') }),
+      Promise.resolve([]),
+      'subscription-refresh-2-second',
+    );
+    const third = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 5, rootTurn: runningTurn('turn-3', 'run-3') }),
+      Promise.resolve([userMessage('turn-3', 'Third')]),
+      'subscription-3',
+    );
+    const duplicateThird = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 5, rootTurn: runningTurn('turn-3', 'run-3') }),
+      Promise.resolve([userMessage('turn-3', 'Duplicate third')]),
+      'subscription-3-duplicate',
+    );
+    const connection = new FakeConnection([
+      first,
+      refreshFirst,
+      refreshSecondFromFirst,
+      second,
+      refreshSecondFromSecond,
+      third,
+      duplicateThird,
+    ]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    const started: MakaPreparedSessionTurn[] = [];
+    driver.subscribeStartedTurns!((turn) => started.push(turn));
+
+    first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
+    first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
+    first.push(projectionFrame(3, completedTurn('turn-2', 'run-2'), 4));
+    first.push(projectionFrame(4, runningTurn('turn-3', 'run-3'), 5));
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => connection.openedSubscriptions === 4 && second.nextCalls > 0);
+
+    second.push(projectionFrame(1, completedTurn('turn-2', 'run-2'), 4, 'subscription-2'));
+    second.push(projectionFrame(2, runningTurn('turn-3', 'run-3'), 5, 'subscription-2'));
+    secondTranscript.resolve([userMessage('turn-2', 'Second')]);
+    await waitFor(
+      () =>
+        connection.openedSubscriptions === 6 &&
+        started.some((turn) => turn.turnId === 'turn-2') &&
+        started.some((turn) => turn.turnId === 'turn-3'),
+    );
+
+    const secondTurn = started.find((turn) => turn.turnId === 'turn-2');
+    assert.ok(secondTurn);
+    for await (const _event of secondTurn.events) {
+      // Draining the retired channel must not publish its buffered successor.
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(connection.openedSubscriptions, 6);
+    assert.deepEqual(
+      started.map((turn) => turn.turnId),
+      ['turn-2', 'turn-3'],
+    );
+  });
+
   test('an explicit Session switch fences an older successor reattach already loading', async () => {
     const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const refresh = new FakeSubscription(
