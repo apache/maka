@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
-import { resolveQuoteTarget, type QuoteScopeNode } from './selection-quote-target.js';
+import {
+  resolveQuoteTarget,
+  type QuoteScopeNode,
+  type QuoteTarget,
+} from './selection-quote-target.js';
 
 /**
  * How long the selection must hold still before the affordance appears.
@@ -16,28 +20,32 @@ const SELECTION_SETTLE_MS = 350;
  * the selection's current viewport-space anchor point, re-measured while
  * scrolling so it can never describe a position the selection has left.
  */
-export interface MessageSelectionQuote {
-  text: string;
-  /** `data-turn-id` of the turn the selection sits in. */
-  turnId: string;
-  /**
-   * Top-centre of the selection in viewport coordinates, or null while the
-   * selection is scrolled out of view. Null means "nothing to point at right
-   * now", not "no longer quotable" — the quote survives so that scrolling back
-   * restores the affordance.
-   */
-  anchor: { x: number; y: number } | null;
+export interface MessageSelectionQuote extends QuoteTarget {
+  /** Top-centre of the selection, in viewport coordinates. */
+  anchor: { x: number; y: number };
 }
 
-function measureAnchor(): { x: number; y: number } | null {
+/**
+ * The point the layer hangs from, or null when there is nothing to point at.
+ *
+ * The visibility test is against `root`, not the window: the layer lives in
+ * the top layer and is never clipped by the scroller, so a selection scrolled
+ * above the transcript would otherwise be pointed at by a bar sitting over the
+ * header. An off-screen range still reports a full-size rect — only
+ * `display:none` yields a zero one — so being out of view has to be measured,
+ * not inferred from the rect collapsing.
+ */
+function measureAnchor(root: HTMLElement): { x: number; y: number } | null {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
   const box = selection.getRangeAt(0).getBoundingClientRect();
   if (box.width === 0 && box.height === 0) return null;
+  const band = root.getBoundingClientRect();
+  if (box.top < band.top || box.top > band.bottom) return null;
   return { x: box.left + box.width / 2, y: box.top };
 }
 
-function readSelection(root: HTMLElement): Omit<MessageSelectionQuote, 'anchor'> | null {
+function readSelection(root: HTMLElement): QuoteTarget | null {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
   const container = selection.getRangeAt(0).commonAncestorContainer as unknown as QuoteScopeNode;
@@ -70,6 +78,12 @@ export function useMessageSelectionQuote(
   // Dismissal needs no "stay dismissed" flag: `selectionchange` is the only
   // thing that can recompute the quote, and dismissing (Escape, light-dismiss,
   // consuming the action) does not change the selection. Clearing is enough.
+  //
+  // One acknowledged gap: Escape pressed inside the settle window does not
+  // cancel the pending show, because there is no layer yet for it to dismiss.
+  // Cancelling would take a keydown listener — the class of listener this hook
+  // exists to be rid of — to buy back a 350ms window in which the user has
+  // nothing on screen to dismiss.
   const clear = useCallback(() => setQuote(null), []);
 
   useEffect(() => {
@@ -81,7 +95,7 @@ export function useMessageSelectionQuote(
       const root = scrollRef.current;
       if (!root) return;
       const target = readSelection(root);
-      const anchor = target ? measureAnchor() : null;
+      const anchor = target ? measureAnchor(root) : null;
       setQuote(target && anchor ? { ...target, anchor } : null);
     }
 
@@ -94,15 +108,22 @@ export function useMessageSelectionQuote(
     }
 
     /**
-     * Scrolling moves the selection, not the quote. Re-measuring keeps the
-     * layer on it; a selection scrolled out of the viewport measures to
-     * nothing, so the layer hides until it scrolls back.
+     * Scrolling moves the selection, not the quote, so the layer follows it —
+     * up to the edge of the scroller. Past that the anchor is gone and so is
+     * the quote: keeping it to restore on the way back cannot work, because
+     * hiding the layer runs `onHide`, which clears the quote anyway.
+     *
+     * Measured before `setQuote` rather than inside the updater: an updater
+     * must be pure, and reading layout is not.
      */
     function onScroll(): void {
+      const root = scrollRef.current;
+      if (!root) return;
+      const anchor = measureAnchor(root);
       setQuote((current) => {
         if (!current) return current;
-        const anchor = measureAnchor();
-        if (anchor?.x === current.anchor?.x && anchor?.y === current.anchor?.y) return current;
+        if (!anchor) return null;
+        if (anchor.x === current.anchor.x && anchor.y === current.anchor.y) return current;
         return { ...current, anchor };
       });
     }

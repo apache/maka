@@ -179,7 +179,8 @@ test('the quote layer follows the selection while the transcript scrolls', async
 }) => {
   await page.setViewportSize({ width: 1400, height: 700 });
   const composer = page.locator(COMPOSER_INPUT);
-  for (let i = 0; i < 6; i += 1) {
+  // Long enough that the selected turn can be scrolled clear of the scroller.
+  for (let i = 0; i < 14; i += 1) {
     await composer.fill(`scroll follow source ${i}`);
     await composer.press('Enter');
     await expect(
@@ -188,7 +189,7 @@ test('the quote layer follows the selection while the transcript scrolls', async
   }
 
   await page
-    .getByText(/Fake backend received: scroll follow source 4/)
+    .getByText(/Fake backend received: scroll follow source 11/)
     .last()
     .evaluate((element) => {
       const range = document.createRange();
@@ -221,4 +222,59 @@ test('the quote layer follows the selection while the transcript scrolls', async
       return Math.abs(layerAfter.y - layerBefore.y - selectionShift) <= 1;
     })
     .toBe(true);
+
+  // Following stops at the edge of the scroller. Once the anchor leaves the
+  // visible band there is nothing to point at, and a bar clamped to the top of
+  // the window pointing at off-screen text is the noise this feature exists to
+  // avoid. `getBoundingClientRect()` still reports a full-size rect for an
+  // off-screen range, so this cannot be left to the zero-size guard.
+  await page.mouse.wheel(0, -6000);
+  await expect(quoteLayer).toBeHidden();
+});
+
+/**
+ * A new selection must not leave the layer standing on the previous one's
+ * anchor while the new one settles. Asserted within a frame: the settle timer
+ * would clear it ~350ms later anyway, so any auto-waiting assertion passes
+ * whether or not the code hides it up front.
+ */
+test('a new selection hides the layer immediately, not when the next one settles', async ({
+  window: page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const composer = page.locator(COMPOSER_INPUT);
+  for (const label of ['hide first alpha', 'hide first beta']) {
+    await composer.fill(label);
+    await composer.press('Enter');
+    await expect(page.getByText(new RegExp(`Fake backend received: ${label}`)).last()).toBeVisible();
+  }
+
+  const select = (pattern: RegExp) =>
+    page
+      .getByText(pattern)
+      .last()
+      .evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      });
+
+  await select(/Fake backend received: hide first alpha/);
+  await expect(page.locator('.maka-quote-actions')).toBeVisible();
+
+  const stillVisibleNextFrame = await page
+    .getByText(/Fake backend received: hide first beta/)
+    .last()
+    .evaluate(async (element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return !!document.querySelector('.maka-quote-actions');
+    });
+  expect(stillVisibleNextFrame).toBe(false);
 });

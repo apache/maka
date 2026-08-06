@@ -103,4 +103,15 @@ describe('resolveQuoteTarget', () => {
     assert.ok(root && leaf);
     assert.equal(resolveQuoteTarget('12:04 · 1.2k tokens', leaf, root), null);
   });
+
+  it('rejects a selection spanning two turns', () => {
+    // A cross-turn selection's common ancestor is the list that holds both
+    // turns, so the walk from it meets no turn id before reaching the root.
+    // Attributing the excerpt to either turn would misreport where it came
+    // from, so the affordance is withheld — deliberately, and asserted here so
+    // it is not later mistaken for an oversight.
+    const [root, turnList] = chain({}, {});
+    assert.ok(root && turnList);
+    assert.equal(resolveQuoteTarget('spans both replies', turnList, root), null);
+  });
 });

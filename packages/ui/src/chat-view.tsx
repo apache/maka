@@ -474,12 +474,10 @@ export function ChatView(props: {
     lightDismiss: true,
     onHide: clearSelectionQuote,
   });
-  // A quote with no anchor is scrolled out of view: keep it, hide the layer.
-  const selectionAnchor = selectionQuote?.anchor ?? null;
   useEffect(() => {
-    if (selectionAnchor) selectionActionsLayer.show();
+    if (selectionQuote) selectionActionsLayer.show();
     else selectionActionsLayer.hide();
-  }, [selectionAnchor, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  }, [selectionQuote, selectionActionsLayer.show, selectionActionsLayer.hide]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
@@ -684,7 +682,7 @@ export function ChatView(props: {
             </>
           )}
         </ChatMessageList>
-        {selectionQuote && selectionAnchor && (props.onQuoteSelection || props.onAskAboutSelection) ? (
+        {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
           selectionActionsLayer.render(
             <div
               className="maka-quote-actions"
@@ -730,8 +728,8 @@ export function ChatView(props: {
               </ButtonGroup>
             </div>,
             {
-              x: selectionAnchor.x,
-              y: Math.max(8, selectionAnchor.y - 42),
+              x: selectionQuote.anchor.x,
+              y: Math.max(8, selectionQuote.anchor.y - 42),
               style: { transform: 'translateX(-50%)' },
             },
           )

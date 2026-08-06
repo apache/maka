@@ -58,6 +58,10 @@ export function findEnclosingTurnId(
  * only when it carries text and sits inside a turn. Metadata that lives in the
  * transcript but outside any turn — timestamps, progress panels, host-injected
  * cards — resolves to null, because quoting it back to the model says nothing.
+ *
+ * A selection spanning two turns resolves to null for the same reason: its
+ * common ancestor is above both turn roots, and attributing the excerpt to one
+ * turn id would be a lie about where it came from.
  */
 export function resolveQuoteTarget(
   rawText: string,
