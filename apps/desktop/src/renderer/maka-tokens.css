@@ -680,6 +680,15 @@
      two chances to change one of them. */
   --maka-titlebar-gutter-left: max(var(--space-6), var(--maka-titlebar-area-x));
   --maka-titlebar-gap: var(--space-2);
+  /* What the strip keeps for itself. This window has no OS title bar, so the
+     strip IS the drag handle, and the session breadcrumb is a grid item that
+     grows to its content: with a maximal name it took the whole middle column
+     and left an 8px band between it and the actions cluster (measured, 1000px
+     window: draggable width across the strip fell from ~730px to 216px, almost
+     all of it left of the breadcrumb). A name is worth reading, but not at the
+     price of being unable to move the window — so the trail truncates a little
+     sooner and this much stays draggable. */
+  --maka-titlebar-drag-reserve: 25%;
 
   /* session list geometry */
 

@@ -269,9 +269,13 @@ export interface ConversationCopy {
     showMore: string;
     showMoreAriaLabel: (count: number) => string;
     renameAriaLabel: string;
-    /** Title of the rename dialog, per subject. */
+    /**
+     * Title of the rename dialog when the subject is a project; a session's
+     * reuses `renameAriaLabel`, which is the same phrase the sidebar and the
+     * titlebar already use for it.
+     */
     renameProjectTitle: string;
-    /** What makes a good name, said once where the name is typed. */
+    /** The rename dialog's submit button. */
     renameSubmit: string;
     respondingAriaLabel: string;
     respondingTitle: string;

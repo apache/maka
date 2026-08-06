@@ -25,9 +25,15 @@ import { useEffect, useRef } from 'react';
 export function InlineRenameInput(props: {
   defaultValue: string;
   ariaLabel: string;
+  /**
+   * How the edit ended. The caller needs it to decide where focus goes: a
+   * keyboard exit should hand focus back to the control that opened the field,
+   * but a click-away already put it somewhere the user chose, and taking it
+   * back would be the field fighting the click.
+   */
   /** The field's whole appearance: it draws nothing of its own. */
   className: string;
-  onCommit(name: string): void;
+  onCommit(name: string, via: 'keyboard' | 'blur'): void;
   onCancel(): void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -50,7 +56,7 @@ export function InlineRenameInput(props: {
           escapeCancelledRef.current = false;
           return;
         }
-        props.onCommit(event.currentTarget.value.trim());
+        props.onCommit(event.currentTarget.value.trim(), 'blur');
       }}
       onKeyDown={(event) => {
         // The sidebar and the titlebar both sit under keyboard shortcuts that
@@ -59,7 +65,7 @@ export function InlineRenameInput(props: {
         if (event.nativeEvent.isComposing || event.key === 'Process') return;
         if (event.key === 'Enter') {
           event.preventDefault();
-          props.onCommit(event.currentTarget.value.trim());
+          props.onCommit(event.currentTarget.value.trim(), 'keyboard');
         } else if (event.key === 'Escape') {
           event.preventDefault();
           escapeCancelledRef.current = true;

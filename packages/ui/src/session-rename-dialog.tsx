@@ -33,7 +33,7 @@ export interface SessionRenameTarget {
  * ways out, which is the convention `PlanReminderFormDialog` set.
  */
 export function SessionRenameDialog(props: {
-  target: SessionRenameTarget | null;
+  target: SessionRenameTarget;
   onOpenChange(open: boolean): void;
   onRename(target: SessionRenameTarget, name: string): void;
 }) {
@@ -42,9 +42,7 @@ export function SessionRenameDialog(props: {
   // Uncontrolled across openings: the dialog is remounted per target (see the
   // `key` at the call site), so the seed is the name as it was when the menu
   // item was chosen, and nothing has to be synchronised while it is open.
-  const [name, setName] = useState(target?.name ?? '');
-
-  if (!target) return null;
+  const [name, setName] = useState(target.name);
 
   const trimmed = name.trim();
   // The row's own vocabulary: a conversation is 对话 everywhere else in the
@@ -53,10 +51,11 @@ export function SessionRenameDialog(props: {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!target) return;
     props.onOpenChange(false);
-    // An empty field is an abandoned edit, not a request for a nameless
-    // session — the same reading the titlebar's field gives it.
+    // Abandoning is Escape or the header's close control; an empty field cannot
+    // reach here, because the only submit affordance is disabled while it is
+    // empty. The guard stands for the browsers that run implicit submission
+    // through a disabled default button anyway.
     if (trimmed && trimmed !== target.name) props.onRename(target, trimmed);
   }
 

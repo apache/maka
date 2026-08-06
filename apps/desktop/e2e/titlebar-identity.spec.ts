@@ -64,10 +64,26 @@ test('titlebar identity opens at the content plate edge, clearing the icon rail'
 
   await page.getByRole('button', { name: '收起侧边栏' }).click();
   await expect(page.locator('[data-sidebar-state="collapsed"]')).toBeVisible();
-  // The rail eases its width; settle on the new seam before measuring it.
+  // The rail eases its width over `--duration-large`, and "has moved at all"
+  // is true on the FIRST frame of that ease — while the assertions below only
+  // hold once it has arrived. Poll for the destination: the plate's left edge
+  // settles on the collapsed rail, which is the same seam `measure()` reads.
   await expect
-    .poll(async () => (await page.locator(CONTENT_PLATE).boundingBox())?.x ?? 0)
-    .toBeLessThan(expanded.plateLeft);
+    .poll(() =>
+      page.evaluate(() => {
+        const plate = document.querySelector('.maka-panel-detail')?.getBoundingClientRect();
+        const frame = document.querySelector('.appFrame');
+        if (!plate || !frame) return null;
+        // The plate opens at the sidebar column's right edge, and that column's
+        // width is the variable the collapse rebinds — so the destination is
+        // stated by the same source the layout reads, not by a literal.
+        const column = Number.parseFloat(
+          getComputedStyle(frame).getPropertyValue('--maka-sidenav-width'),
+        );
+        return Math.round(plate.x - column);
+      }),
+    )
+    .toBe(0);
 
   const collapsed = await measure();
   expect(collapsed.left).toBeCloseTo(collapsed.railRight + gap, 0);
@@ -129,12 +145,29 @@ test('titlebar names the open session and its project, in both sidebar states', 
   await expect(identity).toContainText('示例项目');
   await expect(identity).toContainText('会话 00');
 
+  // "The open session", not "the first row": both are 会话 00 at rest, so a
+  // component wired to `sessions[0]` would read as correct until the user
+  // opens something else. 会话 03 also changes the ANSWER to the project
+  // question — the fixture links only its three newest sessions to 示例项目,
+  // so this one falls back to the name derived from its cwd — which is what
+  // makes this one click test both crumbs at once.
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .locator('[data-maka-contract="session-row"]')
+    .filter({ hasText: '会话 03' })
+    .first()
+    .click();
+  await expect(identity).toContainText('会话 03');
+  await expect(identity).not.toContainText('会话 00');
+  await expect(identity).not.toContainText('示例项目');
+  await expect(identity).toContainText('maka');
+
   // The reason this lives in the titlebar rather than the sidebar: it has to
   // survive the column that used to be its only home.
   await page.getByRole('button', { name: '收起侧边栏' }).click();
   await expect(page.locator('[data-sidebar-state="collapsed"]')).toBeVisible();
-  await expect(identity).toContainText('示例项目');
-  await expect(identity).toContainText('会话 00');
+  await expect(identity).toContainText('maka');
+  await expect(identity).toContainText('会话 03');
 });
 
 test('renaming from the titlebar reaches storage and the sidebar row', async ({
@@ -298,4 +331,107 @@ test('starting a rename leaves the trail exactly where it was', async ({
   await expect(identity.getByRole('textbox', { name: '重命名对话' })).toBeFocused();
 
   expect(await read()).toEqual(before);
+});
+
+/**
+ * A long name must not cost the user the ability to move the window.
+ *
+ * This window has no OS title bar, so the strip is the drag handle, and the
+ * breadcrumb is a grid item that grows to its content. At `max-width: 100%` a
+ * maximal name took the whole middle column: measured on a 1000px window, the
+ * band between the trail and the actions cluster collapsed from 526px to 8px
+ * and the strip's total draggable width fell from ~730px to 216px.
+ *
+ * Not a `no-drag` hygiene bug — the wide box was covered by the crumb button,
+ * so `no-drag` still matched the interactive area. The rect was honest; it was
+ * simply allowed to eat everything. What this pins is the reserve.
+ */
+test('a maximal session name still leaves the strip a band to drag by', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const identity = page.locator(IDENTITY);
+  await identity.getByRole('button', { name: /会话 00/ }).click();
+  const field = identity.getByRole('textbox', { name: '重命名对话' });
+  // 80 characters is the field's own cap, so this is the widest a name gets.
+  await field.fill('很长的会话名字'.repeat(20));
+  await field.press('Enter');
+  await expect(identity).not.toContainText('会话 00');
+
+  const band = await page.evaluate(() => {
+    const box = document.querySelector('[data-maka-contract="titlebar-identity"]')!;
+    const rect = box.getBoundingClientRect();
+    const actions = document.querySelector('.maka-workspace-top-actions')!.getBoundingClientRect();
+    const midY = rect.y + rect.height / 2;
+    const midX = (rect.right + actions.left) / 2;
+    const under = document.elementFromPoint(midX, midY);
+    return {
+      width: Math.round(actions.left - rect.right),
+      // Empty is not the same as draggable: the point has to reach the OS as
+      // window chrome, which is what the strip's one `drag` declaration does.
+      region: under ? getComputedStyle(under).getPropertyValue('-webkit-app-region').trim() : null,
+      clipped: (() => {
+        const seg = box.querySelector('.maka-titlebar-identity__segment--session')!;
+        return seg.scrollWidth > seg.clientWidth;
+      })(),
+    };
+  });
+
+  // The name is long enough to be pressing on the reserve, not merely short.
+  expect(band.clipped, JSON.stringify(band)).toBe(true);
+  expect(band.width, JSON.stringify(band)).toBeGreaterThan(64);
+  expect(band.region, JSON.stringify(band)).toBe('drag');
+});
+
+/**
+ * Clearing the field abandons the edit, quietly.
+ *
+ * The name survives either way — storage rejects an empty one — so what the
+ * `name &&` guard actually holds is that an abandoned edit is not REPORTED as
+ * a failure. Deleting it sends the empty string down to the main process,
+ * which refuses it, and the user gets 重命名会话失败 for an edit they simply
+ * walked away from. Verified by deleting the guard: the name stayed 会话 00
+ * and the toast appeared, which is why this asserts the toast and not the
+ * name alone.
+ */
+test('clearing the titlebar field abandons the rename without reporting a failure', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const identity = page.locator(IDENTITY);
+  await identity.getByRole('button', { name: /会话 00/ }).click();
+  const field = identity.getByRole('textbox', { name: '重命名对话' });
+  await field.fill('   ');
+  await field.press('Enter');
+
+  // A one-shot `count()`, not `toHaveCount(0)`, and before the name check.
+  // Both of the obvious spellings pass while the bug is present: the retrying
+  // matcher simply waits out the toast's own six seconds and then agrees it is
+  // gone, and putting the name assertion first spends those same seconds
+  // waiting for the crumb to come back from blank. The absence has to be read
+  // once, at a moment a real toast would still be on screen.
+  await page.waitForTimeout(1_000);
+  expect(await page.getByText('重命名会话失败').count()).toBe(0);
+  await expect(identity).toContainText('会话 00');
+});
+
+/**
+ * A keyboard exit hands focus back to the crumb it came from.
+ *
+ * The crumb is not hidden while the field is up — it is unmounted — so without
+ * a hand-back the edit ends with focus on the document body and the next Tab
+ * starts at the top of the window. A click-away is deliberately excluded: it
+ * already put focus where the user pointed.
+ */
+test('ending a titlebar rename from the keyboard returns focus to the crumb', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const identity = page.locator(IDENTITY);
+  const crumb = identity.getByRole('button', { name: /会话 00/ });
+
+  await crumb.click();
+  await identity.getByRole('textbox', { name: '重命名对话' }).press('Escape');
+  await expect(crumb).toBeFocused();
+
+  await crumb.click();
+  await identity.getByRole('textbox', { name: '重命名对话' }).press('Enter');
+  await expect(crumb).toBeFocused();
 });

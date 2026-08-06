@@ -2111,16 +2111,21 @@ function AppShellContent({
             new-task surface still shows its project in the composer's
             WorkspacePicker — which stops rendering at the exact moment this
             takes over, when the first message creates the session. */}
-        {navSelection.section === 'sessions' && activeSession && (
+        {/* `activeSessionForView`, not `activeSession`: opening or creating a
+            session runs a few hundred ms on a placeholder record while the real
+            summary loads, and the name this replaced (the context layer's) was
+            showing through that window. Hung on the real record alone, 新任务
+            was named nowhere for the length of it. */}
+        {navSelection.section === 'sessions' && activeSessionForView && (
           <TitlebarSessionIdentity
             /* Keyed by session: the open rename is local state and the field is
                uncontrolled, so a switch that left the instance mounted would
                carry one session's half-typed name — and its commit — onto the
                next one. A remount ties the edit to the session it belongs to. */
-            key={activeSession.id}
-            sessionName={activeSession.name}
+            key={activeSessionForView.id}
+            sessionName={activeSessionForView.name}
             onRenameSession={(name) => {
-              void sessionRowActionHandlers.renameSession(activeSession.id, name);
+              void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
             }}
             project={
               titlebarProjectName

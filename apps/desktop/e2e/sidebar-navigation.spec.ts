@@ -211,8 +211,12 @@ test('scheduled-task hub restores the last selected child module', async ({ wind
  * under the cursor and stepping every row below it up a pixel), its leading
  * icon, its trailing column, and its subtree, which is not decoration but every
  * descendant row: renaming a session with running subagents took the whole
- * branch off screen. A dialog leaves all of it alone by construction, and this
- * pins that it does.
+ * branch off screen.
+ *
+ * A dialog leaves all of that alone by construction, which is what this rests
+ * on — the fixture seeds no parent/child pair, so the measurements below cover
+ * the row and its neighbour, not a subtree. What they do pin is the part that
+ * regressed twice: the row keeps its box, and nothing under it moves.
  */
 test('renaming a session leaves its row exactly where it was', async ({
   sidebarLongSessionsWindow: page,
@@ -240,17 +244,64 @@ test('renaming a session leaves its row exactly where it was', async ({
         // absent neighbour should read as a changed measurement, not a crash
         // inside the page.
         nextRowY: next ? Math.round(next.getBoundingClientRect().y) : null,
-        name: box(first.querySelector('.astryx-side-nav-item > span')),
-        trailing: box(first.querySelector('.maka-session-row-trailing')),
+        // `'absent'` rather than null: these two are Astryx's own DOM, and a
+        // markup change that made both reads null would leave the comparison
+        // passing on two nulls while measuring nothing. A sentinel still
+        // compares equal to itself, but it says so in the failure text of
+        // whichever OTHER measurement moves.
+        name: box(first.querySelector('.astryx-side-nav-item > span')) ?? 'absent',
+        trailing: box(first.querySelector('.maka-session-row-trailing')) ?? 'absent',
         type: `${style.fontSize}/${style.fontWeight}`,
       };
     });
 
   const before = await read();
+  const trigger = row.locator('.maka-session-row-end').getByRole('button').first();
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '重命名对话' });
+  await expect(dialog.getByRole('textbox')).toBeFocused();
+
+  expect(await read()).toEqual(before);
+
+  // Escape leaves, and hands the keyboard back where it came from — the same
+  // contract the delete confirm one item below in this menu already keeps.
+  // Closing by unmounting the dialog skips Astryx's focus restore and drops
+  // the user on <body>, with the next Tab starting at the top of the window.
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
+/**
+ * The session branch of the rename actually commits.
+ *
+ * The project branch is covered above, and the titlebar's rename reaches
+ * storage through a different component entirely — so `commitRename`'s
+ * session arm was the one path with no test on it, and a swapped ternary
+ * there would rename nothing while every other rename test stayed green.
+ */
+test('renaming a session from the dialog reaches the row', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  const row = sidebar
+    .locator('[data-maka-contract="session-row"]')
+    .filter({ hasText: '会话 00' })
+    .first();
   await row.locator('.maka-session-row-end').getByRole('button').first().focus();
   await page.keyboard.press('Enter');
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '重命名对话' }).getByRole('textbox')).toBeFocused();
 
-  expect(await read()).toEqual(before);
+  const dialog = page.getByRole('dialog', { name: '重命名对话' });
+  const field = dialog.getByRole('textbox');
+  await expect(field).toHaveValue('会话 00');
+  await field.fill('会话 零零');
+  await field.press('Enter');
+
+  await expect(dialog).toBeHidden();
+  await expect(
+    sidebar.locator('[data-maka-contract="session-row"]').filter({ hasText: '会话 零零' }),
+  ).toHaveCount(1);
 });

@@ -280,8 +280,9 @@
      width less everything already between it and the window's left edge: this
      strip's resize inset, its left gutter, and the `gap` that follows the
      column. Subtracting the gap is what makes column 2 OPEN at the seam — left
-     in, it pushed the breadcrumb a gap past the plate edge, which measured 7px
-     of overhang instead of the intended flush start.
+     in, it pushed the breadcrumb a gap past the plate edge — one whole
+     `--maka-titlebar-gap` (8px) of overhang instead of the intended flush
+     start.
 
      `minmax(..., auto)` rather than a fixed width for the collapsed state,
      where the two icons are wider than the 48px rail: the column grows to the
@@ -366,9 +367,9 @@ dialog:modal {
   grid-column: 2;
   justify-self: start;
   min-width: 0;
-  max-width: 100%;
-  display: inline-flex;
-  align-items: center;
+  /* Never the whole column: what is left of it is the strip's drag band. */
+  max-width: calc(100% - var(--maka-titlebar-drag-reserve));
+  display: flex;
   padding-left: var(--space-3);
   -webkit-app-region: no-drag;
 }
@@ -418,8 +419,10 @@ dialog:modal {
    underline is declined.
 
    Keyed on the button rather than the segment span so the wash covers the whole
-   hit target, and specificity (0-2-1) clears the StyleX atom (0-2-0) that
-   declares the underline. */
+   hit target. What clears the StyleX atom is LAYER ORDER, not specificity:
+   product CSS imports into `components`, which cascade-layers.css declares
+   last, and Astryx's atoms carry `:not(#\#):not(#\#)` — on specificity alone
+   the atom wins. */
 .maka-titlebar-identity__breadcrumbs button {
   border-radius: var(--radius-control);
   padding-inline: var(--space-1);
@@ -470,8 +473,6 @@ dialog:modal {
   outline: 0;
   box-shadow: 0 1px 0 oklch(from var(--focus-ring) l c h / 0.4);
   field-sizing: content;
-  width: auto;
-  min-width: 0;
   padding-block: 0;
   /* The crumb button's own inline padding, so the first glyph does not step
      4px left the moment the label becomes a field. */

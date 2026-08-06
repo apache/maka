@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BreadcrumbItem, Breadcrumbs } from '@astryxdesign/core/Breadcrumbs';
 import { Icon } from '@astryxdesign/core/Icon';
 import { getConversationCopy } from './conversation-copy.js';
@@ -66,9 +66,38 @@ export function TitlebarSessionIdentity(props: {
 }) {
   const copy = getConversationCopy(useUiLocale());
   const [renaming, setRenaming] = useState(false);
+  const trailRef = useRef<HTMLDivElement>(null);
+  const handBackFocusRef = useRef(false);
+
+  /**
+   * Where focus goes when the edit ends.
+   *
+   * The crumb the user pressed to start the rename is not hidden while the
+   * field is up — it is unmounted — so when the edit ends a NEW button takes
+   * its place and focus has nowhere to fall back to but the document body,
+   * which puts the next Tab at the top of the window. Only a keyboard exit
+   * hands it back: a click-away already moved focus somewhere the user picked.
+   */
+  function endRename(handBackFocus: boolean) {
+    handBackFocusRef.current = handBackFocus;
+    setRenaming(false);
+  }
+
+  useEffect(() => {
+    if (renaming || !handBackFocusRef.current) return;
+    handBackFocusRef.current = false;
+    trailRef.current
+      ?.querySelector('.maka-titlebar-identity__segment--session')
+      ?.closest('button')
+      ?.focus();
+  }, [renaming]);
 
   return (
-    <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity">
+    <div
+      className="maka-titlebar-identity"
+      data-maka-contract="titlebar-identity"
+      ref={trailRef}
+    >
       {/* `default`, not `supporting`. Astryx documents supporting as the variant
           for dense UIs "where the breadcrumb should be subtle", which this is
           the opposite of: it is the window's statement of which session is
@@ -110,14 +139,14 @@ export function TitlebarSessionIdentity(props: {
               className="maka-titlebar-identity__rename-input"
               defaultValue={props.sessionName}
               ariaLabel={copy.sessions.renameAriaLabel}
-              onCommit={(name) => {
-                setRenaming(false);
+              onCommit={(name, via) => {
+                endRename(via === 'keyboard');
                 // An empty field is an abandoned edit, not a request for a
                 // session with no name — the sidebar's rename reads it the
                 // same way.
                 if (name && name !== props.sessionName) props.onRenameSession(name);
               }}
-              onCancel={() => setRenaming(false)}
+              onCancel={() => endRename(true)}
             />
           </BreadcrumbItem>
         ) : (

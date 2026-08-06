@@ -7,6 +7,7 @@ import {
   useState,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
@@ -166,13 +167,43 @@ function SessionListGroups(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
+  /**
+   * The control the rename was started from, so focus can go back to it.
+   *
+   * Astryx's Dialog restores focus on its own — to whatever was focused when it
+   * opened — and that is exactly what fails here. A menu-launched dialog opens
+   * one frame AFTER the menu closed, and the two race: measured frame by frame,
+   * the dialog's capture lands on the menu item (frames 1-3) while the menu
+   * hands focus back to the trigger on frame 4. Restoring to a node that has
+   * since been unmounted is a no-op, so the edit ended on <body> and the next
+   * Tab started at the top of the window — while the delete confirm one item
+   * below in the same menu returns the trigger.
+   *
+   * The opener is passed in rather than captured here, because the component
+   * that renders the menu is the only one that can name it without racing.
+   */
+  const renameOpenerRef = useRef<HTMLElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const activeAncestorIds = useMemo(
     () => resolveActiveSessionAncestorIds(props.activeId, props.childSessionsByParentId),
     [props.activeId, props.childSessionsByParentId],
   );
 
-  const startRename = useCallback((target: SessionRenameTarget) => setRenameTarget(target), []);
+  const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
+    renameOpenerRef.current = opener;
+    setRenameTarget(target);
+  }, []);
+
+  function closeRename() {
+    setRenameTarget(null);
+    const opener = renameOpenerRef.current;
+    renameOpenerRef.current = null;
+    // After the dialog has left the DOM, not before: while it is still open it
+    // is a native modal, everything outside it is inert, and a `focus()` there
+    // is refused outright — measured, the call ran and the row's trigger stayed
+    // unfocused.
+    if (opener) window.requestAnimationFrame(() => opener.focus());
+  }
 
   function commitRename(target: SessionRenameTarget, name: string) {
     const rename =
@@ -217,18 +248,18 @@ function SessionListGroups(props: {
     ],
   );
 
-  // Remounted per target so the field seeds from the name as it was when the
-  // menu item was chosen, with nothing to synchronise while the dialog is open.
-  const renameDialog = (
+  // Keyed per target so the field seeds from the name that row carries now,
+  // with nothing to synchronise while the dialog is open.
+  const renameDialog = renameTarget ? (
     <SessionRenameDialog
-      key={renameTarget?.id ?? 'none'}
+      key={renameTarget.id}
       target={renameTarget}
       onOpenChange={(open) => {
-        if (!open) setRenameTarget(null);
+        if (!open) closeRename();
       }}
       onRename={commitRename}
     />
-  );
+  ) : null;
 
   if (props.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
@@ -246,8 +277,10 @@ function SessionListGroups(props: {
           project={project}
           sessions={group.sessions}
           projectActions={props.projectActions}
-          onStartRename={() => {
-            if (project) startRename({ kind: 'project', id: project.id, name: project.name });
+          onStartRename={(opener) => {
+            if (project) {
+              startRename({ kind: 'project', id: project.id, name: project.name }, opener);
+            }
           }}
           renderSession={(session) => renderSessionTree(session, false)}
         />
@@ -304,7 +337,7 @@ function ProjectNavRow(props: {
   project?: ProjectRecord;
   sessions: SessionSummary[];
   projectActions?: ProjectRowActions;
-  onStartRename(): void;
+  onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
   // Collapsible only when there is a real session subtree. An empty VStack is
@@ -335,9 +368,14 @@ function ProjectNavRow(props: {
 }
 
 /** Keeps trailing controls from activating the parent SideNavItem button. */
-function EndContentHitTarget(props: { children: ReactNode; className?: string }) {
+function EndContentHitTarget(props: {
+  children: ReactNode;
+  className?: string;
+  ref?: Ref<HTMLSpanElement>;
+}) {
   return (
     <span
+      ref={props.ref}
       className={props.className}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
@@ -357,7 +395,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   worktree: boolean;
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
-  onStartRename(target: SessionRenameTarget): void;
+  onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
   childSessions?: readonly SessionSummary[];
   expandedForActiveDescendant: boolean;
   renderSessionTree?(session: SessionSummary, nested: boolean): ReactNode;
@@ -399,11 +437,12 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         }
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {
-            props.onStartRename({
-              kind: 'session',
-              id: props.session.id,
-              name: props.session.name,
-            });
+            props.onStartRename(
+              { kind: 'session', id: props.session.id, name: props.session.name },
+              // The row's own button: a double-click starts the rename from
+              // the row itself, not from the actions menu.
+              event.currentTarget as HTMLElement,
+            );
             return;
           }
           props.onSelectSession(props.session.id);
@@ -461,9 +500,10 @@ function ProjectItemEndContent(props: {
   project?: ProjectRecord;
   sessionCount: number;
   actions?: ProjectRowActions;
-  onStartRename(): void;
+  onStartRename(opener: HTMLElement | null): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
+  const endRef = useRef<HTMLSpanElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const mountedRef = useMountedRef();
@@ -526,7 +566,11 @@ function ProjectItemEndContent(props: {
             label: copy.projectRename,
             icon: Pencil,
             onClick: () => {
-              pendingMenuIntentRef.current = props.onStartRename;
+              // Read now, while the trigger is still the thing the user is on:
+              // by the time the intent runs the menu has closed and focus is
+              // mid-handover.
+              const opener = endRef.current?.querySelector<HTMLElement>('button') ?? null;
+              pendingMenuIntentRef.current = () => props.onStartRename(opener);
             },
           },
           {
@@ -538,7 +582,7 @@ function ProjectItemEndContent(props: {
     : [];
 
   return (
-    <EndContentHitTarget className="maka-session-row-end maka-project-item-end">
+    <EndContentHitTarget className="maka-session-row-end maka-project-item-end" ref={endRef}>
       {project && !project.available && (
         <AlertTriangle size={12} aria-label={copy.projectUnavailable} />
       )}
@@ -570,9 +614,10 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
   stale: boolean;
   worktree: boolean;
   actions?: SessionRowActions;
-  onStartRename(target: SessionRenameTarget): void;
+  onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const locale = useUiLocale();
+  const trailingRef = useRef<HTMLSpanElement>(null);
   const copy = getConversationCopy(locale).sessions;
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
@@ -651,7 +696,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
       )}
       {signal}
       {actions ? (
-        <span className="maka-session-row-trailing">
+        <span className="maka-session-row-trailing" ref={trailingRef}>
           <MoreMenu
             size="sm"
             label={copy.actionsAriaLabel}
@@ -681,12 +726,15 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
                 label: copy.rename,
                 icon: Pencil,
                 onClick: () => {
+                  // Read now, while the trigger is still the thing the user is
+                  // on: by the time the intent runs the menu has closed and
+                  // focus is mid-handover.
+                  const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
                   pendingMenuIntentRef.current = () =>
-                    props.onStartRename({
-                      kind: 'session',
-                      id: props.session.id,
-                      name: props.session.name,
-                    });
+                    props.onStartRename(
+                      { kind: 'session', id: props.session.id, name: props.session.name },
+                      opener,
+                    );
                 },
               },
               {
