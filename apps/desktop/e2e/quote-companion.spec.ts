@@ -108,6 +108,26 @@ test('the quote layer waits for the selection to settle, stays closed after Esca
       selection?.addRange(range);
     });
 
+  // Real drag-select with real mouse events. A drag emits a burst of
+  // `selectionchange`, and the gesture below lasts well past the settle delay,
+  // so a layer that appeared mid-drag — the original complaint — shows up here.
+  const replyBox = (await reply.boundingBox())!;
+  const dragY = replyBox.y + replyBox.height / 2;
+  await page.mouse.move(replyBox.x + 20, dragY);
+  await page.mouse.down();
+  for (const dx of [60, 120, 180, 240, 300]) {
+    await page.mouse.move(replyBox.x + 20 + dx, dragY);
+    await page.waitForTimeout(90);
+    await expect(quoteLayer).toBeHidden();
+  }
+  await page.mouse.up();
+  await expect(quoteLayer).toBeVisible();
+
+  // Back to no selection, so the measurement below times a fresh appearance
+  // rather than finding the layer this drag already raised.
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await expect(quoteLayer).toBeHidden();
+
   // Timed inside the page: measuring across the driver would fold IPC latency
   // into the delay and make the assertion depend on host load.
   const appearedAfterMs = await reply.evaluate(async (element) => {
