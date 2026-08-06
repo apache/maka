@@ -175,35 +175,41 @@
    Markdown; PR 8 owns the remaining streaming and scroll-anchoring boundary. */
 
 /* --- User-turn meta row (relocated from tool-output.css) ----------------- */
-/* PR-CHAT-CHROME-FOLLOWUP-0 / PR5 CHAT-MESSAGE-TIME-0: the relative time is
-   always visible now (it was `opacity: 0` until hover, which hid it on
-   touch + from assistive tech). It stays quiet — caption tier at
-   normal weight, muted — and rides in the user turn's meta row beneath
-   the block. Aligned to the same tier the footer-action cva uses (text-xs). */
-/* #1879: height off the control ruler, not off the line box. `inline-block`
-   let the leading decide the box — measured, bumping this element's own
-   leading to 40px took the box from 20px to 40px and carried the meta row
-   with it. `--h-control-xs` is 20px, the value the supporting leading
-   already resolves to, so the pin is pixel-neutral today and load-bearing
-   the next time a leading moves. Safe to pin because `white-space: nowrap`
-   below makes single-line a property of this box rather than an assumption. */
+/* The time is an Astryx `Timestamp`, so the quiet register (supporting tier,
+   secondary colour) is the component's own default and is not restated here.
+   What stays is what the component does not decide:
+
+   - #1879: height off the control ruler, not off the line box. Measured then,
+     bumping this element's leading to 40px took the box from 20px to 40px and
+     carried the meta row with it. `--h-control-xs` is 20px, what the supporting
+     leading already resolves to, so the pin is pixel-neutral today and
+     load-bearing the next time a leading moves. Safe to pin because `nowrap`
+     makes single-line a property of this box rather than an assumption.
+   - `tabular-nums`, because `Timestamp`'s `time` format renders the hour with
+     `hour: 'numeric'` — no leading zero, so `9:05` and `14:32` differ by a
+     digit. The row is right-aligned, so that difference shows up on the left
+     edge; equal-width digits keep it to the one character it really is. */
 .maka-message-time-inline {
-  font: var(--maka-text-supporting);
   height: var(--h-control-xs);
   display: inline-flex;
   align-items: center;
-  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 /* User turn meta row: quiet time + a copy affordance, right-aligned
    beneath the message block (the parent `Message role="user"` aligns its
-   items to flex-end, so this row shrink-wraps and hugs the right edge). */
+   items to flex-end, so this row shrink-wraps and hugs the right edge).
+
+   The row's own box is 28px — the height of the action buttons, not of the
+   12px time beside them — so it reads tighter against the bubble than its
+   4px top margin suggests. Astryx's default is nudged one step to 6px to give
+   the row back some air without opening a visible gap. */
 .maka-message-meta {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
+  margin-top: var(--space-1-5);
 }
 
 /* Turn summary / lineage rows / footer measure column folded into the

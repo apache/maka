@@ -38,20 +38,12 @@ export function formatAbsoluteTimestamp(ts: number, locale: UiLocale): string {
   return createAbsoluteTimeFormat(locale).format(new Date(ts));
 }
 
-function createClockTimeFormat(locale: UiLocale): Intl.DateTimeFormat {
-  if (typeof Intl === 'undefined' || typeof Intl.DateTimeFormat !== 'function') {
-    return { format: (d: Date) => d.toISOString().slice(11, 16) } as unknown as Intl.DateTimeFormat;
-  }
-  return new Intl.DateTimeFormat(
-    uiLocaleToIntlLocale(locale),
-    { hour: '2-digit', minute: '2-digit', hour12: false },
-  );
-}
-
-/** Wall-clock `HH:mm` (24-hour), for the always-absolute user-message time. */
-export function formatClockTime(ts: number, locale: UiLocale): string {
-  return createClockTimeFormat(locale).format(new Date(ts));
-}
+/* `formatClockTime` (a 24-hour `HH:mm` for the user-message time) lived here
+   until the meta row moved to Astryx's `Timestamp`. Locking the hour cycle was
+   the app overriding a preference that belongs to the reader's system, which is
+   why `Timestamp` formats against the host locale and offers no hour-cycle
+   knob. Absolute readings now come from that component, not from a local bag of
+   `Intl` options. */
 
 export function formatTurnDuration(ms: number): string {
   // Same shape as tool-activity's formatDuration — the turn meta chip

@@ -3,7 +3,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import { AlertOctagon, Ban, Check, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
-import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
+import { turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { redactSecrets } from './redact.js';
 import { isProgressiveStreamingEnabled } from './streaming-presentation.js';
 import {
@@ -17,6 +17,7 @@ import {
   HStack,
   IconButton as UiIconButton,
   Thumbnail,
+  Timestamp,
   Token,
   useLightbox,
 } from '@astryxdesign/core';
@@ -42,6 +43,17 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+
+/* A size has to be passed: Astryx's `sm` button bounds the icon slot at 16px
+   (Button.tsx's `iconSizeStyles`) but does not resize the glyph inside it, so an
+   unsized lucide icon keeps its own 24px height and renders 16×24, squashed.
+
+   14 rather than the slot's own 16, because `--icon-size` (maka-tokens.css)
+   scopes that token to "nav + button icons" and sends "dense meta (12-14)" back
+   to the call site — this row is dense meta. 14 is also where the same position
+   already sits most often across the app. Named rather than repeated at four
+   call sites: one value, one place to read why. */
+const FOOTER_ICON_SIZE = 14;
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -161,34 +173,30 @@ const MessageBody = memo(function MessageBody(props: {
         className="maka-message-meta"
         timestamp={
           props.ts !== undefined ? (
-            <small
-              className="maka-message-time-inline tabular-nums"
-              aria-hidden="true"
-              title={formatAbsoluteTimestamp(props.ts, locale)}
-            >
-              {formatClockTime(props.ts, locale)}
-            </small>
+            /* `value` takes ms directly: Timestamp's own parseValue reads
+               anything past 1e12 as milliseconds (2001-09-09 onward), and a
+               chat message never predates that. */
+            <Timestamp className="maka-message-time-inline" value={props.ts} format="time" />
           ) : undefined
         }
         footer={
           <>
             <MessageCopyButton text={props.text} />
             {props.onEditUserMessage ? (
-              <Tooltip content={editActionLabel}>
-                <UiIconButton
-                  label={editActionLabel}
-                  icon={<Pencil size={12} aria-hidden="true" />}
-                  variant="ghost"
-                  size="sm"
-                  className={markerVariants({ variant: 'footer-action' })}
-                  aria-disabled={props.editDisabled === true ? 'true' : undefined}
-                  data-action="edit"
-                  onClick={() => {
-                    if (props.editDisabled) return;
-                    props.onEditUserMessage?.();
-                  }}
-                />
-              </Tooltip>
+              <UiIconButton
+                label={editActionLabel}
+                tooltip={editActionLabel}
+                icon={<Pencil size={FOOTER_ICON_SIZE} aria-hidden="true" />}
+                variant="ghost"
+                size="sm"
+                className={markerVariants({ variant: 'footer-action' })}
+                aria-disabled={props.editDisabled === true ? 'true' : undefined}
+                data-action="edit"
+                onClick={() => {
+                  if (props.editDisabled) return;
+                  props.onEditUserMessage?.();
+                }}
+              />
             ) : null}
           </>
         }
@@ -270,25 +278,24 @@ function MessageCopyButton(props: { text: string }) {
         ? copyText.copyFailed
         : baseLabel;
   const icon = copied
-    ? <Check size={12} aria-hidden="true" />
-    : <Copy size={12} aria-hidden="true" />;
+    ? <Check size={FOOTER_ICON_SIZE} aria-hidden="true" />
+    : <Copy size={FOOTER_ICON_SIZE} aria-hidden="true" />;
 
   return (
-    <Tooltip content={actionLabel}>
-      <UiIconButton
-        label={baseLabel}
-        icon={icon}
-        variant="ghost"
-        size="sm"
-        className={markerVariants({ variant: 'footer-action' })}
-        aria-busy={copyPending ? 'true' : undefined}
-        isDisabled={copyPending}
-        data-copied={copied}
-        data-copy-feedback={copyPhase ?? undefined}
-        data-pending={copyPending ? 'true' : undefined}
-        onClick={() => void copy()}
-      />
-    </Tooltip>
+    <UiIconButton
+      label={baseLabel}
+      tooltip={actionLabel}
+      icon={icon}
+      variant="ghost"
+      size="sm"
+      className={markerVariants({ variant: 'footer-action' })}
+      aria-busy={copyPending ? 'true' : undefined}
+      isDisabled={copyPending}
+      data-copied={copied}
+      data-copy-feedback={copyPhase ?? undefined}
+      data-pending={copyPending ? 'true' : undefined}
+      onClick={() => void copy()}
+    />
   );
 }
 
@@ -749,24 +756,24 @@ function TurnFooterActions(props: {
               ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
               : (action.tooltip ?? action.label);
             const icon = isCopyAction && copyPhase === 'copied'
-              ? <Check size={12} aria-hidden="true" />
+              ? <Check size={FOOTER_ICON_SIZE} aria-hidden="true" />
               : STATUS_FOOTER_ICON[action.id];
             return (
-              <Tooltip key={action.id} content={tooltipText}>
-                <UiIconButton
-                  label={action.label}
-                  icon={icon}
-                  variant="ghost"
-                  size="sm"
-                  className={markerVariants({ variant: 'footer-action' })}
-                  data-action={action.id}
-                  data-pending={isActionPending || undefined}
-                  data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                  aria-disabled={!action.enabled || copyIsPending}
-                  aria-busy={isActionPending || undefined}
-                  onClick={() => void handleClick(action)}
-                />
-              </Tooltip>
+              <UiIconButton
+                key={action.id}
+                label={action.label}
+                tooltip={tooltipText}
+                icon={icon}
+                variant="ghost"
+                size="sm"
+                className={markerVariants({ variant: 'footer-action' })}
+                data-action={action.id}
+                data-pending={isActionPending || undefined}
+                data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
+                aria-disabled={!action.enabled || copyIsPending}
+                aria-busy={isActionPending || undefined}
+                onClick={() => void handleClick(action)}
+              />
             );
           })}
         </>
@@ -776,10 +783,10 @@ function TurnFooterActions(props: {
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
-  regenerate: <RefreshCcw size={12} aria-hidden="true" />,
-  branch: <GitBranch size={12} aria-hidden="true" />,
-  copy: <Copy size={12} aria-hidden="true" />,
-  info: <Info size={12} aria-hidden="true" />,
+  regenerate: <RefreshCcw size={FOOTER_ICON_SIZE} aria-hidden="true" />,
+  branch: <GitBranch size={FOOTER_ICON_SIZE} aria-hidden="true" />,
+  copy: <Copy size={FOOTER_ICON_SIZE} aria-hidden="true" />,
+  info: <Info size={FOOTER_ICON_SIZE} aria-hidden="true" />,
 };
 
 export function ModelProcessingIndicator() {
