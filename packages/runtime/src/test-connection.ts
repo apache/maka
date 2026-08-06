@@ -148,7 +148,9 @@ async function testConnectionStrict(
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
       const remainingMs = timeoutMs - (Date.now() - t0);
-      if (remainingMs <= 0) break;
+      if (remainingMs <= 0) {
+        return connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
+      }
       const remainingCandidates = candidates.length - index;
       const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
       try {
@@ -166,14 +168,7 @@ async function testConnectionStrict(
         lastFailure = connectionTestFailure(error, t0, true);
       }
     }
-    return (
-      lastFailure ?? {
-        ok: false,
-        errorMessage: 'No OpenCode Free model responded within the connection-test budget',
-        errorClass: 'provider_unavailable',
-        latencyMs: Date.now() - t0,
-      }
-    );
+    return lastFailure ?? connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
   }
 
   return await testConnectionModel(connection, secret, testModel, fetchFn, t0, timeoutMs);

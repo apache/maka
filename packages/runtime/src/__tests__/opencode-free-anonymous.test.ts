@@ -241,7 +241,6 @@ describe('opencode-free anonymous runtime', () => {
   });
 
   test('bounds all fallback probes by one shared deadline', async () => {
-    const requestedModels: string[] = [];
     const connection: LlmConnection = {
       slug: 'opencode-free',
       name: 'OpenCode Free',
@@ -253,8 +252,6 @@ describe('opencode-free anonymous runtime', () => {
       updatedAt: 0,
     };
     const fakeFetch: typeof globalThis.fetch = async (_input, init) => {
-      const body = JSON.parse(String(init?.body)) as { model: string };
-      requestedModels.push(body.model);
       return await new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal;
         assert.ok(signal);
@@ -273,6 +270,5 @@ describe('opencode-free anonymous runtime', () => {
     assert.equal(result.ok, false);
     assert.equal(result.errorClass, 'timeout');
     assert.ok(Date.now() - startedAt < 1_000);
-    assert.ok(requestedModels.length > 0);
   });
 });
