@@ -141,6 +141,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    // claude-subscription discovery is fallback-only (session-scoped OAuth
+    // tokens cannot call GET /v1/models). Create seeds the curated inventory;
+    // pick an id from that inventory rather than opening a fetch ticket.
+    const subscriptionModelId = 'claude-sonnet-5';
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
@@ -148,7 +152,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
         name: 'OAuth backend creation',
         providerType: 'claude-subscription',
         enabled: true,
-        enabledModelIds: [MODEL_ID],
+        enabledModelIds: [subscriptionModelId],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -156,6 +160,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const connection = created.snapshot.connections[0];
     assert.ok(connection);
     if (!connection) return;
+    assert.ok(
+      connection.models.some((model) => model.id === subscriptionModelId),
+      'create must seed the curated claude-subscription inventory',
+    );
     const tokens: OAuthSubscriptionTokens = {
       access_token: 'expired-oauth-access',
       refresh_token: 'rotating-oauth-refresh',
@@ -187,13 +195,13 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       )}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     transports = controlledOAuthTransports();
     const authority = new HostOAuthExecutionAuthority(policy);
     const firstAbort = new AbortController();
     const firstCreation = createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: firstAbort.signal,
+        modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
@@ -218,6 +226,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     secondBackend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
+        modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
