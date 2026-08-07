@@ -71,14 +71,19 @@ test('packs deterministically, inspects completely, and atomically hydrates', as
     tar.subarray(-1024).every((byte) => byte === 0),
     true,
   );
+  // Windows cannot represent the executable bit, so run.sh is canonically packed as 0644.
   assert.equal(
     createHash('sha256').update(tar).digest('hex'),
-    '5aed5bb2802d79826339fcc89f0c0aaf657c36d898452e22ef972fb6d5306148',
+    process.platform === 'win32'
+      ? 'e84d413f59770ec6aa38edbd0c678f64ebb8354bb913309cfed8a16d71f18bc1'
+      : '5aed5bb2802d79826339fcc89f0c0aaf657c36d898452e22ef972fb6d5306148',
   );
   assert.equal(
     first.archiveDigest,
     // Pinned with Node 24's bundled Zstandard encoder; Node 26 currently matches.
-    'sha256:c7c9efbe9fc8a1c84f22ec016985457d82070001c4579d5cecb1304459fed5e1',
+    process.platform === 'win32'
+      ? 'sha256:0d5184d3c7362a2043a6bf6964b88515b81c652b4c4e59cf14653d8d8b29fca2'
+      : 'sha256:c7c9efbe9fc8a1c84f22ec016985457d82070001c4579d5cecb1304459fed5e1',
   );
   assert.equal(firstBytes.lastIndexOf(Buffer.from('28b52ffd', 'hex')), 0);
 
@@ -108,8 +113,17 @@ test('packs deterministically, inspects completely, and atomically hydrates', as
     '#!/bin/sh\necho ok\n',
   );
   assert.equal(await readFile(join(destinationRoot, 'workspace', '深', 'x.txt'), 'utf8'), '好');
-  assert.equal((await stat(join(destinationRoot, 'workspace', 'run.sh'))).mode & 0o777, 0o755);
-  assert.equal((await stat(join(destinationRoot, 'state', 'session.bin'))).mode & 0o777, 0o644);
+  // Node exposes synthesized 0666 file modes on Windows after hydration.
+  const hydratedRegularFileMode = process.platform === 'win32' ? 0o666 : 0o644;
+  const hydratedExecutableFileMode = process.platform === 'win32' ? 0o666 : 0o755;
+  assert.equal(
+    (await stat(join(destinationRoot, 'workspace', 'run.sh'))).mode & 0o777,
+    hydratedExecutableFileMode,
+  );
+  assert.equal(
+    (await stat(join(destinationRoot, 'state', 'session.bin'))).mode & 0o777,
+    hydratedRegularFileMode,
+  );
   await assert.rejects(lstat(join(destinationRoot, 'manifest.json')), { code: 'ENOENT' });
 });
 
