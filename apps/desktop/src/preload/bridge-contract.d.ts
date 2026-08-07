@@ -78,6 +78,7 @@ import type {
   DeepResearchChangedEvent,
   DeepResearchClientProgress,
   LocalMemoryEntryPreview,
+  PetPackManifestV1,
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
@@ -206,6 +207,23 @@ export type AppUpdateInstallResult =
 export type WindowCommand = { id: 'newTask' | 'openSettings' | 'openHelp' };
 
 export interface MakaBridge {
+
+  pets: {
+    list(): Promise<PetPackManifestV1[]>;
+    importLocalDirectory(): Promise<
+      | { ok: true; manifest: PetPackManifestV1 }
+      | {
+          ok: false;
+          reason:
+            | 'cancelled'
+            | 'invalid_directory'
+            | 'invalid_manifest'
+            | 'invalid_asset'
+            | 'already_installed'
+            | 'read_failed';
+        }
+    >;
+  };
 
   tasks: {
     list(sessionId: string): Promise<Task[]>;

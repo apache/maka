@@ -116,6 +116,7 @@ import { registerBrowserIpc } from './browser-ipc-main.js';
 import { registerConnectionsIpc } from './connections-ipc-main.js';
 import { registerConfigIpc } from './config-ipc-main.js';
 import { registerPlanReminderIpc } from './plan-reminders-ipc-main.js';
+import { registerPetPackIpc } from './pet-pack-import.js';
 import { registerWorkspaceResourcesIpc } from './workspace-resources-ipc-main.js';
 import type { NewSessionSkillContext } from './workspace-resources-ipc-main.js';
 import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
@@ -1143,6 +1144,7 @@ function registerIpc(): void {
     getSkillSelectionReport: systemPromptService.getLastSkillSelectionReport,
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
   });
+  registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController });
   registerWorkspaceSearchIpc({ getProjectRoot: resolveProjectRootForContext });
   registerPlanReminderIpc({ planReminders, getWorkspacePrivacyContext });
   registerAgentGraphIpc({

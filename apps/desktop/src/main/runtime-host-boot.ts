@@ -45,6 +45,7 @@ import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerPlanReminderIpc } from "./plan-reminders-ipc-main.js";
 import { createPlanReminderMainService } from "./plan-reminders-main.js";
+import { registerPetPackIpc } from "./pet-pack-import.js";
 import {
   createPermissionOverlayMain,
   registerPermissionOverlayIpc,
@@ -238,6 +239,7 @@ mcpManager.onChange(() => {
 });
 
 registerPersistentClientIpc();
+registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController });
 registerBrowserIpc({ mainWindowController });
 registerNotificationsIpc({
   ipcMain,

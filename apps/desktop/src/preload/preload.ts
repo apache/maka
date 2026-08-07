@@ -125,6 +125,14 @@ type LocalMemoryMutationResult =
   | { ok: false; state: LocalMemoryState; reason: string; message: string };
 
 const makaBridge = {
+  pets: {
+    list() {
+      return ipcRenderer.invoke('pets:list');
+    },
+    importLocalDirectory() {
+      return ipcRenderer.invoke('pets:importLocalDirectory');
+    },
+  },
   tasks: {
     list(sessionId: string): Promise<Task[]> {
       return ipcRenderer.invoke('tasks:list', sessionId);
