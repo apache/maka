@@ -120,7 +120,7 @@ renderer (React)
   └─ window.maka.<ns>.<method>(…)        // typed surface, see preload.ts
       └─ ipcRenderer.invoke / send / on
           └─ main: safeSendToRenderer / ipcMain.handle / ipcMain.on
-              └─ @maka/runtime (agent runtime) + @maka/storage (JSONL persistence)
+              └─ Runtime Host protocol → @maka/runtime + @maka/storage
 ```
 
 The renderer never imports `@maka/runtime` or `@maka/storage` at runtime — all Node-side access goes through the preload `maka` bridge. The renderer only pulls `import type` from them for a few shared types. Types shared across the IPC boundary mostly come from `@maka/core`, with some from `@maka/runtime`, `@maka/storage`, and `@maka/ui` (see `preload.ts` imports).

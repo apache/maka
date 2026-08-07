@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogEntryDraft,
@@ -154,6 +154,185 @@ test('re-enables an existing connection without replacing another default target
       connectionId: defaultConnection.connectionId,
       modelId: 'gpt-5',
     });
+  });
+});
+
+test('leaves canonical onboarding state unchanged when the durable intent cannot be published', {
+  skip: process.platform === 'win32',
+}, async () => {
+  await withFixture(async ({ root, stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('openai', 'openai'));
+    await setConnectionCredential(stores, connection, 'old-secret');
+    await recordVerifiedConnection(stores, connection);
+    let invalidations = 0;
+    const coordinator = onboardingCoordinator(stores, () => {
+      invalidations += 1;
+    });
+    const syncMock = await failFileHandleSync(root, 1);
+    try {
+      assert.deepEqual(
+        await coordinator.handlers['connection.onboarding.save'](
+          {
+            providerType: 'openai',
+            apiKey: 'new-secret',
+            enabledModelIds: ['new-model'],
+          },
+          context,
+        ),
+        {
+          ok: false,
+          error: {
+            code: 'persistence_failed',
+            message: 'Connection effect persistence failed',
+          },
+        },
+      );
+    } finally {
+      syncMock.mock.restore();
+    }
+
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const unchanged = catalog.connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(unchanged?.lastTest?.status, 'verified');
+    assert.deepEqual(unchanged?.enabledModelIds, ['gpt-5']);
+    assert.equal(
+      (await stores.operations.exportCredentialMaterial(connectionCredential(connection)))?.secret,
+      'old-secret',
+    );
+    assert.equal(invalidations, 0);
+  });
+});
+
+test('recovers a durable onboarding intent instead of rolling back a partial publication', {
+  skip: process.platform === 'win32',
+}, async () => {
+  await withFixture(async ({ root, stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('openai', 'openai'));
+    await setConnectionCredential(stores, connection, 'old-secret');
+    await recordVerifiedConnection(stores, connection);
+    let invalidations = 0;
+    const coordinator = onboardingCoordinator(stores, () => {
+      invalidations += 1;
+    });
+    const syncMock = await failFileHandleSync(root, 5);
+    try {
+      assert.deepEqual(
+        await coordinator.handlers['connection.onboarding.save'](
+          {
+            providerType: 'openai',
+            apiKey: 'new-secret',
+            enabledModelIds: ['new-model'],
+          },
+          context,
+        ),
+        {
+          ok: false,
+          error: {
+            code: 'commit_outcome_unknown',
+            message: 'Connection effect commit outcome is unknown',
+          },
+        },
+      );
+    } finally {
+      syncMock.mock.restore();
+    }
+
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const recovered = catalog.connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(recovered?.lastTest, undefined);
+    assert.deepEqual(recovered?.enabledModelIds, ['new-model']);
+    assert.deepEqual(recovered?.models, [{ id: 'new-model' }]);
+    assert.equal(
+      (await stores.operations.exportCredentialMaterial(connectionCredential(connection)))?.secret,
+      'new-secret',
+    );
+    assert.equal(invalidations, 1);
+  });
+});
+
+test('invalidates a verified result when onboarding rotates only the credential', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('openai', 'openai'));
+    await setConnectionCredential(stores, connection, 'old-secret');
+    await recordFetchedModel(stores, connection, 'gpt-5');
+    await recordVerifiedConnection(stores, connection);
+    const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
+
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.save'](
+        {
+          providerType: 'openai',
+          apiKey: 'new-secret',
+          enabledModelIds: ['gpt-5'],
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'saved' } },
+    );
+
+    const updated = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(updated?.lastTest, undefined);
+    assert.equal(
+      (await stores.operations.exportCredentialMaterial(connectionCredential(connection)))?.secret,
+      'new-secret',
+    );
+  });
+});
+
+test('rejects an oversized final catalog before publishing a recovery intent', async () => {
+  await withFixture(async ({ root, stores }) => {
+    const existing = {
+      schemaVersion: 1,
+      revision: 1,
+      defaultTarget: null,
+      connections: [
+        largeCatalogConnection('00000000-0000-4000-8000-000000000001', 'bulk-a', 2_048),
+        largeCatalogConnection('00000000-0000-4000-8000-000000000002', 'bulk-b', 1_400),
+      ],
+    };
+    const bytes = `${JSON.stringify(existing, null, 2)}\n`;
+    assert.ok(Buffer.byteLength(bytes) < 4 * 1024 * 1024);
+    await writeFile(join(root, 'connection-catalog.json'), bytes, { mode: 0o600 });
+    assert.equal((await stores.connectionCatalog.getSnapshot()).connections.length, 2);
+
+    const discovered = largeCatalogModels('onboarding', 512);
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async () => ({ ok: true, models: discovered }),
+    });
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.save'](
+        {
+          providerType: 'openai',
+          apiKey: 'capacity-secret',
+          enabledModelIds: [discovered[0]!.id],
+        },
+        context,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'Connection effect request is invalid',
+        },
+      },
+    );
+
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.equal(catalog.connections.length, 2);
+    assert.equal(
+      catalog.connections.some(({ slug }) => slug === 'openai'),
+      false,
+    );
   });
 });
 
@@ -591,6 +770,87 @@ async function connectionCredentialStatus(
   assert.equal(result.kind, 'status');
   if (result.kind !== 'status') throw new Error('credential query did not return status');
   return result.status;
+}
+
+function onboardingCoordinator(
+  stores: Writer,
+  onCommittedMutation: () => void,
+  modelId = 'new-model',
+) {
+  return new HostConnectionEffectCoordinator({
+    stores,
+    activation: new RuntimePolicyActivationGate(),
+    oauthCredentials: new HostOAuthExecutionAuthority(stores),
+    now: () => 789,
+    onCommittedMutation,
+    createTransport: () => recordingTransport(() => undefined),
+    runModelDiscovery: async () => ({ ok: true, models: [{ id: modelId }] }),
+  });
+}
+
+async function recordFetchedModel(
+  stores: Writer,
+  connection: ConnectionCatalogEntry,
+  modelId: string,
+): Promise<void> {
+  const prepared = await stores.operations.beginModelFetch(connection.connectionId);
+  assert.equal(prepared.kind, 'ready');
+  if (prepared.kind !== 'ready') throw new Error('model fetch did not start');
+  const completed = await stores.operations.completeModelFetch(prepared.ticket, {
+    models: [{ id: modelId }],
+    source: 'fetched',
+    fetchedAt: 1,
+  });
+  assert.equal(completed.kind, 'committed');
+}
+
+async function recordVerifiedConnection(
+  stores: Writer,
+  connection: ConnectionCatalogEntry,
+): Promise<void> {
+  const prepared = await stores.operations.beginConnectionTest(connection.connectionId, 'gpt-5');
+  assert.equal(prepared.kind, 'ready');
+  if (prepared.kind !== 'ready') throw new Error('connection test did not start');
+  const completed = await stores.operations.completeConnectionTest(prepared.ticket, {
+    status: 'verified',
+    checkedAt: '2026-08-07T00:00:00.000Z',
+  });
+  assert.equal(completed.kind, 'committed');
+}
+
+async function failFileHandleSync(root: string, targetCall: number) {
+  const probe = await open(root, 'r');
+  const fileHandlePrototype = Object.getPrototypeOf(probe) as { sync: typeof probe.sync };
+  const originalSync = fileHandlePrototype.sync;
+  await probe.close();
+  let syncCalls = 0;
+  return mock.method(fileHandlePrototype, 'sync', async function (this: typeof probe) {
+    syncCalls += 1;
+    if (syncCalls === targetCall) throw new Error('injected onboarding persistence failure');
+    return originalSync.call(this);
+  });
+}
+
+function largeCatalogConnection(connectionId: string, slug: string, modelCount: number) {
+  return {
+    connectionId,
+    revision: 1,
+    slug,
+    name: slug,
+    providerType: 'ollama' as const,
+    enabled: false,
+    enabledModelIds: [],
+    models: largeCatalogModels(slug, modelCount),
+    modelSource: 'fetched' as const,
+    modelsFetchedAt: 1,
+  };
+}
+
+function largeCatalogModels(prefix: string, count: number) {
+  return Array.from({ length: count }, (_value, index) => ({
+    id: `${prefix}-${index}-`.padEnd(512, 'x'),
+    displayName: 'd'.repeat(512),
+  }));
 }
 
 function recordingTransport(onClose: () => void): ConnectionEffectFetchTransport {

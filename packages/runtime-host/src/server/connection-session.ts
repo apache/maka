@@ -23,6 +23,10 @@ import type {
   ClientCapabilityConnection,
   ClientCapabilityService,
 } from './client-capability-service.js';
+import type {
+  ConfigurationChangeConnection,
+  HostConfigurationChangeService,
+} from './configuration-change-service.js';
 
 const MAX_IN_FLIGHT_REQUESTS = 64;
 
@@ -40,6 +44,7 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveHandlers(): OperationHandlerMap;
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
+  resolveConfigurationChanges?(): HostConfigurationChangeService | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -53,6 +58,7 @@ export class RuntimeHostConnectionSession {
   #continuity: SessionContinuityConnection | undefined;
   #clientCapabilityService: ClientCapabilityService | undefined;
   #clientCapabilities: ClientCapabilityConnection | undefined;
+  #configurationChanges: ConfigurationChangeConnection | undefined;
   #inputClosed = false;
   #closed = false;
 
@@ -62,6 +68,7 @@ export class RuntimeHostConnectionSession {
   }
 
   async run(): Promise<void> {
+    this.#attachConfigurationChanges();
     try {
       try {
         await this.#pumpInbound();
@@ -82,6 +89,7 @@ export class RuntimeHostConnectionSession {
     this.#inputClosed = true;
     this.#detachContinuity();
     this.#detachClientCapabilities();
+    this.#detachConfigurationChanges();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
       this.#options.transport.closed.then(() => 'closed' as const),
@@ -242,12 +250,32 @@ export class RuntimeHostConnectionSession {
     this.#clientCapabilityService = undefined;
   }
 
+  #attachConfigurationChanges(): void {
+    const service = this.#options.resolveConfigurationChanges?.();
+    if (!service || this.#configurationChanges) return;
+    this.#configurationChanges = service.attachConnection(this.#options.connection.connectionId, {
+      send: (frame) => {
+        try {
+          return this.#writer.enqueue(frame).flushed;
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    });
+  }
+
+  #detachConfigurationChanges(): void {
+    this.#configurationChanges?.close();
+    this.#configurationChanges = undefined;
+  }
+
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#inputClosed = true;
     this.#detachContinuity();
     this.#detachClientCapabilities();
+    this.#detachConfigurationChanges();
     this.#writer.close();
     this.#options.transport.destroy();
     this.#options.onTeardown();

@@ -39,7 +39,7 @@ describe('configured subagent catalog', () => {
       },
     ];
     const catalog = createConfiguredSubagentCatalog({
-      getSettings: async () => settings,
+      getPresets: async () => settings.subagents.presets,
       getConnection: async (slug) => (slug === connection.slug ? connection : null),
     });
 

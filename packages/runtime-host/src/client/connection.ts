@@ -16,6 +16,7 @@ import {
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type ClientSurface,
+  type ConfigurationChangedFrame,
   type ContextCompactInput,
   type ContextCompactResult,
   type ContextDiagnosticsQueryInput,
@@ -189,6 +190,7 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
+  subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
 }
 
 export type DirectRequestOperationKey = Exclude<
@@ -231,6 +233,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #subscriptions = new Map<string, ClientSessionSubscription>();
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
+  readonly #configurationChangeListeners = new Set<(revision: number) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #terminalError: Error | undefined;
@@ -497,6 +500,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.#clientCapabilities.unregister(timeoutMs);
   }
 
+  subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
+    this.#configurationChangeListeners.add(listener);
+    return () => this.#configurationChangeListeners.delete(listener);
+  }
+
   async #readResponses(): Promise<void> {
     try {
       while (true) {
@@ -508,6 +516,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
             continue;
           }
           switch (frame.kind) {
+            case 'configuration.changed':
+              this.#acceptConfigurationChanged(frame);
+              continue;
             case 'subscription.session_projection':
             case 'subscription.session_delta':
             case 'subscription.session_event':
@@ -559,6 +570,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     pending.reject(
       new RuntimeHostOperationError(frame.operation, frame.error.code, frame.error.message),
     );
+  }
+
+  #acceptConfigurationChanged(frame: ConfigurationChangedFrame): void {
+    for (const listener of this.#configurationChangeListeners) {
+      try {
+        listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
   }
 
   #retireRequest(requestId: string, error: Error): void {
@@ -706,6 +727,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#subscriptions.clear();
     this.#retiredSubscriptionIds.clear();
     this.#clientCapabilities.close(error);
+    this.#configurationChangeListeners.clear();
     this.#transport.destroy();
   }
 }

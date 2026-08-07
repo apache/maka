@@ -64,6 +64,8 @@ import {
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { buildClientSettingsTools } from "./client-settings-tools.js";
+import { createClientSettingsEffects } from "./client-settings-effects.js";
+import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { registerRuntimeHostDailyReviewIpc } from "./runtime-host-daily-review-ipc-main.js";
@@ -204,30 +206,6 @@ onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
   native.computerUsePip.destroyAll();
 };
-const clientSettingsTools = buildClientSettingsTools({
-  read: () => settingsStore.get(),
-  update: async (patch) => {
-    const settings = await settingsStore.update(patch);
-    if (patch.system) {
-      await keepSystemAwake.apply(settings.system.keepSystemAwake);
-    }
-    mainWindowController.send("settings:externalChanged", { ts: Date.now() });
-    return settings;
-  },
-  confirm: async (changes) => {
-    const result = await dialog.showMessageBox({
-      type: "question",
-      message: "Allow Maka to update this client's settings?",
-      detail: changes.join("\n"),
-      buttons: ["Apply changes", "Cancel"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
-    return result.response === 0;
-  },
-});
-
 const projectRoot = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, "last-project-path.json"),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
@@ -252,6 +230,49 @@ const botRegistry = new BotRegistry({
     mainWindowController.send("settings:bots:statusChanged", status);
   },
 });
+const clientSettingsEffects = createClientSettingsEffects({
+  settingsStore,
+  applyKeepSystemAwake: async (enabled) => {
+    keepSystemAwake.apply(enabled);
+  },
+  applyBotSettings: useBotOnboardingFixture
+    ? async () => undefined
+    : (settings) => botRegistry.applySettings(settings),
+  emitExternalChanged: () =>
+    mainWindowController.send("settings:externalChanged", { ts: Date.now() }),
+});
+const clientSettingsTools = buildClientSettingsTools({
+  read: () => settingsStore.get(),
+  update: async (patch) => {
+    const settings = await settingsStore.update(patch);
+    await clientSettingsEffects.apply(settings, true);
+    return settings;
+  },
+  confirm: async (changes) => {
+    const result = await dialog.showMessageBox({
+      type: "question",
+      message: "Allow Maka to update this client's settings?",
+      detail: changes.join("\n"),
+      buttons: ["Apply changes", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return result.response === 0;
+  },
+});
+const clientSettingsWatcher = startClientSettingsWatcher(
+  workspaceRoot,
+  () => {
+    void clientSettingsEffects.refresh(true).catch((error) =>
+      console.error("[runtime-host] Client settings refresh failed:", error),
+    );
+  },
+  {
+    onError: (error) =>
+      console.error("[runtime-host] Client settings watcher failed:", error),
+  },
+);
 const updateMockState =
   process.env.MAKA_UPDATE_MOCK_STATE === "available" ||
   process.env.MAKA_UPDATE_MOCK_STATE === "downloading" ||
@@ -316,7 +337,11 @@ owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
     candidateEntrypoint: new URL(
-      import.meta.resolve("@maka/runtime-host/execution-candidate-main"),
+      import.meta.resolve(
+        isE2e
+          ? "@maka/runtime-host/desktop-e2e-execution-candidate-main"
+          : "@maka/runtime-host/execution-candidate-main",
+      ),
     ),
     ipcMain,
     workspaceRoot,
@@ -395,12 +420,8 @@ void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
   .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
 
-void settingsStore
-  .get()
-  .then(async (settings) => {
-    await keepSystemAwake.apply(settings.system.keepSystemAwake);
-    await botRegistry.applySettings(settings.botChat);
-  })
+void clientSettingsEffects
+  .refresh(false)
   .catch((error) =>
     console.error("[runtime-host] Client settings startup failed:", error),
   );
@@ -412,6 +433,10 @@ function registerHostClientIpc(
   scopedIpc: Pick<typeof ipcMain, "handle">,
   controls: DesktopRuntimeHostCandidateControls,
 ): () => Promise<void> {
+  const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
+    emitConnectionListChanged();
+    mainWindowController.send("settings:externalChanged", { ts: Date.now() });
+  });
   const capabilityBinding = mcpCapabilityPublisher.bind(
     controls.refreshClientCapabilities,
   );
@@ -468,12 +493,9 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     settingsStore,
-    botRegistry,
-    applyKeepSystemAwake: async (enabled) => {
-      await keepSystemAwake.apply(enabled);
+    applyClientSettings: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
     },
-    emitExternalChanged: () =>
-      mainWindowController.send("settings:externalChanged", { ts: Date.now() }),
   } satisfies Parameters<typeof registerRuntimeHostSettingsIpc>[0];
   registerRuntimeHostSettingsIpc(settingsIpcDeps);
   registerRuntimeHostConfigIpc({
@@ -490,11 +512,9 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     settingsStore,
     botRegistry,
-    applySettingsRuntimeEffects: useBotOnboardingFixture
-      ? async () => undefined
-      : async (settings) => {
-          await botRegistry.applySettings(settings.botChat);
-        },
+    applySettingsRuntimeEffects: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
+    },
     productVersion: app.getVersion(),
     openExternal: (url) => shell.openExternal(url),
     ...(useBotOnboardingFixture
@@ -628,6 +648,7 @@ function registerHostClientIpc(
   });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   return async () => {
+    unsubscribeConfigurationChanges();
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;
@@ -724,6 +745,7 @@ function wireLifecycle(): void {
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
+  clientSettingsWatcher.stop();
   planReminders.stopTimers();
   updateService.dispose();
   settingsBotsIpc?.dispose();

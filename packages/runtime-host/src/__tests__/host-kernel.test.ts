@@ -47,6 +47,7 @@ import {
   type RuntimeHostCompositionContext,
 } from '../server/index.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
+import { HostConfigurationChangeService } from '../server/configuration-change-service.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import {
   prepareStorageRootControlDirectory,
@@ -1151,6 +1152,47 @@ describe('non-serving Runtime Host kernel', () => {
         releaseHandler();
         transport.destroy();
         await host.close().catch(() => undefined);
+      }
+    });
+  });
+
+  test('delivers canonical configuration changes to every connected Client', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const configurationChanges = new HostConfigurationChangeService();
+      const host = await RuntimeHostKernel.start({
+        owner,
+        idleGraceMs: 10_000,
+        compositionFactory: async () => ({
+          handlers: createUnavailableDomainOperationHandlers(),
+          configurationChanges,
+          beginDrain() {},
+          async recover() {},
+          async close() {},
+        }),
+      });
+      const connected = await connectRuntimeHost({
+        rootPath: paths.root,
+        surface: 'desktop',
+        protocol: CURRENT_PROTOCOL,
+      });
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+      try {
+        const observed = new Promise<number>((resolve) => {
+          connected.connection.subscribeConfigurationChanges(resolve);
+        });
+        configurationChanges.publish();
+        assert.equal(
+          await withTimeout(observed, 1_000, 'Client did not receive configuration change'),
+          1,
+        );
+      } finally {
+        await connected.connection.close();
+        await host.close();
       }
     });
   });

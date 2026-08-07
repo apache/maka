@@ -1,3 +1,4 @@
+import { NO_REAL_CONNECTION_CODE } from '@maka/core';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   connectOrSpawnRuntimeHost,
@@ -84,7 +85,7 @@ export function resolveRuntimeHostCliTarget(
     throw new Error(
       input.connectionSlug
         ? `Runtime Host model connection is unavailable: ${input.connectionSlug}`
-        : 'Runtime Host has no default model connection',
+        : `${NO_REAL_CONNECTION_CODE}:missing_default_connection: Runtime Host has no default model connection`,
     );
   }
   const model =

@@ -9,6 +9,7 @@ import {
   BackendRegistry,
   buildHostCapabilitiesFromBinding,
   createLocalContinuationSafetyInspector,
+  createConfiguredSubagentCatalog,
   createBuiltinSandboxManager,
   createFilesystemWorkerLaunchSpecProvider,
   FakeBackend,
@@ -22,6 +23,7 @@ import {
   SessionManager,
   SessionActivityRegistry,
   ShellRunProcessManager,
+  type BackendFactory,
   type MakaTool,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
@@ -68,6 +70,7 @@ import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
+import { HostConfigurationChangeService } from './configuration-change-service.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
@@ -94,7 +97,7 @@ import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
-import { HostOAuthCoordinator } from './oauth-coordinator.js';
+import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
 import { HostPlanCoordinator } from './plan-coordinator.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -133,8 +136,15 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  readonly executionMode?: 'desktop_e2e';
   readonly legacyConfigurationRoot?: string;
+}
+
+export interface ExecutionRuntimeHostCompositionDependencies {
+  readonly primaryBackendFactory?: BackendFactory;
+  readonly oauthAuthorization?: Pick<
+    HostOAuthCoordinatorInput,
+    'startCodexAuthorization' | 'pollCodexAuthorization' | 'exchangeCodexCode'
+  >;
 }
 
 export function runtimeHostFilesystemWorkerRuntime(versions: {
@@ -146,6 +156,7 @@ export function runtimeHostFilesystemWorkerRuntime(versions: {
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
   options: CreateExecutionRuntimeHostCompositionOptions = {},
+  dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
@@ -222,13 +233,10 @@ export async function createExecutionRuntimeHostComposition(
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
-    let applyRuntimePolicyMutationEffects = async (): Promise<void> => {
-      throw new Error('Runtime Policy mutation effects are not ready');
-    };
     const runtimePolicy = new HostRuntimePolicyCoordinator(
       runtimePolicyStores,
       runtimePolicyActivation,
-      () => applyRuntimePolicyMutationEffects(),
+      applyRuntimePolicyMutationEffects,
     );
     const sessionAdmission = new SessionAdmissionGate();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
@@ -344,6 +352,7 @@ export async function createExecutionRuntimeHostComposition(
           runWithStorageRootLease(context.owner.lease, 'interactive', 'write', operation),
       }),
     );
+    const configurationChanges = new HostConfigurationChangeService();
     let rootCoordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
@@ -509,10 +518,11 @@ export async function createExecutionRuntimeHostComposition(
       lane: memoryExtractionLane,
       acquireResidency: context.acquireResidency,
     });
-    backends.register('ai-sdk', (backendContext) =>
-      options.executionMode === 'desktop_e2e'
-        ? new FakeBackend(backendContext)
-        : createHostAiSdkBackend({
+    backends.register(
+      'ai-sdk',
+      dependencies.primaryBackendFactory ??
+        ((backendContext) =>
+          createHostAiSdkBackend({
             context: backendContext,
             runtimePolicy: runtimePolicyStores,
             oauthCredentials,
@@ -544,7 +554,7 @@ export async function createExecutionRuntimeHostComposition(
             ),
             runtimeCommitSink: stores.runtimeEventStore,
             requestDrain: context.requestDrain,
-          }),
+          })),
     );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
@@ -636,12 +646,21 @@ export async function createExecutionRuntimeHostComposition(
         privacy: snapshot.policy.privacy,
       });
     };
+    const subagentCatalog = createConfiguredSubagentCatalog({
+      getPresets: async () =>
+        (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.subagents.presets,
+      getConnection: async (slug) =>
+        (await runtimePolicyStores.connectionCatalog.getSnapshot()).connections.find(
+          (connection) => connection.slug === slug,
+        ) ?? null,
+    });
     manager = new SessionManager({
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
       backends,
+      subagentCatalog,
       newId: randomUUID,
       now: Date.now,
       safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
@@ -741,6 +760,10 @@ export async function createExecutionRuntimeHostComposition(
     const registerBackendInvalidation = (): void => {
       observeBackendInvalidation(manager.refreshIdleBackends());
     };
+    const registerConfigurationMutation = (): void => {
+      configurationChanges.publish();
+      registerBackendInvalidation();
+    };
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
       onModelToolsChanged: registerBackendInvalidation,
@@ -752,7 +775,10 @@ export async function createExecutionRuntimeHostComposition(
       clientCapabilities,
       isProviderEnabled: isOAuthEnrollmentProviderEnabled,
       acquireResidency: context.acquireResidency,
-      invalidateBackends: () => manager.refreshIdleBackends(),
+      invalidateBackends: () => {
+        configurationChanges.publish();
+        return manager.refreshIdleBackends();
+      },
       onFatal: (error) => {
         if (poisonFailure) return;
         poisonFailure = error;
@@ -761,26 +787,7 @@ export async function createExecutionRuntimeHostComposition(
         beginDrain();
         context.requestDrain();
       },
-      ...(options.executionMode === 'desktop_e2e'
-        ? {
-            startCodexAuthorization: async () => ({
-              deviceAuthId: 'desktop-e2e-device-authorization',
-              userCode: 'MAKA-E2E',
-              verificationUrl: 'https://auth.openai.com/codex/device',
-              expiresAt: Date.now() + 60_000,
-              intervalMs: 1,
-            }),
-            pollCodexAuthorization: async () => ({
-              authorizationCode: 'desktop-e2e-authorization-code',
-              codeVerifier: 'desktop-e2e-code-verifier',
-            }),
-            exchangeCodexCode: async () => ({
-              access_token: 'desktop-e2e-access-token',
-              refresh_token: 'desktop-e2e-refresh-token',
-              expires_at: Date.now() + 3_600_000,
-            }),
-          }
-        : {}),
+      ...dependencies.oauthAuthorization,
     });
     const usagePricing = new HostUsagePricingCoordinator(
       openedUsageStores,
@@ -903,20 +910,20 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: context.acquireResidency,
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
     });
-    applyRuntimePolicyMutationEffects = async () => {
+    async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {
         context.requestDrain();
         throw error;
       }
-      registerBackendInvalidation();
-    };
+      registerConfigurationMutation();
+    }
     const connectionEffects = new HostConnectionEffectCoordinator({
       stores: runtimePolicyStores,
       activation: runtimePolicyActivation,
       oauthCredentials,
-      onCommittedMutation: registerBackendInvalidation,
+      onCommittedMutation: registerConfigurationMutation,
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
       stores: stores.sessionStore,
@@ -1241,6 +1248,7 @@ export async function createExecutionRuntimeHostComposition(
       workspaceExecution: requireWorkspaceExecution(workspaceExecution),
       continuity: continuityCoordinator,
       clientCapabilities,
+      configurationChanges,
       releaseConnection: (connectionId: string) => {
         artifacts.releaseConnection(connectionId);
         requireMemory(memory).releaseConnection(connectionId);

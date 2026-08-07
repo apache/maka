@@ -58,6 +58,27 @@ test('preserves a valid default thinking level and rejects unknown levels', () =
   );
 });
 
+test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
+  const preset = {
+    id: 'fast-reader',
+    name: 'Fast reader',
+    description: 'Cheap scans',
+    profile: 'local_read' as const,
+    connectionSlug: 'openrouter',
+    model: 'openrouter/free',
+    enabled: true,
+  };
+  const policy = { ...createDefaultRuntimePolicy(), subagents: { presets: [preset] } };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(policy).subagents.presets, [preset]);
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 2,
+      operation: { kind: 'set_subagents', value: { presets: [preset] } },
+    }),
+    { expectedRevision: 2, operation: { kind: 'set_subagents', value: { presets: [preset] } } },
+  );
+});
+
 test('normalizes only the bounded agent settings patch surface', () => {
   assert.deepEqual(
     normalizeRuntimePolicyMutation({

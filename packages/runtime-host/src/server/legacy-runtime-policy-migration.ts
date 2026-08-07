@@ -39,21 +39,26 @@ export async function migrateLegacyRuntimePolicy(input: {
   const journalPath = join(input.workspaceRoot, JOURNAL_FILE);
   const legacyRoot = input.legacyConfigurationRoot ?? input.workspaceRoot;
   const journal = await readJournal(journalPath);
+  const [catalog, vault, policy] = await Promise.all([
+    input.stores.connectionCatalog.getSnapshot(),
+    input.stores.credentialVault.getSnapshot(),
+    input.stores.runtimePolicy.getSnapshot(),
+  ]);
+  const establishedHostState =
+    catalog.revision !== 0 ||
+    catalog.connections.length !== 0 ||
+    vault.revision !== 0 ||
+    vault.entries.length !== 0 ||
+    policy.revision !== 0;
+  const legacySettingsPath = join(legacyRoot, 'settings.json');
+  const settings = (await fileExists(legacySettingsPath))
+    ? await createSettingsStore(legacyRoot).get()
+    : undefined;
+  if (await isVersionOnePolicy(join(input.workspaceRoot, 'runtime-policy.json'))) {
+    await importSubagents(input.stores, settings?.subagents ?? { presets: [] });
+  }
   if (!journal) {
-    const [catalog, vault, policy] = await Promise.all([
-      input.stores.connectionCatalog.getSnapshot(),
-      input.stores.credentialVault.getSnapshot(),
-      input.stores.runtimePolicy.getSnapshot(),
-    ]);
-    if (
-      catalog.revision !== 0 ||
-      catalog.connections.length !== 0 ||
-      vault.revision !== 0 ||
-      vault.entries.length !== 0 ||
-      policy.revision !== 0
-    ) {
-      return;
-    }
+    if (establishedHostState) return;
     if (!(await hasLegacyState(legacyRoot))) return;
     await writeJournal(journalPath);
   }
@@ -61,9 +66,6 @@ export async function migrateLegacyRuntimePolicy(input: {
   const connectionStore = createConnectionStore(legacyRoot);
   const credentialStore = createFileCredentialStore(legacyRoot);
   const legacyConnections = (await connectionStore.list()).map(normalizeLegacyConnection);
-  const settings = (await fileExists(join(legacyRoot, 'settings.json')))
-    ? await createSettingsStore(legacyRoot).get()
-    : undefined;
   const imported = await importConnections(input.stores, legacyConnections);
   await importConnectionCredentials(input.stores, credentialStore, legacyConnections, imported);
   if (settings) {
@@ -78,6 +80,20 @@ export async function migrateLegacyRuntimePolicy(input: {
     await connectionStore.getDefault(),
   );
   await rm(journalPath, { force: true });
+}
+
+async function importSubagents(
+  stores: RuntimePolicyStoresWriter,
+  subagents: RuntimePolicy['subagents'],
+): Promise<void> {
+  const current = await stores.runtimePolicy.getSnapshot();
+  const result = await stores.runtimePolicy.mutate({
+    expectedRevision: current.revision,
+    operation: { kind: 'set_subagents', value: subagents },
+  });
+  if (result.kind !== 'committed') {
+    throw new Error('Legacy subagent migration lost its exclusive revision');
+  }
 }
 
 async function importConnections(
@@ -217,6 +233,7 @@ async function importRuntimePolicy(
       enabled: settings.webSearch.enabled,
       defaultProvider: settings.webSearch.defaultProvider,
     },
+    subagents: settings.subagents,
   };
   const operations = [
     { kind: 'set_network_proxy' as const, value: values.networkProxy },
@@ -226,6 +243,7 @@ async function importRuntimePolicy(
     { kind: 'set_privacy' as const, value: values.privacy },
     { kind: 'set_chat_defaults' as const, value: values.chatDefaults },
     { kind: 'set_web_search' as const, value: values.webSearch },
+    { kind: 'set_subagents' as const, value: values.subagents },
   ];
   for (const operation of operations) {
     const current = await stores.runtimePolicy.getSnapshot();
@@ -386,6 +404,16 @@ async function fileExists(path: string): Promise<boolean> {
     return true;
   } catch (error) {
     if ((error as { code?: string }).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function isVersionOnePolicy(path: string): Promise<boolean> {
+  try {
+    const value = JSON.parse(await readFile(path, 'utf8')) as { schemaVersion?: unknown };
+    return value.schemaVersion === 1;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
 }

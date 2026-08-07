@@ -1445,6 +1445,7 @@ export {
 // connection-error-copy.ts — shared not-ready-connection fix copy
 export {
   describeChatConfigurationReason,
+  NO_REAL_CONNECTION_CODE,
   parseNoRealConnectionError,
 } from './connection-error-copy.js';
 export type { ParsedNoRealConnectionError } from './connection-error-copy.js';

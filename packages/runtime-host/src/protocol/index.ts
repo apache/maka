@@ -16,6 +16,10 @@ import {
   type ClientCapabilityHostFrame,
 } from './client-capability.js';
 import {
+  decodeConfigurationChangedFrame,
+  type ConfigurationChangedFrame,
+} from './configuration-change.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -29,6 +33,7 @@ export * from './interaction.js';
 export * from './automation.js';
 export * from './daily-review.js';
 export * from './client-capability.js';
+export * from './configuration-change.js';
 export * from './goal.js';
 export * from './plan.js';
 export * from './execution-inspect.js';
@@ -102,7 +107,8 @@ export type HostFrame =
   | HostHandshakeResult
   | ResponseFrame
   | SubscriptionFrame
-  | ClientCapabilityHostFrame;
+  | ClientCapabilityHostFrame
+  | ConfigurationChangedFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -198,6 +204,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
   if (isClientCapabilityHostFrameKind(frame.kind)) {
     return decodeClientCapabilityHostFrame(frame);
   }
+  if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
   return decodeResponseFrame(frame);
 }
 

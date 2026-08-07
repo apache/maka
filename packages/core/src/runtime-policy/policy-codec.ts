@@ -1,5 +1,6 @@
 import { isThinkingLevel } from '../model-thinking.js';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '../settings.js';
+import { normalizeSubagentSettings } from '../subagent-settings.js';
 import type {
   AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
@@ -24,6 +25,21 @@ export function decodeCanonicalRuntimePolicy(value: unknown): RuntimePolicy {
   return decoded;
 }
 
+export function decodeLegacyRuntimePolicyV1(value: unknown): RuntimePolicy {
+  const policy = exactRecord(value, 'legacy runtime policy', [
+    'networkProxy',
+    'personalization',
+    'memory',
+    'workspaceInstructions',
+    'privacy',
+    'chatDefaults',
+    'webSearch',
+  ]);
+  const decoded = normalizeRuntimePolicyFields(policy, { presets: [] });
+  assertCanonicalValue(value, withoutSubagents(decoded), 'legacy runtime policy');
+  return decoded;
+}
+
 export function normalizeRuntimePolicyMutation(value: unknown): MutateRuntimePolicyInput {
   const input = exactRecord(value, 'runtime policy mutation', ['expectedRevision', 'operation']);
   const operation = exactRecord(input.operation, 'runtime policy operation', ['kind', 'value']);
@@ -42,7 +58,15 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     'privacy',
     'chatDefaults',
     'webSearch',
+    'subagents',
   ]);
+  return normalizeRuntimePolicyFields(policy, normalizeSubagentSettings(policy.subagents));
+}
+
+function normalizeRuntimePolicyFields(
+  policy: Record<string, unknown>,
+  subagents: RuntimePolicy['subagents'],
+): RuntimePolicy {
   return {
     networkProxy: normalizeNetworkProxy(policy.networkProxy),
     personalization: normalizePersonalization(policy.personalization),
@@ -51,7 +75,13 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     privacy: normalizePrivacy(policy.privacy),
     chatDefaults: normalizeChatDefaults(policy.chatDefaults),
     webSearch: normalizeWebSearch(policy.webSearch),
+    subagents,
   };
+}
+
+function withoutSubagents(policy: RuntimePolicy): Omit<RuntimePolicy, 'subagents'> {
+  const { subagents: _subagents, ...legacy } = policy;
+  return legacy;
 }
 
 function normalizeMutationOperation(operation: Record<string, unknown>): RuntimePolicyMutation {
@@ -70,6 +100,8 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeChatDefaults(operation.value) };
     case 'set_web_search':
       return { kind: operation.kind, value: normalizeWebSearch(operation.value) };
+    case 'set_subagents':
+      return { kind: operation.kind, value: normalizeSubagentSettings(operation.value) };
     case 'patch_agent_settings':
       return { kind: operation.kind, value: normalizeAgentRuntimeSettingsPatch(operation.value) };
     default:

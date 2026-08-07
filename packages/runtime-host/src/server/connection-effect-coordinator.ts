@@ -238,74 +238,10 @@ export class HostConnectionEffectCoordinator {
     input: ConnectionOnboardingSaveInput,
     prepared: Extract<OnboardingDiscovery, { readonly kind: 'ready' }>,
   ): Promise<ConnectionOnboardingSaveResult> {
-    const definition = PROVIDER_DEFAULTS[input.providerType];
-    const slug = deriveConnectionSlug(input.providerType);
-    let connection = (await this.#stores.connectionCatalog.getSnapshot()).connections.find(
-      (candidate) => candidate.slug === slug,
-    );
-    if (connection && connection.providerType !== input.providerType) {
-      return { kind: 'rejected', reason: 'slug_conflict' };
-    }
-    let mutated = false;
     try {
-      for (let attempt = 0; !connection && attempt < 3; attempt += 1) {
-        const catalog = await this.#stores.connectionCatalog.getSnapshot();
-        const concurrent = catalog.connections.find((candidate) => candidate.slug === slug);
-        if (concurrent) {
-          if (concurrent.providerType !== input.providerType) {
-            return { kind: 'rejected', reason: 'slug_conflict' };
-          }
-          connection = concurrent;
-          break;
-        }
-        const createdResult = await this.#stores.connectionCatalog.create({
-          expectedCatalogRevision: catalog.revision,
-          connection: {
-            slug,
-            name: definition.label,
-            providerType: input.providerType,
-            ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
-            enabled: false,
-            enabledModelIds: [],
-          },
-        });
-        if (createdResult.kind === 'committed') {
-          mutated = true;
-          connection = createdResult.snapshot.connections.find(
-            (candidate) => candidate.slug === slug,
-          );
-        }
-      }
-      if (!connection) return { kind: 'failed', errorClass: 'unknown' };
-
-      if (prepared.suppliedSecret) {
-        const currentCredential = await this.#stores.operations.exportCredentialMaterial({
-          scope: 'connection',
-          connectionId: connection.connectionId,
-          kind: 'api_key',
-        });
-        const credential = await this.#stores.credentialVault.set({
-          locator: {
-            scope: 'connection',
-            connectionId: connection.connectionId,
-            kind: 'api_key',
-          },
-          expected: currentCredential
-            ? {
-                credentialId: currentCredential.credentialId,
-                revision: currentCredential.revision,
-              }
-            : null,
-          secret: prepared.suppliedSecret,
-        });
-        if (credential.kind !== 'committed') {
-          return { kind: 'failed', errorClass: 'unknown' };
-        }
-        mutated = true;
-      }
-
-      const finalized = await this.#stores.operations.finalizeConnectionOnboarding({
-        connectionId: connection.connectionId,
+      const committed = await this.#stores.operations.commitConnectionOnboarding({
+        providerType: input.providerType,
+        suppliedSecret: prepared.suppliedSecret || null,
         enabledModelIds: input.enabledModelIds,
         discovery: {
           models: prepared.models,
@@ -313,11 +249,16 @@ export class HostConnectionEffectCoordinator {
           fetchedAt: this.#now(),
         },
       });
-      if (finalized.kind !== 'committed') return { kind: 'failed', errorClass: 'unknown' };
-      mutated = true;
+      if (committed.kind === 'slug_conflict') {
+        return { kind: 'rejected', reason: 'slug_conflict' };
+      }
+      if (committed.changed) this.#onCommittedMutation();
       return { kind: 'saved' };
-    } finally {
-      if (mutated) this.#onCommittedMutation();
+    } catch (error) {
+      if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
+        this.#onCommittedMutation();
+      }
+      throw error;
     }
   }
 

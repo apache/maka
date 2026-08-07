@@ -3,6 +3,7 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import {
   createConnectionStore,
   createFileCredentialStore,
@@ -54,6 +55,19 @@ test('imports legacy execution policy from its configuration root', async () => 
         defaultProvider: 'tavily',
         providers: { tavily: { apiKey: 'legacy-tavily-key' } },
       },
+      subagents: {
+        presets: [
+          {
+            id: 'legacy-reader',
+            name: 'Legacy reader',
+            description: 'Read through the migrated route',
+            profile: 'local_read',
+            connectionSlug: 'legacy-openai',
+            model: 'gpt-4.1',
+            enabled: true,
+          },
+        ],
+      },
     });
 
     await migrateLegacyRuntimePolicy({ workspaceRoot: root, legacyConfigurationRoot, stores });
@@ -87,6 +101,17 @@ test('imports legacy execution policy from its configuration root', async () => 
     });
     assert.equal(policy.policy.networkProxy.host, '127.0.0.1');
     assert.equal(policy.policy.webSearch.defaultProvider, 'tavily');
+    assert.deepEqual(policy.policy.subagents.presets, [
+      {
+        id: 'legacy-reader',
+        name: 'Legacy reader',
+        description: 'Read through the migrated route',
+        profile: 'local_read',
+        connectionSlug: 'legacy-openai',
+        model: 'gpt-4.1',
+        enabled: true,
+      },
+    ]);
     await assertJournalRemoved(root);
   });
 });
@@ -119,6 +144,41 @@ test('keeps an established Runtime Host policy authoritative over legacy files',
       ['canonical-deepseek'],
     );
     await assertJournalRemoved(root);
+  });
+});
+
+test('moves M4 subagent presets into an established Runtime Host policy', async () => {
+  await withMigrationRoot(async ({ root, legacyConfigurationRoot, stores }) => {
+    const { subagents: _subagents, ...versionOnePolicy } = createDefaultRuntimePolicy();
+    await writeFile(
+      join(root, 'runtime-policy.json'),
+      `${JSON.stringify({ schemaVersion: 1, revision: 3, policy: versionOnePolicy })}\n`,
+      'utf8',
+    );
+    await createSettingsStore(legacyConfigurationRoot).update({
+      subagents: {
+        presets: [
+          {
+            id: 'm4-reader',
+            name: 'M4 reader',
+            description: 'Preserve the configured subagent across the M5 cutover',
+            profile: 'local_read',
+            connectionSlug: 'openrouter',
+            model: 'openrouter/free',
+            enabled: true,
+          },
+        ],
+      },
+    });
+
+    await migrateLegacyRuntimePolicy({ workspaceRoot: root, legacyConfigurationRoot, stores });
+
+    const policy = await stores.runtimePolicy.getSnapshot();
+    assert.equal(policy.revision, 4);
+    assert.deepEqual(
+      policy.policy.subagents.presets.map(({ id }) => id),
+      ['m4-reader'],
+    );
   });
 });
 

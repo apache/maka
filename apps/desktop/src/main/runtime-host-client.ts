@@ -178,6 +178,11 @@ export class DesktopRuntimeHostClient {
     return this.connection.hostEpoch;
   }
 
+  subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConfigurationChanges(listener);
+  }
+
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
     this.#assertOpen();
     try {

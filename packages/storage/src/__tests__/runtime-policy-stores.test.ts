@@ -15,15 +15,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, mock, test } from 'node:test';
-import type {
-  ConnectionCatalogEntry,
-  ConnectionCatalogEntryDraft,
-  ConnectionVersionBasis,
-  CredentialLocator,
-  CredentialStatus,
-  CredentialVersionBasis,
-  MutateRuntimePolicyInput,
-  RuntimePolicy,
+import {
+  createDefaultRuntimePolicy,
+  type ConnectionCatalogEntry,
+  type ConnectionCatalogEntryDraft,
+  type ConnectionVersionBasis,
+  type CredentialLocator,
+  type CredentialStatus,
+  type CredentialVersionBasis,
+  type MutateRuntimePolicyInput,
+  type RuntimePolicy,
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
@@ -45,6 +46,29 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
+  test('upgrades a version-one policy with an empty canonical subagent catalog', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { subagents: _subagents, ...legacyPolicy } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        `${JSON.stringify({ schemaVersion: 1, revision: 3, policy: legacyPolicy })}\n`,
+      );
+
+      const snapshot = await stores.runtimePolicy.getSnapshot();
+      assert.equal(snapshot.revision, 3);
+      assert.deepEqual(snapshot.policy.subagents, { presets: [] });
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 3,
+        operation: { kind: 'set_subagents', value: { presets: [] } },
+      });
+      assert.equal(committed.kind, 'committed');
+      const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
+        schemaVersion: number;
+      };
+      assert.equal(persisted.schemaVersion, 2);
+    });
+  });
+
   test('commits an agent settings patch as one canonical policy revision', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const result = await stores.runtimePolicy.mutate({

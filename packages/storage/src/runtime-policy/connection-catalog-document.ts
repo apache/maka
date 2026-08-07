@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  decodeProviderType,
+  decodeRuntimePolicyEntityId,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
   normalizeCreateCatalogConnectionInput,
@@ -23,7 +26,11 @@ import {
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import { PROVIDER_DEFAULTS, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
+import {
+  deriveConnectionSlug,
+  PROVIDER_DEFAULTS,
+  reconcileConnectionAfterModelFetch,
+} from '@maka/core/llm-connections';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
   codecError,
@@ -55,6 +62,12 @@ export interface ConnectionTestModelBasis {
     readonly id: string;
     readonly apiProtocol: ConnectionCatalogEntry['models'][number]['apiProtocol'];
   }[];
+}
+
+interface PreparedOnboardingResult {
+  readonly kind: 'ready';
+  readonly document: ConnectionCatalogDocument;
+  readonly changed: boolean;
 }
 
 export class ConnectionCatalogDocumentOwner {
@@ -300,17 +313,31 @@ export class ConnectionCatalogDocumentOwner {
     );
   }
 
-  async writeOnboardingResult(
-    root: string,
+  prepareOnboardingUpsert(
     current: ConnectionCatalogDocument,
-    connectionId: string,
+    rawConnectionId: string,
+    rawProviderType: unknown,
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
-  ): Promise<ConnectionCatalogSnapshot> {
-    const index = findConnectionIndex(current, { connectionId });
+    invalidateLastTest: boolean,
+  ): PreparedOnboardingResult | { readonly kind: 'slug_conflict' } {
+    const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+    const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
+    const definition = PROVIDER_DEFAULTS[providerType];
+    const slug = deriveConnectionSlug(providerType);
+    const index = current.connections.findIndex((connection) => connection.slug === slug);
     const previous = current.connections[index];
-    if (!previous) {
-      throw codecError('invalid_document', 'Coordinator admitted an unknown connection');
+    if (previous && previous.providerType !== providerType) {
+      return { kind: 'slug_conflict' };
+    }
+    if (previous && previous.connectionId !== connectionId) {
+      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection id');
+    }
+    if (!previous && current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
+      throw codecError(
+        'invalid_connection_input',
+        `Connection catalog cannot exceed ${CONNECTION_CATALOG_MAX_CONNECTIONS} entries`,
+      );
     }
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     if (result.source !== 'fetched' || result.models.length === 0) {
@@ -322,12 +349,14 @@ export class ConnectionCatalogDocumentOwner {
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(
         {
-          name: previous.name,
-          ...(previous.baseUrl ? { baseUrl: previous.baseUrl } : {}),
+          name: previous?.name ?? definition.label,
+          ...((previous?.baseUrl ?? definition.baseUrl)
+            ? { baseUrl: previous?.baseUrl ?? definition.baseUrl }
+            : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
         },
-        previous.providerType,
+        providerType,
       ),
     );
     const available = new Set(result.models.map(({ id }) => id));
@@ -341,8 +370,17 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
     const finalized: ConnectionCatalogEntry = {
-      ...previous,
-      revision: nextRevision(previous.revision),
+      ...(previous ?? {
+        connectionId,
+        revision: 0,
+        slug,
+        name: definition.label,
+        providerType,
+        enabled: false,
+        enabledModelIds: [],
+        models: [],
+      }),
+      revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
       enabledModelIds: changes.enabledModelIds,
       models: result.models,
@@ -356,18 +394,44 @@ export class ConnectionCatalogDocumentOwner {
             !changes.enabledModelIds.includes(current.defaultTarget.modelId)
           ? { connectionId, modelId: changes.enabledModelIds[0]! }
           : current.defaultTarget;
-    const testBasisChanged = !sameConnectionTestModelBasis(
-      connectionTestModelBasis(previous),
-      connectionTestModelBasis(finalized),
-    );
+    if (
+      previous?.enabled &&
+      sameStringArray(previous.enabledModelIds, changes.enabledModelIds) &&
+      isDeepStrictEqual(previous.models, result.models) &&
+      previous.modelSource === result.source &&
+      previous.modelsFetchedAt === result.fetchedAt &&
+      isDeepStrictEqual(current.defaultTarget, defaultTarget) &&
+      (!invalidateLastTest || previous.lastTest === undefined)
+    ) {
+      return { kind: 'ready', document: current, changed: false };
+    }
+    const testBasisChanged = previous
+      ? !sameConnectionTestModelBasis(
+          connectionTestModelBasis(previous),
+          connectionTestModelBasis(finalized),
+        )
+      : true;
     const { lastTest: _lastTest, ...finalizedWithoutLastTest } = finalized;
-    return this.writePatchedResult(
-      root,
-      current,
-      index,
-      testBasisChanged ? finalizedWithoutLastTest : finalized,
+    const connections = [...current.connections];
+    const entry = testBasisChanged || invalidateLastTest ? finalizedWithoutLastTest : finalized;
+    if (previous) connections[index] = entry;
+    else connections.push(entry);
+    const next = {
+      ...current,
+      revision: nextRevision(current.revision),
       defaultTarget,
-    );
+      connections,
+    };
+    this.assertDocumentSize(next);
+    return { kind: 'ready', document: next, changed: true };
+  }
+
+  async commitPreparedOnboarding(
+    root: string,
+    prepared: PreparedOnboardingResult,
+  ): Promise<ConnectionCatalogSnapshot> {
+    if (prepared.changed) await this.write(root, prepared.document);
+    return catalogSnapshot(prepared.document);
   }
 
   async writeConnectionTestResult(
@@ -452,13 +516,17 @@ export class ConnectionCatalogDocumentOwner {
   }
 
   private async write(root: string, document: ConnectionCatalogDocument): Promise<void> {
+    this.assertDocumentSize(document);
+    await writeJsonDocument(root, FILE, document, CATALOG_DOCUMENT_MAX_BYTES);
+  }
+
+  private assertDocumentSize(document: ConnectionCatalogDocument): void {
     if (serializeJsonDocument(document).length > CATALOG_DOCUMENT_MAX_BYTES) {
       throw new RuntimePolicyStoreError(
         'invalid_connection_input',
         `connection catalog exceeds its ${CATALOG_DOCUMENT_MAX_BYTES} byte limit`,
       );
     }
-    await writeJsonDocument(root, FILE, document, CATALOG_DOCUMENT_MAX_BYTES);
   }
 }
 

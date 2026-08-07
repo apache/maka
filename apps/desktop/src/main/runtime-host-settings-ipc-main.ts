@@ -16,7 +16,6 @@ import type {
   ProxySettings,
   TestProxyInput,
 } from "@maka/core/settings/network-settings";
-import type { BotRegistry } from "@maka/runtime";
 import type { SettingsStore } from "@maka/storage";
 import {
   buildSettingsUpdateResult,
@@ -39,9 +38,7 @@ export interface RuntimeHostSettingsIpcDeps {
   readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
   readonly client: DesktopRuntimeHostClient;
   readonly settingsStore: SettingsStore;
-  readonly botRegistry: BotRegistry;
-  readonly applyKeepSystemAwake: (enabled: boolean) => Promise<void>;
-  readonly emitExternalChanged: () => void;
+  readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
 }
 
 export function registerRuntimeHostSettingsIpc(
@@ -115,11 +112,7 @@ export async function updateRuntimeHostSettings(
   const local = hasPatch(clientPatch)
     ? await deps.settingsStore.update(clientPatch)
     : await deps.settingsStore.get();
-  if (clientPatch.system) {
-    await deps.applyKeepSystemAwake(local.system.keepSystemAwake);
-  }
-  if (clientPatch.botChat) await deps.botRegistry.applySettings(local.botChat);
-  deps.emitExternalChanged();
+  await deps.applyClientSettings(local);
   return loadRuntimeHostSettings(deps);
 }
 
@@ -181,6 +174,7 @@ export async function loadRuntimeHostSettings(
         tavily: projectWebSearchCredential(local, webSearchCredential),
       },
     },
+    subagents: policy.subagents,
   };
 }
 
@@ -287,6 +281,12 @@ async function applyHostPatch(
       else await setCredential(client, WEB_SEARCH_CREDENTIAL, apiKey);
     }
   }
+  if (patch.subagents) {
+    await client.updateRuntimePolicy(() => ({
+      kind: "set_subagents",
+      value: patch.subagents!,
+    }));
+  }
 }
 
 async function mergePolicy<
@@ -382,7 +382,6 @@ function toClientOwnedPatch(
     ...(personalization ? { personalization } : {}),
     ...(patch.notifications ? { notifications: patch.notifications } : {}),
     ...(patch.system ? { system: patch.system } : {}),
-    ...(patch.subagents ? { subagents: patch.subagents } : {}),
   };
 }
 

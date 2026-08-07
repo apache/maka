@@ -1,5 +1,7 @@
+import { parseNoRealConnectionError } from '@maka/core';
 import { SessionActivityRegistry } from '@maka/runtime';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
+import { createForeignSessionStore } from '@maka/storage';
 import { connectRuntimeHostCli } from './runtime-host-cli-context.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
@@ -15,6 +17,7 @@ export interface RunRuntimeHostTuiInput {
 }
 
 export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<number> {
+  const foreignSessions = createForeignSessionStore();
   const contextInput = {
     rootPath: input.workspaceRoot,
     cwd: input.cwd,
@@ -47,6 +50,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       listSkills: context.listSkills,
       onboarding: context.onboarding,
       recap: context.recap,
+      foreignSessions,
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
@@ -106,5 +110,6 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
 }
 
 function isMissingDefaultConnection(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Runtime Host has no default model connection';
+  const parsed = parseNoRealConnectionError(error);
+  return parsed.matched && parsed.reason === 'missing_default_connection';
 }
