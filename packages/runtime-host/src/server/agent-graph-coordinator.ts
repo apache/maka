@@ -361,7 +361,9 @@ function projectWork(
     target:
       work.target.kind === 'agent'
         ? { kind: work.target.kind, agentId: work.target.agentId }
-        : { kind: work.target.kind, operatorId: work.target.operatorId },
+        : work.target.kind === 'preset'
+          ? { kind: work.target.kind, presetId: work.target.presetId }
+          : { kind: work.target.kind, operatorId: work.target.operatorId },
     inputIds: [...work.inputIds],
     ...(work.replaces ? { replaces: work.replaces } : {}),
     status: work.status,

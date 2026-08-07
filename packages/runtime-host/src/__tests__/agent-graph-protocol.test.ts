@@ -200,6 +200,16 @@ function graphSnapshot(): AgentGraphClientSnapshot {
         revision: 1,
         committedAt: 1,
       },
+      {
+        workId: 'work:2',
+        target: { kind: 'preset', presetId: 'deepseek-flash-reader' },
+        inputIds: [],
+        status: 'requested',
+        instructionPreview: 'Inspect independently.',
+        instructionTruncated: false,
+        revision: 1,
+        committedAt: 1,
+      },
     ],
     stoppedTargets: [],
     claims: [

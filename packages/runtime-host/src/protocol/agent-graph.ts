@@ -164,6 +164,7 @@ export interface AgentGraphClientScheduledWork {
   readonly workId: string;
   readonly target:
     | { readonly kind: 'agent'; readonly agentId: string }
+    | { readonly kind: 'preset'; readonly presetId: string }
     | { readonly kind: 'operator'; readonly operatorId: string };
   readonly inputIds: readonly string[];
   readonly replaces?: string;
@@ -734,7 +735,7 @@ function decodeWorkTarget(value: unknown): AgentGraphClientScheduledWork['target
     value,
     'agent graph work target',
     ['kind'],
-    ['agentId', 'operatorId'],
+    ['agentId', 'presetId', 'operatorId'],
   );
   if (record.kind === 'agent') {
     requireExactRecord(record, 'agent graph agent target', ['kind', 'agentId']);
@@ -745,6 +746,13 @@ function decodeWorkTarget(value: unknown): AgentGraphClientScheduledWork['target
     return {
       kind: record.kind,
       operatorId: requireOpaqueIdentity(record.operatorId, 'operatorId'),
+    };
+  }
+  if (record.kind === 'preset') {
+    requireExactRecord(record, 'agent graph preset target', ['kind', 'presetId']);
+    return {
+      kind: record.kind,
+      presetId: requireOpaqueIdentity(record.presetId, 'presetId'),
     };
   }
   throw invalidProtocolFrame('Invalid agent graph work target');
