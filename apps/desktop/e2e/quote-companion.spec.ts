@@ -192,6 +192,10 @@ test('the quote layer follows the selection while the transcript scrolls', async
     .getByText(/Fake backend received: scroll follow source 11/)
     .last()
     .evaluate((element) => {
+      // Centred first: the affordance is owed only to a selection inside the
+      // scroller's visible band, and where turn 11 lands depends on the host's
+      // font metrics. Without this the test asserts on layout luck.
+      element.scrollIntoView({ block: 'center' });
       const range = document.createRange();
       range.selectNodeContents(element);
       const selection = window.getSelection();
@@ -202,55 +206,64 @@ test('the quote layer follows the selection while the transcript scrolls', async
   const quoteLayer = page.locator('.maka-quote-actions');
   await expect(quoteLayer).toBeVisible();
 
-  // Both tops in one evaluate: read across two round-trips and a scroll still
-  // in flight would pair a fresh layer position with a stale selection one.
-  const geometry = () =>
-    page.evaluate(() => {
-      const layer = document.querySelector('.maka-quote-actions');
-      const selection = window.getSelection();
-      if (!layer || !selection || selection.rangeCount === 0) return null;
-      return {
-        layerTop: layer.getBoundingClientRect().top,
-        selectionTop: selection.getRangeAt(0).getBoundingClientRect().top,
-      };
-    });
-
   /**
-   * Drives the scroller directly instead of `mouse.wheel`: wheel delivery is a
+   * The whole measurement runs inside the page. Scrolling and reading across
+   * the driver interleaves round-trips with frames the renderer is still
+   * settling in, which pairs a fresh layer position with a stale selection one
+   * — the flake this test kept hitting. In here the scroll and both rects are
+   * one synchronous layout, and the wait for the layer to catch up is by frame.
+   *
+   * Writing `scrollTop` rather than sending a wheel: wheel delivery is a
    * host-level detail (it landed nowhere on CI's Linux runner), while what this
    * test is about is the `scroll` event the hook listens to, which a scrollTop
    * write raises just the same.
    */
-  const scrollTranscriptBy = (delta: number) =>
-    page.evaluate((by) => {
-      let node = document.querySelector('.maka-chat-message-list')?.parentElement ?? null;
-      while (node && node.scrollHeight <= node.clientHeight) node = node.parentElement;
-      if (!node) throw new Error('no scrollable transcript ancestor');
-      node.scrollTop += by;
-      return node.scrollTop;
-    }, delta);
+  const follow = await page.evaluate(async () => {
+    let scroller = document.querySelector('.maka-chat-message-list')?.parentElement ?? null;
+    while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+      scroller = scroller.parentElement;
+    }
+    if (!scroller) throw new Error('no scrollable transcript ancestor');
 
-  const before = await geometry();
-  expect(before).not.toBeNull();
-  await scrollTranscriptBy(-220);
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const selectionTop = () =>
+      window.getSelection()?.getRangeAt(0).getBoundingClientRect().top ?? null;
+    const layerTop = () =>
+      document.querySelector('.maka-quote-actions')?.getBoundingClientRect().top ?? null;
 
+    const before = { selection: selectionTop(), layer: layerTop() };
+    scroller.scrollTop -= 220;
+    const selectionShift = selectionTop()! - before.selection!;
+
+    for (let frame = 0; frame < 120; frame += 1) {
+      await nextFrame();
+      const now = layerTop();
+      if (now !== null && Math.abs(now - before.layer! - selectionShift) <= 1) {
+        return { selectionShift, layerShift: now - before.layer! };
+      }
+    }
+    return { selectionShift, layerShift: layerTop() === null ? null : layerTop()! - before.layer! };
+  });
+
+  // A scroll that moved nothing would make the assertion below vacuous.
+  expect(follow.selectionShift).not.toBe(0);
   // The layer tracks the selection rather than merely surviving the scroll.
-  await expect
-    .poll(async () => {
-      const after = await geometry();
-      if (!after || !before) return null;
-      const selectionShift = after.selectionTop - before.selectionTop;
-      if (selectionShift === 0) return null;
-      return Math.abs(after.layerTop - before.layerTop - selectionShift) <= 1;
-    })
-    .toBe(true);
+  // Sub-pixel tolerance, not exactness: the layer is positioned in CSS pixels
+  // and rounded to the device grid, so it lands within a pixel of the anchor.
+  expect(Math.abs(follow.layerShift! - follow.selectionShift)).toBeLessThanOrEqual(1);
 
   // Following stops at the edge of the scroller. Once the anchor leaves the
   // visible band there is nothing to point at, and a bar clamped to the top of
   // the window pointing at off-screen text is the noise this feature exists to
   // avoid. `getBoundingClientRect()` still reports a full-size rect for an
   // off-screen range, so this cannot be left to the zero-size guard.
-  await scrollTranscriptBy(-6000);
+  await page.evaluate(() => {
+    let scroller = document.querySelector('.maka-chat-message-list')?.parentElement ?? null;
+    while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+      scroller = scroller.parentElement;
+    }
+    if (scroller) scroller.scrollTop = 0;
+  });
   await expect(quoteLayer).toBeHidden();
 });
 
