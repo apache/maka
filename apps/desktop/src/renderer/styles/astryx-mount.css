@@ -105,3 +105,16 @@
 .maka-window-titlebar [role="tooltip"] {
   pointer-events: none;
 }
+
+/* Lightbox media must breathe, not wallpaper: Astryx caps its <img> at 100%
+   of the dialog, and the dialog is the full viewport — a large screenshot
+   renders edge-to-edge with the close button sitting ON the image. Cap the
+   displayed box with a viewport margin instead; object-fit: contain keeps
+   the aspect ratio, zoom still scales via transform on top of this box, and
+   images smaller than the cap keep their natural size. One rule for every
+   Astryx lightbox (staged-attachment preview and the transcript's), so the
+   two viewers read identically. */
+.astryx-lightbox img {
+  max-width: min(100%, 86vw);
+  max-height: 80vh;
+}
