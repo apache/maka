@@ -1375,6 +1375,7 @@ export {
   READY_PROVIDER_TYPES,
   backendKindOf,
   connectionEnabledModelIds,
+  defaultEnabledModelIdsWhenOmitted,
   deriveConnectionSlug,
   isWiredOAuthProvider,
   reconcileConnectionAfterEnabledModelsChange,

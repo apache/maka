@@ -6,6 +6,7 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core';
 import {
+  defaultEnabledModelIdsWhenOmitted,
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
@@ -92,7 +93,9 @@ export function registerRuntimeHostConnectionsIpc(
       providerType: input.providerType,
       ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
       enabled: true,
-      enabledModelIds: input.defaultModel ? [input.defaultModel] : [],
+      enabledModelIds: input.defaultModel
+        ? [input.defaultModel]
+        : [...(defaultEnabledModelIdsWhenOmitted(input.providerType) ?? [])],
     });
     if (created.kind !== 'committed') {
       throw new Error(`Unable to create Connection: ${created.kind}`);

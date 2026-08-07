@@ -9,6 +9,8 @@ import type { BackendKind } from './session.js';
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+  OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
@@ -25,6 +27,8 @@ export type { BackendKind } from './session.js';
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+  OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
@@ -275,6 +279,12 @@ export interface ConnectionTestResult {
 }
 
 export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
+
+export function defaultEnabledModelIdsWhenOmitted(
+  providerType: ProviderType,
+): readonly string[] | undefined {
+  return PROVIDER_DEFAULTS[providerType].defaultEnabledModelIds;
+}
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {
   const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;

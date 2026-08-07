@@ -42,10 +42,9 @@ export interface RuntimeHostSessionDomainsIpcHandle {
 }
 
 /**
- * Adapt Host-owned Session sidecars to the existing Desktop renderer facade.
- *
- * This remains an isolated M4 candidate. Production keeps registering the
- * embedded handlers until M5 switches the complete ownership path at once.
+ * Adapt Host-owned Session sidecars to the Desktop renderer IPC contract.
+ * Runtime Host remains the production authority; this module only projects
+ * its events and operations onto the client-owned presentation boundary.
  */
 export function registerRuntimeHostSessionDomainsIpc(
   deps: RuntimeHostSessionDomainsIpcDeps,

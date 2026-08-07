@@ -69,9 +69,9 @@ export interface RuntimeHostSessionExecutionIpcDeps {
 }
 
 /**
- * Register the isolated Runtime Host-backed half of the existing Desktop
- * Session IPC facade. Production continues to register the embedded facade
- * until M5 performs the atomic owner switch.
+ * Project Host-owned Session execution onto the Desktop renderer IPC contract.
+ * The adapter owns client validation and presentation events, never Runtime
+ * execution or Session persistence.
  */
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,

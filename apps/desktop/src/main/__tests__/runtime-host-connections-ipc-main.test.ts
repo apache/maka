@@ -35,6 +35,67 @@ test('reports an existing but unconfigured credential as missing', async () => {
   );
 });
 
+test('preserves the provider default inventory when create omits a model', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let createdModels: readonly string[] = [];
+  const emptyCatalog: ConnectionCatalogSnapshot = {
+    revision: 0,
+    defaultTarget: null,
+    connections: [],
+  };
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async () =>
+        createdModels.length === 0
+          ? emptyCatalog
+          : {
+              revision: 1,
+              defaultTarget: null,
+              connections: [
+                {
+                  connectionId: 'connection-free',
+                  revision: 1,
+                  slug: 'opencode-free',
+                  name: 'OpenCode Free',
+                  providerType: 'opencode-free',
+                  enabled: true,
+                  enabledModelIds: createdModels,
+                  models: [],
+                },
+              ],
+            },
+      createConnection: async (
+        _revision: number,
+        draft: { readonly enabledModelIds: readonly string[] },
+      ) => {
+        createdModels = draft.enabledModelIds;
+        return {
+          kind: 'committed',
+          connection: { connectionId: 'connection-free', revision: 1 },
+        };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await handlers.get('connections:create')?.({}, {
+    slug: 'opencode-free',
+    name: 'OpenCode Free',
+    providerType: 'opencode-free',
+  });
+
+  assert.deepEqual(createdModels, [
+    'nemotron-3-ultra-free',
+    'mimo-v2.5-free',
+    'deepseek-v4-flash-free',
+  ]);
+});
+
 test('projects the Host default target without inventing a second Connection authority', () => {
   const connections = projectHostConnections(catalog());
 

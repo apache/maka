@@ -3,6 +3,8 @@ import { access, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   connectionEnabledModelIds,
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+  OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_DEFAULTS,
   type LlmConnection,
 } from '@maka/core/llm-connections';
@@ -18,11 +20,6 @@ import { createConnectionStore } from '@maka/storage/connection-store';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { createSettingsStore } from '@maka/storage/settings-store';
-import {
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
-  OPENCODE_FREE_DEFAULT_MODEL,
-} from './bootstrap-runtime-policy.js';
-
 const JOURNAL_FILE = '.runtime-host-m5-migration.json';
 const LEGACY_FILES = ['llm-connections.json', 'credentials.json', 'settings.json'] as const;
 
