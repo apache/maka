@@ -206,10 +206,28 @@ export type AppUpdateInstallResult =
  */
 export type WindowCommand = { id: 'newTask' | 'openSettings' | 'openHelp' };
 
+export interface PetPackChangedEvent {
+  readonly type: 'pet_pack_changed';
+  readonly reason: 'installed' | 'removed';
+  readonly petId: string;
+  readonly ts: number;
+}
+
 export interface MakaBridge {
 
   pets: {
     list(): Promise<PetPackManifestV1[]>;
+    readSpriteSheet(petId: string): Promise<
+      | { ok: true; mimeType: 'image/png' | 'image/webp'; bytes: Uint8Array }
+      | {
+          ok: false;
+          reason: 'invalid_id' | 'not_found' | 'corrupt_pack' | 'read_failed';
+        }
+    >;
+    remove(petId: string): Promise<
+      | { ok: true; removed: boolean }
+      | { ok: false; reason: 'invalid_id' | 'remove_failed' }
+    >;
     importLocalDirectory(): Promise<
       | { ok: true; manifest: PetPackManifestV1 }
       | {
@@ -223,6 +241,7 @@ export interface MakaBridge {
             | 'read_failed';
         }
     >;
+    subscribeChanges(handler: (event: PetPackChangedEvent) => void): () => void;
   };
 
   tasks: {

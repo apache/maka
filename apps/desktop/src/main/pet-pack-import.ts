@@ -15,7 +15,7 @@ import type { createMainWindowController } from './main-window.js';
 
 type MainWindowController = Pick<
   ReturnType<typeof createMainWindowController>,
-  'showOpenDialog'
+  'send' | 'showOpenDialog'
 >;
 
 export type PetPackImportFailureReason =
@@ -29,6 +29,21 @@ export type PetPackImportFailureReason =
 export type PetPackImportResult =
   | { readonly ok: true; readonly manifest: PetPackManifestV1 }
   | { readonly ok: false; readonly reason: PetPackImportFailureReason };
+
+export type PetPackSpriteSheetResult =
+  | {
+      readonly ok: true;
+      readonly mimeType: 'image/png' | 'image/webp';
+      readonly bytes: Uint8Array;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'invalid_id' | 'not_found' | 'corrupt_pack' | 'read_failed';
+    };
+
+export type PetPackRemoveResult =
+  | { readonly ok: true; readonly removed: boolean }
+  | { readonly ok: false; readonly reason: 'invalid_id' | 'remove_failed' };
 
 export class PetPackImportError extends Error {
   readonly reason: Exclude<PetPackImportFailureReason, 'cancelled'>;
@@ -79,10 +94,48 @@ export function registerPetPackIpc(input: {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly store?: PetPackStore;
+  readonly now?: () => number;
 }): void {
   const store = input.store ?? createPetPackStore(input.workspaceRoot);
+  const now = input.now ?? Date.now;
 
   input.ipcMain.handle('pets:list', () => store.list());
+  input.ipcMain.handle(
+    'pets:readSpriteSheet',
+    async (_event, petId: unknown): Promise<PetPackSpriteSheetResult> => {
+      if (typeof petId !== 'string') return { ok: false, reason: 'invalid_id' };
+      try {
+        const asset = await store.readSpriteSheet(petId);
+        if (!asset) return { ok: false, reason: 'not_found' };
+        return {
+          ok: true,
+          mimeType: asset.format === 'png' ? 'image/png' : 'image/webp',
+          bytes: asset.bytes,
+        };
+      } catch (error) {
+        return { ok: false, reason: spriteSheetFailureReason(error) };
+      }
+    },
+  );
+  input.ipcMain.handle(
+    'pets:remove',
+    async (_event, petId: unknown): Promise<PetPackRemoveResult> => {
+      if (typeof petId !== 'string') return { ok: false, reason: 'invalid_id' };
+      try {
+        const removed = await store.remove(petId);
+        if (removed) emitChanged(input.mainWindowController, 'removed', petId, now());
+        return { ok: true, removed };
+      } catch (error) {
+        return {
+          ok: false,
+          reason:
+            error instanceof PetPackStoreError && error.code === 'invalid_id'
+              ? 'invalid_id'
+              : 'remove_failed',
+        };
+      }
+    },
+  );
   input.ipcMain.handle('pets:importLocalDirectory', async (): Promise<PetPackImportResult> => {
     const selection = await input.mainWindowController.showOpenDialog({
       title: 'Import custom pet',
@@ -97,6 +150,7 @@ export function registerPetPackIpc(input: {
         sourceDirectory: selection.filePaths[0],
         store,
       });
+      emitChanged(input.mainWindowController, 'installed', manifest.id, now());
       return { ok: true, manifest };
     } catch (error) {
       return {
@@ -104,6 +158,29 @@ export function registerPetPackIpc(input: {
         reason: error instanceof PetPackImportError ? error.reason : 'read_failed',
       };
     }
+  });
+}
+
+function spriteSheetFailureReason(
+  error: unknown,
+): Extract<PetPackSpriteSheetResult, { readonly ok: false }>['reason'] {
+  if (!(error instanceof PetPackStoreError)) return 'read_failed';
+  if (error.code === 'invalid_id') return 'invalid_id';
+  if (error.code === 'corrupt_pack') return 'corrupt_pack';
+  return 'read_failed';
+}
+
+function emitChanged(
+  mainWindowController: MainWindowController,
+  reason: 'installed' | 'removed',
+  petId: string,
+  ts: number,
+): void {
+  mainWindowController.send('pets:changed', {
+    type: 'pet_pack_changed',
+    reason,
+    petId,
+    ts,
   });
 }
 

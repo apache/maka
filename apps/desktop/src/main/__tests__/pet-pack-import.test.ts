@@ -143,6 +143,7 @@ test('IPC imports only the native picker result and returns stable envelopes', a
   await withFixture(async ({ source, stateRoot }) => {
     await writeSourcePack(source);
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const events: Array<{ channel: string; payload: unknown }> = [];
     registerPetPackIpc({
       ipcMain: {
         handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
@@ -150,12 +151,90 @@ test('IPC imports only the native picker result and returns stable envelopes', a
       workspaceRoot: stateRoot,
       mainWindowController: {
         showOpenDialog: async () => ({ canceled: false, filePaths: [source] }),
+        send: (channel, payload) => events.push({ channel, payload }),
       },
+      now: () => 42,
     });
 
     const result = await handlers.get('pets:importLocalDirectory')?.({}, '/untrusted/path');
     assert.deepEqual(result, { ok: true, manifest: manifest() });
     assert.deepEqual(await handlers.get('pets:list')?.(), [manifest()]);
+    assert.deepEqual(events, [
+      {
+        channel: 'pets:changed',
+        payload: {
+          type: 'pet_pack_changed',
+          reason: 'installed',
+          petId: 'likun.maodie',
+          ts: 42,
+        },
+      },
+    ]);
+  });
+});
+
+test('IPC returns sprite bytes, removes the pack, and emits only real mutations', async () => {
+  await withFixture(async ({ source, stateRoot }) => {
+    await writeSourcePack(source);
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const events: unknown[] = [];
+    registerPetPackIpc({
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      },
+      workspaceRoot: stateRoot,
+      mainWindowController: {
+        showOpenDialog: async () => ({ canceled: false, filePaths: [source] }),
+        send: (_channel, payload) => events.push(payload),
+      },
+      now: () => 84,
+    });
+    await handlers.get('pets:importLocalDirectory')?.({});
+
+    const asset = (await handlers.get('pets:readSpriteSheet')?.({}, 'likun.maodie')) as {
+      ok: true;
+      mimeType: string;
+      bytes: Uint8Array;
+    };
+    assert.equal(asset.ok, true);
+    assert.equal(asset.mimeType, 'image/png');
+    assert.deepEqual(Buffer.from(asset.bytes), pngHeader(64, 64));
+    assert.deepEqual(await handlers.get('pets:readSpriteSheet')?.({}, '../escape'), {
+      ok: false,
+      reason: 'invalid_id',
+    });
+    assert.deepEqual(await handlers.get('pets:readSpriteSheet')?.({}, 'likun.unknown'), {
+      ok: false,
+      reason: 'not_found',
+    });
+    assert.deepEqual(await handlers.get('pets:remove')?.({}, '../escape'), {
+      ok: false,
+      reason: 'invalid_id',
+    });
+
+    assert.deepEqual(await handlers.get('pets:remove')?.({}, 'likun.maodie'), {
+      ok: true,
+      removed: true,
+    });
+    assert.deepEqual(await handlers.get('pets:remove')?.({}, 'likun.maodie'), {
+      ok: true,
+      removed: false,
+    });
+    assert.deepEqual(await handlers.get('pets:list')?.(), []);
+    assert.deepEqual(events, [
+      {
+        type: 'pet_pack_changed',
+        reason: 'installed',
+        petId: 'likun.maodie',
+        ts: 84,
+      },
+      {
+        type: 'pet_pack_changed',
+        reason: 'removed',
+        petId: 'likun.maodie',
+        ts: 84,
+      },
+    ]);
   });
 });
 
@@ -168,6 +247,7 @@ test('IPC reports picker cancellation without touching storage', async () => {
     workspaceRoot: '/unused',
     mainWindowController: {
       showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      send: () => {},
     },
     store: {
       list: async () => [],

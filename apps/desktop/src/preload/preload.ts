@@ -12,6 +12,7 @@ import type {
   AppUpdateInstallResult,
   AppUpdateStatus,
   WindowCommand,
+  PetPackChangedEvent,
 } from './bridge-contract.js';
 import type {
   ConnectionEvent,
@@ -129,8 +130,20 @@ const makaBridge = {
     list() {
       return ipcRenderer.invoke('pets:list');
     },
+    readSpriteSheet(petId: string) {
+      return ipcRenderer.invoke('pets:readSpriteSheet', petId);
+    },
+    remove(petId: string) {
+      return ipcRenderer.invoke('pets:remove', petId);
+    },
     importLocalDirectory() {
       return ipcRenderer.invoke('pets:importLocalDirectory');
+    },
+    subscribeChanges(handler: (event: PetPackChangedEvent) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PetPackChangedEvent) =>
+        handler(payload);
+      ipcRenderer.on('pets:changed', listener);
+      return () => ipcRenderer.off('pets:changed', listener);
     },
   },
   tasks: {
