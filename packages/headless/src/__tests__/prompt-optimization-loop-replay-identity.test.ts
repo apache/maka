@@ -46,8 +46,6 @@ describe('runPromptOptimizationLoop replay identity guards', () => {
     });
   });
 
-  ;
-
   test('fails closed when replayed task evidence has no prompt hash', async () => {
     await withHarness(async (harness) => {
       const heldInTasks = makeTasks('hin', 20);

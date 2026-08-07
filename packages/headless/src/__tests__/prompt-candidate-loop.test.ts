@@ -669,8 +669,6 @@ describe('prompt candidate loop', () => {
     });
   });
 
-  ;
-
   test('requires an agent cwd when held-out artifact paths are provided', async () => {
     await withDir(async (dir) => {
       const programPath = join(dir, 'program.md');
@@ -847,8 +845,6 @@ describe('prompt candidate loop', () => {
       assert.equal(metaAgentCalled, false);
     });
   });
-
-  ;
 
   test('rejects agent-cwd directory symlinks that contain controller artifacts', async () => {
     await withDir(async (dir) => {
@@ -1858,10 +1854,6 @@ describe('prompt candidate loop', () => {
       assert.equal(await readFile(systemPromptPath, 'utf8'), 'original prompt\n');
     });
   });
-
-  ;
-
-  ;
 
   test('CLI git adapter rejects HEAD movement during a candidate round', async () => {
     await withDir(async (dir) => {
