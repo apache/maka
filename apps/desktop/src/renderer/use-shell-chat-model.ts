@@ -44,6 +44,8 @@ export function useShellChatModel(options: {
   activationCandidate?: NewChatModel;
   activeSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
+  /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
+  defaultThinkingLevel?: ThinkingLevel;
   openSettingsSection: (section: SettingsSection) => void;
 }): {
   chatModelChoices: ChatModelChoice[];
@@ -78,7 +80,23 @@ export function useShellChatModel(options: {
   // An explicit pick stays sticky; otherwise onboarding's readiness-checked
   // candidate wins before the legacy catalog default and first offered choice.
   // Renderer-only — it never mutates the persisted Settings · 模型 default.
-  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] = useState<ThinkingLevel | null>(null);
+  // Three states, because two cannot say this: `undefined` is an untouched
+  // picker, so Settings → 通用 → 默认思考级别 applies; `null` is the user
+  // explicitly choosing 模型默认 for this one chat, which must beat the
+  // configured default or the per-chat picker could not undo it.
+  //
+  // The settings value is read here rather than seeded into useState because it
+  // arrives from an async settings fetch, after this hook first mounts — a
+  // useState initializer would silently keep the mount-time `undefined` and the
+  // setting would never take effect. (`persistedComposerDefaults` above can use
+  // an initializer only because it is read synchronously from localStorage.)
+  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] = useState<
+    ThinkingLevel | null | undefined
+  >(undefined);
+  const requestedNewChatThinkingLevel =
+    pendingNewChatThinkingLevel === undefined
+      ? options.defaultThinkingLevel ?? null
+      : pendingNewChatThinkingLevel;
   // A pick only stays in effect while it is still an offered choice. If the user
   // later disables/removes that connection or model, fall through to another
   // offered candidate so the home chip never shows — nor sends — a stale model.
@@ -127,8 +145,11 @@ export function useShellChatModel(options: {
     },
     [newChatModel, chatModelChoices],
   );
-  const newChatThinkingLevel = pendingNewChatThinkingLevel && newChatThinkingLevels.includes(pendingNewChatThinkingLevel)
-    ? pendingNewChatThinkingLevel
+  // The membership check is what keeps a configured default honest: a level the
+  // current model does not offer falls through to that model's own default
+  // rather than being forced to the nearest rung.
+  const newChatThinkingLevel = requestedNewChatThinkingLevel && newChatThinkingLevels.includes(requestedNewChatThinkingLevel)
+    ? requestedNewChatThinkingLevel
     : undefined;
   const newChatModelLabel = chatModelChoiceLabel(chatModelChoices, newChatModel?.llmConnectionSlug, newChatModel?.model);
 
@@ -179,7 +200,9 @@ export function useShellChatModel(options: {
     newChatThinkingLevel,
     pendingNewChatModel,
     setPendingNewChatModel,
-    pendingNewChatThinkingLevel,
+    // Resolved, not raw: callers want the level the next chat would actually
+    // request, and must not have to re-apply the settings fallback themselves.
+    pendingNewChatThinkingLevel: requestedNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
     sessionHealthNotice,
   };

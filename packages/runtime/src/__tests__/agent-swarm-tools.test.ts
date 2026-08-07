@@ -513,13 +513,24 @@ describe('AgentSwarm adapter', () => {
     const output: Array<{ stream: string; chunk: string }> = [];
     const result = await buildAgentSwarmTool().impl(
       {
-        items: Array.from({ length: AGENT_SWARM_MAX_CONCURRENCY }, (_, index) => swarmItem(index)),
-        max_concurrency: AGENT_SWARM_MAX_CONCURRENCY,
+        // Four children, not the full 32. The cap under test is shared across
+        // the batch, so demonstrating it needs several children overflowing it
+        // together — not the maximum width, which 'composes local width with the
+        // shared child-run permit pool' already launches 32 children to cover.
+        //
+        // This fixture emitted 9,600 events (32 × 300) to prove a 128-event
+        // boundary and took ~19s. Measured, the time tracked the CHILD count,
+        // not the event count — about 0.6s per child, so cutting events alone
+        // changed nothing. Four children run in 0.4s.
+        items: Array.from({ length: 4 }, (_, index) => swarmItem(index)),
+        max_concurrency: 4,
       },
       context({
         emitOutput: (stream, chunk) => output.push({ stream, chunk }),
         spawnChildSession: async (input) => {
-          for (let index = 0; index < 300; index += 1) {
+          // 4 × 40 = 160: past the 128 cap, with every child contributing and
+          // none able to fill it alone.
+          for (let index = 0; index < 40; index += 1) {
             input.onEvent?.(
               childToolStart(
                 `${input.prompt}-tool-${index}`,

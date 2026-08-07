@@ -1976,8 +1976,6 @@ describe('runHarborCell', () => {
     assert.equal(hostCellExitCode({ settledByDeadline: false }), 0);
   });
 
-  ;
-
   test('Harbor ai-sdk backend registration forwards the canonical metering sink', async () => {
     // The controller has always exposed `recordModelCallAttempt`; this
     // composition never passed it on, so Harbor produced diagnostic attempts

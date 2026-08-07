@@ -48,7 +48,6 @@ import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { UsageSettingsPage } from './usage-settings-page';
-import { VoiceModelsSettingsPage } from './voice-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
@@ -491,15 +490,6 @@ function SettingsPageBody(props: {
       );
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} />;
-    case 'voice':
-      return (
-        <VoiceModelsSettingsPage
-          settings={props.settings}
-          connections={props.connections}
-          onUpdate={props.onUpdateSettings}
-          onRefreshConnections={props.onRefreshConnections}
-        />
-      );
     case 'search':
       return (
         <WebSearchSettingsPage

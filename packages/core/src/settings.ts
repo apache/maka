@@ -1,3 +1,4 @@
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 import type { OnboardingMilestone } from './onboarding.js';
 import { sanitizeOnboardingMilestones } from './onboarding.js';
 import type { WebSearchSettingsPatch, WebSearchSettings } from './web-search.js';
@@ -20,8 +21,8 @@ import {
   isUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
-import { defaultVoiceSettings, normalizeVoiceSettings, type VoiceSettings } from './voice.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
+import { isPetPackId } from './pet.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -54,7 +55,6 @@ export {
  * Final mapping:
  *   - `network`                       → `general`
  *   - `personalization` + `theme`     → `appearance`
- *   - `voice` is an independent section
  *   - `daily-review` is its own section again
  *   - `memory` is its own section again
  *
@@ -68,7 +68,6 @@ export const SETTINGS_SECTIONS = [
   'models',
   'subagents',
   'usage',
-  'voice',
   'bot-chat',
   'search',
   'data',
@@ -186,6 +185,8 @@ export interface PersonalizationSettings {
    * stays for fixture tests. Defaults to `'auto'`.
    */
   uiLocale: UiLocalePreference;
+  /** User-selected custom PetPack. `null` keeps the pet surface disabled. */
+  selectedPetId: string | null;
 }
 
 /**
@@ -233,6 +234,16 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
 /** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  /**
+   * Seeds new sessions' thinking level. `undefined` means "whatever the model
+   * does on its own" — the absence of a preference, not a level.
+   *
+   * A chosen level is a wish, not a guarantee: models expose different ladders,
+   * so one that does not offer the chosen rung falls back to its own default
+   * for that session rather than being forced to the nearest neighbour. The
+   * composer already resolves it that way for the per-session picker.
+   */
+  thinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -280,7 +291,6 @@ export interface AppSettings {
   chatDefaults: ChatDefaultsSettings;
   notifications: NotificationSettings;
   system: SystemSettings;
-  voice: VoiceSettings;
   subagents: SubagentSettings;
 }
 
@@ -382,10 +392,6 @@ export type UpdateAppSettingsInput = Partial<{
   chatDefaults: Partial<ChatDefaultsSettings>;
   notifications: Partial<NotificationSettings>;
   system: Partial<SystemSettings>;
-  voice: Partial<{
-    recognition: Partial<VoiceSettings['recognition']>;
-    realtime: Partial<VoiceSettings['realtime']>;
-  }>;
   webSearch: WebSearchSettingsPatch;
   subagents: SubagentSettings;
 }>;
@@ -445,6 +451,7 @@ export function createDefaultSettings(): AppSettings {
       displayName: '',
       assistantTone: '',
       uiLocale: 'auto',
+      selectedPetId: null,
     },
     onboarding: {
       milestones: [],
@@ -464,7 +471,6 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
-    voice: defaultVoiceSettings(),
     subagents: { presets: [] },
   };
 }
@@ -492,6 +498,11 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
     personalization: {
       ...current.personalization,
       ...(patch.personalization ?? {}),
+      selectedPetId: normalizeSelectedPetId(
+        patch.personalization?.selectedPetId === undefined
+          ? current.personalization.selectedPetId
+          : patch.personalization.selectedPetId,
+      ),
     },
     onboarding: {
       ...current.onboarding,
@@ -528,16 +539,6 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
-    voice: normalizeVoiceSettings({
-      recognition: {
-        ...current.voice.recognition,
-        ...(patch.voice?.recognition ?? {}),
-      },
-      realtime: {
-        ...current.voice.realtime,
-        ...(patch.voice?.realtime ?? {}),
-      },
-    }),
     webSearch: mergeWebSearchSettings(current.webSearch, patch.webSearch),
     subagents:
       patch.subagents === undefined
@@ -563,7 +564,6 @@ export function normalizeSettings(input: unknown): AppSettings {
     chatDefaults: value.chatDefaults,
     notifications: value.notifications,
     system: value.system,
-    voice: value.voice,
     subagents: value.subagents,
   });
   // PR110b: milestones bypass the generic patch surface so we can
@@ -611,6 +611,7 @@ export function normalizeSettings(input: unknown): AppSettings {
       uiLocale: isUiLocalePreference(base.personalization.uiLocale)
         ? base.personalization.uiLocale
         : 'auto',
+      selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),
     onboarding: {
@@ -640,9 +641,12 @@ export function normalizeSettings(input: unknown): AppSettings {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
     },
-    voice: normalizeVoiceSettings(base.voice),
     subagents: normalizeSubagentSettings(base.subagents),
   };
+}
+
+function normalizeSelectedPetId(value: unknown): string | null {
+  return isPetPackId(value) ? value : null;
 }
 
 function normalizeWorkspaceInstructionsSettings(
@@ -668,6 +672,10 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
+    // Same fail-closed reasoning as the mode below: a garbage persisted level
+    // drops to "no preference" (the model's own default) rather than reaching
+    // session creation as a rung no picker recognizes.
+    thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
     permissionMode:
       (settings.permissionMode as unknown) === 'execute'
         ? 'ask'

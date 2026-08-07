@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   OPENCODE_FREE_BOOTSTRAP_VERSION,
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
   resolveBootstrapConnections,
@@ -37,6 +38,7 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
       const seeds = resolveBootstrapConnections(env);
       const free = seeds.find((seed) => seed.slug === 'opencode-free');
       assert.equal(free?.defaultModel, OPENCODE_FREE_DEFAULT_MODEL);
+      assert.deepEqual(free?.enabledModelIds, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
       assert.deepEqual(free?.extras, {
         makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
       });
@@ -51,8 +53,16 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
     }
   });
 
-  it('migrates only the untouched historical OpenCode Free seed', () => {
-    const legacy: LlmConnection = {
+  it('migrates only the untouched historical OpenCode Free seed shapes', () => {
+    const currentPatch = {
+      defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
+      enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS],
+      extras: {
+        makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
+      },
+    };
+
+    const legacyV1: LlmConnection = {
       slug: 'opencode-free',
       name: 'OpenCode Free',
       providerType: 'opencode-free',
@@ -62,23 +72,44 @@ describe('resolveBootstrapConnections — zero-credential default seed', () => {
       createdAt: 1,
       updatedAt: 1,
     };
+    assert.deepEqual(resolveOpenCodeFreeBootstrapMigration(legacyV1), currentPatch);
 
-    const migration = resolveOpenCodeFreeBootstrapMigration(legacy);
-    assert.deepEqual(migration, {
+    const legacyV2: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
       defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
       enabledModelIds: [OPENCODE_FREE_DEFAULT_MODEL],
-      extras: {
-        makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
-      },
-    });
-    assert.equal(resolveOpenCodeFreeBootstrapMigration({ ...legacy, ...migration }), undefined);
+      enabled: true,
+      extras: { makaBootstrap: { id: 'opencode-free', version: 2 } },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    assert.deepEqual(resolveOpenCodeFreeBootstrapMigration(legacyV2), currentPatch);
+
+    // Already at the current bootstrap shape — no further migration.
+    assert.equal(
+      resolveOpenCodeFreeBootstrapMigration({
+        ...legacyV2,
+        ...currentPatch,
+      }),
+      undefined,
+    );
 
     for (const customized of [
-      { ...legacy, name: 'My free connection' },
-      { ...legacy, baseUrl: 'https://custom.example/v1' },
-      { ...legacy, enabledModelIds: [OPENCODE_FREE_LEGACY_DEFAULT_MODEL, 'custom-free'] },
-      { ...legacy, models: [{ id: OPENCODE_FREE_LEGACY_DEFAULT_MODEL }] },
-      { ...legacy, extras: { owner: 'user' } },
+      { ...legacyV1, name: 'My free connection' },
+      { ...legacyV1, baseUrl: 'https://custom.example/v1' },
+      { ...legacyV1, enabledModelIds: [OPENCODE_FREE_LEGACY_DEFAULT_MODEL, 'custom-free'] },
+      { ...legacyV1, models: [{ id: OPENCODE_FREE_LEGACY_DEFAULT_MODEL }] },
+      { ...legacyV1, extras: { owner: 'user' } },
+      {
+        ...legacyV2,
+        enabledModelIds: [OPENCODE_FREE_DEFAULT_MODEL, 'mimo-v2.5-free'],
+      },
+      {
+        ...legacyV2,
+        extras: { makaBootstrap: { id: 'opencode-free', version: 2 }, owner: 'user' },
+      },
     ]) {
       assert.equal(resolveOpenCodeFreeBootstrapMigration(customized), undefined);
     }

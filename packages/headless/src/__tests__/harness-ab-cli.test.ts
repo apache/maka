@@ -10,8 +10,6 @@ import { buildHarborJobConfig } from '../harbor-task-runner.js';
 
 const execFileAsync = promisify(execFile);
 
-;
-
 test('harness A/B CLI rejects an unsupported composition before creating a run root', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-composition-'));
   try {

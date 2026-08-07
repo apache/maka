@@ -3,7 +3,6 @@ import { useEffect, useState, type ComponentType } from 'react';
 import {
   Accessibility as AccessibilityIcon,
   Bell,
-  Mic,
   Monitor,
   MousePointer2,
   type LucideProps,
@@ -61,7 +60,6 @@ import { useActionGuard } from './use-action-guard';
 const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = {
   accessibility: AccessibilityIcon,
   screen_recording: Monitor,
-  microphone: Mic,
   notifications: Bell,
   automation: MousePointer2,
 };

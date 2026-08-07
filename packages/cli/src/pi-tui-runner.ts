@@ -33,15 +33,17 @@ import {
   foreignSourceLabel,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
-import type { ForeignSessionStore } from '@maka/storage';
 import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
-import type { ModelChoice } from './connection-target.js';
-import {
-  listApiKeyOnboardableProviders,
-  type MakaOnboardingSurface,
-  type OnboardingProviderEntry,
-} from './onboarding.js';
-import type { MakaCliSkillSurface, SessionRecapGenerator } from './runtime-bootstrap.js';
+import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
+import type {
+  MakaCliSkillSurface,
+  MakaForeignSessionReader,
+  MakaOnboardingSurface,
+  MakaPiTuiGoalLifecycle,
+  ModelChoice,
+  OnboardingProviderEntry,
+  SessionRecapGenerator,
+} from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import {
   listInvocableSkills,
@@ -56,7 +58,6 @@ import {
   type ParsedGraphCommand,
   type ParsedSwarmCommand,
 } from '@maka/core';
-import type { CliGoalTurnHost } from './cli-goal-continuation.js';
 import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
@@ -81,11 +82,7 @@ import {
   toggleAllToolExpansion,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
-import {
-  runMakaPiTuiTurn,
-  type MakaPiTuiTurnLifecycle,
-  type MakaPiTuiTurnRequest,
-} from './pi-tui-turn.js';
+import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
@@ -117,10 +114,6 @@ import {
   thinkingLevelPickerItems,
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
-
-export interface MakaPiTuiGoalLifecycle extends MakaPiTuiTurnLifecycle {
-  bindHost: (host: CliGoalTurnHost) => () => void;
-}
 
 export interface MakaPiTuiInput {
   title: string;
@@ -190,7 +183,7 @@ export interface MakaPiTuiInput {
    * current cwd; selecting one distills it into a handoff digest and opens a
    * fresh Maka session seeded with it. Omitting it hides the feature.
    */
-  foreignSessions?: ForeignSessionStore;
+  foreignSessions?: MakaForeignSessionReader;
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {

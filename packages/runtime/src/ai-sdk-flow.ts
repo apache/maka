@@ -729,7 +729,6 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
           ? { headAnchorRuntimeEvent: ctx.request.initialRuntimeEvent }
           : {}),
         text: input.text,
-        ...(input.voiceAudio !== undefined ? { voiceAudio: input.voiceAudio } : {}),
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
         ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
         context: input.context,

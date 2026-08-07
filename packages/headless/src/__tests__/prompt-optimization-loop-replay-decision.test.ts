@@ -137,8 +137,6 @@ describe('runPromptOptimizationLoop replay decision guards', () => {
     });
   });
 
-  ;
-
   test('fails closed when task evidence appears after its decision', async () => {
     await withHarness(async (harness) => {
       const heldInTasks = makeTasks('hin', 20);

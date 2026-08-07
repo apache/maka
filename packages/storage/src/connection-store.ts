@@ -81,7 +81,10 @@ class FileConnectionStore implements ConnectionStore {
         ...(baseUrl ? { baseUrl } : {}),
         defaultModel,
         enabled: true,
-        enabledModelIds: connectionEnabledModelIds({ defaultModel }),
+        enabledModelIds: connectionEnabledModelIds({
+          defaultModel,
+          enabledModelIds: input.enabledModelIds,
+        }),
         createdAt: now,
         updatedAt: now,
         ...(input.extras ? { extras: input.extras } : {}),

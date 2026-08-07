@@ -132,7 +132,6 @@ import { createAppShellSessionRowActions } from './app-shell-session-row-actions
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
-import { useVoiceInput } from './use-voice-input';
 import {
   useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
@@ -375,8 +374,8 @@ function AppShellContent({
     userLabel,
     setUserLabel,
     defaultPermissionMode,
+    defaultThinkingLevel,
     setDefaultPermissionMode,
-    voiceCaptureConfigured,
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -385,7 +384,6 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
-  const voiceCopy = getDesktopConversationCopy(uiLocale).voice;
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;
@@ -665,6 +663,7 @@ function AppShellContent({
     activationCandidate: onboardingActivationCandidate,
     activeSession,
     persistedComposerDefaults,
+    defaultThinkingLevel,
     openSettingsSection,
   });
   const newChatProviderType = newChatModel
@@ -1435,131 +1434,6 @@ function AppShellContent({
     newChatProjectId: selectedProjectId,
   });
 
-  const voiceInput = useVoiceInput({
-    getDraftKey: () => activeIdRef.current ?? 'new-session',
-    getCurrentAgent: () => {
-      if (activeIdRef.current && activeSessionForView) {
-        return {
-          connectionSlug: activeSessionForView.llmConnectionSlug,
-          model: activeSessionForView.model,
-        };
-      }
-      return newChatModel
-        ? {
-            connectionSlug: newChatModel.llmConnectionSlug,
-            model: newChatModel.model,
-          }
-        : undefined;
-    },
-    appendTranscript: (draftKey, text) => {
-      composerRef.current?.appendDraft?.(draftKey, text);
-    },
-    sendNativeVoice: (operationId) =>
-      send(
-        'Listen to the attached audio and carry out the user request. The audio is authoritative.',
-        undefined,
-        {
-          voiceOperationId: operationId,
-          displayText: voiceCopy.taskDisplayText,
-        },
-      ),
-    runCoordinatorTool: async (call, context) => {
-      if (call.name === 'start_task') {
-        if (!call.arguments.task) throw new Error('voice_task_missing');
-        let taskSessionId: string | undefined;
-        const ok = await send(call.arguments.task, undefined, {
-          onSessionResolved: (sessionId) => {
-            taskSessionId = sessionId;
-          },
-        });
-        return {
-          output: {
-            ok,
-            ...(taskSessionId ? { sessionId: taskSessionId } : {}),
-          },
-          ...(ok && taskSessionId ? { taskSessionId } : {}),
-        };
-      }
-      const sessionId = context.taskSessionId;
-      if (!sessionId) {
-        return { output: { ok: false, status: 'no_active_task' } };
-      }
-      if (call.name === 'steer_task') {
-        if (!call.arguments.guidance) throw new Error('voice_guidance_missing');
-        const outcome = await window.maka.sessions.steer(
-          sessionId,
-          call.arguments.guidance,
-        );
-        if (outcome.kind === 'fallback') {
-          const sendResult = await window.maka.sessions.send(sessionId, {
-            type: 'send',
-            turnId: crypto.randomUUID(),
-            text: call.arguments.guidance,
-          });
-          await refreshSessions();
-          if (activeIdRef.current === sessionId) {
-            await refreshMessages(sessionId);
-          }
-          return {
-            output: { ok: sendResult.ok, fallback: true, sessionId },
-            taskSessionId: sessionId,
-          };
-        }
-        return {
-          output: { ok: true, queued: true, sessionId },
-          taskSessionId: sessionId,
-        };
-      }
-      if (call.name === 'check_task') {
-        const authoritativeSessions = await refreshSessions();
-        const session = authoritativeSessions.find((candidate) => candidate.id === sessionId);
-        return {
-          output: session
-            ? { ok: true, sessionId: session.id, status: session.status }
-            : { ok: false, sessionId, status: 'task_not_found' },
-          ...(session ? { taskSessionId: sessionId } : {}),
-        };
-      }
-      const taskMessages = await window.maka.sessions.readMessages(sessionId);
-      const lastAssistant = [...taskMessages]
-        .reverse()
-        .find((message) => message.type === 'assistant');
-      return {
-        output: {
-          ok: true,
-          sessionId,
-          summary:
-            lastAssistant?.type === 'assistant'
-              ? lastAssistant.text.slice(-4_000)
-              : voiceCopy.noTaskResponse,
-        },
-        taskSessionId: sessionId,
-      };
-    },
-    onBlocked: (reason) => {
-      const configure =
-        reason === 'recognition_not_configured' ||
-        reason === 'realtime_not_configured';
-      toastApi.error(
-        voiceCopy.unavailableTitle,
-        configure
-          ? voiceCopy.configureDescription
-          : reason,
-      );
-      if (configure) openSettingsSection('voice');
-    },
-    onError: (error) => {
-      toastApi.error(
-        voiceCopy.operationFailedTitle,
-        localizedShellErrorMessage(
-          error,
-          voiceCopy.operationFailedFallback,
-          uiLocale,
-        ),
-      );
-    },
-  });
-
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
@@ -2002,9 +1876,8 @@ function AppShellContent({
     // agentReadEnabled switch.
     void refreshMemoryActive();
     // Settings pages own optimistic local drafts, so the shell does not see
-    // every write live. Refresh its display mirrors on close: permission mode
-    // and the independently configured voice routes must both update without
-    // requiring an app restart.
+    // every write live. Refresh its display mirrors on close (e.g. default
+    // permission mode) without requiring an app restart.
     void refreshShellSettings();
   }
 
@@ -2332,16 +2205,6 @@ function AppShellContent({
                   // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
-                  voiceCaptureState={voiceInput.captureState}
-                  realtimeVoiceState={voiceInput.realtimeState}
-                  voiceProviderLabel={voiceInput.providerLabel}
-                  onToggleVoiceCapture={
-                    voiceCaptureConfigured ? voiceInput.toggleCapture : undefined
-                  }
-                  onCancelVoiceCapture={
-                    voiceCaptureConfigured ? voiceInput.cancelCapture : undefined
-                  }
-                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
                   onSend={sendWithAttachments}
                   onStop={stop}
                   revisionNotice={

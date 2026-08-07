@@ -536,7 +536,7 @@ describe('SqliteSessionMetadataStore', () => {
         turnId: 'turn-1',
         expansion: {
           filesystem: {
-            entries: [{ path: join(tmpdir(), 'maka-output'), access: 'write', scope: 'exact' }],
+            entries: [{ path: '/tmp/maka-output', access: 'write', scope: 'exact' }],
           },
         },
         justification: 'Write a temporary output.',

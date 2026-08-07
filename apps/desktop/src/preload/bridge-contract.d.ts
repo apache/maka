@@ -58,12 +58,6 @@ import type {
   PlanReminderRecurrence,
   DailyReviewArchive,
   QueueEnqueueOutcome,
-  VoiceBeginRequest,
-  VoiceBeginResult,
-  VoiceCapturedAudio,
-  VoiceCoordinatorToolCall,
-  VoiceFinishCaptureResult,
-  VoiceRealtimeClientSession,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
   DailyReviewRange,
@@ -78,6 +72,7 @@ import type {
   DeepResearchChangedEvent,
   DeepResearchClientProgress,
   LocalMemoryEntryPreview,
+  PetPackManifestV1,
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
@@ -205,7 +200,51 @@ export type AppUpdateInstallResult =
  */
 export type WindowCommand = { id: 'newTask' | 'openSettings' | 'openHelp' };
 
+export interface PetPackChangedEvent {
+  readonly type: 'pet_pack_changed';
+  readonly reason: 'installed' | 'removed' | 'selected';
+  readonly petId: string | null;
+  readonly ts: number;
+}
+
 export interface MakaBridge {
+
+  pets: {
+    list(): Promise<PetPackManifestV1[]>;
+    getSelection(): Promise<string | null>;
+    select(petId: string | null): Promise<
+      | { ok: true; selectedPetId: string | null }
+      | {
+          ok: false;
+          reason: 'invalid_id' | 'not_found' | 'read_failed' | 'write_failed';
+        }
+    >;
+    readSpriteSheet(petId: string): Promise<
+      | { ok: true; mimeType: 'image/png' | 'image/webp'; bytes: Uint8Array }
+      | {
+          ok: false;
+          reason: 'invalid_id' | 'not_found' | 'corrupt_pack' | 'read_failed';
+        }
+    >;
+    remove(petId: string): Promise<
+      | { ok: true; removed: boolean }
+      | { ok: false; reason: 'invalid_id' | 'remove_failed' }
+    >;
+    importLocalDirectory(): Promise<
+      | { ok: true; manifest: PetPackManifestV1 }
+      | {
+          ok: false;
+          reason:
+            | 'cancelled'
+            | 'invalid_directory'
+            | 'invalid_manifest'
+            | 'invalid_asset'
+            | 'already_installed'
+            | 'read_failed';
+        }
+    >;
+    subscribeChanges(handler: (event: PetPackChangedEvent) => void): () => void;
+  };
 
   tasks: {
     list(sessionId: string): Promise<Task[]>;
@@ -242,7 +281,6 @@ export interface MakaBridge {
             turnId: string;
             text: string;
             displayText?: string;
-            voiceOperationId?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
@@ -389,17 +427,6 @@ export interface MakaBridge {
         openInBrowser(sessionId: string): Promise<Result<void>>;
       };
     };
-  };
-  voice: {
-    begin(input: VoiceBeginRequest): Promise<VoiceBeginResult>;
-    finishCapture(
-      operationId: string,
-      audio: VoiceCapturedAudio,
-    ): Promise<VoiceFinishCaptureResult>;
-    cancel(operationId: string): Promise<void>;
-    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession>;
-    closeRealtimeSession(sessionId: string): Promise<void>;
-    validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall>;
   };
   notifications: {
     /** Fire-and-forget: report that an agent turn reached a terminal

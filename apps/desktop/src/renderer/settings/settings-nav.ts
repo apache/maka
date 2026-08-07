@@ -8,7 +8,6 @@ import {
   Cpu,
   Database,
   Info,
-  Mic,
   Palette,
   Search,
   Settings as SettingsIcon,
@@ -63,7 +62,6 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'models', Icon: Cpu, enabled: true, group: 'capabilities' },
   { id: 'subagents', Icon: Workflow, enabled: true, group: 'capabilities' },
   { id: 'memory', Icon: Brain, enabled: true, group: 'capabilities' },
-  { id: 'voice', Icon: Mic, enabled: true, group: 'capabilities' },
   { id: 'bot-chat', Icon: Bot, enabled: true, group: 'capabilities' },
   { id: 'search', Icon: Search, enabled: true, group: 'capabilities', badge: 'Beta' },
   { id: 'usage', Icon: BarChart3, enabled: true, group: 'activity' },
@@ -93,9 +91,7 @@ export function groupedNav(locale: UiLocale): Array<{ group: SettingsNavGroup; l
 export function readLastSettingsSection(): SettingsSection {
   const value = safeLocalStorageGet('maka-settings-section-v1');
   if (!value) return 'models';
-  // Anyone whose last visit was the retired combined voice page lands on
-  // Voice instead of being silently bounced back to Models.
-  if (value === 'voice-gateway') return 'voice';
+  // Retired pages bounce to Models.
   if (value === 'mcp') return 'models';
   if (SETTINGS_NAV.some((item) => item.id === value)) {
     return value as SettingsSection;

@@ -62,7 +62,6 @@ import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
-import type { EphemeralVoiceAudio } from '@maka/core/voice';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   resolveEffectiveOrchestration,
@@ -91,7 +90,6 @@ import type {
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
 import { DEFAULT_CODE_MODE_LIMITS, executeCodeCell } from '@maka/code-mode';
 import type {
-  AudioPart,
   JSONValue,
   ModelFinishReason,
   ModelMessage,
@@ -1591,7 +1589,6 @@ export class AiSdkBackend implements AgentBackend {
           : await this.buildCurrentUserContent(
               scope.imageBudget,
               input.text,
-              input.voiceAudio,
               input.attachments,
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
@@ -1631,20 +1628,16 @@ export class AiSdkBackend implements AgentBackend {
           }
           const anchorEventId = input.headAnchorRuntimeEvent?.id;
           let decoratedCurrentUser = false;
-          let currentUserOrdinal = -1;
-          let userOrdinal = 0;
           const replayItems = replayPlan.items.map((item) => {
             if (item.kind !== 'text' || item.role !== 'user') {
               return item;
             }
-            const ordinal = userOrdinal++;
             if (
               anchorEventId !== undefined ? item.eventId !== anchorEventId : decoratedCurrentUser
             ) {
               return item;
             }
             decoratedCurrentUser = true;
-            currentUserOrdinal = ordinal;
             return {
               ...item,
               content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string,
@@ -1655,13 +1648,7 @@ export class AiSdkBackend implements AgentBackend {
             scope.imageBudget,
             settledModelOutputs,
           );
-          const operationAudio = input.voiceAudio ? voiceAudioPart(input.voiceAudio) : undefined;
-          return [
-            ...priorReplay.messages,
-            ...(operationAudio && currentUserOrdinal >= 0
-              ? attachAudioToUserOrdinal(currentTurnMessages, currentUserOrdinal, operationAudio)
-              : currentTurnMessages),
-          ];
+          return [...priorReplay.messages, ...currentTurnMessages];
         };
         const activeCompactionHeadAnchor =
           messages[messages.length - 1]?.role === 'user'
@@ -4012,12 +3999,11 @@ export class AiSdkBackend implements AgentBackend {
   private async buildCurrentUserContent(
     budget: ProviderImageBudget,
     text: string,
-    voiceAudio?: EphemeralVoiceAudio,
     attachments?: AttachmentRef[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
-    const content = await this.appendImageParts(
+    return await this.appendImageParts(
       budget,
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
@@ -4026,11 +4012,6 @@ export class AiSdkBackend implements AgentBackend {
       attachments,
       runtimeEventId === undefined ? undefined : `runtime-event:${runtimeEventId}`,
     );
-    if (!voiceAudio) return content;
-    const parts: Exclude<UserContent, string> =
-      typeof content === 'string' ? [{ type: 'text', text: content }] : [...content];
-    parts.push(voiceAudioPart(voiceAudio));
-    return parts;
   }
 
   private async resolveSystemPrompt(scope: TurnScope): Promise<string | undefined> {
@@ -4401,36 +4382,6 @@ function sumOptionalCounts<K extends keyof ActiveToolResultPruneDiagnosticPatch>
 ): Pick<ActiveToolResultPruneDiagnosticPatch, K> | Record<string, never> {
   const total = (left[key] ?? 0) + (right[key] ?? 0);
   return total > 0 ? ({ [key]: total } as Pick<ActiveToolResultPruneDiagnosticPatch, K>) : {};
-}
-
-function voiceAudioPart(voiceAudio: EphemeralVoiceAudio): AudioPart {
-  return {
-    type: 'audio',
-    data: voiceAudio.bytes,
-    mediaType: voiceAudio.mediaType,
-    format: voiceAudio.format,
-    durationMs: voiceAudio.durationMs,
-    ...(voiceAudio.transcript ? { transcript: voiceAudio.transcript } : {}),
-    retention: 'operation_memory',
-  };
-}
-
-function attachAudioToUserOrdinal(
-  messages: readonly ModelMessage[],
-  targetOrdinal: number,
-  audio: AudioPart,
-): ModelMessage[] {
-  let userOrdinal = 0;
-  return messages.map((message) => {
-    if (message.role !== 'user') return message;
-    const ordinal = userOrdinal++;
-    if (ordinal !== targetOrdinal) return message;
-    const content =
-      typeof message.content === 'string'
-        ? [{ type: 'text' as const, text: message.content }, audio]
-        : [...message.content.filter((part) => part.type !== 'audio'), audio];
-    return { ...message, content };
-  });
 }
 
 function contextBudgetWithActiveProjectionDiagnostics(

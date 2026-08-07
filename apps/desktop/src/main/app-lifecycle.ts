@@ -239,6 +239,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
         name: seed.name,
         providerType: seed.providerType,
         defaultModel: seed.defaultModel,
+        ...(seed.enabledModelIds ? { enabledModelIds: [...seed.enabledModelIds] } : {}),
         extras: seed.extras,
       });
       const envApiKey =

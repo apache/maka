@@ -9,21 +9,7 @@ import {
 } from '../main-window-permission-policy.js';
 
 describe('main window Chromium permission policy', () => {
-  it('allows top-level microphone audio and clipboard writes from the product renderer', () => {
-    assert.equal(allowsMainWindowPermissionCheck({
-      ownerMatches: true,
-      rendererUrlMatches: true,
-      permission: 'media',
-      isMainFrame: true,
-      mediaType: 'audio',
-    }), true);
-    assert.equal(allowsMainWindowPermissionRequest({
-      ownerMatches: true,
-      rendererUrlMatches: true,
-      permission: 'media',
-      isMainFrame: true,
-      mediaTypes: ['audio'],
-    }), true);
+  it('allows top-level clipboard writes from the product renderer', () => {
     for (const permission of ['clipboard-sanitized-write', 'clipboard-write']) {
       assert.equal(allowsMainWindowPermissionCheck({
         ownerMatches: true,
@@ -40,13 +26,20 @@ describe('main window Chromium permission policy', () => {
     }
   });
 
-  it('denies camera, mixed media, subframes, auxiliary windows, and unrelated permissions', () => {
+  it('denies media, subframes, auxiliary windows, and unrelated permissions', () => {
     assert.equal(allowsMainWindowPermissionCheck({
       ownerMatches: true,
       rendererUrlMatches: true,
       permission: 'media',
       isMainFrame: true,
-      mediaType: 'video',
+      mediaType: 'audio',
+    }), false);
+    assert.equal(allowsMainWindowPermissionRequest({
+      ownerMatches: true,
+      rendererUrlMatches: true,
+      permission: 'media',
+      isMainFrame: true,
+      mediaTypes: ['audio'],
     }), false);
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
@@ -58,34 +51,25 @@ describe('main window Chromium permission policy', () => {
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
       rendererUrlMatches: true,
-      permission: 'media',
+      permission: 'clipboard-sanitized-write',
       isMainFrame: false,
-      mediaTypes: ['audio'],
     }), false);
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: false,
       rendererUrlMatches: true,
-      permission: 'media',
+      permission: 'clipboard-write',
       isMainFrame: true,
-      mediaTypes: ['audio'],
     }), false);
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
       rendererUrlMatches: false,
-      permission: 'media',
+      permission: 'clipboard-write',
       isMainFrame: true,
-      mediaTypes: ['audio'],
     }), false);
     assert.equal(allowsMainWindowPermissionRequest({
       ownerMatches: true,
       rendererUrlMatches: true,
       permission: 'notifications',
-      isMainFrame: true,
-    }), false);
-    assert.equal(allowsMainWindowPermissionRequest({
-      ownerMatches: true,
-      rendererUrlMatches: true,
-      permission: 'media',
       isMainFrame: true,
     }), false);
   });
@@ -195,10 +179,9 @@ describe('main window Chromium permission policy', () => {
       isMainFrame: true,
       mediaType: 'audio',
       requestingUrl: 'file:///Applications/Maka.app/index.html',
-    }), true);
-    assert.equal(checkHandler(other, 'media', 'file://', {
+    }), false);
+    assert.equal(checkHandler(other, 'clipboard-sanitized-write', 'file://', {
       isMainFrame: true,
-      mediaType: 'audio',
       requestingUrl: 'file:///Applications/Maka.app/index.html',
     }), false);
     assert.equal(checkHandler(owner, 'clipboard-sanitized-write', 'file://', {
@@ -214,7 +197,7 @@ describe('main window Chromium permission policy', () => {
       mediaTypes: ['audio'],
       requestingUrl: 'file:///Applications/Maka.app/index.html',
     });
-    assert.equal(granted, true);
+    assert.equal(granted, false);
 
     let clipboardGranted: boolean | undefined;
     requestHandler(owner, 'clipboard-sanitized-write', (next) => {

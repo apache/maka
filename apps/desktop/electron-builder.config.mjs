@@ -118,8 +118,6 @@ export default {
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.inherit.plist',
     extendInfo: {
-      NSMicrophoneUsageDescription:
-        'Maka uses the microphone only when you test or use voice input.',
       NSAppleEventsUsageDescription:
       'Maka may automate other applications when you explicitly run an agent task.',
     },

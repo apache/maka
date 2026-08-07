@@ -107,7 +107,6 @@ export interface AppShellChatActions {
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
-      voiceOperationId?: string;
       onSessionResolved?: (sessionId: string) => void;
     },
   ): Promise<boolean>;
@@ -297,7 +296,6 @@ export function createAppShellChatActions(deps: {
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
-      voiceOperationId?: string;
       onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
@@ -357,7 +355,6 @@ export function createAppShellChatActions(deps: {
           turnId,
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
@@ -410,7 +407,6 @@ export function createAppShellChatActions(deps: {
         turnId,
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(attachmentItems ? { attachmentItems } : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),

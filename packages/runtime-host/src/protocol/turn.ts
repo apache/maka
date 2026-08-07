@@ -27,7 +27,6 @@ export interface TurnStartInput {
   turnId: string;
   content: MessageContent;
   skillIds?: string[];
-  voiceOperationId?: string;
   turnOrchestration?: TurnOrchestration;
 }
 
@@ -269,22 +268,14 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['skillIds', 'voiceOperationId', 'turnOrchestration'],
+    ['skillIds', 'turnOrchestration'],
   );
   const skillIds = decodeSkillIds(record.skillIds);
-  const voiceOperationId =
-    record.voiceOperationId === undefined
-      ? undefined
-      : requireEntityId(record.voiceOperationId, 'voiceOperationId');
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(
-      record.content,
-      skillIds.length > 0 || voiceOperationId !== undefined,
-    ),
+    content: decodeMessageContent(record.content, skillIds.length > 0),
     ...(skillIds.length > 0 ? { skillIds } : {}),
-    ...(voiceOperationId === undefined ? {} : { voiceOperationId }),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
       : {}),

@@ -130,13 +130,6 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.start',
       'turn.stop',
       'usage.query',
-      'voice.capture.begin',
-      'voice.capture.finish',
-      'voice.operation.cancel',
-      'voice.payload.append',
-      'voice.realtime.begin',
-      'voice.realtime.close',
-      'voice.realtime.finish',
       'web-search.execute',
     ]);
     const errors = [

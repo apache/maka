@@ -16,7 +16,6 @@ import {
   ArrowUp,
   FileText,
   ListTodo,
-  Mic,
   Network,
   Pencil,
   Plus,
@@ -312,19 +311,6 @@ export const Composer = forwardRef<
     graphModePending?: boolean;
     graphModeDisabledReason?: string;
     onGraphModeChange?(active: boolean): void | Promise<void>;
-    voiceCaptureState?: 'idle' | 'requesting' | 'recording' | 'processing' | 'native_ready' | 'sending';
-    /** @deprecated Quiet composer drops realtime chrome; retained for host compatibility. */
-    realtimeVoiceState?: 'idle' | 'connecting' | 'connected';
-    voiceProviderLabel?: string;
-    /**
-     * When provided (and the host has recognition configured), a single mic
-     * appears left of Send. Omitted by default so unconfigured voice is not a
-     * dead control.
-     */
-    onToggleVoiceCapture?(input?: { dictate?: boolean }): void | Promise<void>;
-    onCancelVoiceCapture?(): void;
-    /** @deprecated Realtime voice is not rendered in the quiet composer. */
-    onToggleRealtimeVoice?(): void | Promise<void>;
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
@@ -589,11 +575,6 @@ export const Composer = forwardRef<
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).composer;
   const mentionCopy = getConversationCopy(locale).mentions;
-  const voiceCaptureLabel = props.voiceCaptureState === 'recording'
-    ? copy.voiceStopRecording
-    : props.voiceCaptureState === 'native_ready'
-      ? copy.voiceSend
-      : copy.voiceStart;
 
   useEffect(() => {
     return () => {
@@ -980,15 +961,6 @@ export const Composer = forwardRef<
       );
       return;
     }
-    if (
-      event.key === 'Escape' &&
-      props.voiceCaptureState &&
-      props.voiceCaptureState !== 'idle'
-    ) {
-      event.preventDefault();
-      props.onCancelVoiceCapture?.();
-      return;
-    }
     // Esc while a drag-active highlight is showing should clear it
     // immediately. The existing useEffect listens for blur/dragend/drop
     // but not keydown, so a user who hits Esc to cancel a stuck drag
@@ -1220,7 +1192,6 @@ export const Composer = forwardRef<
     || props.onSwarmModeChange
     || props.onGraphModeChange,
   );
-  const showVoiceCapture = Boolean(props.onToggleVoiceCapture) && !props.streaming;
 
   return (
     <>
@@ -1644,29 +1615,7 @@ export const Composer = forwardRef<
             </div>
           )}
           sendActions={(
-            <div className="maka-composer-right-controls">
-              {showVoiceCapture ? (
-                <IconButton
-                  variant="ghost"
-                  type="button"
-                  size="sm"
-                  className="maka-composer-voice-button"
-                  data-state={props.voiceCaptureState ?? 'idle'}
-                  isDisabled={
-                    props.disabled
-                    || props.voiceCaptureState === 'requesting'
-                    || props.voiceCaptureState === 'processing'
-                    || props.voiceCaptureState === 'sending'
-                  }
-                  label={voiceCaptureLabel}
-                  tooltip={`${voiceCaptureLabel}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
-                  onClick={(event) => {
-                    void props.onToggleVoiceCapture?.({ dictate: event.shiftKey });
-                  }}
-                  icon={<Mic size={15} aria-hidden="true" />}
-                />
-              ) : null}
-            </div>
+            <div className="maka-composer-right-controls" />
           )}
           sendButton={props.streaming ? (
             <UiButton

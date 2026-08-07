@@ -9,7 +9,6 @@ import {
   isThinkingLevel,
   sanitizeTaskLedgerTask,
   thinkingVariantsForModel,
-  VOICE_INPUT_MARKER,
 } from '@maka/core';
 import type {
   CreateSessionRequestInput,
@@ -20,7 +19,6 @@ import type {
   SessionListFilter,
   StoredMessage,
   ThinkingLevel,
-  EphemeralVoiceAudio,
 } from '@maka/core';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
@@ -144,11 +142,6 @@ export interface SessionsIpcDeps {
   ) => Promise<{ turnId: string; ok: boolean; error?: string }>;
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   canCreateFakeSession: () => boolean;
-  consumeNativeAudioOperation?: (input: {
-    operationId: string;
-    connectionSlug: string;
-    model: string;
-  }) => EphemeralVoiceAudio;
 }
 
 function latestStoredMessageTs(messages: readonly StoredMessage[]): number | undefined {
@@ -210,7 +203,6 @@ export function registerSessionsIpc(
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession,
-    consumeNativeAudioOperation,
   } = deps;
   registerSessionExecutionIpc({
     ipcMain,
@@ -486,27 +478,11 @@ export function registerSessionsIpc(
       workspaceFileReferences: sendCommand.workspaceFileReferences,
       receipts: skillInvocation.skillInvocation.receipts,
     });
-    const voiceTargetHeader = sendCommand.voiceOperationId
-      ? await store.readHeader(sessionId)
-      : undefined;
-    const voiceAudio =
-      sendCommand.voiceOperationId && voiceTargetHeader
-        ? consumeNativeAudioOperation?.({
-            operationId: sendCommand.voiceOperationId,
-            connectionSlug: voiceTargetHeader.llmConnectionSlug,
-            model: voiceTargetHeader.model,
-          })
-        : undefined;
-    if (sendCommand.voiceOperationId && !voiceAudio) {
-      throw new Error('voice_operation_unavailable');
-    }
     const iterator = runtime.sendMessage(
       sessionId,
       {
         turnId,
-        text:
-          skillInvocation.sendText || (sendCommand.voiceOperationId ? VOICE_INPUT_MARKER : ''),
-        ...(voiceAudio ? { voiceAudio } : {}),
+        text: skillInvocation.sendText,
         ...(skillInvocation.disposition === 'ready' || sendCommand.displayText !== undefined
           ? { displayText }
           : {}),

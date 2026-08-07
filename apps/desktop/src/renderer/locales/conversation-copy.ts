@@ -154,14 +154,6 @@ export interface DesktopConversationCopy {
     reauth: { label: string; tooltip: string };
     testError: { label: string; tooltip: string };
   };
-  voice: {
-    taskDisplayText: string;
-    noTaskResponse: string;
-    unavailableTitle: string;
-    configureDescription: string;
-    operationFailedTitle: string;
-    operationFailedFallback: string;
-  };
   turnError: {
     unknown: string;
     contextOverflow: string;
@@ -342,14 +334,6 @@ const COPY = {
       reauth: { label: '上次连接测试鉴权失败', tooltip: '最近一次连接测试返回鉴权失败（401 / 403），密钥可能已过期或被吊销。这不会拦截发送，但若发送失败请到 设置 · 模型 重新登录。' },
       testError: { label: '上次连接测试失败', tooltip: '最近一次连接测试因网络 / 超时 / 5xx 失败。这不会拦截发送，但若问题持续请到 设置 · 模型 检查 Base URL / 代理。' },
     },
-    voice: {
-      taskDisplayText: '🎙️ 语音任务',
-      noTaskResponse: '当前任务还没有可总结的回复。',
-      unavailableTitle: '语音不可用',
-      configureDescription: '请先在设置 · 语音中配置识别或实时语音模型。',
-      operationFailedTitle: '语音操作失败',
-      operationFailedFallback: '请检查麦克风、模型配置和网络连接。',
-    },
     turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试', sandboxBoundaryClosed: '访问范围没有放开，重试本轮后可重新决定' } },
   },
   en: {
@@ -445,14 +429,6 @@ const COPY = {
       },
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
-    },
-    voice: {
-      taskDisplayText: '🎙️ Voice task',
-      noTaskResponse: 'The current task has no response to summarize yet.',
-      unavailableTitle: 'Voice unavailable',
-      configureDescription: 'Configure a recognition or realtime voice model in Settings · Voice.',
-      operationFailedTitle: 'Voice operation failed',
-      operationFailedFallback: 'Check the microphone, model configuration, and network.',
     },
     turnError: { unknown: 'Unknown error', contextOverflow: 'Context window exceeded', timeout: 'Request timed out', auth: 'Authentication failed', providerBilling: 'Provider billing required', rateLimit: 'Model rate limit reached', network: 'Network error', provider: 'Model service error', stepCap: 'Tool-step limit reached', tool: 'Tool call failed', permission: 'Waiting for permission', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied', recovery: { safeResume: 'Inspect the current state, then try safe recovery', stepCap: 'The task may be incomplete; continue from here', toolError: 'Inspect the tool result before retrying', connection: 'Check the model connection or sign-in status', partial: 'Partial output was retained; continue from here', toolRecord: 'Tool history was retained; inspect it before retrying', retry: 'No tools ran; retry directly', sandboxBoundaryClosed: 'Access was not widened; retry the turn to decide again' } },
   },

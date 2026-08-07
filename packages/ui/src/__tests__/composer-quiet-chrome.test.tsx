@@ -38,14 +38,14 @@ describe('composer quiet chrome', () => {
       />,
     );
 
-    // Quiet surface: no header attach/voice cluster, no standalone modes/skills triggers.
+    // Quiet surface: no header attach cluster, no standalone modes/skills triggers.
     assert.doesNotMatch(markup, /maka-composer-header-actions/);
     assert.doesNotMatch(markup, /maka-composer-header-context/);
     assert.doesNotMatch(markup, /maka-composer-modes-menu/);
     assert.doesNotMatch(markup, /maka-composer-streaming-hint/);
 
     // Footer left: plus → permission → model (+ thinking when levels offered).
-    // Footer right: send only (no mic by default).
+    // Footer right: send only.
     assert.match(markup, /permissionModeIcon/);
     assert.match(markup, /maka-composer-plus-menu/);
     assert.match(markup, /maka-composer-left-controls/);
@@ -64,8 +64,6 @@ describe('composer quiet chrome', () => {
     );
     // Thinking stays out of the model menu; without levels it does not mount.
     assert.doesNotMatch(markup, /maka-thinking-level-selector/);
-    assert.doesNotMatch(markup, /maka-composer-voice-button/);
-    assert.doesNotMatch(markup, /maka-composer-realtime-voice-button/);
   });
 
   it('places thinking beside the model in left-controls when levels are offered', () => {
@@ -313,18 +311,5 @@ describe('composer quiet chrome', () => {
     assert.match(drawer, /aria-label="Remove premier-league-tactics\.epub"/);
     // No lightbox mounts until a chip is actually clicked.
     assert.doesNotMatch(markup, /astryx-lightbox/);
-  });
-
-  it('shows a single voice control only when the host wires capture', () => {
-    const markup = render(
-      <Composer
-        onSend={() => true}
-        onStop={() => {}}
-        onToggleVoiceCapture={() => {}}
-        modelLabel="demo"
-      />,
-    );
-    assert.match(markup, /maka-composer-voice-button/);
-    assert.doesNotMatch(markup, /maka-composer-realtime-voice-button/);
   });
 });

@@ -263,8 +263,6 @@ describe('runAbComparison', () => {
     assert.equal(result.stopReason, 'observed_cost_stop_reached');
   });
 
-  ;
-
   test('stops scheduling new pairs after a systemic provider failure', async () => {
     const calls: string[] = [];
     const result = await runAbComparison({

@@ -147,21 +147,6 @@
   justify-content: flex-end;
 }
 
-/* `background-color`, never the `background` shorthand: these rules sit in the
-   last cascade layer (cascade-layers.css), and the shorthand's implicit
-   `background-image: none` would beat the ghost button's own :hover / :active
-   overlay gradients from `astryx-components`, leaving the control with no
-   pointer feedback at all. */
-.maka-composer-voice-button[data-state="recording"] {
-  color: var(--status-danger, var(--destructive));
-  background-color: color-mix(in srgb, currentColor 10%, transparent);
-}
-
-.maka-composer-voice-button[data-state="native_ready"] {
-  color: var(--status-running);
-  background-color: color-mix(in srgb, currentColor 10%, transparent);
-}
-
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
 .maka-composer-left-controls .permissionModeIcon,
 .maka-composer-left-controls .maka-composer-plus-menu {
@@ -235,9 +220,9 @@
    so all three share the one accent. The wash derives from currentColor so a
    disabled mark dims both layers together.
 
-   `background-color`, never the `background` shorthand — see the voice button
-   above: the shorthand would suppress the ghost button's hover and active
-   overlays and leave the one way out of a mode with no pointer feedback.
+   `background-color`, never the `background` shorthand: the shorthand would
+   suppress the ghost button's hover and active overlays and leave the one way
+   out of a mode with no pointer feedback.
    `flex: 0 0 auto` keeps a long model name from compressing the mark away. */
 .maka-composer-mode-button {
   flex: 0 0 auto;

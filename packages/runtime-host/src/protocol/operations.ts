@@ -36,7 +36,6 @@ import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
-import { VOICE_OPERATION_SPECS } from './voice.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
 
 export type {
@@ -135,7 +134,6 @@ export * from './session-transcript.js';
 export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
-export * from './voice.js';
 export * from './web-search.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
@@ -170,7 +168,6 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
-  VOICE_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

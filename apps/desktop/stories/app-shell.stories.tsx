@@ -771,9 +771,6 @@ export const NativeConversation: Story = {
           },
         ],
         onRemoveAttachment: noop,
-        onToggleVoiceCapture: noop,
-        onToggleRealtimeVoice: noop,
-        voiceProviderLabel: '系统语音',
       }}
     />
   ),

@@ -837,48 +837,6 @@ export class DesktopRuntimeHostClient {
     return this.#request("configuration.credentials.export", input);
   }
 
-  beginVoiceCapture(
-    input: OperationInput<"voice.capture.begin">,
-  ): Promise<OperationOutput<"voice.capture.begin">> {
-    return this.#request("voice.capture.begin", input);
-  }
-
-  appendVoicePayload(
-    input: OperationInput<"voice.payload.append">,
-  ): Promise<OperationOutput<"voice.payload.append">> {
-    return this.#request("voice.payload.append", input);
-  }
-
-  finishVoiceCapture(
-    input: OperationInput<"voice.capture.finish">,
-  ): Promise<OperationOutput<"voice.capture.finish">> {
-    return this.#request("voice.capture.finish", input);
-  }
-
-  cancelVoiceOperation(
-    input: OperationInput<"voice.operation.cancel">,
-  ): Promise<OperationOutput<"voice.operation.cancel">> {
-    return this.#request("voice.operation.cancel", input);
-  }
-
-  beginVoiceRealtime(
-    input: OperationInput<"voice.realtime.begin">,
-  ): Promise<OperationOutput<"voice.realtime.begin">> {
-    return this.#request("voice.realtime.begin", input);
-  }
-
-  finishVoiceRealtime(
-    input: OperationInput<"voice.realtime.finish">,
-  ): Promise<OperationOutput<"voice.realtime.finish">> {
-    return this.#request("voice.realtime.finish", input);
-  }
-
-  closeVoiceRealtime(
-    input: OperationInput<"voice.realtime.close">,
-  ): Promise<OperationOutput<"voice.realtime.close">> {
-    return this.#request("voice.realtime.close", input);
-  }
-
   startTurn(
     input: OperationInput<"turn.start">,
   ): Promise<OperationOutput<"turn.start">> {

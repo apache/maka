@@ -409,11 +409,6 @@ const permissionSnapshot: PermissionSnapshot = {
       status: 'not_determined',
       canRequest: true,
     }),
-    microphone: makeOsPermission({
-      id: 'microphone',
-      status: 'denied',
-      reason: '用户在系统设置里拒绝了麦克风访问，语音输入与录音自检都会直接失败。',
-    }),
     notifications: makeOsPermission({
       id: 'notifications',
       status: 'granted',
@@ -466,15 +461,6 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
       guidance: ['前往系统设置授予屏幕录制权限后重新探测。'],
     }),
     makeCapability({
-      id: 'voice',
-      label: '语音输入',
-      readiness: 'denied',
-      feature: { state: 'enabled', source: 'settings' },
-      osPermissions: [{ id: 'microphone', required: true, status: 'denied' }],
-      runtimeProbe: { state: 'not_run', source: 'runtime_probe' },
-      guidance: ['麦克风权限已被拒绝，需要在系统设置中重新开启。'],
-    }),
-    makeCapability({
       id: 'memory_write',
       label: '记忆写入',
       readiness: 'enabled',
@@ -517,18 +503,6 @@ const healthSignals: HealthSignal[] = [
     message: '连接测试失败：HTTP 401 invalid_api_key。',
     detail: '凭据已失效或被吊销，请在「模型」页重新填写 API Key 后再次测试。',
     blocksSend: true,
-  },
-  {
-    id: 'perm:microphone',
-    label: '麦克风权限',
-    scope: 'capability',
-    layer: 'permission',
-    status: 'warning',
-    source: 'permission_snapshot',
-    checkedAt: NOW - 30_000,
-    message: '麦克风权限已被拒绝。',
-    relatedCapabilityId: 'voice',
-    blocksCapability: true,
   },
   {
     id: 'feature:computer-use',
@@ -1049,41 +1023,6 @@ export const MemoryPopulated: Story = {
 export const WebSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="search" />,
-};
-// Real path: 设置 → 语音.
-export const Voice: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="voice" />,
-};
-/**
- * The idle story above cannot show the page's only error surface. `permissionSnapshot`
- * already reports microphone `denied` on darwin, and `runCaptureSmoke` returns on that
- * snapshot before it ever reaches `getUserMedia` — so the real path gets here with no
- * MediaRecorder mock at all, which is why the old decorator-driven story was both
- * heavier and wrong.
- */
-// Real path: 设置 → 语音 → 运行录音自检, when macOS has denied microphone access.
-export const VoicePermissionDenied: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="voice" />,
-  play: async ({ canvasElement }) => {
-    const button = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.includes('运行录音自检') === true,
-    );
-    button.click();
-    // The page renders several `[role="status"]` regions and the capture result
-    // is not the first one, so this must scan them all — taking `querySelector`
-    // here is what left the previous voice stories asserting against an empty
-    // node and passing on a state they never reached.
-    await waitForStoryCondition(
-      () =>
-        Array.from(canvasElement.querySelectorAll<HTMLElement>('[role="status"]')).some(
-          (region) => region.textContent?.includes('麦克风权限被拒绝') === true,
-        ),
-      'Voice story did not reach the denied state',
-    );
-  },
 };
 // Real path: same page when a bound channel needs attention — e.g. a WeChat session that
 // has to be re-scanned.

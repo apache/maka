@@ -172,22 +172,14 @@ describe('permission response IPC boundary', () => {
     }
   });
 
-  it('allows a valid voice-only send and validates the operation id', () => {
-    assert.deepEqual(
-      normalizeSessionSendCommand({
-        type: 'send',
-        text: '',
-        voiceOperationId: '123e4567-e89b-12d3-a456-426614174000',
-      }),
-      {
-        type: 'send',
-        text: '',
-        voiceOperationId: '123e4567-e89b-12d3-a456-426614174000',
-      },
+  it('rejects empty send text without skills', () => {
+    assert.throws(
+      () => normalizeSessionSendCommand({ type: 'send', text: '' }),
+      /Invalid send text/,
     );
     assert.throws(
-      () => normalizeSessionSendCommand({ type: 'send', text: '', voiceOperationId: 'not-a-uuid' }),
-      /voice operation id/,
+      () => normalizeSessionSendCommand({ type: 'send', text: '   ' }),
+      /Invalid send text/,
     );
   });
 

@@ -20,6 +20,24 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  test('honors an explicit enabled model set on create', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        defaultModel: 'nemotron-3-ultra-free',
+        enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
+      });
+
+      assert.deepEqual(created.enabledModelIds, [
+        'nemotron-3-ultra-free',
+        'mimo-v2.5-free',
+        'deepseek-v4-flash-free',
+      ]);
+    });
+  });
+
   test('migrates a legacy connection to only its default model enabled', async () => {
     await withConnectionStore(async (store, dir) => {
       await writeFile(
@@ -862,13 +880,17 @@ describe('FileConnectionStore', () => {
 
       const migrated = await store.updateIfUnchanged(created.slug, created.updatedAt, {
         defaultModel: 'nemotron-3-ultra-free',
-        enabledModelIds: ['nemotron-3-ultra-free'],
-        extras: { makaBootstrap: { id: 'opencode-free', version: 2 } },
+        enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
+        extras: { makaBootstrap: { id: 'opencode-free', version: 3 } },
       });
       assert.equal(migrated?.defaultModel, 'nemotron-3-ultra-free');
-      assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free']);
+      assert.deepEqual(migrated?.enabledModelIds, [
+        'nemotron-3-ultra-free',
+        'mimo-v2.5-free',
+        'deepseek-v4-flash-free',
+      ]);
       assert.deepEqual(migrated?.extras, {
-        makaBootstrap: { id: 'opencode-free', version: 2 },
+        makaBootstrap: { id: 'opencode-free', version: 3 },
       });
     });
   });

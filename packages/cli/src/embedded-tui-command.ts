@@ -11,7 +11,8 @@ import {
 } from '@maka/storage';
 import { selectableModelIdsForTarget } from './connection-target.js';
 import { createApiKeyOnboardingSurface } from './onboarding.js';
-import { runMakaPiTui, type MakaPiTuiGoalLifecycle } from './pi-tui-runner.js';
+import type { MakaPiTuiGoalLifecycle } from './pi-tui-contracts.js';
+import { runMakaPiTui } from './pi-tui-runner.js';
 import { createMakaCliRuntimeContext } from './runtime-bootstrap.js';
 import { createMakaSessionDriver, type MakaSessionDriver } from './session-driver.js';
 

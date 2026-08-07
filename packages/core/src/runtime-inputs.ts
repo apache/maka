@@ -17,7 +17,6 @@ import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
 import type { SessionStartMode } from './explore-agent.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
-import type { EphemeralVoiceAudio } from './voice.js';
 import type { ToolMode } from './tool-mode.js';
 
 export type { TurnOrchestration } from './orchestration.js';
@@ -79,8 +78,6 @@ export interface UserMessageInput extends MessageContent {
   /** Caller-generated uuid. Same id used in the UserMessage.turnId and in
    *  every event emitted by this turn. */
   turnId: string;
-  /** Raw audio exists only for the live operation and is never persisted. */
-  voiceAudio?: EphemeralVoiceAudio;
   /** Trusted host-supplied orchestration override for this turn only. */
   turnOrchestration?: TurnOrchestration;
   /** Trusted host-supplied tool protocol override for this run only. */

@@ -112,7 +112,6 @@ import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
-import { HostVoiceCoordinator } from './voice-coordinator.js';
 import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
@@ -743,10 +742,6 @@ export async function createExecutionRuntimeHostComposition(
     const webSearch = new HostWebSearchCoordinator(webSearchService);
     const networkProxy = new HostNetworkProxyCoordinator(runtimePolicyStores.operations);
     const configuration = new HostConfigurationCoordinator(runtimePolicyStores.operations);
-    const voice = new HostVoiceCoordinator({
-      runtimePolicy: runtimePolicyStores,
-      oauthCredentials,
-    });
     const artifacts = new HostArtifactCoordinator(
       openedArtifactStore,
       context.requestDrain,
@@ -780,7 +775,6 @@ export async function createExecutionRuntimeHostComposition(
           host: buildHostCapabilitiesFromBinding(toolNames),
         });
       },
-      voice,
     );
     const coordinator = rootCoordinator;
     graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
@@ -970,7 +964,6 @@ export async function createExecutionRuntimeHostComposition(
       ...webSearch.handlers,
       ...networkProxy.handlers,
       ...configuration.handlers,
-      ...voice.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {

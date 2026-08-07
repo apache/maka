@@ -174,9 +174,6 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...((command.skillIds?.length ?? 0) > 0
           ? { skillIds: command.skillIds }
           : {}),
-        ...(command.voiceOperationId
-          ? { voiceOperationId: command.voiceOperationId }
-          : {}),
         ...(command.turnOrchestration
           ? { turnOrchestration: command.turnOrchestration }
           : {}),

@@ -19,6 +19,7 @@ import {
   type ProviderType,
 } from '@maka/core';
 import { useMountedRef, useUiLocale, useToast , dotForStatus } from '@maka/ui';
+import { settingsActionErrorMessage } from './settings-error-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import {
   CATALOG_INITIAL_FILTER,
@@ -249,7 +250,43 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             logo={<ProviderLogo type={selected.providerType} compact />}
             titleId={detailTitleId}
             title={selected.name}
-            badge={selected.slug === defaultSlug ? <Badge variant="neutral" label={copy.default} /> : null}
+            /* The control sits in the slot that shows the state. Setting the
+               default connection was reachable only from the command palette,
+               while this page displayed a 默认 Badge and offered no way to
+               change it — so a user who came here to change it (the obvious
+               place, since it is where the answer is shown) found a read-only
+               label and gave up. Whichever of the two a connection is, this
+               slot now tells the truth AND is the way to change it.
+
+               `secondary`, not ghost: this button sits alone beside a title,
+               where a ghost's bare text reads as a subtitle rather than
+               something you can press — which would recreate the very problem
+               it exists to solve. 测试连接 below is secondary sm, and that is
+               this page's dialect for "quiet but unmistakably a control".
+
+               `clickAction` rather than onClick: it opens no confirm, so there
+               is no state-driven UI to await inside the transition, and the
+               button gets its own pending affordance for free. */
+            badge={selected.slug === defaultSlug
+              ? <Badge variant="neutral" label={copy.default} />
+              : (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  label={copy.setDefault}
+                  tooltip={copy.setDefaultTitle}
+                  clickAction={async () => {
+                    try {
+                      await window.maka.connections.setDefault(selected.slug);
+                      await reload();
+                    } catch (error) {
+                      // The state is unchanged on failure, so the Badge stays
+                      // where it was and the button remains the way to retry.
+                      toast.error(copy.setDefaultFailed, settingsActionErrorMessage(error, locale));
+                    }
+                  }}
+                />
+              )}
             subtitle={connectionSubtitle(selected, locale)}
           />
           <ConnectionDetail

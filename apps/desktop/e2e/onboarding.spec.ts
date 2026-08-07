@@ -47,7 +47,11 @@ test('first run connects a provider and starts the first task without workspace 
     .toEqual({
       defaultSlug: null,
       defaultModel: '',
-      enabledModelIds: ['nemotron-3-ultra-free'],
+      enabledModelIds: [
+        'nemotron-3-ultra-free',
+        'mimo-v2.5-free',
+        'deepseek-v4-flash-free',
+      ],
     });
   await page.getByRole('button', { name: '返回应用', exact: true }).click();
 

@@ -72,7 +72,7 @@ export * from './primitives/section-header.js';
 export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // PageHeader — the shared page-header shell (convergence round 3). One shell
 // for the module hero (as='h2': 技能 / 定时任务) and the settings intros
-// (as='h3': permission / health / voice / about). Wrapper class + per-slot
+// (as='h3': permission / health / about). Wrapper class + per-slot
 // CSS stay at the call site; the primitive converges STRUCTURE only.
 export { PageHeader } from './primitives/page-header.js';
 export type { PageHeaderProps } from './primitives/page-header.js';
