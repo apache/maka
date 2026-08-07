@@ -147,9 +147,8 @@ describe('drag-to-grant permission overlay', () => {
   it('only recognises the two drag-to-grant permissions', () => {
     assert.equal(isDragGrantPermission('accessibility'), true);
     assert.equal(isDragGrantPermission('screen_recording'), true);
-    // Microphone has a real consent dialog; notifications and Automation
-    // have ordinary System Settings rows. None belongs in a drag card.
-    assert.equal(isDragGrantPermission('microphone'), false);
+    // Notifications and Automation have ordinary System Settings rows.
+    // None belongs in a drag card.
     assert.equal(isDragGrantPermission('notifications'), false);
     assert.equal(isDragGrantPermission('automation'), false);
     assert.equal(isDragGrantPermission(undefined), false);
@@ -280,7 +279,7 @@ describe('drag-to-grant permission overlay', () => {
     assert.equal(linux.windows.length, 0);
 
     const mac = createHarness();
-    assert.deepEqual(await mac.controller.start('microphone'), { ok: false, reason: 'invalid_id' });
+    assert.deepEqual(await mac.controller.start('not-a-permission'), { ok: false, reason: 'invalid_id' });
     assert.equal(mac.windows.length, 0);
   });
 

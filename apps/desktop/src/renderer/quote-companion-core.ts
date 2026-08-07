@@ -7,19 +7,24 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import type {
-  CreateSessionInput,
   PermissionMode,
   QuoteRef,
   SessionEvent,
   SessionSummary,
   StoredMessage,
   TurnRecord,
+  UiLocale,
 } from '@maka/core';
-
-/** The companion is a read-only explanation surface: reads + local search are
- *  available and web/custom tools follow the normal permission path, while
- *  writes / shell / destructive operations are hard-blocked (not approvable). */
-export const COMPANION_PERMISSION_MODE: PermissionMode = 'explore';
+import type { RendererIngestInput } from '../preload/bridge-contract.js';
+import {
+  acquireSessionCopyAttempt,
+  abandonSessionCopyAttempt,
+  completeSessionCopyAttempt,
+  readSessionCopyAttempt,
+  startSessionCopyAttempt,
+  type SessionCopyAttemptKey,
+} from './session-copy-attempt.js';
+import { sessionEventErrorMessage } from './model-connection-errors.js';
 
 /** `sessions.send` resolves (does not throw) with this shape when the run was
  *  not actually started — e.g. an unresolved `/skill:...` invocation. */
@@ -33,23 +38,36 @@ type CompanionSendResult = { ok: true } | { ok: false; reason?: string };
 export interface CompanionSessionApi {
   readMessages(sessionId: string): Promise<StoredMessage[]>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
-  branchFromTurn(sessionId: string, input: { sourceTurnId: string; name?: string }): Promise<SessionSummary>;
-  create(input: Partial<CreateSessionInput>): Promise<SessionSummary>;
+  branchFromTurn(
+    sessionId: string,
+    input: {
+      sourceTurnId: string;
+      name?: string;
+      copyId: string;
+      sideConversation?: boolean;
+    },
+  ): Promise<SessionSummary>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary>;
-  cleanupQuoteCompanion(sessionId: string): Promise<void>;
+  cleanupSessionCopy(sessionId: string): Promise<void>;
+  abandonSessionCopy(sessionId: string): Promise<void>;
   send(
     sessionId: string,
-    command: { type: 'send'; turnId: string; text: string; quotes?: QuoteRef[] },
+    command: {
+      type: 'send';
+      turnId: string;
+      text: string;
+      quotes?: QuoteRef[];
+      attachmentItems?: RendererIngestInput[];
+    },
   ): Promise<CompanionSendResult>;
 }
 
 /** Structured failure reasons the renderer localizes (no user-facing strings in
  *  core). `fork_setup_failed`: reading the source boundary or creating the fork
- *  failed; `permission_pin_failed`: the fork couldn't be confirmed read-only;
- *  `send_failed`: `sessions.send` threw; `send_rejected`: it resolved `{ok:false}`. */
+ *  failed; `send_failed`: `sessions.send` threw; `send_rejected`: it resolved
+ *  `{ok:false}`. */
 export type CompanionErrorCode =
   | 'fork_setup_failed'
-  | 'permission_pin_failed'
   | 'send_failed'
   | 'send_rejected';
 
@@ -57,6 +75,20 @@ export type EnsureCompanionForkResult =
   | { status: 'ready'; session: SessionSummary }
   | { status: 'disposed' }
   | { status: 'error'; code: CompanionErrorCode };
+
+export interface CompanionDismissalGuard {
+  beginMount(): () => boolean;
+}
+
+export function createCompanionDismissalGuard(): CompanionDismissalGuard {
+  let generation = 0;
+  return {
+    beginMount: () => {
+      const mountedGeneration = ++generation;
+      return () => generation === mountedGeneration;
+    },
+  };
+}
 
 export interface EnsureCompanionForkDeps {
   api: CompanionSessionApi;
@@ -72,10 +104,50 @@ export interface EnsureCompanionForkDeps {
   onForkCleanupSucceeded?: (sessionId: string) => void;
 }
 
-/** The latest durable (settled) turn of the source session — the fork boundary.
- *  A `running` turn is skipped so a fork never branches mid-turn. */
+/** The latest successfully completed turn of the source session.
+ *  Failed and aborted turns are not reference context: branching through one
+ *  makes a fresh side prompt look like a continuation of unfinished parent
+ *  work. If no completed turn exists, the side conversation starts empty. */
 export function latestSettledTurnId(turns: readonly TurnRecord[]): string | undefined {
-  return [...turns].reverse().find((turn) => turn.status !== 'running')?.turnId;
+  return [...turns].reverse().find((turn) => turn.status === 'completed')?.turnId;
+}
+
+function companionCopyAttemptKey(sourceSessionId: string): SessionCopyAttemptKey {
+  return { scope: 'quote-companion', kind: 'branch', sourceSessionId };
+}
+
+export async function abandonPendingCompanionCopy(
+  api: CompanionSessionApi,
+  sourceSessionId: string,
+): Promise<boolean> {
+  const key = companionCopyAttemptKey(sourceSessionId);
+  const attempt = readSessionCopyAttempt(key);
+  if (!attempt) return true;
+  abandonSessionCopyAttempt(key, attempt.copyId);
+  try {
+    await api.abandonSessionCopy(attempt.copyId);
+    completeSessionCopyAttempt(key, attempt.copyId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cleanupCompanionCopy(
+  api: CompanionSessionApi,
+  sourceSessionId: string,
+  companionSessionId: string,
+): Promise<boolean> {
+  const key = companionCopyAttemptKey(sourceSessionId);
+  const attempt = readSessionCopyAttempt(key);
+  if (attempt) abandonSessionCopyAttempt(key, attempt.copyId);
+  try {
+    await api.cleanupSessionCopy(companionSessionId);
+    if (attempt) completeSessionCopyAttempt(key, attempt.copyId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -102,24 +174,19 @@ export function deriveCompanionComposerState(
  * lifecycle paths can remain fire-and-forget without losing recovery.
  */
 function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
-  void deps.api
-    .cleanupQuoteCompanion(sessionId)
-    .then(() => deps.onForkCleanupSucceeded?.(sessionId))
-    .catch(() => {});
+  void cleanupCompanionCopy(deps.api, deps.sourceSession.id, sessionId).then((cleaned) => {
+    if (cleaned) deps.onForkCleanupSucceeded?.(sessionId);
+  });
 }
 
 /**
- * Fork the main session for a companion and return a session that is CONFIRMED
- * read-only (`explore`): reads + local search stay available and web/custom
- * tools follow the normal permission path, but writes / shell / destructive
- * operations are hard-blocked. Fails closed: if `setPermissionMode` throws or
- * the session is not `explore`, the fork is removed and an error is returned —
- * never leaving a fork that could run with the parent's inherited execute/bypass
- * permissions. Source-boundary and creation failures are returned as structured
- * errors instead of escaping as unhandled promise rejections. If the panel is
- * disposed mid-flight, any created fork is removed and `disposed` is returned so
- * the caller aborts. The fork inherits the source model/connection (no
- * independent model picker).
+ * Fork the main session for a companion while preserving the source session's
+ * model, collaboration mode, and permission profile. Parent history is still
+ * reference-only through the side-conversation system prompt; inherited
+ * permission only governs actions explicitly requested inside the side chat.
+ * Source-boundary and creation failures are returned as structured errors
+ * instead of escaping as unhandled promise rejections. If the panel is disposed
+ * mid-flight, any created fork is removed and `disposed` is returned.
  */
 export async function ensureCompanionFork(
   deps: EnsureCompanionForkDeps,
@@ -136,23 +203,35 @@ export async function ensureCompanionFork(
   }
   if (isDisposed()) return { status: 'disposed' };
   const boundaryTurnId = latestSettledTurnId(turns);
+  if (!boundaryTurnId) return { status: 'error', code: 'fork_setup_failed' };
 
   let created: SessionSummary;
   try {
-    created = boundaryTurnId
-      ? await api.branchFromTurn(sourceSession.id, { sourceTurnId: boundaryTurnId, name })
-      : await api.create({
-          ...(sourceSession.cwd ? { cwd: sourceSession.cwd } : {}),
-          backend: sourceSession.backend,
-          llmConnectionSlug: sourceSession.llmConnectionSlug,
-          model: sourceSession.model,
-          parentSessionId: sourceSession.id,
-          name,
-        });
+    let copyAttempt = acquireSessionCopyAttempt(
+      companionCopyAttemptKey(sourceSession.id),
+      boundaryTurnId,
+    );
+    if (copyAttempt.phase === 'abandoning') {
+      if (!(await abandonPendingCompanionCopy(api, sourceSession.id))) {
+        return { status: 'error', code: 'fork_setup_failed' };
+      }
+      copyAttempt = acquireSessionCopyAttempt(
+        companionCopyAttemptKey(sourceSession.id),
+        boundaryTurnId,
+      );
+    }
+    if (!startSessionCopyAttempt(companionCopyAttemptKey(sourceSession.id), copyAttempt.copyId)) {
+      return { status: 'error', code: 'fork_setup_failed' };
+    }
+    created = await api.branchFromTurn(sourceSession.id, {
+      sourceTurnId: copyAttempt.sourceTurnId,
+      name,
+      copyId: copyAttempt.copyId,
+      sideConversation: true,
+    });
   } catch {
     return { status: 'error', code: 'fork_setup_failed' };
   }
-
   if (isDisposed()) {
     scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };
@@ -162,25 +241,12 @@ export async function ensureCompanionFork(
   // rather than waiting on the potentially slow permission pin below.
   deps.onForkCreated?.(created);
 
-  // Fail CLOSED on the read-only guardrail: the fork inherits the parent's
-  // permission mode, so it MUST be confirmed `explore` before it is ever used.
-  let ready: SessionSummary;
-  try {
-    ready = await api.setPermissionMode(created.id, COMPANION_PERMISSION_MODE);
-  } catch {
-    scheduleCompanionCleanup(deps, created.id);
-    return { status: 'error', code: 'permission_pin_failed' };
-  }
-  if (ready.permissionMode !== COMPANION_PERMISSION_MODE) {
-    scheduleCompanionCleanup(deps, created.id);
-    return { status: 'error', code: 'permission_pin_failed' };
-  }
   if (isDisposed()) {
     scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };
   }
 
-  return { status: 'ready', session: ready };
+  return { status: 'ready', session: created };
 }
 
 export type CompanionTurnResult =
@@ -194,6 +260,7 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   turnId: string;
   text: string;
   quotes: QuoteRef[] | undefined;
+  attachmentItems?: RendererIngestInput[];
   /** Fired once a fork is created + confirmed read-only, so the caller can commit it. */
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
@@ -228,6 +295,7 @@ export async function performCompanionTurn(
       turnId: deps.turnId,
       text: deps.text,
       ...(deps.quotes ? { quotes: deps.quotes } : {}),
+      ...(deps.attachmentItems ? { attachmentItems: deps.attachmentItems } : {}),
     });
   } catch {
     return { status: 'error', code: 'send_failed' };
@@ -244,6 +312,47 @@ export async function performCompanionTurn(
 
 export function isCompanionTurnTerminal(event: SessionEvent): boolean {
   return event.type === 'error' || event.type === 'abort' || event.type === 'complete';
+}
+
+export type CompanionRunEventEffect =
+  | { kind: 'ignore' }
+  | {
+      kind: 'active';
+      terminal: boolean;
+      /** Undefined keeps the existing error, null clears it. */
+      error?: string | null;
+    };
+
+/**
+ * Side-chat subscriptions can outlive a turn long enough to receive its final
+ * event after the next turn starts. Only the currently armed turn may mutate
+ * the live projection, error banner, or settlement state.
+ */
+export function companionRunEventEffect(
+  event: SessionEvent,
+  activeTurnId: string | null,
+  stopRequested: boolean,
+  locale: UiLocale,
+): CompanionRunEventEffect {
+  if (!event.turnId || event.turnId !== activeTurnId) return { kind: 'ignore' };
+
+  if (event.type === 'error') {
+    return {
+      kind: 'active',
+      terminal: true,
+      error: stopRequested ? null : sessionEventErrorMessage(event, locale),
+    };
+  }
+  if (
+    event.type === 'abort' ||
+    (event.type === 'complete' && event.stopReason === 'user_stop')
+  ) {
+    return { kind: 'active', terminal: true, error: null };
+  }
+  return {
+    kind: 'active',
+    terminal: isCompanionTurnTerminal(event),
+  };
 }
 
 /**

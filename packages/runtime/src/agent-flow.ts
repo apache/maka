@@ -38,7 +38,6 @@ import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { ToolMode } from '@maka/core/tool-mode';
 import type { InvocationContext } from './invocation-context.js';
-import type { EphemeralVoiceAudio } from '@maka/core/voice';
 
 export type { InvocationContext } from './invocation-context.js';
 
@@ -65,8 +64,6 @@ export interface FlowInput {
   toolMode?: ToolMode;
   /** User turn text. */
   text: string;
-  /** Operation-owned raw audio, valid only for this live flow. */
-  voiceAudio?: EphemeralVoiceAudio;
   /** Optional attachments bound to the user message. */
   attachments?: AttachmentRef[];
   /** Optional inline quoted excerpts bound to the user message. */

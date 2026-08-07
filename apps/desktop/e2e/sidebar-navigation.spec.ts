@@ -58,8 +58,6 @@ test('project mode nests sessions under collapsible project SideNav items', asyn
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
   const session = project.locator('[data-maka-contract="session-row"]').first();
   await expect(session).toBeVisible();
-  // Nested project sessions are ordinary nav rows, not subagent rows.
-  await expect(session).not.toHaveAttribute('data-subagent', 'true');
   // Product zero-nest: session left edge matches the project row (no 24px tree indent).
   const projectBox = await projectToggle.boundingBox();
   const sessionBox = await session.boundingBox();

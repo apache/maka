@@ -23,9 +23,9 @@ import {
   localMemoryBackupKindLabel,
   localMemoryBackupSummary,
   memoryStatusLabel,
-  memoryStatusTone,
+  memoryStatusSemantic,
 } from './memory-settings-labels';
-import { statusDotVariant } from './settings-status-badge';
+import { dotForStatus } from '@maka/ui';
 
 export function MemorySettingsPage(props: {
   settings: AppSettings;
@@ -102,7 +102,7 @@ export function MemorySettingsPage(props: {
             <span className="settingsFormRowControlCluster">
               <span className="settingsStatus">
                 <StatusDot
-                  variant={statusDotVariant(memoryStatusTone(effective.status))}
+                  variant={dotForStatus(memoryStatusSemantic(effective.status))}
                   label={memoryStatusLabel(effective.status, copy)}
                 />
                 <span>{memoryStatusLabel(effective.status, copy)}</span>

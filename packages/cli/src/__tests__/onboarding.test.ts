@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ConnectionStore, CredentialStore } from '@maka/storage';
+import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import {
-  listApiKeyOnboardableProviders,
   listOnboardingProviders,
   saveApiKeyConnection,
   verifyApiKeyConnection,

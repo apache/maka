@@ -10,7 +10,7 @@
  *     platforms the request resolves with a structured "unsupported"
  *     failure so the renderer can hide the button.
  *   - `requestPermissionAccess(id)` — when the OS exposes a real,
- *     result-bearing consent dialog (microphone) we ask directly;
+ *     result-bearing consent path (screen capture) we engage it;
  *     otherwise we deep-link to System Settings. Merely showing a
  *     notification is not treated as proof that notifications are allowed.
  *
@@ -48,7 +48,6 @@ export type PermissionActionResult =
 const MACOS_DEEP_LINKS: Record<OsPermissionId, string | null> = {
   accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
   screen_recording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
-  microphone: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
   automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   notifications: 'x-apple.systempreferences:com.apple.preference.notifications',
 };
@@ -83,10 +82,6 @@ export async function requestPermissionAccess(input: unknown): Promise<Permissio
     const plan = planPermissionRequest({
       id,
       platform: process.platform,
-      microphoneStatus:
-        id === 'microphone' && process.platform === 'darwin'
-          ? systemPreferences.getMediaAccessStatus('microphone')
-          : undefined,
       screenStatus:
         id === 'screen_recording' && process.platform === 'darwin'
           ? systemPreferences.getMediaAccessStatus('screen')
@@ -117,12 +112,6 @@ export async function requestPermissionAccess(input: unknown): Promise<Permissio
       }
       case 'open_settings':
         return openSystemPermissionPane(id);
-      case 'request_microphone': {
-        const granted = await systemPreferences.askForMediaAccess('microphone');
-        return granted
-          ? { ok: true }
-          : { ok: false, reason: 'denied' };
-      }
     }
   } catch (err) {
     return { ok: false, reason: 'failed', message: errorMessage(err) };

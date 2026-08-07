@@ -67,7 +67,7 @@ describe('permission and capability snapshot contracts', () => {
       deriveCapabilityReadiness({
         feature: { state: 'partial', source: 'runtime', reason: 'local smoke only' },
         configuration: presentConfig,
-        osPermissions: [requiredPermission('microphone', 'granted')],
+        osPermissions: [requiredPermission('accessibility', 'granted')],
         runtimeProbe: { state: 'not_run', source: 'runtime_probe' },
       }),
     ).toBe('not_configured');
@@ -140,7 +140,7 @@ describe('permission and capability snapshot contracts', () => {
       deriveCapabilityReadiness({
         feature: enabledFeature,
         configuration: presentConfig,
-        osPermissions: [requiredPermission('microphone', 'granted')],
+        osPermissions: [requiredPermission('accessibility', 'granted')],
         runtimeProbe: { state: 'degraded', source: 'runtime_probe', reason: 'probe failed' },
       }),
     ).toBe('degraded');
@@ -166,7 +166,7 @@ describe('permission and capability snapshot contracts', () => {
       deriveCapabilityReadiness({
         feature: { state: 'partial', source: 'runtime', reason: 'local smoke only' },
         configuration: presentConfig,
-        osPermissions: [requiredPermission('microphone', 'granted')],
+        osPermissions: [requiredPermission('accessibility', 'granted')],
         runtimeProbe: { state: 'degraded', source: 'runtime_probe', reason: 'probe failed' },
       }),
     ).toBe('degraded');

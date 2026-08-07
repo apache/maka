@@ -288,6 +288,13 @@ export class AutomationManager {
     automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
   }
 
+  /** Record a retry for a fire that was admitted while the definition was active. */
+  recordAdmittedFireDeferred(id: string): void {
+    const automation = this.automations.get(id);
+    if (!automation) return;
+    automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+  }
+
   /**
    * Skip a fire without executing — advance to next schedule time.
    * Used only when the scheduler's defer/retry window (~45min, mirroring the

@@ -20,7 +20,7 @@ import {
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
-import type { StatusTone } from './settings-status-badge';
+import type { StatusSemantic } from '@maka/ui';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
@@ -351,9 +351,12 @@ function DetailSection(props: { title: string; description: string; children: Re
 /** The list's three status tones against Banner's four; `neutral` has no
  * Banner equivalent, so it takes the quietest one rather than borrowing an
  * alarm color it does not mean. */
-function connectionIssueStatus(tone: StatusTone): 'error' | 'success' | 'info' {
-  if (tone === 'destructive') return 'error';
+function connectionIssueStatus(tone: StatusSemantic): 'error' | 'success' | 'info' {
+  if (tone === 'error') return 'error';
   if (tone === 'success') return 'success';
+  // Banner has a real `info` rung, unlike StatusDot — so this is the
+  // component's own quiet status, not the missing-rung workaround the dots
+  // had to fake with accent. Left as-is on that basis.
   return 'info';
 }
 

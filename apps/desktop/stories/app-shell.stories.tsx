@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
-import { projectRevisionLinkedSessionTree } from '@maka/core';
 import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import {
   ChatSurfaceLayout,
@@ -17,6 +16,7 @@ import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
+import { deriveSessionRail } from '../src/renderer/session-rail';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
@@ -315,11 +315,9 @@ function ComposedShell(props: {
   // showing lineage the production rules would not produce for its sessions.
   const branchBanner = deriveBranchBanner(active, sessions);
   const revisionNavigation = deriveSessionRevisionNavigation(sessions, active?.id);
-  // The sidebar shows logical conversations, not physical revisions: production
-  // collapses each family to one row before rendering. Passing the raw list
-  // would put three rows where the app shows one.
-  const sessionTree = projectRevisionLinkedSessionTree(sessions, active?.id);
-  const sidebarRows = sessionTree.roots;
+  // Same rail projection as app-shell: revision-tree roots only (linked
+  // children stay off the list). Stories include every fixture row.
+  const { sessions: sidebarRows } = deriveSessionRail(sessions, active?.id, () => true);
   const messages = props.chat?.messages ?? baseChatProps.messages;
   // ChatView projects the transcript and calls this back with the turns, the
   // same seam production uses (app-shell.tsx), so a story cannot show footer
@@ -366,6 +364,7 @@ function ComposedShell(props: {
         <AppShellWorkspaceTopActions
           workbarAvailable
           workbarCollapsed={false}
+          onOpenWorkbarLauncher={noop}
           onToggleWorkbar={noop}
         />
       </header>
@@ -389,7 +388,6 @@ function ComposedShell(props: {
             maxWidth={480}
             selection={{ section: 'sessions', filter: 'chats' }}
             sessions={sidebarRows}
-            childSessionsByParentId={sessionTree.childrenByParentId}
             activeId={active?.id}
             groups={viewMode === 'project' ? projectGroups : undefined}
             streamingSessionIds={streamingIds}
@@ -774,9 +772,6 @@ export const NativeConversation: Story = {
           },
         ],
         onRemoveAttachment: noop,
-        onToggleVoiceCapture: noop,
-        onToggleRealtimeVoice: noop,
-        voiceProviderLabel: '系统语音',
       }}
     />
   ),

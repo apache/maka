@@ -4,12 +4,6 @@
   background: transparent;
 }
 
-/* Astryx convergence: the orphaned voice hero vocabulary
-   (.settingsFeatureStatusPage / Hero / Icon / HeroHeading) is deleted — the
-   voice page moved onto the SettingsSection kit and nothing consumed it.
-   .settingsFeatureStatusList went the same way with the voice 边界 list, whose
-   three developer-facing bullets became one sentence on the status group. */
-
 .settingsBackButton {
   justify-content: flex-start;
   padding-inline: var(--space-2);

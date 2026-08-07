@@ -3,6 +3,11 @@ import type { ArtifactRecord, Task } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import { ToastProvider } from '@maka/ui';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
+import {
+  createSessionWorkbarPanelsState,
+  createSessionWorkbarTabsState,
+  openStaticSessionWorkbarTab,
+} from '../src/renderer/session-workbar-tabs';
 import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -416,16 +421,29 @@ function bridge(options: {
 
 /** The column AppShell hands the workbar, at the width it restores by default. */
 function Workbar(props: { tab: 'tasks' | 'files' | 'inspector' }) {
+  const tabsState = openStaticSessionWorkbarTab(
+    createSessionWorkbarTabsState(),
+    props.tab,
+  );
   return (
     <div style={{ height: 720, display: 'flex', justifyContent: 'flex-end' }}>
       <ToastProvider>
         <SessionWorkbar
           sessionId={SESSION_ID}
-          browserLive={false}
           hidden={false}
-          onDismiss={noop}
-          activeTab={props.tab}
-          onActiveTabChange={noop}
+          onDismissPanel={noop}
+          panelsState={createSessionWorkbarPanelsState(tabsState)}
+          rightCollapsed={false}
+          bottomOpen={false}
+          onActivateTab={noop}
+          onCloseTab={noop}
+          onCloseTabs={noop}
+          onReorderTab={noop}
+          onMoveTab={noop}
+          onMoveTabToPanel={noop}
+          onPinTab={noop}
+          onOpenLauncher={noop}
+          onRequestOpenTab={noop}
         />
       </ToastProvider>
     </div>

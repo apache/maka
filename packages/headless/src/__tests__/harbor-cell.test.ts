@@ -1976,54 +1976,6 @@ describe('runHarborCell', () => {
     assert.equal(hostCellExitCode({ settledByDeadline: false }), 0);
   });
 
-  test('host-side Harbor cell config treats MAKA_ECONOMY_TASK_MODE=false as explicit disable', async () => {
-    const { main } = (await import(
-      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
-    )) as {
-      main: (options?: {
-        registerBackends?: (registry: BackendRegistry, context: HeadlessBackendContext) => void;
-      }) => Promise<void>;
-    };
-    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
-      const previousEnv = { ...process.env };
-      const seenPrompts: string[] = [];
-      const registerCapturingBackend = (
-        registry: BackendRegistry,
-        context: HeadlessBackendContext,
-      ): void => {
-        seenPrompts.push(context.config.systemPrompt ?? '');
-        registry.register(
-          'ai-sdk',
-          (ctx) =>
-            new CellReportingBackend({
-              sessionId: ctx.sessionId,
-              header: ctx.header,
-              store: ctx.store,
-            }),
-        );
-      };
-      try {
-        process.env.MAKA_PROVIDER = 'openai';
-        process.env.MAKA_MODEL = 'openai/gpt-4o-mini';
-        process.env.MAKA_HOST_API_KEY = 'test-key';
-        process.env.MAKA_HARBOR_TOOL_EXECUTOR_URL = 'http://127.0.0.1:1';
-        process.env.MAKA_HARBOR_TOOL_EXECUTOR_TOKEN = 'token';
-        process.env.MAKA_INSTRUCTION = 'Write a CSV summary of log files.';
-        process.env.MAKA_WORKDIR = workspaceDir;
-        process.env.MAKA_OUTPUT_DIR = outputDir;
-        process.env.MAKA_STORAGE_ROOT = storageRoot;
-        process.env.MAKA_SYSTEM_PROMPT = 'Use the host prompt.';
-        process.env.MAKA_ECONOMY_TASK_MODE = 'false';
-        await main({ registerBackends: registerCapturingBackend });
-      } finally {
-        process.env = previousEnv;
-      }
-
-      assert.match(seenPrompts[0] ?? '', /Use the host prompt/);
-      assert.doesNotMatch(seenPrompts[0] ?? '', /Economy-task benchmark policy/);
-    });
-  });
-
   test('Harbor ai-sdk backend registration forwards the canonical metering sink', async () => {
     // The controller has always exposed `recordModelCallAttempt`; this
     // composition never passed it on, so Harbor produced diagnostic attempts

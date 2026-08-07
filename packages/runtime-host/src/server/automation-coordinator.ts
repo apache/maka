@@ -169,6 +169,8 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         admitFire: (automationId, expectedSchedule) =>
           this.#admitFire(automationId, expectedSchedule),
         assertPendingFire: (fire) => this.#assertPendingFire(fire),
+        recordFireDeferred: (fire) => this.#recordFireDeferred(fire),
+        failFire: (fire, error) => this.#failFire(fire, error),
         markFireRunning: (fire) => this.#markFireRunning(fire),
         settleFire: (fire, run) => this.#settleFire(fire, run),
         residencyState: () => ({
@@ -737,6 +739,37 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (!current || current.id !== fire.id) {
         throw new AutomationAuthorityInvariantError('Pending Automation fire disappeared');
       }
+    });
+  }
+
+  async #recordFireDeferred(fire: AutomationPendingFire): Promise<void> {
+    await this.#exclusive(async () => {
+      const current = this.#pendingFires.get(fire.automationId);
+      if (!current || current.id !== fire.id) return;
+      const before = this.#snapshot();
+      this.#manager.recordAdmittedFireDeferred(fire.automationId);
+      this.#pendingFires.set(fire.automationId, {
+        ...current,
+        updatedAt: Math.max(current.updatedAt, this.#now()),
+      });
+      await this.#commitOrRestore(before);
+    });
+  }
+
+  async #failFire(fire: AutomationPendingFire, error: string): Promise<void> {
+    await this.#exclusive(async () => {
+      const current = this.#pendingFires.get(fire.automationId);
+      if (!current || current.id !== fire.id) return;
+      const before = this.#snapshot();
+      const automation = this.#manager.get(fire.automationId);
+      if (!automation) {
+        throw new AutomationAuthorityInvariantError(
+          'Pending Automation fire has no canonical definition',
+        );
+      }
+      settleAutomationAttempt(automation, { status: 'failed', error }, this.#now());
+      this.#pendingFires.delete(fire.automationId);
+      await this.#commitOrRestore(before);
     });
   }
 

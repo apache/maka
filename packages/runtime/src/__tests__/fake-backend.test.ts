@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
 import {
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_ERROR_PROMPT_PREFIX,
   FAKE_MERMAID_HOSTILE_PROMPT,
   FAKE_MERMAID_PROMPT,
   FakeBackend,
@@ -13,6 +14,35 @@ import {
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import type { SessionStore } from '../session-manager.js';
+
+test('deterministic error fixture emits a classified error and failed completion', async () => {
+  const backend = new FakeBackend({
+    sessionId: 'session-1',
+    header: { model: 'fake-model' } as SessionHeader,
+    store: {} as SessionStore,
+    appendMessage: async () => {},
+  });
+  const events: SessionEvent[] = [];
+
+  for await (const event of backend.send({
+    turnId: 'turn-error',
+    text: `${FAKE_ERROR_PROMPT_PREFIX}network`,
+    context: [],
+  })) {
+    events.push(event);
+  }
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['error', 'complete'],
+  );
+  const error = events[0];
+  assert.equal(error?.type, 'error');
+  if (error?.type !== 'error') assert.fail('expected classified fake error');
+  assert.equal(error.reason, 'network');
+  assert.equal(error.recoverable, false);
+  assert.equal(events[1]?.type === 'complete' ? events[1].stopReason : undefined, 'error');
+});
 
 test('text deltas preserve the exact completed response, including Markdown line breaks', async () => {
   const backend = new FakeBackend({

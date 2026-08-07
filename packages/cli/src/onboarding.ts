@@ -1,5 +1,4 @@
 import {
-  CATALOG_PROVIDER_TYPES,
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   deriveConnectionSlug,
@@ -11,44 +10,17 @@ import {
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type { ConnectionStore, CredentialStore } from '@maka/storage';
-import type { ModelChoice } from './connection-target.js';
 import { listReadyModelChoices } from './connection-target.js';
-
-export interface OnboardableProvider {
-  providerType: ProviderType;
-  label: string;
-  authKind: 'api_key' | 'optional_api_key';
-  /** True when the catalog ships no default baseUrl, so the wizard must prompt
-   *  for an endpoint (self-hosted / compatible gateways). */
-  requiresBaseUrl: boolean;
-  fallbackModels: readonly string[];
-}
-
-/** Host-supplied onboarding surface for the three-step `/setup` wizard. The
- *  wizard is UI-only: it calls `listProviders` to open, `verify` to check a
- *  supplied-or-stored key and discover models without persisting, and `save` to
- *  persist the curated enabled-model set + cache and refresh the running TUI's
- *  ready model choices. The host owns the connection/credential stores; the
- *  secret never crosses back into the wizard. */
-export interface MakaOnboardingSurface {
-  listProviders: () => Promise<OnboardingProviderEntry[]>;
-  verify: (input: OnboardingVerifyInput) => Promise<OnboardingVerifyResult>;
-  save: (input: OnboardingSaveInput) => Promise<OnboardingSaveResult>;
-}
-
-/** Wizard-facing verify input: a provider plus an optional key (blank reuses a
- *  stored secret for an existing connection). */
-export type OnboardingVerifyInput = Pick<VerifyApiKeyConnectionInput, 'providerType' | 'apiKey'>;
-export type OnboardingVerifyResult = VerifyApiKeyConnectionResult;
-
-/** Wizard-facing save input: the verified provider, an optional key (blank
- *  keeps the stored secret for an existing connection), the curated enabled
- *  set, and the discovered models to cache. */
-export type OnboardingSaveInput = Pick<
-  SaveApiKeyConnectionInput,
-  'providerType' | 'apiKey' | 'enabledModelIds' | 'models'
->;
-export type OnboardingSaveResult = SaveApiKeyConnectionResult;
+import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
+import type {
+  MakaOnboardingSurface,
+  ModelChoice,
+  OnboardingProviderEntry,
+  OnboardingSaveInput,
+  OnboardingSaveResult,
+  OnboardingVerifyInput,
+  OnboardingVerifyResult,
+} from './pi-tui-contracts.js';
 
 /** Build the onboarding surface the TUI wizard calls, owning the connection and
  *  credential stores plus the model probe so the first-run host (cli.ts) and
@@ -88,37 +60,6 @@ export function createApiKeyOnboardingSurface(deps: {
   };
 }
 
-/** Catalog providers that can be onboarded with an API key, in catalog order.
- *  The TUI wizard's first step picks from this list. */
-export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
-  return (
-    CATALOG_PROVIDER_TYPES.filter((providerType) => providerAuthSupportsApiKey(providerType))
-      .map((providerType) => {
-        const def = PROVIDER_DEFAULTS[providerType];
-        return {
-          providerType,
-          label: def.label,
-          authKind: def.authKind as 'api_key' | 'optional_api_key',
-          requiresBaseUrl: !def.baseUrl,
-          fallbackModels: def.fallbackModels,
-        };
-      })
-      // Phase 1 collects only an API key; providers without a default baseUrl
-      // cannot be completed by this wizard and would wedge a fresh install, so
-      // exclude them until the base-URL prompt lands (phase 2).
-      .filter((provider) => !provider.requiresBaseUrl)
-  );
-}
-
-/** A catalog provider annotated with whether a connection already exists for
- *  it, plus that connection's curated enabled model ids. The wizard's provider
- *  search marks existing providers `已设置` and pre-selects their enabled set in
- *  the model step; new connections start with no models selected. */
-export interface OnboardingProviderEntry extends OnboardableProvider {
-  hasConnection: boolean;
-  enabledModelIds: readonly string[];
-}
-
 /** Catalog API-key providers (phase 1) annotated with the host's existing
  *  connection state. The wizard calls this when it opens so `已设置` and the
  *  preserved enabled set reflect live storage, not a startup snapshot. */
@@ -138,8 +79,7 @@ export async function listOnboardingProviders(input: {
   });
 }
 
-export interface VerifyApiKeyConnectionInput {
-  providerType: ProviderType;
+export interface VerifyApiKeyConnectionInput extends OnboardingVerifyInput {
   /** Supplied key. Blank for an existing connection reuses the stored secret;
    *  blank for a new required-key connection is rejected. Never returned to the
    *   wizard — verify is host-owned. */
@@ -149,9 +89,7 @@ export interface VerifyApiKeyConnectionInput {
   fetchModels: (connection: LlmConnection, apiKey: string) => Promise<ModelInfo[]>;
 }
 
-export type VerifyApiKeyConnectionResult =
-  | { kind: 'ok'; models: ModelInfo[] }
-  | { kind: 'error'; text: string };
+export type VerifyApiKeyConnectionResult = OnboardingVerifyResult;
 
 /** Probe a provider with a supplied or stored secret without persisting: the
  *  wizard's key step verifies the key works and discovers models, then defers
@@ -218,8 +156,7 @@ function transientOnboardingConnection(providerType: ProviderType): LlmConnectio
   };
 }
 
-export interface SaveApiKeyConnectionInput {
-  providerType: ProviderType;
+export interface SaveApiKeyConnectionInput extends OnboardingSaveInput {
   /** Supplied key. Blank for an existing connection leaves the stored secret
    *   untouched; a new connection must supply one (verify already enforced it). */
   apiKey?: string;
@@ -236,9 +173,7 @@ export interface SaveApiKeyConnectionInput {
   fetchModelChoices: () => Promise<ModelChoice[]>;
 }
 
-export type SaveApiKeyConnectionResult =
-  | { kind: 'ok'; modelChoices: ModelChoice[] }
-  | { kind: 'error'; text: string };
+export type SaveApiKeyConnectionResult = OnboardingSaveResult;
 
 /** Persist the verified connection with the curated enabled-model set, caching
  *  discovered models and normalizing the required compatibility `defaultModel`

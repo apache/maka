@@ -1,3 +1,4 @@
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 import type { OnboardingMilestone } from './onboarding.js';
 import { sanitizeOnboardingMilestones } from './onboarding.js';
 import type { WebSearchSettingsPatch, WebSearchSettings } from './web-search.js';
@@ -20,8 +21,8 @@ import {
   isUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
-import { defaultVoiceSettings, normalizeVoiceSettings, type VoiceSettings } from './voice.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
+import { isPetPackId } from './pet.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -54,7 +55,6 @@ export {
  * Final mapping:
  *   - `network`                       → `general`
  *   - `personalization` + `theme`     → `appearance`
- *   - `voice` is an independent section
  *   - `daily-review` is its own section again
  *   - `memory` is its own section again
  *
@@ -63,12 +63,12 @@ export {
 export const SETTINGS_SECTIONS = [
   'general',
   'appearance',
+  'projects',
   'memory',
   'daily-review',
   'models',
   'subagents',
   'usage',
-  'voice',
   'bot-chat',
   'search',
   'data',
@@ -186,6 +186,8 @@ export interface PersonalizationSettings {
    * stays for fixture tests. Defaults to `'auto'`.
    */
   uiLocale: UiLocalePreference;
+  /** User-selected custom PetPack. `null` keeps the pet surface disabled. */
+  selectedPetId: string | null;
 }
 
 /**
@@ -201,6 +203,23 @@ export interface OnboardingSettings {
 
 export interface WorkspaceInstructionsSettings {
   enabled: boolean;
+}
+
+/**
+ * Which project a new conversation opens in.
+ *
+ * `defaultProjectId` absent means "no preference", and the app keeps its
+ * existing behaviour of reopening whatever project was used last. Set, it wins
+ * every time — a default that only applied when nothing else was remembered
+ * would be a default in name only, and the composer picker is what overrides
+ * it for a single conversation.
+ *
+ * A project id rather than a path: the catalog owns identity (a project can be
+ * relinked to a new location and keep its id), so storing the path would make
+ * this preference silently point at the wrong project after a move.
+ */
+export interface ProjectPreferencesSettings {
+  defaultProjectId?: string;
 }
 
 export interface PrivacySettings {
@@ -233,6 +252,16 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
 /** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  /**
+   * Seeds new sessions' thinking level. `undefined` means "whatever the model
+   * does on its own" — the absence of a preference, not a level.
+   *
+   * A chosen level is a wish, not a guarantee: models expose different ladders,
+   * so one that does not offer the chosen rung falls back to its own default
+   * for that session rather than being forced to the nearest neighbour. The
+   * composer already resolves it that way for the per-session picker.
+   */
+  thinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -278,9 +307,9 @@ export interface AppSettings {
   workspaceInstructions: WorkspaceInstructionsSettings;
   privacy: PrivacySettings;
   chatDefaults: ChatDefaultsSettings;
+  projects: ProjectPreferencesSettings;
   notifications: NotificationSettings;
   system: SystemSettings;
-  voice: VoiceSettings;
   subagents: SubagentSettings;
 }
 
@@ -380,12 +409,9 @@ export type UpdateAppSettingsInput = Partial<{
   workspaceInstructions: Partial<WorkspaceInstructionsSettings>;
   privacy: Partial<PrivacySettings>;
   chatDefaults: Partial<ChatDefaultsSettings>;
+  projects: Partial<ProjectPreferencesSettings>;
   notifications: Partial<NotificationSettings>;
   system: Partial<SystemSettings>;
-  voice: Partial<{
-    recognition: Partial<VoiceSettings['recognition']>;
-    realtime: Partial<VoiceSettings['realtime']>;
-  }>;
   webSearch: WebSearchSettingsPatch;
   subagents: SubagentSettings;
 }>;
@@ -445,6 +471,7 @@ export function createDefaultSettings(): AppSettings {
       displayName: '',
       assistantTone: '',
       uiLocale: 'auto',
+      selectedPetId: null,
     },
     onboarding: {
       milestones: [],
@@ -455,6 +482,7 @@ export function createDefaultSettings(): AppSettings {
       enabled: true,
     },
     privacy: defaultPrivacySettings(),
+    projects: defaultProjectPreferencesSettings(),
     chatDefaults: defaultChatDefaultsSettings(),
     notifications: {
       runComplete: true,
@@ -464,7 +492,6 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
-    voice: defaultVoiceSettings(),
     subagents: { presets: [] },
   };
 }
@@ -492,6 +519,11 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
     personalization: {
       ...current.personalization,
       ...(patch.personalization ?? {}),
+      selectedPetId: normalizeSelectedPetId(
+        patch.personalization?.selectedPetId === undefined
+          ? current.personalization.selectedPetId
+          : patch.personalization.selectedPetId,
+      ),
     },
     onboarding: {
       ...current.onboarding,
@@ -514,6 +546,9 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
     privacy: patch.privacy
       ? normalizePrivacySettings({ ...current.privacy, ...patch.privacy })
       : current.privacy,
+    projects: patch.projects
+      ? normalizeProjectPreferencesSettings({ ...current.projects, ...patch.projects })
+      : current.projects,
     chatDefaults: patch.chatDefaults
       ? normalizeChatDefaultsSettings({
           ...current.chatDefaults,
@@ -528,16 +563,6 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
-    voice: normalizeVoiceSettings({
-      recognition: {
-        ...current.voice.recognition,
-        ...(patch.voice?.recognition ?? {}),
-      },
-      realtime: {
-        ...current.voice.realtime,
-        ...(patch.voice?.realtime ?? {}),
-      },
-    }),
     webSearch: mergeWebSearchSettings(current.webSearch, patch.webSearch),
     subagents:
       patch.subagents === undefined
@@ -561,9 +586,9 @@ export function normalizeSettings(input: unknown): AppSettings {
     workspaceInstructions: value.workspaceInstructions,
     privacy: value.privacy,
     chatDefaults: value.chatDefaults,
+    projects: value.projects,
     notifications: value.notifications,
     system: value.system,
-    voice: value.voice,
     subagents: value.subagents,
   });
   // PR110b: milestones bypass the generic patch surface so we can
@@ -611,6 +636,7 @@ export function normalizeSettings(input: unknown): AppSettings {
       uiLocale: isUiLocalePreference(base.personalization.uiLocale)
         ? base.personalization.uiLocale
         : 'auto',
+      selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),
     onboarding: {
@@ -620,6 +646,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     localMemory: normalizeLocalMemorySettings(base.localMemory),
     workspaceInstructions: normalizeWorkspaceInstructionsSettings(base.workspaceInstructions),
     privacy: normalizePrivacySettings(base.privacy),
+    projects: normalizeProjectPreferencesSettings(base.projects),
     chatDefaults: normalizeChatDefaultsSettings(base.chatDefaults),
     // Fail-closed boolean coercion: mergeSettings spreads the raw user
     // value, so a non-boolean `runComplete` (from a hand-edited or
@@ -640,9 +667,12 @@ export function normalizeSettings(input: unknown): AppSettings {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
     },
-    voice: normalizeVoiceSettings(base.voice),
     subagents: normalizeSubagentSettings(base.subagents),
   };
+}
+
+function normalizeSelectedPetId(value: unknown): string | null {
+  return isPetPackId(value) ? value : null;
 }
 
 function normalizeWorkspaceInstructionsSettings(
@@ -657,6 +687,10 @@ function defaultPrivacySettings(): PrivacySettings {
   return { incognitoActive: false };
 }
 
+function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
+  return {};
+}
+
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
   return { permissionMode: 'ask' };
 }
@@ -668,6 +702,10 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
+    // Same fail-closed reasoning as the mode below: a garbage persisted level
+    // drops to "no preference" (the model's own default) rather than reaching
+    // session creation as a rung no picker recognizes.
+    thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
     permissionMode:
       (settings.permissionMode as unknown) === 'execute'
         ? 'ask'
@@ -681,4 +719,17 @@ function normalizePrivacySettings(settings: PrivacySettings): PrivacySettings {
   return {
     incognitoActive: settings.incognitoActive === true,
   };
+}
+
+// A blank or non-string id is dropped rather than carried: it cannot name a
+// project, and letting it through would make "has a default" true while
+// nothing resolves. Whether the id still names a LIVE project is decided at
+// read time by the catalog, not here -- a project can be archived or its folder
+// removed long after this value was written, so normalization is the wrong
+// place to answer that.
+function normalizeProjectPreferencesSettings(
+  settings: ProjectPreferencesSettings | undefined,
+): ProjectPreferencesSettings {
+  const id = settings?.defaultProjectId;
+  return typeof id === 'string' && id.trim() !== '' ? { defaultProjectId: id } : {};
 }

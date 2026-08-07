@@ -4,13 +4,21 @@ import { test, expect } from './fixtures';
 // session" are pinned in chat-shell-layout-contract (CSS + chrome actions source).
 test('session tools share one user-controlled workbar', async ({ sessionWorkbarWindow: page }) => {
   const workbar = page.getByRole('complementary', { name: '会话工作栏' });
-  const tabs = workbar.getByRole('navigation', { name: '会话工作栏栏目' });
+  const rightWorkbar = page.locator(
+    '[data-maka-contract="session-workbar-right"]',
+  );
+  const tabs = workbar.getByRole('tablist', { name: '会话工作栏标签' });
 
-  await expect(tabs.getByRole('button', { name: /任务/ })).toHaveAttribute('aria-current', 'page');
-  await expect(tabs.getByRole('button', { name: /浏览器/ })).toHaveCount(0);
-  await expect(tabs.getByRole('button', { name: /文件/ })).toBeEnabled();
+  await expect(tabs.getByRole('tab', { name: /任务/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs.getByRole('tab', { name: /浏览器/ })).toHaveCount(0);
+  const launcher = workbar.getByRole('button', { name: '打开工作栏标签' });
+  await launcher.click();
+  await expect(page.getByRole('menuitem', { name: '文件' })).toBeEnabled();
+  await page.keyboard.press('Escape');
   await expect(
-    workbar.getByRole('tree', { name: '活跃会话任务' }).getByText('完成会话任务台账升级'),
+    page
+      .getByLabel('活跃会话任务')
+      .getByText(/完成会话任务台账升级/),
   ).toBeVisible();
 
   // Sizing is config handed to Astryx Resizable (#1861), and each part fails
@@ -95,8 +103,8 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
 
   // Keyboard-driven disclosure, observed through what the user can read: a
   // collapsed section hides its rows, and Enter on the trigger reveals them.
-  const recent = workbar.getByRole('button', { name: /最近结束/ });
-  const recentRow = workbar.getByText('验证 Goal 一次提醒门禁');
+  const recent = page.getByRole('button', { name: /最近结束/ });
+  const recentRow = page.getByText('验证 Goal 一次提醒门禁');
   await expect(recent).toHaveAttribute('aria-expanded', 'false');
   await expect(recentRow).toBeHidden();
 
@@ -115,31 +123,23 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expect(collapse).toHaveAttribute('aria-expanded', 'true');
   await collapse.click();
 
-  // Collapsing animates, which is only possible because ONE box survives it.
-  // The column itself does not — it subscribes to task changes and can own a
-  // live embedded browser — so the box stays behind at zero width and the column
-  // is torn down when the width transition ends. Each half fails silently: lose
-  // the box and the panel snaps shut, leave the column mounted and a closed
-  // panel keeps working. `toBeHidden` alone would pass for both, so the count is
-  // what actually holds the teardown.
-  // The frames themselves are not observable here — the E2E fixture caps every
-  // transition to 0.01ms on purpose — so what animates is held by the CSS
-  // contract in session-workbar-layout.test.ts, and this covers the end state.
-  const motion = page.locator('.maka-workbar-motion');
-  await expect(workbar).toHaveCount(0);
-  await expect(motion).toHaveCount(1);
-  await expect(motion).toHaveCSS('width', '0px');
+  // Right and bottom panel topology is persistent now: collapse hides the
+  // right grid plate without destroying its tabs, drafts, or embedded views.
+  await expect(rightWorkbar).toHaveCount(1);
+  await expect(rightWorkbar).toBeHidden();
+  await expect(rightWorkbar).toHaveAttribute('data-collapsed', 'true');
   await expect(page.locator('.maka-workbar-resize-handle')).toHaveCount(0);
 
   const expand = page.getByRole('button', { name: '展开会话工作栏' });
   await expect(expand).toHaveAttribute('aria-expanded', 'false');
   expect(await expand.boundingBox()).toMatchObject({ x: openBox.x, y: openBox.y });
   await expand.click();
-  await expect(workbar).toBeVisible();
+  await expect(rightWorkbar).toBeVisible();
   // The width the drag above landed on, restored rather than reset.
-  await expect(motion).toHaveCSS('width', '511px');
-  await tabs.getByRole('button', { name: /文件/ }).click();
-  await expect(workbar.getByText('暂无生成文件')).toBeVisible();
+  await expect(rightWorkbar).toHaveCSS('width', '511px');
+  await rightWorkbar.getByRole('button', { name: '打开工作栏标签' }).click();
+  await page.getByRole('menuitem', { name: '文件' }).click();
+  await expect(page.getByText('暂无生成文件')).toBeVisible();
 
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
   await page
@@ -150,55 +150,21 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
 });
 
-// The journey above runs under the fixture's global 0.01ms transition cap, so
-// it can only ever see settled states. That cap is deliberate — every other
-// assertion in this file would be timing-dependent without it — but it also
-// means nothing in the suite watches the collapse actually happen, and the one
-// defect that lived here was invisible for exactly that reason: the column was
-// torn down 5ms into the slide and the 280ms animation ran on an empty box,
-// which no settled-state assertion can distinguish from a correct collapse.
-//
-// So this test lifts the cap for itself and watches the frames. It collapses
-// TWICE, because the first collapse was the one that worked.
-test('the column stays mounted for the whole slide, every time', async ({
+test('the right workbar stays mounted across repeated collapse', async ({
   sessionWorkbarWindow: page,
 }) => {
-  await expect(page.getByRole('complementary', { name: '会话工作栏' })).toBeVisible();
-  await page.evaluate(() => document.documentElement.removeAttribute('data-maka-e2e-fixture'));
-
-  const motion = page.locator('.maka-workbar-motion');
+  const workbar = page.locator('[data-maka-contract="session-workbar-right"]');
+  await expect(workbar).toBeVisible();
   const collapseOnce = async () => {
-    // Sample the box's width and whether the column is still under it, on every
-    // frame, from the click until the box reaches zero.
-    const frames = await page.evaluate(async () => {
-      const box = document.querySelector('.maka-workbar-motion') as HTMLElement;
-      const seen: { width: number; mounted: boolean }[] = [];
-      (document.querySelector('button[aria-label="收起会话工作栏"]') as HTMLElement).click();
-      const started = performance.now();
-      while (performance.now() - started < 600) {
-        seen.push({
-          width: Number.parseFloat(getComputedStyle(box).width),
-          mounted: document.querySelector('.maka-session-workbar') !== null,
-        });
-        if (seen.length > 1 && seen.at(-1)!.width === 0) break;
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-      return seen;
-    });
-    // It really animated — a snap would give two samples, not a spread.
-    const widths = new Set(frames.map((frame) => frame.width));
-    expect(widths.size).toBeGreaterThan(8);
-    // And the column was under the box the whole way down, not just at the top.
-    const carried = frames.filter((frame) => frame.width > 0);
-    expect(carried.every((frame) => frame.mounted)).toBe(true);
-    // Then it goes, once the box is shut.
-    await expect(page.getByRole('complementary', { name: '会话工作栏' })).toHaveCount(0);
-    await expect(motion).toHaveCSS('width', '0px');
+    await page.getByRole('button', { name: '收起会话工作栏' }).click();
+    await expect(workbar).toHaveCount(1);
+    await expect(workbar).toBeHidden();
+    await expect(workbar).toHaveAttribute('data-collapsed', 'true');
   };
 
   await collapseOnce();
   await page.getByRole('button', { name: '展开会话工作栏' }).click();
-  await expect(page.getByRole('complementary', { name: '会话工作栏' })).toBeVisible();
-  await expect(motion).toHaveCSS('width', '480px');
+  await expect(workbar).toBeVisible();
+  await expect(workbar).toHaveCSS('width', '480px');
   await collapseOnce();
 });

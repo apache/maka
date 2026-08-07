@@ -61,6 +61,7 @@ export { previewVariants } from './primitives/chat.js';
 // second answer to "what colour is this line". `apps/desktop` had one, and the
 // two had already diverged on `diff --git` / `index` headers.
 export { diffLineKind } from './tool-activity/tool-result-preview.js';
+export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { formatTurnDuration } from './chat-display-helpers.js';
 export * from './primitives/stat-tile.js';
 export * from './primitives/section-header.js';
@@ -72,7 +73,7 @@ export * from './primitives/section-header.js';
 export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // PageHeader — the shared page-header shell (convergence round 3). One shell
 // for the module hero (as='h2': 技能 / 定时任务) and the settings intros
-// (as='h3': permission / health / voice / about). Wrapper class + per-slot
+// (as='h3': permission / health / about). Wrapper class + per-slot
 // CSS stay at the call site; the primitive converges STRUCTURE only.
 export { PageHeader } from './primitives/page-header.js';
 export type { PageHeaderProps } from './primitives/page-header.js';
@@ -80,6 +81,9 @@ export type { PageHeaderProps } from './primitives/page-header.js';
 // incident-console archetype). Born in this package for 定时任务 / 每日回顾;
 // exported so the renderer-owned MCP page renders the same surface.
 export { ModulePage, type ModulePageProps } from './primitives/module-page.js';
+// One vocabulary for what a state MEANS, and one place deciding what each
+// word looks like — see status-vocabulary.ts for why there is no `info`.
+export { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 // One tab stop per module-page row list; the MCP page (renderer-owned) uses
 // the same hook the skills and plan-reminder panels do.
 export { useRovingRowFocus, type RovingRowFocusProps } from './use-roving-row-focus.js';

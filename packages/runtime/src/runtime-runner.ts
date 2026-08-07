@@ -233,7 +233,6 @@ export class RuntimeRunner {
       }
       if (
         request.text.length > 0 ||
-        request.voiceAudio !== undefined ||
         request.attachments !== undefined ||
         request.quotes !== undefined
       ) {
@@ -584,9 +583,6 @@ function snapshotInvocationRequest(
     turnId: request.turnId,
     text: request.text,
     source: request.source,
-    ...(request.voiceAudio !== undefined
-      ? { voiceAudio: snapshotVoiceAudio(request.voiceAudio) }
-      : {}),
     ...(request.orchestration !== undefined
       ? { orchestration: cloneAndFreezeSnapshotValue(request.orchestration) }
       : {}),
@@ -622,15 +618,6 @@ function snapshotInvocationRequest(
     ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
   };
   return Object.freeze(snapshot);
-}
-
-function snapshotVoiceAudio(
-  audio: NonNullable<InvocationRequest['voiceAudio']>,
-): NonNullable<InvocationRequest['voiceAudio']> {
-  return Object.freeze({
-    ...audio,
-    bytes: Uint8Array.from(audio.bytes),
-  });
 }
 
 function cloneAndFreezeSnapshotValue<T>(value: T): T {
@@ -794,7 +781,6 @@ function buildFlowInput(request: InvocationRequest): FlowInput {
     ...(request.orchestration !== undefined ? { orchestration: request.orchestration } : {}),
     ...(request.toolMode !== undefined ? { toolMode: request.toolMode } : {}),
     text: request.text,
-    ...(request.voiceAudio !== undefined ? { voiceAudio: request.voiceAudio } : {}),
     context: request.context ?? [],
     ...(request.runtimeContext !== undefined ? { runtimeContext: request.runtimeContext } : {}),
     ...(continuation !== undefined ? { continuation } : {}),

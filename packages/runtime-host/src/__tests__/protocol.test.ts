@@ -112,6 +112,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.read_marker.set',
       'session.recap.generate',
       'session.remove',
+      'session.revision.abandon',
       'session.revision.create',
       'session.transcript.query',
       'skill.catalog.mutate',
@@ -129,13 +130,6 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.start',
       'turn.stop',
       'usage.query',
-      'voice.capture.begin',
-      'voice.capture.finish',
-      'voice.operation.cancel',
-      'voice.payload.append',
-      'voice.realtime.begin',
-      'voice.realtime.close',
-      'voice.realtime.finish',
       'web-search.execute',
     ]);
     const errors = [

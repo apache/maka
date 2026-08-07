@@ -395,61 +395,6 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
   });
 });
 describe('AiSdkBackend model history', () => {
-  test('preserves operation-owned audio through the durable request path and redacts its capture', async () => {
-    const model = completionModel();
-    const captures: ProviderRequestCaptureRecord[] = [];
-    const durable = durableTurnHarness('turn-voice', 'follow the attached audio');
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      recordProviderRequestCapture: async (capture) => {
-        captures.push(capture);
-        return { artifactId: 'artifact-voice-capture' };
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drainDurably(
-      backend.send(
-        durable.input({
-          voiceAudio: {
-            bytes: new Uint8Array([222, 173, 190, 239]),
-            mediaType: 'audio/wav',
-            format: 'wav',
-            durationMs: 500,
-            sampleRate: 16_000,
-            channels: 1,
-            retention: 'operation_memory',
-          },
-        }),
-      ),
-      durable,
-    );
-
-    const providerPrompt = model.doStreamCalls[0]?.prompt ?? [];
-    const currentUser = providerPrompt.find((message) => message.role === 'user');
-    assert.ok(currentUser && Array.isArray(currentUser.content));
-    const audioFile = currentUser.content.find(
-      (part) => part.type === 'file' && part.filename === 'voice-input.wav',
-    );
-    assert.ok(audioFile, 'the durable first provider call must retain native audio');
-    assert.equal(audioFile.type, 'file');
-    if (audioFile.type !== 'file') return;
-    assert.equal(audioFile.mediaType, 'audio/wav');
-
-    assert.equal(captures.length, 1);
-    assert.match(captures[0]!.serializedRequest, /\[redacted:operation-memory-audio\]/);
-    assert.doesNotMatch(captures[0]!.serializedRequest, /3q2\+7w==|"222"/);
-  });
-
   test('exposes one active sandbox snapshot to the model and durable run trace', async () => {
     const model = completionModel();
     const traces: RunTraceEvent[] = [];

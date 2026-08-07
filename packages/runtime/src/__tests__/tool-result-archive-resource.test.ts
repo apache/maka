@@ -19,9 +19,18 @@ describe('tool-result archive resources', () => {
       originalBytes: Buffer.byteLength(body),
     };
     const ref = buildToolResultArchiveResourceRef(identity);
+    const legacyRef = `maka://archive/${identity.artifactId}?sha256=${identity.bodySha256}&bytes=${identity.originalBytes}`;
 
     assert.match(ref, /^maka:\/\/archive\//);
+    assert.doesNotMatch(ref, /[?&]/);
     assert.deepEqual(parseToolResultArchiveResourceRef(ref), identity);
+    assert.deepEqual(parseToolResultArchiveResourceRef(legacyRef), identity);
+    assert.equal(
+      parseToolResultArchiveResourceRef(
+        `maka://archive/${identity.artifactId}?sha256=${identity.bodySha256}`,
+      ),
+      null,
+    );
     assert.equal(parseToolResultArchiveResourceRef('tool-result-archive-abc'), null);
     assert.equal(parseToolResultArchiveResourceRef('maka://runtime/background-tasks/1'), null);
     assert.equal(parseToolResultArchiveResourceRef(`${ref}&unexpected=true`), null);

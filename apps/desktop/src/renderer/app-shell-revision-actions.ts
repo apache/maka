@@ -7,6 +7,14 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
+import {
+  acquireSessionCopyAttempt,
+  abandonSessionCopyAttempt,
+  completeSessionCopyAttempt,
+  startSessionCopyAttempt,
+  type SessionCopyAttemptPhase,
+  type SessionCopyAttemptKey,
+} from './session-copy-attempt.js';
 
 type RefBox<T> = { current: T };
 type MessageListUpdater = (
@@ -22,6 +30,8 @@ type ToastApi = {
 export type TurnRevisionDraft = {
   sourceSessionId: string;
   sourceTurnId: string;
+  copyId: string;
+  copyPhase: SessionCopyAttemptPhase;
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
   originalText: string;
@@ -81,6 +91,14 @@ export function createAppShellRevisionActions(deps: {
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
 
+  function revisionCopyKey(sourceSessionId: string, sourceTurnId: string): SessionCopyAttemptKey {
+    return {
+      scope: `edit-and-resend:${sourceTurnId}`,
+      kind: 'revision',
+      sourceSessionId,
+    };
+  }
+
   function beginEditUserMessage(turnId: string): void {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
@@ -136,9 +154,15 @@ export function createAppShellRevisionActions(deps: {
     }
 
     const prompt = userFacingText(userMessage);
+    const copyAttempt = acquireSessionCopyAttempt(
+      revisionCopyKey(sessionId, turnId),
+      turnId,
+    );
     commitRevisionDraft({
       sourceSessionId: sessionId,
-      sourceTurnId: turnId,
+      sourceTurnId: copyAttempt.sourceTurnId,
+      copyId: copyAttempt.copyId,
+      copyPhase: copyAttempt.phase,
       draftSessionId: sessionId,
       originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
@@ -155,44 +179,128 @@ export function createAppShellRevisionActions(deps: {
   ): Promise<void> {
     composerRef.current?.clearDraft(revisionSessionId);
     const current = revisionDraftRef.current;
-    let restored: TurnRevisionDraft | undefined;
-    if (current?.draftSessionId === revisionSessionId) {
-      restored = { ...draft, draftSessionId: draft.sourceSessionId };
-      composerRef.current?.setDraft(draft.sourceSessionId, text);
-      commitRevisionDraft(restored);
-    }
     if (activeIdRef.current === revisionSessionId) {
       openSessionInChat(draft.sourceSessionId);
       setMessages([]);
       await refreshMessages(draft.sourceSessionId).catch(() => false);
-      if (activeIdRef.current === draft.sourceSessionId && revisionDraftRef.current === restored) {
-        composerRef.current?.setText(text);
-        composerRef.current?.focus();
-      }
     }
-    await window.maka.sessions.remove(revisionSessionId).catch(() => undefined);
+    const abandonment = await abandonRevisionCopy(draft, revisionSessionId);
+    const abandoningDraft = abandonment.draft;
+    let restored: TurnRevisionDraft | undefined;
+    if (current?.copyId === draft.copyId && revisionDraftRef.current === abandoningDraft) {
+      if (abandonment.acknowledged) {
+        const nextAttempt = acquireSessionCopyAttempt(
+          revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId),
+          draft.sourceTurnId,
+        );
+        restored = {
+          ...draft,
+          sourceTurnId: nextAttempt.sourceTurnId,
+          copyId: nextAttempt.copyId,
+          copyPhase: nextAttempt.phase,
+          draftSessionId: draft.sourceSessionId,
+        };
+      } else {
+        restored = { ...abandoningDraft, draftSessionId: draft.sourceSessionId };
+      }
+      composerRef.current?.setDraft(draft.sourceSessionId, text);
+      commitRevisionDraft(restored);
+    }
+    if (activeIdRef.current === draft.sourceSessionId && revisionDraftRef.current === restored) {
+      composerRef.current?.setText(text);
+      composerRef.current?.focus();
+    }
     await refreshSessions().catch(() => []);
   }
 
+  function completeRevisionCopyAttempt(draft: TurnRevisionDraft): void {
+    completeTurnRevisionCopyAttempt(draft);
+  }
+
+  async function abandonRevisionCopy(
+    draft: TurnRevisionDraft,
+    revisionSessionId: string,
+  ): Promise<{ acknowledged: boolean; draft: TurnRevisionDraft }> {
+    const tracked = abandonSessionCopyAttempt(
+      revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId),
+      draft.copyId,
+    );
+    const current = revisionDraftRef.current;
+    const trackedDraft = current?.copyId === draft.copyId ? current : draft;
+    const abandoningDraft =
+      tracked && trackedDraft.copyPhase !== 'abandoning'
+        ? { ...trackedDraft, copyPhase: 'abandoning' as const }
+        : trackedDraft;
+    if (revisionDraftRef.current === trackedDraft && abandoningDraft !== trackedDraft) {
+      commitRevisionDraft(abandoningDraft);
+    }
+    try {
+      // Main acknowledges only after the cleanup intent is durable; physical
+      // removal may finish after this renderer has closed the draft.
+      await window.maka.sessions.abandonSessionCopy(revisionSessionId);
+      completeRevisionCopyAttempt(draft);
+      return { acknowledged: true, draft: abandoningDraft };
+    } catch {
+      // An ambiguous cleanup acknowledgement stays in `abandoning`; this
+      // target may only retry cleanup and can never be copied into again.
+      return { acknowledged: false, draft: abandoningDraft };
+    }
+  }
+
   async function prepareRevisionSend(text: string): Promise<boolean> {
-    const draft = revisionDraftRef.current;
+    let draft = revisionDraftRef.current;
     if (!draft || activeIdRef.current !== draft.draftSessionId) return false;
     // A previous attempt already prepared the version; retry normal send there.
     if (draft.draftSessionId !== draft.sourceSessionId) return true;
 
-    const sourceSessionId = draft.sourceSessionId;
+    if (draft.copyPhase === 'abandoning') {
+      const abandonment = await abandonRevisionCopy(draft, draft.copyId);
+      if (
+        !abandonment.acknowledged ||
+        revisionDraftRef.current !== abandonment.draft ||
+        activeIdRef.current !== draft.sourceSessionId
+      ) {
+        return false;
+      }
+      const nextAttempt = acquireSessionCopyAttempt(
+        revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId),
+        draft.sourceTurnId,
+      );
+      draft = {
+        ...draft,
+        copyId: nextAttempt.copyId,
+        copyPhase: nextAttempt.phase,
+      };
+      commitRevisionDraft(draft);
+    }
+
+    const startedDraft =
+      draft.copyPhase === 'started' ? draft : { ...draft, copyPhase: 'started' as const };
+    if (startedDraft !== draft) {
+      if (
+        !startSessionCopyAttempt(
+          revisionCopyKey(draft.sourceSessionId, draft.sourceTurnId),
+          draft.copyId,
+        )
+      ) {
+        return false;
+      }
+      commitRevisionDraft(startedDraft);
+    }
+    const sourceSessionId = startedDraft.sourceSessionId;
     let preparedSessionId: string | undefined;
     try {
       const newSession = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
-        sourceTurnId: draft.sourceTurnId,
+        sourceTurnId: startedDraft.sourceTurnId,
+        copyId: startedDraft.copyId,
       });
       preparedSessionId = newSession.id;
-      if (activeIdRef.current !== sourceSessionId || revisionDraftRef.current !== draft) {
-        await rollbackPreparedRevision(draft, newSession.id, text);
+      if (activeIdRef.current !== sourceSessionId || revisionDraftRef.current !== startedDraft) {
+        await rollbackPreparedRevision(startedDraft, newSession.id, text);
         return false;
       }
 
-      const prepared = { ...draft, draftSessionId: newSession.id };
+      const prepared = { ...startedDraft, draftSessionId: newSession.id };
       composerRef.current?.setDraft(newSession.id, text);
       commitRevisionDraft(prepared);
       upsertSessionSummary(newSession);
@@ -204,7 +312,7 @@ export function createAppShellRevisionActions(deps: {
         activeIdRef.current !== newSession.id ||
         revisionDraftRef.current !== prepared
       ) {
-        await rollbackPreparedRevision(draft, newSession.id, text);
+        await rollbackPreparedRevision(startedDraft, newSession.id, text);
         return false;
       }
       composerRef.current?.focus();
@@ -213,7 +321,7 @@ export function createAppShellRevisionActions(deps: {
       return true;
     } catch (error) {
       if (preparedSessionId) {
-        await rollbackPreparedRevision(draft, preparedSessionId, text);
+        await rollbackPreparedRevision(startedDraft, preparedSessionId, text);
       }
       if (activeIdRef.current !== sourceSessionId) return false;
       if (isSessionWorkspaceUnavailableError(error)) {
@@ -231,18 +339,24 @@ export function createAppShellRevisionActions(deps: {
   async function cancelRevisionDraft(): Promise<void> {
     const draft = revisionDraftRef.current;
     if (!draft) return;
-    const preparedSessionId =
-      draft.draftSessionId !== draft.sourceSessionId ? draft.draftSessionId : undefined;
+    const cleanupSessionId = draft.copyPhase !== 'reserved'
+      ? draft.draftSessionId !== draft.sourceSessionId
+        ? draft.draftSessionId
+        : draft.copyId
+      : undefined;
+    if (cleanupSessionId) await abandonRevisionCopy(draft, cleanupSessionId);
+    else completeRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
-    if (preparedSessionId) composerRef.current?.clearDraft(preparedSessionId);
+    if (draft.draftSessionId !== draft.sourceSessionId) {
+      composerRef.current?.clearDraft(draft.draftSessionId);
+    }
     if (activeIdRef.current !== draft.sourceSessionId) {
       openSessionInChat(draft.sourceSessionId);
       setMessages([]);
       await refreshMessages(draft.sourceSessionId).catch(() => false);
     }
-    if (preparedSessionId) {
-      await window.maka.sessions.remove(preparedSessionId).catch(() => undefined);
+    if (cleanupSessionId) {
       await refreshSessions().catch(() => []);
     }
     if (activeIdRef.current === draft.sourceSessionId) {
@@ -252,4 +366,35 @@ export function createAppShellRevisionActions(deps: {
   }
 
   return { beginEditUserMessage, prepareRevisionSend, cancelRevisionDraft };
+}
+
+export function completeTurnRevisionCopyAttempt(draft: TurnRevisionDraft): void {
+  completeSessionCopyAttempt(
+    {
+      scope: `edit-and-resend:${draft.sourceTurnId}`,
+      kind: 'revision',
+      sourceSessionId: draft.sourceSessionId,
+    },
+    draft.copyId,
+  );
+}
+
+export async function abandonTurnRevisionCopyAttempt(
+  draft: TurnRevisionDraft,
+): Promise<boolean> {
+  const key: SessionCopyAttemptKey = {
+    scope: `edit-and-resend:${draft.sourceTurnId}`,
+    kind: 'revision',
+    sourceSessionId: draft.sourceSessionId,
+  };
+  abandonSessionCopyAttempt(key, draft.copyId);
+  const targetSessionId =
+    draft.draftSessionId === draft.sourceSessionId ? draft.copyId : draft.draftSessionId;
+  try {
+    await window.maka.sessions.abandonSessionCopy(targetSessionId);
+    completeSessionCopyAttempt(key, draft.copyId);
+    return true;
+  } catch {
+    return false;
+  }
 }

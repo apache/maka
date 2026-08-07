@@ -9,10 +9,9 @@ import { safeLocalStorageGet } from './browser-storage.js';
 export const SESSION_WORKBAR_DEFAULT_WIDTH = 480;
 export const SESSION_WORKBAR_MIN_WIDTH = 320;
 export const SESSION_WORKBAR_MAX_WIDTH = 600;
-// 'quote' is a transient tab that only exists while a quote side-panel excerpt
-// is active; it is never persisted as a default (see readSessionWorkbarTab).
-export type SessionWorkbarTab = 'tasks' | 'browser' | 'files' | 'inspector' | 'quote';
-
+export const SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT = 300;
+export const SESSION_BOTTOM_PANEL_MIN_HEIGHT = 180;
+export const SESSION_BOTTOM_PANEL_MAX_HEIGHT = 520;
 /**
  * Seeds `useResizable`'s `defaultSize`. Deliberately unclamped: the hook clamps
  * whatever it is handed against `minSizePx`/`maxSizePx`, so a second clamp here
@@ -36,7 +35,13 @@ export function readSessionWorkbarCollapsed(): boolean {
   return true;
 }
 
-export function readSessionWorkbarTab(): SessionWorkbarTab {
-  const stored = safeLocalStorageGet('maka-session-workbar-tab-v1');
-  return stored === 'browser' || stored === 'files' || stored === 'inspector' ? stored : 'tasks';
+export function readSessionBottomPanelHeight(): number {
+  const stored = Number(safeLocalStorageGet('maka-session-bottom-panel-height-v1'));
+  return Number.isFinite(stored) && stored > 0
+    ? Math.round(stored)
+    : SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT;
+}
+
+export function readSessionBottomPanelOpen(): boolean {
+  return safeLocalStorageGet('maka-session-bottom-panel-open-v1') === 'true';
 }

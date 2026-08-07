@@ -88,7 +88,7 @@ test('the trigger menu opens exactly on the boundaries we depend on', async ({
 
   // The nearest boundary wins.
   await composer.fill('@a /b');
-  await expect(page.getByRole('listbox', { name: '技能' })).toBeVisible();
+  await expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible();
   await expect(files).toHaveCount(0);
 });
 

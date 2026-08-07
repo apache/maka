@@ -198,32 +198,6 @@ describe('RuntimeRunner', () => {
     expect(result.events[1]!.author).toBe('agent');
   });
 
-  test('keeps ephemeral Voice audio in the invocation snapshot without retaining caller bytes', async () => {
-    const providers = makeProviders();
-    const flow = new ScriptFlow((ctx) => [flowTerminalEvent(ctx, 'completed')]);
-    const runner = new RuntimeRunner({ flow, providers });
-    const bytes = new Uint8Array([82, 73, 70, 70]);
-    const running = runner.run(
-      makeRequest({
-        text: '[Voice input]',
-        voiceAudio: {
-          bytes,
-          mediaType: 'audio/wav',
-          format: 'wav',
-          durationMs: 500,
-          sampleRate: 16_000,
-          channels: 1,
-          retention: 'operation_memory',
-        },
-      }),
-    );
-    bytes.fill(0);
-    await running;
-
-    expect(flow.seenInputs[0]?.voiceAudio?.mediaType).toBe('audio/wav');
-    expect([...flow.seenInputs[0]!.voiceAudio!.bytes]).toEqual([82, 73, 70, 70]);
-  });
-
   test('preserves a host-authored initial user-role RuntimeEvent', async () => {
     const providers = makeProviders();
     const flow = new ScriptFlow((ctx) => [flowTerminalEvent(ctx, 'completed')]);

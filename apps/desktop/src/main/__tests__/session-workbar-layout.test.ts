@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
-  readSessionWorkbarTab,
+  readSessionBottomPanelHeight,
+  SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
   readSessionWorkbarWidth,
   SESSION_WORKBAR_DEFAULT_WIDTH,
 } from '../../renderer/session-workbar-layout.js';
@@ -40,63 +41,38 @@ describe('readSessionWorkbarWidth', () => {
   });
 });
 
-/**
- * The persistence whitelist decides which tab survives a restart. A tab that
- * renders but is not listed here silently reverts to Tasks, which looks like
- * the panel forgetting rather than like a missing case.
- */
-function storedTab(value: string | null): void {
-  (globalThis as { localStorage?: unknown }).localStorage = {
-    getItem: (key: string) => (key === 'maka-session-workbar-tab-v1' ? value : null),
-  };
-}
-
-describe('readSessionWorkbarTab', () => {
+describe('readSessionBottomPanelHeight', () => {
   afterEach(() => {
     delete (globalThis as { localStorage?: unknown }).localStorage;
   });
 
-  it('restores every persistable tab, including the Inspector', () => {
-    for (const tab of ['browser', 'files', 'inspector'] as const) {
-      storedTab(tab);
-      assert.equal(readSessionWorkbarTab(), tab);
-    }
-  });
+  it('rounds stored height and falls back for invalid values', () => {
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (key: string) =>
+        key === 'maka-session-bottom-panel-height-v1' ? '344.6' : null,
+    };
+    assert.equal(readSessionBottomPanelHeight(), 345);
 
-  it('falls back to tasks for the transient quote tab and for junk', () => {
-    // 'quote' only exists while an excerpt is staged, so it is never restored.
-    for (const stored of ['quote', 'nonsense', null]) {
-      storedTab(stored);
-      assert.equal(readSessionWorkbarTab(), 'tasks');
-    }
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: () => 'invalid',
+    };
+    assert.equal(
+      readSessionBottomPanelHeight(),
+      SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
+    );
   });
 });
 
-// The column's teardown is scheduled on the motion box's width transition
-// ending. `transition: none` and `transition-property: none` do not shorten
-// that transition — they CANCEL it, and no `transitionend` ever arrives — so
-// every rule that quiets the box has to cap the duration instead. Miss this and
-// the panel still looks shut while the column behind it keeps its task
-// subscription and any live embedded browser. Two rules already need the quiet:
-// the stacked layout under 990px, and the drag gate.
-describe('workbar motion CSS contract', () => {
-  it('never removes the motion box transition, only caps it', async () => {
+describe('workbar panel topology CSS contract', () => {
+  it('allocates independent right and bottom grid areas', async () => {
     const css = await readRendererContractCss();
-    const rules = [...css.matchAll(/\.maka-workbar-motion[^{]*\{([\s\S]*?)\}/g)].map(
-      (match) => match[1] ?? '',
+    assert.match(
+      css,
+      /\.maka-detail-with-artifacts\s*\{[^}]*grid-template-areas:\s*"main right-handle right"\s*"bottom-handle right-handle right"\s*"bottom right-handle right"/,
     );
-    assert.ok(rules.length >= 3, `expected the box to be styled in several places, saw ${rules.length}`);
-
-    for (const body of rules) {
-      assert.doesNotMatch(
-        body,
-        /transition(-property)?:\s*none/,
-        `a .maka-workbar-motion rule cancels its transition instead of capping it: ${body.trim()}`,
-      );
-    }
-
-    // And the transition it caps to still has to reach zero-ish, not stay long.
-    assert.match(css, /\.maka-workbar-motion[^{]*\{[^}]*transition-duration:\s*0\.01ms/);
+    assert.match(css, /\.maka-session-workbar\[data-placement="right"\]\s*\{[^}]*grid-area:\s*right/);
+    assert.match(css, /\.maka-session-workbar\[data-placement="bottom"\]\s*\{[^}]*grid-area:\s*bottom/);
+    assert.match(css, /\.maka-workbar-layout-vars,[^{]*\{[^}]*display:\s*contents/);
   });
 
   it('keeps the frame a frame rather than a scrollport', async () => {
@@ -115,22 +91,22 @@ describe('workbar motion CSS contract', () => {
     );
     // Each plate pays for its own clearance, which is what puts their top
     // edges on one line without anyone overhanging.
-    for (const plate of ['\\.mainColumn', '\\.maka-session-workbar']) {
-      assert.match(
-        css,
-        new RegExp(`${plate}\\s*\\{[^}]*padding-top:\\s*var\\(--maka-plate-titlebar-clearance\\)`),
-        `${plate} does not clear the titlebar itself`,
-      );
-    }
+    assert.match(
+      css,
+      /\.maka-session-workbar\s*\{[^}]*padding-top:\s*var\(--maka-plate-titlebar-clearance\)/,
+    );
   });
 
-  it('animates the box and holds the column still inside it', async () => {
+  it('keeps tab surfaces in the same grid topology as their panel chrome', async () => {
     const css = await readRendererContractCss();
-    // The E2E fixture caps every transition, so no rendered test can see these
-    // frames; this is where they are held. The box eases its own width, and the
-    // column keeps a floor width so it does not reflow its whole layout on the
-    // way out — the two halves of "the panel slides, its contents do not".
-    assert.match(css, /\.maka-workbar-motion\s*\{[^}]*transition:\s*width\s+var\(--duration-large\)/);
-    assert.match(css, /\.maka-session-workbar\s*\{[^}]*min-width:\s*320px/);
+    assert.match(
+      css,
+      /\.maka-session-workbar-panel\[data-overlay\]\[data-placement="right"\]\s*\{[^}]*grid-area:\s*right/,
+    );
+    assert.match(
+      css,
+      /\.maka-session-workbar-panel\[data-overlay\]\[data-placement="bottom"\]\s*\{[^}]*grid-area:\s*bottom/,
+    );
+    assert.match(css, /--maka-session-bottom-panel-height,\s*300px/);
   });
 });

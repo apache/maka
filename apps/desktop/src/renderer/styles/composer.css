@@ -98,107 +98,13 @@
   visibility: visible;
 }
 
-/* Staged non-image file — a two-line card in the idiom of contemporary agent
-   composers: kind icon on a tinted tile, filename, "EXT · size" meta. Fixed
-   64px height so cards and image thumbnails read as one row, not a staggered
-   pile; capped width + ellipsis so a full z-library book title cannot span
-   the card. */
-.maka-composer-attachment-card {
-  display: inline-flex;
-  align-items: center;
-  box-sizing: border-box;
-  height: 56px;
-  gap: var(--space-1-5);
+/* Staged attachments share the quote chips' Token rhythm (maintainer
+   decision on the #2367 follow-up); the drawer stays a flat chip row. Cap
+   the chip and let Astryx Token's own ellipsis truncate, so a full
+   z-library book title cannot span the drawer — the full name rides the
+   chip's hover Tooltip instead. */
+.maka-composer-context-drawer .maka-composer-attachment-token {
   max-width: min(280px, 100%);
-  padding: 0 var(--space-1-5);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-modal);
-  background: var(--background);
-}
-
-.maka-composer-attachment-card-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-surface);
-  background: var(--muted);
-  color: var(--foreground-secondary);
-}
-
-/* Kind accents keep to existing semantic tokens (no new hues): documents that
-   read as "PDF red" everywhere else, code as the accent. */
-.maka-composer-attachment-card[data-kind="pdf"] .maka-composer-attachment-card-icon {
-  background: color-mix(in oklch, var(--status-danger, var(--destructive)) 12%, var(--background));
-  color: var(--status-danger, var(--destructive));
-}
-
-.maka-composer-attachment-card[data-kind="code"] .maka-composer-attachment-card-icon {
-  background: color-mix(in oklch, var(--accent) 12%, var(--background));
-  color: var(--accent);
-}
-
-.maka-composer-attachment-card-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 2px;
-}
-
-.maka-composer-attachment-card-name {
-  font-size: 13px;
-  font-weight: var(--font-weight-medium);
-  line-height: 1.25;
-  color: var(--foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-attachment-card-meta {
-  font-size: 11px;
-  line-height: 1.2;
-  color: var(--muted-foreground);
-  white-space: nowrap;
-}
-
-.maka-composer-attachment-card-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 auto;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background-color: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.maka-composer-attachment-card-remove:hover,
-.maka-composer-attachment-card-remove:focus-visible {
-  background-color: var(--muted);
-  color: var(--foreground);
-}
-
-/* Image thumbnails: hairline border + the same 12px radius as the file card,
-   so a mostly-white screenshot doesn't melt into the drawer surface.
-   `--radius-element` feeds Astryx Thumbnail's inner image container; 11px
-   (outer 12 − 1px border) nests the image corners flush against the border
-   instead of leaving a sliver of background in each corner. */
-.maka-composer-attachment-thumbnail {
-  /* local: --radius-element — Astryx Thumbnail's inner image radius; outer
-     radius minus the 1px border nests the image flush in the frame. */
-  --radius-element: calc(var(--radius-modal) - 1px);
-  width: 56px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-modal);
-  overflow: hidden;
-  background: var(--background);
 }
 
 .maka-composer-input {
@@ -239,21 +145,6 @@
 .maka-composer-right-controls {
   flex: 0 0 auto;
   justify-content: flex-end;
-}
-
-/* `background-color`, never the `background` shorthand: these rules sit in the
-   last cascade layer (cascade-layers.css), and the shorthand's implicit
-   `background-image: none` would beat the ghost button's own :hover / :active
-   overlay gradients from `astryx-components`, leaving the control with no
-   pointer feedback at all. */
-.maka-composer-voice-button[data-state="recording"] {
-  color: var(--status-danger, var(--destructive));
-  background-color: color-mix(in srgb, currentColor 10%, transparent);
-}
-
-.maka-composer-voice-button[data-state="native_ready"] {
-  color: var(--status-running);
-  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
@@ -329,9 +220,9 @@
    so all three share the one accent. The wash derives from currentColor so a
    disabled mark dims both layers together.
 
-   `background-color`, never the `background` shorthand — see the voice button
-   above: the shorthand would suppress the ghost button's hover and active
-   overlays and leave the one way out of a mode with no pointer feedback.
+   `background-color`, never the `background` shorthand: the shorthand would
+   suppress the ghost button's hover and active overlays and leave the one way
+   out of a mode with no pointer feedback.
    `flex: 0 0 auto` keeps a long model name from compressing the mark away. */
 .maka-composer-mode-button {
   flex: 0 0 auto;
@@ -379,7 +270,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  width: min(
+    var(--maka-chat-measure),
+    calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
+  );
   max-width: var(--maka-chat-measure);
   margin: 0 auto var(--space-1-5);
   padding: var(--space-1) var(--space-2-5);
@@ -412,7 +306,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  width: min(
+    var(--maka-chat-measure),
+    calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
+  );
   max-width: var(--maka-chat-measure);
   margin: 0 auto var(--space-1);
   padding: 0 var(--space-1-5);

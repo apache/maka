@@ -67,16 +67,33 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
     );
   });
 
-  // Both attachment kinds appear in the composer before send: the file as a
-  // named two-line card, the image as a decoded Astryx Thumbnail — its
-  // filename lives in the accessible name (and hover tooltip), not visible
-  // text, once the preview probe passes.
-  await expect(page.getByText('note.txt')).toBeVisible();
-  const stagedThumbnail = page
-    .locator('.maka-composer-context-drawer')
-    .getByRole('group', { name: 'pixel.png' });
-  await expect(stagedThumbnail).toBeVisible();
-  await expect(stagedThumbnail.locator('img')).toBeVisible();
+  // Both attachment kinds stage as Token chips in the quote chips' rhythm,
+  // names visible on the chip itself (the full name + «EXT · size» meta ride
+  // the hover tooltip).
+  const chips = page.locator('.maka-composer-context-drawer .maka-composer-attachment-token');
+  await expect(chips.filter({ hasText: 'note.txt' })).toBeVisible();
+  const imageChip = chips.filter({ hasText: 'pixel.png' });
+  await expect(imageChip).toBeVisible();
+  // Once the preview decodes, the image chip becomes clickable (Token mounts
+  // its invisible button exactly then) and opens the Astryx Lightbox.
+  // exact: true — a bare name would also match the chip's remove button
+  // («移除 pixel.png»).
+  const imageChipButton = imageChip.getByRole('button', { name: 'pixel.png', exact: true });
+  await imageChipButton.click();
+  const stagedLightbox = page.getByRole('dialog');
+  await expect(stagedLightbox.getByRole('img', { name: 'pixel.png' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(stagedLightbox).not.toBeVisible();
+  // Native-dialog contract: closing hands focus back to the chip button that
+  // opened it — keyboard users must not be dropped on <body>. The Lightbox
+  // stays mounted through the close for exactly this.
+  await expect(imageChipButton).toBeFocused();
+  // Keyboard parity with hover: the focused chip surfaces the same
+  // «name · EXT · size» tooltip (focusTrigger="always" — Token's root span
+  // is not focusable, so focusin must bubble from the inner button).
+  await expect(
+    page.getByRole('tooltip').filter({ hasText: 'pixel.png · PNG' }),
+  ).toBeVisible();
 
   // Send the message carrying the attachment — the fake backend echoes the
   // attachment name, proving the ingest-on-send path delivered it (not just

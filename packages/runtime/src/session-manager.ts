@@ -75,6 +75,7 @@ import {
 import {
   DEFAULT_SESSION_NAME,
   DEEP_RESEARCH_SESSION_LABEL,
+  SIDE_CONVERSATION_SESSION_LABEL,
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
   childSessionsForParent,
@@ -4696,13 +4697,7 @@ export class SessionManager {
     let recoveryReason: string;
     let diagnostic: Record<string, unknown>;
     let workspaceIdentity: string | undefined;
-    if (input.execution.kind === 'external_message' && input.execution.ephemeralInput === 'voice') {
-      recoveryReason = 'ephemeral_voice_admission_without_run';
-      diagnostic = {
-        executionKind: input.execution.kind,
-        ephemeralInput: input.execution.ephemeralInput,
-      };
-    } else if (input.execution.kind === 'goal') {
+    if (input.execution.kind === 'goal') {
       headerExtras.goalId = input.execution.goalId;
       recoveryReason = 'goal_internal_admission_without_run';
       diagnostic = {
@@ -4793,7 +4788,7 @@ export class SessionManager {
           : {}),
       };
     } else {
-      throw new Error('External message recovery closure requires ephemeral Voice input');
+      throw new Error('External message recovery closure is not supported');
     }
 
     const run: AgentRunHeader = {
@@ -5125,7 +5120,9 @@ export class SessionManager {
         collaborationMode: header.collaborationMode,
         orchestrationMode: header.orchestrationMode ?? 'default',
         name: input.name ?? `${header.name} · 分支`,
-        labels: header.labels,
+        labels: input.sideConversation
+          ? [...new Set([...header.labels, SIDE_CONVERSATION_SESSION_LABEL])]
+          : header.labels,
         parentSessionId: sessionId,
         branchOfTurnId: input.sourceTurnId,
         status: 'active',

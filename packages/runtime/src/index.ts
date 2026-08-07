@@ -605,6 +605,8 @@ export type {
   PtyControlWriter,
   RuntimeResourceReader,
   ShellRunBashInput,
+  ShellRunPtyDataEvent,
+  ShellRunPtySnapshot,
   ShellRunProcessManagerInput,
   ShellRunWriteInput,
 } from './shell-run-contract.js';

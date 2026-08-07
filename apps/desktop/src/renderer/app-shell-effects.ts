@@ -32,7 +32,10 @@ import {
   recordSessionEventStreamEvent,
 } from './session-event-health';
 import { settledSessionTransientIds } from './settled-session-transients.js';
-import type { SessionWorkbarTab } from './session-workbar-layout.js';
+import {
+  persistableSessionWorkbarPanels,
+  type SessionWorkbarPanelsState,
+} from './session-workbar-tabs.js';
 import type { WindowCommand } from '../preload/bridge-contract.js';
 import {
   mergeShellRunNotification,
@@ -117,7 +120,9 @@ export function useAppShellPersistenceEffects(options: {
   sessionListWidth: number;
   workbarCollapsed: boolean;
   workbarWidth: number;
-  workbarTab: SessionWorkbarTab;
+  bottomPanelOpen: boolean;
+  bottomPanelHeight: number;
+  workbarPanelsState: SessionWorkbarPanelsState;
   themePalette: ThemePalette;
   themePref: ThemePreference;
 }) {
@@ -168,8 +173,28 @@ export function useAppShellPersistenceEffects(options: {
   }, [options.workbarCollapsed]);
 
   useEffect(() => {
-    safeLocalStorageSet('maka-session-workbar-tab-v1', options.workbarTab);
-  }, [options.workbarTab]);
+    const handle = window.setTimeout(() => {
+      safeLocalStorageSet(
+        'maka-session-bottom-panel-height-v1',
+        String(options.bottomPanelHeight),
+      );
+    }, LAYOUT_PERSIST_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [options.bottomPanelHeight]);
+
+  useEffect(() => {
+    safeLocalStorageSet(
+      'maka-session-bottom-panel-open-v1',
+      options.bottomPanelOpen ? 'true' : 'false',
+    );
+  }, [options.bottomPanelOpen]);
+
+  useEffect(() => {
+    safeLocalStorageSet(
+      'maka-session-workbar-panels-v3',
+      JSON.stringify(persistableSessionWorkbarPanels(options.workbarPanelsState)),
+    );
+  }, [options.workbarPanelsState]);
 
   // Persist the active destination and each hub's last selected module.
   // Strict localStorage availability check — Vite dev sometimes runs through

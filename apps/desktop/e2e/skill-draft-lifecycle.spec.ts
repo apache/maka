@@ -29,7 +29,7 @@ async function composeWithSkill(page: Page, text: string, name: RegExp): Promise
   await composer.fill(text);
   await composer.click();
   await composer.pressSequentially(' /');
-  const option = page.getByRole('listbox', { name: '技能' }).getByRole('option', { name });
+  const option = page.getByRole('listbox', { name: /技能/ }).getByRole('option', { name });
   await expect(option).toBeVisible();
   await option.click();
 }

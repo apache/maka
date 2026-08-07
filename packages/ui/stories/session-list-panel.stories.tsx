@@ -76,7 +76,6 @@ function panelProps(input: {
   groups?: SessionListPanelProps['groups'];
   projectActions?: SessionListPanelProps['projectActions'];
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
-  childSessionsByParentId?: SessionListPanelProps['childSessionsByParentId'];
 }): SessionListPanelProps {
   return {
     selection: { section: 'sessions', filter: 'chats' },
@@ -87,9 +86,6 @@ function panelProps(input: {
     ...(input.groups ? { groups: input.groups } : {}),
     ...(input.projectActions ? { projectActions: input.projectActions } : {}),
     ...(input.worktreeSessionIds ? { worktreeSessionIds: input.worktreeSessionIds } : {}),
-    ...(input.childSessionsByParentId
-      ? { childSessionsByParentId: input.childSessionsByParentId }
-      : {}),
     onSelectSession: noop,
     onSelect: noop,
     onOpenSettings: noop,
@@ -306,42 +302,6 @@ export const PinnedAndRecentSections: Story = {
       />
     </StoryFrame>
   ),
-};
-
-// Real path: a parent session that spawned a linked child agent — child sits
-// under the parent with data-subagent + native Bot leading icon.
-export const NestedSubagentSessions: Story = {
-  render: () => {
-    const parent = makeSession({
-      id: 'parent-main',
-      name: '重构侧栏会话树',
-      status: 'running',
-      lastMessageAt: NOW - 3 * 60 * 1000,
-    });
-    const child = makeSession({
-      id: 'child-agent',
-      name: 'explore: 扫描 SideNav 用法',
-      status: 'done',
-      lastMessageAt: NOW - 2 * 60 * 1000,
-    });
-    const sibling = makeSession({
-      id: 'peer-session',
-      name: '无子代理的普通会话',
-      lastMessageAt: NOW - 20 * 60 * 1000,
-    });
-    return (
-      <StoryFrame>
-        <SessionListPanel
-          {...panelProps({
-            sessions: [parent, sibling],
-            activeId: 'child-agent',
-            streamingSessionIds: new Set(['parent-main']),
-            childSessionsByParentId: new Map([[parent.id, [child]]]),
-          })}
-        />
-      </StoryFrame>
-    );
-  },
 };
 
 // Real path: group-by-project — collapsible project rows, sessions flush under

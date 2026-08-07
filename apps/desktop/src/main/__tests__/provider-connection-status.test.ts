@@ -24,22 +24,22 @@ describe('connectionChipStatus', () => {
     > = [
       [
         { enabled: false, lastTestStatus: 'needs_reauth' },
-        { label: '需要重新登录', tone: 'info' },
+        { label: '需要重新登录', tone: 'attention' },
       ],
       [
         { enabled: true, lastTestStatus: 'needs_reauth' },
-        { label: '需要重新登录', tone: 'info' },
+        { label: '需要重新登录', tone: 'attention' },
       ],
       [
         { enabled: false, lastTestStatus: 'error' },
-        { label: '暂不可用 · 上次连接失败', tone: 'destructive' },
+        { label: '暂不可用 · 上次连接失败', tone: 'error' },
       ],
       [{ enabled: false, lastTestStatus: undefined }, { label: '暂不可用', tone: 'neutral' }],
       [{ enabled: false, lastTestStatus: 'verified' }, { label: '暂不可用', tone: 'neutral' }],
       [{ enabled: true, lastTestStatus: 'verified' }, null],
       [
         { enabled: true, lastTestStatus: 'error' },
-        { label: '上次连接失败', tone: 'destructive' },
+        { label: '上次连接失败', tone: 'error' },
       ],
       [{ enabled: true, lastTestStatus: undefined }, null],
     ];

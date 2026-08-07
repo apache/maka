@@ -1,3 +1,4 @@
+import type { StatusSemantic } from '@maka/ui';
 import type { LocalMemoryState } from '@maka/core';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
 
@@ -68,12 +69,21 @@ export function localMemoryPromptPreviewBlockedReason(state: LocalMemoryState, c
   return '';
 }
 
-export function memoryStatusTone(status: LocalMemoryState['status']): 'success' | 'info' | 'warning' | 'destructive' {
+/**
+ * `disabled` is a settled fact the user chose, so it is `neutral`. It used to
+ * say `info`, which the settings surface painted as the accent dot — making a
+ * feature the user deliberately switched off look like one that was running.
+ *
+ * `error` replaces the old `destructive`: that word belongs to actions (a
+ * delete button), not to states, and this was the only place in the app naming
+ * this meaning differently from everywhere else.
+ */
+export function memoryStatusSemantic(status: LocalMemoryState['status']): StatusSemantic {
   switch (status) {
     case 'ok': return 'success';
-    case 'disabled': return 'info';
+    case 'disabled': return 'neutral';
     case 'safe_mode':
-    case 'incognito_blocked': return 'warning';
-    case 'error': return 'destructive';
+    case 'incognito_blocked': return 'attention';
+    case 'error': return 'error';
   }
 }

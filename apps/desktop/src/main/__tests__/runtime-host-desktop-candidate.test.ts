@@ -271,6 +271,41 @@ test('closes the claimed Host connection when native capability construction fai
   assert.equal(host.closeCalls, 1);
 });
 
+test('does not release or report a Revision the Host retained during cleanup', async () => {
+  const ipc = ipcHarness();
+  const host = connectionHarness('retained-revision', { revisionAbandon: 'retained' });
+  const released: string[] = [];
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  let removeSessionCopy: ((sessionId: string) => Promise<'removed' | 'retained'>) | undefined;
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc, {
+      browserTools: [],
+      releaseBrowserSession: (sessionId) => {
+        released.push(`browser:${sessionId}`);
+      },
+      computerUseTools: emptyComputerUseTools(),
+      releaseComputerUseSession: (sessionId) => {
+        released.push(`computer:${sessionId}`);
+      },
+    }),
+    emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
+    createSessionCopyCleanup: ({ removeSession }) => {
+      removeSessionCopy = removeSession;
+      return {
+        cleanup: async () => undefined,
+        schedule: async () => undefined,
+        recover: async () => ({ removed: [], failed: [] }),
+      };
+    },
+  });
+
+  assert.ok(removeSessionCopy);
+  assert.equal(await removeSessionCopy('session-retained-revision'), 'retained');
+  assert.deepEqual(released, []);
+  assert.deepEqual(changes, []);
+  await candidate.close();
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {
@@ -318,6 +353,11 @@ function deps(
     emitSessionsChanged() {},
     emitModeChanged() {},
     completeComputerUseTurn() {},
+    createSessionCopyCleanup: () => ({
+      cleanup: async () => undefined,
+      schedule: async () => undefined,
+      recover: async () => ({ removed: [], failed: [] }),
+    }),
     newId: () => 'candidate-id',
   };
 }
@@ -335,7 +375,10 @@ function nativeTool(): MakaTool {
   };
 }
 
-function connectionHarness(label: string) {
+function connectionHarness(
+  label: string,
+  options: { revisionAbandon?: 'abandoned' | 'retained' } = {},
+) {
   let resolveClosed: (() => void) | undefined;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
@@ -374,7 +417,27 @@ function connectionHarness(label: string) {
         operation === 'session.catalog.query' &&
         (input as { kind?: unknown }).kind === 'get'
       ) {
-        return { kind: 'session', session: session((input as { sessionId: string }).sessionId) };
+        const sessionId = (input as { sessionId: string }).sessionId;
+        return {
+          kind: 'session',
+          session:
+            options.revisionAbandon === undefined
+              ? session(sessionId)
+              : {
+                  ...session(sessionId),
+                  revisionRootSessionId: 'source-revision-root',
+                  revisionParentSessionId: 'source-revision-root',
+                  revisionOfTurnId: 'source-turn',
+                  revisionIndex: 2,
+                  revisionState: 'preparing',
+                },
+        };
+      }
+      if (operation === 'session.revision.abandon' && options.revisionAbandon) {
+        return {
+          kind: options.revisionAbandon,
+          sessionId: (input as { targetSessionId: string }).targetSessionId,
+        };
       }
       if (operation === 'runtime.resource.query') {
         return {

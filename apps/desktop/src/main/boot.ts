@@ -118,6 +118,7 @@ import { registerBrowserIpc } from './browser-ipc-main.js';
 import { registerConnectionsIpc } from './connections-ipc-main.js';
 import { registerConfigIpc } from './config-ipc-main.js';
 import { registerPlanReminderIpc } from './plan-reminders-ipc-main.js';
+import { registerPetPackIpc } from './pet-pack-import.js';
 import { registerWorkspaceResourcesIpc } from './workspace-resources-ipc-main.js';
 import type { NewSessionSkillContext } from './workspace-resources-ipc-main.js';
 import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
@@ -150,7 +151,6 @@ import {
 } from './desktop-backend-tool-surface.js';
 import { registerSessionsIpc } from './sessions-ipc-main.js';
 import { registerAgentGraphIpc } from './agent-graph-ipc-main.js';
-import { createVoiceIpcService, registerVoiceIpc } from './voice-ipc-main.js';
 import {
   assertSessionCanSendFromHeader,
   isSessionLifecycleError,
@@ -389,12 +389,6 @@ function disconnectManagedOAuthConnection(connection: LlmConnection): Promise<vo
 function resolveConnectionSecret(slug: string): Promise<string | null> {
   return oauthModelConnections.resolveConnectionSecret(slug);
 }
-
-const voiceIpcService = createVoiceIpcService({
-  settingsStore,
-  connectionStore,
-  resolveConnectionSecret,
-});
 
 /**
  * Read-only credential-presence check for status paths (onboarding's
@@ -671,6 +665,9 @@ const shellRuns = new ShellRunProcessManager({
   now: Date.now,
   onShellRunUpdate: (update) => {
     safeSendToRenderer('shell-runs:update', update);
+  },
+  onPtyData: (event) => {
+    safeSendToRenderer('shell-runs:pty-data', event);
   },
 });
 const updateService = createAppUpdateService({
@@ -1150,16 +1147,17 @@ function registerIpc(): void {
     getSkillSelectionReport: systemPromptService.getLastSkillSelectionReport,
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
   });
+  registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
   registerWorkspaceSearchIpc({ getProjectRoot: resolveProjectRootForContext });
   registerPlanReminderIpc({ planReminders, getWorkspacePrivacyContext });
   registerAgentGraphIpc({
     coordinator: agentGraphCoordinator,
     sendToRenderer: safeSendToRenderer,
   });
-  registerVoiceIpc({ ipcMain, service: voiceIpcService });
   registerSessionsIpc({
     workspaceRoot,
     runtime,
+    shellRuns,
     store,
     taskLedgerStore,
     goalWiring,
@@ -1193,8 +1191,6 @@ function registerIpc(): void {
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession: canCreateFakeSessionFromRenderer,
-    consumeNativeAudioOperation: (input) =>
-      voiceIpcService.consumeNativeAudioOperation(input),
   });
   registerSubscriptionIpc({
     ipcMain,
@@ -1393,7 +1389,12 @@ async function ensureSessionWorkspaceAvailable(sessionId: string): Promise<void>
 }
 
 async function createDesktopSession(input: DesktopCreateSessionInput) {
-  const selected = await resolveDesktopSessionSelection(input, projectManagement);
+  const selected = await resolveDesktopSessionSelection(input, {
+    ...projectManagement,
+    // Read per creation rather than cached at boot: the user can change the
+    // default project in Settings without restarting the app.
+    defaultProjectId: async () => (await settingsStore.get()).projects.defaultProjectId,
+  });
   await assertSessionWorkspaceAvailable(selected.cwd);
   return runtime.createSession(await resolveNewSessionProjectInput(selected, projectCatalog));
 }

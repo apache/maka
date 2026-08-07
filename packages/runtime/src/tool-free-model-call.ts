@@ -1,10 +1,5 @@
 import type { ModelMessage } from './model-protocol.js';
-import {
-  lowerNativeAudioMessages,
-  lowerModelTools,
-  normalizeAiSdkUsage,
-  type AiSdkUsageLike,
-} from './model-adapter.js';
+import { lowerModelTools, normalizeAiSdkUsage, type AiSdkUsageLike } from './model-adapter.js';
 import { rawFinishReasonString, type NormalizedUsage } from './model-protocol.js';
 import type { ModelToolSet } from './model-protocol.js';
 
@@ -71,7 +66,7 @@ export async function generateProviderPrefixModelCall(
   const result = await ai.generateText({
     model: input.model,
     ...(input.system === undefined ? {} : { system: input.system }),
-    messages: lowerNativeAudioMessages(input.messages),
+    messages: input.messages,
     tools: lowerModelTools(input.tools),
     activeTools: input.activeTools,
     // Preserve the source request's Tool schema for Provider cache reuse. Most

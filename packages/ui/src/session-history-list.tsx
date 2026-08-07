@@ -2,7 +2,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -16,19 +15,20 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  Bot,
   FolderGit2,
   FolderOpen,
   Pencil,
   Pin,
   PinOff,
   Plug,
+  Plus,
   SquarePen,
   Trash2,
 } from './icons.js';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import {
   SideNavItem,
   SideNavSection,
@@ -39,6 +39,7 @@ import { describeBlockedReason, presentSessionStatus } from './session-status-pr
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { getShellControlsCopy } from './shell-controls-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
@@ -74,13 +75,19 @@ export function SessionHistoryList(props: {
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
-  childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
   groupVariant?: SessionHistoryGroupVariant;
   /** Optional section chrome (title + end actions) wrapping the history. */
   heading?: string;
   headingEnd?: ReactNode;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
+  /**
+   * Creates a new task from a group header's trailing trigger (time grouping
+   * only). Same handler as the rail's top-level 新任务 row: a session created
+   * here lands where any new session lands; the trigger is a proximity entry,
+   * not a different creation path. Absent = no trigger.
+   */
+  onNewTask?(): void;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
@@ -122,11 +129,11 @@ export function SessionHistoryList(props: {
       activeId={props.activeId}
       streamingSessionIds={props.streamingSessionIds}
       staleSessionIds={props.staleSessionIds}
-      childSessionsByParentId={props.childSessionsByParentId}
       worktreeSessionIds={props.worktreeSessionIds}
       onSelectSession={props.onSelectSession}
       rowActions={props.rowActions}
       projectActions={props.projectActions}
+      onNewTask={props.onNewTask}
     />
   );
 
@@ -159,13 +166,14 @@ function SessionListGroups(props: {
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
-  childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
   worktreeSessionIds?: ReadonlySet<string>;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
+  onNewTask?(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
+  const newTaskCopy = getShellControlsCopy(useUiLocale()).navigation.groupNewTask;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -184,10 +192,6 @@ function SessionListGroups(props: {
    */
   const renameOpenerRef = useRef<HTMLElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
-  const activeAncestorIds = useMemo(
-    () => resolveActiveSessionAncestorIds(props.activeId, props.childSessionsByParentId),
-    [props.activeId, props.childSessionsByParentId],
-  );
 
   const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
     renameOpenerRef.current = opener;
@@ -214,32 +218,25 @@ function SessionListGroups(props: {
     });
   }
 
-  const renderSessionTree = useCallback(
-    function renderSessionTree(session: SessionSummary, nested: boolean): ReactNode {
-      const childSessions = props.childSessionsByParentId?.get(session.id);
-      return (
-        <SessionNavRow
-          key={session.id}
-          session={session}
-          nested={nested}
-          active={session.id === props.activeId}
-          streaming={props.streamingSessionIds?.has(session.id) ?? false}
-          stale={props.staleSessionIds?.has(session.id) ?? false}
-          worktree={props.worktreeSessionIds?.has(session.id) ?? false}
-          onSelectSession={props.onSelectSession}
-          actions={props.rowActions}
-          onStartRename={startRename}
-          childSessions={childSessions}
-          expandedForActiveDescendant={activeAncestorIds.has(session.id)}
-          renderSessionTree={childSessions?.length ? renderSessionTree : undefined}
-        />
-      );
-    },
+  // Linked subagent sessions open in the main chat column, not as nested
+  // sidebar rows. The host passes only root/user sessions here.
+  const renderSessionRow = useCallback(
+    (session: SessionSummary): ReactNode => (
+      <SessionNavRow
+        key={session.id}
+        session={session}
+        active={session.id === props.activeId}
+        streaming={props.streamingSessionIds?.has(session.id) ?? false}
+        stale={props.staleSessionIds?.has(session.id) ?? false}
+        worktree={props.worktreeSessionIds?.has(session.id) ?? false}
+        onSelectSession={props.onSelectSession}
+        actions={props.rowActions}
+        onStartRename={startRename}
+      />
+    ),
     [
-      activeAncestorIds,
       startRename,
       props.activeId,
-      props.childSessionsByParentId,
       props.onSelectSession,
       props.rowActions,
       props.staleSessionIds,
@@ -282,7 +279,7 @@ function SessionListGroups(props: {
               startRename({ kind: 'project', id: project.id, name: project.name }, opener);
             }
           }}
-          renderSession={(session) => renderSessionTree(session, false)}
+          renderSession={renderSessionRow}
         />
       );
     }
@@ -309,11 +306,32 @@ function SessionListGroups(props: {
     );
   }
 
+  // Group-header new-task trigger (time grouping). Same HANDLER as the
+  // rail's top-level 新任务 SideNavItem, but a different NAME
+  // (navigation.groupNewTask): reusing copy.newTask would give two controls
+  // the same accessible name, a strict-mode collision for
+  // getByRole('button', { name: '新任务' }) and an ambiguity for screen
+  // readers. IconButton + Tooltip is the icon-only pattern
+  // SessionSidebarFooter already uses; the compact 24px box and column
+  // alignment belong to sidebar.css.
+  const newTaskAction = props.onNewTask ? (
+    <Tooltip content={newTaskCopy}>
+      <IconButton
+        className="maka-group-new-task-button"
+        variant="ghost"
+        size="sm"
+        label={newTaskCopy}
+        icon={<Plus size={14} aria-hidden="true" />}
+        onClick={() => void props.onNewTask?.()}
+      />
+    </Tooltip>
+  ) : undefined;
+
   return (
     <>
       {renameDialog}
       {props.groups.map((group) => {
-        const items = group.sessions.map((session) => renderSessionTree(session, false));
+        const items = group.sessions.map((session) => renderSessionRow(session));
         if (!group.label) {
           return (
             <div key={group.key} className="maka-session-group">
@@ -322,7 +340,12 @@ function SessionListGroups(props: {
           );
         }
         return (
-          <SideNavSection key={group.key} title={group.label} className="maka-session-group">
+          <SideNavSection
+            key={group.key}
+            title={group.label}
+            endContent={newTaskAction}
+            className="maka-session-group"
+          >
             {items}
           </SideNavSection>
         );
@@ -388,7 +411,6 @@ function EndContentHitTarget(props: {
 
 const SessionNavRow = memo(function SessionNavRow(props: {
   session: SessionSummary;
-  nested: boolean;
   active: boolean;
   streaming: boolean;
   stale: boolean;
@@ -396,45 +418,22 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
-  childSessions?: readonly SessionSummary[];
-  expandedForActiveDescendant: boolean;
-  renderSessionTree?(session: SessionSummary, nested: boolean): ReactNode;
 }) {
   const locale = useUiLocale();
   const metaTitle = formatSessionMeta(props.session, locale);
-  const hasChildren = Boolean(props.childSessions?.length);
-  const [userCollapsed, setUserCollapsed] = useState<boolean | null>(null);
-  // A tree should not pay to mount every descendant before the user opens it.
-  // Keep the active session visible by forcing only its ancestor chain open;
-  // the active node itself may stay collapsed when it owns a large Swarm.
-  const isCollapsed = props.expandedForActiveDescendant
-    ? false
-    : (userCollapsed ?? true);
 
   return (
     <div
       className="maka-session-row"
       data-maka-contract="session-row"
       data-session-id={props.session.id}
-      data-subagent={props.nested ? 'true' : undefined}
       data-stale={props.stale ? 'true' : undefined}
       title={metaTitle}
     >
       <SideNavItem
         label={props.session.name}
-        // Nested (subagent) rows: native leading Bot icon keeps hierarchy
-        // readable without CSS nest-padding overrides. Parent rows stay iconless.
-        icon={props.nested ? Bot : undefined}
         size="md"
         isSelected={props.active}
-        collapsible={
-          hasChildren
-            ? {
-                isCollapsed,
-                onCollapsedChange: setUserCollapsed,
-              }
-            : undefined
-        }
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {
             props.onStartRename(
@@ -458,43 +457,10 @@ const SessionNavRow = memo(function SessionNavRow(props: {
             onStartRename={props.onStartRename}
           />
         }
-      >
-        {hasChildren ? (
-          isCollapsed ? (
-            // Astryx derives disclosure chrome from `Boolean(children)`.
-            // A zero-layout sentinel preserves the chevron without mounting
-            // the expensive descendant tree while this node is collapsed.
-            <span className="maka-session-lazy-children-sentinel" aria-hidden="true" />
-          ) : (
-            props.childSessions?.map((child) => props.renderSessionTree?.(child, true))
-          )
-        ) : undefined}
-      </SideNavItem>
+      />
     </div>
   );
 });
-
-function resolveActiveSessionAncestorIds(
-  activeId: string | undefined,
-  childSessionsByParentId: ReadonlyMap<string, readonly SessionSummary[]> | undefined,
-): ReadonlySet<string> {
-  const ancestors = new Set<string>();
-  if (!activeId || !childSessionsByParentId) return ancestors;
-
-  const parentByChildId = new Map<string, string>();
-  for (const [parentId, children] of childSessionsByParentId) {
-    for (const child of children) parentByChildId.set(child.id, parentId);
-  }
-
-  const visited = new Set<string>([activeId]);
-  let parentId = parentByChildId.get(activeId);
-  while (parentId && !visited.has(parentId)) {
-    ancestors.add(parentId);
-    visited.add(parentId);
-    parentId = parentByChildId.get(parentId);
-  }
-  return ancestors;
-}
 
 function ProjectItemEndContent(props: {
   project?: ProjectRecord;

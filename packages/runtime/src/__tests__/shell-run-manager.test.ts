@@ -20,6 +20,7 @@ import { createSqliteShellRunStore } from '@maka/storage';
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import {
   ShellRunPtyControlClosedError,
+  type ShellRunPtyDataEvent,
   type ShellRunProcessManagerInput,
 } from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
@@ -1385,6 +1386,73 @@ describe('ShellRunProcessManager', () => {
     assert.match(terminalText(completed.output), /SEEN:one\nSEEN:two\nSEEN:three/);
   });
 
+  test('publishes raw PTY deltas and exposes a bounded replay snapshot', async () => {
+    const cwd = await workspace();
+    const events: ShellRunPtyDataEvent[] = [];
+    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
+      onPtyData: (event) => events.push(event),
+    });
+    const run = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command:
+          "printf 'RAW-READY\\n'; IFS= read -r line; " +
+          'printf \'RAW-VALUE:%s\\n\' "$line"; while :; do sleep 1; done',
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(run.kind, 'shell_run');
+    await waitForPtyText(manager, run.ref, /RAW-READY/);
+
+    const initial = manager.getLivePtySnapshot('session-1', run.ref);
+    assert.ok(initial);
+    assert.match(initial.buffer, /RAW-READY/);
+    await waitUntil(() => events.length > 0);
+    assert.ok((events.at(-1)?.sequence ?? 0) >= initial.sequence);
+    assert.deepEqual(
+      events.map(({ sessionId, ref }) => ({ sessionId, ref })),
+      events.map(() => ({ sessionId: 'session-1', ref: run.ref })),
+    );
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: run.ref,
+      input: 'hello\n',
+    });
+    await waitForPtyText(manager, run.ref, /RAW-VALUE:hello/);
+    const latest = manager.getLivePtySnapshot('session-1', run.ref);
+    assert.ok(latest);
+    assert.ok(latest.sequence > initial.sequence);
+    assert.match(latest.buffer, /RAW-VALUE:hello/);
+    await manager.stopBackgroundTask('session-1', run.ref, NO_ABORT);
+  });
+
+  test('coalesces high-volume PTY renderer deltas without dropping bytes', async () => {
+    const cwd = await workspace();
+    const events: ShellRunPtyDataEvent[] = [];
+    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
+      onPtyData: (event) => events.push(event),
+    });
+    const run = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: `node -e "process.stdout.write('x'.repeat(1024 * 1024))"`,
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(run.kind, 'shell_run');
+    await waitForTerminalShellRun(manager, run.ref);
+
+    const bytes = events.reduce((total, event) => total + Buffer.byteLength(event.data, 'utf8'), 0);
+    assert.equal(bytes, 1024 * 1024);
+    assert.ok(events.length <= 32, `expected bounded PTY IPC batches, got ${events.length}`);
+    for (let index = 1; index < events.length; index += 1) {
+      assert.ok(events[index]!.sequence > events[index - 1]!.sequence);
+    }
+  });
+
   test('keeps concurrent PTY control and Read persistence in parser-cut order', async () => {
     const updates: ShellRunUpdate[] = [];
     const store = createSqliteShellRunStore(await workspace());
@@ -2256,6 +2324,7 @@ function createManager(
     killGraceMs?: number;
     flushIntervalMs?: number;
     pipeOutputDrainMs?: number;
+    onPtyData?: ShellRunProcessManagerInput['onPtyData'];
     scheduleFlush?: ShellRunProcessManagerInput['scheduleFlush'];
   } = {},
 ): ShellRunProcessManager {
@@ -2269,6 +2338,7 @@ function createManager(
     killGraceMs: 100,
     exitAcknowledgementMs: 500,
     ...(onShellRunUpdate ? { onShellRunUpdate } : {}),
+    ...(options.onPtyData ? { onPtyData: options.onPtyData } : {}),
     ...options,
   });
 }
@@ -2302,6 +2372,7 @@ async function createTestManager(
     killGraceMs?: number;
     flushIntervalMs?: number;
     pipeOutputDrainMs?: number;
+    onPtyData?: ShellRunProcessManagerInput['onPtyData'];
   },
 ): Promise<ShellRunProcessManager> {
   return createManager(createSqliteShellRunStore(await workspace()), onShellRunUpdate, options);

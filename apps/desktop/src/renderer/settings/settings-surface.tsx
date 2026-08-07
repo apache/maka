@@ -29,9 +29,10 @@ import type {
 } from '@maka/core';
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { ProvidersPanel } from './ProvidersPanel';
+import { ProvidersPanel } from './providers-panel';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
+import { ProjectsSettingsPage } from './projects-settings-page';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
 import { BotChatSettingsPage } from './bot-chat-settings-page';
@@ -48,7 +49,6 @@ import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { UsageSettingsPage } from './usage-settings-page';
-import { VoiceModelsSettingsPage } from './voice-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
@@ -462,12 +462,15 @@ function SettingsPageBody(props: {
           onRefreshConnections={props.onRefreshConnections}
         />
       );
+    case 'projects':
+      return (
+        <ProjectsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />
+      );
     case 'appearance':
       return (
         <AppearanceSettingsPage
           themePref={props.themePref}
           themePalette={props.themePalette}
-          settings={props.settings}
           onUpdate={props.onUpdateSettings}
           onThemeChange={props.onThemeChange}
           onThemePaletteChange={props.onThemePaletteChange}
@@ -491,15 +494,6 @@ function SettingsPageBody(props: {
       );
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} />;
-    case 'voice':
-      return (
-        <VoiceModelsSettingsPage
-          settings={props.settings}
-          connections={props.connections}
-          onUpdate={props.onUpdateSettings}
-          onRefreshConnections={props.onRefreshConnections}
-        />
-      );
     case 'search':
       return (
         <WebSearchSettingsPage

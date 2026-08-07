@@ -1,0 +1,53 @@
+name: Dependency audit
+
+on:
+  schedule:
+    # Offset from the hour to reduce peak-time scheduling delays.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/dependency-audit.yml
+      - package.json
+      - package-lock.json
+      - 'apps/*/package.json'
+      - 'packages/*/package.json'
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - package-lock.json
+      - 'apps/*/package.json'
+      - 'packages/*/package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --omit=dev
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Verify registry signatures
+        run: npm audit signatures --omit=dev

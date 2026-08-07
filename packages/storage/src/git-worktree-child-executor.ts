@@ -170,7 +170,7 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
     if (!(await isDirectory(binding.worktreePath))) return;
     await this.ensure(binding);
     await this.withRepositoryAllocation(binding.gitCommonDir, () =>
-      this.removeOwnedWorktree(binding.worktreePath, binding.branch),
+      this.removeOwnedWorktree(binding.worktreePath, binding.branch, binding.gitCommonDir),
     );
   }
 
@@ -362,18 +362,23 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
       throw new Error(`Orphan subagent worktree ownership is unavailable: ${path}`);
     }
     await this.withRepositoryAllocation(inspected.gitCommonDir, () =>
-      this.removeOwnedWorktree(path, branch),
+      this.removeOwnedWorktree(path, branch, inspected.gitCommonDir),
     );
   }
 
-  private async removeOwnedWorktree(path: string, leaseBranch: string): Promise<void> {
+  private async removeOwnedWorktree(
+    path: string,
+    leaseBranch: string,
+    gitCommonDir: string,
+  ): Promise<void> {
     await runGit(path, ['clean', '-ffdx']);
     await runGit(path, ['checkout', '--detach', '--force', 'HEAD']);
     await runGit(path, ['clean', '-ffdx']);
     if (await gitRevParseOptional(path, leaseBranch)) {
       await runGit(path, ['branch', '-D', leaseBranch]);
     }
-    await runGit(path, ['worktree', 'remove', '--force', path]);
+    // Windows cannot remove a process's current directory, so run the final removal elsewhere.
+    await runGit(gitCommonDir, ['worktree', 'remove', '--force', path]);
   }
 }
 

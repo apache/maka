@@ -134,10 +134,10 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-bots-onboarding',
   'settings-about',
   'settings-general',
+  'settings-projects',
   'settings-memory',
   'settings-daily-review',
   'settings-permissions',
-  'settings-voice',
   'settings-usage',
   'settings-health',
   'module-skills',
@@ -467,7 +467,13 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
     case 'artifact-preview-image':
     case 'artifact-preview-unsupported':
     case 'artifact-preview-oversize':
-      return { ...state, activeSessionId: ARTIFACT_SESSION_ID, workbarCollapsed: false, workbarTab: 'files' };
+      return {
+        ...state,
+        activeSessionId: ARTIFACT_SESSION_ID,
+        workbarCollapsed: false,
+        workbarTab: 'files',
+        workbarPreview: true,
+      };
     case 'turn-narrative':
     case 'task-ledger':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
@@ -557,14 +563,14 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       // PR-SETTINGS-IA-CONSOLIDATE-0: 通用 now also hosts the proxy
       // block that used to live on its own 网络 page.
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'general' };
+    case 'settings-projects':
+      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'projects' };
     case 'settings-memory':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'memory' };
     case 'settings-daily-review':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'daily-review' };
     case 'settings-permissions':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'permissions' };
-    case 'settings-voice':
-      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'voice' };
     case 'settings-usage':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'usage' };
     case 'settings-health':
@@ -792,6 +798,53 @@ export async function seedE2eFixture(input: {
             { path: input.workspaceRoot, isWorktree: false, lastUsedAt: now },
           ],
           lastUsedAt: now,
+        },
+      ],
+    });
+  }
+  // Settings -> 项目: three catalog entries so the list shows real rhythm --
+  // one available and default-able, one with a long absolute path (the case
+  // that decides whether the mono line reads or wraps into a block), and one
+  // whose folder is gone, which is what the row's unavailable state is for.
+  if (input.fixture.scenario === 'settings-projects') {
+    // Real directories, because `available` is derived from the folder still
+    // existing -- seeding invented paths made every row render its unavailable
+    // state, which is not the list a reviewer needs to judge. `retired-prototype`
+    // below is deliberately NOT created: one genuinely missing folder is what
+    // proves the unavailable row still reads correctly.
+    const designSystemPath = join(input.workspaceRoot, 'astryx-design-system');
+    await mkdir(designSystemPath, { recursive: true });
+    await writeJson(join(input.workspaceRoot, 'projects.json'), {
+      schemaVersion: 1,
+      projects: [
+        {
+          id: 'proj-fixture-maka',
+          name: 'maka-agent',
+          identity: `folder:${input.workspaceRoot}`,
+          locations: [{ path: input.workspaceRoot, isWorktree: false, lastUsedAt: now }],
+          lastUsedAt: now,
+        },
+        {
+          id: 'proj-fixture-long',
+          name: 'astryx-design-system',
+          identity: `folder:${designSystemPath}`,
+          locations: [
+            { path: designSystemPath, isWorktree: false, lastUsedAt: now - 86_400_000 },
+          ],
+          lastUsedAt: now - 86_400_000,
+        },
+        {
+          id: 'proj-fixture-gone',
+          name: 'retired-prototype',
+          identity: 'folder:/Users/maka/Developer/retired-prototype',
+          locations: [
+            {
+              path: '/Users/maka/Developer/retired-prototype',
+              isWorktree: false,
+              lastUsedAt: now - 604_800_000,
+            },
+          ],
+          lastUsedAt: now - 604_800_000,
         },
       ],
     });

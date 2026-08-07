@@ -44,4 +44,5 @@
 @import "./styles/theme-glass.css" layer(components);
 @import "./styles/prompt-rail.css" layer(components);
 @import "./styles/quote-side-panel.css" layer(components);
+@import "./styles/custom-pet-companion.css" layer(components);
 @import "./styles/astryx-mount.css" layer(components);

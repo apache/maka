@@ -1,4 +1,14 @@
+/**
+ * Badge tones. Still its own vocabulary because Astryx's Badge has an `info`
+ * pill and its own idea of `neutral`, so a Badge can express a shade the dot
+ * cannot — mapping it through the status vocabulary would flatten that.
+ *
+ * Only 一处 still renders these (the subagent settings page). Everything else
+ * on the settings surface is a dot plus plain text, per the "no decorative
+ * Badge" principle.
+ */
 export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'destructive';
+
 export function statusBadgeVariant(tone: StatusTone): 'success' | 'warning' | 'error' | 'info' | 'neutral' {
   switch (tone) {
     case 'success': return 'success';
@@ -10,19 +20,3 @@ export function statusBadgeVariant(tone: StatusTone): 'success' | 'warning' | 'e
     case 'neutral': return 'neutral';
   }
 }
-
-/**
- * StatusDot variant for a tone. The settings surface's status language is a
- * dot + plain text ("no decorative Badge" — astryx docs principles); Astryx's
- * StatusDot has no `info` rung, so informational states ride the accent dot.
- */
-export function statusDotVariant(tone: StatusTone): 'success' | 'warning' | 'error' | 'accent' | 'neutral' {
-  switch (tone) {
-    case 'success': return 'success';
-    case 'warning': return 'warning';
-    case 'destructive': return 'error';
-    case 'info': return 'accent';
-    case 'neutral': return 'neutral';
-  }
-}
-

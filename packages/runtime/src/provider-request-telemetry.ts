@@ -630,28 +630,7 @@ function preparedCapture(
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {
   const { abortSignal: _abortSignal, headers: _headers, ...safe } = params;
-  return redactOperationMemoryAudio(safe) as Record<string, unknown>;
-}
-
-const OPERATION_MEMORY_AUDIO_REDACTION = '[redacted:operation-memory-audio]';
-
-function redactOperationMemoryAudio(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactOperationMemoryAudio);
-  const record = asRecord(value);
-  if (!record) return value;
-  if (
-    typeof record.filename === 'string' &&
-    record.filename.startsWith('voice-input.') &&
-    typeof record.mediaType === 'string' &&
-    record.mediaType.startsWith('audio/') &&
-    'data' in record
-  ) {
-    return { ...record, data: OPERATION_MEMORY_AUDIO_REDACTION };
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  return Object.fromEntries(
-    Object.entries(record).map(([key, entry]) => [key, redactOperationMemoryAudio(entry)]),
-  );
+  return safe;
 }
 
 function abortStatus(signal: AbortSignal | undefined, error: unknown): 'failed' | 'aborted' {

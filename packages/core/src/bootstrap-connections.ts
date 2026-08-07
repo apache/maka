@@ -16,8 +16,15 @@
 import type { LlmConnection, ProviderType, UpdateConnectionInput } from './llm-connections.js';
 
 export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
+/** Models enabled on a fresh OpenCode Free connection (default first). */
+export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
+  OPENCODE_FREE_DEFAULT_MODEL,
+  'mimo-v2.5-free',
+  'deepseek-v4-flash-free',
+] as const;
 export const OPENCODE_FREE_LEGACY_DEFAULT_MODEL = 'big-pickle';
-export const OPENCODE_FREE_BOOTSTRAP_VERSION = 2;
+/** v1: big-pickle only; v2: nemotron only; v3: three free models enabled. */
+export const OPENCODE_FREE_BOOTSTRAP_VERSION = 3;
 
 const OPENCODE_FREE_BOOTSTRAP_EXTRAS = {
   makaBootstrap: { id: 'opencode-free', version: OPENCODE_FREE_BOOTSTRAP_VERSION },
@@ -28,6 +35,7 @@ export interface BootstrapConnectionSeed {
   readonly name: string;
   readonly providerType: ProviderType;
   readonly defaultModel: string;
+  readonly enabledModelIds?: readonly string[];
   readonly isDefault: boolean;
   readonly extras?: Record<string, unknown>;
 }
@@ -42,6 +50,7 @@ const OPENCODE_FREE_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   name: 'OpenCode Free',
   providerType: 'opencode-free',
   defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
+  enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   extras: OPENCODE_FREE_BOOTSTRAP_EXTRAS,
 };
 
@@ -58,6 +67,25 @@ const OPENAI_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   providerType: 'openai',
   defaultModel: 'gpt-4o-mini',
 };
+
+/**
+ * Default `enabledModelIds` when a create call omits them.
+ *
+ * Most providers stay on the historical "only the default model" seed. OpenCode
+ * Free is the exception: #2431 made the free inventory the product default for
+ * both bootstrap and a user-driven "保存供应商" create, so omitting the field
+ * must not collapse back to a one-model connection.
+ *
+ * Returns `undefined` when create should keep the generic single-default rule.
+ * An explicit empty or partial list from the caller is still honored — this
+ * only fills a missing selection.
+ */
+export function defaultEnabledModelIdsWhenOmitted(
+  providerType: ProviderType,
+): readonly string[] | undefined {
+  if (providerType === 'opencode-free') return OPENCODE_FREE_DEFAULT_ENABLED_MODELS;
+  return undefined;
+}
 
 /**
  * Resolve the bootstrap connection seeds for a fresh install.
@@ -87,28 +115,62 @@ export function resolveBootstrapConnections(env: BootstrapEnv): readonly Bootstr
  * Migrate only the exact connection shape written by Maka's historical
  * OpenCode Free bootstrap. Any user-visible customization makes ownership
  * ambiguous and therefore fails closed.
+ *
+ * Recognized untouched shapes:
+ * - v1: `big-pickle` only, no extras
+ * - v2: `nemotron-3-ultra-free` only, bootstrap extras version 2
  */
 export function resolveOpenCodeFreeBootstrapMigration(
   connection: LlmConnection,
 ): UpdateConnectionInput | undefined {
-  if (
-    connection.slug !== 'opencode-free' ||
-    connection.name !== 'OpenCode Free' ||
-    connection.providerType !== 'opencode-free' ||
-    connection.baseUrl !== undefined ||
-    connection.defaultModel !== OPENCODE_FREE_LEGACY_DEFAULT_MODEL ||
-    connection.enabled !== true ||
-    connection.enabledModelIds?.length !== 1 ||
-    connection.enabledModelIds[0] !== OPENCODE_FREE_LEGACY_DEFAULT_MODEL ||
-    connection.models !== undefined ||
-    connection.extras !== undefined
-  ) {
-    return undefined;
-  }
+  if (!isUntouchedOpenCodeFreeBootstrapBase(connection)) return undefined;
+
+  const isLegacyV1 =
+    connection.defaultModel === OPENCODE_FREE_LEGACY_DEFAULT_MODEL &&
+    sameStringList(connection.enabledModelIds, [OPENCODE_FREE_LEGACY_DEFAULT_MODEL]) &&
+    connection.extras === undefined;
+
+  const isV2 =
+    connection.defaultModel === OPENCODE_FREE_DEFAULT_MODEL &&
+    sameStringList(connection.enabledModelIds, [OPENCODE_FREE_DEFAULT_MODEL]) &&
+    bootstrapVersion(connection) === 2;
+
+  if (!isLegacyV1 && !isV2) return undefined;
 
   return {
     defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
-    enabledModelIds: [OPENCODE_FREE_DEFAULT_MODEL],
+    enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS],
     extras: OPENCODE_FREE_BOOTSTRAP_EXTRAS,
   };
+}
+
+function isUntouchedOpenCodeFreeBootstrapBase(connection: LlmConnection): boolean {
+  return (
+    connection.slug === 'opencode-free' &&
+    connection.name === 'OpenCode Free' &&
+    connection.providerType === 'opencode-free' &&
+    connection.baseUrl === undefined &&
+    connection.enabled === true &&
+    connection.models === undefined
+  );
+}
+
+function bootstrapVersion(connection: LlmConnection): number | undefined {
+  const extras = connection.extras;
+  if (!extras || typeof extras !== 'object' || Array.isArray(extras)) return undefined;
+  const keys = Object.keys(extras);
+  if (keys.length !== 1 || keys[0] !== 'makaBootstrap') return undefined;
+  const bootstrap = extras.makaBootstrap;
+  if (!bootstrap || typeof bootstrap !== 'object' || Array.isArray(bootstrap)) return undefined;
+  const record = bootstrap as { id?: unknown; version?: unknown };
+  if (record.id !== 'opencode-free' || typeof record.version !== 'number') return undefined;
+  if (Object.keys(record).length !== 2) return undefined;
+  return record.version;
+}
+
+function sameStringList(
+  actual: readonly string[] | undefined,
+  expected: readonly string[],
+): boolean {
+  return actual?.length === expected.length && actual.every((id, index) => id === expected[index]);
 }

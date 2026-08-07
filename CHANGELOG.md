@@ -2,6 +2,122 @@
 
 ## Unreleased
 
+## 0.1.8 - 2026-08-08
+
+### Highlights
+
+- Added Codex-style side conversations: branch a side thread from the one you
+  are in and come back with the answer (#2428).
+- Gave projects a first-class Settings page: manage every project Maka knows,
+  pick the default one new conversations open in (explicit default beats
+  last-used; the composer can still switch per conversation) (#2446), rename
+  and reveal a project from its row menu (#2447), and carried the list on the
+  entity-list components with folder anchors and tail-preserving path
+  truncation (#2451).
+- Closed three self-serve gaps reported by users: the Models page can set the
+  default connection where the 默认 badge lives (#2421), new conversations
+  take a configurable default thinking level and the composer menu says
+  模型默认 instead of a deceptive 默认 (#2430), and the 外观 page structure,
+  grouping, and copy were brought under the settings idiom (#2343).
+- Introduced custom pets end to end: a pack contract with atomic storage
+  (#2422), safe pack import (#2423), a pack library (#2427), persisted
+  selection (#2437), management in Settings (#2440), rendering (#2442), and
+  runtime-state-driven animation (#2444).
+- Enabled Mimo and DeepSeek free models by default for OpenCode Free (#2431)
+  and seeded its default inventory on create (#2443).
+- Removed the product Voice module end to end (#2426).
+- Closed the Runtime Host M4 readiness gaps (#2419).
+
+### Reliability and developer experience
+
+- Windows: serialized root marker repair (#2438), stabilized portable path
+  tests (#2395), enabled long paths for bare Git fixtures (#2435), normalized
+  CI process identities (#2334), and refreshed the test skip inventory
+  (#2434).
+- Storage: removed worktrees outside their cwd (#2424).
+- Renamed the desktop UI components to kebab-case (#2417), finished two CI
+  cleanups and reformatted what landed unformatted (#2432), and trimmed
+  low-value guard and CSS-contract suites while fixing sqlite warning noise
+  (#2425).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
+## 0.1.7 - 2026-08-07
+
+### Highlights
+
+- Rebuilt the composer attachment experience: staged attachments are Token
+  chips with tooltip metadata and a lightbox (#2393), with preview thumbnails
+  and file cards (#2367).
+- Unified the app's status language: what a status means is now named in one
+  place (#2397), the Settings surfaces state semantics instead of colours
+  (#2401), and the migration finished by deleting its own bridge (#2403) —
+  every status dot draws from a single definition, and five formerly
+  "active-blue" informational dots settled into their true quiet states.
+- Added bounded long-term memory extraction (#2117) and a runtime `WebFetch`
+  tool (#2362).
+- Moved the CLI onto Runtime Host: `maka run` (#2337) and TUI sessions
+  (#2308), and scanned finished runs' trajectories for retrieval (#2319).
+- Kept a running status line up for the whole live turn (#2356), opened linked
+  subagents from stream tools instead of the sidebar (#2383), restored the
+  transcript's markdown rhythm (#2348), handed the chat meta row back to
+  Astryx primitives (#2358), and exposed recovery for empty failed turns
+  (#2381).
+- Rebuilt the extension module pages on the shared ModulePage shell (#2266),
+  led the session trace with an Astryx-native overview (#2289), and unified
+  the workspace picker onto the composer's ghost-menu family (#2287).
+- The window titlebar states the session's project and name (#2327), and the
+  Pinned and Recent group headers carry a new-task trigger (#2364).
+- Upgraded Astryx 0.2.0 → 0.3.0 (#2288), unified lucide-react onto one major
+  (#2275), added a dependency audit lane (#2223), and published the bundled
+  Git runtime's source materials (#2235).
+
+### Reliability and developer experience
+
+- Provider transport: hardened incremental OpenAI Responses (#2247), stopped
+  reporting a truncated provider stream as a finished turn (#2297), sent the
+  Responses wire the options it reads and read the reasoning it returns
+  (#2328), settled stop cleanly when it aborts a pending question (#2257), and
+  bounded oversized prior turns (#2378).
+- Sessions and storage: made session copy retries idempotent (#2398),
+  preserved operational state across schema upgrades (#2361), imported legacy
+  JSONL session transcripts into SQLite (#2263), closed usage stores after
+  lease revocation (#2365), made active session joins replay-safe (#2368), and
+  validated swarm resume by agent id (#2375).
+- Chat and UI details: kept quote layer geometry stable during entry (#2377)
+  and shown only for settled selections (#2350), made the tool diff readable
+  with its counts on a collapsed group (#2300), kept the prompt rail clickable
+  on macOS (#2338), used standard tab order in the provider catalog (#2306),
+  and served Claude OAuth models from the curated catalog with real error
+  causes (#2336).
+- Desktop platform: isolated the dev build's userData root from release
+  (#2292), closed xAI OAuth callback connections and retried a busy port
+  (#2302), enforced a metadata-free renderer startup boundary (#2176), and
+  dropped the consumer-less update-download bridge (#2326) while giving the
+  update action a slot instead of a row (#2320).
+- Runtime and headless: compacted and sanitized agent tool contracts (#2349),
+  classified an expired probe budget as timeout (#2344), decided the tool call
+  event's ledger lane at push time (#2240), separated request latency from
+  liveness (#2392), measured the wire the Maka runtime actually dials (#2286),
+  and mounted build outputs into the task container rather than the repo root
+  (#2298).
+- Trimmed low-value and redundant tests across suites (#2404, #2406), and made
+  ordering assertions independent of fixed wall-clock budgets (#2304).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
 ## 0.1.6 - 2026-08-06
 
 ### Highlights

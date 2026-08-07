@@ -56,7 +56,10 @@ import {
   useToast,
   useUiLocale,
   type ModuleHubHeader,
+  dotForStatus,
+  type StatusSemantic,
 } from '@maka/ui';
+
 import {
   FileCode,
   Globe,
@@ -788,14 +791,25 @@ function McpServerInspector(props: {
   );
 }
 
-function mcpStatusDotVariant(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }): 'accent' | 'warning' | 'error' | 'neutral' {
-  // A failed connection is the one exceptional state; connected is the one
-  // live state worth the accent. Connecting is transient and indistinguishable
-  // from it by colour alone, so it stays neutral with the quiet states.
+function mcpStatusSemantic(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }): StatusSemantic {
   if (state.tone === 'error') return 'error';
-  if (state.tone === 'warning') return 'warning';
-  if (state.tone === 'success') return 'accent';
+  if (state.tone === 'warning') return 'attention';
+  // A connected server is healthy, not merely busy, so it takes success rather
+  // than the accent it used to borrow. That accent was a workaround from
+  // before this page had a word for "success" — accent means "live" everywhere
+  // else (a reminder waiting to fire wears it), and spending it on health made
+  // a connected server read as an in-flight one.
+  if (state.tone === 'success') return 'success';
+  // `info` here is genuinely quiet: 连接中 is transient and says nothing the
+  // user must act on, so it sits with the neutral states rather than claiming
+  // the eye. Other surfaces read their own `info` as "something is happening"
+  // and choose `active` — which is why the vocabulary has no `info` rung for
+  // them to disagree inside of.
   return 'neutral';
+}
+
+function mcpStatusDotVariant(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }) {
+  return dotForStatus(mcpStatusSemantic(state));
 }
 function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;

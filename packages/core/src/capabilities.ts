@@ -3,7 +3,6 @@ import type { BotProvider, BotReadinessState } from './bot-chat-settings.js';
 export const OS_PERMISSION_IDS = [
   'accessibility',
   'screen_recording',
-  'microphone',
   'notifications',
   'automation',
 ] as const;
@@ -82,7 +81,6 @@ export type CapabilityReadinessState = (typeof CAPABILITY_READINESS_STATES)[numb
 export type CapabilityId =
   | 'computer_use'
   | 'activity_recorder'
-  | 'voice'
   | 'memory_write'
   | `bot:${BotProvider}`;
 

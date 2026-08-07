@@ -113,6 +113,8 @@ export interface MakaSessionSwitchResult {
 export interface MakaPreparedSessionTurn {
   sessionId: string;
   turnId: string;
+  /** Host-owned Run identity when the adapter exposes exact Turn cancellation. */
+  runId?: string;
   events: AsyncIterable<SessionEvent>;
   /** Authoritative Session metadata available when the Turn was attached. */
   summary?: SessionSummary;

@@ -38,14 +38,14 @@ describe('composer quiet chrome', () => {
       />,
     );
 
-    // Quiet surface: no header attach/voice cluster, no standalone modes/skills triggers.
+    // Quiet surface: no header attach cluster, no standalone modes/skills triggers.
     assert.doesNotMatch(markup, /maka-composer-header-actions/);
     assert.doesNotMatch(markup, /maka-composer-header-context/);
     assert.doesNotMatch(markup, /maka-composer-modes-menu/);
     assert.doesNotMatch(markup, /maka-composer-streaming-hint/);
 
     // Footer left: plus → permission → model (+ thinking when levels offered).
-    // Footer right: send only (no mic by default).
+    // Footer right: send only.
     assert.match(markup, /permissionModeIcon/);
     assert.match(markup, /maka-composer-plus-menu/);
     assert.match(markup, /maka-composer-left-controls/);
@@ -64,8 +64,6 @@ describe('composer quiet chrome', () => {
     );
     // Thinking stays out of the model menu; without levels it does not mount.
     assert.doesNotMatch(markup, /maka-thinking-level-selector/);
-    assert.doesNotMatch(markup, /maka-composer-voice-button/);
-    assert.doesNotMatch(markup, /maka-composer-realtime-voice-button/);
   });
 
   it('places thinking beside the model in left-controls when levels are offered', () => {
@@ -178,6 +176,24 @@ describe('composer quiet chrome', () => {
     assert.doesNotMatch(tagCarrying(atRest, 'maka-thinking-level-selector'), /aria-disabled/, 'at rest the thinking menu is enabled');
   });
 
+  it('keeps Stop and an explicit Steer submit available during a running turn', () => {
+    const markup = render(
+      <Composer
+        onSend={() => true}
+        onSteer={() => true}
+        onStop={() => {}}
+        streaming
+        modelLabel="demo-model"
+      />,
+    );
+
+    assert.match(markup, /maka-composer-running-actions/);
+    assert.match(markup, /aria-label="停止"/);
+    assert.match(markup, /aria-label="插入消息"/);
+    assert.match(markup, /lucide-square/);
+    assert.match(markup, /lucide-arrow-up/);
+  });
+
   it('reads active modes off the footer toolbar, after the model pair', () => {
     const markup = render(
       <Composer
@@ -264,7 +280,7 @@ describe('composer quiet chrome', () => {
     assert.doesNotMatch(drawer, /data-mode=/);
   });
 
-  it('stages an image as a thumbnail preview and a file as an iconized token', () => {
+  it('stages every attachment as a Token chip; a decoded image chip is clickable', () => {
     const markup = render(
       <Composer
         onSend={() => true}
@@ -282,35 +298,36 @@ describe('composer quiet chrome', () => {
       markup.indexOf('maka-composer-context-drawer'),
       markup.indexOf('maka-composer-left-controls'),
     );
-    // An image with a host-supplied preview is a real Astryx Thumbnail showing
-    // those pixels — not a filename chip.
-    assert.match(drawer, /maka-composer-attachment-thumbnail/);
-    assert.match(drawer, /<img[^>]*src="blob:app\/shot"/);
-    // An image whose preview hasn't landed (or failed) renders as a NAMED file
-    // card — never an anonymous placeholder square.
-    const thumbCount = drawer.split('maka-composer-attachment-thumbnail').length - 1;
-    assert.equal(thumbCount, 1, 'only the previewable image is a thumbnail');
-    assert.match(drawer, /data-kind="image"/);
-    assert.match(drawer, /pending\.png/);
-    // A non-image file is a two-line card: kind icon tile, name, "EXT · size"
-    // meta, and a localized remove control — not a bare filename chip.
-    assert.match(drawer, /maka-composer-attachment-card/);
-    assert.match(drawer, /data-kind="doc"/);
+    // Maintainer decision on the #2367 follow-up: attachments keep the quote
+    // chips' Token rhythm — no inline thumbnails, no two-line cards.
+    assert.doesNotMatch(drawer, /maka-composer-attachment-thumbnail/);
+    assert.doesNotMatch(drawer, /maka-composer-attachment-card/);
+    const chipCount = drawer.split('maka-composer-attachment-token').length - 1;
+    assert.equal(chipCount, 3, 'every attachment is one Token chip');
+    // Kind icons ride the chips (image + doc here), names stay visible text.
+    assert.match(drawer, /lucide-file-image/);
+    assert.match(drawer, /lucide-file-type/);
     assert.match(drawer, /premier-league-tactics\.epub/);
-    assert.match(drawer, /EPUB · 3\.0 MB/);
-    assert.match(drawer, /aria-label="移除 premier-league-tactics\.epub"/);
-  });
-
-  it('shows a single voice control only when the host wires capture', () => {
-    const markup = render(
-      <Composer
-        onSend={() => true}
-        onStop={() => {}}
-        onToggleVoiceCapture={() => {}}
-        modelLabel="demo"
-      />,
+    // Only the decoded image is interactive: Token renders its invisible
+    // button (real button semantics) exactly when onClick is wired, and the
+    // lightbox trigger exists only for a set previewUrl.
+    assert.match(
+      drawer,
+      /<button[^>]*type="button"[^>]*>(?:<span[^>]*>)?shot\.png/,
+      'the previewable image chip must be clickable',
     );
-    assert.match(markup, /maka-composer-voice-button/);
-    assert.doesNotMatch(markup, /maka-composer-realtime-voice-button/);
+    assert.doesNotMatch(
+      drawer,
+      /<button[^>]*type="button"[^>]*>(?:<span[^>]*>)?pending\.png/,
+      'an image without a decoded preview stays inert',
+    );
+    // The full name and «EXT · size» meta ride the chip's Tooltip.
+    assert.match(drawer, /premier-league-tactics\.epub · EPUB · 3\.0 MB/);
+    // Astryx Token owns the remove affordance. English here because this
+    // render mounts no AstryxLocaleProvider — the zh catalog override
+    // (@astryx.token.remove) is covered by the localization suites.
+    assert.match(drawer, /aria-label="Remove premier-league-tactics\.epub"/);
+    // No lightbox mounts until a chip is actually clicked.
+    assert.doesNotMatch(markup, /astryx-lightbox/);
   });
 });

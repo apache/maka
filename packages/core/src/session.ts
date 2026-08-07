@@ -505,6 +505,13 @@ export function isLinkedSubagentSession(
   return linkedSubagentParentId(session) !== undefined;
 }
 
+/** Immediate linked parent session id, if this session is a linked child. */
+export function linkedSubagentParentSessionId(
+  session: Pick<SessionSummary, 'subagent' | 'subagentParent'>,
+): string | undefined {
+  return linkedSubagentParentId(session);
+}
+
 /** Read-model projection; input order is preserved at every tree level. */
 export function projectLinkedSessionTree(
   sessions: readonly SessionSummary[],
@@ -553,39 +560,6 @@ function linkedSubagentParentId(
     return session.subagentParent.parentSessionId;
   }
   return session.subagent?.parentSessionId;
-}
-
-/**
- * Filter a linked tree without leaking non-matching descendants through a
- * matching parent. Matching descendants whose ancestors do not match are
- * promoted to the nearest matching ancestor, or to a root when none exists.
- */
-export function filterLinkedSessionTree(
-  tree: LinkedSessionTree,
-  include: (session: SessionSummary) => boolean,
-): LinkedSessionTree {
-  const roots: SessionSummary[] = [];
-  const mutableChildren = new Map<string, SessionSummary[]>();
-
-  const visit = (session: SessionSummary, visibleParentId?: string): void => {
-    const included = include(session);
-    const nextVisibleParentId = included ? session.id : visibleParentId;
-    if (included) {
-      if (visibleParentId) {
-        const children = mutableChildren.get(visibleParentId) ?? [];
-        children.push(session);
-        mutableChildren.set(visibleParentId, children);
-      } else {
-        roots.push(session);
-      }
-    }
-    for (const child of tree.childrenByParentId.get(session.id) ?? []) {
-      visit(child, nextVisibleParentId);
-    }
-  };
-
-  for (const root of tree.roots) visit(root);
-  return { roots, childrenByParentId: mutableChildren };
 }
 
 function linkedParentChainContainsCycle(

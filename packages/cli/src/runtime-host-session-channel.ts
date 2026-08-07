@@ -32,6 +32,7 @@ export interface RuntimeHostSessionChannelOptions {
   now: () => number;
   onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
   onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
+  onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
 }
@@ -44,11 +45,13 @@ export class RuntimeHostSessionChannel {
   readonly #now: () => number;
   readonly #onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
   readonly #onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
+  readonly #onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   readonly #onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   readonly #onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
   readonly #turns = new Map<string, SessionEventQueue>();
   readonly #pendingFrames: SubscriptionFrame[] = [];
   readonly #pendingStartedTurns = new Map<string, MakaPreparedSessionTurn>();
+  readonly #pendingOpenedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingResolvedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingTerminalTurns: TerminalTurnSnapshot[] = [];
   #projector: RuntimeHostSessionProjector | undefined;
@@ -70,6 +73,7 @@ export class RuntimeHostSessionChannel {
     this.#now = options.now;
     this.#onTurnStarted = options.onTurnStarted;
     this.#onRuntimeResourceChanged = options.onRuntimeResourceChanged;
+    this.#onInteractionPending = options.onInteractionPending;
     this.#onInteractionResolved = options.onInteractionResolved;
     this.#onTurnTerminal = options.onTurnTerminal;
   }
@@ -135,6 +139,12 @@ export class RuntimeHostSessionChannel {
       this.#startedTurnBarrier = claimedTurnId;
     } else {
       this.#flushStartedTurns();
+    }
+    for (const interaction of this.snapshot.interactions.pending) {
+      this.#onInteractionPending(structuredClone(interaction));
+    }
+    for (const interaction of this.#pendingOpenedInteractions.splice(0)) {
+      this.#onInteractionPending(interaction);
     }
     for (const interaction of this.#pendingResolvedInteractions.splice(0)) {
       this.#onInteractionResolved(interaction);
@@ -231,9 +241,18 @@ export class RuntimeHostSessionChannel {
       this.#fail(new Error(`Runtime Host Session subscription closed: ${frame.reason}`));
       return;
     }
+    const previousPendingIds = new Set(
+      this.snapshot.interactions.pending.map((interaction) => interaction.interactionId),
+    );
     const update = this.#projector?.accept(frame);
     if (!update || !this.#projector) return;
     this.snapshot = this.#projector.snapshot;
+    for (const interaction of this.snapshot.interactions.pending) {
+      if (previousPendingIds.has(interaction.interactionId)) continue;
+      const pending = structuredClone(interaction);
+      if (this.#activated) this.#onInteractionPending(pending);
+      else this.#pendingOpenedInteractions.push(pending);
+    }
     for (const interaction of update.resolvedInteractions) {
       if (this.#activated) this.#onInteractionResolved(interaction);
       else this.#pendingResolvedInteractions.push(interaction);
@@ -243,6 +262,7 @@ export class RuntimeHostSessionChannel {
       const turn = {
         sessionId: this.sessionId,
         turnId: update.startedTurn.turnId,
+        runId: update.startedTurn.runId,
         events: this.eventsForTurn(update.startedTurn.turnId),
       } satisfies MakaPreparedSessionTurn;
       if (this.#activated && !this.#startedTurnBarrier) this.#onTurnStarted(turn);

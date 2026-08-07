@@ -15,10 +15,19 @@ export async function resolveDesktopSessionSelection(
     select(
       projectId: unknown,
     ): Promise<{ project: { id: string } | null; path: string }>;
+    /**
+     * Settings -> 偏好 -> 项目 -> 默认项目, or undefined for "no preference".
+     * Optional so the pure-selection callers and tests that predate the
+     * setting keep their two-argument shape.
+     */
+    defaultProjectId?(): Promise<string | undefined>;
   },
 ): Promise<CreateSessionInput> {
   if (input.cwd) return { ...input, cwd: input.cwd };
 
+  // An explicit project id is this conversation's own choice (the composer
+  // picker) and outranks the configured default -- that override is the whole
+  // reason the picker still exists once a default is set.
   if (input.projectId !== undefined) {
     const selected = await selection.select(input.projectId);
     return {
@@ -26,6 +35,25 @@ export async function resolveDesktopSessionSelection(
       cwd: selected.path,
       projectId: selected.project?.id ?? null,
     };
+  }
+
+  // No per-conversation choice: the configured default wins over the
+  // last-used project. A default that only applied when nothing was
+  // remembered would be a default in name only, since something is almost
+  // always remembered.
+  const configuredDefault = await selection.defaultProjectId?.();
+  if (configuredDefault !== undefined) {
+    try {
+      const selected = await selection.select(configuredDefault);
+      if (selected.project) {
+        return { ...input, cwd: selected.path, projectId: selected.project.id };
+      }
+    } catch {
+      // Archived, unavailable, or deleted since it was chosen. Creating the
+      // session still has to succeed, so fall through to the last-used
+      // project; the settings page is where that degradation is reported,
+      // because a toast at session-create time would blame the wrong action.
+    }
   }
 
   const selected = await selection.current();

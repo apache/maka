@@ -3,7 +3,7 @@
 // PageHeader — the shared header shell for the SETTINGS intro dialect:
 //
 //   SETTINGS intros (as='h3', or as='h2' for the About hero): the smaller
-//      Permission / Health / Voice / About page intro cards — a body-tier
+//      Permission / Health / About page intro cards — a body-tier
 //      semibold title, a lede, and a trailing quieter META cluster
 //      (RelativeTime + refresh Button) or a leading feature ICON + trailing
 //      BADGE chip. Previously `.settingsPermissionIntro`,
@@ -41,8 +41,8 @@ export interface PageHeaderProps {
   /** Optional leading glyph, rendered in a framed icon box left of the content. */
   icon?: ReactNode;
   /**
-   * Optional marker rendered inline right AFTER the title (voice 本地自检
-   * chip, About version/channel pills). Accepts one node or a fragment.
+   * Optional marker rendered inline right AFTER the title (About
+   * version/channel pills). Accepts one node or a fragment.
    */
   badge?: ReactNode;
   /**

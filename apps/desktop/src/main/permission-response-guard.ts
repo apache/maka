@@ -15,6 +15,7 @@ import {
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
 const MAX_TURN_ID_LENGTH = 128;
+const MAX_COPY_ID_LENGTH = 128;
 const MAX_BRANCH_NAME_LENGTH = 200;
 const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
@@ -28,12 +29,14 @@ interface WorkspaceFileReferencePosition {
   start: number;
 }
 
+export type RuntimeHostBranchFromTurnInput = BranchFromTurnInput & { copyId: string };
+export type RuntimeHostReviseBeforeTurnInput = ReviseBeforeTurnInput & { copyId: string };
+
 interface NormalizedSendSessionCommand {
   type: 'send';
   turnId?: string;
   text: string;
   displayText?: string;
-  voiceOperationId?: string;
   skillIds?: string[];
   attachmentItems?: unknown;
   turnOrchestration?: TurnOrchestration;
@@ -99,9 +102,13 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
     value.name === undefined
       ? undefined
       : normalizeOptionalString(value.name, 'Invalid branch name', MAX_BRANCH_NAME_LENGTH);
+  if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
+    throw new Error('Invalid branch sideConversation');
+  }
   return {
     sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
     ...(name ? { name } : {}),
+    ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };
 }
 
@@ -116,18 +123,34 @@ export function normalizeReviseBeforeTurnInput(input: unknown): ReviseBeforeTurn
   };
 }
 
+export function normalizeRuntimeHostBranchFromTurnInput(
+  input: unknown,
+): RuntimeHostBranchFromTurnInput {
+  const value = requireObject(input, 'Invalid branch turn input');
+  return {
+    ...normalizeBranchFromTurnInput(value),
+    copyId: normalizeRequiredString(value.copyId, 'Invalid conversation copyId', MAX_COPY_ID_LENGTH),
+  };
+}
+
+export function normalizeRuntimeHostReviseBeforeTurnInput(
+  input: unknown,
+): RuntimeHostReviseBeforeTurnInput {
+  const value = requireObject(input, 'Invalid revision turn input');
+  return {
+    ...normalizeReviseBeforeTurnInput(value),
+    copyId: normalizeRequiredString(value.copyId, 'Invalid conversation copyId', MAX_COPY_ID_LENGTH),
+  };
+}
+
 export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessionCommand | undefined {
   const value = requireObject(input, 'Invalid session command');
   if (value.type !== 'send') return undefined;
   const text = normalizeSendText(value.text);
   const displayText =
     value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
-  const voiceOperationId =
-    value.voiceOperationId === undefined
-      ? undefined
-      : normalizeVoiceOperationId(value.voiceOperationId);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0 && !voiceOperationId) {
+  if (!text.trim() && skillIds.length === 0) {
     throw new Error('Invalid send text');
   }
   return {
@@ -135,7 +158,6 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...normalizeOptionalSendTurnId(value.turnId),
     text,
     ...(displayText !== undefined ? { displayText } : {}),
-    ...(voiceOperationId ? { voiceOperationId } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
     ...(value.turnOrchestration !== undefined
@@ -185,17 +207,6 @@ function normalizeOptionalWorkspaceFileReferences(
     return { value: tokenValue, start: value.start };
   });
   return workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {};
-}
-
-function normalizeVoiceOperationId(input: unknown): string {
-  if (
-    typeof input !== 'string' ||
-    input.length > 64 ||
-    !/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(input)
-  ) {
-    throw new Error('Invalid voice operation id');
-  }
-  return input;
 }
 
 function normalizeTurnOrchestration(input: unknown): TurnOrchestration {

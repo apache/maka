@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { arch as osArch, release as osRelease } from 'node:os';
+import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import { app, ipcMain, shell, type IpcMain } from 'electron';
 import { resolveProjectGitInfo } from '@maka/runtime';
 import type { createMainWindowController } from './main-window.js';
@@ -71,6 +71,9 @@ export function registerAppIpc(
       arch: osArch(),
       osRelease: osRelease(),
       workspacePath: workspaceRoot,
+      // Lets the renderer collapse a home prefix to `~` in displayed paths;
+      // it has no other way to learn this.
+      homePath: homedir(),
       projectId: selection.projectId,
       projectPath,
       projectGit: await resolveProjectGitInfo(projectPath),
@@ -90,6 +93,19 @@ export function registerAppIpc(
     deps.projectManagement.select(projectId));
   targetIpc.handle('projects:relink', (_event, projectId: unknown) =>
     deps.projectManagement.relink(projectId));
+  // Reveal takes an id, not a path: main asks the catalog where that project
+  // lives, so a renderer cannot ask for an arbitrary directory to be opened.
+  // The existing `project` open-path guard then re-checks the resolved
+  // directory before it reaches the shell.
+  targetIpc.handle('projects:reveal', async (_event, projectId: unknown): Promise<OpenPathResult> => {
+    const projectPath = await deps.projectManagement.pathFor(projectId);
+    if (!projectPath) return { ok: false, reason: 'missing' };
+    const resolved = await resolveOpenPath({ key: 'project', workspaceRoot, projectRoot: projectPath });
+    if (!resolved.ok) return resolved;
+    const error = await shell.openPath(resolved.path);
+    if (error) return { ok: false, reason: 'open-failed' };
+    return { ok: true, opened: resolved.key };
+  });
   targetIpc.handle('projects:rename', (_event, projectId: unknown, name: unknown) =>
     deps.projectManagement.rename(projectId, name));
   targetIpc.handle('projects:archive', (_event, projectId: unknown) =>

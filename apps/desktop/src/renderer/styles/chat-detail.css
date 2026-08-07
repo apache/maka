@@ -7,9 +7,13 @@
 /* ──────────────────────────────────────────────────────────────────────── */
 
 .maka-detail-with-artifacts {
-  display: flex;
-  flex-direction: row;
-  align-items: stretch;
+  display: grid;
+  grid-template-areas:
+    "main right-handle right"
+    "bottom-handle right-handle right"
+    "bottom right-handle right";
+  grid-template-columns: minmax(0, 1fr) 0 auto;
+  grid-template-rows: minmax(0, 1fr) 0 auto;
   flex: 1 1 auto;
   height: auto;
   min-width: 0;
@@ -17,84 +21,17 @@
 }
 
 .maka-detail-with-artifacts > .mainColumn {
-  flex: 1 1 auto;
+  grid-area: main;
   min-width: 0;
-}
-
-/* Astryx owns the workbar's chrome (Card, Toolbar, TabList, Badge). What is
-   left here is what those components cannot know: the width the user dragged,
-   a header/body split that keeps the body a scroll parent, and that this column
-   is a floating plate, not a region drawn inside another one.
-
-   The seam is the canvas between the two plates — the same gap the content
-   frame already leaves on its other three sides, and the shell's only way of
-   separating surfaces. It replaced a hairline, and for a while it was supposed
-   to be a tone step against the conversation instead; that step does not exist
-   anywhere but darwin dark, where a glass override happens to lift the content
-   surface. Measured on darwin light: plate, workbar and rail all resolve to
-   `oklch(1 0 0)`, and the column had no visible boundary at all. A gap has no
-   palette to be right in. */
-/* The column's motion box, and the only part of the column that survives the
-   collapse (chat-workbar.tsx). It owns the animated width and the clip; the
-   column inside keeps a fixed width so it slides off rather than reflowing.
-
-   Same shape as `.maka-sidenav-motion` on the other side, and the same reason:
-   a width transition needs one element that is the same node before and after.
-   The rail can hold its own width because SideNav is never unmounted; this
-   column is, so the box has to outlive it. */
-.maka-workbar-motion {
-  flex: 0 0 auto;
-  width: var(--maka-session-workbar-width, 480px);
   min-height: 0;
-  overflow: hidden;
-  /* The canvas gutter between the two plates, and it belongs to this one: it
-     exists exactly as long as the panel does, so it leaves with it rather than
-     leaving a strip of canvas behind a shut panel. Both properties ease on the
-     same curve, so the gutter closes with the width instead of snapping. */
-  margin-left: var(--agents-content-area-gap);
-  transition:
-    width var(--duration-large) var(--ease-out-strong),
-    margin-left var(--duration-large) var(--ease-out-strong);
 }
 
-.maka-workbar-motion[data-collapsed] {
-  width: 0;
-  margin-left: 0;
-}
-
-/* A pointer drag feeds a new width back on every move; a standing transition
-   would restart on each one and leave the column trailing the cursor. Astryx
-   marks its handle `data-resizing` for exactly this, and the handle is this
-   box's sibling — the same gate `.maka-sidenav-motion` uses, read from the row
-   rather than from within.
-
-   Capped rather than removed, the way every other motion suppression in this
-   app is: `transition-property: none` CANCELS a transition already in flight,
-   and the column's teardown is scheduled on that transition's end. Grabbing the
-   handle while the panel is closing would otherwise strand the column mounted
-   behind a shut panel. */
-/* Astryx marks `data-resizing` only while a POINTER is down; its arrow-key path
-   commits a size and ends in the same tick, so it never appears there. Without
-   the focused handle in this gate, every keypress restarts the ease and a 10px
-   step takes 280ms to arrive — measured 400 → 405.7 → 408.1 → … → 410 — while
-   the announced `aria-valuenow` is already at the new value. Holding the key
-   crawls. `:focus-visible` is the keyboard half of the same "the user is
-   sizing this right now" fact.
-
-   Scoped away from the collapsed state so a handle that still holds focus
-   cannot cap the collapse ease itself; the box carries that state, which is
-   what makes this expressible here. */
-.maka-detail-with-artifacts:has([data-resizing], .maka-workbar-resize-handle:focus-visible)
-  .maka-workbar-motion:not([data-collapsed]) {
-  transition-duration: 0.01ms;
+.maka-workbar-layout-vars,
+.maka-workbar-workspace-contents {
+  display: contents;
 }
 
 .maka-session-workbar {
-  width: var(--maka-session-workbar-width, 480px);
-  /* Load-bearing during the collapse, not just a resize clamp: it is what keeps
-     the column at full width inside a box narrowing to zero. */
-  min-width: 320px;
-  max-width: 600px;
   min-height: 0;
   overflow: hidden;
   display: grid;
@@ -109,16 +46,199 @@
   box-sizing: border-box;
 }
 
-/* `.maka-workbar-resize-handle` survives only so the narrow breakpoint further
-   down can hide the handle. */
+.maka-session-workbar[data-placement="right"] {
+  grid-area: right;
+  width: var(--maka-session-workbar-width, 480px);
+  min-width: 320px;
+  max-width: 600px;
+  margin-left: var(--agents-content-area-gap);
+}
+
+.maka-session-workbar[data-placement="bottom"] {
+  grid-area: bottom;
+  width: 100%;
+  height: var(--maka-session-bottom-panel-height, 300px);
+  min-height: 180px;
+  max-height: 520px;
+  margin-top: var(--agents-content-area-gap);
+  padding-top: 0;
+}
+
+.maka-session-workbar[data-collapsed] {
+  display: none;
+}
+
+.maka-workbar-resize-handle-right {
+  grid-area: right-handle;
+}
+
+.maka-workbar-resize-handle-bottom {
+  grid-area: bottom-handle;
+}
+
+.maka-session-workbar-panel[data-overlay] {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  background: var(--agents-content-area-bg);
+  border-radius: var(--radius-modal);
+  box-sizing: border-box;
+}
+
+.maka-session-workbar-panel[data-overlay][data-placement="right"] {
+  grid-area: right;
+  width: var(--maka-session-workbar-width, 480px);
+  min-width: 320px;
+  max-width: 600px;
+  margin-left: var(--agents-content-area-gap);
+  padding-top: calc(var(--maka-plate-titlebar-clearance) + var(--size-element-sm));
+}
+
+.maka-session-workbar-panel[data-overlay][data-placement="bottom"] {
+  grid-area: bottom;
+  width: 100%;
+  height: var(--maka-session-bottom-panel-height, 300px);
+  min-height: 180px;
+  max-height: 520px;
+  margin-top: var(--agents-content-area-gap);
+  padding-top: var(--size-element-sm);
+}
 
 .maka-session-workbar-toolbar {
+  position: relative;
+  z-index: 2;
   min-width: 0;
 }
 
-.maka-session-workbar-tab-list {
+.maka-session-workbar-toolbar [role="toolbar"] > div {
   width: 100%;
+  min-width: 0;
+}
+
+.maka-workbar-tab-strip {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
   flex: 0 0 auto;
+}
+
+.maka-workbar-tab-list {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: var(--space-1);
+  scrollbar-width: none;
+}
+
+.maka-workbar-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.maka-workbar-tab-context {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.maka-workbar-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  height: var(--size-element-sm);
+  border-radius: var(--radius-element);
+  color: var(--foreground-secondary);
+  touch-action: none;
+  user-select: none;
+}
+
+.maka-workbar-tab:hover,
+.maka-workbar-tab[data-active] {
+  background: var(--color-overlay-hover);
+  color: var(--foreground);
+}
+
+.maka-workbar-tab[data-active]::after {
+  position: absolute;
+  right: var(--space-2);
+  bottom: -1px;
+  left: var(--space-2);
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  content: "";
+}
+
+.maka-workbar-tab[data-dragging] {
+  z-index: 2;
+  opacity: 0.72;
+  box-shadow: var(--shadow-low);
+}
+
+.maka-workbar-tab[data-preparing] {
+  cursor: progress;
+}
+
+.maka-workbar-tab-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.maka-workbar-tab-spinner {
+  animation: maka-spin 1s linear infinite;
+}
+
+.maka-workbar-tab-select {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: var(--maka-text-supporting);
+}
+
+.maka-workbar-tab[data-active] .maka-workbar-tab-select {
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-workbar-tab-select:focus-visible {
+  border-radius: var(--radius-element);
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--focus-ring-width));
+}
+
+.maka-workbar-tab[data-preview] .maka-workbar-tab-label {
+  font-style: italic;
+}
+
+.maka-workbar-tab-label {
+  overflow: hidden;
+  max-width: 112px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-workbar-tab-close {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  margin-right: 1px;
+}
+
+.maka-workbar-new-tab {
+  flex: 0 0 auto;
+  margin-left: var(--space-1);
 }
 
 .maka-session-workbar-panel {
@@ -128,6 +248,99 @@
 
 /* Section sets its own `display`, so the attribute needs the override. */
 .maka-session-workbar-panel[hidden] { display: none; }
+
+.maka-workbar-panel-loading {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 0;
+  color: var(--muted-foreground);
+}
+
+.maka-workbar-launcher {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.maka-workbar-launcher-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: min(100%, 360px);
+}
+
+.maka-workbar-launcher-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  text-align: left;
+}
+
+.maka-workbar-launcher-row:hover,
+.maka-workbar-launcher-row:focus-visible {
+  background: var(--color-overlay-hover);
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
+.maka-workbar-launcher-row:active {
+  transform: scale(0.98);
+}
+
+.maka-workbar-launcher-row[data-secondary]:first-of-type,
+.maka-workbar-launcher-row:not([data-secondary])
+  + .maka-workbar-launcher-row[data-secondary] {
+  margin-top: var(--space-2);
+  padding-top: calc(var(--space-2) + var(--space-1));
+  border-top: var(--border-width-hairline) solid var(--border);
+  border-radius: 0 0 var(--radius-element) var(--radius-element);
+}
+
+.maka-workbar-launcher-row:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.maka-workbar-launcher-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--foreground-secondary);
+}
+
+.maka-workbar-launcher-icon > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.maka-workbar-launcher-label {
+  overflow: hidden;
+  font: var(--maka-text-supporting);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-workbar-launcher-shortcut {
+  padding: 2px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--card-bg);
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  white-space: nowrap;
+}
 
 /* Session trace (#1625): a read-only causal timeline in the workbar.
 
@@ -140,6 +353,90 @@
   height: 100%;
   min-height: 0;
   overflow-y: auto;
+}
+
+.maka-session-review-panel {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.maka-session-review-panel > .astryx-toolbar {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--agents-content-area-bg);
+}
+
+.maka-session-review-toolbar {
+  min-width: 0;
+}
+
+.maka-session-review-source {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.maka-session-review-source::-webkit-scrollbar {
+  display: none;
+}
+
+.maka-session-review-summary {
+  display: flex;
+  min-height: 30px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.maka-session-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.maka-session-review-more {
+  display: flex;
+  justify-content: center;
+  padding-block: var(--space-2);
+}
+
+.maka-session-terminal-panel {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--foreground);
+  background: var(--agents-content-area-bg);
+}
+
+.maka-session-terminal-panel > .astryx-banner {
+  flex: none;
+  margin: var(--space-2);
+}
+
+.maka-session-terminal-xterm {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.maka-session-terminal-xterm .xterm {
+  height: 100%;
+}
+
+.maka-session-terminal-xterm .xterm-viewport {
+  scrollbar-width: thin;
 }
 
 /* The live region is a wrapper only; its children carry their own spacing. */
@@ -934,34 +1231,31 @@
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
   .maka-detail-with-artifacts {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "main"
+      "bottom-handle"
+      "bottom"
+      "right-handle"
+      "right";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 0 auto 0 auto;
   }
 
-  /* Stacked, the column is a row of the grid rather than a flex item, and it
-     has no titlebar above it to clear. Height is what would animate here; it is
-     not wired, so the box just sizes to its content and collapses to nothing.
-     Capped rather than removed: the width still changes, and its transition end
-     is what tears the column down. The gutter turns with the stack — the two
-     plates now sit above and below rather than side by side. */
-  .maka-workbar-motion {
-    width: 100%;
-    margin-left: 0;
-    margin-top: var(--agents-content-area-gap);
-    transition-duration: 0.01ms;
-  }
-
-  .maka-workbar-motion[data-collapsed] {
-    margin-top: 0;
-  }
-
-  .maka-session-workbar {
+  .maka-session-workbar[data-placement],
+  .maka-session-workbar-panel[data-overlay][data-placement] {
     width: 100%;
     min-width: 0;
     max-width: none;
     min-height: min(220px, 42dvh);
     max-height: min(42dvh, 360px);
+    height: min(42dvh, 360px);
+    margin-left: 0;
+    margin-top: var(--agents-content-area-gap);
     padding-top: 0;
+  }
+
+  .maka-session-workbar-panel[data-overlay][data-placement] {
+    padding-top: var(--size-element-sm);
   }
 
   .maka-workbar-resize-handle { display: none; }

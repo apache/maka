@@ -42,7 +42,6 @@ export function SessionListPanel(props: {
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
-  childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
   viewMode?: SessionViewMode;
   onViewModeChange?: (mode: SessionViewMode) => void;
   onSelectSession(sessionId: string): void;
@@ -159,9 +158,13 @@ export function SessionListPanel(props: {
             groups={groups}
             worktreeSessionIds={props.worktreeSessionIds}
             projectActions={props.projectActions}
-            childSessionsByParentId={props.childSessionsByParentId}
             onSelectSession={props.onSelectSession}
             rowActions={props.rowActions}
+            /* The group-header trigger is the SAME creation path as the rail's
+               新任务 row: one handler, two proximity entries (decision D1-a:
+               a session created from the Pinned header is an ordinary new
+               session, nothing auto-pinned). */
+            onNewTask={props.onNew}
             heading={onViewModeChange ? copy.title : undefined}
             headingEnd={groupingSwitch}
           />

@@ -18,7 +18,6 @@ import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event'
 import type { StoredMessage } from '@maka/core/session';
 import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
-import type { EphemeralVoiceAudio } from '@maka/core/voice';
 import type { ToolMode } from '@maka/core/tool-mode';
 
 // ============================================================================
@@ -84,8 +83,6 @@ export interface InvocationRequest {
   /** Trusted effective tool protocol snapshot for this invocation. */
   toolMode?: ToolMode;
   text: string;
-  /** Operation-owned raw audio, excluded from every durable projection. */
-  voiceAudio?: EphemeralVoiceAudio;
   /** Optional attachments bound to this user turn. */
   attachments?: AttachmentRef[];
   /** Optional inline quoted excerpts bound to this user turn. */

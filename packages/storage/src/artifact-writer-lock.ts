@@ -5,6 +5,7 @@ import { lstat, mkdir, open, realpath, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path';
 import { unlock, waitForLock } from 'fs-native-extensions';
 import { ARTIFACT_WRITER_LOCK_FILE } from './artifact-storage-layout.js';
+import { withArtifactWriterBootstrapLock } from './artifact-writer-bootstrap-lock.js';
 import {
   prepareArtifactWriterBootstrapAuthority,
   prepareArtifactWriterLockAuthorityForMarkedRoot,
@@ -21,7 +22,7 @@ export async function withArtifactWriterLock<T>(
   await mkdir(workspaceRoot, { recursive: true });
   const requestedCanonicalRoot = await realpath(workspaceRoot);
   const bootstrap = await prepareArtifactWriterBootstrapAuthority(requestedCanonicalRoot);
-  return withBootstrapArtifactWriterLock(bootstrap.lockPath, async () => {
+  return withArtifactWriterBootstrapLock(bootstrap.lockPath, async () => {
     await bootstrap.assertCurrentRoot();
     const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(
       bootstrap.canonicalPath,
@@ -38,16 +39,9 @@ export async function withLeaseBoundArtifactWriterLock<T>(
   authority: ArtifactWriterLockAuthority,
   operation: () => Promise<T>,
 ): Promise<T> {
-  return withBootstrapArtifactWriterLock(authority.bootstrapLockPath, () =>
+  return withArtifactWriterBootstrapLock(authority.bootstrapLockPath, () =>
     withAuthorityArtifactWriterLock(authority, operation),
   );
-}
-
-async function withBootstrapArtifactWriterLock<T>(
-  lockPath: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  return withArtifactWriterLockPath(lockPath, operation);
 }
 
 async function withAuthorityArtifactWriterLock<T>(

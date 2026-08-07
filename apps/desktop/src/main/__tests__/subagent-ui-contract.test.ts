@@ -48,4 +48,66 @@ describe('subagent UI contract', () => {
     assert.doesNotMatch(markup, /42 个事件/);
   });
 
+  it('forwards onOpenLinkedSession through ToolCallDetail when childSessionId is present', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'subagent-open',
+      toolName: 'spawn_subagent',
+      status: 'completed',
+      args: {},
+      result: {
+        kind: 'subagent',
+        agentName: 'Explore layout',
+        turnId: 'turn-open',
+        runId: 'run-open',
+        childSessionId: 'child-session-open',
+        status: 'completed',
+        permissionMode: 'explore',
+        summary: 'Mapped the layout.',
+        artifactIds: [],
+        durationMs: 1_200,
+        eventCount: 4,
+      },
+    };
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(ToolCallDetail, {
+        item,
+        onOpenLinkedSession() {},
+      }),
+    }));
+
+    assert.match(markup, /data-kind="subagent"/);
+    assert.match(markup, /打开会话|Open session/);
+    assert.match(markup, /child-session-open|Explore layout/);
+  });
+
+  it('hides the open control when onOpenLinkedSession is not provided', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'subagent-no-host',
+      toolName: 'spawn_subagent',
+      status: 'completed',
+      args: {},
+      result: {
+        kind: 'subagent',
+        agentName: 'No host open',
+        turnId: 'turn-no-host',
+        runId: 'run-no-host',
+        childSessionId: 'child-session-no-host',
+        status: 'completed',
+        permissionMode: 'explore',
+        summary: 'Ready.',
+        artifactIds: [],
+        durationMs: 800,
+        eventCount: 2,
+      },
+    };
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(ToolCallDetail, { item }),
+    }));
+
+    assert.match(markup, /data-kind="subagent"/);
+    assert.doesNotMatch(markup, /打开会话|Open session/);
+  });
+
 });

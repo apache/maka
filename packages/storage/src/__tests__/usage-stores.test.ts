@@ -15,6 +15,7 @@ import {
   resolveStorageRoot,
   STORAGE_ROOT_MARKER_FILE,
   StorageRootAuthorityError,
+  tryAcquireInteractiveRootReader,
   tryAcquireInteractiveRootOwner,
   type StorageRootAuthorityErrorCode,
 } from '../root-authority.js';
@@ -27,6 +28,7 @@ import {
 import {
   classifyInteractiveUsageStoresFailure,
   InteractiveUsageStoresClosedError,
+  openInteractiveUsageStoresForRead,
   openInteractiveUsageStoresForWrite,
 } from '../usage-stores.js';
 
@@ -129,15 +131,20 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
-  test('classifies a renamed or replaced live root as a draining persistence failure', async () => {
+  test('classifies a renamed or replaced live root as a draining persistence failure', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows does not permit renaming a directory with an open SQLite database'
+        : false,
+  }, async () => {
     for (const replacement of [false, true]) {
       await withInteractiveRoot(async ({ root, capability }) => {
         const owner = await tryAcquireInteractiveRootOwner(capability);
         assert(owner);
         const stores = await openInteractiveUsageStoresForWrite(owner.lease);
-        await rename(root, `${root}-moved`);
-        if (replacement) await mkdir(root);
         try {
+          await rename(root, `${root}-moved`);
+          if (replacement) await mkdir(root);
           await assert.rejects(
             () => stores.pricing.snapshot(),
             (error: unknown) => {
@@ -151,6 +158,7 @@ describe('InteractiveUsageStores', () => {
             },
           );
         } finally {
+          await stores.close();
           await owner.close();
         }
       });
@@ -200,6 +208,7 @@ describe('InteractiveUsageStores', () => {
             },
           );
         } finally {
+          await stores.close();
           await owner.close();
         }
       });
@@ -274,6 +283,28 @@ describe('InteractiveUsageStores', () => {
         () => stores.pricing.snapshot(),
         (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
       );
+      await stores.close();
+    });
+  });
+
+  test('reader close releases local resources after lease revocation', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const writer = await openInteractiveUsageStoresForWrite(owner.lease);
+      await writer.close();
+      await owner.close();
+
+      const readerOwner = await tryAcquireInteractiveRootReader(capability);
+      assert(readerOwner);
+      const reader = await openInteractiveUsageStoresForRead(readerOwner.lease);
+      await readerOwner.close();
+
+      await assert.rejects(
+        () => reader.pricing.snapshot(),
+        (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+      );
+      await reader.close();
     });
   });
 });

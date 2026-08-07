@@ -26,7 +26,7 @@ import {
   supportsMediaPermissionProbe,
 } from './os-permission-policy.js';
 
-const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'microphone', 'automation'];
+const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'automation'];
 
 export function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform): PermissionSnapshot {
   return {
@@ -35,7 +35,6 @@ export function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platf
     permissions: {
       accessibility: accessibilitySnapshot(now, platform),
       screen_recording: mediaPermissionSnapshot('screen_recording', 'screen', now, platform),
-      microphone: mediaPermissionSnapshot('microphone', 'microphone', now, platform),
       notifications: notificationSnapshot(now, platform),
       automation: automationSnapshot(now, platform),
     },
@@ -74,26 +73,6 @@ export function buildCapabilitySnapshotCollection(input: {
         state: 'not_run',
         source: 'runtime_probe',
         reason: '打开 Daily Review 可查看本地活动聚合结果',
-      },
-    }),
-    staticCapability({
-      id: 'voice',
-      label: 'Voice',
-      now,
-      feature: {
-        state: 'partial',
-        source: 'runtime',
-        reason: '本地麦克风录音自检已可用；当前不包含 STT/TTS 生成通道',
-      },
-      requiredPermissions: [
-        { id: 'microphone', required: true, status: permissions.microphone.status },
-      ],
-      actionApproval: { state: 'not_required', source: 'not_applicable' },
-      memoryAcceptance: { state: 'disabled', source: 'memory_contract' },
-      runtimeProbe: {
-        state: 'not_run',
-        source: 'runtime_probe',
-        reason: '在设置 → 语音运行本地录音自检',
       },
     }),
     staticCapability({
@@ -295,8 +274,8 @@ function accessibilitySnapshot(now: number, platform: NodeJS.Platform): OsPermis
 }
 
 function mediaPermissionSnapshot(
-  id: 'screen_recording' | 'microphone',
-  mediaType: 'screen' | 'microphone',
+  id: 'screen_recording',
+  mediaType: 'screen',
   now: number,
   platform: NodeJS.Platform,
 ): OsPermissionSnapshot {
@@ -304,9 +283,7 @@ function mediaPermissionSnapshot(
     return unsupportedPermission(
       id,
       now,
-      id === 'screen_recording'
-        ? '屏幕录制权限状态仅能在 macOS 上读取'
-        : '当前平台无法读取麦克风系统权限状态',
+      '屏幕录制权限状态仅能在 macOS 上读取',
     );
   }
   try {

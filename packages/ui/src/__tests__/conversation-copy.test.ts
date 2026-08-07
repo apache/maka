@@ -41,7 +41,12 @@ test('selectors accept only resolved UI locales', () => {
 
 test('thinking-level labels stay short single tokens (default / off / low…xhigh)', () => {
   const zh = getConversationCopy('zh').model;
-  assert.equal(zh.defaultLevel, '默认');
+  // 模型默认, not 默认: this option means "whatever the model does on its
+  // own", which the user can neither see nor set. Calling it 默认 promised a
+  // knob that did not exist — a user reported the menu as deceptive for
+  // exactly that reason. The subagent editor already said 跟随模型默认; this
+  // is the same concept finally using the same word.
+  assert.equal(zh.defaultLevel, '模型默认');
   assert.deepEqual(zh.level, {
     off: '关',
     minimal: '最少',

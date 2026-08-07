@@ -7,6 +7,7 @@ import { describe, test } from 'node:test';
 import type { AgentRunHeader, SessionHeader } from '@maka/core';
 import type { AutomationDefinition, AutomationPendingFire } from '@maka/core/automation';
 import {
+  DEFER_WINDOW_MS,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
   type MakaToolContext,
@@ -266,7 +267,10 @@ describe('Host Automation coordinator', () => {
         await harness.coordinator.recover();
         assert.equal(harness.rootInputs.length, 1);
         assert.deepEqual((await harness.store.read()).pendingFires, [fire]);
+        assert.equal((await harness.store.read()).automations[0]?.deferredFireCount, 1);
 
+        const paused = await harness.coordinator.pause(automation.id, automation.sessionId);
+        assert.equal(paused?.status, 'paused');
         harness.coordinator.start();
         harness.fireTimer();
         await waitFor(
@@ -275,6 +279,39 @@ describe('Host Automation coordinator', () => {
         );
         assert.equal(harness.rootInputs[1]?.runId, fire.runId);
         assert.equal((await harness.store.read()).pendingFires[0]?.id, fire.id);
+        const retried = (await harness.store.read()).automations[0];
+        assert.equal(retried?.status, 'paused');
+        assert.equal(retried?.deferredFireCount, 2);
+      },
+      { rootMode: 'busy' },
+    );
+  });
+
+  test('fails a recovered admitted fire after its durable retry window expires', async () => {
+    await withHarness(
+      async (harness) => {
+        const automation = startedDefinition();
+        const fire = pendingFire();
+        await harness.store.commit({
+          expectedRevision: 0,
+          automations: [automation],
+          pendingFires: [fire],
+        });
+        harness.now = fire.admittedAt + DEFER_WINDOW_MS;
+
+        await harness.coordinator.prepareRecovery();
+        await harness.coordinator.recover();
+
+        const snapshot = await harness.store.read();
+        assert.deepEqual(snapshot.pendingFires, []);
+        assert.equal(snapshot.automations[0]?.status, 'paused');
+        assert.equal(snapshot.automations[0]?.consecutiveFailures, 1);
+        assert.equal(
+          snapshot.automations[0]?.lastError,
+          'Automation execution could not enter Runtime within its retry window: Session is busy',
+        );
+        assert.equal(harness.rootInputs.length, 1);
+        assert.equal(harness.drainCount, 0);
       },
       { rootMode: 'busy' },
     );
@@ -611,6 +648,8 @@ describe('Host Automation coordinator', () => {
           return fire;
         },
         assertPendingFire: async () => undefined,
+        recordFireDeferred: async () => undefined,
+        failFire: async () => undefined,
         markFireRunning: async () => undefined,
         settleFire: async () => undefined,
         residencyState: () => ({ pending: false, scheduled: false }),

@@ -55,107 +55,59 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('rejects an execution identity with the wrong reasoning effort', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-      const maxConfig: Config = { ...config, thinkingLevel: 'max' };
-      const output = harborOutput({
-        taskId: 'task-a',
-        executionIdentity: {
-          llmConnectionSlug: 'fake',
-          model: 'fake-model',
-          reasoningEffort: 'high',
-          systemPromptHash: hashSystemPrompt('fixed prompt\n'),
-          pricingProfile: 'test-profile',
-        },
-      });
+  for (const { label, configPatch, identity, legacyIdentity = false } of [
+    {
+      label: 'wrong reasoning effort',
+      configPatch: { thinkingLevel: 'max' } as const,
+      identity: { reasoningEffort: 'high' },
+    },
+    {
+      label: 'wrong Agent tool policy',
+      configPatch: { agentTools: true } as const,
+      identity: { agentTools: false },
+    },
+    {
+      label: 'missing Agent tool policy',
+      configPatch: {},
+      identity: {},
+      legacyIdentity: true,
+    },
+  ] as const) {
+    test(`rejects an execution identity with ${label}`, async () => {
+      await withDir(async (dir) => {
+        const systemPromptPath = join(dir, 'system_prompt.md');
+        await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+        const cellConfig: Config = { ...config, ...configPatch };
+        const output = harborOutput({
+          taskId: 'task-a',
+          ...(legacyIdentity ? { legacyExecutionIdentity: true } : {}),
+          executionIdentity: {
+            llmConnectionSlug: 'fake',
+            model: 'fake-model',
+            systemPromptHash: hashSystemPrompt('fixed prompt\n'),
+            pricingProfile: 'test-profile',
+            ...identity,
+          },
+        });
 
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config: maxConfig,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        resultsTsvPath: join(dir, 'results.tsv'),
-        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        requireExecutionIdentity: true,
-        expectedPricingProfile: 'test-profile',
-        taskRunner: async () => output,
-      });
+        const result = await runFixedPromptController({
+          runId: 'run-1',
+          roundId: 'round-1',
+          config: cellConfig,
+          systemPromptPath,
+          resultsJsonlPath: join(dir, 'results.jsonl'),
+          resultsTsvPath: join(dir, 'results.tsv'),
+          tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+          requireExecutionIdentity: true,
+          expectedPricingProfile: 'test-profile',
+          taskRunner: async () => output,
+        });
 
-      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
-      assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
+        assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+        assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
+      });
     });
-  });
-
-  test('rejects an execution identity with the wrong Agent tool policy', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-      const agentConfig: Config = { ...config, agentTools: true };
-      const output = harborOutput({
-        taskId: 'task-a',
-        executionIdentity: {
-          llmConnectionSlug: 'fake',
-          model: 'fake-model',
-          systemPromptHash: hashSystemPrompt('fixed prompt\n'),
-          pricingProfile: 'test-profile',
-          agentTools: false,
-        },
-      });
-
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config: agentConfig,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        resultsTsvPath: join(dir, 'results.tsv'),
-        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        requireExecutionIdentity: true,
-        expectedPricingProfile: 'test-profile',
-        taskRunner: async () => output,
-      });
-
-      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
-      assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
-    });
-  });
-
-  test('rejects an execution identity missing the Agent tool policy', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-      const output = harborOutput({
-        taskId: 'task-a',
-        legacyExecutionIdentity: true,
-        executionIdentity: {
-          llmConnectionSlug: 'fake',
-          model: 'fake-model',
-          systemPromptHash: hashSystemPrompt('fixed prompt\n'),
-          pricingProfile: 'test-profile',
-        },
-      });
-
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        resultsTsvPath: join(dir, 'results.tsv'),
-        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        requireExecutionIdentity: true,
-        expectedPricingProfile: 'test-profile',
-        taskRunner: async () => output,
-      });
-
-      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
-      assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
-    });
-  });
-
+  }
   test('resumes from completed task events in the WAL', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -1721,95 +1673,55 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('stops immediately and leaves provider billing failures unscored', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-      const calls: string[] = [];
+  for (const { label, errorClass, withTsv } of [
+    { label: 'provider billing failures', errorClass: 'provider_billing', withTsv: true },
+    { label: 'a pre-execution authentication failure', errorClass: 'auth', withTsv: false },
+  ]) {
+    test(`stops immediately and leaves ${label} unscored`, async () => {
+      await withDir(async (dir) => {
+        const systemPromptPath = join(dir, 'system_prompt.md');
+        await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+        const calls: string[] = [];
 
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        resultsTsvPath: join(dir, 'results.tsv'),
-        tasks: [
-          { id: 'task-a', path: '/bench/task-a' },
-          { id: 'task-b', path: '/bench/task-b' },
-        ],
-        maxConcurrency: 1,
-        taskRunner: async ({ task }) => {
-          calls.push(task.id);
-          return harborOutput({
-            taskId: task.id,
-            reward: 0,
-            status: 'failed',
-            errorClass: 'provider_billing',
-            omitTokenSummary: true,
-            steps: 0,
-            verifier: {
-              outcome: 'failed',
-              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
-            },
-          });
-        },
-        now: () => 100,
-        newId: idFactory(),
+        const result = await runFixedPromptController({
+          runId: 'run-1',
+          roundId: 'round-1',
+          config,
+          systemPromptPath,
+          resultsJsonlPath: join(dir, 'results.jsonl'),
+          ...(withTsv ? { resultsTsvPath: join(dir, 'results.tsv') } : {}),
+          tasks: [
+            { id: 'task-a', path: '/bench/task-a' },
+            { id: 'task-b', path: '/bench/task-b' },
+          ],
+          maxConcurrency: 1,
+          taskRunner: async ({ task }) => {
+            calls.push(task.id);
+            return harborOutput({
+              taskId: task.id,
+              reward: 0,
+              status: 'failed',
+              errorClass,
+              omitTokenSummary: true,
+              steps: 0,
+              verifier: {
+                outcome: 'failed',
+                attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+              },
+            });
+          },
+          now: () => 100,
+          newId: idFactory(),
+        });
+
+        assert.deepEqual(calls, ['task-a']);
+        assert.equal(String(result.stopReason), 'systemic_provider_failure');
+        assert.equal(result.events[0]?.type, 'task_infra_failed');
+        assert.equal(String(result.events[0]?.errorClass), errorClass);
+        assert.equal(result.events[0]?.scored, false);
       });
-
-      assert.deepEqual(calls, ['task-a']);
-      assert.equal(String(result.stopReason), 'systemic_provider_failure');
-      assert.equal(result.events[0]?.type, 'task_infra_failed');
-      assert.equal(String(result.events[0]?.errorClass), 'provider_billing');
-      assert.equal(result.events[0]?.scored, false);
     });
-  });
-
-  test('stops immediately on a pre-execution authentication failure', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-      const calls: string[] = [];
-
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        tasks: [
-          { id: 'task-a', path: '/bench/task-a' },
-          { id: 'task-b', path: '/bench/task-b' },
-        ],
-        maxConcurrency: 1,
-        taskRunner: async ({ task }) => {
-          calls.push(task.id);
-          return harborOutput({
-            taskId: task.id,
-            reward: 0,
-            status: 'failed',
-            errorClass: 'auth',
-            omitTokenSummary: true,
-            steps: 0,
-            verifier: {
-              outcome: 'failed',
-              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
-            },
-          });
-        },
-        now: () => 100,
-        newId: idFactory(),
-      });
-
-      assert.deepEqual(calls, ['task-a']);
-      assert.equal(result.stopReason, 'systemic_provider_failure');
-      assert.equal(result.events[0]?.type, 'task_infra_failed');
-      assert.equal(result.events[0]?.errorClass, 'auth');
-      assert.equal(result.events[0]?.scored, false);
-    });
-  });
-
+  }
   test('stops when cost exceeds the configured ceiling', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -2267,111 +2179,42 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('counts a verifier-graded max-token stop as a scored benchmark failure', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+  for (const errorClass of ['max_tokens', 'tool_step_cap_reached', 'policy_denied']) {
+    test(`counts a verifier-graded ${errorClass} stop as a scored benchmark failure`, async () => {
+      await withDir(async (dir) => {
+        const systemPromptPath = join(dir, 'system_prompt.md');
+        await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
 
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () =>
-          harborOutput({
-            taskId: 'task-a',
-            reward: 0,
-            status: 'failed',
-            errorClass: 'max_tokens',
-            verifier: {
-              outcome: 'failed',
-              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
-            },
-          }),
-        now: () => 100,
-        newId: idFactory(),
+        const result = await runFixedPromptController({
+          runId: 'run-1',
+          roundId: 'round-1',
+          config,
+          systemPromptPath,
+          resultsJsonlPath: join(dir, 'results.jsonl'),
+          tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+          taskRunner: async () =>
+            harborOutput({
+              taskId: 'task-a',
+              reward: 0,
+              status: 'failed',
+              errorClass,
+              verifier: {
+                outcome: 'failed',
+                attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+              },
+            }),
+          now: () => 100,
+          newId: idFactory(),
+        });
+
+        assert.equal(result.events[0]?.type, 'task_completed');
+        assert.equal(result.events[0]?.passed, false);
+        assert.equal(result.events[0]?.scored, true);
+        assert.equal(result.events[0]?.eligible, true);
+        assert.equal(result.events[0]?.errorClass, errorClass);
       });
-
-      assert.equal(result.events[0]?.type, 'task_completed');
-      assert.equal(result.events[0]?.passed, false);
-      assert.equal(result.events[0]?.scored, true);
-      assert.equal(result.events[0]?.eligible, true);
-      assert.equal(result.events[0]?.errorClass, 'max_tokens');
     });
-  });
-
-  test('counts a verifier-graded tool-step cap as a scored benchmark failure', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () =>
-          harborOutput({
-            taskId: 'task-a',
-            reward: 0,
-            status: 'failed',
-            errorClass: 'tool_step_cap_reached',
-            verifier: {
-              outcome: 'failed',
-              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
-            },
-          }),
-        now: () => 100,
-        newId: idFactory(),
-      });
-
-      assert.equal(result.events[0]?.type, 'task_completed');
-      assert.equal(result.events[0]?.passed, false);
-      assert.equal(result.events[0]?.scored, true);
-      assert.equal(result.events[0]?.eligible, true);
-      assert.equal(result.events[0]?.errorClass, 'tool_step_cap_reached');
-    });
-  });
-
-  test('counts a verifier-graded provider policy denial as a scored benchmark failure', async () => {
-    await withDir(async (dir) => {
-      const systemPromptPath = join(dir, 'system_prompt.md');
-      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
-
-      const result = await runFixedPromptController({
-        runId: 'run-1',
-        roundId: 'round-1',
-        config,
-        systemPromptPath,
-        resultsJsonlPath: join(dir, 'results.jsonl'),
-        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () =>
-          harborOutput({
-            taskId: 'task-a',
-            reward: 0,
-            status: 'failed',
-            errorClass: 'policy_denied',
-            verifier: {
-              outcome: 'failed',
-              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
-            },
-          }),
-        now: () => 100,
-        newId: idFactory(),
-      });
-
-      assert.equal(result.events[0]?.type, 'task_completed');
-      assert.equal(result.events[0]?.passed, false);
-      assert.equal(result.events[0]?.scored, true);
-      assert.equal(result.events[0]?.eligible, true);
-      assert.equal(result.events[0]?.errorClass, 'policy_denied');
-    });
-  });
-
+  }
   test('keeps verifier-graded deadlines scored after completed model and workspace steps', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');

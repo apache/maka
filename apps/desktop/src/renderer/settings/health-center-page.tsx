@@ -11,7 +11,7 @@ import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
-import { statusDotVariant } from './settings-status-badge';
+import { dotForStatus } from '@maka/ui';
 
 /**
  * PR-UI-9 — Health Center read-only page. Consumes `window.maka.health.getSnapshot()`
@@ -201,7 +201,7 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
       )}
       end={(
         <span className="settingsStatus">
-          <StatusDot variant={statusDotVariant(statusCopy.tone)} label={statusCopy.label} />
+          <StatusDot variant={dotForStatus(statusCopy.tone)} label={statusCopy.label} />
           <span>{statusCopy.label}</span>
         </span>
       )}

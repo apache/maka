@@ -35,6 +35,8 @@ import type {
   OperationOutcome,
   SessionConversationCopyInput,
   SessionConversationCopyResult,
+  SessionRevisionAbandonInput,
+  SessionRevisionAbandonResult,
 } from '../protocol/index.js';
 import type {
   SessionRevisionOperationHandlerMap,
@@ -50,7 +52,12 @@ import {
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 type ConversationCopyKind = 'branch' | 'revision';
-type ConversationCopyOutcome = OperationOutcome<SessionRevisionOperationKey>;
+type ConversationCopyOperationKey = Exclude<
+  SessionRevisionOperationKey,
+  'session.revision.abandon'
+>;
+type ConversationCopyOutcome = OperationOutcome<ConversationCopyOperationKey>;
+type RevisionAbandonOutcome = OperationOutcome<'session.revision.abandon'>;
 const CONVERSATION_COPY_ADMISSION_PASSES = 2;
 interface ConversationCopyAdmissionRetry {
   readonly kind: 'retry_admission';
@@ -77,6 +84,7 @@ export class HostSessionRevisionCoordinator {
   readonly handlers: SessionRevisionOperationHandlerMap = {
     'session.branch.create': (input) => this.#copy('branch', input),
     'session.revision.create': (input) => this.#copy('revision', input),
+    'session.revision.abandon': (input) => this.#abandonRevision(input),
   };
 
   readonly #stores: ExecutionStoresWriter<'interactive'>;
@@ -176,6 +184,42 @@ export class HostSessionRevisionCoordinator {
       for (const sessionId of result.sessionIds) admittedSessionIds.add(sessionId);
     }
     return copyFailure('session_busy', 'Agent Graph child ownership changed during copy');
+  }
+
+  async #abandonRevision(input: SessionRevisionAbandonInput): Promise<RevisionAbandonOutcome> {
+    return this.options.admission.run(input.targetSessionId, async () => {
+      let header: SessionHeader;
+      try {
+        header = await this.#stores.sessionStore.readHeaderSnapshot(input.targetSessionId);
+      } catch (error) {
+        return isSessionNotFoundError(error)
+          ? abandonFailure('not_found', 'Target Session revision does not exist')
+          : abandonFailure('persistence_failed', 'Target Session revision is unavailable');
+      }
+      if (header.conversationCopy?.kind !== 'revision') {
+        return abandonFailure('operation_conflict', 'Target is not a Session revision copy');
+      }
+      if (
+        header.revisionState !== 'preparing' ||
+        this.options.isSessionActive(input.targetSessionId) ||
+        (await this.#hasAdmittedRevisionTurn(input.targetSessionId)) ||
+        (await this.#hasCommittedConversationCopyDependent(input.targetSessionId))
+      ) {
+        return abandonSuccess({ kind: 'retained', sessionId: input.targetSessionId });
+      }
+      try {
+        await this.#discard(header);
+        return abandonSuccess({
+          kind: 'abandoned',
+          sessionId: input.targetSessionId,
+        });
+      } catch {
+        return abandonFailure(
+          'persistence_failed',
+          'Target Session revision could not be abandoned',
+        );
+      }
+    });
   }
 
   async #copyAdmitted(
@@ -687,6 +731,14 @@ export class HostSessionRevisionCoordinator {
     }
     return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
   }
+
+  async #hasCommittedConversationCopyDependent(sessionId: string): Promise<boolean> {
+    return (await this.#stores.sessionStore.listHeaders()).some(
+      (header) =>
+        header.conversationCopy?.state === 'committed' &&
+        header.conversationCopy.sourceSessionId === sessionId,
+    );
+  }
 }
 
 function isConversationRuntimeFactRewriteUnsupported(error: unknown): boolean {
@@ -701,15 +753,17 @@ function conversationCopyFingerprint(
   kind: ConversationCopyKind,
   input: SessionConversationCopyInput,
 ): `sha256:${string}` {
+  // The optimistic source revision guards only the initial create. Once this
+  // target exists, its stable identity must resolve the committed outcome even
+  // if a reconnecting Client observes a newer source revision.
   return `sha256:${createHash('sha256')
     .update(
       JSON.stringify([
-        'session.conversation-copy.v0',
+        'session.conversation-copy.v1',
         kind,
         input.sourceSessionId,
         input.targetSessionId,
         input.sourceTurnId,
-        input.expectedSourceRevision,
       ]),
     )
     .digest('hex')}`;
@@ -806,9 +860,20 @@ function copySuccess(result: SessionConversationCopyResult): ConversationCopyOut
   return { ok: true, result };
 }
 
+function abandonSuccess(result: SessionRevisionAbandonResult): RevisionAbandonOutcome {
+  return { ok: true, result };
+}
+
 function copyFailure(
   code: Extract<ConversationCopyOutcome, { ok: false }>['error']['code'],
   message: string,
 ): ConversationCopyOutcome {
+  return { ok: false, error: { code, message } };
+}
+
+function abandonFailure(
+  code: Extract<RevisionAbandonOutcome, { ok: false }>['error']['code'],
+  message: string,
+): RevisionAbandonOutcome {
   return { ok: false, error: { code, message } };
 }

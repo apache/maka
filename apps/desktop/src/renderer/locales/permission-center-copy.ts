@@ -1,3 +1,4 @@
+import type { StatusSemantic } from '@maka/ui';
 import type {
   CapabilityReadinessState,
   CapabilitySnapshot,
@@ -7,7 +8,7 @@ import type {
   UiLocale,
 } from '@maka/core';
 
-type Tone = 'neutral' | 'info' | 'success' | 'warning' | 'destructive';
+type Tone = StatusSemantic;
 type StatusCopy = { label: string; tone: Tone };
 
 export type PermissionCenterCopy = {
@@ -79,21 +80,20 @@ const PERMISSION_CENTER_COPY = {
   zh: {
     readiness: {
       not_configured: { label: '等待配置', detail: '需要先打开开关或补齐配置才能启用。', tone: 'neutral' },
-      denied: { label: '系统拒绝', detail: '所需系统权限被拒绝或当前平台不支持。', tone: 'destructive' },
+      denied: { label: '系统拒绝', detail: '所需系统权限被拒绝或当前平台不支持。', tone: 'error' },
       enabled: { label: '运行可用', detail: '当前快照标记为可用，具体层级见下方。', tone: 'success' },
-      degraded: { label: '部分可用', detail: '已有一部分能力可用，但仍有运行态、权限或子功能需要处理。', tone: 'warning' },
-      paused: { label: '已暂停', detail: '功能开关被显式关闭，但配置仍保留。', tone: 'info' },
+      degraded: { label: '部分可用', detail: '已有一部分能力可用，但仍有运行态、权限或子功能需要处理。', tone: 'attention' },
+      paused: { label: '已暂停', detail: '功能开关被显式关闭，但配置仍保留。', tone: 'neutral' },
     },
     osPermissions: {
       accessibility: { label: '辅助功能', purpose: 'Computer Use 需要它来读取窗口焦点 / 模拟键盘鼠标。', impact: 'Computer Use · 自动化键鼠操作' },
       screen_recording: { label: '屏幕录制', purpose: 'Computer Use 需要它来读取窗口内容；未来屏幕活动录制也会使用。', impact: 'Computer Use · 截屏上下文' },
-      microphone: { label: '麦克风', purpose: 'Voice 通道需要它来采集语音输入。', impact: '语音输入' },
       notifications: { label: '通知', purpose: '权限申请、回顾完成等系统通知需要它。', impact: '权限申请提醒 · 每日回顾完成通知' },
       automation: { label: '自动化（Apple Events）', purpose: 'Computer Use 控制其他 App 需要逐 target 授权。', impact: 'Computer Use · 跨 App 自动化' },
     },
     osStates: {
       unsupported: { label: '当前平台不支持', tone: 'neutral' }, unknown: { label: '无法读取状态', tone: 'neutral' },
-      not_determined: { label: '等待授权', tone: 'warning' }, denied: { label: '已拒绝', tone: 'destructive' }, granted: { label: '已授权', tone: 'neutral' },
+      not_determined: { label: '等待授权', tone: 'attention' }, denied: { label: '已拒绝', tone: 'error' }, granted: { label: '已授权', tone: 'neutral' },
     },
     loading: '正在加载权限快照', readFailed: '无法读取权限快照', noData: '权限服务未返回数据。', readAgain: '重新读取',
     actionFailed: '权限操作失败',
@@ -127,21 +127,20 @@ const PERMISSION_CENTER_COPY = {
   en: {
     readiness: {
       not_configured: { label: 'Needs setup', detail: 'Enable the feature or complete its configuration first.', tone: 'neutral' },
-      denied: { label: 'Denied by system', detail: 'A required system permission was denied or is unsupported on this platform.', tone: 'destructive' },
+      denied: { label: 'Denied by system', detail: 'A required system permission was denied or is unsupported on this platform.', tone: 'error' },
       enabled: { label: 'Available', detail: 'The current snapshot is available; see the layers below for details.', tone: 'success' },
-      degraded: { label: 'Partially available', detail: 'Some functionality is available, but runtime, permission, or sub-feature work remains.', tone: 'warning' },
-      paused: { label: 'Paused', detail: 'The feature was explicitly disabled while its configuration remains saved.', tone: 'info' },
+      degraded: { label: 'Partially available', detail: 'Some functionality is available, but runtime, permission, or sub-feature work remains.', tone: 'attention' },
+      paused: { label: 'Paused', detail: 'The feature was explicitly disabled while its configuration remains saved.', tone: 'neutral' },
     },
     osPermissions: {
       accessibility: { label: 'Accessibility', purpose: 'Computer Use needs it to read window focus and simulate keyboard or mouse input.', impact: 'Computer Use · automated keyboard and mouse input' },
       screen_recording: { label: 'Screen Recording', purpose: 'Computer Use needs it to read window contents; future screen activity recording will use it too.', impact: 'Computer Use · screenshot context' },
-      microphone: { label: 'Microphone', purpose: 'The Voice channel needs it to capture speech input.', impact: 'Voice input' },
       notifications: { label: 'Notifications', purpose: 'System alerts use it for permission requests and completed reviews.', impact: 'Permission alerts · Daily Review completion' },
       automation: { label: 'Automation (Apple Events)', purpose: 'Computer Use needs per-target authorization to control other apps.', impact: 'Computer Use · cross-app automation' },
     },
     osStates: {
       unsupported: { label: 'Unsupported on this platform', tone: 'neutral' }, unknown: { label: 'Status unavailable', tone: 'neutral' },
-      not_determined: { label: 'Waiting for permission', tone: 'warning' }, denied: { label: 'Denied', tone: 'destructive' }, granted: { label: 'Granted', tone: 'neutral' },
+      not_determined: { label: 'Waiting for permission', tone: 'attention' }, denied: { label: 'Denied', tone: 'error' }, granted: { label: 'Granted', tone: 'neutral' },
     },
     loading: 'Loading permission snapshot', readFailed: 'Could not read permission snapshot', noData: 'The permission service returned no data.', readAgain: 'Read again',
     actionFailed: 'Permission action failed',

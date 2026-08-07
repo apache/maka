@@ -576,7 +576,6 @@ export class AgentRun {
         orchestration: this.effectiveOrchestration,
         toolMode: this.toolMode,
         text: this.input.userInput.text,
-        ...(this.input.userInput.voiceAudio ? { voiceAudio: this.input.userInput.voiceAudio } : {}),
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),

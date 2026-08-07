@@ -461,7 +461,7 @@ test('a duplicate active request id tears down only the offending connection', a
   );
 });
 
-test('a sixty-fifth in-flight request tears down only the overflowing connection', async () => {
+test('reserves liveness status at the domain request limit and rejects another domain request', async () => {
   const releaseHandlers = deferred();
   await withRuntimeHost(
     async (input) => {
@@ -491,6 +491,19 @@ test('a sixty-fifth in-flight request tears down only the overflowing connection
             value.activeResidencies === 0,
         );
         await transport.write({
+          requestId: 'overflow-status',
+          operation: 'host.status',
+          input: {},
+        });
+        const statusResponse = decodeHostFrame(await transport.read(1_000));
+        assert.equal('kind' in statusResponse, false);
+        if (!('kind' in statusResponse)) {
+          assert.equal(statusResponse.requestId, 'overflow-status');
+          assert.equal(statusResponse.operation, 'host.status');
+          assert.equal(statusResponse.ok, true);
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await transport.write({
           requestId: 'overflow-64',
           operation: 'turn.query',
           input: { sessionId: 'session', turnId: 'turn-64' },
@@ -512,6 +525,108 @@ test('a sixty-fifth in-flight request tears down only the overflowing connection
       assert.equal(status.state, 'ready');
     },
   );
+});
+
+test('an in-flight status does not consume the final domain request slot', async () => {
+  const pair = await openTransportPair();
+  const domainEntered = Array.from({ length: 64 }, () => deferred());
+  const releaseDomains = deferred();
+  const statusEntered = deferred();
+  const releaseStatus = deferred();
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => {
+      statusEntered.resolve();
+      await releaseStatus.promise;
+      return {
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 65,
+          activeResidencies: 0,
+        },
+      };
+    },
+    ...createHandlers(async (input) => {
+      const index = Number(input.turnId.slice('turn-'.length));
+      domainEntered[index]?.resolve();
+      await releaseDomains.promise;
+      return {
+        ok: true,
+        result: runningSnapshot(input.sessionId, input.turnId),
+      };
+    }),
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: {
+      hostEpoch: 'host-epoch',
+      connectionId: 'status-before-final-domain-client',
+      surface: 'tui',
+      principal: 'local_os_user',
+    },
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => undefined,
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    const initialDomains = Array.from({ length: 63 }, (_, index) => ({
+      requestId: `status-first-${index}`,
+      operation: 'turn.query' as const,
+      input: { sessionId: 'session', turnId: `turn-${index}` },
+    }));
+    pair.clientTransport.socket.write(
+      `${initialDomains.map((request) => JSON.stringify(request)).join('\n')}\n`,
+    );
+    await withTimeout(
+      Promise.all(domainEntered.slice(0, 63).map((entry) => entry.promise)),
+      1_000,
+      'initial domain handlers were not admitted',
+    );
+    await pair.clientTransport.write({
+      requestId: 'status-first-probe',
+      operation: 'host.status',
+      input: {},
+    });
+    await withTimeout(statusEntered.promise, 1_000, 'status handler was not admitted');
+    await pair.clientTransport.write({
+      requestId: 'status-first-63',
+      operation: 'turn.query',
+      input: { sessionId: 'session', turnId: 'turn-63' },
+    });
+    await withTimeout(domainEntered[63]?.promise, 1_000, 'final domain handler was not admitted');
+
+    releaseStatus.resolve();
+    const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+    assert.equal('kind' in response, false);
+    if (!('kind' in response)) {
+      assert.equal(response.requestId, 'status-first-probe');
+      assert.equal(response.operation, 'host.status');
+      assert.equal(response.ok, true);
+    }
+    await pair.clientTransport.write({
+      requestId: 'status-first-overflow',
+      operation: 'turn.query',
+      input: { sessionId: 'session', turnId: 'turn-64' },
+    });
+    await withTimeout(
+      pair.clientTransport.closed,
+      1_000,
+      'in-flight overflow did not close its connection',
+    );
+  } finally {
+    releaseStatus.resolve();
+    releaseDomains.resolve();
+    pair.clientTransport.destroy();
+    await Promise.allSettled([run, pair.close()]);
+  }
 });
 
 test('evicting one slow subscription keeps sibling subscriptions and requests usable', async () => {

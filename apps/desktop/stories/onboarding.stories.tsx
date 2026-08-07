@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
 import { ChatSurfaceLayout, ChatView } from '@maka/ui';
 import { expect, fn, userEvent, within } from 'storybook/test';
-import { OnboardingHero } from '../src/renderer/OnboardingHero';
+import { OnboardingHero } from '../src/renderer/onboarding-hero';
 
 const meta = {
   title: 'Product/Onboarding',

@@ -43,7 +43,17 @@ export function deriveTitlebarProjectName(options: {
 }
 
 /**
- * The session's identity in the window titlebar: `project › session name`.
+ * Parent session trail segment for a linked subagent open in the main column.
+ * Clicking returns to the parent; the child is never listed in the sidebar.
+ */
+export interface TitlebarParentSession {
+  name: string;
+  onOpen(): void;
+}
+
+/**
+ * The session's identity in the window titlebar: `project › session name`,
+ * or `project › parent › child` when a linked subagent is open.
  *
  * Before this, an open session showed neither. The name lived only in the
  * sidebar list — gone the moment the sidebar was collapsed — and the project
@@ -55,7 +65,7 @@ export function deriveTitlebarProjectName(options: {
  * project, it is the trail `SessionContextLayer` already speaks for session
  * lineage, and it degrades to a single item when there is no project.
  *
- * The two interactive segments carve `no-drag` rectangles out of the titlebar's
+ * The interactive segments carve `no-drag` rectangles out of the titlebar's
  * drag surface, the same way the left rail and the workspace actions do. Each
  * covers only its own text, so the strip stays draggable around them.
  */
@@ -63,6 +73,8 @@ export function TitlebarSessionIdentity(props: {
   sessionName: string;
   onRenameSession(name: string): void;
   project?: TitlebarProject;
+  /** Immediate linked parent when viewing a child subagent session. */
+  parentSession?: TitlebarParentSession;
 }) {
   const copy = getConversationCopy(useUiLocale());
   const [renaming, setRenaming] = useState(false);
@@ -125,6 +137,19 @@ export function TitlebarSessionIdentity(props: {
             </span>
             <span className="maka-visually-hidden">
               {copy.chat.openProjectFolderAction}
+            </span>
+          </BreadcrumbItem>
+        ) : null}
+        {props.parentSession ? (
+          <BreadcrumbItem onClick={props.parentSession.onOpen}>
+            <span
+              className="maka-titlebar-identity__segment"
+              title={copy.chat.openParentSession(props.parentSession.name)}
+            >
+              {props.parentSession.name}
+            </span>
+            <span className="maka-visually-hidden">
+              {copy.chat.openParentSessionAction}
             </span>
           </BreadcrumbItem>
         ) : null}

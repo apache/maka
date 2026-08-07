@@ -20,7 +20,7 @@ import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 // Loading it lazily keeps all of that out of the initial chunk so the first
 // paint of the chat shell isn't blocked on parsing hundreds of KB of settings
 // UI that may never be opened.
-const SettingsModal = lazy(() => import('./settings/SettingsModal').then((m) => ({ default: m.SettingsModal })));
+const SettingsModal = lazy(() => import('./settings/settings-modal').then((m) => ({ default: m.SettingsModal })));
 
 type SearchModalProps = Parameters<typeof SearchModal>[0];
 

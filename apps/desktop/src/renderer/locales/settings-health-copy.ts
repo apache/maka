@@ -1,3 +1,4 @@
+import type { StatusSemantic } from '@maka/ui';
 import type {
   HealthSignal,
   HealthSignalLayer,
@@ -7,7 +8,16 @@ import type {
   UiLocale,
 } from '@maka/core';
 
-type HealthTone = 'neutral' | 'info' | 'success' | 'warning' | 'destructive';
+/**
+ * Health signals carry their own severity ladder — error > warning > info > ok
+ * — and the colours have to stay monotonic with it. That is why `info` maps to
+ * neutral rather than to attention: amber would collide with `warning` and
+ * collapse five rungs into four, leaving 提示 and 警告 visually identical. Grey
+ * keeps the ladder ordered (red > amber > grey > green); 提示 and 未知 share
+ * grey and are told apart by their labels, which is fine because neither asks
+ * for action.
+ */
+type HealthTone = StatusSemantic;
 
 export type HealthCenterCopy = {
   loading: string;
@@ -67,7 +77,7 @@ const SETTINGS_HEALTH_COPY = {
     layerAria: (label) => `${label}健康信号`, layerListAria: (label) => `${label}健康信号列表`,
     footnote: '本页不直接执行测试、修复或权限变更；它只汇总当前已记录的健康信号。需要处理问题时，请进入对应设置页或重新触发相关功能。',
     layers: layersZh,
-    statuses: { ok: { label: '正常', tone: 'neutral' }, info: { label: '提示', tone: 'info' }, warning: { label: '警告', tone: 'warning' }, error: { label: '错误', tone: 'destructive' }, unknown: { label: '未知', tone: 'neutral' } },
+    statuses: { ok: { label: '正常', tone: 'neutral' }, info: { label: '提示', tone: 'neutral' }, warning: { label: '警告', tone: 'attention' }, error: { label: '错误', tone: 'error' }, unknown: { label: '未知', tone: 'neutral' } },
     scopes: { app: '应用', llm_connection: 'LLM 连接', bot: '机器人', capability: '能力', storage: '存储' },
     sources: { connection_test: '连接测试', capability_snapshot: '能力快照', permission_snapshot: '权限快照', runtime_probe: '运行态探测', settings: '设置', storage: '本地存储' },
     source: '来源：', blocksSend: '阻塞发送', blocksCapability: '阻塞能力',
@@ -83,7 +93,7 @@ const SETTINGS_HEALTH_COPY = {
     layerAria: (label) => `${label} health signals`, layerListAria: (label) => `${label} health signal list`,
     footnote: 'This page does not run tests, repairs, or permission changes. It only summarizes recorded health signals. Open the relevant settings page or retry the related feature to address an issue.',
     layers: layersEn,
-    statuses: { ok: { label: 'Healthy', tone: 'neutral' }, info: { label: 'Info', tone: 'info' }, warning: { label: 'Warning', tone: 'warning' }, error: { label: 'Error', tone: 'destructive' }, unknown: { label: 'Unknown', tone: 'neutral' } },
+    statuses: { ok: { label: 'Healthy', tone: 'neutral' }, info: { label: 'Info', tone: 'neutral' }, warning: { label: 'Warning', tone: 'attention' }, error: { label: 'Error', tone: 'error' }, unknown: { label: 'Unknown', tone: 'neutral' } },
     scopes: { app: 'App', llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability', storage: 'Storage' },
     sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings', storage: 'Local storage' },
     source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',

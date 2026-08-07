@@ -81,6 +81,7 @@ function makeOptions(partial: Partial<AppShellCommandListOptions> = {}): AppShel
     },
     ...partial,
     canSetPermissionMode: partial.canSetPermissionMode ?? true,
+    openSideConversation: partial.openSideConversation ?? (() => undefined),
     uiLocale: partial.uiLocale ?? 'zh',
   };
 }

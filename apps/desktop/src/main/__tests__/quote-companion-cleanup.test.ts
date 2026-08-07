@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { createQuoteCompanionCleanupAuthority } from '../quote-companion-cleanup.js';
+import { createSessionCopyCleanupAuthority } from '../quote-companion-cleanup.js';
 
 const roots: string[] = [];
 
@@ -19,9 +19,27 @@ afterEach(async () => {
 });
 
 describe('quote companion cleanup authority', () => {
+  it('acknowledges abandon after the intent is durable without waiting for removal', async () => {
+    const workspaceRoot = await createWorkspace();
+    let releaseRemoval: (() => void) | undefined;
+    const removal = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      removeSession: async () => removal,
+    });
+
+    await authority.schedule('fork-scheduled');
+    assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-scheduled']);
+
+    releaseRemoval?.();
+    await authority.cleanup('fork-scheduled');
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
   it('persists a failed removal and recovers it through a new authority instance', async () => {
     const workspaceRoot = await createWorkspace();
-    const first = createQuoteCompanionCleanupAuthority({
+    const first = createSessionCopyCleanupAuthority({
       workspaceRoot,
       removeSession: async () => {
         throw new Error('temporary removal failure');
@@ -32,7 +50,7 @@ describe('quote companion cleanup authority', () => {
     assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-1']);
 
     const removed: string[] = [];
-    const afterRestart = createQuoteCompanionCleanupAuthority({
+    const afterRestart = createSessionCopyCleanupAuthority({
       workspaceRoot,
       removeSession: async (sessionId) => {
         removed.push(sessionId);
@@ -48,7 +66,7 @@ describe('quote companion cleanup authority', () => {
   it('clears the durable intent only after the complete removal succeeds', async () => {
     const workspaceRoot = await createWorkspace();
     let pendingDuringRemoval: string[] = [];
-    const authority = createQuoteCompanionCleanupAuthority({
+    const authority = createSessionCopyCleanupAuthority({
       workspaceRoot,
       removeSession: async () => {
         pendingDuringRemoval = await readPendingIds(workspaceRoot);
@@ -63,7 +81,7 @@ describe('quote companion cleanup authority', () => {
 
   it('continues recovering other companions when one removal still fails', async () => {
     const workspaceRoot = await createWorkspace();
-    const seed = createQuoteCompanionCleanupAuthority({
+    const seed = createSessionCopyCleanupAuthority({
       workspaceRoot,
       removeSession: async () => {
         throw new Error('offline');
@@ -72,7 +90,7 @@ describe('quote companion cleanup authority', () => {
     await assert.rejects(seed.cleanup('fork-a'));
     await assert.rejects(seed.cleanup('fork-b'));
 
-    const authority = createQuoteCompanionCleanupAuthority({
+    const authority = createSessionCopyCleanupAuthority({
       workspaceRoot,
       removeSession: async (sessionId) => {
         if (sessionId === 'fork-a') throw new Error('still offline');
@@ -86,6 +104,24 @@ describe('quote companion cleanup authority', () => {
       ['fork-a'],
     );
     assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-a']);
+  });
+
+  it('forgets a terminal retained Revision without reporting deletion', async () => {
+    const workspaceRoot = await createWorkspace();
+    const seed = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      removeSession: async () => {
+        throw new Error('offline');
+      },
+    });
+    await assert.rejects(seed.cleanup('retained-revision'));
+
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      removeSession: async () => 'retained',
+    });
+    assert.deepEqual(await authority.recover(), { removed: [], failed: [] });
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
   });
 });
 

@@ -8,6 +8,7 @@ import type {
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
 import type {
+  InteractionPendingSnapshot,
   OperationInput,
   OperationOutput,
   SessionCatalogProjection,
@@ -591,6 +592,27 @@ describe('Runtime Host Maka Session driver', () => {
     });
   });
 
+  test('publishes a pending permission that has no transcript event', async () => {
+    const permission = pendingPermission();
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [permission] } }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const published = deferred<InteractionPendingSnapshot>();
+    driver.subscribePendingInteractions((pending) => published.resolve(pending));
+
+    await driver.switchSession('session-1');
+
+    assert.deepEqual(await published.promise, permission);
+  });
+
   test('reads a fresh Host transcript when listing rewind targets', async () => {
     const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const current = new FakeSubscription(
@@ -959,6 +981,31 @@ function pendingQuestion() {
       kind: 'question' as const,
       toolUseId: 'tool-question',
       questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    },
+  };
+}
+
+function pendingPermission() {
+  return {
+    schemaVersion: 1 as const,
+    interactionId: 'permission-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    outcome: null,
+    request: {
+      kind: 'permission' as const,
+      toolUseId: 'tool-permission',
+      prompt: {
+        kind: 'tool_permission' as const,
+        toolName: 'Bash',
+        category: 'shell_unsafe' as const,
+        reason: 'shell_dangerous' as const,
+        review: { kind: 'command' as const, command: 'echo protected', cwd: '/tmp' },
+        rememberForTurnAllowed: true,
+      },
     },
   };
 }

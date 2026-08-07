@@ -2,7 +2,7 @@
    -------------------------------------------------------------------------
    Astryx Layer and ButtonGroup own the floating "引用" / "在侧栏追问"
    control. This file adds only the native window hit-test opt-out plus the
-   workbar "追问引用" tab and in-tab companion. */
+   workbar side-conversation tab and in-tab companion. */
 
 /* Selection coordinates and top-layer behavior belong to Astryx useLayer.
    The secondary buttons inside use the translucent `--color-neutral` surface,
@@ -64,30 +64,13 @@
   display: none;
 }
 
-/* Empty-state (no follow-up yet): the excerpt + a one-line read-only hint,
-   rendered inside ChatView's scroll area via its emptyOverride slot. */
-.maka-quote-companion-intro {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
+.maka-quote-companion-empty {
+  min-height: 1px;
 }
 
-.maka-quote-panel-quote {
-  font: var(--maka-text-supporting);
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-left: var(--border-width-thick) solid var(--border-strong);
-  border-radius: var(--radius-control);
-  background: var(--card-bg);
-  color: var(--foreground-secondary);
-  white-space: pre-wrap;
-}
-
-.maka-quote-panel-hint {
-  font: var(--maka-text-supporting);
-  margin: 0;
-  color: var(--muted-foreground);
+.maka-quote-companion-preparing {
+  justify-content: center;
+  min-height: 32px;
 }
 
 .maka-quote-companion-error {
@@ -97,14 +80,46 @@
   color: var(--destructive-text);
 }
 
-.maka-quote-companion-actions {
-  flex: 0 0 auto;
-  display: flex;
-  /* Horizontal inset matches the composer's inner box (24px) so the full-width
-     clear button lines up edge-to-edge with the dialog box above it. */
-  padding: var(--space-1) var(--space-6) var(--space-2);
+.maka-session-workbar-panel[data-placement="right"] .maka-quote-companion .composer {
+  padding-inline: var(--space-2);
+  padding-bottom: var(--space-2);
 }
 
-.maka-quote-panel-clear {
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-astryx {
+  --_chat-composer-radius: var(--radius-surface);
+
+  overflow: hidden;
+  border-radius: var(--radius-surface);
+  box-shadow: 0 2px 8px oklch(from var(--foreground) l c h / 0.08);
+}
+
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-context-drawer {
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+}
+
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-left-controls {
+  flex-wrap: nowrap;
+}
+
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-model-selection-controls {
+  max-width: min(200px, 56%);
+  flex: 1 1 auto;
+}
+
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-model-chip {
+  justify-content: flex-start;
   width: 100%;
+  max-width: 200px;
+  padding-inline: var(--space-1-5);
 }

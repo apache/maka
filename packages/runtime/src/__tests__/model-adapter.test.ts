@@ -2,47 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
 
-import { ModelAdapter, lowerNativeAudioMessages, normalizeAiSdkUsage } from '../model-adapter.js';
+import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
-  test('lowers explicit audio only at the provider boundary without copying bytes', () => {
-    const bytes = new Uint8Array([1, 2, 3]);
-    const [message] = lowerNativeAudioMessages([
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'follow the voice request' },
-          {
-            type: 'audio',
-            data: bytes,
-            mediaType: 'audio/wav',
-            format: 'wav',
-            durationMs: 500,
-            retention: 'operation_memory',
-          },
-        ],
-      },
-    ]);
-    assert.equal(message?.role, 'user');
-    assert.notEqual(typeof message?.content, 'string');
-    if (!message || message.role !== 'user' || typeof message.content === 'string') return;
-    const file = message.content.find((part) => part.type === 'file');
-    assert.equal(file?.type, 'file');
-    if (
-      file?.type !== 'file' ||
-      typeof file.data !== 'object' ||
-      file.data === null ||
-      !('type' in file.data) ||
-      file.data.type !== 'data'
-    ) {
-      return;
-    }
-    assert.equal(file.data.data, bytes);
-    assert.equal(file.mediaType, 'audio/wav');
-    assert.equal(file.filename, 'voice-input.wav');
-  });
-
   test('resolves optional-key LocalAI without fabricating a credential', () => {
     const model = {};
     let observedApiKey: string | undefined;

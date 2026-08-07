@@ -8,6 +8,7 @@ import { createProjectCatalog } from '@maka/storage';
 import {
   resolveDesktopSessionSelection,
   resolveNewSessionProjectInput,
+  type DesktopCreateSessionInput,
 } from '../new-session-project.js';
 
 test('default sessions inherit the main-owned project selection', async () => {
@@ -199,3 +200,88 @@ function makeInput(
     ...overrides,
   };
 }
+
+const BASE_SESSION: DesktopCreateSessionInput = {
+  backend: 'fake',
+  llmConnectionSlug: 'fake',
+  model: 'fake-model',
+  permissionMode: 'ask',
+  name: 'Session',
+  labels: [],
+};
+
+test('the configured default project beats the last-used one', async () => {
+  // The point of the setting: something is almost always "last used", so a
+  // default that yielded to it would never apply.
+  const resolved = await resolveDesktopSessionSelection(
+    { ...BASE_SESSION },
+    {
+      current: async () => ({ projectId: 'last-used', path: '/last/used' }),
+      select: async (projectId) => ({
+        project: { id: projectId as string },
+        path: '/default/project',
+      }),
+      defaultProjectId: async () => 'default-project',
+    },
+  );
+
+  assert.equal(resolved.cwd, '/default/project');
+  assert.equal(resolved.projectId, 'default-project');
+});
+
+test('an explicit project id still overrides the configured default', async () => {
+  // The composer picker has to be able to take one conversation elsewhere,
+  // otherwise setting a default would trap every new chat in it.
+  const resolved = await resolveDesktopSessionSelection(
+    { ...BASE_SESSION, projectId: 'picked-for-this-chat' },
+    {
+      current: async () => {
+        throw new Error('current must not be called');
+      },
+      select: async (projectId) => ({
+        project: { id: projectId as string },
+        path: `/${projectId as string}`,
+      }),
+      defaultProjectId: async () => {
+        throw new Error('the default must not be consulted for an explicit pick');
+      },
+    },
+  );
+
+  assert.equal(resolved.projectId, 'picked-for-this-chat');
+});
+
+test('no configured default leaves the last-used behaviour untouched', async () => {
+  const resolved = await resolveDesktopSessionSelection(
+    { ...BASE_SESSION },
+    {
+      current: async () => ({ projectId: 'last-used', path: '/last/used' }),
+      select: async () => {
+        throw new Error('select must not be called');
+      },
+      defaultProjectId: async () => undefined,
+    },
+  );
+
+  assert.equal(resolved.cwd, '/last/used');
+  assert.equal(resolved.projectId, 'last-used');
+});
+
+test('a default project that no longer resolves falls back instead of failing the create', async () => {
+  // Archived, or its folder was deleted after it was chosen. Creating a
+  // session must still succeed — refusing to start a conversation because a
+  // preference went stale would be the worst possible reading of "default".
+  const resolved = await resolveDesktopSessionSelection(
+    { ...BASE_SESSION },
+    {
+      current: async () => ({ projectId: 'last-used', path: '/last/used' }),
+      select: async () => {
+        throw new Error('No such project: removed-project');
+      },
+      defaultProjectId: async () => 'removed-project',
+    },
+  );
+
+  assert.equal(resolved.cwd, '/last/used');
+  assert.equal(resolved.projectId, 'last-used');
+});

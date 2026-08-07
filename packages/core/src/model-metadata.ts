@@ -13,9 +13,6 @@ export interface ModelMetadata {
   maxOutputTokens?: number;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
-  endpointRoles?: ModelInfo['endpointRoles'];
-  transports?: ModelInfo['transports'];
-  transcriptOutput?: boolean;
   /**
    * Per-model reasoning controls, mirroring models.dev `reasoning_options`.
    * Omitted on models with no declarable thinking knob (miss → no menu).
@@ -58,9 +55,6 @@ export function lookupModelMetadata(providerType: ProviderType, modelId: string)
     ...override,
     capabilities: { ...generated.capabilities, ...override.capabilities },
     modalities: override.modalities ?? generated.modalities,
-    endpointRoles: override.endpointRoles ?? generated.endpointRoles,
-    transports: override.transports ?? generated.transports,
-    transcriptOutput: override.transcriptOutput ?? generated.transcriptOutput,
   };
 }
 
@@ -239,72 +233,6 @@ const GOOGLE_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
   },
 };
 
-const OPENAI_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
-  'gpt-audio': openAiAudioChatModel(),
-  'gpt-audio-mini': openAiAudioChatModel(),
-  'gpt-4o-audio-preview': openAiAudioChatModel(),
-  'gpt-4o-mini-audio-preview': openAiAudioChatModel(),
-  'gpt-4o-transcribe': openAiTranscriptionModel(),
-  'gpt-4o-mini-transcribe': openAiTranscriptionModel(),
-  'gpt-4o-mini-transcribe-2025-12-15': openAiTranscriptionModel(),
-  'whisper-1': openAiTranscriptionModel(),
-  'gpt-realtime': openAiRealtimeModel(),
-  'gpt-realtime-mini': openAiRealtimeModel(),
-  'gpt-realtime-1.5': openAiRealtimeModel(),
-  'gpt-realtime-2': openAiRealtimeModel(),
-  'gpt-realtime-2.1': openAiRealtimeModel(),
-};
-
-function openAiAudioChatModel(): ModelMetadata {
-  return {
-    modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
-    endpointRoles: ['agent_chat', 'audio_chat'],
-    transports: ['openai_chat_audio'],
-    transcriptOutput: true,
-  };
-}
-
-function openAiTranscriptionModel(): ModelMetadata {
-  return {
-    modalities: { input: ['audio'], output: ['text'] },
-    endpointRoles: ['transcription'],
-    transports: ['openai_audio_transcriptions'],
-    transcriptOutput: true,
-  };
-}
-
-function openAiRealtimeModel(): ModelMetadata {
-  return {
-    modalities: { input: ['text', 'audio'], output: ['text', 'audio'] },
-    endpointRoles: ['realtime_voice'],
-    transports: ['openai_realtime'],
-    transcriptOutput: true,
-  };
-}
-
-export function resolveModelVoiceMetadata(
-  providerType: ProviderType,
-  models: readonly ModelInfo[] | undefined,
-  modelId: string,
-): Pick<ModelInfo, 'modalities' | 'endpointRoles' | 'transports' | 'transcriptOutput'> {
-  const stored = models?.find((entry) => entry.id === modelId);
-  const metadata = lookupModelMetadata(providerType, modelId);
-  return {
-    ...((stored?.modalities ?? metadata.modalities)
-      ? { modalities: stored?.modalities ?? metadata.modalities }
-      : {}),
-    ...((stored?.endpointRoles ?? metadata.endpointRoles)
-      ? { endpointRoles: stored?.endpointRoles ?? metadata.endpointRoles }
-      : {}),
-    ...((stored?.transports ?? metadata.transports)
-      ? { transports: stored?.transports ?? metadata.transports }
-      : {}),
-    ...((stored?.transcriptOutput ?? metadata.transcriptOutput)
-      ? { transcriptOutput: stored?.transcriptOutput ?? metadata.transcriptOutput }
-      : {}),
-  };
-}
-
 const OPENAI_OAUTH_MODEL_METADATA: Record<string, ModelMetadata> = {
   'gpt-5.6-sol': {
     ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.6-sol']!,
@@ -313,7 +241,6 @@ const OPENAI_OAUTH_MODEL_METADATA: Record<string, ModelMetadata> = {
   },
   'gpt-5.5': {
     ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.5']!,
-    ...OPENAI_MODEL_OVERRIDES['gpt-5.5']!,
     contextWindow: 272_000,
   },
   'gpt-5.4': { ...GENERATED_MODELS_DEV_METADATA.openai['gpt-5.4']!, contextWindow: 272_000 },
@@ -408,7 +335,6 @@ const ollamaCloudThinkingModels: Record<string, ModelMetadata> = Object.fromEntr
 const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMetadata>>> = {
   anthropic: ANTHROPIC_MODEL_OVERRIDES,
   'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
-  openai: OPENAI_MODEL_OVERRIDES,
   google: GOOGLE_MODEL_OVERRIDES,
   cohere: {
     'command-a-plus-05-2026': {

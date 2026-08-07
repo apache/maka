@@ -13,7 +13,11 @@ import {
  * and the project only in the composer's WorkspacePicker (gone the moment a
  * session exists). So these assertions are about presence, not decoration.
  */
-function render(props: { sessionName: string; projectName?: string }): string {
+function render(props: {
+  sessionName: string;
+  projectName?: string;
+  parentName?: string;
+}): string {
   return renderToStaticMarkup(
     <LocaleProvider locale="en">
       <TitlebarSessionIdentity
@@ -22,6 +26,11 @@ function render(props: { sessionName: string; projectName?: string }): string {
         project={
           props.projectName
             ? { name: props.projectName, onOpenFolder: () => undefined }
+            : undefined
+        }
+        parentSession={
+          props.parentName
+            ? { name: props.parentName, onOpen: () => undefined }
             : undefined
         }
       />
@@ -62,6 +71,27 @@ describe('TitlebarSessionIdentity', () => {
       'project and session segments must both be buttons',
     );
     assert.doesNotMatch(html, /aria-current/);
+  });
+
+  it('inserts the parent session between project and child when a linked child is open', () => {
+    const html = render({
+      sessionName: 'explore · layout',
+      projectName: 'maka-agent',
+      parentName: 'Implement session ledger',
+    });
+    assert.match(html, /maka-agent/);
+    assert.match(html, /Implement session ledger/);
+    assert.match(html, /explore · layout/);
+    assert.ok(
+      html.indexOf('maka-agent') < html.indexOf('Implement session ledger') &&
+        html.indexOf('Implement session ledger') < html.indexOf('explore · layout'),
+      'trail order is project › parent › child',
+    );
+    assert.equal(
+      html.match(/<button[^>]*type="button"/g)?.length,
+      3,
+      'project, parent, and session segments must all be buttons',
+    );
   });
 
   it('truncates each segment on its own rather than wrapping the strip', () => {

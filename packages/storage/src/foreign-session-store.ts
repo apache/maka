@@ -569,14 +569,13 @@ async function readCodexThreadRows(
       // Filter cwd IN SQL, before LIMIT: otherwise a multi-project store with
       // many newer threads from other directories fills the LIMIT window and
       // the target project's older thread never reaches the JS-side filter.
-      // This is a COARSE pre-filter — the exact normalized path or its
-      // trailing-separator variant — so a stored `/target/` isn't dropped
-      // before the authoritative two-sided normalizePath() comparison in
-      // codexRowsToSummaries(); SQL cannot run normalizePath on the stored side.
+      // This is a COARSE pre-filter across source-native and host-normalized
+      // separator forms. The authoritative two-sided normalizePath()
+      // comparison still runs in codexRowsToSummaries().
       if (cwdFilter !== undefined && columns.has('cwd')) {
-        const norm = normalizePath(cwdFilter);
-        where.push('(cwd = ? OR cwd = ?)');
-        params.push(norm, norm + sep);
+        const variants = codexCwdSqlVariants(cwdFilter);
+        where.push(`cwd IN (${variants.map(() => '?').join(', ')})`);
+        params.push(...variants);
       }
       const orderColumn = columns.has('updated_at_ms')
         ? 'updated_at_ms'
@@ -683,4 +682,21 @@ function rolloutFilenameMatchesId(base: string, id: string): boolean {
 function normalizePath(path: string): string {
   const resolved = resolve(path);
   return resolved.endsWith(sep) && resolved !== sep ? resolved.slice(0, -1) : resolved;
+}
+
+export function codexCwdSqlVariants(path: string): string[] {
+  const variants = new Set<string>();
+  for (const candidate of [path, normalizePath(path)]) {
+    for (const separatorForm of [
+      candidate,
+      candidate.replaceAll('\\', '/'),
+      candidate.replaceAll('/', '\\'),
+    ]) {
+      const withoutTrailingSeparator = separatorForm.replace(/[\\/]+$/, '') || separatorForm;
+      variants.add(withoutTrailingSeparator);
+      variants.add(`${withoutTrailingSeparator}/`);
+      variants.add(`${withoutTrailingSeparator}\\`);
+    }
+  }
+  return [...variants];
 }

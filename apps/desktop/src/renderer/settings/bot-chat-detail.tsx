@@ -38,7 +38,7 @@ import {
 } from './bot-chat-shared';
 import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
-import { statusDotVariant } from './settings-status-badge';
+import { dotForStatus } from '@maka/ui';
 
 function canEnableBotChannel(readiness: BotReadinessState): boolean {
   return readiness === 'credentials_valid' || readiness === 'operational' || readiness === 'degraded';
@@ -184,7 +184,7 @@ export function BotChatChannelDetail(props: {
               {/* Astryx convergence: readiness reads as the shared StatusDot +
                   text idiom — "no decorative Badge" (astryx docs principles). */}
               <span className="settingsStatus">
-                <StatusDot variant={statusDotVariant(readinessCopy.tone)} label={readinessCopy.label} />
+                <StatusDot variant={dotForStatus(readinessCopy.tone)} label={readinessCopy.label} />
                 <span>{readinessCopy.label}</span>
               </span>
             </h3>

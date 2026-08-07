@@ -127,13 +127,14 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
+          . ./scripts/windows-process-identity.ps1
           $baseline = Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/process-baseline.json" -Raw |
             ConvertFrom-Json
           $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
             [System.StringComparer]::Ordinal
           )
           foreach ($process in @($baseline.Processes)) {
-            [void]$baselineKeys.Add("$($process.ProcessId)|$($process.CreationDate)")
+            [void]$baselineKeys.Add((Get-WindowsProcessIdentityKey $process))
           }
           $allProcesses = @(
             Get-CimInstance Win32_Process |
@@ -150,7 +151,7 @@ jobs:
           $leaks = @(
             $allProcesses | Where-Object {
                 $_.Name -in @('node.exe', 'electron.exe') -and
-                -not $baselineKeys.Contains("$($_.ProcessId)|$($_.CreationDate)")
+                -not $baselineKeys.Contains((Get-WindowsProcessIdentityKey $_))
               }
           )
           ConvertTo-Json -InputObject $leaks -Depth 3 |
@@ -188,12 +189,12 @@ jobs:
           $remainingById = @{}
           Get-CimInstance Win32_Process |
             ForEach-Object {
-              $key = "$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))"
+              $key = Get-WindowsProcessIdentityKey $_
               $remainingById[$key] = $_
             }
           $unreaped = @(
             $ownedTree | Where-Object {
-              $remainingById.ContainsKey("$($_.ProcessId)|$($_.CreationDate)")
+              $remainingById.ContainsKey((Get-WindowsProcessIdentityKey $_))
             }
           )
           ConvertTo-Json -InputObject $unreaped -Depth 3 |

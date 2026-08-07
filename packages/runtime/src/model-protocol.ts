@@ -101,21 +101,6 @@ export interface FilePart {
   providerOptions?: ProviderOptions;
 }
 
-/**
- * Explicit native-audio intent. ModelAdapter lowers this only for a route that
- * was admitted by the voice capability router; a generic FilePart is never
- * promoted into audio by MIME sniffing.
- */
-export interface AudioPart {
-  type: 'audio';
-  data: DataContent;
-  mediaType: string;
-  format: 'wav' | 'webm' | 'mp3' | 'm4a';
-  durationMs: number;
-  transcript?: string;
-  retention: 'operation_memory';
-}
-
 export interface ReasoningPart {
   type: 'reasoning';
   text: string;
@@ -284,7 +269,7 @@ export type AssistantContent =
       | ToolResultPart
       | ToolApprovalRequest
     >;
-export type UserContent = string | Array<TextPart | ImagePart | FilePart | AudioPart>;
+export type UserContent = string | Array<TextPart | ImagePart | FilePart>;
 export type ToolContent = Array<ToolResultPart | ToolApprovalResponse>;
 
 export interface SystemModelMessage {

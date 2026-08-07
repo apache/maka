@@ -159,7 +159,13 @@ function AutomationResultPreview(props: { text: string }) {
  * row's expansion state internally — this panel is the seam where the product
  * decides what a result looks like, and it is asserted directly.
  */
-export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
+export function ToolCallDetail({
+  item,
+  onOpenLinkedSession,
+}: {
+  item: ToolActivityItem;
+  onOpenLinkedSession?(sessionId: string): void;
+}) {
   const locale = useUiLocale();
   const cancelled = isCancelledToolResult(item.result);
   const sandboxBlocked = isSandboxDeniedTool(item);
@@ -223,6 +229,7 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
             toolName={item.toolName}
             args={item.args}
             shellRunSource={item.shellRunSource}
+            onOpenLinkedSession={onOpenLinkedSession}
           />
         )
       )}
@@ -265,7 +272,13 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
               return <ToolCodeBlock code={invocationLine} />;
             }
             if (showResult && !ownsPanel && displayResult) {
-              return <ToolResultPreview content={displayResult} toolName={item.toolName} />;
+              return (
+                <ToolResultPreview
+                  content={displayResult}
+                  toolName={item.toolName}
+                  onOpenLinkedSession={onOpenLinkedSession}
+                />
+              );
             }
             if (showInvocation && invocationLine) {
               return <ToolCodeBlock code={invocationLine} />;
@@ -285,7 +298,13 @@ export function ToolCallDetail({ item }: { item: ToolActivityItem }) {
  * their own word in `errorMessage`, and the detail panel (banner, command,
  * output, previews) rides along in `resultDetail`.
  */
-export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
+export function ToolTrow({
+  items,
+  onOpenLinkedSession,
+}: {
+  items: ToolActivityItem[];
+  onOpenLinkedSession?(sessionId: string): void;
+}) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
   const calls: ChatToolCallItem[] = items.map((item) => ({
@@ -303,7 +322,7 @@ export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
     ...diffStats(itemDiffs(item)),
     resultDetail: (
       <ToolDetailReveal>
-        <ToolCallDetail item={item} />
+        <ToolCallDetail item={item} onOpenLinkedSession={onOpenLinkedSession} />
       </ToolDetailReveal>
     ),
   }));

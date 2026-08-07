@@ -9,7 +9,7 @@ import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
-import { statusDotVariant } from './settings-status-badge';
+import { dotForStatus } from '@maka/ui';
 
 /**
  * Remote-access overview: the "正在使用" list of configured channels plus
@@ -91,7 +91,7 @@ export function BotChatOverview(props: {
                 <span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
                   {botCopy.providers[entry.provider].label}
                   <span className="settingsStatus">
-                    <StatusDot variant={statusDotVariant(entry.copy.tone)} label={entry.copy.label} />
+                    <StatusDot variant={dotForStatus(entry.copy.tone)} label={entry.copy.label} />
                     <span>{entry.copy.label}</span>
                   </span>
                 </span>

@@ -5,11 +5,14 @@
 // where it is shown — the same contract plan-reminder-status.ts keeps for
 // 定时任务.
 //
-// Tone rules: error is a broken state file or unreadable metadata; warning
-// is anything that asks for a decision (review, shadowed, budget-omitted, a
-// managed update); a deliberately disabled skill is neutral, not broken; an
-// enabled skill in context is simply live (accent), never success-green.
+// Meaning rules: `error` is a broken state file or unreadable metadata;
+// `attention` is anything that asks for a decision (review, shadowed,
+// budget-omitted, a managed update); a deliberately disabled skill is
+// `neutral`, not broken; an enabled skill in context is simply `active`,
+// never success-green. What those words look like is status-vocabulary's
+// call, not this file's.
 
+import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 import type { SkillEntry } from './module-panel-types.js';
 import type { SkillsCopy } from './skills-copy.js';
 
@@ -24,20 +27,30 @@ function hasManagedUpdateAttention(skill: SkillEntry): boolean {
     && skill.managedUpdateStatus !== 'up_to_date';
 }
 
-export function skillStatusDotVariant(skill: SkillEntry): 'accent' | 'warning' | 'error' | 'neutral' {
+/**
+ * The ladder is the domain knowledge here: which of a skill's several
+ * independent problems wins the one dot it gets. Broken beats needs-looking-at
+ * beats off beats fine, and the order inside each rung is this file's business
+ * — status-vocabulary only decides what the words look like.
+ */
+export function skillStatusSemantic(skill: SkillEntry): StatusSemantic {
   const contextStatus = skillContextStatus(skill);
   if (skill.runtimeStatus === 'state_error' || skill.validationStatus === 'metadata_error' || contextStatus === 'invalid') {
     return 'error';
   }
-  if (skill.kind === 'discovery_diagnostic') return 'warning';
-  if (skill.needsReview) return 'warning';
-  if (skill.validationStatus && skill.validationStatus !== 'ok') return 'warning';
+  if (skill.kind === 'discovery_diagnostic') return 'attention';
+  if (skill.needsReview) return 'attention';
+  if (skill.validationStatus && skill.validationStatus !== 'ok') return 'attention';
   if (contextStatus === 'shadowed' || contextStatus === 'budget' || contextStatus === 'host_incompatible') {
-    return 'warning';
+    return 'attention';
   }
-  if (hasManagedUpdateAttention(skill)) return 'warning';
+  if (hasManagedUpdateAttention(skill)) return 'attention';
   if (!skill.enabled) return 'neutral';
-  return 'accent';
+  return 'active';
+}
+
+export function skillStatusDotVariant(skill: SkillEntry) {
+  return dotForStatus(skillStatusSemantic(skill));
 }
 
 /**

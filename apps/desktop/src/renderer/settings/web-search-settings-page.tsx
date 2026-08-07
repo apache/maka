@@ -8,7 +8,7 @@ import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { SettingsActions, SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { statusDotVariant } from './settings-status-badge';
+import { dotForStatus, type StatusSemantic } from '@maka/ui';
 import { useKeyedActionGuard } from './use-action-guard';
 
 /**
@@ -221,7 +221,10 @@ export function WebSearchSettingsPage(props: {
   const statusCopy = usingModelSearch
     ? {
         label: webSearch.enabled ? copy.statuses.modelEnabled : copy.statuses.modelDisabled,
-        tone: webSearch.enabled ? ('info' as const) : ('warning' as const),
+        // Verified-and-on is proven health, which is what success is for.
+        // Off stays amber (`attention`) exactly as before — it was never one of
+        // the ruled `info` states, and this pass repaints nothing it did not name.
+        tone: webSearch.enabled ? ('success' as const) : ('attention' as const),
       }
     : presentWebSearchCredentialStatus(
         credentialSource,
@@ -272,7 +275,7 @@ export function WebSearchSettingsPage(props: {
           end={<div className="settingsWebSearchControlCluster">
             <div className="settingsWebSearchStatusCluster" role="group" aria-label={copy.statusAria}>
               <span className="settingsStatus">
-                <StatusDot variant={statusDotVariant(statusCopy.tone)} label={statusCopy.label} />
+                <StatusDot variant={dotForStatus(statusCopy.tone)} label={statusCopy.label} />
                 <span>{statusCopy.label}</span>
               </span>
               {hasCheckedAt && (
@@ -449,21 +452,25 @@ function presentWebSearchCredentialStatus(
   enabled: boolean,
   status: WebSearchCredentialStatus,
   copy: WebSearchSettingsCopy,
-): { label: string; tone: 'success' | 'info' | 'warning' | 'destructive' } {
-  if (credentialSource === 'none') return { label: copy.statuses.not_configured, tone: 'warning' };
+): { label: string; tone: StatusSemantic } {
+  if (credentialSource === 'none') return { label: copy.statuses.not_configured, tone: 'attention' };
   if (status === 'valid') {
     return enabled
       ? { label: copy.statuses.validEnabled, tone: 'success' }
-      : { label: copy.statuses.validDisabled, tone: 'info' };
+      // Valid credentials, feature off: a fact the user set, not a problem.
+      : { label: copy.statuses.validDisabled, tone: 'neutral' };
   }
-  if (status === 'invalid_credentials') return { label: copy.statuses.invalid_credentials, tone: 'destructive' };
-  if (status === 'rate_limited') return { label: copy.statuses.rate_limited, tone: 'warning' };
-  if (status === 'timeout') return { label: copy.statuses.timeout, tone: 'warning' };
-  if (status === 'network_error') return { label: copy.statuses.network_error, tone: 'warning' };
-  if (status === 'not_configured') return { label: copy.statuses.not_configured, tone: 'warning' };
+  if (status === 'invalid_credentials') return { label: copy.statuses.invalid_credentials, tone: 'error' };
+  if (status === 'rate_limited') return { label: copy.statuses.rate_limited, tone: 'attention' };
+  if (status === 'timeout') return { label: copy.statuses.timeout, tone: 'attention' };
+  if (status === 'network_error') return { label: copy.statuses.network_error, tone: 'attention' };
+  if (status === 'not_configured') return { label: copy.statuses.not_configured, tone: 'attention' };
   return enabled
-    ? { label: copy.statuses.unknownEnabled, tone: 'warning' }
-    : { label: copy.statuses.untested, tone: 'info' };
+    ? { label: copy.statuses.unknownEnabled, tone: 'attention' }
+    // Configured but never tested: setup is unfinished, and the amber says so.
+    // Testing moves it to success or error, completing the narrative; neutral
+    // would read as "all set" and break that story.
+    : { label: copy.statuses.untested, tone: 'attention' };
 }
 
 function presentWebSearchCredentialSource(

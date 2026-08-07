@@ -727,7 +727,124 @@ describe('non-serving Runtime Host kernel', () => {
     assert.equal(isProcessAlive(candidatePid), false);
   });
 
-  test('a response timeout is connection-fatal and Client close stays local', {
+  test('slow domain work preserves multiplexed requests and retires only explicit deadlines', async () => {
+    await withHostPaths(async (paths) => {
+      let releaseAdmitted!: () => void;
+      const admittedGate = new Promise<void>((resolve) => {
+        releaseAdmitted = resolve;
+      });
+      let markAdmitted!: () => void;
+      const admittedEntered = new Promise<void>((resolve) => {
+        markAdmitted = resolve;
+      });
+      let releaseLate!: () => void;
+      const lateGate = new Promise<void>((resolve) => {
+        releaseLate = resolve;
+      });
+      let markLate!: () => void;
+      const lateEntered = new Promise<void>((resolve) => {
+        markLate = resolve;
+      });
+      let markLateHandled!: () => void;
+      const lateHandled = new Promise<void>((resolve) => {
+        markLateHandled = resolve;
+      });
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = paths.resources.trackCloseable(
+        await tryAcquireInteractiveRootOwner(capability),
+      );
+      assert.ok(owner);
+      if (!owner) return;
+      const host = paths.resources.trackCloseable(
+        await RuntimeHostKernel.start({
+          owner,
+          idleGraceMs: 10_000,
+          compositionFactory: async () => ({
+            ...testComposition(),
+            handlers: {
+              ...createUnavailableDomainOperationHandlers(),
+              'memory.mutate': async () => {
+                markAdmitted();
+                await admittedGate;
+                return {
+                  ok: true,
+                  result: { kind: 'rejected', reason: 'invalid_state' },
+                };
+              },
+              'goal.query': async ({ sessionId }) => {
+                if (sessionId === 'blocked-session') await admittedGate;
+                if (sessionId === 'late-session') {
+                  markLate();
+                  await lateGate;
+                  markLateHandled();
+                }
+                return { ok: true, result: { sessionId, goal: null } };
+              },
+            },
+          }),
+        }),
+      );
+      const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+
+      try {
+        const admitted = connected.connection.request('memory.mutate', {
+          kind: 'replace_begin',
+          expectedRevision: `sha256:${'a'.repeat(64)}`,
+          totalBytes: 0,
+          contentSha256: `sha256:${'b'.repeat(64)}`,
+        });
+        await admittedEntered;
+        const laneWaiter = connected.connection.request('goal.query', {
+          sessionId: 'blocked-session',
+        });
+        assert.deepEqual(
+          await withTimeout(
+            connected.connection.request('goal.query', { sessionId: 'unrelated-session' }),
+            500,
+            'unrelated Runtime Host request waited behind admitted work',
+          ),
+          { sessionId: 'unrelated-session', goal: null },
+        );
+
+        await sleep(2_100);
+        releaseAdmitted();
+        assert.deepEqual(await admitted, { kind: 'rejected', reason: 'invalid_state' });
+        assert.deepEqual(await laneWaiter, { sessionId: 'blocked-session', goal: null });
+
+        const locallyTimed = connected.connection.request(
+          'goal.query',
+          { sessionId: 'late-session' },
+          50,
+        );
+        await lateEntered;
+        await assert.rejects(
+          locallyTimed,
+          (error: unknown) =>
+            error instanceof RuntimeHostTransportError && error.code === 'read_timeout',
+        );
+        assert.equal(
+          (await connected.connection.status()).hostEpoch,
+          connected.connection.hostEpoch,
+        );
+        releaseLate();
+        await lateHandled;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(
+          await connected.connection.request('goal.query', { sessionId: 'after-late-response' }),
+          { sessionId: 'after-late-response', goal: null },
+        );
+      } finally {
+        releaseAdmitted();
+        releaseLate();
+        await connected.connection.close();
+        await host.close();
+      }
+    });
+  });
+
+  test('an automatic failed liveness check is connection-fatal and Client close stays local', {
     skip: process.platform === 'win32',
   }, async () => {
     await withHostPaths(async (paths) => {
@@ -745,10 +862,19 @@ describe('non-serving Runtime Host kernel', () => {
         process.kill(attempt.pid, 'SIGSTOP');
         stopped = true;
         await waitForProcessStopped(attempt.pid);
-        await assert.rejects(
-          () => connected.connection.status(50),
-          (error: unknown) =>
-            error instanceof RuntimeHostTransportError && error.code === 'read_timeout',
+        const pending = connected.connection.request('goal.query', {
+          sessionId: 'stopped-host-session',
+        });
+        await withTimeout(
+          assert.rejects(
+            pending,
+            (error: unknown) =>
+              error instanceof RuntimeHostTransportError &&
+              error.code === 'read_timeout' &&
+              error.message.includes('host.status'),
+          ),
+          5_000,
+          'automatic Runtime Host liveness check did not reject pending work',
         );
         await withTimeout(
           connected.connection.closed,

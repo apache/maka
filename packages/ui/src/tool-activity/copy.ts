@@ -136,6 +136,9 @@ export interface ToolActivityCopy {
     artifacts: string;
     artifactCount: (count: number) => string;
     readOnly: string;
+    /** Open the linked child session in the main chat column. */
+    openSession: string;
+    openSessionAriaLabel: (name: string) => string;
     copyState: { pending: string; copied: string; failed: string; pendingAria: (label: string) => string; failedAria: (label: string) => string };
     copyButtons: Record<'summary' | 'continuation' | 'process' | 'evidence' | 'report' | 'candidate' | 'matches', { idle: string; copied: string }>;
     objectiveFallback: string;
@@ -222,6 +225,7 @@ const TOOL_ACTIVITY_COPY = {
     },
     agent: {
       subagentStatus: { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', waiting_for_user: '等待用户输入' }, duration: (value) => `耗时 ${value}`, resultSummaryAriaLabel: '子代理结果摘要', resultSummary: '结果摘要', artifactsAriaLabel: '子代理产物', artifacts: '产物', artifactCount: (n) => `${n} 个`, readOnly: '只读',
+      openSession: '打开会话', openSessionAriaLabel: (name) => `打开子代理会话「${name}」`,
       swarm: { status: { completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消' }, taskCount: (n) => `${n} 个任务`, completedCount: (n) => `${n} 完成`, failedCount: (n) => `${n} 失败`, cancelledCount: (n) => `${n} 取消`, artifactCount: (n) => `${n} 个产物`, resultsAriaLabel: 'Agent Swarm 结果', hiddenTaskCount: (n) => `另有 ${n} 个任务未显示` },
       copyState: { pending: '复制中…', copied: '已复制', failed: '复制失败', pendingAria: (label) => `${label}中`, failedAria: (label) => `${label}失败` },
       copyButtons: { summary: { idle: '复制摘要', copied: '已复制探索摘要' }, continuation: { idle: '复制续研提示', copied: '已复制续研提示' }, process: { idle: '复制过程', copied: '已复制探索过程' }, evidence: { idle: '复制证据', copied: '已复制证据锚点' }, report: { idle: '复制报告', copied: '已复制研究报告' }, candidate: { idle: '复制候选', copied: '已复制候选文件' }, matches: { idle: '复制片段', copied: '已复制命中片段' } },
@@ -281,6 +285,7 @@ const TOOL_ACTIVITY_COPY = {
     },
     agent: {
       subagentStatus: { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', running: 'Running', waiting_for_user: 'Waiting for user input' }, duration: (value) => `Duration ${value}`, resultSummaryAriaLabel: 'Subagent result summary', resultSummary: 'Result summary', artifactsAriaLabel: 'Subagent artifacts', artifacts: 'Artifacts', artifactCount: (n) => `${n}`, readOnly: 'Read only',
+      openSession: 'Open session', openSessionAriaLabel: (name) => `Open subagent session “${name}”`,
       swarm: { status: { completed: 'Completed', partial: 'Partially completed', failed: 'Failed', cancelled: 'Cancelled' }, taskCount: (n) => `${n} ${n === 1 ? 'task' : 'tasks'}`, completedCount: (n) => `${n} completed`, failedCount: (n) => `${n} failed`, cancelledCount: (n) => `${n} cancelled`, artifactCount: (n) => `${n} ${n === 1 ? 'artifact' : 'artifacts'}`, resultsAriaLabel: 'Agent Swarm results', hiddenTaskCount: (n) => `${n} more ${n === 1 ? 'task is' : 'tasks are'} not shown` },
       copyState: { pending: 'Copying…', copied: 'Copied', failed: 'Copy failed', pendingAria: (label) => `Copying ${label}`, failedAria: (label) => `Failed to copy ${label}` },
       copyButtons: { summary: { idle: 'Copy summary', copied: 'Exploration summary copied' }, continuation: { idle: 'Copy continuation prompt', copied: 'Continuation prompt copied' }, process: { idle: 'Copy process', copied: 'Exploration process copied' }, evidence: { idle: 'Copy evidence', copied: 'Evidence anchors copied' }, report: { idle: 'Copy report', copied: 'Research report copied' }, candidate: { idle: 'Copy candidates', copied: 'Candidate files copied' }, matches: { idle: 'Copy matches', copied: 'Matching excerpts copied' } },

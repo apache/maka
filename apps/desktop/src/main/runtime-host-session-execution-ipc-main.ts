@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import {
   deriveTurnRecords,
+  SIDE_CONVERSATION_SESSION_LABEL,
   type AttachmentRef,
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -14,9 +15,9 @@ import {
   resolveIngestItems,
 } from "./attachment-ingest.js";
 import {
-  normalizeBranchFromTurnInput,
+  normalizeRuntimeHostBranchFromTurnInput,
   normalizeRegenerateTurnInput,
-  normalizeReviseBeforeTurnInput,
+  normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeUserQuestionResponse,
@@ -174,9 +175,6 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...((command.skillIds?.length ?? 0) > 0
           ? { skillIds: command.skillIds }
           : {}),
-        ...(command.voiceOperationId
-          ? { voiceOperationId: command.voiceOperationId }
-          : {}),
         ...(command.turnOrchestration
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
@@ -302,15 +300,25 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     "sessions:branchFromTurn",
     async (_event, sessionId: string, input: unknown) => {
-      const normalized = normalizeBranchFromTurnInput(input);
+      const normalized = normalizeRuntimeHostBranchFromTurnInput(input);
       let branch = await deps.client.copySession("branch", {
         sourceSessionId: sessionId,
-        targetSessionId: newId(),
+        targetSessionId: normalized.copyId,
         sourceTurnId: normalized.sourceTurnId,
       });
-      if (normalized.name) {
+      if (normalized.name || normalized.sideConversation) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
-          name: normalized.name,
+          ...(normalized.name ? { name: normalized.name } : {}),
+          ...(normalized.sideConversation
+            ? {
+                labels: [
+                  ...new Set([
+                    ...branch.labels,
+                    SIDE_CONVERSATION_SESSION_LABEL,
+                  ]),
+                ],
+              }
+            : {}),
         });
       }
       deps.emitSessionsChanged("created", branch.id);
@@ -320,10 +328,10 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     "sessions:reviseBeforeTurn",
     async (_event, sessionId: string, input: unknown) => {
-      const normalized = normalizeReviseBeforeTurnInput(input);
+      const normalized = normalizeRuntimeHostReviseBeforeTurnInput(input);
       const revision = await deps.client.copySession("revision", {
         sourceSessionId: sessionId,
-        targetSessionId: newId(),
+        targetSessionId: normalized.copyId,
         sourceTurnId: normalized.sourceTurnId,
       });
       deps.emitSessionsChanged("created", revision.id);

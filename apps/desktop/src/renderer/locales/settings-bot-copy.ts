@@ -1,3 +1,4 @@
+import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState, UiCatalog, UiLocale } from '@maka/core';
 
 type WidenCopy<T> = T extends string
@@ -20,11 +21,11 @@ const zhCopy = {
   readiness: {
     unscaffolded: { label: '未开放', detail: '该平台当前不可作为远程接入渠道。', tone: 'neutral' },
     scaffolded: { label: '待配置', detail: '等待补齐这个平台需要的凭据配置。', tone: 'neutral' },
-    configured: { label: '已配置', detail: '已填写配置；等待完成凭据或运行态验证。', tone: 'info' },
-    credentials_valid: { label: '凭据有效', detail: '凭据探测通过；这不代表已能收发消息。', tone: 'warning' },
+    configured: { label: '已配置', detail: '已填写配置；等待完成凭据或运行态验证。', tone: 'attention' },
+    credentials_valid: { label: '凭据有效', detail: '凭据探测通过；这不代表已能收发消息。', tone: 'attention' },
     operational: { label: '运行可用', detail: '最近一次真实运行探测成功。', tone: 'success' },
-    degraded: { label: '运行降级', detail: '之前可用，但最近运行态探测失败。', tone: 'destructive' },
-  } satisfies Record<BotReadinessState, { label: string; detail: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'destructive' }>,
+    degraded: { label: '运行降级', detail: '之前可用，但最近运行态探测失败。', tone: 'error' },
+  } satisfies Record<BotReadinessState, { label: string; detail: string; tone: StatusSemantic }>,
   planned: { label: '未开放', detail: '该平台当前不会保存为远程接入渠道或计划提醒投递目标。', tone: 'neutral' as const },
   status: {
     disabled: '开关关闭', noToken: '等待填写 Bot Token', missingFeishuCredentials: '等待填写飞书 App ID 或 App Secret',
@@ -104,8 +105,8 @@ const enCopy: BotSettingsCopy = {
   },
   readiness: {
     unscaffolded: { label: 'Unavailable', detail: 'This platform cannot currently be used for remote access.', tone: 'neutral' }, scaffolded: { label: 'Setup required', detail: 'Add the credentials required by this platform.', tone: 'neutral' },
-    configured: { label: 'Configured', detail: 'Configuration is saved; credential or runtime validation is still required.', tone: 'info' }, credentials_valid: { label: 'Credentials valid', detail: 'The credential check passed; this does not prove messages can be sent or received.', tone: 'warning' },
-    operational: { label: 'Operational', detail: 'The latest live runtime check succeeded.', tone: 'success' }, degraded: { label: 'Degraded', detail: 'This channel worked before, but the latest runtime check failed.', tone: 'destructive' },
+    configured: { label: 'Configured', detail: 'Configuration is saved; credential or runtime validation is still required.', tone: 'attention' }, credentials_valid: { label: 'Credentials valid', detail: 'The credential check passed; this does not prove messages can be sent or received.', tone: 'attention' },
+    operational: { label: 'Operational', detail: 'The latest live runtime check succeeded.', tone: 'success' }, degraded: { label: 'Degraded', detail: 'This channel worked before, but the latest runtime check failed.', tone: 'error' },
   },
   planned: { label: 'Unavailable', detail: 'This platform is not saved as a remote-access channel or scheduled-task delivery target.', tone: 'neutral' },
   status: { disabled: 'Turned off', noToken: 'Waiting for Bot Token', missingFeishuCredentials: 'Waiting for Feishu App ID or App Secret', feishuDomainRequired: 'Feishu credentials are valid; add the event subscription domain', feishuEventsNotConnected: 'Feishu credentials are valid; connect the event callback', unavailable: 'This platform cannot currently be used for remote access', stopped: 'Listener stopped', detailsInLogs: 'See logs for runtime details', polling: 'Long polling', gateway: 'Event channel', webhook: 'Webhook', none: 'None' },

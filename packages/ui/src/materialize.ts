@@ -355,6 +355,8 @@ export interface TurnViewModel {
   errorClass?: string;
   partialOutputRetained: boolean;
   user?: ChatItem;
+  /** User instructions inserted while this turn was already running. */
+  userInterjections?: ChatItem[];
   tools: ToolActivityItem[];
   assistant?: ChatItem;
   /**
@@ -398,7 +400,13 @@ export function overlayLiveTurn(
   const targetIndex = turns.findIndex(
     (turn) => turn.turnId === liveTurn.turnId,
   );
-  if (targetIndex >= 0 && liveTurn.steps.length === 0) return turns;
+  if (
+    targetIndex >= 0
+    && liveTurn.steps.length === 0
+    && (liveTurn.steering?.length ?? 0) === 0
+  ) {
+    return turns;
+  }
   const current =
     targetIndex >= 0
       ? turns[targetIndex]!
@@ -482,8 +490,26 @@ export function overlayLiveTurn(
     }
   }
   const mergedTimeline = mergeAdjacentTimeline(timeline);
+  const persistedUserIds = new Set([
+    ...(current.user ? [current.user.id] : []),
+    ...(current.userInterjections ?? []).map((message) => message.id),
+  ]);
+  const userInterjections = [
+    ...(current.userInterjections ?? []),
+    ...(liveTurn.steering ?? []).flatMap((message) =>
+      persistedUserIds.has(message.id)
+        ? []
+        : [{
+            id: message.id,
+            role: "user" as const,
+            text: message.text,
+            ts: message.ts,
+          }],
+    ),
+  ];
   const next = {
     ...current,
+    ...(userInterjections.length > 0 ? { userInterjections } : {}),
     tools: timelineTools(mergedTimeline),
     timeline: mergedTimeline,
   };
@@ -626,7 +652,7 @@ export function materializeTurns(
     if (turnMessageList) turnMessageList.push(message);
     else messagesByTurn.set(turnId, [message]);
     if (message.type === "user") {
-      turn.user = {
+      const user: ChatItem = {
         id: message.id,
         role: "user",
         text: message.displayText ?? message.text,
@@ -642,6 +668,11 @@ export function materializeTurns(
           : {}),
         ...(message.origin ? { hostOrigin: message.origin } : {}),
       };
+      if (!turn.user) {
+        turn.user = user;
+      } else {
+        turn.userInterjections = [...(turn.userInterjections ?? []), user];
+      }
     } else if (message.type === "assistant") {
       // A turn now holds one AssistantMessage per model step. Concatenate their
       // text (and thinking) in step order so the turn reads as one answer; keep

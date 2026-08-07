@@ -29,9 +29,6 @@ export function renderSessionListPanel(options: {
   groups?: Parameters<typeof SessionListPanel>[0]['groups'];
   projectActions?: Parameters<typeof SessionListPanel>[0]['projectActions'];
   worktreeSessionIds?: Parameters<typeof SessionListPanel>[0]['worktreeSessionIds'];
-  childSessionsByParentId?: Parameters<
-    typeof SessionListPanel
-  >[0]['childSessionsByParentId'];
   staleSessionIds?: Parameters<typeof SessionListPanel>[0]['staleSessionIds'];
   viewMode?: Parameters<typeof SessionListPanel>[0]['viewMode'];
 } = {}): string {
@@ -52,7 +49,6 @@ export function renderSessionListPanel(options: {
       groups: options.groups,
       projectActions: options.projectActions,
       worktreeSessionIds: options.worktreeSessionIds,
-      childSessionsByParentId: options.childSessionsByParentId,
       staleSessionIds: options.staleSessionIds,
       viewMode: options.viewMode,
       onViewModeChange: options.viewMode ? () => {} : undefined,

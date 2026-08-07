@@ -161,36 +161,37 @@ describe('stale session CSS contract (@kenji review gate)', () => {
     const { makeSessionSummary, renderSessionListPanel } = await import(
       './session-list-render-helpers.js'
     );
-    const parent = makeSessionSummary({ id: 'parent', name: 'Parent' });
-    const child = makeSessionSummary({ id: 'child', name: 'Child' });
+    const stale = makeSessionSummary({ id: 'stale-session', name: 'Stale' });
+    const healthy = makeSessionSummary({ id: 'healthy-session', name: 'Healthy' });
     const html = renderSessionListPanel({
-      sessions: [parent],
-      activeId: child.id,
-      childSessionsByParentId: new Map([['parent', [child]]]),
-      staleSessionIds: new Set(['parent']),
+      sessions: [stale, healthy],
+      activeId: healthy.id,
+      staleSessionIds: new Set(['stale-session']),
     });
 
-    const parentChunk = html.match(
-      /data-session-id="parent"[\s\S]*?(?=data-session-id="child"|$)/,
+    const staleChunk = html.match(
+      /data-session-id="stale-session"[\s\S]*?(?=data-session-id="healthy-session"|$)/,
     )?.[0];
-    const childChunk = html.match(/data-session-id="child"[\s\S]*?(?=data-session-id=|$)/)?.[0];
-    assert.ok(parentChunk, 'expected parent session row markup');
-    assert.ok(childChunk, 'expected child session row markup');
-    assert.match(parentChunk, /data-stale="true"/, 'stale parent must set data-stale');
+    const healthyChunk = html.match(
+      /data-session-id="healthy-session"[\s\S]*?(?=data-session-id=|$)/,
+    )?.[0];
+    assert.ok(staleChunk, 'expected stale session row markup');
+    assert.ok(healthyChunk, 'expected healthy session row markup');
+    assert.match(staleChunk, /data-stale="true"/, 'stale session must set data-stale');
     assert.match(
-      parentChunk,
+      staleChunk,
       /maka-list-row-stale-pill/,
-      'stale parent must render the stale pill',
+      'stale session must render the stale pill',
     );
     assert.doesNotMatch(
-      childChunk,
+      healthyChunk,
       /data-stale="true"/,
-      'healthy child must not inherit data-stale from parent',
+      'healthy session must not inherit data-stale',
     );
     assert.doesNotMatch(
-      childChunk,
+      healthyChunk,
       /maka-list-row-stale-pill/,
-      'healthy child must not render a stale pill',
+      'healthy session must not render a stale pill',
     );
   });
 });

@@ -16,6 +16,14 @@ export interface ProjectManagementService {
     projectId: unknown,
   ): Promise<{ project: ProjectRecord | null; path: string }>;
   relink(projectId: unknown): Promise<DirectoryActionResult>;
+  /**
+   * The on-disk path of a catalogued project, for surfaces that need to open
+   * it. Returns null when the project is unknown, archived, or its folder is
+   * gone, so a caller cannot reveal something the catalog no longer vouches
+   * for. Deliberately takes an id rather than a path: the renderer never gets
+   * to name an arbitrary directory for the main process to open.
+   */
+  pathFor(projectId: unknown): Promise<string | null>;
   rename(projectId: unknown, name: unknown): Promise<ProjectRecord>;
   archive(projectId: unknown): Promise<ProjectRecord>;
   restore(projectId: unknown): Promise<ProjectRecord>;
@@ -140,6 +148,15 @@ export function createProjectManagementService(deps: {
         deps.selection.setSelection(project.id, project.preferredPath);
       }
       return { ok: true, project };
+    },
+
+    async pathFor(projectId) {
+      const id = requireProjectId(projectId);
+      const project = (await deps.catalog.list()).find(
+        (candidate) => candidate.id === id || candidate.aliases?.includes(id),
+      );
+      if (!project || project.archivedAt !== undefined || !project.available) return null;
+      return project.preferredPath ?? null;
     },
 
     rename(projectId, name) {

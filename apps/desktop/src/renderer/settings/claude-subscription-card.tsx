@@ -15,7 +15,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { statusDotVariant, type StatusTone } from './settings-status-badge';
+import { dotForStatus, type StatusSemantic } from '@maka/ui';
 import {
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
@@ -317,7 +317,7 @@ export function ClaudeSubscriptionCard() {
     <VStack gap={3}>
       <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
         <span className="settingsStatus">
-          <StatusDot variant={statusDotVariant(presentation.tone)} label={presentation.label} />
+          <StatusDot variant={dotForStatus(presentation.tone)} label={presentation.label} />
           <span>{presentation.label}</span>
         </span>
         {state?.profile?.email ? (
@@ -439,7 +439,7 @@ type ClaudeSubscriptionPendingAction = 'login' | 'submit' | 'cancel' | 'logout' 
 
 interface SubscriptionStatePresentation {
   label: string;
-  tone: StatusTone;
+  tone: StatusSemantic;
   detail: string;
 }
 
@@ -449,7 +449,9 @@ function presentSubscriptionState(state: SubscriptionAccountState, locale: UiLoc
     case 'not_logged_in':
       return { label: copy.signedOut, tone: 'neutral', detail: copy.signedOutDetail };
     case 'authorizing':
-      return { label: copy.authorizing, tone: 'info', detail: copy.authorizingDetail };
+      // The system is working right now — one of only two genuine `active` states
+      // on this whole surface.
+      return { label: copy.authorizing, tone: 'active', detail: copy.authorizingDetail };
     case 'authenticated':
       return {
         label: copy.signedIn,
@@ -457,29 +459,29 @@ function presentSubscriptionState(state: SubscriptionAccountState, locale: UiLoc
         detail: copy.signedInDetail,
       };
     case 'refreshing':
-      return { label: copy.tokenRefreshing, tone: 'info', detail: copy.tokenRefreshingDetail };
+      return { label: copy.tokenRefreshing, tone: 'active', detail: copy.tokenRefreshingDetail };
     case 'refresh_failed':
       return {
         label: copy.tokenRefreshFailed,
-        tone: 'warning',
+        tone: 'attention',
         detail: subscriptionResultMessage(state.errorMessage, copy.tokenRefreshFailedDetail, locale),
       };
     case 'storage_failed':
       return {
         label: copy.storageFailed,
-        tone: 'warning',
+        tone: 'attention',
         detail: subscriptionResultMessage(state.errorMessage, copy.storageFailedDetail, locale),
       };
     case 'quota_unavailable':
       return {
         label: copy.quotaUnavailable,
-        tone: 'warning',
+        tone: 'attention',
         detail: subscriptionResultMessage(state.errorMessage, copy.quotaUnavailableDetail, locale),
       };
     case 'provider_rejected':
       return {
         label: copy.providerRejected,
-        tone: 'destructive',
+        tone: 'error',
         detail: subscriptionResultMessage(state.errorMessage, copy.providerRejectedDetail, locale),
       };
     default:

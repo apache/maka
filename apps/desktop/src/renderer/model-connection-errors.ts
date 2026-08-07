@@ -38,6 +38,9 @@ export function sessionEventErrorMessage(
   event: Extract<SessionEvent, { type: 'error' }>,
   locale: UiLocale = 'zh',
 ): string {
+  if (isNoRealConnectionEvent(event)) {
+    return noRealConnectionSetupDescription(noRealConnectionReasonFromEvent(event), locale);
+  }
   const reasonDescription = describeSessionErrorReason(event.reason, locale);
   if (reasonDescription) return reasonDescription;
   const fallback = getDesktopConversationCopy(locale).actions.conversationErrorFallback;

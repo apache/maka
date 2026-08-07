@@ -12,6 +12,7 @@ import {
 } from '@maka/core';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -69,6 +70,9 @@ export interface RuntimeHostMakaSessionDriverInput {
 }
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
+  createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  readMessages(): Promise<StoredMessage[]>;
+  subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions(
     listener: (sessionId: string, requestId: string) => void,
@@ -105,6 +109,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #sessionGeneration = 0;
   #channelGeneration = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
+  readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
   readonly #shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
   readonly #resolvedInteractionListeners = new Set<
@@ -126,10 +131,26 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
   }
 
+  readMessages(): Promise<StoredMessage[]> {
+    return loadCurrentMessages(this.#connection, this.#requireSession('read messages'));
+  }
+
+  async createSession(input: CreateSessionInput): Promise<SessionSummary> {
+    if (this.#sessionId) throw new Error('Cannot create a Session while another is active.');
+    if (!input.model) throw new Error('Runtime Host Session creation requires an explicit model');
+    this.#cwd = input.cwd;
+    this.#llmConnectionSlug = input.llmConnectionSlug;
+    this.#model = input.model;
+    this.#thinkingLevel = input.thinkingLevel;
+    this.#permissionMode = input.permissionMode ?? 'ask';
+    const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
+    return runtimeHostSessionSummary(session);
+  }
+
   async listSessions(): Promise<SessionSummary[]> {
     const sessions = (await readRuntimeHostSessions(this.#connection))
       .flatMap(representableSession)
-      .map(sessionSummary);
+      .map(runtimeHostSessionSummary);
     return sessions
       .map((session, index) => ({ session, index }))
       .sort((left, right) => {
@@ -159,7 +180,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const events = channel.eventsForTurn(turnId);
     const modelText = options.modelText ?? prompt;
     try {
-      await this.#request('turn.start', {
+      const started = await this.#request('turn.start', {
         sessionId,
         turnId,
         content: {
@@ -168,11 +189,17 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
       });
+      return {
+        sessionId,
+        turnId,
+        runId: started.runId,
+        events,
+        summary: runtimeHostSessionSummary(configuration.session),
+      };
     } catch (error) {
       channel.failTurn(turnId, error);
       throw error;
     }
-    return { sessionId, turnId, events, summary: sessionSummary(configuration.session) };
   }
 
   async *compactSession(): AsyncIterable<SessionEvent> {
@@ -313,7 +340,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async renameSession(name: string): Promise<string> {
     const sessionId = this.#requireSession('rename');
-    const session = await updateSession(this.#connection, sessionId, (current) =>
+    const session = await updateRuntimeHostSession(this.#connection, sessionId, (current) =>
       this.#request('session.metadata.update', {
         sessionId,
         expectedRevision: current.revision,
@@ -331,7 +358,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       return { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
     }
     const oldCwdDirty = await this.#inspectCwdChanges(previousCwd).catch(() => undefined);
-    const session = await updateSession(this.#connection, sessionId, (current) =>
+    const session = await updateRuntimeHostSession(this.#connection, sessionId, (current) =>
       this.#request('session.cwd.relocate', {
         sessionId,
         expectedRevision: current.revision,
@@ -343,9 +370,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    const session = await getSession(this.#connection, sessionId);
+    const session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    const summary = sessionSummary(session);
+    const summary = runtimeHostSessionSummary(session);
     const availability = await inspectSessionResumeAvailability(summary);
     if (!availability.available) {
       throw new Error(
@@ -383,6 +410,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
             activeTurn: {
               sessionId,
               turnId: attachedTurnId,
+              ...(opened.channel.snapshot.rootTurn?.turnId === attachedTurnId
+                ? { runId: opened.channel.snapshot.rootTurn.runId }
+                : {}),
               events: opened.channel.eventsForTurn(attachedTurnId),
             },
           }
@@ -416,7 +446,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (!promptMessage) throw new Error(`Cannot rewind to turn ${turnId}: no user prompt.`);
     const targetSessionId = this.#newId();
     for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
-      const current = await getSession(this.#connection, sourceSessionId);
+      const current = await getRuntimeHostSession(this.#connection, sourceSessionId);
       if (!current) throw new Error(`Session not found: ${sourceSessionId}`);
       const result = await this.#request('session.revision.create', {
         sourceSessionId,
@@ -445,6 +475,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
     this.#startedTurnListeners.add(listener);
     return () => this.#startedTurnListeners.delete(listener);
+  }
+
+  subscribePendingInteractions(
+    listener: (pending: InteractionPendingSnapshot) => void,
+  ): () => void {
+    this.#pendingInteractionListeners.add(listener);
+    return () => this.#pendingInteractionListeners.delete(listener);
   }
 
   subscribeResolvedInteractions(
@@ -508,12 +545,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async #ensureSession(): Promise<string> {
     if (this.#sessionId) return this.#sessionId;
+    return (await this.#createSession(DEFAULT_SESSION_NAME)).id;
+  }
+
+  async #createSession(name: string): Promise<SessionCatalogProjection> {
     const sessionId = this.#newId();
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,
         cwd: this.#cwd,
-        name: DEFAULT_SESSION_NAME,
+        name,
         modelTarget: {
           kind: 'explicit',
           connectionSlug: this.#llmConnectionSlug,
@@ -530,7 +571,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#sessionId = sessionId;
     this.#adoptConfiguration(session);
     await this.#ensureChannel(sessionId);
-    return sessionId;
+    return session;
   }
 
   async #ensureChannel(sessionId: string): Promise<RuntimeHostSessionChannel> {
@@ -598,7 +639,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       orchestrationMode?: OrchestrationMode;
     },
   ): Promise<SessionCatalogProjection> {
-    return updateSession(this.#connection, sessionId, (current) =>
+    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
       this.#request('session.configuration.update', {
         sessionId,
         expectedRevision: current.revision,
@@ -634,7 +675,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async #loadConfiguration(sessionId: string): Promise<LoadedSessionConfiguration> {
     const [session, boundary] = await Promise.all([
-      getSession(this.#connection, sessionId),
+      getRuntimeHostSession(this.#connection, sessionId),
       this.#request('session.execution_boundary.query', { sessionId }),
     ]);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -722,9 +763,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const turn = {
       sessionId,
       turnId,
+      ...(opened.channel.snapshot.rootTurn?.turnId === turnId
+        ? { runId: opened.channel.snapshot.rootTurn.runId }
+        : {}),
       events: opened.channel.eventsForTurn(turnId),
       messages: opened.messages,
-      summary: sessionSummary(configuration.session),
+      summary: runtimeHostSessionSummary(configuration.session),
     } satisfies MakaAttachedSessionTurn;
     for (const listener of this.#startedTurnListeners) listener(turn);
     opened.channel.activate(turnId);
@@ -741,6 +785,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onTurnStarted: (turn) => this.#publishStartedTurn(turn, sessionGeneration),
       onRuntimeResourceChanged: (sourceSessionId, ref) =>
         this.#publishRuntimeResource(sourceSessionId, ref),
+      onInteractionPending: (pending) => {
+        for (const listener of this.#pendingInteractionListeners) listener(pending);
+      },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
     });
@@ -804,7 +851,7 @@ interface LoadedSessionConfiguration {
   boundaryDisplayMode: PermissionMode | undefined;
 }
 
-async function getSession(
+async function getRuntimeHostSession(
   connection: RuntimeHostConnection,
   sessionId: string,
 ): Promise<SessionCatalogProjection | null> {
@@ -822,13 +869,13 @@ function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
   throw new Error(`Runtime Host Session is not representable by this CLI: ${item.id}`);
 }
 
-async function updateSession(
+async function updateRuntimeHostSession(
   connection: RuntimeHostConnection,
   sessionId: string,
   update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
 ): Promise<SessionCatalogProjection> {
   for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
-    const current = await getSession(connection, sessionId);
+    const current = await getRuntimeHostSession(connection, sessionId);
     if (!current) throw new Error(`Session not found: ${sessionId}`);
     const result = await update(current);
     if (result.kind === 'committed') return requireSession(result.session);
@@ -855,7 +902,7 @@ async function loadCurrentMessages(
   }
 }
 
-function sessionSummary(session: SessionCatalogProjection): SessionSummary {
+export function runtimeHostSessionSummary(session: SessionCatalogProjection): SessionSummary {
   return {
     id: session.id,
     cwd: session.cwd,

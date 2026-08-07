@@ -107,7 +107,6 @@ export interface AppShellChatActions {
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
-      voiceOperationId?: string;
       onSessionResolved?: (sessionId: string) => void;
     },
   ): Promise<boolean>;
@@ -117,7 +116,9 @@ export interface AppShellChatActions {
   retryMessages(sessionId: string): Promise<void>;
 }
 
-function toIngestItems(pending: readonly PendingAttachment[]): RendererIngestInput[] {
+export function toRendererIngestItems(
+  pending: readonly PendingAttachment[],
+): RendererIngestInput[] {
   return pending.map((p) =>
     p.source.type === 'approval'
       ? {
@@ -297,7 +298,6 @@ export function createAppShellChatActions(deps: {
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
-      voiceOperationId?: string;
       onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
@@ -351,13 +351,15 @@ export function createAppShellChatActions(deps: {
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
-        const attachmentItems = pending && pending.length > 0 ? toIngestItems(pending) : undefined;
+        const attachmentItems =
+          pending && pending.length > 0
+            ? toRendererIngestItems(pending)
+            : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
           turnId,
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
@@ -404,13 +406,15 @@ export function createAppShellChatActions(deps: {
       optimisticSessionId = sessionId;
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);
-      const attachmentItems = pending && pending.length > 0 ? toIngestItems(pending) : undefined;
+      const attachmentItems =
+        pending && pending.length > 0
+          ? toRendererIngestItems(pending)
+          : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',
         turnId,
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(attachmentItems ? { attachmentItems } : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),

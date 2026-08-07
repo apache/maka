@@ -17,7 +17,18 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 const LUCIDE_REACT_PACKAGE = ['lucide', 'react'].join('-');
 
 type RendererComponents = {
+  AppearanceSettingsPage(props: {
+    themePref: 'light' | 'dark' | 'auto';
+    themePalette: 'default';
+    onUpdate(): Promise<never>;
+    onThemeChange(): void;
+    onThemePaletteChange(): void;
+  }): ReactNode;
   ArtifactPreview(props: { record: ArtifactRecord }): ReactNode;
+  PersonalizationSettingsSection(props: {
+    settings: AppSettings;
+    onUpdate(): Promise<never>;
+  }): ReactNode;
   BotWeChatFields(props: {
     channel: BotChannelSettings;
     updateChannel(patch: Partial<BotChannelSettings>): Promise<boolean>;
@@ -224,6 +235,65 @@ describe('Astryx component behavior', () => {
     assert.match(markup, /class="astryx-table-scroll-wrapper/);
     assert.equal(markup.match(/<td\b[^>]*role="rowheader"/g)?.length, 1);
   });
+
+  it('files every appearance option tile under a named group', async () => {
+    const { AppearanceSettingsPage, LocaleProvider, ToastProvider } = await rendererComponents;
+    const markup = renderWithLocale(
+      LocaleProvider,
+      createElement(AppearanceSettingsPage, {
+        themePref: 'auto',
+        themePalette: 'default',
+        onUpdate: async () => { throw new Error('not called during render'); },
+        onThemeChange: () => undefined,
+        onThemePaletteChange: () => undefined,
+      }),
+      ToastProvider,
+    );
+
+    // One page root. The page used to wrap a second component that opened a
+    // `SettingsPage` of its own, so the page grid nested inside itself.
+    assert.equal(markup.match(/class="[^"]*settingsPageStack/g)?.length, 1);
+
+    // Each `<section>` is named by its own heading, and each option grid is a
+    // group named by the label the user can see above it — 主题 for the theme
+    // tiles, 编辑器主题 / 产品色调 for the two palette sets. Without this the
+    // page hands assistive tech 14 loose tiles with no statement of which set
+    // any of them belongs to.
+    for (const id of [
+      'settings-appearance-theme-heading',
+      'settings-appearance-palette-heading',
+      'settings-appearance-palette-editor-label',
+      'settings-appearance-palette-product-label',
+    ]) {
+      assert.match(markup, new RegExp(`id="${id}"`), `missing anchor id ${id}`);
+      assert.match(markup, new RegExp(`aria-labelledby="${id}"`), `nothing points at ${id}`);
+    }
+    assert.equal(markup.match(/role="group"/g)?.length, 3);
+    assert.equal(markup.match(/<section [^>]*aria-labelledby=/g)?.length, 2);
+
+    // 界面语言 lives on 通用 now; the 外观 page must not grow it back.
+    assert.doesNotMatch(markup, /界面语言/);
+  });
+
+  it('keeps the identity block a section of 通用, not a page of its own', async () => {
+    const { LocaleProvider, PersonalizationSettingsSection, ToastProvider } = await rendererComponents;
+    const settings = {
+      personalization: { displayName: '', assistantTone: '', uiLocale: 'zh' },
+    } as AppSettings;
+    const markup = renderWithLocale(
+      LocaleProvider,
+      createElement(PersonalizationSettingsSection, {
+        settings,
+        onUpdate: async () => { throw new Error('not called during render'); },
+      }),
+      ToastProvider,
+    );
+
+    // 通用 renders this inside its own page stack; a second one here nests the
+    // page grid in itself and doubles the section rhythm.
+    assert.doesNotMatch(markup, /settingsPageStack/);
+    assert.match(markup, /class="settingsSection"/);
+  });
 });
 
 async function importRendererComponents(): Promise<RendererComponents> {
@@ -234,10 +304,12 @@ async function importRendererComponents(): Promise<RendererComponents> {
   await build({
     stdin: {
       contents: [
+        "export { AppearanceSettingsPage } from './apps/desktop/src/renderer/settings/appearance-settings-page.tsx';",
         "export { ArtifactPreview } from './apps/desktop/src/renderer/artifact-preview.tsx';",
         "export { BotWeChatFields } from './apps/desktop/src/renderer/settings/bot-wechat-login.tsx';",
         "export { KeyboardHelpModal } from './apps/desktop/src/renderer/keyboard-help.tsx';",
-        "export { OnboardingHero } from './apps/desktop/src/renderer/OnboardingHero.tsx';",
+        "export { OnboardingHero } from './apps/desktop/src/renderer/onboarding-hero.tsx';",
+        "export { PersonalizationSettingsSection } from './apps/desktop/src/renderer/settings/personalization-settings-section.tsx';",
         "export { ProviderCatalogPage } from './apps/desktop/src/renderer/settings/provider-catalog-page.tsx';",
         "export { UsageSettingsPage } from './apps/desktop/src/renderer/settings/usage-settings-page.tsx';",
         "export { LocaleProvider } from './packages/ui/dist/locale-context.js';",

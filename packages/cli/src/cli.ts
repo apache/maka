@@ -107,6 +107,11 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
   const command = parseMakaCliArgs(argv, version);
   switch (command.kind) {
     case 'run': {
+      const runtimeOwner = resolveCliRuntimeOwner(process.env.MAKA_CLI_RUNTIME_OWNER);
+      if (runtimeOwner === 'runtime-host') {
+        const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
+        return runRuntimeHostTextCli(command.args);
+      }
       const { runMakaTextCli } = await import('./run-command.js');
       return runMakaTextCli(command.args);
     }

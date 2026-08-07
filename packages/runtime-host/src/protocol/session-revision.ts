@@ -34,6 +34,14 @@ export type SessionConversationCopyResult =
       readonly actualRevision: number;
     };
 
+export interface SessionRevisionAbandonInput {
+  readonly targetSessionId: string;
+}
+
+export type SessionRevisionAbandonResult =
+  | { readonly kind: 'abandoned'; readonly sessionId: string }
+  | { readonly kind: 'retained'; readonly sessionId: string };
+
 export const SESSION_REVISION_OPERATION_SPECS = {
   'session.branch.create': defineOperation<
     SessionConversationCopyInput,
@@ -59,7 +67,42 @@ export const SESSION_REVISION_OPERATION_SPECS = {
     decodeOutput: decodeSessionConversationCopyResult,
     assertOutputForInput: assertConversationCopyOutput,
   }),
+  'session.revision.abandon': defineOperation<
+    SessionRevisionAbandonInput,
+    SessionRevisionAbandonResult,
+    (typeof SESSION_COPY_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: SESSION_COPY_ERRORS,
+    decodeInput: decodeSessionRevisionAbandonInput,
+    decodeOutput: decodeSessionRevisionAbandonResult,
+    assertOutputForInput: (input, output) => {
+      if (output.sessionId !== input.targetSessionId) {
+        throw invalidProtocolFrame('Abandoned Session revision identity does not match request');
+      }
+    },
+  }),
 } as const;
+
+function decodeSessionRevisionAbandonInput(value: unknown): SessionRevisionAbandonInput {
+  const input = requireExactRecord(value, 'Session revision abandon input', ['targetSessionId']);
+  return { targetSessionId: requireEntityId(input.targetSessionId, 'targetSessionId') };
+}
+
+function decodeSessionRevisionAbandonResult(value: unknown): SessionRevisionAbandonResult {
+  const result = requireExactRecord(value, 'Session revision abandon result', [
+    'kind',
+    'sessionId',
+  ]);
+  if (result.kind !== 'abandoned' && result.kind !== 'retained') {
+    throw invalidProtocolFrame('Invalid Session revision abandon result kind');
+  }
+  return {
+    kind: result.kind,
+    sessionId: requireEntityId(result.sessionId, 'sessionId'),
+  };
+}
 
 export function decodeSessionConversationCopyInput(value: unknown): SessionConversationCopyInput {
   const input = requireExactRecord(value, 'Session conversation-copy input', [

@@ -5,6 +5,8 @@ import {
   normalizeBranchFromTurnInput,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
+  normalizeRuntimeHostBranchFromTurnInput,
+  normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
@@ -57,18 +59,49 @@ describe('permission response IPC boundary', () => {
       turnId: 'turn-3',
     });
     assert.deepEqual(
-      normalizeBranchFromTurnInput({ sourceTurnId: 'turn-3', name: '  Branch name  ', ignored: 1 }),
-      { sourceTurnId: 'turn-3', name: 'Branch name' },
+      normalizeBranchFromTurnInput({
+        sourceTurnId: 'turn-3',
+        name: '  Branch name  ',
+        sideConversation: true,
+        ignored: 1,
+      }),
+      { sourceTurnId: 'turn-3', name: 'Branch name', sideConversation: true },
     );
-    assert.deepEqual(normalizeReviseBeforeTurnInput({ sourceTurnId: 'turn-4', ignored: true }), {
-      sourceTurnId: 'turn-4',
-    });
+    assert.deepEqual(
+      normalizeRuntimeHostBranchFromTurnInput({
+        sourceTurnId: 'turn-3',
+        name: '  Branch name  ',
+        sideConversation: true,
+        copyId: 'branch-copy-1',
+        ignored: 1,
+      }),
+      {
+        sourceTurnId: 'turn-3',
+        name: 'Branch name',
+        sideConversation: true,
+        copyId: 'branch-copy-1',
+      },
+    );
+    assert.deepEqual(
+      normalizeRuntimeHostReviseBeforeTurnInput({
+        sourceTurnId: 'turn-4',
+        copyId: 'revision-copy-1',
+        ignored: true,
+      }),
+      {
+        sourceTurnId: 'turn-4',
+        copyId: 'revision-copy-1',
+      },
+    );
 
     const invalidActions: Array<() => unknown> = [
       () => normalizeRegenerateTurnInput({ sourceTurnId: 'turn-1', turnId: 1 }),
       () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', name: 1 }),
+      () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', sideConversation: 'yes' }),
       () => normalizeBranchFromTurnInput({ sourceTurnId: 'x'.repeat(129) }),
       () => normalizeReviseBeforeTurnInput({ sourceTurnId: 1 }),
+      () => normalizeRuntimeHostBranchFromTurnInput({ sourceTurnId: 'turn-1' }),
+      () => normalizeRuntimeHostReviseBeforeTurnInput({ sourceTurnId: 'turn-1', copyId: '' }),
     ];
     for (const action of invalidActions) assert.throws(action, /Invalid/);
   });
@@ -155,22 +188,14 @@ describe('permission response IPC boundary', () => {
     }
   });
 
-  it('allows a valid voice-only send and validates the operation id', () => {
-    assert.deepEqual(
-      normalizeSessionSendCommand({
-        type: 'send',
-        text: '',
-        voiceOperationId: '123e4567-e89b-12d3-a456-426614174000',
-      }),
-      {
-        type: 'send',
-        text: '',
-        voiceOperationId: '123e4567-e89b-12d3-a456-426614174000',
-      },
+  it('rejects empty send text without skills', () => {
+    assert.throws(
+      () => normalizeSessionSendCommand({ type: 'send', text: '' }),
+      /Invalid send text/,
     );
     assert.throws(
-      () => normalizeSessionSendCommand({ type: 'send', text: '', voiceOperationId: 'not-a-uuid' }),
-      /voice operation id/,
+      () => normalizeSessionSendCommand({ type: 'send', text: '   ' }),
+      /Invalid send text/,
     );
   });
 

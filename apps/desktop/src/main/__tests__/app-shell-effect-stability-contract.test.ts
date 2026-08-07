@@ -613,6 +613,7 @@ describe('AppShell effect stability contract', () => {
       arch: 'arm64',
       osRelease: 'test',
       workspacePath: '/workspace',
+      homePath: '/home/tester',
       projectId: project.id,
       projectPath: '/workspace/available',
       projectGit: { isGitRepo: false },

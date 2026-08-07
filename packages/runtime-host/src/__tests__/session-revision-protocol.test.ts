@@ -82,6 +82,20 @@ describe('Session revision protocol', () => {
         }),
       isInvalidFrame,
     );
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-abandon',
+        operation: 'session.revision.abandon',
+        ok: true,
+        result: { kind: 'retained', sessionId: 'revision-target' },
+      }),
+      {
+        requestId: 'request-abandon',
+        operation: 'session.revision.abandon',
+        ok: true,
+        result: { kind: 'retained', sessionId: 'revision-target' },
+      },
+    );
   });
 
   test('preserves optimistic source revision conflicts on the wire', () => {
@@ -106,6 +120,27 @@ describe('Session revision protocol', () => {
           actualRevision: 5,
         },
       },
+    );
+  });
+
+  test('keeps single-target Revision abandonment identity exact', () => {
+    const frame = decodeClientFrame({
+      requestId: 'request-abandon',
+      operation: 'session.revision.abandon',
+      input: { targetSessionId: 'revision-target' },
+    });
+    assert.deepEqual(frame, {
+      requestId: 'request-abandon',
+      operation: 'session.revision.abandon',
+      input: { targetSessionId: 'revision-target' },
+    });
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['session.revision.abandon'].assertOutputForInput?.(
+          { targetSessionId: 'revision-target' },
+          { kind: 'abandoned', sessionId: 'other-target' },
+        ),
+      isInvalidFrame,
     );
   });
 });

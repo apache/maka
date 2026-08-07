@@ -24,6 +24,7 @@ export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
 export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
+export const FAKE_ERROR_PROMPT_PREFIX = '__e2e_error__:';
 
 type PendingQuestion = {
   turnId: string;
@@ -65,6 +66,10 @@ export class FakeBackend implements AgentBackend {
     }
     if (input.text === FAKE_ASK_SANDBOX_BOUNDARY_PROMPT) {
       yield* this.sendSandboxBoundaryScenario(input);
+      return;
+    }
+    if (input.text.startsWith(FAKE_ERROR_PROMPT_PREFIX)) {
+      yield* this.sendErrorScenario(input, input.text.slice(FAKE_ERROR_PROMPT_PREFIX.length));
       return;
     }
     const turnId = input.turnId;
@@ -266,6 +271,41 @@ export class FakeBackend implements AgentBackend {
   }
 
   async dispose(): Promise<void> {}
+
+  private async *sendErrorScenario(
+    input: BackendSendInput,
+    requestedReason: string,
+  ): AsyncIterable<SessionEvent> {
+    await sleep(250);
+    const turnId = input.turnId;
+    if (this.stopped) {
+      yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+      yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'user_stop' };
+      return;
+    }
+    const reason =
+      requestedReason === 'network' ||
+      requestedReason === 'auth' ||
+      requestedReason === 'rate_limit'
+        ? requestedReason
+        : undefined;
+    yield {
+      type: 'error',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      recoverable: false,
+      ...(reason ? { reason } : {}),
+      message: reason ? `Deterministic ${reason} failure` : 'Operation failed',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      stopReason: 'error',
+    };
+  }
 
   private async *sendQuestionScenario(input: BackendSendInput): AsyncIterable<SessionEvent> {
     // A real model needs time to produce its first tool call. Mirror that

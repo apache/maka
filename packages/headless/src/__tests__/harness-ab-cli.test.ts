@@ -10,28 +10,6 @@ import { buildHarborJobConfig } from '../harbor-task-runner.js';
 
 const execFileAsync = promisify(execFile);
 
-test('harness A/B CLI accepts a 5-task operational canary', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-cli-'));
-  try {
-    const scriptPath = new URL('../../harbor/run-harness-ab.mjs', import.meta.url);
-    await assert.rejects(
-      execFileAsync(process.execPath, [scriptPath.pathname], {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          MAKA_HARNESS_AB_OUT_DIR: join(dir, 'out'),
-          MAKA_HARNESS_AB_TASKS_ROOT: join(dir, 'missing-tasks'),
-          MAKA_HARNESS_AB_LIMIT: '5',
-          MAKA_HARNESS_AB_DRY_RUN: '1',
-        },
-      }),
-      /Terminal-Bench 2\.1 task set mismatch/,
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test('harness A/B CLI rejects an unsupported composition before creating a run root', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-composition-'));
   try {

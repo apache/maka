@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { userInfo } from 'node:os';
 import { basename } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { ipcMain as electronIpcMain } from 'electron';
@@ -6,10 +7,10 @@ import {
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
+  isSideConversationSession,
   isThinkingLevel,
   sanitizeTaskLedgerTask,
   thinkingVariantsForModel,
-  VOICE_INPUT_MARKER,
 } from '@maka/core';
 import type {
   CreateSessionRequestInput,
@@ -20,11 +21,17 @@ import type {
   SessionListFilter,
   StoredMessage,
   ThinkingLevel,
-  EphemeralVoiceAudio,
+  GitReviewMutationAction,
+  GitReviewSource,
 } from '@maka/core';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
-import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runtime';
+import {
+  defaultShellPlan,
+  type PreparedSkillInvocationMessage,
+  type SessionManager,
+  type ShellRunProcessManager,
+} from '@maka/runtime';
 import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
@@ -57,10 +64,12 @@ import { handleReviseBeforeTurn } from './session-revision.js';
 import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
 import type { DesktopCreateSessionInput } from './new-session-project.js';
 import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
-import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
+import { createSessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
 import { mergeSentInlineReferences } from './session-send-inline-references.js';
 import { resolveSessionActionIds } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
+import { selectLoginShell } from './shell-env.js';
+import { mutateGitReview, readGitReview } from './git-review-main.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
@@ -78,6 +87,7 @@ interface SessionToolCleanup {
 export interface SessionsIpcDeps {
   workspaceRoot: string;
   runtime: SessionManager;
+  shellRuns?: ShellRunProcessManager;
   store: SessionStore;
   taskLedgerStore: MainTaskLedgerWiring['store'];
   goalWiring: MainGoalWiring;
@@ -144,11 +154,6 @@ export interface SessionsIpcDeps {
   ) => Promise<{ turnId: string; ok: boolean; error?: string }>;
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   canCreateFakeSession: () => boolean;
-  consumeNativeAudioOperation?: (input: {
-    operationId: string;
-    connectionSlug: string;
-    model: string;
-  }) => EphemeralVoiceAudio;
 }
 
 function latestStoredMessageTs(messages: readonly StoredMessage[]): number | undefined {
@@ -182,6 +187,7 @@ export function registerSessionsIpc(
   const {
     workspaceRoot,
     runtime,
+    shellRuns,
     store,
     taskLedgerStore,
     goalWiring,
@@ -210,7 +216,6 @@ export function registerSessionsIpc(
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession,
-    consumeNativeAudioOperation,
   } = deps;
   registerSessionExecutionIpc({
     ipcMain,
@@ -234,12 +239,220 @@ export function registerSessionsIpc(
     automationManager.removeAllForSession(sessionId);
     emitSessionsChanged('deleted', sessionId);
   };
-  const quoteCompanionCleanup = createQuoteCompanionCleanupAuthority({
+  const sessionCopyCleanup = createSessionCopyCleanupAuthority({
     workspaceRoot,
     removeSession,
   });
+  const startupSideConversationCleanup = (async () => {
+    const failedSessionIds = new Set<string>();
+    for (const session of await runtime.listSessions()) {
+      if (!isSideConversationSession(session.labels)) continue;
+      try {
+        await sessionCopyCleanup.cleanup(session.id);
+      } catch {
+        failedSessionIds.add(session.id);
+      }
+    }
+    const recovered = await sessionCopyCleanup.recover();
+    for (const { sessionId } of recovered.failed) failedSessionIds.add(sessionId);
+    return failedSessionIds;
+  })();
 
   ipcMain.handle('shell-runs:list', (_event, sessionId: string) => runtime.listShellRunUpdates(sessionId));
+  ipcMain.handle(
+    'git-review:read',
+    async (
+      _event,
+      input: {
+        sessionId?: unknown;
+        source?: unknown;
+        baseBranch?: unknown;
+      },
+    ) => {
+      if (!input || typeof input !== 'object') {
+        throw new Error('Invalid Git review input');
+      }
+      if (typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new Error('Invalid Session id');
+      }
+      if (
+        input.source !== 'branch' &&
+        input.source !== 'unstaged' &&
+        input.source !== 'staged'
+      ) {
+        throw new Error('Invalid Git review source');
+      }
+      if (
+        input.baseBranch !== undefined &&
+        (typeof input.baseBranch !== 'string' ||
+          input.baseBranch.length === 0 ||
+          input.baseBranch.length > 1024 ||
+          /[\u0000-\u001f\u007f]/u.test(input.baseBranch))
+      ) {
+        throw new Error('Invalid Git review base branch');
+      }
+      const header = await store.readHeader(input.sessionId);
+      const workspace = await stat(header.cwd).catch(() => null);
+      if (!workspace?.isDirectory()) {
+        return { ok: false as const, reason: 'workspace_unavailable' as const };
+      }
+      return readGitReview(
+        header.cwd,
+        input.source as GitReviewSource,
+        undefined,
+        typeof input.baseBranch === 'string' ? input.baseBranch : undefined,
+      );
+    },
+  );
+  ipcMain.handle(
+    'git-review:mutate',
+    async (
+      _event,
+      input: {
+        sessionId?: unknown;
+        source?: unknown;
+        revision?: unknown;
+        path?: unknown;
+        action?: unknown;
+      },
+    ) => {
+      if (!input || typeof input !== 'object') {
+        throw new Error('Invalid Git review mutation input');
+      }
+      if (typeof input.sessionId !== 'string' || !input.sessionId) {
+        throw new Error('Invalid Session id');
+      }
+      if (input.source !== 'unstaged' && input.source !== 'staged') {
+        throw new Error('Invalid Git review mutation source');
+      }
+      if (
+        typeof input.revision !== 'string' ||
+        !/^[a-f0-9]{64}$/u.test(input.revision)
+      ) {
+        throw new Error('Invalid Git review revision');
+      }
+      if (
+        typeof input.path !== 'string' ||
+        input.path.length === 0 ||
+        input.path.length > 4096
+      ) {
+        throw new Error('Invalid Git review path');
+      }
+      if (
+        input.action !== 'stage' &&
+        input.action !== 'unstage' &&
+        input.action !== 'revert'
+      ) {
+        throw new Error('Invalid Git review mutation action');
+      }
+      const header = await store.readHeader(input.sessionId);
+      const workspace = await stat(header.cwd).catch(() => null);
+      if (!workspace?.isDirectory()) {
+        return { ok: false as const, reason: 'git_failed' as const };
+      }
+      return mutateGitReview({
+        cwd: header.cwd,
+        source: input.source,
+        revision: input.revision,
+        path: input.path,
+        action: input.action as GitReviewMutationAction,
+      });
+    },
+  );
+  ipcMain.handle(
+    'shell-runs:attach',
+    (_event, input: { sessionId?: unknown; ref?: unknown }) => {
+      if (!shellRuns) throw new Error('Interactive terminal is unavailable');
+      if (!input || typeof input !== 'object') throw new Error('Invalid terminal attach input');
+      if (typeof input.sessionId !== 'string' || !input.sessionId)
+        throw new Error('Invalid Session id');
+      if (typeof input.ref !== 'string' || !input.ref) throw new Error('Invalid terminal ref');
+      return shellRuns.getLivePtySnapshot(input.sessionId, input.ref);
+    },
+  );
+  ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
+    if (!shellRuns) throw new Error('Interactive terminal is unavailable');
+    if (typeof sessionId !== 'string' || !sessionId) throw new Error('Invalid Session id');
+    await ensureSessionWorkspaceAvailable(sessionId);
+    const header = await store.readHeader(sessionId);
+    if (header.isArchived) throw new Error('Cannot start a terminal for an archived Session');
+    const identity = `desktop-terminal-${randomUUID()}`;
+    const shell = defaultShellPlan();
+    const env = { ...process.env };
+    let command: string;
+    if (shell.kind === 'posix') {
+      env.SHELL = selectLoginShell(env.SHELL, userInfo().shell, process.platform);
+      env.DISABLE_AUTO_UPDATE = 'true';
+      env.DISABLE_UPDATE_PROMPT = 'true';
+      command = 'exec "$SHELL" -l';
+    } else if (shell.kind === 'cmd') {
+      command = '%ComSpec% /d /q';
+    } else {
+      const executable = (shell.exe ?? shell.displayName).replace(/'/g, "''");
+      command = `& '${executable}' -NoLogo`;
+    }
+    const result = await shellRuns.runBackgroundBash({
+      sessionId,
+      sourceTurnId: identity,
+      sourceToolCallId: identity,
+      cwd: header.cwd,
+      command,
+      env,
+      pty: true,
+      emitOutput: () => {},
+      shell,
+    });
+    const update = await runtime.getShellRunUpdate(sessionId, result.ref);
+    if (!update) throw new Error('Terminal started without a Runtime Resource projection');
+    return update;
+  });
+  ipcMain.handle(
+    'shell-runs:write',
+    async (
+      _event,
+      input: {
+        sessionId?: unknown;
+        ref?: unknown;
+        input?: unknown;
+        size?: { cols?: unknown; rows?: unknown };
+      },
+    ) => {
+      if (!shellRuns) throw new Error('Interactive terminal is unavailable');
+      if (!input || typeof input !== 'object') throw new Error('Invalid terminal control input');
+      if (typeof input.sessionId !== 'string' || !input.sessionId)
+        throw new Error('Invalid Session id');
+      if (typeof input.ref !== 'string' || !input.ref) throw new Error('Invalid terminal ref');
+      const text = input.input;
+      const size = input.size;
+      const result = await shellRuns.writeStdin({
+        sessionId: input.sessionId,
+        ref: input.ref,
+        ...(typeof text === 'string' ? { input: text } : {}),
+        ...(size &&
+        Number.isInteger(size.cols) &&
+        Number.isInteger(size.rows)
+          ? { size: { cols: Number(size.cols), rows: Number(size.rows) } }
+          : {}),
+      });
+      return runtime.getShellRunUpdate(input.sessionId, result.ref);
+    },
+  );
+  ipcMain.handle(
+    'shell-runs:stop',
+    async (_event, input: { sessionId?: unknown; ref?: unknown }) => {
+      if (!shellRuns) throw new Error('Interactive terminal is unavailable');
+      if (!input || typeof input !== 'object') throw new Error('Invalid terminal stop input');
+      if (typeof input.sessionId !== 'string' || !input.sessionId)
+        throw new Error('Invalid Session id');
+      if (typeof input.ref !== 'string' || !input.ref) throw new Error('Invalid terminal ref');
+      await shellRuns.stopBackgroundTask(
+        input.sessionId,
+        input.ref,
+        new AbortController().signal,
+      );
+      return runtime.getShellRunUpdate(input.sessionId, input.ref);
+    },
+  );
   ipcMain.handle('tasks:list', async (_event, sessionId: string) => {
     const tasks = await taskLedgerStore.list(sessionId, {
       includeTerminal: true,
@@ -252,19 +465,33 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:list', async (_event, filter?: SessionListFilter) => {
     // Listing is also a recovery trigger. Await it so an orphaned hidden
     // companion is removed before it can reappear in the sidebar after restart.
-    const recovery = await quoteCompanionCleanup.recover();
-    const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
+    const startupFailures = await startupSideConversationCleanup;
+    const recovery = await sessionCopyCleanup.recover();
+    const pendingCleanup = new Set([
+      ...startupFailures,
+      ...recovery.failed.map(({ sessionId }) => sessionId),
+    ]);
     return (await runtime.listSessions(filter)).filter(
       ({ id }) => !pendingCleanup.has(id),
     );
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
+    await startupSideConversationCleanup;
     // #1433: `mode` is a product intent, not a session field. What it implies,
     // what the renderer may ask for directly, and what the configured default
     // fills in are all resolved in one pure place (create-session-input.ts),
     // which is also the only place any of it can be tested.
     const { permissionMode, collaborationMode, orchestrationMode, name, labels } =
       await resolveCreateSessionInput(input, { readSettings: () => settingsStore.get() });
+    const parentSessionId = isSideConversationSession(labels)
+      ? input?.parentSessionId
+      : undefined;
+    if (isSideConversationSession(labels)) {
+      if (typeof parentSessionId !== 'string' || !parentSessionId) {
+        throw new Error('Side conversation requires a parent Session');
+      }
+      await ensureSessionWorkspaceAvailable(parentSessionId);
+    }
     if (input?.backend === 'fake') {
       if (!canCreateFakeSession()) {
         throw new Error('FakeBackend sessions are only available in development.');
@@ -280,6 +507,7 @@ export function registerSessionsIpc(
         orchestrationMode,
         name,
         labels,
+        ...(parentSessionId ? { parentSessionId } : {}),
       });
       emitSessionsChanged('created', session.id);
       return session;
@@ -301,6 +529,7 @@ export function registerSessionsIpc(
       orchestrationMode,
       name,
       labels,
+      ...(parentSessionId ? { parentSessionId } : {}),
     });
     emitSessionsChanged('created', session.id);
     return session;
@@ -486,27 +715,11 @@ export function registerSessionsIpc(
       workspaceFileReferences: sendCommand.workspaceFileReferences,
       receipts: skillInvocation.skillInvocation.receipts,
     });
-    const voiceTargetHeader = sendCommand.voiceOperationId
-      ? await store.readHeader(sessionId)
-      : undefined;
-    const voiceAudio =
-      sendCommand.voiceOperationId && voiceTargetHeader
-        ? consumeNativeAudioOperation?.({
-            operationId: sendCommand.voiceOperationId,
-            connectionSlug: voiceTargetHeader.llmConnectionSlug,
-            model: voiceTargetHeader.model,
-          })
-        : undefined;
-    if (sendCommand.voiceOperationId && !voiceAudio) {
-      throw new Error('voice_operation_unavailable');
-    }
     const iterator = runtime.sendMessage(
       sessionId,
       {
         turnId,
-        text:
-          skillInvocation.sendText || (sendCommand.voiceOperationId ? VOICE_INPUT_MARKER : ''),
-        ...(voiceAudio ? { voiceAudio } : {}),
+        text: skillInvocation.sendText,
         ...(skillInvocation.disposition === 'ready' || sendCommand.displayText !== undefined
           ? { displayText }
           : {}),
@@ -581,6 +794,7 @@ export function registerSessionsIpc(
     },
   );
   ipcMain.handle('sessions:branchFromTurn', async (_event, sessionId: string, input: unknown) => {
+    await startupSideConversationCleanup;
     return handleBranchFromTurn(sessionId, input, {
       ensureSessionWorkspaceAvailable,
       branchFromTurn: (id, normalized) => runtime.branchFromTurn(id, normalized),
@@ -742,8 +956,13 @@ export function registerSessionsIpc(
       await removeSession(id);
     }
   });
-  ipcMain.handle('sessions:cleanupQuoteCompanion', async (_event, sessionId: string) => {
-    await quoteCompanionCleanup.cleanup(sessionId);
+  ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
+    if (!(await runtime.listSessions()).some((session) => session.id === sessionId)) return;
+    await sessionCopyCleanup.cleanup(sessionId);
+  });
+  ipcMain.handle('sessions:abandonSessionCopy', async (_event, sessionId: string) => {
+    if (!(await runtime.listSessions()).some((session) => session.id === sessionId)) return;
+    await sessionCopyCleanup.schedule(sessionId);
   });
 }
 

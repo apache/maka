@@ -7,7 +7,7 @@ import {
   type SettingsSection,
 } from '@maka/core';
 import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
-import { OnboardingHero } from './OnboardingHero';
+import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import { getShellCopy } from './locales/shell-copy';

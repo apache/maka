@@ -15,7 +15,6 @@ import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from
  * This fixture pins the states that matter instead:
  *   - `screen_recording` — `not_determined` + requestable + openable, the
  *     three-action shape (open, guided drag, request) that exercises the squeeze;
- *   - `microphone` — `denied`, one button;
  *   - `accessibility` / `notifications` — `granted`, no buttons;
  *   - `automation` — `unsupported`, which carries the widest status Badge
  *     ("当前平台不支持", ~101px intrinsic and `whitespace-nowrap` by primitive
@@ -62,12 +61,6 @@ export function permissionSnapshotE2eFixture(now: number): PermissionSnapshot | 
         status: 'not_determined',
         now,
         canRequest: true,
-      }),
-      microphone: fixtureOsPermission({
-        id: 'microphone',
-        status: 'denied',
-        now,
-        reason: '用户在系统设置里拒绝了麦克风访问，语音输入与录音自检都会直接失败。',
       }),
       notifications: fixtureOsPermission({
         id: 'notifications',

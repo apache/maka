@@ -142,6 +142,33 @@ describe('appearance settings boundaries', () => {
   });
 });
 
+describe('custom pet selection settings', () => {
+  test('stays disabled by default and preserves a canonical user selection', () => {
+    const defaults = createDefaultSettings();
+    expect(defaults.personalization.selectedPetId).toBe(null);
+
+    const selected = mergeSettings(defaults, {
+      personalization: { selectedPetId: 'likun.maodie' },
+    });
+    expect(selected.personalization.selectedPetId).toBe('likun.maodie');
+    expect(normalizeSettings(selected).personalization.selectedPetId).toBe('likun.maodie');
+  });
+
+  test('fails closed for missing, unsafe, or malformed persisted selections', () => {
+    for (const selectedPetId of [undefined, '../maodie', 'MAODIE', '', 42, {}]) {
+      const normalized = normalizeSettings({
+        personalization: {
+          displayName: '',
+          assistantTone: '',
+          uiLocale: 'auto',
+          selectedPetId,
+        },
+      });
+      expect(normalized.personalization.selectedPetId).toBe(null);
+    }
+  });
+});
+
 test('boolean settings default, normalize, and merge through their shared boundary', () => {
   const defaults = createDefaultSettings();
   expect(defaults.notifications.runComplete).toBe(true);
@@ -199,4 +226,54 @@ test('web-search settings stay owned by their normalization boundary', () => {
     credentialSource: 'saved',
     credentialVersion: 1,
   });
+});
+
+test('an unset chat-default thinking level stays unset rather than becoming a level', () => {
+  // The distinction this pins: "no preference" is not a rung on the ladder. If
+  // normalization ever invented one here (say, 'medium'), every new session
+  // would silently start on a level the user never chose and the settings row
+  // would claim they had.
+  const normalized = normalizeSettings(createDefaultSettings());
+  expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
+});
+
+test('a persisted chat-default thinking level survives normalization', () => {
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), { chatDefaults: { thinkingLevel: 'high' } }),
+  );
+  expect(normalized.chatDefaults.thinkingLevel).toBe('high');
+});
+
+test('a chat-default thinking level the app does not recognize drops to no preference', () => {
+  // Fail closed, matching permissionMode next to it: a level that reached
+  // settings.json from an older build or a hand edit must not travel on to
+  // session creation as a rung no picker can render.
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), {
+      chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
+    }),
+  );
+  expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
+});
+
+test('no default project means no preference, not an empty one', () => {
+  const normalized = normalizeSettings(createDefaultSettings());
+  expect(normalized.projects.defaultProjectId).toBe(undefined);
+});
+
+test('a chosen default project survives normalization', () => {
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), { projects: { defaultProjectId: 'proj-7' } }),
+  );
+  expect(normalized.projects.defaultProjectId).toBe('proj-7');
+});
+
+test('a blank default project id is dropped rather than stored', () => {
+  // A blank id cannot name a project, so carrying it would make "a default is
+  // set" true while nothing resolves — the settings row would claim a default
+  // the app can never open.
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), { projects: { defaultProjectId: '   ' } }),
+  );
+  expect(normalized.projects.defaultProjectId).toBe(undefined);
 });

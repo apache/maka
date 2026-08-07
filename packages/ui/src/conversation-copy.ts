@@ -61,6 +61,7 @@ export interface ConversationCopy {
     sending: string;
     importing: string;
     sendLabel: string;
+    steerLabel: string;
     stopLabel: string;
     stopping: string;
     streaming: string;
@@ -107,18 +108,6 @@ export interface ConversationCopy {
     noModelAction: string;
     /** Explanatory title on the disabled Send button in the no-model state. */
     noModelSendTitle: string;
-    voiceStart: string;
-    voiceStopRecording: string;
-    voiceSend: string;
-    voiceRecording: string;
-    voiceRequesting: string;
-    voiceProcessing: string;
-    voiceReady: string;
-    voiceSending: string;
-    voiceRealtimeStart: string;
-    voiceRealtimeStop: string;
-    voiceConnecting: string;
-    voiceConnected: string;
   };
   model: {
     thinkingLevel: string;
@@ -165,8 +154,10 @@ export interface ConversationCopy {
   mentions: {
     noFiles: string;
     noSkills: string;
+    noCommandsOrSkills: string;
     filesAriaLabel: string;
     skillsAriaLabel: string;
+    commandsAndSkillsAriaLabel: string;
     loading: string;
   };
   workspace: {
@@ -271,6 +262,10 @@ export interface ConversationCopy {
     openProjectFolder: (name: string) => string;
     /** Action phrase appended to the titlebar project crumb's accessible name. */
     openProjectFolderAction: string;
+    /** Tooltip / accessible name for the parent crumb when a linked child is open. */
+    openParentSession: (name: string) => string;
+    /** Action phrase appended to the titlebar parent crumb's accessible name. */
+    openParentSessionAction: string;
     sessionContextMore: (count: number) => string;
     revisionVersionsAriaLabel: string;
     revisionVersion: (current: number, total: number) => string;
@@ -347,7 +342,7 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
-      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', stopLabel: '停止', stopping: '停止中…',
+      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
@@ -361,14 +356,9 @@ const CONVERSATION_COPY = {
       graphModeLabel: 'Graph', enableGraphMode: '开启 Graph Mode', disableGraphMode: '退出 Graph Mode',
       graphModeOnTitle: 'Graph 模式已启用，点击关闭',
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
-      voiceStart: '语音输入（Shift 点击强制转写）', voiceStopRecording: '停止录音', voiceSend: '发送语音任务',
-      voiceRecording: '正在录音，点击麦克风结束 · Esc 取消', voiceRequesting: '正在准备语音模型…', voiceProcessing: '正在处理语音…',
-      voiceReady: '语音已就绪，再次点击发送', voiceSending: '正在发送语音任务…',
-      voiceRealtimeStart: '开始实时语音协作', voiceRealtimeStop: '结束实时语音协作',
-      voiceConnecting: '正在连接实时语音…', voiceConnected: '实时语音已连接',
     },
     model: {
-      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
+      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '模型默认',
       // Short single-token labels — trigger + popout size to content.
       // Canonical ladder: 默认 / 关 / 低 / 中 / 高 / 超高 (minimal/max when offered).
       level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
@@ -397,7 +387,7 @@ const CONVERSATION_COPY = {
       allowSession: '本会话允许',
     },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
-    mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
+    mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', loading: '加载中…' },
     workspace: {
       choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
@@ -437,6 +427,7 @@ const CONVERSATION_COPY = {
       loadFailed: '对话载入失败', loading: '载入中…', retryLoad: '重试载入', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
       branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '会话上下文', sessionLineageAriaLabel: '会话来源', sessionContextMore: (count) => `更多会话上下文（${count}）`,
       titlebarIdentityAriaLabel: '当前会话', openProjectFolder: (name) => `在文件管理器中打开「${name}」`, openProjectFolderAction: '打开项目文件夹',
+      openParentSession: (name) => `返回父会话「${name}」`, openParentSessionAction: '打开父会话',
       revisionVersionsAriaLabel: '对话版本', revisionVersion: (current, total) => `版本 ${current} / ${total}`, previousRevision: '查看上一版本', nextRevision: '查看下一版本',
     },
     sessions: {
@@ -492,7 +483,7 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
-      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', stopLabel: 'Stop', stopping: 'Stopping…',
+      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
@@ -506,14 +497,9 @@ const CONVERSATION_COPY = {
       graphModeLabel: 'Graph', enableGraphMode: 'Enable Graph Mode', disableGraphMode: 'Disable Graph Mode',
       graphModeOnTitle: 'Graph mode is on — click to turn off',
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
-      voiceStart: 'Voice input (Shift-click to force transcription)', voiceStopRecording: 'Stop recording', voiceSend: 'Send voice task',
-      voiceRecording: 'Recording; click the microphone to stop · Esc to cancel', voiceRequesting: 'Preparing the voice model…', voiceProcessing: 'Processing voice…',
-      voiceReady: 'Voice is ready; click again to send', voiceSending: 'Sending voice task…',
-      voiceRealtimeStart: 'Start realtime voice collaboration', voiceRealtimeStop: 'Stop realtime voice collaboration',
-      voiceConnecting: 'Connecting realtime voice…', voiceConnected: 'Realtime voice connected',
     },
     model: {
-      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Default',
+      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this conversation', switchSession: 'Switch the model used by this conversation',
       pinnedSession: (connection, model) => `Model fixed for this conversation: ${connection} · ${model}`,
@@ -540,7 +526,7 @@ const CONVERSATION_COPY = {
       allowSession: 'Allow for this session',
     },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
-    mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
+    mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', loading: 'Loading…' },
     workspace: {
       choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
@@ -580,6 +566,7 @@ const CONVERSATION_COPY = {
       loadFailed: 'Conversation failed to load', loading: 'Loading…', retryLoad: 'Retry', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
       branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Session context', sessionLineageAriaLabel: 'Session origin', sessionContextMore: (count) => `More session context (${count})`,
       titlebarIdentityAriaLabel: 'Current conversation', openProjectFolder: (name) => `Open “${name}” in the file manager`, openProjectFolderAction: 'Open project folder',
+      openParentSession: (name) => `Return to parent session “${name}”`, openParentSessionAction: 'Open parent session',
       revisionVersionsAriaLabel: 'Conversation versions', revisionVersion: (current, total) => `Version ${current} of ${total}`, previousRevision: 'View previous version', nextRevision: 'View next version',
     },
     sessions: {

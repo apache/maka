@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { defaultEnabledModelIdsWhenOmitted } from '@maka/core';
 import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
@@ -81,7 +82,12 @@ class FileConnectionStore implements ConnectionStore {
         ...(baseUrl ? { baseUrl } : {}),
         defaultModel,
         enabled: true,
-        enabledModelIds: connectionEnabledModelIds({ defaultModel }),
+        enabledModelIds: connectionEnabledModelIds({
+          defaultModel,
+          // Only fill a missing selection. Explicit [] / subset stays as stated.
+          enabledModelIds:
+            input.enabledModelIds ?? defaultEnabledModelIdsWhenOmitted(input.providerType),
+        }),
         createdAt: now,
         updatedAt: now,
         ...(input.extras ? { extras: input.extras } : {}),

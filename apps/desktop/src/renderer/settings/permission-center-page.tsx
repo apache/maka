@@ -1,8 +1,8 @@
+import type { StatusSemantic } from '@maka/ui';
 import { useEffect, useState, type ComponentType } from 'react';
 import {
   Accessibility as AccessibilityIcon,
   Bell,
-  Mic,
   Monitor,
   MousePointer2,
   type LucideProps,
@@ -34,7 +34,7 @@ import { RelativeTime, StatusDot, useMountedRef, useToast, useUiLocale } from '@
 import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { statusDotVariant } from './settings-status-badge';
+import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
 
@@ -60,7 +60,6 @@ import { useActionGuard } from './use-action-guard';
 const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = {
   accessibility: AccessibilityIcon,
   screen_recording: Monitor,
-  microphone: Mic,
   notifications: Bell,
   automation: MousePointer2,
 };
@@ -393,7 +392,7 @@ function CapabilityRow(props: {
           <HStack gap={2} align="center">
             <Text type="label" size="sm">{capabilityLabel}</Text>
             <span className="settingsStatus">
-              <StatusDot variant={statusDotVariant(readinessCopy.tone)} label={readinessCopy.label} />
+              <StatusDot variant={dotForStatus(readinessCopy.tone)} label={readinessCopy.label} />
               <span>{readinessCopy.label}</span>
             </span>
           </HStack>
@@ -444,7 +443,7 @@ function CapabilityRow(props: {
               {capability.osPermissions.map((req) => (
                 <MetadataListItem key={req.id} label={copy.osPermissions[req.id]?.label ?? req.id}>
                   <span className="settingsStatus">
-                    <StatusDot variant={statusDotVariant(copy.osStates[req.status].tone)} label={copy.osStates[req.status].label} />
+                    <StatusDot variant={dotForStatus(copy.osStates[req.status].tone)} label={copy.osStates[req.status].label} />
                     <span>{copy.osStates[req.status].label}</span>
                   </span>
                 </MetadataListItem>
@@ -598,7 +597,7 @@ function OsPermissionRow(props: {
         <HStack gap={2} align="center">
           <Text type="label" size="sm">{label}</Text>
           <span className="settingsStatus">
-            <StatusDot variant={statusDotVariant(stateCopy.tone)} label={stateCopy.label} />
+            <StatusDot variant={dotForStatus(stateCopy.tone)} label={stateCopy.label} />
             <span>{stateCopy.label}</span>
           </span>
         </HStack>
@@ -643,36 +642,39 @@ function localizedCapabilityGuidance(
   return capability.guidance.filter((item) => locale === 'zh' || !/[\u3400-\u9fff]/u.test(item));
 }
 
-function featureTone(state: CapabilitySnapshot['feature']['state']): 'neutral' | 'info' | 'success' | 'warning' | 'destructive' {
+function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {
   if (state === 'enabled') return 'success';
-  if (state === 'partial') return 'warning';
-  if (state === 'disabled') return 'info';
+  if (state === 'partial') return 'attention';
+  // A capability the user turned off is a settled fact, not activity.
+  if (state === 'disabled') return 'neutral';
   return 'neutral';
 }
 
-function configurationTone(state: CapabilitySnapshot['configuration']['state']): 'neutral' | 'info' | 'success' | 'warning' | 'destructive' {
+function configurationTone(state: CapabilitySnapshot['configuration']['state']): StatusSemantic {
   if (state === 'present') return 'success';
-  if (state === 'missing') return 'warning';
+  if (state === 'missing') return 'attention';
   return 'neutral';
 }
 
-function actionApprovalTone(state: CapabilitySnapshot['actionApproval']['state']): 'neutral' | 'info' | 'success' | 'warning' | 'destructive' {
+function actionApprovalTone(state: CapabilitySnapshot['actionApproval']['state']): StatusSemantic {
   if (state === 'approved') return 'success';
-  if (state === 'denied') return 'destructive';
-  if (state === 'pending') return 'warning';
-  if (state === 'required_per_action' || state === 'required_scoped_lease') return 'info';
+  if (state === 'denied') return 'error';
+  if (state === 'pending') return 'attention';
+  // A configured approval policy describes how things will behave, not
+  // something happening now.
+  if (state === 'required_per_action' || state === 'required_scoped_lease') return 'neutral';
   return 'neutral';
 }
 
-function memoryAcceptanceTone(state: CapabilitySnapshot['memoryAcceptance']['state']): 'neutral' | 'info' | 'success' | 'warning' | 'destructive' {
+function memoryAcceptanceTone(state: CapabilitySnapshot['memoryAcceptance']['state']): StatusSemantic {
   if (state === 'accepted') return 'success';
-  if (state === 'draft_required') return 'warning';
+  if (state === 'draft_required') return 'attention';
   return 'neutral';
 }
 
-function runtimeProbeTone(state: CapabilitySnapshot['runtimeProbe']['state']): 'neutral' | 'info' | 'success' | 'warning' | 'destructive' {
+function runtimeProbeTone(state: CapabilitySnapshot['runtimeProbe']['state']): StatusSemantic {
   if (state === 'healthy') return 'success';
-  if (state === 'degraded') return 'destructive';
-  if (state === 'not_run') return 'warning';
+  if (state === 'degraded') return 'error';
+  if (state === 'not_run') return 'attention';
   return 'neutral';
 }

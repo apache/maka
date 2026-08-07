@@ -67,6 +67,7 @@ export function ToolOutputSurface(props: {
   heading?: string;
   body?: string;
   attention?: 'error' | 'warning';
+  actions?: ReactNode;
   children: ReactNode;
 }) {
   const copyText = getToolActivityCopy(useUiLocale()).copy;
@@ -99,23 +100,26 @@ export function ToolOutputSurface(props: {
       {command && (
         <div className="maka-tool-output-command-row">
           <code className={TOOL_OUTPUT_COMMAND_CLASS}>{command}</code>
-          <UiButton
-            variant="ghost"
-            size="sm"
-            className="maka-tool-output-command-copy"
-            data-copy-feedback={phase ?? undefined}
-            // Icon-only: the heading already fills the row, and a word beside
-            // it would compete with the thing being copied. `label` is the
-            // accessible name in this mode.
-            isIconOnly
-            label={label}
-            aria-busy={phase === 'pending' ? 'true' : undefined}
-            isDisabled={phase === 'pending'}
-            onClick={() => void feedback.copy(copyKey, copyPayload)}
-            icon={phase === 'copied'
-              ? <Check size={14} aria-hidden="true" />
-              : <Copy size={14} aria-hidden="true" />}
-          />
+          <div className="maka-tool-output-command-actions">
+            {props.actions}
+            <UiButton
+              variant="ghost"
+              size="sm"
+              className="maka-tool-output-command-copy"
+              data-copy-feedback={phase ?? undefined}
+              // Icon-only: the heading already fills the row, and a word beside
+              // it would compete with the thing being copied. `label` is the
+              // accessible name in this mode.
+              isIconOnly
+              label={label}
+              aria-busy={phase === 'pending' ? 'true' : undefined}
+              isDisabled={phase === 'pending'}
+              onClick={() => void feedback.copy(copyKey, copyPayload)}
+              icon={phase === 'copied'
+                ? <Check size={14} aria-hidden="true" />
+                : <Copy size={14} aria-hidden="true" />}
+            />
+          </div>
         </div>
       )}
       {props.children}
@@ -129,12 +133,21 @@ export function ToolResultPreview(props: {
   toolName?: string;
   args?: unknown;
   shellRunSource?: 'owned' | 'unavailable';
+  /** Open a linked subagent child session in the main chat column. */
+  onOpenLinkedSession?(sessionId: string): void;
+  fileDiffActions?: ReactNode;
 }) {
   const { content } = props;
   const locale = useUiLocale();
 
   if (content.kind === 'file_diff') {
-    return <FileDiffPreview diff={content.diff} paths={content.paths} />;
+    return (
+      <FileDiffPreview
+        diff={content.diff}
+        paths={content.paths}
+        actions={props.fileDiffActions}
+      />
+    );
   }
 
   if (content.kind === 'web_search') {
@@ -179,11 +192,21 @@ export function ToolResultPreview(props: {
   }
 
   if (content.kind === 'subagent') {
-    return <SubagentPreview result={content} />;
+    return (
+      <SubagentPreview
+        result={content}
+        onOpenSession={props.onOpenLinkedSession}
+      />
+    );
   }
 
   if (content.kind === 'agent_swarm') {
-    return <AgentSwarmPreview result={content} />;
+    return (
+      <AgentSwarmPreview
+        result={content}
+        onOpenSession={props.onOpenLinkedSession}
+      />
+    );
   }
 
   if (content.kind === 'rive_workflow') {
@@ -381,7 +404,11 @@ function highlightedCode(code: string, tokens: TokenLine | undefined): ReactNode
   return parts;
 }
 
-function FileDiffPreview(props: { diff: string; paths: string[] }) {
+function FileDiffPreview(props: {
+  diff: string;
+  paths: string[];
+  actions?: ReactNode;
+}) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   // Astryx injects the `astryx-token-*` rules on first use of a code surface;
   // a diff can be the first one on screen, so it has to ask for them itself.
@@ -421,6 +448,7 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
       kind="file_diff"
       heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
       body={body}
+      actions={props.actions}
     >
       <pre className={previewVariants({ part: 'diff-body' })}>
         {rows.map((row, index) => (

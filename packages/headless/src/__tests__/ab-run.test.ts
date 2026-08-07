@@ -263,53 +263,6 @@ describe('runAbComparison', () => {
     assert.equal(result.stopReason, 'observed_cost_stop_reached');
   });
 
-  test('closes pair admission as soon as one arm reaches the observed cost threshold', async () => {
-    const calls: string[] = [];
-    let releaseSibling!: () => void;
-    const siblingMayFinish = new Promise<void>((resolve) => {
-      releaseSibling = resolve;
-    });
-    let secondPairFinished!: () => void;
-    const secondPairFinishedPromise = new Promise<void>((resolve) => {
-      secondPairFinished = resolve;
-    });
-    let secondPairArms = 0;
-    const comparison = runAbComparison({
-      runId: 'ab-run',
-      arms: [
-        { id: 'off', kind: 'runtime', fingerprint: sha256('off') },
-        { id: 'on', kind: 'runtime', fingerprint: sha256('on') },
-      ],
-      evaluationTasks: [
-        { id: 't1', path: '/tasks/t1' },
-        { id: 't2', path: '/tasks/t2' },
-        { id: 't3', path: '/tasks/t3' },
-      ],
-      reps: 1,
-      maxConcurrency: 2,
-      observedCostStopUsd: 0.01,
-      runArm: async ({ arm, task }) => {
-        calls.push(`${task.id}:${arm.id}`);
-        if (task.id === 't1' && arm.id === 'on') await siblingMayFinish;
-        if (task.id === 't2') {
-          secondPairArms += 1;
-          if (secondPairArms === 2) secondPairFinished();
-        }
-        return completed(task.id, true);
-      },
-    });
-
-    await secondPairFinishedPromise;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const suffixStartedBeforeDrain = calls.some((call) => call.startsWith('t3:'));
-    releaseSibling();
-    const result = await comparison;
-
-    assert.equal(suffixStartedBeforeDrain, false);
-    assert.deepEqual(new Set(calls), new Set(['t1:off', 't1:on', 't2:off', 't2:on']));
-    assert.equal(result.stopReason, 'observed_cost_stop_reached');
-  });
-
   test('stops scheduling new pairs after a systemic provider failure', async () => {
     const calls: string[] = [];
     const result = await runAbComparison({

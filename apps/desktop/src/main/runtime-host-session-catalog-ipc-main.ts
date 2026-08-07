@@ -27,6 +27,7 @@ import {
   resolveSessionActionIds,
 } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
+import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
 
 type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
@@ -51,6 +52,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
     extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
   ) => void;
   releaseSessionResources: (sessionId: string) => void | Promise<void>;
+  sessionCopyCleanup: SessionCopyCleanupAuthority;
   newId?: () => string;
 }
 
@@ -60,9 +62,12 @@ export function registerRuntimeHostSessionCatalogIpc(
 ): void {
   const newId = deps.newId ?? randomUUID;
   const listSessions = async (filter?: SessionListFilter): Promise<DesktopHostSessionSummary[]> => {
+    const recovery = await deps.sessionCopyCleanup.recover();
+    const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
     const parentSessionId = normalizeParentSessionFilter(filter?.subagentParentSessionId);
     const sessions = await deps.client.listSessions(toHostCatalogFilter(filter));
     return sessions
+      .filter((session) => !pendingCleanup.has(session.id))
       .filter((session) =>
         parentSessionId === undefined ? true : session.subagent?.parentSessionId === parentSessionId,
       )
@@ -72,6 +77,12 @@ export function registerRuntimeHostSessionCatalogIpc(
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
   ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => listSessions(filter));
+  ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
+    await deps.sessionCopyCleanup.cleanup(sessionId);
+  });
+  ipcMain.handle('sessions:abandonSessionCopy', async (_event, sessionId: string) => {
+    await deps.sessionCopyCleanup.schedule(sessionId);
+  });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
     if (input?.backend !== undefined && input.backend !== 'ai-sdk') {
       throw new Error('Unsupported Runtime Host Session backend');

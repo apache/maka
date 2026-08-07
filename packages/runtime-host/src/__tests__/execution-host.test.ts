@@ -59,6 +59,7 @@ import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
+  type AutomationProjection,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
@@ -92,6 +93,88 @@ import {
   withExecutionRoot,
   withTimeout,
 } from './fixtures/execution-host-suite.js';
+
+test('production Host executes admitted heartbeat and cron fires through one durable root authority', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root, 'desktop');
+    const tui = await connectClient(fixture.root, 'tui');
+    try {
+      const heartbeat = await desktop.request('automation.mutate', {
+        kind: 'create',
+        sessionId: fixture.sessionId,
+        automationKind: 'heartbeat',
+        name: 'heartbeat execution proof',
+        prompt: 'Complete the heartbeat execution proof.',
+        schedule: { type: 'once', delaySeconds: 5 },
+      });
+      const cron = await tui.request('automation.mutate', {
+        kind: 'create',
+        sessionId: fixture.sessionId,
+        automationKind: 'cron',
+        name: 'cron execution proof',
+        prompt: 'Complete the cron execution proof.',
+        schedule: { type: 'once', delaySeconds: 5 },
+      });
+      assert.equal(heartbeat.kind, 'committed');
+      assert.equal(cron.kind, 'committed');
+      if (
+        heartbeat.kind !== 'committed' ||
+        !heartbeat.automation ||
+        cron.kind !== 'committed' ||
+        !cron.automation
+      ) {
+        return;
+      }
+
+      const [observedHeartbeat, observedCron] = await Promise.all([
+        waitForAutomationCompletion(tui, fixture.sessionId, heartbeat.automation.id),
+        waitForAutomationCompletion(desktop, fixture.sessionId, cron.automation.id),
+      ]);
+      assert.ok(observedHeartbeat.lastRunId);
+      assert.ok(observedCron.lastRunId);
+      assert.equal(observedHeartbeat.lastError, null);
+      assert.equal(observedCron.lastError, null);
+      assert.equal(observedHeartbeat.firePending, false);
+      assert.equal(observedCron.firePending, false);
+
+      const cronSessions = await desktop.request('session.catalog.query', {
+        kind: 'list_start',
+        filter: { labelSlug: 'cron' },
+      });
+      assert.equal(cronSessions.kind, 'page');
+      if (cronSessions.kind === 'page') {
+        assert.equal(cronSessions.sessions.length, 1);
+        const cronSession = cronSessions.sessions[0];
+        assert.ok(cronSession && !('kind' in cronSession));
+        if (cronSession && !('kind' in cronSession)) {
+          assert.deepEqual([...cronSession.labels].sort(), ['automation', 'cron']);
+          assert.ok(cronSession.lastMessageAt);
+        }
+      }
+
+      const deletedHeartbeat = await tui.request('automation.mutate', {
+        kind: 'delete',
+        sessionId: fixture.sessionId,
+        automationId: heartbeat.automation.id,
+      });
+      assert.equal(deletedHeartbeat.kind, 'committed');
+      assert.equal(deletedHeartbeat.kind === 'committed' && deletedHeartbeat.automation, null);
+      const deletedCron = await desktop.request('automation.mutate', {
+        kind: 'delete',
+        sessionId: fixture.sessionId,
+        automationId: cron.automation.id,
+      });
+      assert.equal(deletedCron.kind, 'committed');
+      assert.equal(deletedCron.kind === 'committed' && deletedCron.automation, null);
+    } finally {
+      await Promise.allSettled([desktop.close(), tui.close()]);
+      await fixture.stopHost(host);
+    }
+  });
+});
 
 test('production Host settles dispatched Client Capabilities before publishing Ready', async () => {
   await withExecutionRoot(async (fixture) => {
@@ -1077,4 +1160,40 @@ async function collectTaskLedgerProjection(
     pages,
     tasks: pages.flatMap((page) => page.tasks),
   };
+}
+
+async function waitForAutomationCompletion(
+  client: RuntimeHostConnection,
+  sessionId: string,
+  automationId: string,
+): Promise<AutomationProjection> {
+  const deadline = Date.now() + 20_000;
+  let last: AutomationProjection | null = null;
+  while (Date.now() < deadline) {
+    const result = await client.request('automation.query', {
+      kind: 'get',
+      sessionId,
+      automationId,
+    });
+    if (
+      result.kind === 'automation' &&
+      result.automation?.status === 'completed' &&
+      !result.automation.firePending
+    ) {
+      return result.automation;
+    }
+    if (result.kind === 'automation') last = result.automation;
+    if (
+      result.kind === 'automation' &&
+      result.automation &&
+      !result.automation.firePending &&
+      result.automation.lastError
+    ) {
+      throw new Error(`Automation execution failed: ${result.automation.lastError}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(
+    `Automation ${automationId} did not settle before the deadline: ${JSON.stringify(last)}`,
+  );
 }

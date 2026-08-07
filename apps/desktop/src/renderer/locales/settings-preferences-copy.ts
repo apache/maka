@@ -43,6 +43,8 @@ export type SettingsPreferencesCopy = {
     themeHelp: string;
     palette: string;
     paletteHelp: string;
+    pets: string;
+    petsHelp: string;
   };
   appearance: {
     saveFailed: string;
@@ -52,7 +54,48 @@ export type SettingsPreferencesCopy = {
     paletteLabels: Record<ThemePalette, string>;
     paletteHelp: Record<ThemePalette, string>;
     paletteGroups: { editor: string; product: string };
-    persistenceHelp: string;
+  };
+  pets: {
+    import: string;
+    importing: string;
+    loading: string;
+    status: string;
+    activePet(name: string): string;
+    disabled: string;
+    disable: string;
+    disabling: string;
+    empty: string;
+    emptyHelp: string;
+    selected: string;
+    select: string;
+    selecting: string;
+    remove: string;
+    removing: string;
+    removeTitle(name: string): string;
+    removeDescription: string;
+    confirmRemove: string;
+    cancel: string;
+    loadFailed: string;
+    importFailed: string;
+    selectFailed: string;
+    removeFailed: string;
+    importErrors: {
+      invalid_directory: string;
+      invalid_manifest: string;
+      invalid_asset: string;
+      already_installed: string;
+      read_failed: string;
+    };
+    selectErrors: {
+      invalid_id: string;
+      not_found: string;
+      read_failed: string;
+      write_failed: string;
+    };
+    removeErrors: {
+      invalid_id: string;
+      remove_failed: string;
+    };
   };
   general: {
     incognito: string;
@@ -72,6 +115,10 @@ export type SettingsPreferencesCopy = {
     saveDefaultModelFailed: string;
     defaultPermission: string;
     defaultPermissionHelp: string;
+    defaultThinking: string;
+    defaultThinkingHelp: string;
+    followModelDefault: string;
+    saveDefaultThinkingFailed: string;
     saveDefaultPermissionFailed: string;
     proxy: string;
     proxyHelp: string;
@@ -138,21 +185,33 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     sections: {
       identity: '身份', identityHelp: 'Maka 如何称呼你，以及界面语言和回答语气。',
       privacy: '隐私与通知', privacyHelp: '本地数据的读写范围，以及桌面通知时机。',
-      chatDefaults: '对话默认', chatDefaultsHelp: '新对话的起始模型与权限模式。',
+      chatDefaults: '对话默认', chatDefaultsHelp: '新对话的起始模型、权限模式与思考级别。',
       network: '网络', networkHelp: 'AI 模型请求走的网络通道。',
       theme: '主题', themeHelp: '界面跟随系统，还是固定浅色或深色。',
       palette: '调色板', paletteHelp: '强调色与画布色调；切换会立即生效并保存在本地。',
+      pets: '自定义宠物', petsHelp: '管理你自己导入的 PetPack。Maka 不预装、也不默认启用任何宠物。',
     },
     appearance: {
       saveFailed: '保存外观设置失败', theme: '主题', palette: '调色板',
       themeOptions: { light: { label: '浅色', help: '始终使用浅色界面。' }, dark: { label: '深色', help: '始终使用深色界面。' }, auto: { label: '跟随系统', help: '匹配系统当前的浅色或深色偏好。' } },
       paletteLabels: { default: '默认', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '珊瑚', azure: '湖蓝', forest: '森林', dusk: '暮光', sand: '沙金', mono: '极简灰' },
       paletteHelp: { default: 'Maka 品牌蓝强调色', onedark: '编辑器经典深色', 'catppuccin-mocha': '紫调柔和深色', 'tokyo-night': '深蓝主题', nord: '北欧冷色', coral: '暖粉 / 珊瑚强调色', azure: '湖蓝强调色，干净冷静', forest: '深苔绿与暖蜂蜜强调色', dusk: '深紫罗兰与冷调画布', sand: '琥珀沙金与暖奶白', mono: '纯灰阶，无彩色干扰' },
-      paletteGroups: { editor: '编辑器主题', product: '产品色调' }, persistenceHelp: '切换会立即生效，并保存在本地外观设置里供下次启动使用。',
+      paletteGroups: { editor: '编辑器主题', product: '产品色调' },
+    },
+    pets: {
+      import: '导入 PetPack', importing: '正在导入…', loading: '正在载入自定义宠物…',
+      status: '桌面宠物', activePet: (name) => `当前使用：${name}`, disabled: '已关闭', disable: '关闭宠物', disabling: '正在关闭…',
+      empty: '还没有导入宠物', emptyHelp: '选择一个包含 pet.json 和精灵图的本地文件夹。',
+      selected: '正在使用', select: '使用', selecting: '正在切换…', remove: '删除', removing: '正在删除…',
+      removeTitle: (name) => `删除“${name}”？`, removeDescription: '这会删除 Maka 本地保存的该宠物包，且无法撤销。原始文件夹不会受影响。', confirmRemove: '删除', cancel: '取消',
+      loadFailed: '无法载入自定义宠物', importFailed: '导入宠物失败', selectFailed: '切换宠物失败', removeFailed: '删除宠物失败',
+      importErrors: { invalid_directory: '所选文件夹无效。', invalid_manifest: 'pet.json 不符合 maka.pet/v1 格式。', invalid_asset: '精灵图缺失、无效或超出限制。', already_installed: '已经导入了相同 ID 的宠物。', read_failed: '无法读取所选文件夹。' },
+      selectErrors: { invalid_id: '宠物 ID 无效。', not_found: '该宠物已不在本地宠物库中。', read_failed: '无法读取宠物库。', write_failed: '无法保存宠物选择。' },
+      removeErrors: { invalid_id: '宠物 ID 无效。', remove_failed: '无法删除本地宠物包。' },
     },
     general: {
       incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和计划提醒触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '完成时发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成或出错后发送桌面通知。', notificationsFailed: '通知设置切换失败', workspaceInstructions: '遵循项目指令', workspaceInstructionsHelp: '自动读取每个项目中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；文件仍由各自项目管理。', workspaceInstructionsFailed: '项目指令设置切换失败', updateFailed: '设置未生效，请稍后重试。',
-      defaultModel: '默认模型', defaultModelHelp: '新对话默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新对话默认使用的权限模式；可在对话内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败',
+      defaultModel: '默认模型', defaultModelHelp: '新对话默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新对话默认使用的权限模式；可在对话内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败', defaultThinking: '默认思考级别', defaultThinkingHelp: '新对话的思考级别；当前模型不支持所选级别时用模型默认。', followModelDefault: '跟随模型默认', saveDefaultThinkingFailed: '保存默认思考级别失败',
       proxy: '代理服务器', proxyHelp: '为 AI 模型请求配置网络代理', enableProxy: '启用代理服务器', saveNetworkFailed: '保存网络设置失败', proxyProtocol: '代理协议', serverAddress: '服务器地址', port: '端口', proxyAuth: '代理认证', proxyAuthHelp: '需要用户名和密码时开启。', enableProxyAuth: '启用代理认证', username: '用户名', password: '密码', bypassList: '代理白名单', bypassHelp: '这些域名将绕过代理直连，多个用逗号分隔。', autoBypass: (count) => `已自动添加 ${count} 个域名。代理仅作用于 AI 模型请求。`, testing: '测试中…', testCurrent: '测试当前配置', proxyReachable: '代理可达', proxyTestFailed: '代理测试失败', proxyTestError: '代理测试出错',
     },
     about: {
@@ -167,16 +226,28 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
       privacy: 'Privacy and notifications', privacyHelp: 'What Maka may read and write locally, and when it notifies you.',
-      chatDefaults: 'Conversation defaults', chatDefaultsHelp: 'The model and permission mode a new conversation starts on.',
+      chatDefaults: 'Conversation defaults', chatDefaultsHelp: 'The model, permission mode, and thinking level a new conversation starts on.',
       network: 'Network', networkHelp: 'The network path AI model requests take.',
       theme: 'Theme', themeHelp: 'Follow the system appearance, or stay on light or dark.',
       palette: 'Color palette', paletteHelp: 'Accent and canvas colors. Changes apply immediately and are saved locally.',
+      pets: 'Custom pets', petsHelp: 'Manage PetPacks you import yourself. Maka does not bundle or enable any pet by default.',
     },
     appearance: {
-      saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, persistenceHelp: 'Changes apply immediately and are saved locally for the next launch.',
+      saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' },
+    },
+    pets: {
+      import: 'Import PetPack', importing: 'Importing…', loading: 'Loading custom pets…',
+      status: 'Desktop pet', activePet: (name) => `Currently using: ${name}`, disabled: 'Off', disable: 'Turn off pet', disabling: 'Turning off…',
+      empty: 'No pets imported yet', emptyHelp: 'Choose a local folder containing pet.json and a sprite sheet.',
+      selected: 'In use', select: 'Use', selecting: 'Switching…', remove: 'Remove', removing: 'Removing…',
+      removeTitle: (name) => `Remove “${name}”?`, removeDescription: 'This removes Maka’s local copy of the pet pack and cannot be undone. The original folder is not affected.', confirmRemove: 'Remove', cancel: 'Cancel',
+      loadFailed: 'Could not load custom pets', importFailed: 'Could not import pet', selectFailed: 'Could not switch pet', removeFailed: 'Could not remove pet',
+      importErrors: { invalid_directory: 'The selected folder is invalid.', invalid_manifest: 'pet.json does not match the maka.pet/v1 format.', invalid_asset: 'The sprite sheet is missing, invalid, or outside the supported limits.', already_installed: 'A pet with the same ID is already installed.', read_failed: 'The selected folder could not be read.' },
+      selectErrors: { invalid_id: 'The pet ID is invalid.', not_found: 'That pet is no longer in the local library.', read_failed: 'The pet library could not be read.', write_failed: 'The pet selection could not be saved.' },
+      removeErrors: { invalid_id: 'The pet ID is invalid.', remove_failed: 'The local pet pack could not be removed.' },
     },
     general: {
-      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled reminder triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new conversations.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new conversations; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
+      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled reminder triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new conversations.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new conversations; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', defaultThinking: 'Default thinking level', defaultThinkingHelp: 'Thinking level for new conversations; models that do not offer the chosen level use their own default.', followModelDefault: 'Follow model default', saveDefaultThinkingFailed: 'Could not save the default thinking level', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
     },
     about: {
       loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Environment info copied', pasteHint: 'Paste it directly into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Conversations, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the conversation.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each session.'], copying: 'Copying…', copyEnvironment: 'Copy environment info', copyHelp: 'Copy version and platform details to help diagnose an issue. The workspace path is excluded.', keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View', reportIssueLabel: 'Report an issue',

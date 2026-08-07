@@ -1,11 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { filterLinkedSessionTree, projectLinkedSessionTree } from '@maka/core';
 import { sessionMatchesNavSelection } from '../../renderer/session-nav-filter.js';
 import {
   deriveProjectGroups,
   deriveWorktreeSessionIds,
 } from '../../renderer/session-project-grouping.js';
+import { deriveSessionRail } from '../../renderer/session-rail.js';
 import { makeSessionSummary, renderSessionListPanel } from './session-list-render-helpers.js';
 
 describe('sidebar project view mode', () => {
@@ -230,36 +230,25 @@ describe('sidebar project view mode', () => {
     assert.doesNotMatch(activeChunk, /data-session-status=/);
   });
 
-  it('lazy-mounts linked children and expands the active child ancestor chain', () => {
+  it('keeps the sidebar flat: linked children are not nested under parents', () => {
     const parent = makeSessionSummary({ id: 'parent', name: 'Parent task' });
     const child = makeSessionSummary({ id: 'child', name: 'Child agent' });
-    const collapsedMarkup = renderSessionListPanel({
-      sessions: [parent],
-      childSessionsByParentId: new Map([[parent.id, [child]]]),
-    });
-    assert.match(collapsedMarkup, /maka-session-lazy-children-sentinel/);
-    assert.doesNotMatch(collapsedMarkup, /data-session-id="child"/);
-
+    // Host passes only root sessions; child open state is titlebar + main column.
     const markup = renderSessionListPanel({
       sessions: [parent],
-      activeId: child.id,
-      childSessionsByParentId: new Map([[parent.id, [child]]]),
+      activeId: parent.id,
     });
 
-    assert.ok(markup.indexOf('Parent task') < markup.indexOf('Child agent'));
-    assert.match(markup, /data-subagent="true"/);
-    assert.match(markup, /data-session-id="child"/);
-    assert.match(markup, /data-maka-contract="session-row"/);
-    // Nested subagent rows use native SideNavItem Bot icon (lucide-bot).
-    const childChunk =
-      markup.match(/data-session-id="child"[\s\S]*?(?=data-session-id="|$)/)?.[0] ?? '';
-    assert.match(childChunk, /lucide-bot/);
-    const parentChunk =
-      markup.match(/data-session-id="parent"[\s\S]*?(?=data-session-id="child"|$)/)?.[0] ?? '';
-    assert.doesNotMatch(parentChunk, /lucide-bot/);
+    assert.match(markup, /data-session-id="parent"/);
+    assert.doesNotMatch(markup, /data-session-id="child"/);
+    assert.doesNotMatch(markup, /data-subagent="true"/);
+    assert.doesNotMatch(markup, /maka-session-lazy-children-sentinel/);
+    assert.doesNotMatch(markup, /lucide-bot/);
+    // Child is not a sidebar peer either — only the root list is rendered.
+    assert.doesNotMatch(markup, /Child agent/);
   });
 
-  it('applies Chats, Flagged, and Archived filters independently to parents and children', () => {
+  it('applies Chats, Flagged, and Archived filters through the production rail projection', () => {
     const parent = makeSessionSummary({
       id: 'parent',
       name: 'Parent task',
@@ -291,42 +280,34 @@ describe('sidebar project view mode', () => {
       lastMessageAt: 50,
       subagentParent: childRelation(archivedParent.id),
     });
-    const tree = projectLinkedSessionTree([
+    const sessions = [
       parent,
       archivedChild,
       flaggedChild,
       archivedParent,
       activeChild,
-    ]);
-    const filter = (selection: 'chats' | 'flagged' | 'archived') =>
-      filterLinkedSessionTree(tree, (session) =>
+    ];
+
+    const rail = (selection: 'chats' | 'flagged' | 'archived') =>
+      deriveSessionRail(sessions, parent.id, (session) =>
         sessionMatchesNavSelection(session, { section: 'sessions', filter: selection }),
       );
 
-    const chats = filter('chats');
     assert.deepEqual(
-      chats.roots.map((session) => session.id),
-      [parent.id, activeChild.id],
+      rail('chats').sessions.map((session) => session.id),
+      [parent.id],
     );
     assert.deepEqual(
-      chats.childrenByParentId.get(parent.id)?.map((session) => session.id),
-      [flaggedChild.id],
+      rail('flagged').sessions.map((session) => session.id),
+      [],
     );
-
-    const flagged = filter('flagged');
     assert.deepEqual(
-      flagged.roots.map((session) => session.id),
-      [flaggedChild.id],
-    );
-
-    const archived = filter('archived');
-    assert.deepEqual(
-      archived.roots.map((session) => session.id),
-      [archivedChild.id, archivedParent.id],
+      rail('archived').sessions.map((session) => session.id),
+      [archivedParent.id],
     );
   });
 
-  it('keeps a running parent visible when preview metadata is temporarily unavailable', () => {
+  it('keeps a running parent on the rail when preview metadata is temporarily unavailable', () => {
     const parent = makeSessionSummary({
       id: 'running-parent',
       name: 'Running parent',
@@ -340,20 +321,15 @@ describe('sidebar project view mode', () => {
       lastMessageAt: 50,
       subagentParent: childRelation(parent.id),
     });
-    const tree = filterLinkedSessionTree(
-      projectLinkedSessionTree([parent, child]),
-      (session) =>
-        sessionMatchesNavSelection(session, { section: 'sessions', filter: 'chats' }),
+    const rail = deriveSessionRail([parent, child], parent.id, (session) =>
+      sessionMatchesNavSelection(session, { section: 'sessions', filter: 'chats' }),
     );
 
     assert.deepEqual(
-      tree.roots.map((session) => session.id),
+      rail.sessions.map((session) => session.id),
       [parent.id],
     );
-    assert.deepEqual(
-      tree.childrenByParentId.get(parent.id)?.map((session) => session.id),
-      [child.id],
-    );
+    assert.equal(rail.activeRowId, parent.id);
   });
 
   it('project group ids stay DOM-safe and distinct when the cwd has spaces or shared basenames', () => {
