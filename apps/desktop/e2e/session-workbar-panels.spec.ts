@@ -1,4 +1,26 @@
+import type { Page } from '@playwright/test';
 import { test, expect, COMPOSER_INPUT } from './fixtures';
+
+async function waitForSourceSessionToSettle(page: Page) {
+  await expect
+    .poll(async () => {
+      const [source] = await page.evaluate(() => window.maka.sessions.list());
+      return source?.status;
+    })
+    .not.toBe('running');
+}
+
+async function openReadySideConversation(page: Page) {
+  await page.getByRole('button', { name: '打开工作栏工具' }).click();
+  await page.getByRole('menuitem', { name: /侧边对话/ }).click();
+  await expect(
+    page
+      .locator(
+        '.maka-workbar-tab[data-active][data-workbar-tab-id^="side-chat:"]',
+      )
+      .getByRole('tab'),
+  ).not.toHaveAttribute('aria-busy', 'true');
+}
 
 test('side chat moves between right and bottom panels without losing its fork', async ({
   window: page,
@@ -8,9 +30,9 @@ test('side chat moves between right and bottom panels without losing its fork', 
   await mainComposer.fill('dual panel side chat source');
   await mainComposer.press('Enter');
   await expect(page.getByText(/Fake backend received: dual panel side chat source/)).toBeVisible();
+  await waitForSourceSessionToSettle(page);
 
-  await page.getByRole('button', { name: '打开工作栏工具' }).click();
-  await page.getByRole('menuitem', { name: /侧边对话/ }).click();
+  await openReadySideConversation(page);
   const sideComposer = page.locator('.maka-quote-workbar-panel:not([hidden])').locator(
     COMPOSER_INPUT,
   );
@@ -67,13 +89,13 @@ test('minimum-width side chat keeps the active tab, launcher, and composer contr
   await expect(
     page.getByText(/Fake backend received: minimum width side chat source/),
   ).toBeVisible();
+  await waitForSourceSessionToSettle(page);
 
   for (const name of ['任务', '追踪', '审阅']) {
     await page.getByRole('button', { name: '打开工作栏工具' }).click();
     await page.getByRole('menuitem', { name }).click();
   }
-  await page.getByRole('button', { name: '打开工作栏工具' }).click();
-  await page.getByRole('menuitem', { name: /侧边对话/ }).click();
+  await openReadySideConversation(page);
 
   const resizeHandle = page.locator('.maka-workbar-resize-handle-right');
   await resizeHandle.focus();

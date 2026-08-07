@@ -230,7 +230,7 @@ export function QuoteCompanionPanel(props: {
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
-              draftKey={companion.companionSession?.id ?? draftKey}
+              draftKey={draftKey}
               disabled={!props.sourceSession || companion.preparing}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}

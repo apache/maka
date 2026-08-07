@@ -4,6 +4,13 @@ import { test, expect, COMPOSER_INPUT } from './fixtures';
 async function openSideConversationFromLauncher(page: Page) {
   await page.getByRole('button', { name: '打开工作栏工具' }).click();
   await page.getByRole('menuitem', { name: /侧边对话/ }).click();
+  await expect(
+    page
+      .locator(
+        '.maka-workbar-tab[data-active][data-workbar-tab-id^="side-chat:"]',
+      )
+      .getByRole('tab'),
+  ).not.toHaveAttribute('aria-busy', 'true');
 }
 
 async function waitForSourceSessionToSettle(page: Page) {
@@ -36,6 +43,7 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
   await mainComposer.press('Enter');
   const secondSourceReply = page.getByText(/Fake backend received: quote companion source two/);
   await expect(secondSourceReply).toBeVisible();
+  await waitForSourceSessionToSettle(page);
   const [sourceSession] = await page.evaluate(() => window.maka.sessions.list());
   expect(sourceSession).toBeDefined();
 
@@ -49,11 +57,13 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
       document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
       document.dispatchEvent(
         new KeyboardEvent('keyup', { bubbles: true, key: 'Shift' }),
       );
     });
+    await expect(page.getByRole('button', { name: '在侧栏追问' })).toBeVisible();
     await page.getByRole('button', { name: '在侧栏追问' }).click();
   };
   await stageReply(firstSourceReply);
@@ -70,7 +80,9 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
 
   // Quiet composer stages quotes as drawer Tokens (Astryx Token + remove).
   const quoteTokens = panel.locator('.maka-composer-context-drawer .astryx-token');
-  const contextDrawerToggle = panel.getByRole('button', { name: '展开添加上下文' });
+  const contextDrawerToggle = panel.locator(
+    '.maka-composer-drawer [role="button"][aria-expanded]',
+  );
   await expect(contextDrawerToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(quoteTokens).toHaveCount(2);
   await contextDrawerToggle.click();
@@ -177,6 +189,9 @@ test('the quote layer waits for the selection to settle, stays closed after Esca
   await page.mouse.down();
   for (const dx of [60, 120, 180, 240, 300]) {
     await page.mouse.move(replyBox.x + 20 + dx, dragY);
+    await page.evaluate(() =>
+      document.dispatchEvent(new Event('selectionchange')),
+    );
     await page.waitForTimeout(90);
     await expect(quoteLayer).toBeHidden();
   }
@@ -246,6 +261,7 @@ test('the quote layer follows the selection while the transcript scrolls', async
     await expect(
       page.getByText(new RegExp(`Fake backend received: scroll follow source ${i}`)).last(),
     ).toBeVisible();
+    await waitForSourceSessionToSettle(page);
   }
 
   await page
@@ -342,6 +358,7 @@ test('a new selection hides the layer immediately, not when the next one settles
     await composer.fill(label);
     await composer.press('Enter');
     await expect(page.getByText(new RegExp(`Fake backend received: ${label}`)).last()).toBeVisible();
+    await waitForSourceSessionToSettle(page);
   }
 
   const select = (pattern: RegExp) =>
@@ -487,6 +504,7 @@ test('side chat inherits permissions and steers an active turn without losing th
   await mainComposer.fill('side steering source');
   await mainComposer.press('Enter');
   await expect(page.getByText(/Fake backend received: side steering source/)).toBeVisible();
+  await waitForSourceSessionToSettle(page);
   const [sourceSession] = await page.evaluate(() => window.maka.sessions.list());
   expect(sourceSession).toBeDefined();
 
@@ -744,6 +762,7 @@ test('batch tab close confirms once and cleans every non-empty side fork', async
   await mainComposer.fill('batch side chat source');
   await mainComposer.press('Enter');
   await expect(page.getByText(/Fake backend received: batch side chat source/)).toBeVisible();
+  await waitForSourceSessionToSettle(page);
 
   await page.getByRole('button', { name: '打开工作栏工具' }).click();
   await page.getByRole('menuitem', { name: '任务' }).click();
