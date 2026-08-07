@@ -86,6 +86,58 @@ describe('the unconfirmed claim an arm carries', () => {
 });
 
 describe('applyLiveTurnEvent', () => {
+  it('folds replayed absolute deltas instead of appending a resubscription seed', () => {
+    const seed = {
+      type: 'text_delta' as const,
+      id: 'seed-1',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 100,
+      startOffset: 0,
+      text: 'Hello',
+    };
+    const first = applyLiveTurnEvent(undefined, seed);
+    const replayed = applyLiveTurnEvent(first, { ...seed, id: 'seed-2', ts: 200 });
+    const extended = applyLiveTurnEvent(replayed, {
+      ...seed,
+      id: 'delta-3',
+      ts: 300,
+      startOffset: 5,
+      text: ' world',
+    });
+
+    assert.equal(replayed.steps[0]?.text?.text, 'Hello');
+    assert.equal(extended.steps[0]?.text?.text, 'Hello world');
+    assert.equal(extended.steps[0]?.text?.sourceEndOffset, 11);
+  });
+
+  it('tracks absolute thinking offsets independently from redacted display text', () => {
+    const first = applyLiveTurnEvent(undefined, {
+      type: 'thinking_delta',
+      id: 'thinking-1',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 100,
+      startOffset: 0,
+      text: 'Authorization: Bearer secret-value',
+    });
+    const replayed = applyLiveTurnEvent(first, {
+      type: 'thinking_delta',
+      id: 'thinking-2',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 200,
+      startOffset: 0,
+      text: 'Authorization: Bearer secret-value',
+    });
+
+    assert.equal(replayed.steps[0]?.thinking?.text, first.steps[0]?.thinking?.text);
+    assert.equal(
+      replayed.steps[0]?.thinking?.sourceEndOffset,
+      'Authorization: Bearer secret-value'.length,
+    );
+  });
+
   it('moves an armed turn from waiting to streamed on its first content event', () => {
     const waiting = armLiveTurn('turn-1');
     assert.equal(waiting.phase, 'waiting');

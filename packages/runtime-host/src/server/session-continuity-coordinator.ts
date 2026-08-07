@@ -68,8 +68,15 @@ interface SessionProjectionState {
   canonical: CanonicalSessionProjection;
   revision: number;
   subscribers: Map<string, Subscriber>;
-  assistantOffsets: Map<string, number>;
+  assistantPrefixes: Map<string, ActiveAssistantPrefix>;
   terminalPublicationFence?: TerminalPublicationFence;
+}
+
+interface ActiveAssistantPrefix {
+  turnId: string;
+  messageId: string;
+  kind: SessionAssistantDelta['kind'];
+  text: string;
 }
 
 interface TerminalPublicationFence {
@@ -434,9 +441,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
-        for (const key of state.assistantOffsets.keys()) {
-          if (key.startsWith(`${runId}\0`)) state.assistantOffsets.delete(key);
-        }
+        state.assistantPrefixes.clear();
         this.#broadcastProjection(state, snapshot);
         if (state.subscribers.size === 0) this.#sessions.delete(sessionId);
       },
@@ -483,9 +488,15 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
-        const offsetKey = assistantOffsetKey(runId, kind, event.messageId);
-        const startOffset = state.assistantOffsets.get(offsetKey) ?? 0;
-        state.assistantOffsets.set(offsetKey, startOffset + event.text.length);
+        const prefixKey = assistantPrefixKey(kind, event.messageId);
+        const current = state.assistantPrefixes.get(prefixKey);
+        const startOffset = current?.text.length ?? 0;
+        state.assistantPrefixes.set(prefixKey, {
+          turnId: event.turnId,
+          messageId: event.messageId,
+          kind,
+          text: (current?.text ?? '') + event.text,
+        });
         for (const subscriber of state.subscribers.values()) {
           this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
         }
@@ -647,9 +658,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         return transcriptSubscriptionNotFound();
       }
       try {
+        const state = this.#sessions.get(subscriber.sessionId);
         const messages = await readTranscript(
           subscriber.sessionId,
-          this.#sessions.get(subscriber.sessionId)?.canonical.rootTurn ?? null,
+          state?.canonical.rootTurn ?? null,
         );
         if (this.#ownedSubscriber(connectionId, input.subscriptionId) !== subscriber) {
           return transcriptSubscriptionNotFound();
@@ -658,7 +670,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           connectionId,
           subscriptionId: subscriber.subscriptionId,
           sessionId: subscriber.sessionId,
-          messages,
+          messages: mergeActiveAssistantPrefixes(messages, state?.assistantPrefixes.values()),
         });
       } catch {
         return {
@@ -928,7 +940,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
     if (!state) {
       const value = createSessionContinuitySnapshot(canonical, 1);
-      state = { canonical, revision: 1, subscribers: new Map(), assistantOffsets: new Map() };
+      state = {
+        canonical,
+        revision: 1,
+        subscribers: new Map(),
+        assistantPrefixes: new Map(),
+      };
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
     }
@@ -980,12 +997,50 @@ function slowConsumerFrameBytes(subscriber: Subscriber, hostEpoch: string): numb
   }).byteLength;
 }
 
-function assistantOffsetKey(
-  runId: string,
-  kind: SessionAssistantDelta['kind'],
-  messageId: string,
-): string {
-  return `${runId}\0${kind}\0${messageId}`;
+function assistantPrefixKey(kind: SessionAssistantDelta['kind'], messageId: string): string {
+  return `${kind}\0${messageId}`;
+}
+
+function mergeActiveAssistantPrefixes(
+  messages: readonly StoredMessage[],
+  prefixes: Iterable<ActiveAssistantPrefix> | undefined,
+): readonly StoredMessage[] {
+  const activePrefixes = prefixes ? [...prefixes] : [];
+  if (activePrefixes.length === 0) return messages;
+  const messageIndexById = new Map(messages.map((message, index) => [message.id, index]));
+  let merged: StoredMessage[] | undefined;
+  for (const prefix of activePrefixes) {
+    const messageIndex = messageIndexById.get(prefix.messageId);
+    if (messageIndex === undefined) {
+      throw new Error('Active assistant prefix has no matching transcript message');
+    }
+    const message = merged?.[messageIndex] ?? messages[messageIndex];
+    if (message?.type !== 'assistant' || message.turnId !== prefix.turnId) {
+      throw new Error('Active assistant prefix has no matching transcript message');
+    }
+    let nextMessage: StoredMessage;
+    if (prefix.kind === 'text') {
+      const text = mergeAssistantPrefix(message.text, prefix.text);
+      if (text === message.text) continue;
+      nextMessage = { ...message, text };
+    } else {
+      if (!message.thinking) {
+        throw new Error('Active thinking prefix has no matching transcript content');
+      }
+      const text = mergeAssistantPrefix(message.thinking.text, prefix.text);
+      if (text === message.thinking.text) continue;
+      nextMessage = { ...message, thinking: { ...message.thinking, text } };
+    }
+    if (!merged) merged = [...messages];
+    merged[messageIndex] = nextMessage;
+  }
+  return merged ?? messages;
+}
+
+function mergeAssistantPrefix(durable: string, active: string): string {
+  if (active.startsWith(durable)) return active;
+  if (durable.startsWith(active)) return durable;
+  throw new Error('Active assistant prefix conflicts with the durable transcript');
 }
 
 function transcriptSubscriptionNotFound(): OperationOutcome<'session.transcript.query'> {

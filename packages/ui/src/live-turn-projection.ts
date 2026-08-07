@@ -12,6 +12,8 @@ export interface LiveThinkingProjection {
   text: string;
   truncated: boolean;
   complete: boolean;
+  /** Raw source length, independent of redaction and display truncation. */
+  sourceEndOffset?: number;
 }
 
 export interface LiveTurnStepProjection {
@@ -28,6 +30,8 @@ export interface LiveTextProjection {
   text: string;
   truncated: boolean;
   complete: boolean;
+  /** Raw source length, independent of redaction and display truncation. */
+  sourceEndOffset?: number;
 }
 
 export interface LiveTurnProjection {
@@ -189,13 +193,17 @@ export function applyLiveTurnEvent(
   const step = stepIndex >= 0 ? prior.steps[stepIndex]! : { stepId, tools: [] };
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
-    const applied = applyThinkingDelta(step.thinking?.text ?? '', event.text, { locale });
+    const delta = replaySafeDelta(step.thinking?.sourceEndOffset, event);
+    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, { locale });
     nextStep = {
       ...step,
       thinking: {
         text: applied.text,
         truncated: (step.thinking?.truncated ?? false) || applied.truncated,
         complete: false,
+        ...(delta.sourceEndOffset === undefined
+          ? {}
+          : { sourceEndOffset: delta.sourceEndOffset }),
       },
     };
   } else if (event.type === 'thinking_complete') {
@@ -206,16 +214,23 @@ export function applyLiveTurnEvent(
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
+        ...(step.thinking?.sourceEndOffset === undefined
+          ? {}
+          : { sourceEndOffset: event.text.length }),
       },
     };
   } else if (event.type === 'text_delta') {
-    const applied = applyAssistantDelta(step.text?.text ?? '', event.text, { locale });
+    const delta = replaySafeDelta(step.text?.sourceEndOffset, event);
+    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, { locale });
     nextStep = {
       ...step,
       text: {
         text: applied.text,
         truncated: (step.text?.truncated ?? false) || applied.truncated,
         complete: false,
+        ...(delta.sourceEndOffset === undefined
+          ? {}
+          : { sourceEndOffset: delta.sourceEndOffset }),
       },
     };
   } else if (event.type === 'text_complete') {
@@ -226,6 +241,9 @@ export function applyLiveTurnEvent(
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
+        ...(step.text?.sourceEndOffset === undefined
+          ? {}
+          : { sourceEndOffset: event.text.length }),
       },
     };
   } else if (event.type === 'tool_start') {
@@ -332,6 +350,29 @@ export function applyLiveTurnEvent(
       : [...prior.steps, nextStep];
   }
   return { ...priorWithoutRetry, phase: 'streamed', steps };
+}
+
+function replaySafeDelta(
+  currentEndOffset: number | undefined,
+  event: Extract<SessionEvent, { type: 'text_delta' | 'thinking_delta' }>,
+): { text: string; sourceEndOffset?: number } {
+  if (event.startOffset === undefined) {
+    return {
+      text: event.text,
+      ...(currentEndOffset === undefined
+        ? {}
+        : { sourceEndOffset: currentEndOffset + event.text.length }),
+    };
+  }
+  const endOffset = event.startOffset + event.text.length;
+  if (currentEndOffset === undefined || event.startOffset > currentEndOffset) {
+    return { text: event.text, sourceEndOffset: endOffset };
+  }
+  const overlapLength = Math.min(currentEndOffset - event.startOffset, event.text.length);
+  return {
+    text: event.text.slice(overlapLength),
+    sourceEndOffset: Math.max(currentEndOffset, endOffset),
+  };
 }
 
 /**

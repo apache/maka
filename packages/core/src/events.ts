@@ -475,6 +475,8 @@ export type SessionEvent =
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
   messageId: string;
+  /** Absolute UTF-16 offset for replay-safe streams; absent for append-only backends. */
+  startOffset?: number;
   text: string;
 }
 
@@ -489,6 +491,8 @@ export interface TextCompleteEvent extends BaseEvent {
 export interface ThinkingDeltaEvent extends BaseEvent {
   type: 'thinking_delta';
   messageId: string;
+  /** Absolute UTF-16 offset for replay-safe streams; absent for append-only backends. */
+  startOffset?: number;
   text: string;
 }
 

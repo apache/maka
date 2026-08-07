@@ -56,10 +56,11 @@ test("joins an active Turn without losing or replaying assistant text", async ()
     target.events.map((event) => [
       event.type,
       "text" in event ? event.text : undefined,
+      "startOffset" in event ? event.startOffset : undefined,
     ]),
     [
-      ["text_delta", "Hello"],
-      ["text_delta", " world"],
+      ["text_delta", "Hello", 0],
+      ["text_delta", " world", 5],
     ],
   );
 

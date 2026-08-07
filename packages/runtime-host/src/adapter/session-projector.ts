@@ -83,6 +83,7 @@ export class RuntimeHostSessionProjector {
           turnId: accumulator.turnId,
           messageId: accumulator.messageId,
           ts: this.#now(),
+          startOffset: 0,
           text: accumulator.text,
         });
       }
@@ -131,6 +132,7 @@ export class RuntimeHostSessionProjector {
           turnId: delta.turnId,
           messageId: delta.messageId,
           ts: this.#now(),
+          startOffset: folded.text.length - folded.tail.length,
           text: folded.tail,
         });
       }

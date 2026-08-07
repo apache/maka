@@ -522,6 +522,37 @@ test('a joining Client receives an immutable transcript and absolute overlapping
   coordinator.close();
 });
 
+test('a joining Client receives live assistant text that has not reached durable storage', async () => {
+  const durable = assistantMessage('chunk-1');
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    async () => [durable],
+  );
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
+  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  const snapshot = await coordinator.handlers['session.transcript.query'](
+    { kind: 'start', subscriptionId: opened.subscriptionId },
+    connectionContext('connection-1'),
+  );
+  assert.equal(snapshot.ok, true);
+  if (!snapshot.ok) assert.fail('expected the transcript snapshot');
+  assert.equal(snapshot.result.kind, 'chunk');
+  if (snapshot.result.kind !== 'chunk') assert.fail('expected a transcript chunk');
+  assert.deepEqual(
+    JSON.parse(Buffer.from(snapshot.result.data, 'base64').toString('utf8')),
+    assistantMessage('chunk-1chunk-2'),
+  );
+  coordinator.close();
+});
+
 test('transcript snapshots chunk one large message and remain subscription-owned', async () => {
   const message = assistantMessage('界'.repeat(20_000));
   const coordinator = new SessionContinuityCoordinator(
