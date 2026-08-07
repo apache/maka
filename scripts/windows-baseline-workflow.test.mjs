@@ -7,6 +7,19 @@ import { fileURLToPath } from 'node:url';
 const workflowUrl = new URL('../.github/workflows/windows-baseline.yml', import.meta.url);
 const processIdentityScriptUrl = new URL('./windows-process-identity.ps1', import.meta.url);
 
+function resolvePowerShellExecutable() {
+  for (const executable of ['pwsh.exe', 'powershell.exe']) {
+    const probe = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
+      encoding: 'utf8',
+    });
+    if (probe.status === 0) return executable;
+    if (probe.error?.code !== 'ENOENT') {
+      assert.fail(probe.error?.message || probe.stderr || probe.stdout);
+    }
+  }
+  assert.fail('Neither pwsh.exe nor powershell.exe is available');
+}
+
 test('Windows baseline workflow keeps its non-blocking evidence contract', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
@@ -76,7 +89,7 @@ test('Windows process identity matches a non-empty JSON baseline to a live proce
       $captured = [pscustomobject]@{
         Processes = @([pscustomobject]@{
           ProcessId = 4242
-          CreationDate = [DateTimeOffset]::Parse('2026-08-05T08:09:10.1234567+08:00')
+          CreationDate = [DateTimeOffset]::Parse('2026-08-05T08:09:10.1234567+08:00').ToUniversalTime().ToString('o')
         })
       } | ConvertTo-Json -Depth 3 | ConvertFrom-Json
       $live = [pscustomobject]@{
@@ -87,8 +100,12 @@ test('Windows process identity matches a non-empty JSON baseline to a live proce
         exit 1
       }
     `;
-  const result = spawnSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', fixture], {
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const result = spawnSync(
+    resolvePowerShellExecutable(),
+    ['-NoProfile', '-NonInteractive', '-Command', fixture],
+    {
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });
