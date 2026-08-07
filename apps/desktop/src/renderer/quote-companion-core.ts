@@ -13,6 +13,7 @@ import type {
   SessionSummary,
   StoredMessage,
   TurnRecord,
+  UiLocale,
 } from '@maka/core';
 import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import {
@@ -23,6 +24,7 @@ import {
   startSessionCopyAttempt,
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
+import { sessionEventErrorMessage } from './model-connection-errors.js';
 
 /** `sessions.send` resolves (does not throw) with this shape when the run was
  *  not actually started — e.g. an unresolved `/skill:...` invocation. */
@@ -310,6 +312,47 @@ export async function performCompanionTurn(
 
 export function isCompanionTurnTerminal(event: SessionEvent): boolean {
   return event.type === 'error' || event.type === 'abort' || event.type === 'complete';
+}
+
+export type CompanionRunEventEffect =
+  | { kind: 'ignore' }
+  | {
+      kind: 'active';
+      terminal: boolean;
+      /** Undefined keeps the existing error, null clears it. */
+      error?: string | null;
+    };
+
+/**
+ * Side-chat subscriptions can outlive a turn long enough to receive its final
+ * event after the next turn starts. Only the currently armed turn may mutate
+ * the live projection, error banner, or settlement state.
+ */
+export function companionRunEventEffect(
+  event: SessionEvent,
+  activeTurnId: string | null,
+  stopRequested: boolean,
+  locale: UiLocale,
+): CompanionRunEventEffect {
+  if (!event.turnId || event.turnId !== activeTurnId) return { kind: 'ignore' };
+
+  if (event.type === 'error') {
+    return {
+      kind: 'active',
+      terminal: true,
+      error: stopRequested ? null : sessionEventErrorMessage(event, locale),
+    };
+  }
+  if (
+    event.type === 'abort' ||
+    (event.type === 'complete' && event.stopReason === 'user_stop')
+  ) {
+    return { kind: 'active', terminal: true, error: null };
+  }
+  return {
+    kind: 'active',
+    terminal: isCompanionTurnTerminal(event),
+  };
 }
 
 /**

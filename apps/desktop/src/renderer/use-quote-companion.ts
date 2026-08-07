@@ -26,9 +26,9 @@ import {
   applyCompanionInteractionEvent,
   cleanupCompanionCopy,
   createCompanionDismissalGuard,
+  companionRunEventEffect,
   deriveCompanionComposerState,
   ensureCompanionFork,
-  isCompanionTurnTerminal,
   performCompanionTurn,
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
@@ -136,6 +136,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   sourceSessionIdRef.current = sourceSession?.id;
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
   const stopRequestedRef = useRef(false);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const turnInFlightRef = useRef(false);
+  const settlingTurnIdsRef = useRef<Set<string>>(new Set());
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
   const localeRef = useRef(locale);
@@ -174,25 +177,25 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       .then(({ messages }) => {
         if (mountedRef.current) setAllMessages(messages);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (mountedRef.current) setError(copyRef.current.errors.settlementFailed);
+      });
     unsubscribeRef.current = window.maka.sessions.subscribeEvents(forkId, (event: SessionEvent) => {
-      if (event.turnId && !ownTurnIdsRef.current.has(event.turnId)) {
-        ownTurnIdsRef.current.add(event.turnId);
-        setOwnTurnTick((tick) => tick + 1);
-      }
+      const effect = companionRunEventEffect(
+        event,
+        activeTurnIdRef.current,
+        stopRequestedRef.current,
+        localeRef.current,
+      );
+      if (effect.kind === 'ignore') return;
+
       // Interaction queue (so a boundary expansion surfaces) + live stream.
       setInteractions((current) => applyCompanionInteractionEvent(current, forkId, event));
       setLiveTurn((prev) => applyLiveTurnEvent(prev, event, localeRef.current));
-      if (event.type === 'error' && !stopRequestedRef.current) {
-        setError(copyRef.current.errors.runError);
-      }
-      if (
-        event.type === 'abort' ||
-        (event.type === 'complete' && event.stopReason === 'user_stop')
-      ) {
-        setError(null);
-      }
-      if (isCompanionTurnTerminal(event)) {
+      if (effect.error !== undefined) setError(effect.error);
+      if (effect.terminal && event.turnId && !settlingTurnIdsRef.current.has(event.turnId)) {
+        const settledTurnId = event.turnId;
+        settlingTurnIdsRef.current.add(settledTurnId);
         // Settlement: wait for the assistant message to persist before handing
         // off from the live projection, then reconcile (shared with the main chat)
         // so the finished exchange never flickers away.
@@ -200,15 +203,26 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           ...(requiredAssistantMessageId(liveTurnRef.current)
             ? { requiredAssistantMessageId: requiredAssistantMessageId(liveTurnRef.current) }
             : {}),
-        })
+          })
           .then(({ messages: next }) => {
-            if (!mountedRef.current) return;
+            if (!mountedRef.current || activeTurnIdRef.current !== settledTurnId) return;
             setAllMessages(next);
             setLiveTurn((prev) => (prev ? reconcileTerminalLiveTurn(prev, next) : prev));
+            activeTurnIdRef.current = null;
+            turnInFlightRef.current = false;
+            stopRequestedRef.current = false;
             setTurnInFlight(false);
           })
           .catch(() => {
-            if (mountedRef.current) setTurnInFlight(false);
+            if (!mountedRef.current || activeTurnIdRef.current !== settledTurnId) return;
+            activeTurnIdRef.current = null;
+            turnInFlightRef.current = false;
+            stopRequestedRef.current = false;
+            setTurnInFlight(false);
+            setError((current) => current ?? copyRef.current.errors.settlementFailed);
+          })
+          .finally(() => {
+            settlingTurnIdsRef.current.delete(settledTurnId);
           });
       }
     });
@@ -314,13 +328,19 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       attachmentItems?: RendererIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
-      if (!trimmed || turnInFlight || !sourceSession) return false;
+      if (!trimmed || turnInFlightRef.current || !sourceSession) return false;
+      // Close the same-frame double-submit window before the first await. The
+      // visible in-flight state still begins only when the run is armed.
+      turnInFlightRef.current = true;
       setError(null);
       const turnId = crypto.randomUUID();
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
       const fork = await ensureFork(`${copyRef.current.namePrefix}${label}`);
-      if (fork.status !== 'ready') return false;
+      if (fork.status !== 'ready') {
+        turnInFlightRef.current = false;
+        return false;
+      }
       const result = await performCompanionTurn({
         api: window.maka.sessions,
         sourceSession,
@@ -341,6 +361,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // Arm the optimistic live turn right before the send.
         onBeforeSend: () => {
           stopRequestedRef.current = false;
+          activeTurnIdRef.current = turnId;
+          turnInFlightRef.current = true;
           setTurnInFlight(true);
           setLiveTurn(armLiveTurn(turnId));
           ownTurnIdsRef.current.add(turnId);
@@ -377,14 +399,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           send_rejected: errors.sendRejected,
         };
         setError(byCode[result.code]);
+        activeTurnIdRef.current = null;
+        turnInFlightRef.current = false;
         setTurnInFlight(false);
         setLiveTurn(undefined);
       }
       // 'disposed' → the panel unmounted mid-create; nothing to update.
+      turnInFlightRef.current = false;
       return false;
     },
     [
-      turnInFlight,
       sourceSession,
       panelId,
       pendingQuotes,
@@ -448,15 +472,27 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const id = companionIdRef.current;
       if (!id || turnInFlight || regeneratePendingTurnId) return false;
       setRegeneratePendingTurnId(turnId);
+      const regenerationTurnId = crypto.randomUUID();
       stopRequestedRef.current = false;
+      activeTurnIdRef.current = regenerationTurnId;
+      turnInFlightRef.current = true;
       setTurnInFlight(true);
       setError(null);
+      setLiveTurn(armLiveTurn(regenerationTurnId));
+      ownTurnIdsRef.current.add(regenerationTurnId);
+      setOwnTurnTick((tick) => tick + 1);
       try {
-        await window.maka.sessions.regenerateTurn(id, { sourceTurnId: turnId });
+        await window.maka.sessions.regenerateTurn(id, {
+          sourceTurnId: turnId,
+          turnId: regenerationTurnId,
+        });
         return true;
       } catch {
         if (mountedRef.current) {
+          activeTurnIdRef.current = null;
+          turnInFlightRef.current = false;
           setTurnInFlight(false);
+          setLiveTurn(undefined);
           setError(copyRef.current.errors.sendFailed);
         }
         return false;

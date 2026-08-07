@@ -17,6 +17,7 @@ import {
   applyCompanionInteractionEvent,
   cleanupCompanionCopy,
   createCompanionDismissalGuard,
+  companionRunEventEffect,
   deriveCompanionComposerState,
   isCompanionTurnTerminal,
   latestSettledTurnId,
@@ -483,6 +484,97 @@ describe('isCompanionTurnTerminal', () => {
       true,
     );
     assert.equal(isCompanionTurnTerminal({ type: 'text_delta' } as SessionEvent), false);
+  });
+});
+
+describe('companionRunEventEffect', () => {
+  const errorEvent = (
+    turnId: string,
+    reason: string | undefined,
+    message = 'Provider failed',
+  ): SessionEvent =>
+    ({
+      type: 'error',
+      id: `error-${turnId}`,
+      turnId,
+      ts: 1,
+      recoverable: false,
+      ...(reason ? { reason } : {}),
+      message,
+    }) as SessionEvent;
+
+  it('uses the main-chat localized error classification for the active turn', () => {
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('active', 'network'), 'active', false, 'zh'),
+      {
+        kind: 'active',
+        terminal: true,
+        error: '网络错误',
+      },
+    );
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('active', 'auth'), 'active', false, 'en'),
+      {
+        kind: 'active',
+        terminal: true,
+        error: 'Authentication failed',
+      },
+    );
+  });
+
+  it('ignores a late error from an older turn', () => {
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('old-turn', 'network'), 'new-turn', false, 'zh'),
+      { kind: 'ignore' },
+    );
+  });
+
+  it('suppresses a late error after Stop while still settling the active turn', () => {
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('active', 'network'), 'active', true, 'zh'),
+      {
+        kind: 'active',
+        terminal: true,
+        error: null,
+      },
+    );
+  });
+
+  it('keeps unknown provider text behind the safe localized fallback', () => {
+    const effect = companionRunEventEffect(
+      errorEvent('active', 'future_provider_failure', 'token=provider-secret'),
+      'active',
+      false,
+      'zh',
+    );
+    assert.deepEqual(effect, {
+      kind: 'active',
+      terminal: true,
+      error: '对话运行失败，请稍后重试。',
+    });
+    assert.equal(JSON.stringify(effect).includes('provider-secret'), false);
+  });
+
+  it('clears an earlier error for user-stop terminal events', () => {
+    assert.deepEqual(
+      companionRunEventEffect(
+        {
+          type: 'complete',
+          id: 'complete-stop',
+          turnId: 'active',
+          ts: 2,
+          stopReason: 'user_stop',
+        },
+        'active',
+        true,
+        'zh',
+      ),
+      {
+        kind: 'active',
+        terminal: true,
+        error: null,
+      },
+    );
   });
 });
 

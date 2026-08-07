@@ -532,6 +532,58 @@ test('side chat inherits permissions and steers an active turn without losing th
     .toBe('bypass');
 });
 
+test('side chat classifies failures, survives collapse, retries, and closes during a failing turn', async ({
+  window: page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
+  await mainComposer.fill('side failure recovery source');
+  await mainComposer.press('Enter');
+  await expect(
+    page.getByText(/Fake backend received: side failure recovery source/),
+  ).toBeVisible();
+  await waitForSourceSessionToSettle(page);
+
+  await openSideConversationFromLauncher(page);
+  const panel = page.locator('.maka-quote-companion');
+  const sideComposer = panel.locator(COMPOSER_INPUT);
+  const rightPanel = page.locator('[data-maka-contract="session-workbar-right"]');
+
+  await sideComposer.fill('__e2e_error__:network');
+  await sideComposer.press('Enter');
+  await expect(panel.getByRole('button', { name: '停止' })).toBeVisible();
+
+  await page.getByRole('button', { name: '收起会话工作栏' }).click();
+  await expect(rightPanel).toBeHidden();
+  await page.getByRole('button', { name: '展开会话工作栏' }).click();
+  await expect(panel).toBeVisible();
+  await expect(panel.locator('.maka-quote-companion-error')).toHaveText('网络错误');
+  await expect(panel.getByRole('button', { name: '停止' })).toHaveCount(0);
+
+  await sideComposer.fill('retry after deterministic network failure');
+  await sideComposer.press('Enter');
+  await expect(panel.locator('.maka-quote-companion-error')).toHaveCount(0);
+  await expect(
+    panel.getByText(/Fake backend received: retry after deterministic network failure/),
+  ).toBeVisible();
+
+  await sideComposer.fill('__e2e_error__:auth');
+  await sideComposer.press('Enter');
+  const activeSideTab = page.locator(
+    '.maka-workbar-tab[data-running][data-workbar-tab-id^="side-chat:"]',
+  );
+  await expect(activeSideTab).toBeVisible();
+  await activeSideTab.locator('.maka-workbar-tab-close').click();
+  await expect(page.getByRole('dialog', { name: '关闭侧边对话？' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: '关闭侧边对话' }).click();
+  await expect(panel).toBeHidden();
+  await expect
+    .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
+    .toBe(1);
+  await page.waitForTimeout(350);
+  await expect(page.getByText('鉴权失败')).toHaveCount(0);
+});
+
 test('side conversation survives workbar collapse and launcher navigation with its draft', async ({
   window: page,
 }) => {

@@ -227,12 +227,12 @@ export interface DesktopConversationCopy {
     errors: {
       /** Reading the source boundary or creating the companion fork failed. */
       forkSetupFailed: string;
-      /** The companion run reported an error event. */
-      runError: string;
       /** `sessions.send` was rejected without throwing (e.g. an unresolved skill). */
       sendRejected: string;
       /** `sessions.send` threw / the turn could not be started. */
       sendFailed: string;
+      /** The run ended but the persisted transcript could not be refreshed. */
+      settlementFailed: string;
       /** Responding to a permission / question prompt failed. */
       respondFailed: string;
     };
@@ -494,9 +494,9 @@ const COPY = {
       },
       errors: {
         forkSetupFailed: '无法创建追问会话，请稍后重试。',
-        runError: '追问出错了，请重试。',
         sendRejected: '追问未能开始，请稍后重试。',
         sendFailed: '追问失败，请稍后重试。',
+        settlementFailed: '对话已结束，但消息加载失败。请重试或重新打开侧边对话。',
         respondFailed: '响应失败，请稍后重试。',
       },
     },
@@ -685,9 +685,9 @@ const COPY = {
       },
       errors: {
         forkSetupFailed: 'Could not create the companion conversation. Please try again.',
-        runError: 'The companion run errored. Please try again.',
         sendRejected: 'The companion could not start. Please try again.',
         sendFailed: 'The companion request failed. Please try again.',
+        settlementFailed: 'The run ended, but its messages could not be loaded. Retry or reopen the side chat.',
         respondFailed: 'The response failed. Please try again.',
       },
     },
