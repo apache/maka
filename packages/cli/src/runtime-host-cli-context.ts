@@ -17,14 +17,32 @@ export interface RuntimeHostCliTarget {
   readonly model: string;
 }
 
-export async function connectRuntimeHostCli(input: {
-  readonly rootPath: string;
-  readonly surface: ClientSurface;
-}): Promise<RuntimeHostCliConnectionContext> {
-  const connected = await connectOrSpawnRuntimeHost({
+interface RuntimeHostCliContextDeps {
+  readonly connectOrSpawn: typeof connectOrSpawnRuntimeHost;
+  readonly readConnectionCatalog: typeof readRuntimeHostConnectionCatalog;
+  readonly executionCandidateEntrypoint: URL;
+}
+
+export async function connectRuntimeHostCli(
+  input: {
+    readonly rootPath: string;
+    readonly surface: ClientSurface;
+  },
+  overrides: Partial<RuntimeHostCliContextDeps> = {},
+): Promise<RuntimeHostCliConnectionContext> {
+  const deps: RuntimeHostCliContextDeps = {
+    connectOrSpawn: connectOrSpawnRuntimeHost,
+    readConnectionCatalog: readRuntimeHostConnectionCatalog,
+    executionCandidateEntrypoint: new URL(
+      import.meta.resolve('@maka/runtime-host/execution-candidate-main'),
+    ),
+    ...overrides,
+  };
+  const connected = await deps.connectOrSpawn({
     rootPath: input.rootPath,
     surface: input.surface,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+    candidateEntrypoint: deps.executionCandidateEntrypoint,
   });
   if (connected.kind === 'incompatible') {
     throw new Error(
@@ -39,7 +57,7 @@ export async function connectRuntimeHostCli(input: {
     await waitForReady(connection);
     return {
       connection,
-      catalog: await readRuntimeHostConnectionCatalog(connection),
+      catalog: await deps.readConnectionCatalog(connection),
       close: () => connection.close(),
     };
   } catch (error) {
