@@ -189,6 +189,16 @@ export type ConnectionEffectCompletionResult =
       readonly changed: readonly ConnectionEffectChangedDomain[];
     };
 
+export interface FinalizeConnectionOnboardingInput {
+  readonly connectionId: string;
+  readonly enabledModelIds: readonly string[];
+  readonly discovery: ConnectionModelDiscoveryResult;
+}
+
+export type FinalizeConnectionOnboardingResult =
+  | { readonly kind: 'committed'; readonly snapshot: ConnectionCatalogSnapshot }
+  | { readonly kind: 'connection_not_found' };
+
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'disabled' }
@@ -225,6 +235,9 @@ export interface RuntimePolicyOperationCoordinator {
     ticket: ModelFetchTicket,
     result: ConnectionModelDiscoveryResult,
   ): Promise<ConnectionEffectCompletionResult>;
+  finalizeConnectionOnboarding(
+    input: FinalizeConnectionOnboardingInput,
+  ): Promise<FinalizeConnectionOnboardingResult>;
   beginConnectionTest(
     connectionId: string,
     modelId: string | null,

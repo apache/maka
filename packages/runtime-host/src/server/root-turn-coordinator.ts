@@ -1663,6 +1663,7 @@ export class RootTurnCoordinator {
       const execution = {
         kind: 'external_message' as const,
         inputDigest: hostedExternalInputDigest(content, skillIds),
+        ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
       };
       return this.startRootMessage(
         {
@@ -1687,7 +1688,10 @@ export class RootTurnCoordinator {
       {
         sessionId: input.sessionId,
         turnId: input.turnId,
-        execution: { kind: 'external_message' },
+        execution: {
+          kind: 'external_message',
+          ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+        },
         ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
         archivedMessage: 'Cannot start a new Turn in an archived Session',
         content,
@@ -2661,6 +2665,10 @@ export class RootTurnCoordinator {
                     ...(input.turnOrchestration
                       ? { turnOrchestration: input.turnOrchestration }
                       : {}),
+                    ...(active.descriptor.kind === 'external_message' &&
+                    active.descriptor.maxSteps !== undefined
+                      ? { maxSteps: active.descriptor.maxSteps }
+                      : {}),
                     ...(messageOrigin ? { origin: messageOrigin } : {}),
                   },
                   {
@@ -3387,6 +3395,10 @@ function activationInputForAdmission(admission: RootTurnAdmission): RootTurnActi
     content: normalizeMessageContent(admission.normalizedInput),
     ...(admission.turnOrchestration
       ? { turnOrchestration: { ...admission.turnOrchestration } }
+      : {}),
+    ...(admission.execution.kind === 'external_message' &&
+    admission.execution.maxSteps !== undefined
+      ? { maxSteps: admission.execution.maxSteps }
       : {}),
   };
 }

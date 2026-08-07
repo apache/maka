@@ -45,14 +45,14 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // The wire version remains v0 before the first release. This independent epoch
 // lets a new Client retire a stale same-version Host whose closed schema is no
 // longer safe to use.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 4 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 5 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
 // as Session continuity retain their own limits.
 export const RUNTIME_HOST_MAX_FRAME_BYTES = 96 * 1024;
 
-export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'inspect';
+export type ClientSurface = 'desktop' | 'tui' | 'run' | 'activation' | 'bot' | 'inspect';
 
 export interface ProtocolRange {
   min: number;
@@ -325,6 +325,7 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'desktop' ||
     value === 'tui' ||
     value === 'run' ||
+    value === 'activation' ||
     value === 'bot' ||
     value === 'inspect'
   )

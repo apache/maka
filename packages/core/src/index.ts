@@ -1490,21 +1490,6 @@ export {
   sanitizeOnboardingMilestones,
 } from './onboarding.js';
 
-// bootstrap-connections.ts
-export type {
-  BootstrapConnectionSeed,
-  BootstrapEnv,
-} from './bootstrap-connections.js';
-export {
-  OPENCODE_FREE_BOOTSTRAP_VERSION,
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
-  OPENCODE_FREE_DEFAULT_MODEL,
-  OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
-  defaultEnabledModelIdsWhenOmitted,
-  resolveBootstrapConnections,
-  resolveOpenCodeFreeBootstrapMigration,
-} from './bootstrap-connections.js';
-
 // model-catalog.ts
 export type {
   BuildModelCatalogInput,

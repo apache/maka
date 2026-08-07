@@ -50,7 +50,10 @@ export type RuntimePolicyOperationKey = Extract<
 >;
 export type ConnectionEffectOperationKey = Extract<
   OperationKey,
-  'connection.models.fetch' | 'connection.test.run'
+  | 'connection.models.fetch'
+  | 'connection.test.run'
+  | 'connection.onboarding.verify'
+  | 'connection.onboarding.save'
 >;
 export type MessageOperationKey = Extract<
   OperationKey,

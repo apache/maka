@@ -75,7 +75,9 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
       { itemId: 'entrypoints', title: 'Map entrypoints', status: 'completed' },
     ],
     reportSections: [{ key: 'conclusion', status: 'completed' }],
-    recentInspectedRefs: [{ kind: 'file', locator: 'apps/desktop/src/main/boot.ts' }],
+    recentInspectedRefs: [
+      { kind: 'file', locator: 'apps/desktop/src/main/runtime-host-boot.ts' },
+    ],
     workerRunIds: ['run-1'],
     blockers: [],
     reportArtifactId: 'artifact-1',
@@ -435,7 +437,7 @@ function hostedResearch() {
     recentInspectedRefs: [
       {
         kind: 'file' as const,
-        locator: 'apps/desktop/src/main/boot.ts',
+        locator: 'apps/desktop/src/main/runtime-host-boot.ts',
         label: null,
       },
     ],

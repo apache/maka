@@ -61,6 +61,8 @@ import {
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
+  type FinalizeConnectionOnboardingInput,
+  type FinalizeConnectionOnboardingResult,
   type ConnectionTestTicket,
   type InteractiveOAuthLoginCompletionResult,
   type InteractiveOAuthLoginProvider,
@@ -732,6 +734,28 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'committed' as const, snapshot });
       }),
     );
+  }
+
+  finalizeConnectionOnboarding(
+    input: FinalizeConnectionOnboardingInput,
+  ): Promise<FinalizeConnectionOnboardingResult> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(input.connectionId),
+      );
+      const catalog = await this.catalog.read(root);
+      if (!findConnection(catalog, { connectionId })) {
+        return deepFreeze({ kind: 'connection_not_found' as const });
+      }
+      const snapshot = await this.catalog.writeOnboardingResult(
+        root,
+        catalog,
+        connectionId,
+        input.enabledModelIds,
+        input.discovery,
+      );
+      return deepFreeze({ kind: 'committed' as const, snapshot });
+    });
   }
 
   beginConnectionTest(

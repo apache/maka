@@ -375,6 +375,12 @@ export type {
 } from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
 export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
+export {
+  buildExploreAgentTool,
+  runReadOnlyExplore,
+  EXPLORE_AGENT_TOOL_NAME,
+} from './explore-agent-tool.js';
+export type { ExploreAgentEvent, ExploreAgentResult } from './explore-agent-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
 export type { PlanToolResult } from './plan-tools.js';
 export {

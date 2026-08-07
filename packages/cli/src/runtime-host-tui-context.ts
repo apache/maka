@@ -12,6 +12,10 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from './runtime-host-session-driver.js';
+import {
+  createRuntimeHostOnboardingSurface,
+  projectRuntimeHostModelChoices,
+} from './runtime-host-onboarding.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -26,6 +30,7 @@ export interface RuntimeHostTuiContext {
   readonly goalLifecycle: MakaPiTuiGoalLifecycle;
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   readonly recap: SessionRecapGenerator;
+  readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
   close(): Promise<void>;
 }
 
@@ -48,7 +53,7 @@ export async function createRuntimeHostTuiContext(
     const target = input.resumeSessionId
       ? await resolveResumeTarget(connection, catalog, input.resumeSessionId)
       : resolveTarget(catalog);
-    const modelChoices = projectModelChoices(catalog);
+    const modelChoices = projectRuntimeHostModelChoices(catalog);
     const driverInput: RuntimeHostMakaSessionDriverInput = {
       connection,
       cwd: input.cwd,
@@ -71,6 +76,7 @@ export async function createRuntimeHostTuiContext(
       goalLifecycle: createHostOwnedGoalLifecycle(),
       listSkills: (cwd) => listStablePresentedSkills(connection, cwd),
       recap: createRuntimeHostRecapGenerator(connection),
+      onboarding: createRuntimeHostOnboardingSurface(connection),
       close: () => connected.close(),
     };
   } catch (error) {
@@ -134,29 +140,6 @@ async function resolveResumeTarget(
     if (sessionConnection) return { connection: sessionConnection, model: session.model };
   }
   return resolveTarget(catalog);
-}
-
-function projectModelChoices(catalog: ConnectionCatalogSnapshot): ModelChoice[] {
-  const choices: ModelChoice[] = [];
-  for (const connection of catalog.connections) {
-    if (!connection.enabled) continue;
-    const modelsById = new Map(connection.models.map((model) => [model.id, model]));
-    const ids = new Set(connection.enabledModelIds);
-    if (catalog.defaultTarget?.connectionId === connection.connectionId) {
-      ids.add(catalog.defaultTarget.modelId);
-    }
-    for (const model of ids) {
-      choices.push({
-        connectionSlug: connection.slug,
-        connectionName: connection.name,
-        providerType: connection.providerType,
-        model,
-        isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
-        contextWindow: modelsById.get(model)?.contextWindow,
-      });
-    }
-  }
-  return choices;
 }
 
 function createHostOwnedGoalLifecycle(): MakaPiTuiGoalLifecycle {

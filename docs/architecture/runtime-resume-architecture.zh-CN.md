@@ -949,11 +949,11 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 
 ### Product wiring
 
-1. `apps/desktop/src/main/app-lifecycle.ts`：startup repair、auto-resume 和 shutdown。
-2. `apps/desktop/src/main/sessions-ipc-main.ts`：`sessions:resumeLatest`。
+1. `apps/desktop/src/main/runtime-host-boot.ts`：Runtime Host 启动、客户端投影和 shutdown。
+2. `apps/desktop/src/main/runtime-host-session-execution-ipc-main.ts`：`sessions:resumeLatest`。
 3. `apps/desktop/src/renderer/use-shell-resume.ts`：中断横幅的手动入口。
-4. `packages/cli/src/runtime-bootstrap.ts`：CLI store、inspector 与 shutdown owner。
-5. `packages/cli/src/session-driver.ts`：TUI `/resume` 的 plan/execute 路径。
+4. `packages/cli/src/runtime-host-cli-context.ts`：CLI Runtime Host 连接与上下文。
+5. `packages/cli/src/runtime-host-session-driver.ts`：TUI `/resume` 的 plan/execute 路径。
 
 ### Contract tests
 
@@ -966,7 +966,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 7. `packages/runtime/src/__tests__/recovery-authority-equivalence.test.ts`
 8. `packages/storage/src/__tests__/recovery-persistence-authority.test.ts`
 9. `packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts`
-10. `apps/desktop/src/main/__tests__/runtime-resume-routing-contract.test.ts`
+10. `apps/desktop/src/main/__tests__/runtime-host-session-execution-ipc-main.test.ts`
 
 ## 延伸阅读
 

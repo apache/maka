@@ -1,4 +1,4 @@
-import { app, ipcMain, powerSaveBlocker, shell } from "electron";
+import { app, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import {
@@ -33,10 +33,14 @@ import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
 import { readFileCapped } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { releaseBrowserSession } from "./browser/session.js";
+import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
+import { createFileCredentialStore } from "./credential-store.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
+import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
+import { resolveE2eFixture, seedE2eFixture } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
 import { createMainWindowController } from "./main-window.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
@@ -91,13 +95,46 @@ import {
   registerSettingsBotsIpc,
   type SettingsBotsIpcHandle,
 } from "./settings-bots-ipc-main.js";
+import {
+  isComputerUseRealModelE2e,
+  isE2e,
+  isIsolatedE2e,
+} from "./startup-context.js";
+import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
+import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 
 await resolveShellEnv();
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
-const workspaceRoot = join(userDataDir, "workspaces", "default");
+const e2eFixture = resolveDesktopE2eFixture();
+const useBotOnboardingFixture =
+  e2eFixture?.scenario === "settings-bots" ||
+  e2eFixture?.scenario === "settings-bots-onboarding";
+const workspaceRoot = join(
+  userDataDir,
+  "workspaces",
+  e2eFixture?.workspaceName ?? "default",
+);
+const credentialStore = createFileCredentialStore(workspaceRoot);
+if (e2eFixture) {
+  console.log(
+    `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
+  );
+  await seedE2eFixture({ workspaceRoot, fixture: e2eFixture, credentialStore });
+} else {
+  const storageRoot = await startupStep(
+    "storage root",
+    resolveDesktopStorageRoot(workspaceRoot, {
+      confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
+    }),
+  );
+  if (!storageRoot) {
+    app.exit(0);
+    await new Promise<never>(() => {});
+  }
+}
 const settingsStore = createSettingsStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot, {
   onLegacyImportFailure: (error) =>
@@ -123,20 +160,24 @@ function ensureMcpReady(): Promise<void> {
 }
 const planReminderStore = createSqlitePlanReminderStore(workspaceRoot);
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
+const startHidden =
+  (Boolean(e2eFixture) || isIsolatedE2e) &&
+  process.env.MAKA_E2E_SHOW_WINDOW !== "1";
 let onMainWindowClose = (): void => {};
 const mainWindowController = createMainWindowController({
   workspaceRoot,
-  e2eFixture: null,
+  e2eFixture,
   settingsStore,
-  startHidden: false,
+  startHidden,
   onClose: () => onMainWindowClose(),
 });
 const native = assembleDesktopNativeCapabilities({
-  isComputerUseRealModelE2e: false,
+  isComputerUseRealModelE2e,
   settings: settingsStore,
   keepSystemAwake,
   mainWindow: mainWindowController,
 });
+const riveWorkflowTool = buildRiveWorkflowTool();
 const completeComputerUseTurn = (sessionId: string): void => {
   native.computerUseOverlay.clearForSession(sessionId);
   native.computerUsePip.complete(sessionId);
@@ -170,8 +211,10 @@ const projectRoot = createProjectRootController({
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
 const attachmentApprovals = createAttachmentApprovalRegistry();
-const oauthPresentation = new RuntimeHostOAuthPresentation((url) =>
-  shell.openExternal(url),
+const oauthPresentation = new RuntimeHostOAuthPresentation(
+  e2eFixture?.scenario === "oauth-relogin"
+    ? async () => undefined
+    : (url) => shell.openExternal(url),
 );
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
@@ -244,7 +287,7 @@ registerNotificationsIpc({
   ipcMain,
   settingsStore,
   mainWindowController,
-  e2e: false,
+  e2e: isE2e,
 });
 
 owner = await startRuntimeHostDesktopOwner(
@@ -263,17 +306,27 @@ owner = await startRuntimeHostDesktopOwner(
       releaseBrowserSession,
       computerUseTools: native.computerUseTools,
       additionalGroups: () => {
-        const tools = buildMcpTools(mcpManager);
-        return tools.length === 0
-          ? []
-          : [
-              {
-                offerId: "desktop_mcp",
-                label: "MCP",
-                description: "Use MCP tools connected by this Desktop client.",
-                tools,
-              },
-            ];
+        const mcpTools = buildMcpTools(mcpManager);
+        return [
+          {
+            offerId: "desktop_rive",
+            label: "Rive",
+            description:
+              "Use durable Rive workflows through this Desktop client.",
+            tools: [riveWorkflowTool],
+          },
+          ...(mcpTools.length === 0
+            ? []
+            : [
+                {
+                  offerId: "desktop_mcp",
+                  label: "MCP",
+                  description:
+                    "Use MCP tools connected by this Desktop client.",
+                  tools: mcpTools,
+                },
+              ]),
+        ];
       },
       oauthPresentation,
       releaseComputerUseSession,
@@ -408,11 +461,19 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     settingsStore,
     botRegistry,
-    applySettingsRuntimeEffects: async (settings) => {
-      await botRegistry.applySettings(settings.botChat);
-    },
+    applySettingsRuntimeEffects: useBotOnboardingFixture
+      ? async () => undefined
+      : async (settings) => {
+          await botRegistry.applySettings(settings.botChat);
+        },
     productVersion: app.getVersion(),
     openExternal: (url) => shell.openExternal(url),
+    ...(useBotOnboardingFixture
+      ? {
+          botOnboardingAdapters: createE2eFixtureBotOnboardingAdapters(),
+          botOnboardingReadChannelStatus: () => ({ running: true }),
+        }
+      : {}),
   });
   settingsBotsIpc = candidateSettingsBotsIpc;
   registerRuntimeHostPermissionsIpc({
@@ -491,7 +552,7 @@ function registerHostClientIpc(
       getProjectRoot: resolveProjectRootForContext,
       workspaceRoot,
       buildInfo,
-      e2eFixture: null,
+      e2eFixture,
       projectManagement,
       updateService,
     },
@@ -615,7 +676,7 @@ function wireLifecycle(): void {
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
-    startHidden: false,
+    startHidden,
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
     onIconError: (error) =>
@@ -654,4 +715,53 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     if (result.status === "rejected")
       console.error("[runtime-host] shutdown failed:", result.reason);
   }
+}
+
+function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
+  try {
+    return resolveE2eFixture(
+      process.env.MAKA_E2E_FIXTURE,
+      app.isPackaged,
+      process.env.MAKA_E2E_FIXTURE_REDUCED_MOTION,
+      process.env.MAKA_E2E_FIXTURE_THEME,
+      process.env.MAKA_E2E_FIXTURE_LOCALE,
+      process.env.MAKA_E2E_FIXTURE_TIMEZONE,
+      process.env.MAKA_E2E_FIXTURE_PLATFORM,
+    );
+  } catch (error) {
+    if (!process.env.MAKA_E2E_FIXTURE) throw error;
+    console.error(
+      `[e2e-fixture] fatal: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1);
+  }
+}
+
+async function confirmDesktopStorageRootRepair(
+  workspaceRoot: string,
+): Promise<boolean> {
+  console.log(
+    "[storage-root] root-identity conflict; parking at repair dialog",
+  );
+  const isChinese =
+    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const { response } = await whileAwaitingPerson(
+    dialog.showMessageBox({
+      type: "warning",
+      title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
+      message: isChinese
+        ? "Maka 无法验证这个工作区。"
+        : "Maka cannot verify this workspace.",
+      detail: isChinese
+        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
+        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+      buttons: isChinese
+        ? ["修复工作区", "退出"]
+        : ["Repair Workspace", "Exit"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    }),
+  );
+  return response === 0;
 }

@@ -300,6 +300,76 @@ export class ConnectionCatalogDocumentOwner {
     );
   }
 
+  async writeOnboardingResult(
+    root: string,
+    current: ConnectionCatalogDocument,
+    connectionId: string,
+    rawEnabledModelIds: readonly string[],
+    rawResult: ConnectionModelDiscoveryResult,
+  ): Promise<ConnectionCatalogSnapshot> {
+    const index = findConnectionIndex(current, { connectionId });
+    const previous = current.connections[index];
+    if (!previous) {
+      throw codecError('invalid_document', 'Coordinator admitted an unknown connection');
+    }
+    const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
+    if (result.source !== 'fetched' || result.models.length === 0) {
+      throw codecError(
+        'invalid_connection_input',
+        'Onboarding requires a non-empty fetched model inventory',
+      );
+    }
+    const changes = decodeConnectionInput(() =>
+      normalizeConnectionCatalogEntryUpdateForProvider(
+        {
+          name: previous.name,
+          ...(previous.baseUrl ? { baseUrl: previous.baseUrl } : {}),
+          enabled: true,
+          enabledModelIds: rawEnabledModelIds,
+        },
+        previous.providerType,
+      ),
+    );
+    const available = new Set(result.models.map(({ id }) => id));
+    if (
+      changes.enabledModelIds.length === 0 ||
+      changes.enabledModelIds.some((modelId) => !available.has(modelId))
+    ) {
+      throw codecError(
+        'invalid_connection_input',
+        'Onboarding enabled models must come from the fetched inventory',
+      );
+    }
+    const finalized: ConnectionCatalogEntry = {
+      ...previous,
+      revision: nextRevision(previous.revision),
+      enabled: true,
+      enabledModelIds: changes.enabledModelIds,
+      models: result.models,
+      modelSource: result.source,
+      modelsFetchedAt: result.fetchedAt,
+    };
+    const defaultTarget =
+      current.defaultTarget === null
+        ? { connectionId, modelId: changes.enabledModelIds[0]! }
+        : current.defaultTarget.connectionId === connectionId &&
+            !changes.enabledModelIds.includes(current.defaultTarget.modelId)
+          ? { connectionId, modelId: changes.enabledModelIds[0]! }
+          : current.defaultTarget;
+    const testBasisChanged = !sameConnectionTestModelBasis(
+      connectionTestModelBasis(previous),
+      connectionTestModelBasis(finalized),
+    );
+    const { lastTest: _lastTest, ...finalizedWithoutLastTest } = finalized;
+    return this.writePatchedResult(
+      root,
+      current,
+      index,
+      testBasisChanged ? finalizedWithoutLastTest : finalized,
+      defaultTarget,
+    );
+  }
+
   async writeConnectionTestResult(
     root: string,
     current: ConnectionCatalogDocument,

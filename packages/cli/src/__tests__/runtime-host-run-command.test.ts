@@ -321,12 +321,24 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
-  test('fails explicitly instead of ignoring an unsupported Host step cap', () => {
+  test('applies the requested step cap through the Host turn', async () => {
     const fixture = runFixture({ maxSteps: 3 });
-    assert.throws(
-      () => fixture.context,
-      new Error('--max-steps is not available through the Runtime Host yet'),
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await collect(
+      fixture.context.runtime.sendMessage(session.id, {
+        turnId: 'turn-with-step-cap',
+        text: 'answer within the cap',
+      }),
     );
+
+    assert.deepEqual(fixture.preparedMaxSteps, [3]);
   });
 
   test('never selects a discovered model that the Host has not enabled', () => {
@@ -594,6 +606,7 @@ function runFixture(input: {
     (sessionId: string, turnId: string, messages: StoredMessage[]) => void
   >();
   let messageReads = 0;
+  const preparedMaxSteps: Array<number | undefined> = [];
   const driver = {
     createSession: async () => sessionSummary('session-created'),
     readMessages: async () => {
@@ -649,7 +662,11 @@ function runFixture(input: {
         messages: [],
       };
     },
-    preparePrompt: async (_prompt: string, options: { turnId?: string } = {}) => {
+    preparePrompt: async (
+      _prompt: string,
+      options: { turnId?: string; maxSteps?: number } = {},
+    ) => {
+      preparedMaxSteps.push(options.maxSteps);
       input.onPrepareStarted?.();
       await input.prepareGate;
       const events = input.turnEvents ?? eventsFor(options.turnId ?? 'turn-1', 'Host answer');
@@ -738,6 +755,7 @@ function runFixture(input: {
     switches,
     graphStops,
     exactTurnStops,
+    preparedMaxSteps,
     sandboxResponses,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
       for (const listener of pendingInteractionListeners) listener(structuredClone(pending));

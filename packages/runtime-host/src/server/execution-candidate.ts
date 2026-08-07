@@ -14,6 +14,7 @@ export type ExecutionRuntimeHostCandidateResult =
 
 export interface ExecutionRuntimeHostCandidateOptions extends RuntimeHostCandidateOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
+  readonly executionMode?: 'desktop_e2e';
   /** Packaged resource root containing bundled-git.json and the Git toolchain. */
   readonly bundledGitResourcesRoot?: string;
 }
@@ -41,6 +42,10 @@ export async function startExecutionRuntimeHostCandidate(
     compositionFactory: (context) =>
       createExecutionRuntimeHostComposition(context, {
         ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
+        ...(options.executionMode ? { executionMode: options.executionMode } : {}),
+        ...(options.legacyConfigurationRoot
+          ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
+          : {}),
       }),
   });
   return { kind: 'winner', host };

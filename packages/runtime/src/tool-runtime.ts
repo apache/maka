@@ -2156,10 +2156,9 @@ export class ToolRuntime {
       // unconditionally a few lines above, so that guard answers only an
       // embedder that builds its own context — never a production tool call.
       //
-      // This one does fire in production. The desktop app supplies both store
-      // callbacks unconditionally (`session-stream.ts`), but the CLI supplies
-      // them only on the `tui` surface (`runtime-bootstrap.ts`), so every
-      // non-TUI CLI surface reaches here for any call that is not a hosted run.
+      // This remains part of the embedding API. Runtime Host supplies the
+      // interaction capability for production clients, while an embedder can
+      // still construct ToolRuntime without one.
       throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
     const normalized = await racePromiseWithAbort(

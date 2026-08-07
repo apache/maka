@@ -5,7 +5,9 @@ import type {
   CredentialLocator,
   CredentialStatus,
   MutateRuntimePolicyResult,
+  RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
+import type { MakaTool } from '@maka/runtime';
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,
@@ -29,6 +31,7 @@ import {
   type RuntimePolicyMutateInput,
 } from '../protocol/index.js';
 import type { RuntimePolicyOperationHandlerMap } from './operation-dispatcher.js';
+import { buildHostAgentSettingsTools } from './agent-settings-tools.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 
 type StoreQueryOutcome<T> =
@@ -63,6 +66,7 @@ type StoreMutationOutcome<T> =
 
 /** Runtime Host control-plane projection over the authentic interactive policy stores. */
 export class HostRuntimePolicyCoordinator {
+  readonly modelTools: readonly MakaTool[];
   readonly handlers: RuntimePolicyOperationHandlerMap = {
     'runtime.policy.query': () => this.#queryPolicy(),
     'runtime.policy.mutate': (input) => this.#mutatePolicy(input),
@@ -84,6 +88,10 @@ export class HostRuntimePolicyCoordinator {
     private readonly onCommittedMutation: () => Promise<void> = async () => {},
   ) {
     this.#stores = authenticateRuntimePolicyStoresWriter(stores);
+    this.modelTools = buildHostAgentSettingsTools({
+      read: async () => requirePolicyQuery(await this.#queryPolicy()),
+      mutate: async (input) => requirePolicyMutation(await this.#mutatePolicy(input)),
+    });
   }
 
   async #queryPolicy(): Promise<OperationOutcome<'runtime.policy.query'>> {
@@ -336,6 +344,20 @@ function projectPolicyMutation(result: MutateRuntimePolicyResult) {
   return result.kind === 'committed'
     ? { kind: 'committed' as const, revision: result.snapshot.revision }
     : result;
+}
+
+function requirePolicyQuery(
+  outcome: OperationOutcome<'runtime.policy.query'>,
+): RuntimePolicySnapshot {
+  if (outcome.ok) return outcome.result;
+  throw new Error(`Runtime Policy query failed: ${outcome.error.message}`);
+}
+
+function requirePolicyMutation(
+  outcome: OperationOutcome<'runtime.policy.mutate'>,
+): Extract<OperationOutcome<'runtime.policy.mutate'>, { readonly ok: true }>['result'] {
+  if (outcome.ok) return outcome.result;
+  throw new Error(`Runtime Policy mutation failed: ${outcome.error.message}`);
 }
 
 function committedCatalogRevision(snapshot: ConnectionCatalogSnapshot) {

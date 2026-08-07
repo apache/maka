@@ -41,6 +41,7 @@ export interface MakaRunRuntime {
   ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
   setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;
+  resumeLatest?(sessionId: string): Promise<AsyncIterable<SessionEvent> | null>;
 }
 
 export interface MakaRunContext {
@@ -62,7 +63,7 @@ export interface MakaRunOutcome {
 }
 
 export interface MakaRunContextInput {
-  surface: 'run';
+  surface: 'run' | 'activation';
   workspaceRoot: string;
   cwd: string;
   requestedConnectionSlug?: string;

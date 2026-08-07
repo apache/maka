@@ -85,6 +85,8 @@ import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
+import { migrateLegacyRuntimePolicy } from './legacy-runtime-policy-migration.js';
+import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
@@ -130,6 +132,8 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
+  readonly executionMode?: 'desktop_e2e';
+  readonly legacyConfigurationRoot?: string;
 }
 
 export function runtimeHostFilesystemWorkerRuntime(versions: {
@@ -171,6 +175,17 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
+    await migrateLegacyRuntimePolicy({
+      workspaceRoot: context.owner.capability.canonicalPath,
+      ...(options.legacyConfigurationRoot
+        ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
+        : {}),
+      stores: runtimePolicyStores,
+    });
+    await ensureBootstrapRuntimePolicy({
+      workspaceRoot: context.owner.capability.canonicalPath,
+      stores: runtimePolicyStores,
+    });
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedAutomationStore = await openInteractiveAutomationAuthorityForWrite(
       context.owner.lease,
@@ -202,6 +217,14 @@ export async function createExecutionRuntimeHostComposition(
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
+    let applyRuntimePolicyMutationEffects = async (): Promise<void> => {
+      throw new Error('Runtime Policy mutation effects are not ready');
+    };
+    const runtimePolicy = new HostRuntimePolicyCoordinator(
+      runtimePolicyStores,
+      runtimePolicyActivation,
+      () => applyRuntimePolicyMutationEffects(),
+    );
     const sessionAdmission = new SessionAdmissionGate();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
@@ -298,6 +321,7 @@ export async function createExecutionRuntimeHostComposition(
     const hostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
+      ...runtimePolicy.modelTools,
     ];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
@@ -481,39 +505,41 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: context.acquireResidency,
     });
     backends.register('ai-sdk', (backendContext) =>
-      createHostAiSdkBackend({
-        context: backendContext,
-        runtimePolicy: runtimePolicyStores,
-        oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
-        skills,
-        memory: requireMemory(memory),
-        memoryExtraction,
-        taskLedger,
-        artifacts: openedArtifactStore,
-        executionArtifacts,
-        usage: openedUsageStores,
-        clientCapabilities: requireClientCapabilities(clientCapabilities),
-        automationTool: requireAutomationCoordinator(automations).modelTool,
-        planStore: openedPlanStore,
-        deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
-          backendContext.sessionId,
-        ),
-        goalTools: requireGoal(goal).tools,
-        builtinTools,
-        hostTools,
-        resolveRootTools: (sessionId) =>
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
-        parentAgentTools: childAgentTools.parentTools,
-        childTools: childAgentTools.childTools,
-        worktreePatchWriteBackAvailable: true,
-        childAgents: bindHostChildAgentBackend(
-          requireSessionManager(manager),
-          backendContext.sessionId,
-        ),
-        runtimeCommitSink: stores.runtimeEventStore,
-        requestDrain: context.requestDrain,
-      }),
+      options.executionMode === 'desktop_e2e'
+        ? new FakeBackend(backendContext)
+        : createHostAiSdkBackend({
+            context: backendContext,
+            runtimePolicy: runtimePolicyStores,
+            oauthCredentials,
+            claudeDeviceId: context.owner.capability.rootId,
+            skills,
+            memory: requireMemory(memory),
+            memoryExtraction,
+            taskLedger,
+            artifacts: openedArtifactStore,
+            executionArtifacts,
+            usage: openedUsageStores,
+            clientCapabilities: requireClientCapabilities(clientCapabilities),
+            automationTool: requireAutomationCoordinator(automations).modelTool,
+            planStore: openedPlanStore,
+            deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
+              backendContext.sessionId,
+            ),
+            goalTools: requireGoal(goal).tools,
+            builtinTools,
+            hostTools,
+            resolveRootTools: (sessionId) =>
+              requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+            parentAgentTools: childAgentTools.parentTools,
+            childTools: childAgentTools.childTools,
+            worktreePatchWriteBackAvailable: true,
+            childAgents: bindHostChildAgentBackend(
+              requireSessionManager(manager),
+              backendContext.sessionId,
+            ),
+            runtimeCommitSink: stores.runtimeEventStore,
+            requestDrain: context.requestDrain,
+          }),
     );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
@@ -730,6 +756,26 @@ export async function createExecutionRuntimeHostComposition(
         beginDrain();
         context.requestDrain();
       },
+      ...(options.executionMode === 'desktop_e2e'
+        ? {
+            startCodexAuthorization: async () => ({
+              deviceAuthId: 'desktop-e2e-device-authorization',
+              userCode: 'MAKA-E2E',
+              verificationUrl: 'https://auth.openai.com/codex/device',
+              expiresAt: Date.now() + 60_000,
+              intervalMs: 1,
+            }),
+            pollCodexAuthorization: async () => ({
+              authorizationCode: 'desktop-e2e-authorization-code',
+              codeVerifier: 'desktop-e2e-code-verifier',
+            }),
+            exchangeCodexCode: async () => ({
+              access_token: 'desktop-e2e-access-token',
+              refresh_token: 'desktop-e2e-refresh-token',
+              expires_at: Date.now() + 3_600_000,
+            }),
+          }
+        : {}),
     });
     const usagePricing = new HostUsagePricingCoordinator(
       openedUsageStores,
@@ -852,19 +898,15 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: context.acquireResidency,
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
     });
-    const runtimePolicy = new HostRuntimePolicyCoordinator(
-      runtimePolicyStores,
-      runtimePolicyActivation,
-      async () => {
-        try {
-          await requireMemory(memory).refreshAfterPolicyMutation();
-        } catch (error) {
-          context.requestDrain();
-          throw error;
-        }
-        registerBackendInvalidation();
-      },
-    );
+    applyRuntimePolicyMutationEffects = async () => {
+      try {
+        await requireMemory(memory).refreshAfterPolicyMutation();
+      } catch (error) {
+        context.requestDrain();
+        throw error;
+      }
+      registerBackendInvalidation();
+    };
     const connectionEffects = new HostConnectionEffectCoordinator({
       stores: runtimePolicyStores,
       activation: runtimePolicyActivation,

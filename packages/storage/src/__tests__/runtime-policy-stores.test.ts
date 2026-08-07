@@ -45,6 +45,40 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
+  test('commits an agent settings patch as one canonical policy revision', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const result = await stores.runtimePolicy.mutate({
+        expectedRevision: 0,
+        operation: {
+          kind: 'patch_agent_settings',
+          value: {
+            personalization: { displayName: 'Maka' },
+            memory: { agentReadEnabled: true },
+            privacy: { incognitoActive: true },
+            webSearch: { enabled: true },
+          },
+        },
+      });
+
+      assert.equal(result.kind, 'committed');
+      if (result.kind !== 'committed') return;
+      assert.equal(result.snapshot.revision, 1);
+      assert.deepEqual(result.snapshot.policy.personalization, {
+        displayName: 'Maka',
+        assistantTone: '',
+      });
+      assert.deepEqual(result.snapshot.policy.memory, {
+        enabled: true,
+        agentReadEnabled: true,
+      });
+      assert.equal(result.snapshot.policy.privacy.incognitoActive, true);
+      assert.deepEqual(result.snapshot.policy.webSearch, {
+        enabled: true,
+        defaultProvider: 'model',
+      });
+    });
+  });
+
   test('seeds the canonical inventory for fallback-only providers', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {

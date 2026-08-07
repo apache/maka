@@ -47,6 +47,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 5);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'agent.graph.operator.query',
       'agent.graph.query',
@@ -65,6 +66,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.catalog.set-default-target',
       'connection.catalog.update',
       'connection.models.fetch',
+      'connection.onboarding.save',
+      'connection.onboarding.verify',
       'connection.test.run',
       'context.compact',
       'context.diagnostics.query',
@@ -651,6 +654,24 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('accepts protocol v0 in handshakes and Host registration while rejecting negatives', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        kind: 'hello',
+        clientInstanceId: 'activation-client',
+        surface: 'activation',
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      }),
+      {
+        kind: 'hello',
+        clientInstanceId: 'activation-client',
+        surface: 'activation',
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      },
+    );
     const accepted = {
       kind: 'accepted' as const,
       hostEpoch: 'epoch-1',
@@ -931,6 +952,7 @@ describe('Runtime Host bootstrap protocol', () => {
           quotes,
         },
         turnOrchestration: { mode: 'swarm', source: 'host_api' } as const,
+        maxSteps: 4,
       },
     };
     const start = decodeClientFrame(JSON.parse(encodeProtocolFrame(startWire).toString('utf8')));
@@ -942,6 +964,7 @@ describe('Runtime Host bootstrap protocol', () => {
         turnId: 'turn-1',
         content: { text: 'model text', attachments: [attachment], quotes },
         turnOrchestration: { mode: 'swarm', source: 'host_api' },
+        maxSteps: 4,
       },
     });
     assert.notEqual(start.input.content.quotes, quotes);
@@ -970,6 +993,16 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    for (const maxSteps of [0, 1.5]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            ...startWire,
+            input: { ...startWire.input, maxSteps },
+          }),
+        isInvalidFrame,
+      );
+    }
     assert.throws(
       () =>
         decodeClientFrame({

@@ -28,6 +28,7 @@ export interface TurnStartInput {
   content: MessageContent;
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
+  maxSteps?: number;
 }
 
 export type { MessageContent };
@@ -268,7 +269,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['skillIds', 'turnOrchestration'],
+    ['skillIds', 'turnOrchestration', 'maxSteps'],
   );
   const skillIds = decodeSkillIds(record.skillIds);
   return {
@@ -279,7 +280,16 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
       : {}),
+    ...(record.maxSteps !== undefined
+      ? { maxSteps: requirePositiveSafeInteger(record.maxSteps, 'maxSteps') }
+      : {}),
   };
+}
+
+function requirePositiveSafeInteger(value: unknown, label: string): number {
+  const decoded = requireCount(value, label);
+  if (decoded === 0) throw invalidProtocolFrame(`Invalid ${label}`);
+  return decoded;
 }
 
 function decodeSkillIds(value: unknown): string[] {

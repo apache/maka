@@ -109,11 +109,10 @@ test('release tooling and the release config select the checks that cover them',
 });
 
 test('sandbox is flagged whenever the cli workspace runs in the closure', () => {
-  // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
-  // shell tools, so any change whose dependency closure selects packages/cli must
-  // provision the sandbox — not only direct cli/runtime edits.
+  // The Runtime Host CLI controls sandboxed shell resources, so any change whose
+  // dependency closure selects packages/cli must provision the sandbox.
   for (const path of [
-    'packages/cli/src/__tests__/runtime-bootstrap.test.ts',
+    'packages/cli/src/__tests__/runtime-host-session-driver.test.ts',
     'packages/runtime/src/shell-tools.ts',
     'packages/storage/src/session-store.ts',
     'packages/headless/src/cell-output.ts',

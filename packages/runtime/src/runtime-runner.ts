@@ -587,6 +587,7 @@ function snapshotInvocationRequest(
       ? { orchestration: cloneAndFreezeSnapshotValue(request.orchestration) }
       : {}),
     ...(request.toolMode !== undefined ? { toolMode: request.toolMode } : {}),
+    ...(request.maxSteps !== undefined ? { maxSteps: request.maxSteps } : {}),
     ...(request.attachments !== undefined
       ? { attachments: cloneAndFreezeSnapshotValue(request.attachments) }
       : {}),
@@ -780,6 +781,7 @@ function buildFlowInput(request: InvocationRequest): FlowInput {
     ...(request.lineage?.parentRunId ? { parentRunId: request.lineage.parentRunId } : {}),
     ...(request.orchestration !== undefined ? { orchestration: request.orchestration } : {}),
     ...(request.toolMode !== undefined ? { toolMode: request.toolMode } : {}),
+    ...(request.maxSteps !== undefined ? { maxSteps: request.maxSteps } : {}),
     text: request.text,
     context: request.context ?? [],
     ...(request.runtimeContext !== undefined ? { runtimeContext: request.runtimeContext } : {}),

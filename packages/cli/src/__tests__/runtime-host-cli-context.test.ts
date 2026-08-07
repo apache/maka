@@ -7,6 +7,7 @@ import { connectRuntimeHostCli } from '../runtime-host-cli-context.js';
 
 test('CLI Runtime Host bootstrap launches the execution composition', async () => {
   let candidateEntrypoint: string | URL | undefined;
+  let legacyConfigurationRoot: string | undefined;
   let closes = 0;
   const connection = {
     status: async () => ({ state: 'ready' }),
@@ -16,10 +17,15 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   } as unknown as RuntimeHostConnection;
 
   const context = await connectRuntimeHostCli(
-    { rootPath: '/runtime-host-root', surface: 'run' },
+    {
+      rootPath: '/runtime-host-root',
+      surface: 'activation',
+      legacyConfigurationRoot: '/legacy-configuration',
+    },
     {
       connectOrSpawn: async (input) => {
         candidateEntrypoint = input.candidateEntrypoint;
+        legacyConfigurationRoot = input.legacyConfigurationRoot;
         return { kind: 'connected', connection };
       },
       readConnectionCatalog: async () => ({
@@ -32,6 +38,7 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
 
   assert.ok(candidateEntrypoint instanceof URL);
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
+  assert.equal(legacyConfigurationRoot, '/legacy-configuration');
   await context.close();
   assert.equal(closes, 1);
 });

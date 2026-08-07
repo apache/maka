@@ -1,13 +1,22 @@
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   decodeConnectionModelId,
+  decodeConnectionModel,
+  decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
   RuntimePolicyDomainDecodeError,
   type ConnectionVersionBasis,
   type ModelDiscoverySource,
 } from '@maka/core/runtime-policy';
-import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
+import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import {
+  requireCount,
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireString,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -54,6 +63,35 @@ export interface ConnectionTestRunInput {
   readonly connectionId: string;
   readonly modelId: string | null;
 }
+
+export interface ConnectionOnboardingVerifyInput {
+  readonly providerType: ProviderType;
+  readonly apiKey: string | null;
+}
+
+export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
+  readonly enabledModelIds: readonly string[];
+}
+
+export type ConnectionOnboardingVerifyResult =
+  | { readonly kind: 'verified'; readonly models: readonly ModelInfo[] }
+  | {
+      readonly kind: 'rejected';
+      readonly reason: 'provider_unsupported' | 'credential_not_configured' | 'slug_conflict';
+    }
+  | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
+
+export type ConnectionOnboardingSaveResult =
+  | { readonly kind: 'saved' }
+  | {
+      readonly kind: 'rejected';
+      readonly reason:
+        | 'provider_unsupported'
+        | 'credential_not_configured'
+        | 'slug_conflict'
+        | 'model_unavailable';
+    }
+  | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
 
 interface ConnectionEffectCommitted {
   readonly kind: 'committed';
@@ -110,6 +148,28 @@ export type ConnectionTestRunResult =
   | ConnectionEffectSuperseded;
 
 export const CONNECTION_EFFECT_OPERATION_SPECS = {
+  'connection.onboarding.save': defineOperation<
+    ConnectionOnboardingSaveInput,
+    ConnectionOnboardingSaveResult,
+    (typeof EFFECT_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: EFFECT_ERRORS,
+    decodeInput: decodeConnectionOnboardingSaveInput,
+    decodeOutput: decodeConnectionOnboardingSaveResult,
+  }),
+  'connection.onboarding.verify': defineOperation<
+    ConnectionOnboardingVerifyInput,
+    ConnectionOnboardingVerifyResult,
+    (typeof EFFECT_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: EFFECT_ERRORS,
+    decodeInput: decodeConnectionOnboardingVerifyInput,
+    decodeOutput: decodeConnectionOnboardingVerifyResult,
+  }),
   'connection.models.fetch': defineOperation<
     ConnectionModelFetchInput,
     ConnectionModelFetchResult,
@@ -133,6 +193,118 @@ export const CONNECTION_EFFECT_OPERATION_SPECS = {
     decodeOutput: decodeConnectionTestRunResult,
   }),
 } as const;
+
+export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionOnboardingSaveInput {
+  const input = requireExactRecord(value, 'connection onboarding save input', [
+    'providerType',
+    'apiKey',
+    'enabledModelIds',
+  ]);
+  const verified = decodeConnectionOnboardingVerifyInput({
+    providerType: input.providerType,
+    apiKey: input.apiKey,
+  });
+  if (
+    !Array.isArray(input.enabledModelIds) ||
+    input.enabledModelIds.length === 0 ||
+    input.enabledModelIds.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
+  ) {
+    throw invalidProtocolFrame('Connection onboarding requires at least one enabled model');
+  }
+  const enabledModelIds = input.enabledModelIds.map((modelId) =>
+    decodeDomain(() => decodeConnectionModelId(modelId)),
+  );
+  if (new Set(enabledModelIds).size !== enabledModelIds.length) {
+    throw invalidProtocolFrame('Connection onboarding enabled models must be unique');
+  }
+  return { ...verified, enabledModelIds };
+}
+
+export function decodeConnectionOnboardingSaveResult(
+  value: unknown,
+): ConnectionOnboardingSaveResult {
+  const result = requireRecord(value, 'connection onboarding save result');
+  if (result.kind === 'saved') {
+    requireExactRecord(result, 'saved connection onboarding result', ['kind']);
+    return { kind: 'saved' };
+  }
+  if (result.kind === 'failed') {
+    const failed = requireExactRecord(result, 'failed connection onboarding save result', [
+      'kind',
+      'errorClass',
+    ]);
+    return { kind: 'failed', errorClass: effectFailureClass(failed.errorClass) };
+  }
+  const rejected = requireExactRecord(result, 'rejected connection onboarding save result', [
+    'kind',
+    'reason',
+  ]);
+  if (
+    rejected.kind !== 'rejected' ||
+    (rejected.reason !== 'provider_unsupported' &&
+      rejected.reason !== 'credential_not_configured' &&
+      rejected.reason !== 'slug_conflict' &&
+      rejected.reason !== 'model_unavailable')
+  ) {
+    throw invalidProtocolFrame('Invalid connection onboarding save rejection');
+  }
+  return { kind: 'rejected', reason: rejected.reason };
+}
+
+export function decodeConnectionOnboardingVerifyInput(
+  value: unknown,
+): ConnectionOnboardingVerifyInput {
+  const input = requireExactRecord(value, 'connection onboarding verification input', [
+    'providerType',
+    'apiKey',
+  ]);
+  return {
+    providerType: decodeDomain(() => decodeProviderType(input.providerType)),
+    apiKey:
+      input.apiKey === null
+        ? null
+        : requireString(input.apiKey, 'connection onboarding API key', 64 * 1024),
+  };
+}
+
+export function decodeConnectionOnboardingVerifyResult(
+  value: unknown,
+): ConnectionOnboardingVerifyResult {
+  const result = requireRecord(value, 'connection onboarding verification result');
+  if (result.kind === 'verified') {
+    const verified = requireExactRecord(result, 'verified connection onboarding result', [
+      'kind',
+      'models',
+    ]);
+    if (!Array.isArray(verified.models) || verified.models.length === 0) {
+      throw invalidProtocolFrame('Connection onboarding models must be a non-empty array');
+    }
+    return {
+      kind: 'verified',
+      models: verified.models.map((model) => decodeDomain(() => decodeConnectionModel(model))),
+    };
+  }
+  if (result.kind === 'failed') {
+    const failed = requireExactRecord(result, 'failed connection onboarding result', [
+      'kind',
+      'errorClass',
+    ]);
+    return { kind: 'failed', errorClass: effectFailureClass(failed.errorClass) };
+  }
+  const rejected = requireExactRecord(result, 'rejected connection onboarding result', [
+    'kind',
+    'reason',
+  ]);
+  if (
+    rejected.kind !== 'rejected' ||
+    (rejected.reason !== 'provider_unsupported' &&
+      rejected.reason !== 'credential_not_configured' &&
+      rejected.reason !== 'slug_conflict')
+  ) {
+    throw invalidProtocolFrame('Invalid connection onboarding rejection');
+  }
+  return { kind: 'rejected', reason: rejected.reason };
+}
 
 export function decodeConnectionModelFetchInput(value: unknown): ConnectionModelFetchInput {
   const input = requireExactRecord(value, 'connection model fetch input', ['connectionId']);

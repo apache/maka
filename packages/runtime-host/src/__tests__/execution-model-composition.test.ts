@@ -751,6 +751,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Automation',
       'Bash',
       'Edit',
+      'ExploreAgent',
       'FormatJson',
       'Glob',
       'GoalClear',
@@ -759,6 +760,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'GoalSet',
       'GoalStatus',
       'Grep',
+      'MakaSettingsGet',
+      'MakaSettingsUpdate',
       'Read',
       'Skill',
       'SkillSearch',
@@ -770,6 +773,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'load_tools',
       'memory_extract',
       'memory_remember',
+      'request_sandbox_boundary',
       'task_create',
       'task_get',
       'task_list',
@@ -2184,6 +2188,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
 
   assert.deepEqual(composition.tools.map((candidate) => candidate.name).sort(), [
     'AskUserQuestion',
+    'ExploreAgent',
     'Read',
     'WebSearch',
     'deep_research_status',
@@ -2193,7 +2198,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
   assert.equal(composition.tools.includes(unsafeDeepResearchTool), false);
   assert.equal(
     composition.tools.some((candidate) => candidate.categoryHint === 'subagent'),
-    false,
+    true,
   );
   assert.equal(
     composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
@@ -2207,7 +2212,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
       workspaceRoot: process.cwd(),
     })) ?? '';
   assert.match(prompt, /Deep research mode is active/);
-  assert.doesNotMatch(prompt, /ExploreAgent/);
+  assert.match(prompt, /ExploreAgent/);
 });
 
 test('Plan composition admits only planning tools before approval and execution controls after', async () => {

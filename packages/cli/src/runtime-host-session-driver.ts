@@ -72,6 +72,7 @@ export interface RuntimeHostMakaSessionDriverInput {
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
   readMessages(): Promise<StoredMessage[]>;
+  resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions(
@@ -188,6 +189,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           ...(modelText === prompt ? {} : { displayText: prompt }),
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+        ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
       });
       return {
         sessionId,

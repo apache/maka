@@ -151,15 +151,20 @@ export async function writeSession(
   session: SessionHeader,
   messages: StoredMessage[],
 ): Promise<void> {
+  const rootedSession: SessionHeader = {
+    ...session,
+    workspaceRoot,
+    cwd: workspaceRoot,
+  };
   const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
   const sessions = createSqliteSessionMetadataStore(
     join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
     { databaseLease },
   );
   try {
-    await sessions.create(session);
+    await sessions.create(rootedSession);
     await sessions.appendMessages(
-      session.id,
+      rootedSession.id,
       messages,
       projectSessionCatalogMessages(messages),
     );

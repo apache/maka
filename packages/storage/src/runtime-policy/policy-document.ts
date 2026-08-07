@@ -125,5 +125,29 @@ function applyMutation(policy: RuntimePolicy, operation: RuntimePolicyMutation):
       return { ...policy, chatDefaults: operation.value };
     case 'set_web_search':
       return { ...policy, webSearch: operation.value };
+    case 'patch_agent_settings':
+      return {
+        ...policy,
+        ...(operation.value.personalization
+          ? { personalization: { ...policy.personalization, ...operation.value.personalization } }
+          : {}),
+        ...(operation.value.memory
+          ? { memory: { ...policy.memory, ...operation.value.memory } }
+          : {}),
+        ...(operation.value.workspaceInstructions
+          ? {
+              workspaceInstructions: {
+                ...policy.workspaceInstructions,
+                ...operation.value.workspaceInstructions,
+              },
+            }
+          : {}),
+        ...(operation.value.privacy
+          ? { privacy: { ...policy.privacy, ...operation.value.privacy } }
+          : {}),
+        ...(operation.value.webSearch
+          ? { webSearch: { ...policy.webSearch, ...operation.value.webSearch } }
+          : {}),
+      };
   }
 }

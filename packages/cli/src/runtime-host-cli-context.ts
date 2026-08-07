@@ -27,6 +27,7 @@ export async function connectRuntimeHostCli(
   input: {
     readonly rootPath: string;
     readonly surface: ClientSurface;
+    readonly legacyConfigurationRoot?: string;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
 ): Promise<RuntimeHostCliConnectionContext> {
@@ -43,6 +44,9 @@ export async function connectRuntimeHostCli(
     surface: input.surface,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
     candidateEntrypoint: deps.executionCandidateEntrypoint,
+    ...(input.legacyConfigurationRoot
+      ? { legacyConfigurationRoot: input.legacyConfigurationRoot }
+      : {}),
   });
   if (connected.kind === 'incompatible') {
     throw new Error(

@@ -30,20 +30,6 @@ test('the Desktop Host candidate cannot reach an embedded Runtime owner', async 
   });
   assert.ok(result.metafile);
 
-  const reached = new Set(Object.keys(result.metafile.inputs).map(normalize));
-  const forbiddenModules = [
-    'apps/desktop/src/main/app-lifecycle.ts',
-    'apps/desktop/src/main/boot.ts',
-    'apps/desktop/src/main/embedded-bot-session-adapter.ts',
-    'apps/desktop/src/main/execution-store-wiring.ts',
-    'apps/desktop/src/main/sessions-ipc-main.ts',
-    'apps/desktop/src/main/startup-safe-boundary-resume.ts',
-  ];
-  assert.deepEqual(
-    forbiddenModules.filter((path) => reached.has(normalize(path))),
-    [],
-  );
-
   const externalImports = Object.values(result.metafile.inputs).flatMap(({ imports }) =>
     imports.filter(({ external }) => external).map(({ path }) => path),
   );

@@ -16,6 +16,7 @@ import {
   AiSdkBackend,
   buildAskUserQuestionTool,
   buildBuiltinTools,
+  buildExploreAgentTool,
   buildDefaultContextBudgetPolicy,
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
@@ -23,6 +24,7 @@ import {
   buildCancelPlanTool,
   buildParentAgentTools,
   buildPricingLookup,
+  buildRequestSandboxBoundaryTool,
   buildProviderOptions,
   buildSubmitPlanTool,
   buildSessionEnvironmentPromptFragment,
@@ -701,6 +703,8 @@ function buildDefaultHostTools(
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
+  const sandboxBoundary = buildRequestSandboxBoundaryTool();
+  const exploreAgent = buildExploreAgentTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -720,6 +724,8 @@ function buildDefaultHostTools(
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
     question.name,
+    sandboxBoundary.name,
+    exploreAgent.name,
     'Skill',
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
@@ -735,6 +741,8 @@ function buildDefaultHostTools(
     ...builtins,
     ...hostTools,
     question,
+    sandboxBoundary,
+    exploreAgent,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, {
       shadowTracker,
     }),

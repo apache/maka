@@ -2,13 +2,13 @@
  * The wiring, not the component.
  *
  * `startup-step.test.ts` builds every `startupStep` call it checks, so it stays
- * green with `boot.ts` calling nothing at all: the whole module can be orphaned
+ * green with the production boot calling nothing at all: the whole module can be orphaned
  * in the tree and the desktop main suite does not move. That is the shape of
- * the failure this pins — a later edit to `boot.ts` drops the wrappers, CI is
+ * the failure this pins — a later edit to the boot drops the wrappers, CI is
  * green, and the silent launch these lines exist to name comes back while the
  * diagnostic still looks healthy from the test report.
  *
- * `boot.ts` binds `ipcMain` and `app` at module scope and runs top-level await,
+ * The boot binds `ipcMain` and `app` at module scope and runs top-level await,
  * so it cannot be imported under `node --test`; there is no seam to observe the
  * calls through. Asserting against the source text is the precedent already in
  * this directory (`app-region-hygiene-contract.test.ts`), for the same reason:
@@ -23,7 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
-const BOOT = resolve(import.meta.dirname, '../../../src/main/boot.ts');
+const BOOT = resolve(import.meta.dirname, '../../../src/main/runtime-host-boot.ts');
 
 /**
  * Drop whole-line `//` comments, so prose about a wrapper cannot stand in for
@@ -40,8 +40,6 @@ function stripLineComments(source: string): string {
 /** Steps whose await is long enough that a hang there looks like a crash. */
 const WRAPPED_STEPS = [
   { name: 'storage root', call: 'resolveDesktopStorageRoot' },
-  { name: 'execution store', call: 'openDesktopExecutionStoreWiring' },
-  { name: 'runtime event persistence', call: 'openRuntimeEventPersistence' },
 ] as const;
 
 describe('startup step wiring', () => {
@@ -49,8 +47,8 @@ describe('startup step wiring', () => {
     const boot = stripLineComments(await readFile(BOOT, 'utf8'));
     assert.match(
       boot,
-      /import\s*\{[^}]*\bstartupStep\b[^}]*\bwhileAwaitingPerson\b[^}]*\}\s*from\s*'\.\/startup-step\.js'/,
-      'boot.ts must take both halves of the reporter; the module is used nowhere else in production',
+      /import\s*\{[^}]*\bstartupStep\b[^}]*\bwhileAwaitingPerson\b[^}]*\}\s*from\s*["']\.\/startup-step\.js["']/,
+      'production boot must take both halves of the reporter',
     );
   });
 
@@ -59,7 +57,7 @@ describe('startup step wiring', () => {
       const boot = stripLineComments(await readFile(BOOT, 'utf8'));
       assert.match(
         boot,
-        new RegExp(`await startupStep\\(\\s*'${name}',\\s*${call}\\(`),
+        new RegExp(`await startupStep\\(\\s*["']${name}["'],\\s*${call}\\(`),
         `${call} must be awaited through startupStep('${name}'), or a hang there prints nothing`,
       );
       assert.doesNotMatch(

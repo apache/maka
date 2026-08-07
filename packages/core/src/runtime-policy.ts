@@ -105,6 +105,14 @@ export interface RuntimePolicySnapshot {
   readonly policy: RuntimePolicy;
 }
 
+export interface AgentRuntimeSettingsPatch {
+  readonly personalization?: Partial<RuntimePolicy['personalization']>;
+  readonly memory?: Partial<RuntimePolicy['memory']>;
+  readonly workspaceInstructions?: Partial<RuntimePolicy['workspaceInstructions']>;
+  readonly privacy?: Partial<RuntimePolicy['privacy']>;
+  readonly webSearch?: Pick<Partial<RuntimePolicy['webSearch']>, 'enabled'>;
+}
+
 export type RuntimePolicyMutation =
   | { readonly kind: 'set_network_proxy'; readonly value: RuntimePolicy['networkProxy'] }
   | { readonly kind: 'set_personalization'; readonly value: RuntimePolicy['personalization'] }
@@ -115,7 +123,8 @@ export type RuntimePolicyMutation =
     }
   | { readonly kind: 'set_privacy'; readonly value: RuntimePolicy['privacy'] }
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
-  | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] };
+  | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
+  | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
 export interface MutateRuntimePolicyInput {
   readonly expectedRevision: Revision;

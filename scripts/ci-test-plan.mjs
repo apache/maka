@@ -231,7 +231,7 @@ export function planTests(changedFiles, options = {}) {
       directWorkspaces.has('packages/ui') ||
       files.some((path) => E2E_DRIVING_SCRIPTS.has(path)),
     full: false,
-    // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
+    // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct
     // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).

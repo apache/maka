@@ -5,7 +5,7 @@ import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { parseMakaRunArgs } from '../run-command.js';
+import { parseMakaRunArgs } from '../run-command-core.js';
 
 const fixturePath = fileURLToPath(new URL('./run-command-fixture.js', import.meta.url));
 

@@ -85,8 +85,8 @@ export interface ComputerUseStatusItemDeps {
    * and whose picture-in-picture sibling labels the same two actions in
    * Chinese, so the menu bar and the mirror disagreed about what language the
    * product speaks. Sync, because a menu template is built synchronously;
-   * defaults to the system language, which is the same source boot.ts already
-   * uses for the one other main-process string it has to draw.
+   * defaults to the system language, which is also used for other
+   * main-process strings.
    */
   resolveLocale?: () => UiLocale;
   /** Test seams: the contract is drivable without an Electron main process. */

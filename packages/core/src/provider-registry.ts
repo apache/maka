@@ -1,10 +1,11 @@
 import type { BackendKind } from './session.js';
-import { OPENCODE_FREE_DEFAULT_MODEL } from './bootstrap-connections.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
   GENERATED_MODELS_DEV_PROVIDER_FACTS,
 } from './model-metadata.generated.js';
+
+const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
 
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';

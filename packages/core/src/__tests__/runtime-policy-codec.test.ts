@@ -39,6 +39,44 @@ test('normalizes policy input while canonical policy decode rejects producer dri
   );
 });
 
+test('normalizes only the bounded agent settings patch surface', () => {
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 4,
+      operation: {
+        kind: 'patch_agent_settings',
+        value: {
+          personalization: { assistantTone: 'Be direct.' },
+          memory: { agentReadEnabled: true },
+          webSearch: { enabled: true },
+        },
+      },
+    }),
+    {
+      expectedRevision: 4,
+      operation: {
+        kind: 'patch_agent_settings',
+        value: {
+          personalization: { assistantTone: 'Be direct.' },
+          memory: { agentReadEnabled: true },
+          webSearch: { enabled: true },
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 4,
+        operation: {
+          kind: 'patch_agent_settings',
+          value: { networkProxy: { enabled: false } },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('normalizes catalog inputs while canonical entries reject noncanonical endpoints', () => {
   const input = normalizeCreateCatalogConnectionInput({
     expectedCatalogRevision: 0,

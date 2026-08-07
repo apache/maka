@@ -31,6 +31,132 @@ const context: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
+test('verifies a first-run API key without persisting a connection or credential', async () => {
+  await withFixture(async ({ stores }) => {
+    let observed: { slug: string; secret: string } | undefined;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (connection, secret) => {
+        observed = { slug: connection.slug, secret };
+        return { ok: true, models: [{ id: 'verified-model' }] };
+      },
+    });
+
+    const result = await coordinator.handlers['connection.onboarding.verify'](
+      { providerType: 'openai', apiKey: 'first-run-secret' },
+      context,
+    );
+
+    assert.deepEqual(result, {
+      ok: true,
+      result: { kind: 'verified', models: [{ id: 'verified-model' }] },
+    });
+    assert.deepEqual(observed, { slug: 'openai', secret: 'first-run-secret' });
+    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
+    assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+  });
+});
+
+test('saves a verified first-run target through the canonical Host authorities', async () => {
+  await withFixture(async ({ stores }) => {
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 123,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async () => ({
+        ok: true,
+        models: [{ id: 'first-model' }, { id: 'second-model' }],
+      }),
+    });
+
+    const result = await coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai',
+        apiKey: 'first-run-secret',
+        enabledModelIds: ['second-model'],
+      },
+      context,
+    );
+
+    assert.deepEqual(result, { ok: true, result: { kind: 'saved' } });
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.equal(catalog.connections.length, 1);
+    assert.deepEqual(catalog.connections[0]?.models, [
+      { id: 'first-model' },
+      { id: 'second-model' },
+    ]);
+    assert.deepEqual(catalog.connections[0]?.enabledModelIds, ['second-model']);
+    assert.deepEqual(catalog.defaultTarget, {
+      connectionId: catalog.connections[0]?.connectionId,
+      modelId: 'second-model',
+    });
+    const credential = (await stores.credentialVault.getSnapshot()).entries[0];
+    assert.equal(credential?.configured, true);
+    assert.doesNotMatch(JSON.stringify(credential), /first-run-secret/u);
+  });
+});
+
+test('re-enables an existing connection without replacing another default target', async () => {
+  await withFixture(async ({ stores }) => {
+    const defaultConnection = await createConnection(
+      stores,
+      0,
+      connectionDraft('existing-default', 'ollama'),
+    );
+    const defaulted = await stores.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: 1,
+      target: { connectionId: defaultConnection.connectionId, modelId: 'gpt-5' },
+    });
+    assert.equal(defaulted.kind, 'committed');
+    const disabledConnection = await createConnection(stores, 2, {
+      slug: 'openai',
+      name: 'OpenAI',
+      providerType: 'openai',
+      enabled: false,
+      enabledModelIds: [],
+    });
+    await setConnectionCredential(stores, disabledConnection, 'stored-secret');
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 456,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (connection, secret) => {
+        assert.equal(connection.enabled, false);
+        assert.equal(secret, 'stored-secret');
+        return { ok: true, models: [{ id: 'restored-model' }] };
+      },
+    });
+
+    const result = await coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai',
+        apiKey: null,
+        enabledModelIds: ['restored-model'],
+      },
+      context,
+    );
+
+    assert.deepEqual(result, { ok: true, result: { kind: 'saved' } });
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const restored = catalog.connections.find(
+      ({ connectionId }) => connectionId === disabledConnection.connectionId,
+    );
+    assert.equal(restored?.enabled, true);
+    assert.deepEqual(restored?.enabledModelIds, ['restored-model']);
+    assert.deepEqual(catalog.defaultTarget, {
+      connectionId: defaultConnection.connectionId,
+      modelId: 'gpt-5',
+    });
+  });
+});
+
 test('serializes one connection, runs different connections concurrently, and continues after provider failure', async () => {
   await withFixture(async ({ stores }) => {
     const first = await createConnection(stores, 0, connectionDraft('queue-first', 'ollama'));

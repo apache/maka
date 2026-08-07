@@ -1,5 +1,6 @@
 import { CHAT_DEFAULT_PERMISSION_MODES } from '../settings.js';
 import type {
+  AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
   RuntimePolicy,
   RuntimePolicyMutation,
@@ -68,9 +69,86 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeChatDefaults(operation.value) };
     case 'set_web_search':
       return { kind: operation.kind, value: normalizeWebSearch(operation.value) };
+    case 'patch_agent_settings':
+      return { kind: operation.kind, value: normalizeAgentRuntimeSettingsPatch(operation.value) };
     default:
       throw domainError(`runtime policy operation '${String(operation.kind)}' is unknown`);
   }
+}
+
+function normalizeAgentRuntimeSettingsPatch(value: unknown): AgentRuntimeSettingsPatch {
+  const patch = exactRecord(
+    value,
+    'agent runtime settings patch',
+    ['personalization', 'memory', 'workspaceInstructions', 'privacy', 'webSearch'],
+    [],
+  );
+  return {
+    ...(patch.personalization === undefined
+      ? {}
+      : { personalization: normalizePersonalizationPatch(patch.personalization) }),
+    ...(patch.memory === undefined ? {} : { memory: normalizeMemoryPatch(patch.memory) }),
+    ...(patch.workspaceInstructions === undefined
+      ? {}
+      : {
+          workspaceInstructions: normalizeEnabledPatch(
+            patch.workspaceInstructions,
+            'workspace instructions patch',
+          ),
+        }),
+    ...(patch.privacy === undefined ? {} : { privacy: normalizePrivacyPatch(patch.privacy) }),
+    ...(patch.webSearch === undefined
+      ? {}
+      : { webSearch: normalizeEnabledPatch(patch.webSearch, 'web search patch') }),
+  };
+}
+
+function normalizePersonalizationPatch(
+  value: unknown,
+): AgentRuntimeSettingsPatch['personalization'] {
+  const patch = exactRecord(value, 'personalization patch', ['displayName', 'assistantTone'], []);
+  return {
+    ...(patch.displayName === undefined
+      ? {}
+      : { displayName: stringValue(patch.displayName, 'personalization displayName', 256) }),
+    ...(patch.assistantTone === undefined
+      ? {}
+      : {
+          assistantTone: stringValue(patch.assistantTone, 'personalization assistantTone', 4_096),
+        }),
+  };
+}
+
+function normalizeMemoryPatch(value: unknown): AgentRuntimeSettingsPatch['memory'] {
+  const patch = exactRecord(value, 'memory patch', ['enabled', 'agentReadEnabled'], []);
+  return {
+    ...(patch.enabled === undefined
+      ? {}
+      : { enabled: booleanValue(patch.enabled, 'memory enabled') }),
+    ...(patch.agentReadEnabled === undefined
+      ? {}
+      : {
+          agentReadEnabled: booleanValue(patch.agentReadEnabled, 'memory agentReadEnabled'),
+        }),
+  };
+}
+
+function normalizePrivacyPatch(value: unknown): AgentRuntimeSettingsPatch['privacy'] {
+  const patch = exactRecord(value, 'privacy patch', ['incognitoActive'], []);
+  return {
+    ...(patch.incognitoActive === undefined
+      ? {}
+      : { incognitoActive: booleanValue(patch.incognitoActive, 'privacy incognitoActive') }),
+  };
+}
+
+function normalizeEnabledPatch(value: unknown, name: string): { readonly enabled?: boolean } {
+  const patch = exactRecord(value, name, ['enabled'], []);
+  return {
+    ...(patch.enabled === undefined
+      ? {}
+      : { enabled: booleanValue(patch.enabled, `${name} enabled`) }),
+  };
 }
 
 function normalizeNetworkProxy(value: unknown): RuntimePolicy['networkProxy'] {

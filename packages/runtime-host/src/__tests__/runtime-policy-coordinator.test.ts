@@ -9,7 +9,7 @@ import type {
   ConnectionCatalogSnapshot,
   CredentialLocator,
 } from '@maka/core/runtime-policy';
-import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime';
+import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend, type MakaToolContext } from '@maka/runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -30,6 +30,46 @@ const context: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('model settings tool confirms and atomically updates canonical Runtime Policy', async () => {
+  await withCoordinator(async ({ coordinator, stores }) => {
+    const tool = coordinator.modelTools.find(({ name }) => name === 'MakaSettingsUpdate');
+    assert.ok(tool);
+    if (!tool) return;
+    const questions: string[] = [];
+    const toolContext: MakaToolContext = {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      cwd: '/workspace',
+      toolCallId: 'call-1',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      askUserQuestion: async (input) => {
+        questions.push(...input.map(({ question }) => question));
+        return {
+          answers: input.map(({ question }) => ({ question, answer: 'Apply changes' })),
+        };
+      },
+    };
+
+    const result = await tool.impl(
+      {
+        personalization: { assistantTone: 'Be direct.' },
+        memory: { agentReadEnabled: true },
+        webSearch: { enabled: true },
+      },
+      toolContext,
+    );
+
+    assert.equal((result as { applied?: boolean }).applied, true);
+    assert.equal(questions.length, 1);
+    const snapshot = await stores.runtimePolicy.getSnapshot();
+    assert.equal(snapshot.revision, 1);
+    assert.equal(snapshot.policy.personalization.assistantTone, 'Be direct.');
+    assert.equal(snapshot.policy.memory.agentReadEnabled, true);
+    assert.equal(snapshot.policy.webSearch.enabled, true);
+  });
+});
 
 test('production composition shares one gate across mutation and backend activation', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-policy-composition-'));

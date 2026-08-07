@@ -1369,16 +1369,25 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest'];
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
     }
     if (value.inputDigest !== undefined && !isSha256Digest(value.inputDigest)) {
       throw new Error('Invalid root execution descriptor');
     }
+    if (
+      value.maxSteps !== undefined &&
+      (typeof value.maxSteps !== 'number' ||
+        !Number.isSafeInteger(value.maxSteps) ||
+        value.maxSteps <= 0)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
     return Object.freeze({
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
+      ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
     });
   }
   if (value.kind === 'regenerate') {
