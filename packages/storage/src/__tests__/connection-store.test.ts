@@ -38,6 +38,40 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  // Onboarding "保存供应商" (and any other create path that only states a
+  // defaultModel) must land the same free inventory bootstrap seeds — not a
+  // one-model connection that then fails the first-run e2e contract.
+  test('creates OpenCode Free with the default free inventory when enabled models are omitted', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        defaultModel: 'nemotron-3-ultra-free',
+      });
+
+      assert.deepEqual(created.enabledModelIds, [
+        'nemotron-3-ultra-free',
+        'mimo-v2.5-free',
+        'deepseek-v4-flash-free',
+      ]);
+    });
+  });
+
+  test('still honors an explicit subset when creating OpenCode Free', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        defaultModel: 'nemotron-3-ultra-free',
+        enabledModelIds: ['nemotron-3-ultra-free'],
+      });
+
+      assert.deepEqual(created.enabledModelIds, ['nemotron-3-ultra-free']);
+    });
+  });
+
   test('migrates a legacy connection to only its default model enabled', async () => {
     await withConnectionStore(async (store, dir) => {
       await writeFile(

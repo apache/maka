@@ -1500,6 +1500,7 @@ export {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
+  defaultEnabledModelIdsWhenOmitted,
   resolveBootstrapConnections,
   resolveOpenCodeFreeBootstrapMigration,
 } from './bootstrap-connections.js';
