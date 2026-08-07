@@ -110,6 +110,7 @@ import { updateReminderFromStatus } from './app-shell-app-update';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
 import { CustomPetCompanion } from './custom-pet-companion';
+import { derivePetActivityState } from './custom-pet-companion-model';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
 import { useAppShellModuleData } from './use-module-data';
 import { useKeepSystemAwake } from './use-keep-system-awake';
@@ -308,6 +309,7 @@ function AppShellContent({
   const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
   const [newChatGraphModeActive, setNewChatGraphModeActive] = useState(false);
   const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
+  const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
   // BrowserPanel mounts only for these, so ordinary chats reserve no space.
   const [liveBrowserSessionIds, setLiveBrowserSessionIds] = useState<string[]>([]);
@@ -627,6 +629,12 @@ function AppShellContent({
   } = useShellLiveTurn({
     liveTurn: activeLiveTurnSnapshot,
     activeSession,
+  });
+  const petActivityState = derivePetActivityState({
+    hasActiveSession: activeSession !== undefined,
+    hasActiveInteraction: activeInteraction !== undefined,
+    turnActive,
+    sessionStatus: activeSession?.status,
   });
   // Surface a credential-lifecycle alert directly in the chat header when
   // the active session's connection is in `needs_reauth` / `error` or has
@@ -1653,6 +1661,9 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
     notifyRunEnded: ({ kind, sessionId, body }) => {
+      if (kind === 'completed' && activeIdRef.current === sessionId) {
+        setPetCompletionNonce((current) => current + 1);
+      }
       const title = sessionsRef.current.find((session) => session.id === sessionId)?.name;
       // Best-effort: swallow any main-side failure so a missed banner
       // never surfaces as an unhandled promise rejection.
@@ -2511,7 +2522,13 @@ function AppShellContent({
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>
-      {!hasModalOpen && !settingsOpen && <CustomPetCompanion />}
+      {!hasModalOpen && !settingsOpen && (
+        <CustomPetCompanion
+          activityState={petActivityState}
+          completionNonce={petCompletionNonce}
+          contextKey={activeId}
+        />
+      )}
       <AppShellOverlays
         settingsOpen={settingsOpen}
         connections={connections}

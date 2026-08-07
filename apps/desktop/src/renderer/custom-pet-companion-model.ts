@@ -1,7 +1,9 @@
 import type {
+  PetActivityState,
   PetAnimationV1,
   PetPackManifestV1,
   PetSpriteSheetV1,
+  SessionStatus,
 } from '@maka/core';
 
 export interface PetCompanionSource {
@@ -24,6 +26,43 @@ export type SelectedPetCompanion =
       readonly mimeType: 'image/png' | 'image/webp';
       readonly bytes: Uint8Array;
     };
+
+export interface PetRuntimeActivityInput {
+  readonly hasActiveSession: boolean;
+  readonly hasActiveInteraction: boolean;
+  readonly turnActive: boolean;
+  readonly sessionStatus: SessionStatus | undefined;
+}
+
+/**
+ * Project authoritative shell signals onto the pack contract. Completion is a
+ * separate edge-triggered pulse: normal turns return their session to `active`,
+ * so a durable status cannot distinguish "ready just now" from ordinary idle.
+ */
+export function derivePetActivityState(
+  input: PetRuntimeActivityInput,
+): PetActivityState {
+  if (!input.hasActiveSession) return 'idle';
+  if (input.hasActiveInteraction || input.sessionStatus === 'waiting_for_user') {
+    return 'needs-input';
+  }
+  if (input.sessionStatus === 'blocked') return 'blocked';
+  if (input.turnActive) return 'working';
+  return 'idle';
+}
+
+export function syncPetPlaybackState(input: {
+  readonly currentState: PetActivityState;
+  readonly activityState: PetActivityState;
+  readonly completionArrived: boolean;
+  readonly contextChanged: boolean;
+}): PetActivityState {
+  if (input.completionArrived) return 'ready';
+  if (input.contextChanged || input.activityState !== 'idle') return input.activityState;
+  // A completed turn can retire its running witness before its one-shot
+  // `ready` animation ends. Its manifest fallback owns that transition.
+  return input.currentState === 'ready' ? 'ready' : 'idle';
+}
 
 /**
  * Resolve the selection through the same public bridge available to Settings.

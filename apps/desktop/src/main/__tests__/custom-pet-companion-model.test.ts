@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { PetPackManifestV1 } from '@maka/core';
 import {
+  derivePetActivityState,
   loadSelectedPetCompanion,
   petFrameSourceRect,
   samplePetAnimation,
   shouldReducePetMotion,
+  syncPetPlaybackState,
   type PetCompanionSource,
 } from '../../renderer/custom-pet-companion-model.js';
 
@@ -48,6 +50,64 @@ function source(overrides: Partial<PetCompanionSource> = {}): PetCompanionSource
 }
 
 describe('custom pet companion model', () => {
+  it('projects authoritative runtime signals onto pet activity states', () => {
+    const base = {
+      hasActiveSession: true,
+      hasActiveInteraction: false,
+      turnActive: false,
+      sessionStatus: 'active' as const,
+    };
+
+    assert.equal(derivePetActivityState(base), 'idle');
+    assert.equal(derivePetActivityState({ ...base, turnActive: true }), 'working');
+    assert.equal(derivePetActivityState({
+      ...base,
+      turnActive: true,
+      hasActiveInteraction: true,
+    }), 'needs-input');
+    assert.equal(derivePetActivityState({
+      ...base,
+      sessionStatus: 'waiting_for_user',
+    }), 'needs-input');
+    assert.equal(derivePetActivityState({
+      ...base,
+      turnActive: true,
+      sessionStatus: 'blocked',
+    }), 'blocked');
+    assert.equal(derivePetActivityState({
+      ...base,
+      hasActiveSession: false,
+      turnActive: true,
+    }), 'idle');
+  });
+
+  it('lets a completion pulse finish before ordinary idle takes over', () => {
+    assert.equal(syncPetPlaybackState({
+      currentState: 'working',
+      activityState: 'working',
+      completionArrived: true,
+      contextChanged: false,
+    }), 'ready');
+    assert.equal(syncPetPlaybackState({
+      currentState: 'ready',
+      activityState: 'idle',
+      completionArrived: false,
+      contextChanged: false,
+    }), 'ready');
+    assert.equal(syncPetPlaybackState({
+      currentState: 'ready',
+      activityState: 'blocked',
+      completionArrived: false,
+      contextChanged: false,
+    }), 'blocked');
+    assert.equal(syncPetPlaybackState({
+      currentState: 'ready',
+      activityState: 'idle',
+      completionArrived: false,
+      contextChanged: true,
+    }), 'idle');
+  });
+
   it('does not read the library when custom pets are disabled', async () => {
     let listCalls = 0;
     const result = await loadSelectedPetCompanion(source({

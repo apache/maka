@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  resolvePetAnimationFallback,
+  resolvePetAnimationState,
+  type PetActivityState,
+} from '@maka/core';
 import { useMountedRef } from '@maka/ui';
 import {
   loadSelectedPetCompanion,
   petFrameSourceRect,
   samplePetAnimation,
   shouldReducePetMotion,
+  syncPetPlaybackState,
   type SelectedPetCompanion,
 } from './custom-pet-companion-model.js';
 
@@ -47,10 +53,16 @@ function usePetMotionPreference(): boolean {
 
 function PetSpriteCanvas(props: {
   companion: Extract<SelectedPetCompanion, { readonly kind: 'ready' }>;
+  activityState: PetActivityState;
+  onAnimationComplete: (
+    completedState: PetActivityState,
+    fallbackState: PetActivityState,
+  ) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const reducedMotion = usePetMotionPreference();
   const { manifest, mimeType, bytes } = props.companion;
+  const resolvedState = resolvePetAnimationState(manifest, props.activityState);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -58,7 +70,7 @@ function PetSpriteCanvas(props: {
     if (!canvas || !context) return;
 
     const sheet = manifest.spriteSheet;
-    const animation = manifest.animations.idle;
+    const animation = manifest.animations[resolvedState] ?? manifest.animations.idle;
     canvas.width = sheet.frameWidth;
     canvas.height = sheet.frameHeight;
     context.imageSmoothingEnabled = true;
@@ -103,7 +115,14 @@ function PetSpriteCanvas(props: {
           previousSequenceIndex = sample.sequenceIndex;
           draw(sample.frame);
         }
-        if (!sample.complete) animationFrame = window.requestAnimationFrame(tick);
+        if (sample.complete) {
+          props.onAnimationComplete(
+            resolvedState,
+            resolvePetAnimationFallback(manifest, resolvedState),
+          );
+          return;
+        }
+        animationFrame = window.requestAnimationFrame(tick);
       };
       animationFrame = window.requestAnimationFrame(tick);
     };
@@ -115,23 +134,49 @@ function PetSpriteCanvas(props: {
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
       URL.revokeObjectURL(objectUrl);
     };
-  }, [bytes, manifest, mimeType, reducedMotion]);
+  }, [bytes, manifest, mimeType, props.onAnimationComplete, reducedMotion, resolvedState]);
 
   return (
     <canvas
       ref={canvasRef}
       className="maka-custom-pet-companion__canvas"
       data-pet-id={manifest.id}
-      data-pet-state="idle"
+      data-pet-state={resolvedState}
     />
   );
 }
 
-/** Decorative selected-pet layer. Runtime state projection follows separately. */
-export function CustomPetCompanion() {
+export function CustomPetCompanion(props: {
+  activityState: PetActivityState;
+  completionNonce: number;
+  contextKey: string | undefined;
+}) {
   const mountedRef = useMountedRef();
   const loadTicketRef = useRef(0);
+  const lastCompletionNonceRef = useRef(props.completionNonce);
+  const lastContextKeyRef = useRef(props.contextKey);
   const [companion, setCompanion] = useState<SelectedPetCompanion>(EMPTY_COMPANION);
+  const [playbackState, setPlaybackState] = useState(props.activityState);
+
+  useEffect(() => {
+    const completionArrived = props.completionNonce !== lastCompletionNonceRef.current;
+    const contextChanged = props.contextKey !== lastContextKeyRef.current;
+    lastCompletionNonceRef.current = props.completionNonce;
+    lastContextKeyRef.current = props.contextKey;
+    setPlaybackState((currentState) => syncPetPlaybackState({
+      currentState,
+      activityState: props.activityState,
+      completionArrived,
+      contextChanged,
+    }));
+  }, [props.activityState, props.completionNonce, props.contextKey]);
+
+  const handleAnimationComplete = useCallback((
+    completedState: PetActivityState,
+    fallbackState: PetActivityState,
+  ) => {
+    setPlaybackState((current) => current === completedState ? fallbackState : current);
+  }, []);
 
   const refresh = useCallback(async () => {
     const ticket = ++loadTicketRef.current;
@@ -165,7 +210,11 @@ export function CustomPetCompanion() {
   if (companion.kind !== 'ready') return null;
   return (
     <div className="maka-custom-pet-companion" aria-hidden="true">
-      <PetSpriteCanvas companion={companion} />
+      <PetSpriteCanvas
+        companion={companion}
+        activityState={playbackState}
+        onAnimationComplete={handleAnimationComplete}
+      />
     </div>
   );
 }
