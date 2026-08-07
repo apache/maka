@@ -115,13 +115,6 @@ export function createSessionWorkbarPanelsState(
   return { right, bottom, focusedPanel };
 }
 
-export function sessionWorkbarPanel(
-  state: SessionWorkbarPanelsState,
-  placement: SessionWorkbarPlacement,
-): SessionWorkbarTabsState {
-  return state[placement];
-}
-
 export function updateSessionWorkbarPanel(
   state: SessionWorkbarPanelsState,
   placement: SessionWorkbarPlacement,

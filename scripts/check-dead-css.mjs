@@ -139,6 +139,12 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // composer-mention.css caps its width: upstream sets a 180px floor and no
   // ceiling, and our rows carry a non-wrapping second line.
   'astryx-trigger-menu',
+  // Workbar Review and Terminal surfaces style Astryx components by their
+  // stable runtime themeProps classes.
+  'astryx-banner',
+  'astryx-toolbar',
+  // xterm.js creates the viewport node internally after mounting.
+  'xterm-viewport',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in
