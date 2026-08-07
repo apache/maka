@@ -452,6 +452,10 @@ export interface MakaBridge {
       | { ok: true; files: { approvalId: string; name: string; mimeType?: string; size: number }[] }
       | { ok: false; reason: 'cancelled' }
     >;
+    previewApproval(approvalId: string): Promise<
+      | { ok: true; base64: string; mimeType: string }
+      | { ok: false; reason: string }
+    >;
     readBytes(sessionId: string, relativePath: string): Promise<
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }

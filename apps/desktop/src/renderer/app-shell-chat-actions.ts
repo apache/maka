@@ -33,12 +33,28 @@ import {
 } from './skill-invocation-feedback.js';
 
 export type PendingAttachment = {
+  /** Unique per staged item; keys the preview cache and its cleanup, so a
+   *  preview resolving after its item left the list can never strand an
+   *  orphan entry. */
+  stagingKey: string;
   displayName: string;
   mimeType?: string;
   kind: import('@maka/core').AttachmentRef['kind'];
   size: number;
+  /** Composer drawer thumbnail source for image attachments. Merged in from
+   *  the preview cache only after the URL has actually decoded as an image,
+   *  so a set previewUrl always means "renderable" — anything else keeps the
+   *  named file card. */
+  previewUrl?: string;
   source: { type: 'approval'; approvalId: string; name: string } | { type: 'file'; file: File };
 };
+
+/** Stable identity for a staged attachment across preview-URL merges. The
+ *  drawer list is re-derived when a preview lands, so submitted items must
+ *  be matched by their source — never by object reference. */
+export function pendingAttachmentSourceKey(attachment: PendingAttachment): unknown {
+  return attachment.source.type === 'approval' ? `approval:${attachment.source.approvalId}` : attachment.source.file;
+}
 
 export interface WorkspaceFileReferencePosition {
   value: string;

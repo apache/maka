@@ -93,7 +93,7 @@ describe('ingestAttachments', () => {
         },
       });
       assert.equal(refs.length, 1);
-      assert.equal(refs[0].kind, 'other');
+      assert.equal(refs[0].kind, 'code');
       assert.equal(refs[0].ref.kind, 'workspace_file');
       assert.equal((refs[0].ref as { relativePath: string }).relativePath, 'main.ts');
       assert.equal(resizeCalls, 0);

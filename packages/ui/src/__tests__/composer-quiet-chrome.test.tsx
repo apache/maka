@@ -264,6 +264,43 @@ describe('composer quiet chrome', () => {
     assert.doesNotMatch(drawer, /data-mode=/);
   });
 
+  it('stages an image as a thumbnail preview and a file as an iconized token', () => {
+    const markup = render(
+      <Composer
+        onSend={() => true}
+        onStop={() => {}}
+        pendingAttachments={[
+          { displayName: 'shot.png', kind: 'image', size: 2048, previewUrl: 'blob:app/shot' },
+          { displayName: 'pending.png', kind: 'image', size: 1024 },
+          { displayName: 'premier-league-tactics.epub', kind: 'doc', size: 3 * 1024 * 1024 },
+        ]}
+        onRemoveAttachment={() => {}}
+        modelLabel="demo"
+      />,
+    );
+    const drawer = markup.slice(
+      markup.indexOf('maka-composer-context-drawer'),
+      markup.indexOf('maka-composer-left-controls'),
+    );
+    // An image with a host-supplied preview is a real Astryx Thumbnail showing
+    // those pixels — not a filename chip.
+    assert.match(drawer, /maka-composer-attachment-thumbnail/);
+    assert.match(drawer, /<img[^>]*src="blob:app\/shot"/);
+    // An image whose preview hasn't landed (or failed) renders as a NAMED file
+    // card — never an anonymous placeholder square.
+    const thumbCount = drawer.split('maka-composer-attachment-thumbnail').length - 1;
+    assert.equal(thumbCount, 1, 'only the previewable image is a thumbnail');
+    assert.match(drawer, /data-kind="image"/);
+    assert.match(drawer, /pending\.png/);
+    // A non-image file is a two-line card: kind icon tile, name, "EXT · size"
+    // meta, and a localized remove control — not a bare filename chip.
+    assert.match(drawer, /maka-composer-attachment-card/);
+    assert.match(drawer, /data-kind="doc"/);
+    assert.match(drawer, /premier-league-tactics\.epub/);
+    assert.match(drawer, /EPUB · 3\.0 MB/);
+    assert.match(drawer, /aria-label="移除 premier-league-tactics\.epub"/);
+  });
+
   it('shows a single voice control only when the host wires capture', () => {
     const markup = render(
       <Composer

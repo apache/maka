@@ -98,6 +98,41 @@ export function guessMimeFromName(fileName: string): string {
  * `vnd.openxmlformats` string depending on the source); MIME still wins
  * when it is present and specific.
  */
+/** Extensions routed to the `code` kind. Consumption is identical to `other`
+ * (the model Reads them on demand); the kind only drives display — the
+ * FileCode icon in chat turns and the composer's staged-file card. */
+const CODE_FILE_EXTENSIONS = new Set([
+  'c',
+  'cc',
+  'cpp',
+  'cs',
+  'css',
+  'go',
+  'h',
+  'hpp',
+  'java',
+  'js',
+  'json',
+  'jsx',
+  'kt',
+  'mjs',
+  'cjs',
+  'php',
+  'py',
+  'rb',
+  'rs',
+  'sh',
+  'sql',
+  'svelte',
+  'swift',
+  'ts',
+  'tsx',
+  'vue',
+  'yaml',
+  'yml',
+  'zsh',
+]);
+
 export function attachmentKindFromMimeType(
   mimeType: string,
   fileName?: string,
@@ -116,6 +151,10 @@ export function attachmentKindFromMimeType(
       lowerName.endsWith('.ppt')
     ) {
       return 'doc';
+    }
+    const dot = lowerName.lastIndexOf('.');
+    if (dot >= 0 && CODE_FILE_EXTENSIONS.has(lowerName.slice(dot + 1))) {
+      return 'code';
     }
   }
   return 'other';

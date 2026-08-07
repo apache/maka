@@ -14,6 +14,10 @@ describe('attachment MIME routing', () => {
       ['application/pdf', undefined, 'pdf'],
       ['application/octet-stream', 'budget.xlsx', 'doc'],
       ['', 'slides.pptx', 'doc'],
+      ['text/plain', 'server.ts', 'code'],
+      ['application/octet-stream', 'MAIN.PY', 'code'],
+      ['text/markdown', 'notes.md', 'other'],
+      ['', 'archive.tar.gz', 'other'],
     ] as const) {
       assert.equal(attachmentKindFromMimeType(mime, name), kind);
     }

@@ -35,4 +35,17 @@ describe('pending attachments by draft key', () => {
 
     assert.deepEqual(selectPending(next, 'draft'), [addedWhileSending]);
   });
+
+  test('removes by caller identity even when the submitted snapshot was re-derived', () => {
+    // The composer hands back merged copies (e.g. with a late-arriving
+    // previewUrl), so reference equality would strand the staged originals.
+    const staged = { id: 'a', name: 'shot.png' };
+    const kept = { id: 'b', name: 'notes.md' };
+    const map = appendPending({}, 'draft', [staged, kept]);
+
+    const submittedCopy = { ...staged, previewUrl: 'data:image/png;base64,xyz' };
+    const next = removePendingItems(map, 'draft', [submittedCopy], (item) => item.id);
+
+    assert.deepEqual(selectPending(next, 'draft'), [kept]);
+  });
 });

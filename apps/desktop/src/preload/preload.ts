@@ -589,6 +589,14 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('attachments:pickFiles');
     },
+    // Staged-attachment thumbnail for the composer drawer. Peeks the approval
+    // (never consumes it) so the token stays redeemable for the actual send.
+    previewApproval(approvalId: string): Promise<
+      | { ok: true; base64: string; mimeType: string }
+      | { ok: false; reason: string }
+    > {
+      return ipcRenderer.invoke('attachments:previewApproval', approvalId);
+    },
     readBytes(sessionId: string, relativePath: string): Promise<
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }

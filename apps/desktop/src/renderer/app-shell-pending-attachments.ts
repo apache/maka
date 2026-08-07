@@ -21,9 +21,10 @@ export function removePendingItems<T>(
   map: PendingByKey<T>,
   key: string,
   items: readonly T[],
+  identityOf: (item: T) => unknown = (item) => item,
 ): PendingByKey<T> {
-  const submitted = new Set(items);
-  const remaining = (map[key] ?? []).filter((item) => !submitted.has(item));
+  const submitted = new Set(items.map(identityOf));
+  const remaining = (map[key] ?? []).filter((item) => !submitted.has(identityOf(item)));
   if (remaining.length === 0) return clearPending(map, key);
   return { ...map, [key]: remaining };
 }

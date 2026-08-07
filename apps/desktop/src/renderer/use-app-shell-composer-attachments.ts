@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core';
 import { useUiLocale } from '@maka/ui';
-import type { PendingAttachment } from './app-shell-chat-actions';
+import { pendingAttachmentSourceKey, type PendingAttachment } from './app-shell-chat-actions';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -24,6 +24,7 @@ function approvalToPending(file: {
 }): PendingAttachment {
   const mimeType = file.mimeType ?? guessMimeFromName(file.name);
   return {
+    stagingKey: crypto.randomUUID(),
     displayName: file.name,
     mimeType,
     kind: attachmentKindFromMimeType(mimeType, file.name),
@@ -35,12 +36,32 @@ function approvalToPending(file: {
 function fileToPending(file: File): PendingAttachment {
   const mimeType = file.type || undefined;
   return {
+    stagingKey: crypto.randomUUID(),
     displayName: file.name,
     mimeType,
     kind: attachmentKindFromMimeType(mimeType ?? '', file.name),
     size: file.size,
     source: { type: 'file', file },
   };
+}
+
+/** True once the URL has decoded as an image in this renderer. Gates every
+ * preview before it reaches the drawer, so a corrupt file or a spoofed
+ * extension falls back to the named file card instead of Astryx Thumbnail's
+ * anonymous placeholder. */
+async function probeImageUrl(url: string): Promise<boolean> {
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releasePreviewUrl(url: string | undefined): void {
+  if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
 }
 
 export function useAppShellComposerAttachments(options: {
@@ -50,14 +71,90 @@ export function useAppShellComposerAttachments(options: {
   const uiLocale = useUiLocale();
   const copy = getDesktopConversationCopy(uiLocale).actions;
   const [pendingByKey, setPendingByKey] = useState<PendingByKey<PendingAttachment>>({});
-  const pendingAttachments = selectPending(pendingByKey, options.draftKey);
+  // Preview URLs by stagingKey, kept beside — not inside — the staged items
+  // so a late-arriving preview never replaces an item object out from under
+  // an in-flight send. Entries only exist for staged items (see the cleanup
+  // effect); values are object URLs (file source) or data URLs (approval).
+  const [previewByStagingKey, setPreviewByStagingKey] = useState<Record<string, string>>({});
+  // Live mirror of every staged item's key, for async preview arrivals to
+  // check before writing: state snapshots inside a .then are stale by design.
+  const stagedKeysRef = useRef<Set<string>>(new Set());
+  const stagedAttachments = selectPending(pendingByKey, options.draftKey);
+  const pendingAttachments = useMemo(
+    () =>
+      stagedAttachments.map((item) => {
+        const previewUrl = previewByStagingKey[item.stagingKey];
+        return previewUrl ? { ...item, previewUrl } : item;
+      }),
+    [stagedAttachments, previewByStagingKey],
+  );
+
+  // Single owner of preview lifecycle: whenever the staged set changes,
+  // refresh the live-key mirror and drop (+ revoke) every preview whose item
+  // is gone — covering remove, submit, and any preview that raced past the
+  // write guard below.
+  useEffect(() => {
+    const liveKeys = new Set<string>();
+    for (const items of Object.values(pendingByKey)) {
+      for (const item of items) liveKeys.add(item.stagingKey);
+    }
+    stagedKeysRef.current = liveKeys;
+    setPreviewByStagingKey((current) => {
+      const deadKeys = Object.keys(current).filter((key) => !liveKeys.has(key));
+      if (deadKeys.length === 0) return current;
+      const next = { ...current };
+      for (const key of deadKeys) {
+        releasePreviewUrl(next[key]);
+        delete next[key];
+      }
+      return next;
+    });
+  }, [pendingByKey]);
+
+  function commitPreview(stagingKey: string, url: string): void {
+    if (!stagedKeysRef.current.has(stagingKey)) {
+      // The item was removed or sent while the preview was in flight.
+      releasePreviewUrl(url);
+      return;
+    }
+    setPreviewByStagingKey((current) => ({ ...current, [stagingKey]: url }));
+  }
+
+  /** SEQUENTIAL by design: each approval preview makes main read and decode
+   * the full original (bounded by the file's own stat size), so firing a
+   * whole picker batch concurrently multiplies peak memory by the batch
+   * size. One at a time keeps the ceiling at a single image; the drawer
+   * shows named file cards until each thumbnail lands. */
+  async function loadPreviewsSequentially(staged: readonly PendingAttachment[]): Promise<void> {
+    for (const item of staged) {
+      if (item.kind !== 'image') continue;
+      if (!stagedKeysRef.current.has(item.stagingKey)) continue;
+      try {
+        if (item.source.type === 'file') {
+          const url = URL.createObjectURL(item.source.file);
+          if (await probeImageUrl(url)) commitPreview(item.stagingKey, url);
+          else releasePreviewUrl(url);
+          continue;
+        }
+        const preview = await window.maka.attachments.previewApproval(item.source.approvalId);
+        if (!preview.ok) continue;
+        const url = `data:${preview.mimeType};base64,${preview.base64}`;
+        if (await probeImageUrl(url)) commitPreview(item.stagingKey, url);
+      } catch {
+        // Soft by design: a failed preview leaves the named file card.
+      }
+    }
+  }
 
   async function pickAttachments(): Promise<void> {
     const ownerKey = options.draftKey;
     try {
       const result = await window.maka.attachments.pickFiles();
       if (!result.ok) return;
-      setPendingByKey((map) => appendPending(map, ownerKey, result.files.map(approvalToPending)));
+      const staged = result.files.map(approvalToPending);
+      setPendingByKey((map) => appendPending(map, ownerKey, staged));
+      for (const item of staged) stagedKeysRef.current.add(item.stagingKey);
+      void loadPreviewsSequentially(staged);
     } catch (error) {
       options.toastApi.error(
         copy.attachmentFailedTitle,
@@ -69,7 +166,10 @@ export function useAppShellComposerAttachments(options: {
   async function attachFilePaths(files: File[]): Promise<void> {
     if (files.length === 0) return;
     const ownerKey = options.draftKey;
-    setPendingByKey((map) => appendPending(map, ownerKey, files.map(fileToPending)));
+    const staged = files.map(fileToPending);
+    setPendingByKey((map) => appendPending(map, ownerKey, staged));
+    for (const item of staged) stagedKeysRef.current.add(item.stagingKey);
+    void loadPreviewsSequentially(staged);
   }
 
   function removeAttachment(index: number): void {
@@ -79,7 +179,9 @@ export function useAppShellComposerAttachments(options: {
 
   function clearSubmittedAttachments(submitted: readonly PendingAttachment[]): void {
     const ownerKey = options.draftKey;
-    setPendingByKey((map) => removePendingItems(map, ownerKey, submitted));
+    setPendingByKey((map) =>
+      removePendingItems(map, ownerKey, submitted, pendingAttachmentSourceKey),
+    );
   }
 
   return {

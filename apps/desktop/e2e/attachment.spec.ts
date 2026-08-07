@@ -67,9 +67,16 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
     );
   });
 
-  // Both attachment kinds appear in the composer before send.
+  // Both attachment kinds appear in the composer before send: the file as a
+  // named two-line card, the image as a decoded Astryx Thumbnail — its
+  // filename lives in the accessible name (and hover tooltip), not visible
+  // text, once the preview probe passes.
   await expect(page.getByText('note.txt')).toBeVisible();
-  await expect(page.getByText('pixel.png')).toBeVisible();
+  const stagedThumbnail = page
+    .locator('.maka-composer-context-drawer')
+    .getByRole('group', { name: 'pixel.png' });
+  await expect(stagedThumbnail).toBeVisible();
+  await expect(stagedThumbnail.locator('img')).toBeVisible();
 
   // Send the message carrying the attachment — the fake backend echoes the
   // attachment name, proving the ingest-on-send path delivered it (not just

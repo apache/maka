@@ -141,7 +141,7 @@ function isPathAttachment(file: AttachmentIngestFile): file is Extract<Attachmen
 /** Read at most maxBytes+1 bytes; reject if the file is larger. Guards against a
  * TOCTOU where the file grows between stat (size pre-check) and read, so main
  * never loads an oversized file into memory. */
-async function readFileCapped(path: string, maxBytes: number): Promise<Uint8Array> {
+export async function readFileCapped(path: string, maxBytes: number): Promise<Uint8Array> {
   const fh = await open(path, 'r');
   try {
     const buf = Buffer.alloc(maxBytes + 1);

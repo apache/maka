@@ -28,7 +28,9 @@ import { registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
-import { resizeImageForAttachment } from "./attachment-resize-native.js";
+import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
+import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
+import { readFileCapped } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { releaseBrowserSession } from "./browser/session.js";
 import { resolveBuildInfo } from "./build-info.js";
@@ -563,6 +565,12 @@ function registerPersistentClientIpc(): void {
       ok: true,
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),
     };
+  });
+  registerAttachmentPreviewIpc({
+    ipcMain,
+    approvals: attachmentApprovals,
+    readFile: readFileCapped,
+    renderPreview: renderAttachmentPreview,
   });
 }
 

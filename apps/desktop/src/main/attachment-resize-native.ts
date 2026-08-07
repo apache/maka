@@ -17,3 +17,27 @@ export async function resizeImageForAttachment(bytes: Uint8Array): Promise<Uint8
   const resized = img.resize({ width: target.width, height: target.height });
   return resized.toPNG();
 }
+
+/** Longest edge for composer-drawer preview thumbnails. The drawer renders a
+ * 64px square; 512 keeps it crisp on retina + drawer zoom while the data URL
+ * handed to the renderer stays small. */
+export const ATTACHMENT_PREVIEW_MAX_EDGE = 512;
+
+/**
+ * Render a staged attachment's preview thumbnail: decode, scale the longest
+ * edge down to {@link ATTACHMENT_PREVIEW_MAX_EDGE}, re-encode as PNG (always
+ * PNG so the renderer never sees the original container format). Returns
+ * null when the bytes don't decode as an image (corrupt file or a spoofed
+ * extension), so the caller can fall back to the placeholder glyph. Same
+ * nativeImage caveats as {@link resizeImageForAttachment}.
+ */
+export async function renderAttachmentPreview(
+  bytes: Uint8Array,
+): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
+  const img = nativeImage.createFromBuffer(Buffer.from(bytes));
+  if (img.isEmpty()) return null;
+  const size = img.getSize();
+  const target = computeResizeDimensions(size.width, size.height, ATTACHMENT_PREVIEW_MAX_EDGE);
+  const scaled = target ? img.resize({ width: target.width, height: target.height }) : img;
+  return { bytes: scaled.toPNG(), mimeType: 'image/png' };
+}

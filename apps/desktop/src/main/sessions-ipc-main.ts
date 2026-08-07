@@ -29,7 +29,9 @@ import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
 import { createRunStartedHook, resolveSessionSend, stoppedTurnBroadcasts } from './session-send-resolve.js';
-import { resizeImageForAttachment } from './attachment-resize-native.js';
+import { renderAttachmentPreview, resizeImageForAttachment } from './attachment-resize-native.js';
+import { registerAttachmentPreviewIpc } from './attachment-preview.js';
+import { readFileCapped } from './attachment-ingest.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
 import { resolveCreateSessionInput } from './create-session-input.js';
@@ -558,6 +560,12 @@ export function registerSessionsIpc(
       return { ok: true, files: attachmentApprovals.issueApprovals(event.sender.id, chosen) };
     },
   );
+  registerAttachmentPreviewIpc({
+    ipcMain,
+    approvals: attachmentApprovals,
+    readFile: readFileCapped,
+    renderPreview: renderAttachmentPreview,
+  });
   ipcMain.handle(
     'attachments:readBytes',
     async (_event, sessionId: string, relativePath: string): Promise<
