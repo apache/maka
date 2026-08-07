@@ -39,6 +39,25 @@ test('normalizes policy input while canonical policy decode rejects producer dri
   );
 });
 
+test('preserves a valid default thinking level and rejects unknown levels', () => {
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    chatDefaults: { permissionMode: 'ask' as const, thinkingLevel: 'high' as const },
+  };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(policy).chatDefaults, policy.chatDefaults);
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 0,
+        operation: {
+          kind: 'set_chat_defaults',
+          value: { permissionMode: 'ask', thinkingLevel: 'unbounded' },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('normalizes only the bounded agent settings patch surface', () => {
   assert.deepEqual(
     normalizeRuntimePolicyMutation({

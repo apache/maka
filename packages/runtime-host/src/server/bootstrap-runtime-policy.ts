@@ -6,7 +6,12 @@ import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 
 const JOURNAL_FILE = '.runtime-host-bootstrap.json';
-const FREE_MODEL = 'nemotron-3-ultra-free';
+export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
+export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
+  OPENCODE_FREE_DEFAULT_MODEL,
+  'mimo-v2.5-free',
+  'deepseek-v4-flash-free',
+] as const;
 
 interface BootstrapEnvironment {
   readonly ANTHROPIC_API_KEY?: string;
@@ -17,7 +22,7 @@ interface BootstrapSeed {
   readonly slug: string;
   readonly name: string;
   readonly providerType: ProviderType;
-  readonly modelId: string;
+  readonly enabledModelIds: readonly string[];
   readonly secret?: string;
 }
 
@@ -73,7 +78,7 @@ function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSe
       slug: 'opencode-free',
       name: 'OpenCode Free',
       providerType: 'opencode-free',
-      modelId: FREE_MODEL,
+      enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
     },
   ];
   const anthropic = environment.ANTHROPIC_API_KEY?.trim();
@@ -83,7 +88,7 @@ function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSe
       slug: 'env-anthropic',
       name: 'Anthropic (env)',
       providerType: 'anthropic',
-      modelId: 'claude-sonnet-4-5-20250929',
+      enabledModelIds: ['claude-sonnet-4-5-20250929'],
       secret: anthropic,
     });
   } else if (openai) {
@@ -91,7 +96,7 @@ function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSe
       slug: 'env-openai',
       name: 'OpenAI (env)',
       providerType: 'openai',
-      modelId: 'gpt-4o-mini',
+      enabledModelIds: ['gpt-4o-mini'],
       secret: openai,
     });
   }
@@ -118,7 +123,7 @@ async function ensureConnection(
         name: seed.name,
         providerType: seed.providerType,
         enabled: true,
-        enabledModelIds: [seed.modelId],
+        enabledModelIds: seed.enabledModelIds,
       },
     });
     if (created.kind === 'committed') {
@@ -171,7 +176,10 @@ async function setDefaultIfMissing(
   if (catalog.defaultTarget !== null) return;
   const committed = await stores.connectionCatalog.setDefaultTarget({
     expectedCatalogRevision: catalog.revision,
-    target: { connectionId: connection.connectionId, modelId: FREE_MODEL },
+    target: {
+      connectionId: connection.connectionId,
+      modelId: OPENCODE_FREE_DEFAULT_MODEL,
+    },
   });
   if (committed.kind !== 'committed') {
     throw new Error(`Bootstrap default target could not be stored: ${committed.kind}`);
@@ -188,7 +196,7 @@ async function replaceBootstrapDefault(
   const current = catalog.defaultTarget;
   if (
     current !== null &&
-    (current.connectionId !== free.connectionId || current.modelId !== FREE_MODEL)
+    (current.connectionId !== free.connectionId || current.modelId !== OPENCODE_FREE_DEFAULT_MODEL)
   ) {
     return;
   }

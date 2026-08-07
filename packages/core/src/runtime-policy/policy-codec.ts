@@ -1,3 +1,4 @@
+import { isThinkingLevel } from '../model-thinking.js';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '../settings.js';
 import type {
   AgentRuntimeSettingsPatch,
@@ -217,11 +218,22 @@ function normalizePrivacy(value: unknown): RuntimePolicy['privacy'] {
 }
 
 function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
-  const item = exactRecord(value, 'chat defaults', ['permissionMode']);
+  const item = exactRecord(
+    value,
+    'chat defaults',
+    ['permissionMode', 'thinkingLevel'],
+    ['permissionMode'],
+  );
   if (!(CHAT_DEFAULT_PERMISSION_MODES as readonly unknown[]).includes(item.permissionMode)) {
     throw domainError('chat default permission mode is invalid');
   }
-  return { permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'] };
+  if (item.thinkingLevel !== undefined && !isThinkingLevel(item.thinkingLevel)) {
+    throw domainError('chat default thinking level is invalid');
+  }
+  return {
+    permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'],
+    ...(item.thinkingLevel === undefined ? {} : { thinkingLevel: item.thinkingLevel }),
+  };
 }
 
 function normalizeWebSearch(value: unknown): RuntimePolicy['webSearch'] {

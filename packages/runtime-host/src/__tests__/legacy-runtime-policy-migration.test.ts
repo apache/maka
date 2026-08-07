@@ -170,23 +170,38 @@ test('resumes a journaled migration without duplicating committed Connections', 
 });
 
 test('upgrades only the untouched historical free bootstrap during import', async () => {
-  await withMigrationRoot(async ({ root, legacyConfigurationRoot, stores }) => {
-    const legacy = createConnectionStore(legacyConfigurationRoot);
-    await legacy.create({
-      slug: 'opencode-free',
-      name: 'OpenCode Free',
-      providerType: 'opencode-free',
+  for (const seed of [
+    {
       defaultModel: 'big-pickle',
+      enabledModelIds: ['big-pickle'],
+    },
+    {
+      defaultModel: 'nemotron-3-ultra-free',
+      enabledModelIds: ['nemotron-3-ultra-free'],
+      extras: { makaBootstrap: { id: 'opencode-free', version: 2 } },
+    },
+  ]) {
+    await withMigrationRoot(async ({ root, legacyConfigurationRoot, stores }) => {
+      const legacy = createConnectionStore(legacyConfigurationRoot);
+      await legacy.create({
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        ...seed,
+      });
+      await legacy.setDefault('opencode-free');
+
+      await migrateLegacyRuntimePolicy({ workspaceRoot: root, legacyConfigurationRoot, stores });
+
+      const catalog = await stores.connectionCatalog.getSnapshot();
+      assert.deepEqual(catalog.connections[0]?.enabledModelIds, [
+        'nemotron-3-ultra-free',
+        'mimo-v2.5-free',
+        'deepseek-v4-flash-free',
+      ]);
+      assert.equal(catalog.defaultTarget?.modelId, 'nemotron-3-ultra-free');
     });
-    await legacy.update('opencode-free', { enabledModelIds: ['big-pickle'] });
-    await legacy.setDefault('opencode-free');
-
-    await migrateLegacyRuntimePolicy({ workspaceRoot: root, legacyConfigurationRoot, stores });
-
-    const catalog = await stores.connectionCatalog.getSnapshot();
-    assert.deepEqual(catalog.connections[0]?.enabledModelIds, ['nemotron-3-ultra-free']);
-    assert.equal(catalog.defaultTarget?.modelId, 'nemotron-3-ultra-free');
-  });
+  }
 });
 
 async function withMigrationRoot(

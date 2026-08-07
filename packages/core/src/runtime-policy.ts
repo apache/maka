@@ -4,6 +4,7 @@ import type {
   ModelDiscoveryResult,
   ModelInfo,
 } from './llm-connections.js';
+import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
 import {
@@ -93,6 +94,7 @@ export interface RuntimePolicy {
   };
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
+    readonly thinkingLevel?: ThinkingLevel;
   };
   readonly webSearch: {
     readonly enabled: boolean;

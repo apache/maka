@@ -18,6 +18,10 @@ import { createConnectionStore } from '@maka/storage/connection-store';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { createSettingsStore } from '@maka/storage/settings-store';
+import {
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+  OPENCODE_FREE_DEFAULT_MODEL,
+} from './bootstrap-runtime-policy.js';
 
 const JOURNAL_FILE = '.runtime-host-m5-migration.json';
 const LEGACY_FILES = ['llm-connections.json', 'credentials.json', 'settings.json'] as const;
@@ -297,25 +301,46 @@ function legacyTestSummary(connection: LlmConnection): ConnectionTestSummary | n
 }
 
 function normalizeLegacyConnection(connection: LlmConnection): LlmConnection {
-  if (
-    connection.slug !== 'opencode-free' ||
-    connection.name !== 'OpenCode Free' ||
-    connection.providerType !== 'opencode-free' ||
-    connection.baseUrl !== undefined ||
-    connection.defaultModel !== 'big-pickle' ||
-    connection.enabled !== true ||
-    connection.enabledModelIds?.length !== 1 ||
-    connection.enabledModelIds[0] !== 'big-pickle' ||
-    connection.models !== undefined ||
-    connection.extras !== undefined
-  ) {
-    return connection;
-  }
+  const isBootstrapBase =
+    connection.slug === 'opencode-free' &&
+    connection.name === 'OpenCode Free' &&
+    connection.providerType === 'opencode-free' &&
+    connection.baseUrl === undefined &&
+    connection.enabled === true &&
+    connection.models === undefined;
+  if (!isBootstrapBase) return connection;
+  const legacyV1 =
+    connection.defaultModel === 'big-pickle' &&
+    sameStringList(connection.enabledModelIds, ['big-pickle']) &&
+    connection.extras === undefined;
+  const legacyV2 =
+    connection.defaultModel === OPENCODE_FREE_DEFAULT_MODEL &&
+    sameStringList(connection.enabledModelIds, [OPENCODE_FREE_DEFAULT_MODEL]) &&
+    bootstrapVersion(connection) === 2;
+  if (!legacyV1 && !legacyV2) return connection;
   return {
     ...connection,
-    defaultModel: 'nemotron-3-ultra-free',
-    enabledModelIds: ['nemotron-3-ultra-free'],
+    defaultModel: OPENCODE_FREE_DEFAULT_MODEL,
+    enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS],
   };
+}
+
+function bootstrapVersion(connection: LlmConnection): number | undefined {
+  const extras = connection.extras;
+  if (!extras || typeof extras !== 'object' || Array.isArray(extras)) return undefined;
+  if (Object.keys(extras).length !== 1) return undefined;
+  const bootstrap = extras.makaBootstrap;
+  if (!bootstrap || typeof bootstrap !== 'object' || Array.isArray(bootstrap)) return undefined;
+  const record = bootstrap as { id?: unknown; version?: unknown };
+  if (Object.keys(record).length !== 2 || record.id !== 'opencode-free') return undefined;
+  return typeof record.version === 'number' ? record.version : undefined;
+}
+
+function sameStringList(
+  actual: readonly string[] | undefined,
+  expected: readonly string[],
+): boolean {
+  return actual?.length === expected.length && actual.every((id, index) => id === expected[index]);
 }
 
 async function hasLegacyState(workspaceRoot: string): Promise<boolean> {

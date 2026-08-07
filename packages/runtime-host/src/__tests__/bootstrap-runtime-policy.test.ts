@@ -19,7 +19,11 @@ test('a fresh Host starts with one anonymous runnable target', async () => {
     const free = catalog.connections[0];
     assert.equal(free?.slug, 'opencode-free');
     assert.equal(free?.enabled, true);
-    assert.deepEqual(free?.enabledModelIds, ['nemotron-3-ultra-free']);
+    assert.deepEqual(free?.enabledModelIds, [
+      'nemotron-3-ultra-free',
+      'mimo-v2.5-free',
+      'deepseek-v4-flash-free',
+    ]);
     assert.deepEqual(catalog.defaultTarget, {
       connectionId: free?.connectionId,
       modelId: 'nemotron-3-ultra-free',
