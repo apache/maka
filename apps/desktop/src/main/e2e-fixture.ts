@@ -3,11 +3,12 @@ import { join } from 'node:path';
 import type { UiLocale, E2eFixtureScenario, E2eFixtureState } from '@maka/core';
 import {
   backfillSessionProjects,
+  createFileCredentialStore,
   createProjectCatalog,
   createSessionStore,
 } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
-import type { CredentialStore } from './credential-store.js';
+import type { CredentialStore } from '@maka/storage';
 import {
   ARTIFACT_SESSION_ID,
   ERROR_SESSION_ID,
@@ -689,18 +690,19 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
 export async function seedE2eFixture(input: {
   workspaceRoot: string;
   fixture: E2eFixture;
-  credentialStore: Pick<CredentialStore, 'setSecret'>;
+  credentialStore?: Pick<CredentialStore, 'setSecret'>;
   now?: number;
 }): Promise<void> {
   const now = input.now ?? E2E_FIXTURE_NOW;
   await rm(input.workspaceRoot, { recursive: true, force: true });
   await mkdir(input.workspaceRoot, { recursive: true });
   await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
+  const credentialStore = input.credentialStore ?? createFileCredentialStore(input.workspaceRoot);
   await writeSettings(input.workspaceRoot, input.fixture.scenario);
   if (input.fixture.scenario === 'first-run') return;
   await writeConnections(input.workspaceRoot, now, input.fixture.scenario);
   for (const slug of ['zai-live', 'relay-fallback', 'empty-fetched', 'needs-reauth', 'broken-provider']) {
-    await input.credentialStore.setSecret(slug, 'api_key', `fixture-key-${slug}`);
+    await credentialStore.setSecret(slug, 'api_key', `fixture-key-${slug}`);
   }
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
   if (input.fixture.scenario === 'deep-research-progress') {

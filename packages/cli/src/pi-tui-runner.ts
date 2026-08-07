@@ -39,7 +39,7 @@ import type {
   MakaCliSkillSurface,
   MakaForeignSessionReader,
   MakaOnboardingSurface,
-  MakaPiTuiGoalLifecycle,
+  MakaPiTuiTurnActivitySurface,
   ModelChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
@@ -154,8 +154,8 @@ export interface MakaPiTuiInput {
   skills?: MakaCliSkillSurface;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
-  /** Mandatory turn ownership shared with CLI Automation and Goal continuation. */
-  goalLifecycle: MakaPiTuiGoalLifecycle;
+  /** Serializes TUI turn and control activity for the attached Session. */
+  turnActivity: MakaPiTuiTurnActivitySurface;
   /** API-key onboarding surface (#1098). When present, /setup runs the wizard,
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
@@ -252,7 +252,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
-  let unbindGoalHost: (() => void) | undefined;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -525,7 +524,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let sessionActivity: SessionActivityLease | undefined;
     try {
       const sessionId = input.driver.getSessionId();
-      if (sessionId) sessionActivity = await input.goalLifecycle.activities.acquire(sessionId);
+      if (sessionId) sessionActivity = await input.turnActivity.activities.acquire(sessionId);
       if (closed) return;
       await action();
     } catch (error) {
@@ -552,8 +551,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const restoreTerminal = () => {
     removeProcessHandlers();
-    unbindGoalHost?.();
-    unbindGoalHost = undefined;
     unsubscribeSessionTitleChanges();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
@@ -1034,8 +1031,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     submitPrompt(prompt);
   };
 
-  // Runs one agent turn through the shared activity/drain lifecycle. Shared by
-  // user submits, queued follow-ups, and coordinator-owned goal injections.
+  // Runs one visible agent turn through the shared activity/drain lifecycle.
   function runAgentTurn(
     request: MakaPiTuiTurnRequest,
     authoritativeAttachedTurn?: MakaAttachedSessionTurn,
@@ -1070,7 +1066,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
     return runMakaPiTuiTurn({
       driver: input.driver,
-      lifecycle: input.goalLifecycle,
+      turnActivity: input.turnActivity,
       request,
       // A requested stop converges through the authoritative event stream.
       // Cutting the iterator short here would make the UI appear idle before
@@ -1263,41 +1259,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       attached.kind === 'external' ? attached.turn : undefined,
     );
   };
-
-  try {
-    unbindGoalHost = input.goalLifecycle.bindHost({
-      admitTurn: (sessionId, text) => {
-        if (input.driver.getSessionId() !== sessionId) {
-          return { kind: 'unavailable', reason: 'TUI is attached to a different session.' };
-        }
-        if (busy) {
-          return { kind: 'busy', whenIdle: currentActivityCompletion! };
-        }
-        const sessionActivity = input.goalLifecycle.activities.reserveIfIdle(sessionId)!;
-        const turnId = randomUUID();
-        return {
-          kind: 'prepared',
-          turnId,
-          start: () => {
-            try {
-              return runAgentTurn({
-                kind: 'coordinator',
-                prompt: text,
-                turnId,
-                activity: sessionActivity,
-              });
-            } catch (error) {
-              sessionActivity.release();
-              throw error;
-            }
-          },
-        };
-      },
-    });
-  } catch (error) {
-    beginClose(error instanceof Error ? error : new Error(String(error)));
-    return closedPromise;
-  }
 
   const setModel = async (nextModel: string) => {
     await input.driver.setModel(nextModel);

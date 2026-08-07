@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core';
-import { SessionActivityRegistry, type GoalTurnOutcome } from '@maka/runtime';
+import { SessionActivityRegistry } from '@maka/runtime';
 import { runMakaPiTuiTurn } from '../pi-tui-turn.js';
 
 describe('Maka Pi TUI turn', () => {
-  test('prepares, projects, and settles an external turn after releasing activity', async () => {
+  test('prepares and drains an external turn under one Session activity lease', async () => {
     const activities = new SessionActivityRegistry();
     const sequence: string[] = [];
-    const settled: GoalTurnOutcome[] = [];
 
     const outcome = await runMakaPiTuiTurn({
       driver: {
@@ -29,24 +28,7 @@ describe('Maka Pi TUI turn', () => {
           ]);
         },
       },
-      lifecycle: {
-        activities,
-        beginObservedTurn: (sessionId, turnId) => {
-          sequence.push('register');
-          assert.equal(sessionId, 'session-1');
-          assert.equal(turnId, 'turn-1');
-          assert.ok(activities.whenIdle(sessionId));
-          return {
-            kind: 'registered',
-            settle: (settledOutcome) => {
-              assert.equal(activities.whenIdle(sessionId), undefined);
-              sequence.push('settle');
-              settled.push(settledOutcome);
-              return Promise.resolve();
-            },
-          };
-        },
-      },
+      turnActivity: { activities },
       request: {
         kind: 'external',
         prompt: 'visible prompt',
@@ -64,15 +46,7 @@ describe('Maka Pi TUI turn', () => {
     });
 
     assert.deepEqual(outcome, { kind: 'completed', turnId: 'turn-1' });
-    assert.deepEqual(settled, [outcome]);
-    assert.deepEqual(sequence, [
-      'start',
-      'prepare',
-      'register',
-      'event:text_delta',
-      'event:complete',
-      'settle',
-    ]);
+    assert.deepEqual(sequence, ['start', 'prepare', 'event:text_delta', 'event:complete']);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
 
@@ -86,13 +60,7 @@ describe('Maka Pi TUI turn', () => {
           return preparedTurn([]);
         },
       },
-      lifecycle: {
-        activities,
-        beginObservedTurn: () => ({
-          kind: 'registered',
-          settle: async () => {},
-        }),
-      },
+      turnActivity: { activities },
       request: { kind: 'external', prompt: 'hello', sessionId: null },
       shouldAbort: () => false,
       onFailure: (error) => {
@@ -112,7 +80,6 @@ describe('Maka Pi TUI turn', () => {
   test('releases existing-session activity when preparation fails', async () => {
     const activities = new SessionActivityRegistry();
     const failures: string[] = [];
-    let registrations = 0;
 
     const outcome = await runMakaPiTuiTurn({
       driver: {
@@ -121,16 +88,7 @@ describe('Maka Pi TUI turn', () => {
           throw new Error('prepare failed');
         },
       },
-      lifecycle: {
-        activities,
-        beginObservedTurn: () => {
-          registrations++;
-          return {
-            kind: 'registered',
-            settle: async () => {},
-          };
-        },
-      },
+      turnActivity: { activities },
       request: { kind: 'external', prompt: 'hello', sessionId: 'session-1' },
       shouldAbort: () => false,
       onFailure: (error) => {
@@ -140,7 +98,6 @@ describe('Maka Pi TUI turn', () => {
 
     assert.deepEqual(outcome, { kind: 'errored', reason: 'prepare failed' });
     assert.deepEqual(failures, ['prepare failed']);
-    assert.equal(registrations, 0);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
 });

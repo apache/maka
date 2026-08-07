@@ -185,6 +185,8 @@ export async function createExecutionRuntimeHostComposition(
     await ensureBootstrapRuntimePolicy({
       workspaceRoot: context.owner.capability.canonicalPath,
       stores: runtimePolicyStores,
+      onDeferredError: (error) =>
+        console.error('[runtime-host] optional bootstrap target could not be configured:', error),
     });
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedAutomationStore = await openInteractiveAutomationAuthorityForWrite(

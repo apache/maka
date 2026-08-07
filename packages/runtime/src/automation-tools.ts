@@ -19,18 +19,10 @@ import {
 } from '@maka/core/automation';
 import type { AutomationStatus } from '@maka/core/automation';
 import type { MakaTool } from './tool-runtime.js';
-import type { AutomationManager, AutomationDefinition } from './automation-state.js';
+import type { AutomationDefinition } from './automation-state.js';
 
 export const AUTOMATION_TOOL_NAME = 'Automation';
 export const AUTOMATION_MODEL_LIST_MAX_ITEMS = 100;
-
-export interface AutomationToolDeps {
-  automationManager: AutomationManager;
-  onAutomationChange?: () => void;
-  /** Whether the host can run cron (fresh-session) automations. When false, the
-   *  cron kind is not advertised and is rejected at creation. */
-  cronEnabled?: boolean;
-}
 
 export interface AutomationToolAuthority {
   create(input: {
@@ -41,12 +33,23 @@ export interface AutomationToolAuthority {
     schedule: AutomationDefinition['schedule'];
     maxFires?: number;
     durable?: boolean;
-  }): Promise<AutomationDefinition | { error: string }>;
-  delete(id: string, sessionId: string): Promise<boolean>;
-  pause(id: string, sessionId: string): Promise<AutomationDefinition | undefined>;
-  resume(id: string, sessionId: string): Promise<AutomationDefinition | undefined>;
-  get(id: string, sessionId: string): Promise<AutomationDefinition | undefined>;
-  listVisibleForSession(sessionId: string): Promise<readonly AutomationDefinition[]>;
+  }): AutomationDefinition | { error: string } | Promise<AutomationDefinition | { error: string }>;
+  delete(id: string, sessionId: string): boolean | Promise<boolean>;
+  pause(
+    id: string,
+    sessionId: string,
+  ): AutomationDefinition | undefined | Promise<AutomationDefinition | undefined>;
+  resume(
+    id: string,
+    sessionId: string,
+  ): AutomationDefinition | undefined | Promise<AutomationDefinition | undefined>;
+  get(
+    id: string,
+    sessionId: string,
+  ): AutomationDefinition | undefined | Promise<AutomationDefinition | undefined>;
+  listVisibleForSession(
+    sessionId: string,
+  ): readonly AutomationDefinition[] | Promise<readonly AutomationDefinition[]>;
 }
 
 export interface AutomationAuthorityToolDeps {
@@ -163,30 +166,6 @@ const AUTOMATION_SCHEMA_HEARTBEAT_ONLY = makeAutomationSchema(
 
 // Type from the broadest (cron-enabled) schema so kind can be 'heartbeat'|'cron'.
 type AutomationInput = z.infer<typeof AUTOMATION_SCHEMA_WITH_CRON>;
-
-export function buildAutomationTool(deps: AutomationToolDeps): MakaTool<AutomationInput, string> {
-  const changed = <T>(value: T): T => {
-    deps.onAutomationChange?.();
-    return value;
-  };
-  return buildAutomationAuthorityTool({
-    cronEnabled: deps.cronEnabled,
-    authority: {
-      create: async (input) => changed(deps.automationManager.create(input)),
-      delete: async (id, sessionId) => changed(deps.automationManager.delete(id, sessionId)),
-      pause: async (id, sessionId) => changed(deps.automationManager.pause(id, sessionId)),
-      resume: async (id, sessionId) => changed(deps.automationManager.resume(id, sessionId)),
-      get: async (id, sessionId) => {
-        const automation = deps.automationManager.get(id);
-        return automation && (automation.sessionId === sessionId || automation.durable === true)
-          ? automation
-          : undefined;
-      },
-      listVisibleForSession: async (sessionId) =>
-        deps.automationManager.listVisibleForSession(sessionId),
-    },
-  });
-}
 
 export function buildAutomationAuthorityTool(
   deps: AutomationAuthorityToolDeps,

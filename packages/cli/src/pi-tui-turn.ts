@@ -2,17 +2,14 @@ import type { SessionEvent } from '@maka/core';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import {
   drainGoalTurn,
-  type GoalObservedTurnStart,
-  type GoalObservedTurnSettler,
   type GoalTurnOutcome,
   type SessionActivityLease,
   type SessionActivityRegistry,
 } from '@maka/runtime';
 import type { MakaPreparedSessionTurn, MakaSessionDriver } from './session-driver.js';
 
-export interface MakaPiTuiTurnLifecycle {
+export interface MakaPiTuiTurnActivity {
   activities: SessionActivityRegistry;
-  beginObservedTurn: (sessionId: string, turnId: string) => GoalObservedTurnStart;
 }
 
 export type MakaPiTuiTurnRequest =
@@ -27,12 +24,6 @@ export type MakaPiTuiTurnRequest =
       turnOrchestration?: TurnOrchestration;
     }
   | {
-      kind: 'coordinator';
-      prompt: string;
-      turnId: string;
-      activity: SessionActivityLease;
-    }
-  | {
       /** A Turn that another Client or the Runtime Host already started. */
       kind: 'attached';
       turn: MakaPreparedSessionTurn;
@@ -40,7 +31,7 @@ export type MakaPiTuiTurnRequest =
 
 export interface RunMakaPiTuiTurnInput {
   driver: Pick<MakaSessionDriver, 'preparePrompt'>;
-  lifecycle: MakaPiTuiTurnLifecycle;
+  turnActivity: MakaPiTuiTurnActivity;
   request: MakaPiTuiTurnRequest;
   shouldAbort: () => boolean;
   onStart?: () => void;
@@ -51,29 +42,16 @@ export interface RunMakaPiTuiTurnInput {
 
 /**
  * Owns one visible TUI turn from activity reservation through full stream drain.
- * External settlement always follows activity release; coordinator turns return
- * their outcome directly to the admission completion capability.
+ * Goal continuation and Automation admission remain Runtime Host responsibilities.
  */
 export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<GoalTurnOutcome> {
   const { request } = input;
-  let activity = request.kind === 'coordinator' ? request.activity : undefined;
-  let preparedTurnId =
-    request.kind === 'coordinator'
-      ? request.turnId
-      : request.kind === 'attached'
-        ? request.turn.turnId
-        : undefined;
-  let settleExternalTurn: GoalObservedTurnSettler | undefined;
-
-  const notifySettlement = (outcome: GoalTurnOutcome): void => {
-    if (!settleExternalTurn) return;
-    void settleExternalTurn(outcome);
-  };
+  let activity: SessionActivityLease | undefined;
+  let preparedTurnId = request.kind === 'attached' ? request.turn.turnId : undefined;
 
   const finishBeforeDrain = (outcome: GoalTurnOutcome): GoalTurnOutcome => {
     activity?.release();
     activity = undefined;
-    notifySettlement(outcome);
     return outcome;
   };
 
@@ -84,13 +62,9 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
     }
 
     const observedSessionId =
-      request.kind === 'external'
-        ? request.sessionId
-        : request.kind === 'attached'
-          ? request.turn.sessionId
-          : null;
+      request.kind === 'external' ? request.sessionId : request.turn.sessionId;
     if (observedSessionId) {
-      activity = await input.lifecycle.activities.acquire(observedSessionId);
+      activity = await input.turnActivity.activities.acquire(observedSessionId);
       if (input.shouldAbort()) {
         return finishBeforeDrain(abortedOutcome(preparedTurnId));
       }
@@ -100,28 +74,15 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
       request.kind === 'attached'
         ? request.turn
         : await input.driver.preparePrompt(request.prompt, {
-            ...(request.kind === 'coordinator' ? { turnId: request.turnId } : {}),
-            ...(request.kind === 'external' && request.sendText !== undefined
-              ? { modelText: request.sendText }
-              : {}),
-            ...(request.kind === 'external' && request.turnOrchestration
-              ? { turnOrchestration: request.turnOrchestration }
-              : {}),
+            ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
+            ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           });
     preparedTurnId = turn.turnId;
     await input.onPrepared?.(turn);
 
-    if (!activity) activity = await input.lifecycle.activities.acquire(turn.sessionId);
+    if (!activity) activity = await input.turnActivity.activities.acquire(turn.sessionId);
     if (input.shouldAbort()) {
       return finishBeforeDrain(abortedOutcome(turn.turnId));
-    }
-
-    if (request.kind !== 'coordinator') {
-      const registration = input.lifecycle.beginObservedTurn(turn.sessionId, turn.turnId);
-      if (registration.kind !== 'registered') {
-        throw new Error(registration.reason);
-      }
-      settleExternalTurn = registration.settle;
     }
 
     let sawTerminalEvent = false;
@@ -145,7 +106,6 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
           await input.onFailure?.(new Error(outcome.reason));
         }
       },
-      onSettled: notifySettlement,
     });
     activity = undefined;
     return outcome;

@@ -24,6 +24,10 @@ test('a fresh Host starts with one anonymous runnable target', async () => {
       connectionId: free?.connectionId,
       modelId: 'nemotron-3-ultra-free',
     });
+    assert.deepEqual(
+      catalog.connections.map(({ slug }) => slug),
+      ['opencode-free'],
+    );
   });
 });
 
@@ -98,6 +102,33 @@ test('bootstrap does not alter an existing user catalog', async () => {
 
     assert.deepEqual(await stores.connectionCatalog.getSnapshot(), before);
     assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+  });
+});
+
+test('an invalid optional environment credential does not block the free target', async () => {
+  await withFixture(async ({ root, stores }) => {
+    const errors: unknown[] = [];
+    await ensureBootstrapRuntimePolicy({
+      workspaceRoot: root,
+      stores,
+      environment: { OPENAI_API_KEY: 'x'.repeat(64 * 1024 + 1) },
+      onDeferredError: (error) => errors.push(error),
+    });
+
+    assert.equal(errors.length, 1);
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const free = catalog.connections.find(({ slug }) => slug === 'opencode-free');
+    assert.deepEqual(catalog.defaultTarget, {
+      connectionId: free?.connectionId,
+      modelId: 'nemotron-3-ultra-free',
+    });
+    await assert.doesNotReject(() =>
+      ensureBootstrapRuntimePolicy({
+        workspaceRoot: root,
+        stores,
+        environment: {},
+      }),
+    );
   });
 });
 

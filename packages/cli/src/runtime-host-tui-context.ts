@@ -4,7 +4,7 @@ import { SessionActivityRegistry, type InvocableSkillEntry } from '@maka/runtime
 import { readRuntimeHostSkillCatalog, type RuntimeHostConnection } from '@maka/runtime-host/client';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import type {
-  MakaPiTuiGoalLifecycle,
+  MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -27,7 +27,7 @@ export interface RuntimeHostTuiContext {
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
-  readonly goalLifecycle: MakaPiTuiGoalLifecycle;
+  readonly turnActivity: MakaPiTuiTurnActivitySurface;
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
@@ -73,7 +73,7 @@ export async function createRuntimeHostTuiContext(
       modelContextWindow: target.connection.models.find((model) => model.id === target.model)
         ?.contextWindow,
       modelChoices,
-      goalLifecycle: createHostOwnedGoalLifecycle(),
+      turnActivity: createHostOwnedTurnActivity(),
       listSkills: (cwd) => listStablePresentedSkills(connection, cwd),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding: createRuntimeHostOnboardingSurface(connection),
@@ -142,12 +142,6 @@ async function resolveResumeTarget(
   return resolveTarget(catalog);
 }
 
-function createHostOwnedGoalLifecycle(): MakaPiTuiGoalLifecycle {
-  return {
-    activities: new SessionActivityRegistry(),
-    beginObservedTurn: () => ({ kind: 'registered', settle: async () => {} }),
-    // Goal continuation is a Runtime Host responsibility. Binding a local
-    // admission callback would create a second scheduler authority.
-    bindHost: () => () => {},
-  };
+function createHostOwnedTurnActivity(): MakaPiTuiTurnActivitySurface {
+  return { activities: new SessionActivityRegistry() };
 }

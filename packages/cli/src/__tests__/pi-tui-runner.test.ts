@@ -20,10 +20,8 @@ import {
   type UserQuestionResponse,
 } from '@maka/core';
 import {
-  GoalManager,
   SessionActivityRegistry,
   type ContextDiagnostics,
-  type GoalTurnOutcome,
   type ShellRunUpdate,
 } from '@maka/runtime';
 import type {
@@ -37,11 +35,10 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
-import { CliGoalContinuation, type CliGoalTurnHost } from '../cli-goal-continuation.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import type {
   MakaOnboardingSurface,
-  MakaPiTuiGoalLifecycle,
+  MakaPiTuiTurnActivitySurface,
   ModelChoice,
   OnboardingProviderEntry,
   OnboardingSaveResult,
@@ -66,17 +63,17 @@ import {
 // load, which varies between local (truecolor) and CI (unset/dumb) terminals.
 before(() => _setColorLevelForTesting(3));
 
-type TestMakaPiTuiInput = Omit<MakaPiTuiInput, 'driver' | 'goalLifecycle'> & {
+type TestMakaPiTuiInput = Omit<MakaPiTuiInput, 'driver' | 'turnActivity'> & {
   driver: MakaSessionDriver;
-  goalLifecycle?: MakaPiTuiGoalLifecycle;
+  turnActivity?: MakaPiTuiTurnActivitySurface;
 };
 
 function runMakaPiTui(input: TestMakaPiTuiInput): Promise<void> {
-  const { driver, goalLifecycle, ...rest } = input;
+  const { driver, turnActivity, ...rest } = input;
   return runMakaPiTuiImpl({
     ...rest,
     driver,
-    goalLifecycle: goalLifecycle ?? createTestGoalLifecycle(),
+    turnActivity: turnActivity ?? createTestTurnActivity(),
   });
 }
 
@@ -97,26 +94,10 @@ function prepareTestPrompt(
   });
 }
 
-function createTestGoalLifecycle(
-  onSettled?: (sessionId: string, turnId: string, outcome: GoalTurnOutcome) => void,
+function createTestTurnActivity(
   activities = new SessionActivityRegistry(),
-  onHostChange?: (host: CliGoalTurnHost | undefined) => void,
-): MakaPiTuiGoalLifecycle {
-  return {
-    activities,
-    beginObservedTurn: (sessionId, turnId) => ({
-      kind: 'registered',
-      settle: async (outcome) => {
-        onSettled?.(sessionId, turnId, outcome);
-      },
-    }),
-    bindHost: (host) => {
-      onHostChange?.(host);
-      return () => {
-        onHostChange?.(undefined);
-      };
-    },
-  };
+): MakaPiTuiTurnActivitySurface {
+  return { activities };
 }
 
 function deferred<T>() {
@@ -1867,111 +1848,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('passes an external turn failure to the settlement callback', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new QuickErrorDriver();
-    const settlements: Array<{ sessionId: string; kind: string; reason?: string }> = [];
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-      goalLifecycle: createTestGoalLifecycle((sessionId, _turnId, outcome) => {
-        settlements.push({
-          sessionId,
-          kind: outcome.kind,
-          ...(outcome.kind === 'errored' ? { reason: outcome.reason } : {}),
-        });
-      }),
-    });
-
-    terminal.input('run');
-    terminal.input('\r');
-    await waitFor(() => settlements.length === 1);
-
-    assert.deepEqual(settlements, [
-      {
-        sessionId: 'session-1',
-        kind: 'errored',
-        reason: 'turn failed',
-      },
-    ]);
-
-    exitMaka(terminal);
-    await run;
-  });
-
-  test('uses the real CLI Goal lifecycle for external, owned, and switched turns', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    let goalId = 0;
-    let evaluations = 0;
-    const manager = new GoalManager({
-      generateId: () => `goal-${++goalId}`,
-      now: () => 1,
-    });
-    const lifecycle = new CliGoalContinuation({
-      goalManager: manager,
-      evaluator: {
-        evaluate: async () => {
-          evaluations++;
-          return JSON.stringify({
-            met: evaluations === 2,
-            impossible: false,
-            progress: true,
-            waiting: false,
-            reason: evaluations === 2 ? 'verified' : 'continue',
-          });
-        },
-      },
-      getRecentContext: async () => 'recent context',
-    });
-    assert.equal(manager.create('session-1', 'ship').kind, 'created');
-
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-      goalLifecycle: lifecycle,
-    });
-
-    terminal.input('run');
-    terminal.input('\r');
-    await waitFor(() => manager.get('session-1')?.status === 'achieved');
-    assert.equal(evaluations, 2);
-    assert.equal(driver.prompts.length, 2);
-    assert.equal(driver.prompts[0], 'run');
-    assert.match(driver.prompts[1] ?? '', /\[Goal continuation\]/);
-    assert.equal(manager.get('session-1')?.iterations, 1);
-    assert.equal(lifecycle.activities.whenIdle('session-1'), undefined);
-
-    assert.equal(manager.create('session-1', 'old session goal').kind, 'created');
-    const switched = lifecycle.beginObservedTurn('session-1', 'turn-after-switch');
-    assert.equal(switched.kind, 'registered');
-    if (switched.kind !== 'registered') throw new Error('expected registered switch-boundary turn');
-    await driver.switchSession('session-2');
-    await switched.settle({
-      kind: 'completed',
-      turnId: 'turn-after-switch',
-    });
-    await waitFor(() => manager.get('session-1')?.status === 'paused');
-    assert.equal(manager.get('session-1')?.lastReason, 'TUI is attached to a different session.');
-
-    manager.clear('session-1');
-    exitMaka(terminal);
-    await run;
-
-    lifecycle.dispose();
-    manager.dispose();
-  });
-
   test('waits to start a visible turn until shared session activity releases', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -1985,7 +1861,7 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'deepseek',
       permissionMode: 'ask',
       terminal,
-      goalLifecycle: createTestGoalLifecycle(undefined, activities),
+      turnActivity: createTestTurnActivity(activities),
     });
 
     terminal.input('run');
@@ -2006,7 +1882,6 @@ describe('Maka Pi TUI runner', () => {
     const terminal = new FakeTerminal();
     const driver = new FirstSessionPreparedDriver();
     const activities = new SessionActivityRegistry();
-    let registered = false;
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -2015,26 +1890,12 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'deepseek',
       permissionMode: 'ask',
       terminal,
-      goalLifecycle: {
-        activities,
-        bindHost: () => () => {},
-        beginObservedTurn: (sessionId, turnId) => {
-          assert.equal(sessionId, 'session-first');
-          assert.equal(turnId, 'turn-first');
-          assert.ok(activities.whenIdle(sessionId));
-          registered = true;
-          return {
-            kind: 'registered',
-            settle: async () => {},
-          };
-        },
-      },
+      turnActivity: createTestTurnActivity(activities),
     });
 
     terminal.input('run');
     terminal.input('\r');
     await driver.streamStarted.promise;
-    assert.equal(registered, true);
     assert.ok(activities.whenIdle('session-first'));
     assert.equal(activities.reserveIfIdle('session-first'), undefined);
 
@@ -2068,7 +1929,7 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'deepseek',
       permissionMode: 'ask',
       terminal,
-      goalLifecycle: createTestGoalLifecycle(undefined, activities),
+      turnActivity: createTestTurnActivity(activities),
     });
 
     terminal.input('run');
@@ -4809,7 +4670,6 @@ describe('Maka Pi TUI runner', () => {
     const terminal = new FakeTerminal();
     const driver = new DeferredControlDriver();
     const activities = new SessionActivityRegistry();
-    let goalHost: CliGoalTurnHost | undefined;
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -4818,18 +4678,14 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
       terminal,
-      goalLifecycle: createTestGoalLifecycle(undefined, activities, (host) => {
-        if (host) goalHost = host;
-      }),
+      turnActivity: createTestTurnActivity(activities),
     });
-    assert.ok(goalHost);
 
     terminal.input('/model claude-opus-4-1');
     terminal.input('\r');
     await waitFor(() => driver.models.length === 1);
-    const admission = goalHost.admitTurn('session-1', 'wait for control');
-    assert.equal(admission.kind, 'busy');
-    if (admission.kind !== 'busy') throw new Error('expected busy admission');
+    const controlCompletion = activities.whenIdle('session-1');
+    assert.ok(controlCompletion);
 
     let automationAcquired = false;
     const automationActivity = activities.acquire('session-1').then((lease) => {
@@ -4847,7 +4703,7 @@ describe('Maka Pi TUI runner', () => {
 
     // After the switch completes, the previously typed prompt goes through.
     driver.releaseSetModel();
-    await admission.whenIdle;
+    await controlCompletion;
     const automationLease = await automationActivity;
     automationLease.release();
     await delay(20);
@@ -8435,55 +8291,6 @@ class SandboxBoundaryThenErrorDriver implements MakaSessionDriver {
   }
 }
 
-class QuickErrorDriver implements MakaSessionDriver {
-  readonly prompts: string[] = [];
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
-
-  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
-    return prepareTestPrompt(this, prompt);
-  }
-
-  async *compactSession(): AsyncIterable<never> {}
-
-  async *promptEvents(prompt: string): AsyncIterable<SessionEvent> {
-    this.prompts.push(prompt);
-    // The turn fails immediately, so its duration never crosses the long-turn
-    // threshold — the attention ring must come from the error, not the timer.
-    yield {
-      type: 'error',
-      id: 'event-error',
-      turnId: 'turn-1',
-      ts: 1,
-      message: 'turn failed',
-      recoverable: false,
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
-}
-
 class RewindDriver extends SlashCommandDriver {
   readonly rewound: string[] = [];
 
@@ -8602,10 +8409,8 @@ async function runSignalExitProbe(
     }
 
     const terminal = new ReportingTerminal();
-    const goalLifecycle = {
+    const turnActivity = {
       activities: {},
-      beginObservedTurn() { throw new Error('unused'); },
-      bindHost() { return () => {}; },
     };
     const driver = {
       async preparePrompt() { throw new Error('unused'); },
@@ -8632,7 +8437,7 @@ async function runSignalExitProbe(
       connectionSlug: 'test-connection',
       permissionMode: 'ask',
       terminal,
-      goalLifecycle,
+      turnActivity,
       onProcessExit: (exitCode) => beginMakaCliExit(exitCode),
     });
     process.stdout.write('READY\\n');
@@ -8703,10 +8508,8 @@ async function runFatalExitProbe(
     }
 
     const terminal = new ReportingTerminal();
-    const goalLifecycle = {
+    const turnActivity = {
       activities: {},
-      beginObservedTurn() { throw new Error('unused'); },
-      bindHost() { return () => {}; },
     };
     const driver = {
       async preparePrompt() { throw new Error('unused'); },
@@ -8735,7 +8538,7 @@ async function runFatalExitProbe(
         connectionSlug: 'test-connection',
         permissionMode: 'ask',
         terminal,
-        goalLifecycle,
+        turnActivity,
         onProcessExit: (exitCode, error) => {
           if (error) process.stderr.write(\`${'${formatMakaCliFatalError(error)}'}\\n\`);
           beginMakaCliExit(exitCode);

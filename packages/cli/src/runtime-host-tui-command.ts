@@ -2,7 +2,7 @@ import { SessionActivityRegistry } from '@maka/runtime';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
 import { connectRuntimeHostCli } from './runtime-host-cli-context.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
-import type { MakaPiTuiGoalLifecycle } from './pi-tui-contracts.js';
+import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
 import { createRuntimeHostTuiContext } from './runtime-host-tui-context.js';
 import type { MakaSessionDriver } from './session-driver.js';
@@ -43,7 +43,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: 'ask',
-      goalLifecycle: context.goalLifecycle,
+      turnActivity: context.turnActivity,
       listSkills: context.listSkills,
       onboarding: context.onboarding,
       recap: context.recap,
@@ -72,11 +72,9 @@ async function runFirstRunOnboarding(rootPath: string, cwd: string): Promise<boo
       connectionSlug: '',
       permissionMode: 'ask',
       firstRun: true,
-      goalLifecycle: {
+      turnActivity: {
         activities: new SessionActivityRegistry(),
-        beginObservedTurn: () => ({ kind: 'registered', settle: async () => {} }),
-        bindHost: () => () => {},
-      } satisfies MakaPiTuiGoalLifecycle,
+      } satisfies MakaPiTuiTurnActivitySurface,
       onboarding: createRuntimeHostOnboardingSurface(connected.connection),
     });
     return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;

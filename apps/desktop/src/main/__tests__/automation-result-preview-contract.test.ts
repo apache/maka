@@ -12,7 +12,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { AutomationManager, buildAutomationTool, AUTOMATION_TOOL_NAME } from '@maka/runtime';
+import {
+  AutomationManager,
+  buildAutomationAuthorityTool,
+  AUTOMATION_TOOL_NAME,
+} from '@maka/runtime';
 import { LocaleProvider, ToolCallDetail, type ToolActivityItem } from '@maka/ui';
 
 const SESSION = 'sess-preview-contract';
@@ -41,7 +45,7 @@ function realTool() {
     now: () => 1_700_000_000_000,
     random: () => 0,
   });
-  return buildAutomationTool({ automationManager: manager, cronEnabled: true });
+  return buildAutomationAuthorityTool({ authority: manager, cronEnabled: true });
 }
 
 function renderAutomationResult(text: string): string {

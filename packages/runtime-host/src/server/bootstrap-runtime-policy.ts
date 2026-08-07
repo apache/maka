@@ -30,6 +30,7 @@ export async function ensureBootstrapRuntimePolicy(input: {
   readonly workspaceRoot: string;
   readonly stores: RuntimePolicyStoresWriter;
   readonly environment?: BootstrapEnvironment;
+  readonly onDeferredError?: (error: unknown) => void;
 }): Promise<void> {
   const journalPath = join(input.workspaceRoot, JOURNAL_FILE);
   const resuming = await readJournal(journalPath);
@@ -40,17 +41,29 @@ export async function ensureBootstrapRuntimePolicy(input: {
   }
 
   const seeds = bootstrapSeeds(input.environment ?? process.env);
-  const free = await ensureConnection(input.stores, seeds[0]!);
+  const { connection: free } = await ensureConnection(input.stores, seeds[0]!);
   await setDefaultIfMissing(input.stores, free);
 
-  let preferred = free;
-  for (const seed of seeds.slice(1)) {
-    const connection = await ensureConnection(input.stores, seed);
-    if (seed.secret) await ensureCredential(input.stores, connection, seed.secret);
-    preferred = connection;
+  try {
+    let preferred = free;
+    for (const seed of seeds.slice(1)) {
+      const ensured = await ensureConnection(input.stores, seed);
+      const connection = ensured.connection;
+      if (seed.secret) {
+        try {
+          await ensureCredential(input.stores, connection, seed.secret);
+        } catch (error) {
+          if (ensured.created) await removeFailedBootstrapConnection(input.stores, connection);
+          throw error;
+        }
+      }
+      preferred = connection;
+    }
+    await replaceBootstrapDefault(input.stores, free, preferred);
+    await rm(journalPath, { force: true });
+  } catch (error) {
+    input.onDeferredError?.(error);
   }
-  await replaceBootstrapDefault(input.stores, free, preferred);
-  await rm(journalPath, { force: true });
 }
 
 function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSeed[] {
@@ -87,7 +100,7 @@ function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSe
 async function ensureConnection(
   stores: RuntimePolicyStoresWriter,
   seed: BootstrapSeed,
-): Promise<ConnectionCatalogEntry> {
+): Promise<{ readonly connection: ConnectionCatalogEntry; readonly created: boolean }> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const catalog = await stores.connectionCatalog.getSnapshot();
     const existing = catalog.connections.find(({ slug }) => slug === seed.slug);
@@ -95,7 +108,7 @@ async function ensureConnection(
       if (existing.providerType !== seed.providerType) {
         throw new Error(`Bootstrap Connection slug conflict: ${seed.slug}`);
       }
-      return existing;
+      return { connection: existing, created: false };
     }
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: catalog.revision,
@@ -110,10 +123,22 @@ async function ensureConnection(
     if (created.kind === 'committed') {
       const connection = created.snapshot.connections.find(({ slug }) => slug === seed.slug);
       if (!connection) throw new Error('Bootstrap commit omitted its Connection');
-      return connection;
+      return { connection, created: true };
     }
   }
   throw new Error(`Bootstrap Connection could not be created: ${seed.slug}`);
+}
+
+async function removeFailedBootstrapConnection(
+  stores: RuntimePolicyStoresWriter,
+  connection: ConnectionCatalogEntry,
+): Promise<void> {
+  const removed = await stores.connectionCatalog.remove({
+    expected: { connectionId: connection.connectionId, revision: connection.revision },
+  });
+  if (removed.kind !== 'committed') {
+    throw new Error(`Failed Bootstrap Connection could not be removed: ${removed.kind}`);
+  }
 }
 
 async function ensureCredential(

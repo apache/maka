@@ -1542,22 +1542,15 @@ export type {
   AutomationStatus,
   AutomationManagerDeps,
 } from './automation-state.js';
-export {
-  AutomationScheduler,
-  FIRE_CHECK_INTERVAL_MS,
-  DEFER_WINDOW_MS,
-} from './automation-scheduler.js';
-export type { AutomationSchedulerDeps, AutomationFireResult } from './automation-scheduler.js';
+export { FIRE_CHECK_INTERVAL_MS, DEFER_WINDOW_MS } from './automation-schedule-policy.js';
 export {
   buildAutomationAuthorityTool,
-  buildAutomationTool,
   AUTOMATION_TOOL_NAME,
   AUTOMATION_MODEL_LIST_MAX_ITEMS,
 } from './automation-tools.js';
 export type {
   AutomationAuthorityToolDeps,
   AutomationToolAuthority,
-  AutomationToolDeps,
 } from './automation-tools.js';
 export { evaluateAutomationCanFire, HEARTBEAT_IDLE_STATUSES } from './automation-can-fire.js';
 export type { CanFireSessionHeader, EvaluateAutomationCanFireDeps } from './automation-can-fire.js';

@@ -36,7 +36,6 @@ import { releaseBrowserSession } from "./browser/session.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
-import { createFileCredentialStore } from "./credential-store.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
@@ -64,6 +63,7 @@ import {
 } from "./runtime-host-connections-ipc-main.js";
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
+import { buildClientSettingsTools } from "./client-settings-tools.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { registerRuntimeHostDailyReviewIpc } from "./runtime-host-daily-review-ipc-main.js";
@@ -117,12 +117,11 @@ const workspaceRoot = join(
   "workspaces",
   e2eFixture?.workspaceName ?? "default",
 );
-const credentialStore = createFileCredentialStore(workspaceRoot);
 if (e2eFixture) {
   console.log(
     `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
   );
-  await seedE2eFixture({ workspaceRoot, fixture: e2eFixture, credentialStore });
+  await seedE2eFixture({ workspaceRoot, fixture: e2eFixture });
 } else {
   const storageRoot = await startupStep(
     "storage root",
@@ -205,6 +204,29 @@ onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
   native.computerUsePip.destroyAll();
 };
+const clientSettingsTools = buildClientSettingsTools({
+  read: () => settingsStore.get(),
+  update: async (patch) => {
+    const settings = await settingsStore.update(patch);
+    if (patch.system) {
+      await keepSystemAwake.apply(settings.system.keepSystemAwake);
+    }
+    mainWindowController.send("settings:externalChanged", { ts: Date.now() });
+    return settings;
+  },
+  confirm: async (changes) => {
+    const result = await dialog.showMessageBox({
+      type: "question",
+      message: "Allow Maka to update this client's settings?",
+      detail: changes.join("\n"),
+      buttons: ["Apply changes", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return result.response === 0;
+  },
+});
 
 const projectRoot = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, "last-project-path.json"),
@@ -308,6 +330,13 @@ owner = await startRuntimeHostDesktopOwner(
       additionalGroups: () => {
         const mcpTools = buildMcpTools(mcpManager);
         return [
+          {
+            offerId: "desktop_settings",
+            label: "Client settings",
+            description:
+              "Read or update UI and operating-system settings owned by this Desktop client.",
+            tools: clientSettingsTools,
+          },
           {
             offerId: "desktop_rive",
             label: "Rive",

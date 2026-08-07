@@ -1,7 +1,7 @@
 import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
-import type { GoalTurnAdmission, HostCapabilities, SkillSource } from '@maka/runtime';
-import type { MakaPiTuiTurnLifecycle } from './pi-tui-turn.js';
+import type { HostCapabilities, SkillSource } from '@maka/runtime';
+import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
   connectionSlug: string;
@@ -68,6 +68,4 @@ export interface MakaForeignSessionReader {
   readDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest>;
 }
 
-export interface MakaPiTuiGoalLifecycle extends MakaPiTuiTurnLifecycle {
-  bindHost(host: { admitTurn(sessionId: string, text: string): GoalTurnAdmission }): () => void;
-}
+export type MakaPiTuiTurnActivitySurface = MakaPiTuiTurnActivity;
