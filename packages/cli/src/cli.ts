@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
-import { resolveCliRuntimeOwner } from './cli-runtime-owner.js';
 
 export type MakaCliCommand =
   | { kind: 'tui'; resumeSessionId?: string }
@@ -107,13 +106,8 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
   const command = parseMakaCliArgs(argv, version);
   switch (command.kind) {
     case 'run': {
-      const runtimeOwner = resolveCliRuntimeOwner(process.env.MAKA_CLI_RUNTIME_OWNER);
-      if (runtimeOwner === 'runtime-host') {
-        const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
-        return runRuntimeHostTextCli(command.args);
-      }
-      const { runMakaTextCli } = await import('./run-command.js');
-      return runMakaTextCli(command.args);
+      const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
+      return runRuntimeHostTextCli(command.args);
     }
     case 'activate': {
       const { runMakaActivationCli } = await import('./activation-command.js');
@@ -138,18 +132,8 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       return command.exitCode;
     case 'tui': {
       const workspaceRoot = resolveMakaWorkspaceRoot();
-      const runtimeOwner = resolveCliRuntimeOwner(process.env.MAKA_CLI_RUNTIME_OWNER);
-      if (runtimeOwner === 'runtime-host') {
-        const { runRuntimeHostTui } = await import('./runtime-host-tui-command.js');
-        return runRuntimeHostTui({
-          workspaceRoot,
-          cwd: process.cwd(),
-          onProcessExit: handleMakaCliProcessExit,
-          ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
-        });
-      }
-      const { runEmbeddedTui } = await import('./embedded-tui-command.js');
-      return runEmbeddedTui({
+      const { runRuntimeHostTui } = await import('./runtime-host-tui-command.js');
+      return runRuntimeHostTui({
         workspaceRoot,
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,

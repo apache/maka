@@ -1,13 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createSessionStore } from '@maka/storage';
 import { parseMakaCliArgs, resolveMakaCliExitCode } from '../cli.js';
-import { formatStartupConnectionError, resolveTuiResumeTarget } from '../embedded-tui-command.js';
 
 describe('Maka CLI args', () => {
   test('parses canonical commands and rejects malformed input', () => {
@@ -62,55 +57,5 @@ describe('Maka CLI args', () => {
 
     assert.equal(signal, null);
     assert.equal(code, 1);
-  });
-});
-
-describe('resolveTuiResumeTarget', () => {
-  test("anchors the resumed session's stored connection and model", async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-cli-resume-target-'));
-    try {
-      const session = await createSessionStore(root).create({
-        cwd: '/tmp/some-workspace',
-        name: 'Resume target',
-        backend: 'ai-sdk',
-        llmConnectionSlug: 'some-connection',
-        model: 'some-model',
-        permissionMode: 'ask',
-      });
-
-      const result = await resolveTuiResumeTarget(root, session.id);
-
-      assert.deepEqual(result, {
-        requestedConnectionSlug: 'some-connection',
-        requestedModel: 'some-model',
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('returns undefined for a session that does not exist, so startup falls back to the default connection', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-cli-resume-target-missing-'));
-    try {
-      const result = await resolveTuiResumeTarget(root, 'nonexistent-session');
-
-      assert.equal(result, undefined);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('startup connection-error guidance', () => {
-  const workspaceRoot = '/tmp/maka-workspace';
-
-  test('recognizes connection failures without swallowing unrelated errors', () => {
-    for (const reason of ['missing_default_connection', 'missing_api_key']) {
-      assert.ok(
-        formatStartupConnectionError(new Error(`NO_REAL_CONNECTION:${reason}`), workspaceRoot),
-        reason,
-      );
-    }
-    assert.equal(formatStartupConnectionError(new Error('ENOENT'), workspaceRoot), null);
   });
 });
