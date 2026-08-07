@@ -109,11 +109,9 @@ instruction-for-instruction equivalence.
 
 ## Visual validation
 
-The same built Canvas engine is rendered on both light and dark surfaces:
+Validate against the live overlay, not checked-in screenshots:
 
-![Light and dark cursor comparison](assets/codex-cursor/light-dark-comparison.png)
+- Render the same built Canvas engine on both light and dark surfaces and confirm the soft fog silhouette and center hotspot.
+- Sample one long move and confirm the curved path, movement-axis stretch and rotation, and terminal settle.
 
-The contact sheet below samples one long move from the built overlay bundle. It
-shows the curved path, movement-axis stretch and rotation, and terminal settle:
-
-![Cursor motion contact sheet](assets/codex-cursor/motion-sheet.png)
+PR visual evidence belongs on the pull request (or issue), not under `docs/`.

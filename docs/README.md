@@ -71,3 +71,4 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - Move completed plans to `docs/archive/`; remove a document only after its unique references are updated or no longer needed.
 - Prefer updating an existing authority over adding a parallel document.
 - Keep PR follow-up records, incident investigations, and run logs in the pull request or `docs/archive/`, not as new current contracts. `notes/` and `docs/local/` are workspace-local scratch and stay untracked.
+- Do not commit PR or issue screenshots under `docs/`. Attach temporary visual evidence on the GitHub thread; product hero/marketing images live under `.github/assets/`.
