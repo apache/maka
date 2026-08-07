@@ -5,6 +5,7 @@ import type {
   AgentGraphClientSnapshot,
   AgentGraphClientScheduledWork,
 } from './stream-graph-read-model.js';
+import type { AgentGraphScheduleReconciliationResult } from './stream-graph-schedule-reconcile.js';
 
 export const AGENT_SWARM_STATUS_TOOL_NAME = 'agent_swarm_status';
 
@@ -25,6 +26,8 @@ export interface AgentSwarmStatusItem {
   operatorId?: string;
   childSessionId?: string;
   runId?: string;
+  failurePhase?: 'schedule' | 'topology' | 'stop' | 'render' | 'dispatch';
+  failureReason?: string;
 }
 
 export interface AgentSwarmStatusResult {
@@ -58,7 +61,12 @@ export function projectAgentSwarmStatus(
   for (const operator of snapshot.operators) {
     for (const workId of operator.scheduledWorkIds) operatorByWorkId.set(workId, operator);
   }
-  const items = snapshot.work.map((work) => swarmItem(work, operatorByWorkId.get(work.workId)));
+  const failureByWorkId = new Map(
+    snapshot.reconciliationFailures.map((failure) => [failure.workId, failure]),
+  );
+  const items = snapshot.work.map((work) =>
+    swarmItem(work, operatorByWorkId.get(work.workId), failureByWorkId.get(work.workId)),
+  );
   const counts = emptyCounts();
   for (const item of items) counts[item.status] += 1;
   const status = items.some((item) => attentionStatuses.has(item.status))
@@ -77,6 +85,52 @@ export function projectAgentSwarmStatus(
 
 export function isAgentSwarmSupervisorCheckpoint(snapshot: AgentGraphClientSnapshot): boolean {
   return projectAgentSwarmStatus(snapshot).status !== 'running';
+}
+
+export function shouldWakeAgentSwarmSupervisor(
+  _rootSessionId: string,
+  _result: AgentGraphScheduleReconciliationResult | undefined,
+  snapshot: AgentGraphClientSnapshot,
+): boolean | undefined {
+  if (snapshot.orchestrationMode !== 'swarm') return undefined;
+  return snapshot.reconciliationFailures.length > 0 || isAgentSwarmSupervisorCheckpoint(snapshot);
+}
+
+export function renderAgentSwarmSupervisorWake(
+  _rootSessionId: string,
+  snapshot: AgentGraphClientSnapshot,
+  result?: AgentGraphScheduleReconciliationResult,
+):
+  | {
+      text: string;
+      displayText: string;
+      orchestrationMode: 'graph';
+    }
+  | undefined {
+  if (snapshot.orchestrationMode !== 'swarm') return undefined;
+  const status = projectAgentSwarmStatus(snapshot);
+  const attentionWorkIds = status.items
+    .filter((item) => attentionStatuses.has(item.status))
+    .map((item) => item.workId);
+  return {
+    text: [
+      '<agent-swarm-checkpoint>',
+      `Asynchronous swarm ${status.swarmId} reached ${status.status}.`,
+      `Reconciliation status: ${result?.status ?? 'checkpoint'}.`,
+      ...(attentionWorkIds.length > 0
+        ? [`Attention work ids: ${attentionWorkIds.join(', ')}.`]
+        : []),
+      'Call agent_swarm_status for compact item statuses only. Do not inspect child logs, tool activity, reasoning, or partial output.',
+      'For completed items, read only committed final results with agent_output view=result.',
+      'Replace failed work with update_agent_graph using replaces=<failed work id> and replacement_mode=replace. If work remains active after that decision, call yield_agent_graph without polling.',
+      'When all useful work is settled, finish the graph and report the synthesized result.',
+      '</agent-swarm-checkpoint>',
+    ].join('\n'),
+    displayText: `Agent swarm ${status.status.replace('_', ' ')}.`,
+    // Supervisor wake admission is always Graph orchestration; Swarm remains
+    // the durable graph identity and presentation policy, not a second runtime.
+    orchestrationMode: 'graph',
+  };
 }
 
 export function buildAgentSwarmStatusTool(input: {
@@ -98,9 +152,18 @@ export function buildAgentSwarmStatusTool(input: {
 function swarmItem(
   work: AgentGraphClientScheduledWork,
   operator: AgentGraphClientOperator | undefined,
+  failure: AgentGraphClientSnapshot['reconciliationFailures'][number] | undefined,
 ): AgentSwarmStatusItem {
   if (work.status !== 'requested') {
     return { workId: work.workId, status: work.status };
+  }
+  if (failure) {
+    return {
+      workId: work.workId,
+      status: 'failed',
+      failurePhase: failure.phase,
+      failureReason: failure.reason,
+    };
   }
   const status = operatorStatus(operator);
   return {

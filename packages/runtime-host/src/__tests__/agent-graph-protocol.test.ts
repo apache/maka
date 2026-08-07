@@ -145,6 +145,7 @@ function graphSnapshot(): AgentGraphClientSnapshot {
     schemaVersion: 1,
     rootSessionId: 'root-1',
     graphId: 'agent_graph_1',
+    orchestrationMode: 'swarm',
     snapshotVersion: fingerprint,
     status: 'active',
     scheduleRevision: 1,
@@ -211,6 +212,7 @@ function graphSnapshot(): AgentGraphClientSnapshot {
         committedAt: 1,
       },
     ],
+    reconciliationFailures: [],
     stoppedTargets: [],
     claims: [
       {
@@ -230,6 +232,7 @@ function graphSnapshot(): AgentGraphClientSnapshot {
       operators: 0,
       edges: 0,
       work: 0,
+      reconciliationFailures: 0,
       stoppedTargets: 0,
       claims: 0,
       controlDecisions: 0,

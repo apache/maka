@@ -191,6 +191,8 @@ export {
   buildAgentSwarmStatusTool,
   isAgentSwarmSupervisorCheckpoint,
   projectAgentSwarmStatus,
+  renderAgentSwarmSupervisorWake,
+  shouldWakeAgentSwarmSupervisor,
 } from './agent-swarm-status-tool.js';
 export type {
   AgentSwarmItemStatus,

@@ -50,9 +50,9 @@ import {
   buildParentAgentTools,
   listRunnableBuiltinAgentDefinitions,
   listInvocableSkills,
-  isAgentSwarmSupervisorCheckpoint,
+  renderAgentSwarmSupervisorWake,
   prepareSkillInvocationMessage,
-  projectAgentSwarmStatus,
+  shouldWakeAgentSwarmSupervisor,
   resolveSkillDiscoveryPaths,
 } from '@maka/runtime';
 import type {
@@ -1028,31 +1028,8 @@ agentGraphSupervisorWakeCoordinator = new AgentGraphSupervisorWakeCoordinator({
     }
     return runs[0]?.status ?? 'missing';
   },
-  shouldWake: async (rootSessionId, result, snapshot) => {
-    const header = await store.readHeader(rootSessionId);
-    if (header.orchestrationMode !== 'swarm') return undefined;
-    return result.failures.length > 0 || isAgentSwarmSupervisorCheckpoint(snapshot);
-  },
-  renderWake: async (rootSessionId, snapshot, result) => {
-    const header = await store.readHeader(rootSessionId);
-    if (header.orchestrationMode !== 'swarm') return undefined;
-    const status = projectAgentSwarmStatus(snapshot);
-    const checkpointStatus = result?.failures.length ? 'needs_attention' : status.status;
-    return {
-      text: [
-        '<agent-swarm-checkpoint>',
-        `Asynchronous swarm ${status.swarmId} reached ${checkpointStatus}.`,
-        `Reconciliation status: ${result?.status ?? 'recovered'}.`,
-        'Call agent_swarm_status for compact item statuses only. Do not inspect child logs, tool activity, reasoning, or partial output.',
-        'For completed items, read only committed final results with agent_output view=result.',
-        'Replace failed work with update_agent_graph using replaces=<failed work id> and replacement_mode=replace. If work remains active after that decision, call yield_agent_graph without polling.',
-        'When all useful work is settled, finish the graph and report the synthesized result.',
-        '</agent-swarm-checkpoint>',
-      ].join('\n'),
-      displayText: `Agent swarm ${checkpointStatus.replace('_', ' ')}.`,
-      orchestrationMode: 'swarm',
-    };
-  },
+  shouldWake: shouldWakeAgentSwarmSupervisor,
+  renderWake: renderAgentSwarmSupervisorWake,
   newId: randomUUID,
   onError: (rootSessionId) => {
     emitSessionsChanged('status-change', rootSessionId);
@@ -1067,6 +1044,9 @@ agentGraphCoordinator = new AgentGraphCoordinator({
   newId: randomUUID,
   onReconciliation: (rootSessionId, result) => {
     agentGraphSupervisorWakeCoordinator.notify(rootSessionId, result);
+  },
+  onCheckpoint: (rootSessionId) => {
+    agentGraphSupervisorWakeCoordinator.notify(rootSessionId);
   },
 });
 let settingsIpc: SettingsIpcHandle | undefined;

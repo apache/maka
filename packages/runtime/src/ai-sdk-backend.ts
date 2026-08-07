@@ -1121,6 +1121,7 @@ export class AiSdkBackend implements AgentBackend {
     runId: string | undefined;
     invocationId: string | undefined;
     hostedInteraction: HostedInteractionBridge | undefined;
+    orchestrationMode: EffectiveOrchestration['mode'];
     scope: () => TurnScope;
   }): ToolRuntime {
     const input = this.input;
@@ -1139,6 +1140,7 @@ export class AiSdkBackend implements AgentBackend {
       turnId: identity.turnId,
       ...(identity.hostedInteraction ? { hostedInteraction: identity.hostedInteraction } : {}),
       ...(identity.runId ? { runId: identity.runId } : {}),
+      orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
         this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
@@ -1210,6 +1212,7 @@ export class AiSdkBackend implements AgentBackend {
         runId: input.runId,
         invocationId: input.invocationId ?? input.runId,
         hostedInteraction: input.hostedInteraction,
+        orchestrationMode: orchestration.mode,
         scope: () => scope,
       }),
     );
@@ -1454,7 +1457,13 @@ export class AiSdkBackend implements AgentBackend {
             'agent_output',
           ])
         : scope.orchestration.mode === 'graph'
-          ? new Set(['view_agent_graph', 'update_agent_graph', 'yield_agent_graph', 'agent_output'])
+          ? new Set([
+              'view_agent_graph',
+              'update_agent_graph',
+              'yield_agent_graph',
+              'agent_swarm_status',
+              'agent_output',
+            ])
           : new Set<string>();
     const requestedToolMode: unknown =
       input.toolMode === undefined ? DEFAULT_TOOL_MODE : input.toolMode;

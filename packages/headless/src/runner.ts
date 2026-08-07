@@ -4,6 +4,7 @@ import {
   AgentGraphCoordinator,
   AGENT_TOOL_GROUP_ID,
   BackendRegistry,
+  SessionActivityRegistry,
   SessionManager,
   buildChildAgentTools,
   type InvocationResult,
@@ -29,7 +30,10 @@ import { defaultFinalScorer } from './scorer.js';
 import { buildHeadlessProductToolSurfaceForBackend } from './tools.js';
 import { normalizeVerifier, runVerifier, verifierProtectedPaths } from './verifier.js';
 import type { BenchmarkAdapterRegistry } from './benchmark-adapters.js';
-import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
+import {
+  createHeadlessAgentGraphWakeCoordinator,
+  createHeadlessSessionCapabilityBridge,
+} from './session-capabilities.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
 
 export interface RunExperimentDeps {
@@ -127,6 +131,7 @@ export async function runExperimentWithStorage(
 
   const workspace = await prepareWorkspace(task.workspaceDir);
   let graphCoordinator: AgentGraphCoordinator | undefined;
+  let graphWakeCoordinator: import('@maka/runtime').AgentGraphSupervisorWakeCoordinator | undefined;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
@@ -191,6 +196,7 @@ export async function runExperimentWithStorage(
       { initialBoundary: { kind: 'external', revision: 0 } },
     );
     graphControlStore = createAgentGraphControlStore(deps.storageRoot);
+    const graphWakeActivities = new SessionActivityRegistry();
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore: storage.executionStores.sessionStore,
       runStore,
@@ -199,19 +205,39 @@ export async function runExperimentWithStorage(
       runtime: manager,
       newId,
       rootSessionId: session.id,
+      onReconciliation: (rootSessionId, result) => {
+        graphWakeCoordinator?.notify(rootSessionId, result);
+      },
+      onCheckpoint: (rootSessionId) => {
+        graphWakeCoordinator?.notify(rootSessionId);
+      },
     });
-    sessionCapabilities.bind(manager, graphCoordinator);
+    graphWakeCoordinator = createHeadlessAgentGraphWakeCoordinator({
+      manager,
+      graphCoordinator,
+      activityRegistry: graphWakeActivities,
+      wakeStore: graphControlStore,
+      runStore,
+      sessionStore: storage.executionStores.sessionStore,
+      newId,
+    });
+    sessionCapabilities.bind(manager, graphCoordinator, graphWakeCoordinator);
 
     const turnId = newId();
     // Drain the turn to completion. The trajectory + status come from the
     // captured InvocationResult, not the streamed SessionEvents. Headless
     // execution is already enclosed by its explicit external isolation boundary.
-    for await (const _event of manager.sendMessage(session.id, {
-      turnId,
-      text: task.instruction,
-      ...(deps.turnOrchestration ? { turnOrchestration: deps.turnOrchestration } : {}),
-    })) {
-      // Event consumption drives the runtime to its terminal invocation.
+    const rootActivity = graphWakeActivities.reserve(session.id);
+    try {
+      for await (const _event of manager.sendMessage(session.id, {
+        turnId,
+        text: task.instruction,
+        ...(deps.turnOrchestration ? { turnOrchestration: deps.turnOrchestration } : {}),
+      })) {
+        // Event consumption drives the runtime to its terminal invocation.
+      }
+    } finally {
+      rootActivity.release();
     }
     await sessionCapabilities.settle(session.id);
     // Agent phase ends here: nothing still managed may be running while the
@@ -312,12 +338,16 @@ export async function runExperimentWithStorage(
       await endManagedShellSessions(deps.realBackendIsolation);
     } finally {
       try {
-        await graphCoordinator?.close();
+        await graphWakeCoordinator?.close();
       } finally {
         try {
-          graphControlStore?.close();
+          await graphCoordinator?.close();
         } finally {
-          await workspace.cleanup();
+          try {
+            graphControlStore?.close();
+          } finally {
+            await workspace.cleanup();
+          }
         }
       }
     }

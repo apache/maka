@@ -468,6 +468,74 @@ describe('stream graph schedule reconciliation', () => {
       store.close();
     }
   });
+
+  test('notifies a dispatch failure before slower siblings settle', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(600) });
+    const observation = new MemoryGraphObservation();
+    const baseExecutor = new MemoryScheduleExecutor(store, observation);
+    const stopController = new MemoryStopController(observation);
+    const slowStarted = deferred<void>();
+    const releaseSlow = deferred<void>();
+    const failureObserved = deferred<void>();
+    let reconciliationSettled = false;
+    try {
+      await commitSchedule(store, 'tool-parallel-failure', {
+        add_work: [
+          {
+            operator_id: 'writer',
+            instruction: 'fail immediately',
+            input_ids: [],
+          },
+          {
+            operator_id: 'writer',
+            instruction: 'settle slowly',
+            input_ids: [],
+          },
+        ],
+      });
+      const executor: AgentGraphIntentExecutor = {
+        async runClaimedAgentGraphIntent(input) {
+          if (input.prompt === 'fail immediately') {
+            throw new Error('fast dispatch failure');
+          }
+          slowStarted.resolve(undefined);
+          await releaseSlow.promise;
+          return baseExecutor.runClaimedAgentGraphIntent(input);
+        },
+      };
+
+      const reconciliation = reconcileAgentGraphSchedule({
+        topology: topology(),
+        controlStore: store,
+        executor,
+        stopController,
+        newId: nextId(),
+        maxNewActivations: 2,
+        observeGraph: () => observation.read(),
+        renderPrompt: ({ work }) => work.instruction,
+        supervisor: {
+          onReconciliationFailure(failure) {
+            assert.equal(failure.phase, 'dispatch');
+            assert.match(String(failure.error), /fast dispatch failure/);
+            failureObserved.resolve(undefined);
+          },
+        },
+      }).finally(() => {
+        reconciliationSettled = true;
+      });
+
+      await Promise.all([slowStarted.promise, failureObserved.promise]);
+      assert.equal(reconciliationSettled, false);
+      releaseSlow.resolve(undefined);
+      const result = await reconciliation;
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failures.length, 1);
+      assert.equal(result.dispatches.length, 1);
+    } finally {
+      releaseSlow.resolve(undefined);
+      store.close();
+    }
+  });
 });
 
 const GRAPH_ID = 'graph-schedule';

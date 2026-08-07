@@ -18,7 +18,9 @@ import {
   prepareSkillInvocationMessageFromInventory,
   RuntimeReadModel,
   routeWebSearchTools,
+  renderAgentSwarmSupervisorWake,
   SessionManager,
+  shouldWakeAgentSwarmSupervisor,
   SessionActivityRegistry,
   ShellRunProcessManager,
   type MakaTool,
@@ -696,6 +698,9 @@ export async function createExecutionRuntimeHostComposition(
       onReconciliation: (rootSessionId, result) => {
         void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
       },
+      onCheckpoint: (rootSessionId) => {
+        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId);
+      },
     });
     graphClient = new HostAgentGraphCoordinator({
       authority: graphCoordinator,
@@ -807,6 +812,8 @@ export async function createExecutionRuntimeHostComposition(
           randomUUID(),
           abortSignal,
         ),
+      shouldWake: shouldWakeAgentSwarmSupervisor,
+      renderWake: renderAgentSwarmSupervisorWake,
       newId: randomUUID,
       isSessionDeliverable: async (sessionId) => {
         try {

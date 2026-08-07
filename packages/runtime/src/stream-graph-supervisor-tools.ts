@@ -573,7 +573,10 @@ function resolveViewCursor(input: ViewAgentGraphToolInput): string | undefined {
 export function compileAgentGraphScheduleUpdate(input: {
   graphId: string;
   input: UpdateAgentGraphToolInput;
-  context: Pick<MakaToolContext, 'sessionId' | 'runId' | 'turnId' | 'toolCallId'>;
+  context: Pick<
+    MakaToolContext,
+    'sessionId' | 'runId' | 'turnId' | 'toolCallId' | 'orchestrationMode'
+  >;
 }): AgentGraphScheduleUpdateRequest {
   const graphId = requireIdentity(input.graphId, 'graph id');
   const parsed = updateSchema.parse(input.input);
@@ -583,6 +586,8 @@ export function compileAgentGraphScheduleUpdate(input: {
     runId,
     turnId: requireIdentity(input.context.turnId, 'source turn id'),
     toolCallId: requireIdentity(input.context.toolCallId, 'source tool call id'),
+    orchestrationMode:
+      input.context.orchestrationMode === 'swarm' ? ('swarm' as const) : ('graph' as const),
   };
   const addWorkInput =
     parsed.operation === undefined || parsed.operation === 'add_work'

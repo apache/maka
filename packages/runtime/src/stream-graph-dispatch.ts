@@ -69,6 +69,9 @@ export interface AgentGraphSupervisorObserver {
   onObservation?(observation: AgentGraphSupervisorObservation): void | Promise<void>;
   onActivationReady?(activation: AgentGraphSupervisorActivationReady): void | Promise<void>;
   onRuntimeEvent?(event: AgentGraphSupervisorRuntimeEvent): void | Promise<void>;
+  onReconciliationFailure?(
+    failure: import('./stream-graph-schedule-reconcile.js').AgentGraphScheduleReconciliationFailure,
+  ): void | Promise<void>;
 }
 
 export interface RunAgentGraphToQuiescenceInput {

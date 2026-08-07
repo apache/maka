@@ -33,6 +33,7 @@ import type {
 } from './stream-graph-dispatch.js';
 import {
   reconcileAgentGraphSchedule,
+  type AgentGraphScheduleReconciliationFailure,
   type AgentGraphScheduleReconciliationResult,
   type RenderAgentGraphScheduledWorkPromptInput,
 } from './stream-graph-schedule-reconcile.js';
@@ -47,6 +48,7 @@ import {
   materializeAgentGraphClientProjection,
   materializedAgentGraphTerminalHistoryPage,
   type AgentGraphClientSnapshot,
+  type AgentGraphClientReconciliationFailure,
   type AgentGraphClientSnapshotOptions,
   type AgentGraphOperatorInspection,
   type BuildAgentGraphClientReadModelInput,
@@ -63,7 +65,7 @@ import {
   type AgentGraphTimelinePageOptions,
 } from './agent-graph-timeline.js';
 import { isAgentGraphSupervisorMilestone } from './agent-graph-supervisor-wake.js';
-import { buildAgentSwarmStatusTool } from './agent-swarm-status-tool.js';
+import { buildAgentSwarmStatusTool, projectAgentSwarmStatus } from './agent-swarm-status-tool.js';
 
 const DEFAULT_MAX_NEW_ACTIVATIONS = 32;
 const MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS = 4;
@@ -103,6 +105,8 @@ export interface AgentGraphCoordinatorInput {
     rootSessionId: string,
     result: AgentGraphScheduleReconciliationResult,
   ): void | Promise<void>;
+  /** Durable client projection reached a checkpoint before the whole dispatch wave settled. */
+  onCheckpoint?(rootSessionId: string): void | Promise<void>;
   onError?(rootSessionId: string, error: unknown): void | Promise<void>;
 }
 
@@ -583,6 +587,7 @@ export class AgentGraphCoordinator {
         const result = await this.#reconcileOnce(driver, abortController.signal);
         driver.lastResult = result;
         await this.#waitForClientProjectionUpdates(driver);
+        await this.#reconcileReconciliationFailures(driver, result);
         if (driver.clientProjectionDirty) {
           await this.#repairClientProjectionBestEffort(driver);
         }
@@ -681,23 +686,45 @@ export class AgentGraphCoordinator {
             driver.runtimeFailureRunIds.delete(event.claim.targetRunId);
           }
           if (isMaterializedGraphClientEvent(event.event.type)) {
-            this.#queueClientProjectionUpdate(driver, () =>
-              this.#advanceClientProjection(driver, event, activationHadError),
-            );
+            this.#queueClientProjectionUpdate(driver, async () => {
+              const advancement = await this.#advanceClientProjection(
+                driver,
+                event,
+                activationHadError,
+              );
+              if (
+                advancement &&
+                isSwarmCheckpointTransition(advancement.before, advancement.after)
+              ) {
+                await notify(this.#input.onCheckpoint, driver.rootSessionId);
+              }
+            });
           }
           void notify(this.#input.supervisor?.onRuntimeEvent, event);
+        },
+        onReconciliationFailure: (failure) => {
+          this.#queueClientProjectionUpdate(driver, async () => {
+            await this.#mergeReconciliationFailure(driver, failure);
+            await notify(this.#input.onCheckpoint, driver.rootSessionId);
+          });
+          void notify(this.#input.supervisor?.onReconciliationFailure, failure);
         },
       },
     });
   }
 
-  async #readClientModelInput(rootSessionId: string): Promise<BuildAgentGraphClientReadModelInput> {
+  async #readClientModelInput(
+    rootSessionId: string,
+    reconciliationFailures?: readonly AgentGraphClientReconciliationFailure[],
+  ): Promise<BuildAgentGraphClientReadModelInput> {
     await this.#assertRootGraphReader(rootSessionId);
     const graphId = agentGraphIdForRootSession(rootSessionId);
-    const [provisions, scheduleUpdates, claimAdmissions] = await Promise.all([
+    const [provisions, scheduleUpdates, claimAdmissions, header, existing] = await Promise.all([
       this.#input.controlStore.listAgentGraphOperatorProvisions(graphId),
       this.#input.controlStore.listAgentGraphScheduleUpdates(graphId),
       this.#input.controlStore.listAgentGraphClientClaimAdmissions(graphId),
+      this.#input.sessionStore.readHeader(rootSessionId),
+      this.#input.controlStore.readAgentGraphClientProjection(graphId),
     ]);
     scheduleUpdates.forEach((update) =>
       this.#assertScheduleOwnedByRoot(update, rootSessionId, graphId),
@@ -709,6 +736,9 @@ export class AgentGraphCoordinator {
       provisions,
       scheduleUpdates,
       claimAdmissions,
+      orchestrationMode: graphOrchestrationMode(scheduleUpdates, header),
+      reconciliationFailures:
+        reconciliationFailures ?? existingReconciliationFailures(existing?.payload),
       observation: await this.#observeTopology(topology),
     };
   }
@@ -729,7 +759,7 @@ export class AgentGraphCoordinator {
       ) {
         throw new Error(`Invalid materialized agent graph projection ${graphId}`);
       }
-      return existing;
+      if (isCurrentClientProjectionPayload(existing.payload)) return existing;
     }
     const rebuilt = await this.#rebuildClientProjection(rootSessionId, graphId);
     if (driver) driver.clientProjectionDirty = false;
@@ -765,10 +795,12 @@ export class AgentGraphCoordinator {
     graphId: string,
     observation: AgentGraphSupervisorObservation,
   ): Promise<void> {
-    const [provisions, scheduleUpdates, claimAdmissions] = await Promise.all([
+    const [provisions, scheduleUpdates, claimAdmissions, header, existing] = await Promise.all([
       this.#input.controlStore.listAgentGraphOperatorProvisions(graphId),
       this.#input.controlStore.listAgentGraphScheduleUpdates(graphId),
       this.#input.controlStore.listAgentGraphClientClaimAdmissions(graphId),
+      this.#input.sessionStore.readHeader(rootSessionId),
+      this.#input.controlStore.readAgentGraphClientProjection(graphId),
     ]);
     scheduleUpdates.forEach((update) =>
       this.#assertScheduleOwnedByRoot(update, rootSessionId, graphId),
@@ -779,11 +811,11 @@ export class AgentGraphCoordinator {
       provisions,
       scheduleUpdates,
       claimAdmissions,
+      orchestrationMode: graphOrchestrationMode(scheduleUpdates, header),
+      reconciliationFailures: existingReconciliationFailures(existing?.payload),
       observation,
     };
-    const expectedSnapshotVersion =
-      (await this.#input.controlStore.readAgentGraphClientProjection(graphId))?.snapshotVersion ??
-      null;
+    const expectedSnapshotVersion = existing?.snapshotVersion ?? null;
     try {
       await this.#commitClientProjection(
         input,
@@ -794,6 +826,96 @@ export class AgentGraphCoordinator {
       if (!(error instanceof AgentGraphClientProjectionConflictError)) throw error;
       await this.#rebuildClientProjection(rootSessionId, graphId);
     }
+  }
+
+  async #mergeReconciliationFailure(
+    driver: GraphDriver,
+    failure: AgentGraphScheduleReconciliationFailure,
+  ): Promise<void> {
+    const projected = durableReconciliationFailure(failure);
+    if (!projected) return;
+    const existing = await this.#input.controlStore.readAgentGraphClientProjection(driver.graphId);
+    const failures = existingReconciliationFailures(existing?.payload).filter(
+      (candidate) => candidate.workId !== projected.workId,
+    );
+    failures.push(projected);
+    await this.#setReconciliationFailures(driver, failures);
+  }
+
+  async #reconcileReconciliationFailures(
+    driver: GraphDriver,
+    result: AgentGraphScheduleReconciliationResult,
+  ): Promise<void> {
+    const existing = await this.#input.controlStore.readAgentGraphClientProjection(driver.graphId);
+    const existingFailures = existingReconciliationFailures(existing?.payload);
+    const requestedWorkIds = new Set(
+      result.schedule.work.filter((work) => work.status === 'requested').map((work) => work.workId),
+    );
+    const successfulWorkIds = new Set(
+      result.dispatches.map((dispatch) => dispatch.intent.readinessId),
+    );
+    const failuresByWorkId = new Map(
+      existingFailures
+        .filter(
+          (failure) =>
+            requestedWorkIds.has(failure.workId) && !successfulWorkIds.has(failure.workId),
+        )
+        .map((failure) => [failure.workId, failure]),
+    );
+    for (const failure of result.failures) {
+      const projected = durableReconciliationFailure(failure);
+      if (projected && requestedWorkIds.has(projected.workId)) {
+        failuresByWorkId.set(projected.workId, projected);
+      }
+    }
+    const nextFailures = [...failuresByWorkId.values()].sort((left, right) =>
+      left.workId.localeCompare(right.workId),
+    );
+    const currentFailures = [...existingFailures].sort((left, right) =>
+      left.workId.localeCompare(right.workId),
+    );
+    if (
+      nextFailures.length === currentFailures.length &&
+      nextFailures.every(
+        (failure, index) =>
+          failure.workId === currentFailures[index]?.workId &&
+          failure.phase === currentFailures[index]?.phase &&
+          failure.reason === currentFailures[index]?.reason,
+      )
+    ) {
+      return;
+    }
+    await this.#setReconciliationFailures(driver, nextFailures);
+  }
+
+  async #setReconciliationFailures(
+    driver: GraphDriver,
+    failures:
+      | readonly AgentGraphScheduleReconciliationFailure[]
+      | readonly AgentGraphClientReconciliationFailure[],
+  ): Promise<void> {
+    const projected = failures
+      .map((failure) => ('error' in failure ? durableReconciliationFailure(failure) : failure))
+      .filter((failure): failure is AgentGraphClientReconciliationFailure => Boolean(failure));
+    for (let attempt = 0; attempt < MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS; attempt += 1) {
+      const existing = await this.#input.controlStore.readAgentGraphClientProjection(
+        driver.graphId,
+      );
+      const input = await this.#readClientModelInput(driver.rootSessionId, projected);
+      try {
+        await this.#commitClientProjection(
+          input,
+          materializeAgentGraphClientProjection(input),
+          existing?.snapshotVersion ?? null,
+        );
+        return;
+      } catch (error) {
+        if (!(error instanceof AgentGraphClientProjectionConflictError)) throw error;
+      }
+    }
+    throw new AgentGraphClientProjectionConflictError(
+      `Agent graph client projection ${driver.graphId} kept changing while recording failures`,
+    );
   }
 
   async #commitClientProjection(
@@ -879,7 +1001,7 @@ export class AgentGraphCoordinator {
     driver: GraphDriver,
     event: AgentGraphSupervisorRuntimeEvent,
     activationHadError: boolean,
-  ): Promise<void> {
+  ): Promise<{ before: AgentGraphClientSnapshot; after: AgentGraphClientSnapshot } | undefined> {
     for (let attempt = 0; attempt < MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS; attempt += 1) {
       const graph = await this.#input.controlStore.readAgentGraphClientProjection(driver.graphId);
       const operator = await this.#input.controlStore.readAgentGraphClientOperatorProjection(
@@ -908,7 +1030,7 @@ export class AgentGraphCoordinator {
         event,
         activationHadError,
       );
-      if (!advanced) return;
+      if (!advanced) return undefined;
       try {
         const committed = await this.#input.controlStore.commitAgentGraphClientProjection({
           schemaVersion: AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
@@ -939,8 +1061,9 @@ export class AgentGraphCoordinator {
         });
         if (committed.snapshotVersion === advanced.snapshot.snapshotVersion) {
           this.#notifyClientChanged(driver, 'runtime_activity');
+          return { before: snapshot, after: advanced.snapshot };
         }
-        return;
+        return undefined;
       } catch (error) {
         if (!(error instanceof AgentGraphClientProjectionConflictError)) throw error;
       }
@@ -1199,6 +1322,27 @@ function isMaterializedGraphClientEvent(
   ].includes(type);
 }
 
+function isSwarmCheckpointTransition(
+  before: AgentGraphClientSnapshot,
+  after: AgentGraphClientSnapshot,
+): boolean {
+  if (after.orchestrationMode !== 'swarm') return false;
+  const previous = projectAgentSwarmStatus(before);
+  const current = projectAgentSwarmStatus(after);
+  if (current.status === 'settled' && previous.status !== 'settled') return true;
+  const attention = (snapshot: ReturnType<typeof projectAgentSwarmStatus>): string[] =>
+    snapshot.items
+      .filter((item) => ['blocked', 'failed', 'aborted', 'cancelled'].includes(item.status))
+      .map((item) => `${item.workId}:${item.status}`)
+      .sort();
+  const previousAttention = attention(previous);
+  const currentAttention = attention(current);
+  return (
+    previousAttention.length !== currentAttention.length ||
+    currentAttention.some((entry, index) => entry !== previousAttention[index])
+  );
+}
+
 function hasLiveGraphOperator(observation: AgentGraphSupervisorObservation): boolean {
   return observation.projection.operators.some(
     (operator) => observation.projection.state.operators[operator.operatorId]?.status === 'running',
@@ -1261,6 +1405,59 @@ function assertUniqueClaims(graphId: string, claims: readonly AgentGraphIntentCl
     }
     intentIds.add(claim.intentId);
   }
+}
+
+function graphOrchestrationMode(
+  updates: readonly AgentGraphScheduleUpdate[],
+  header: SessionHeader,
+): 'graph' | 'swarm' {
+  const first = [...updates].sort((a, b) => a.revision - b.revision)[0];
+  if (first?.source.orchestrationMode === 'swarm') return 'swarm';
+  if (first?.source.orchestrationMode === 'graph') return 'graph';
+  return header.orchestrationMode === 'swarm' ? 'swarm' : 'graph';
+}
+
+function isCurrentClientProjectionPayload(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const snapshot = value as Partial<AgentGraphClientSnapshot>;
+  return (
+    (snapshot.orchestrationMode === 'graph' || snapshot.orchestrationMode === 'swarm') &&
+    Array.isArray(snapshot.reconciliationFailures) &&
+    typeof snapshot.omitted?.reconciliationFailures === 'number'
+  );
+}
+
+function existingReconciliationFailures(value: unknown): AgentGraphClientReconciliationFailure[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const candidates = (value as Partial<AgentGraphClientSnapshot>).reconciliationFailures;
+  if (!Array.isArray(candidates)) return [];
+  return candidates.flatMap((failure) =>
+    failure &&
+    typeof failure === 'object' &&
+    !Array.isArray(failure) &&
+    typeof failure.workId === 'string' &&
+    typeof failure.reason === 'string' &&
+    (failure.phase === 'schedule' ||
+      failure.phase === 'topology' ||
+      failure.phase === 'stop' ||
+      failure.phase === 'render' ||
+      failure.phase === 'dispatch')
+      ? [{ workId: failure.workId, phase: failure.phase, reason: failure.reason }]
+      : [],
+  );
+}
+
+function durableReconciliationFailure(
+  failure: AgentGraphScheduleReconciliationFailure,
+): AgentGraphClientReconciliationFailure | undefined {
+  const workId = failure.work?.workId ?? failure.targetId;
+  if (!workId) return undefined;
+  const reason = failure.error instanceof Error ? failure.error.message : String(failure.error);
+  return {
+    workId,
+    phase: failure.phase,
+    reason: reason.trim().slice(0, 1_000) || 'Unknown reconciliation failure',
+  };
 }
 
 function notify<T extends unknown[]>(

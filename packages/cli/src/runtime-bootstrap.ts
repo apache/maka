@@ -47,10 +47,12 @@ import {
   listRunnableBuiltinAgentDefinitions,
   replayPlanItemsToModelMessages,
   recoverAgentGraphSupervisorContextOverflow,
+  renderAgentSwarmSupervisorWake,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
   projectEffectiveProductToolSurface,
   routeWebSearchTools,
+  shouldWakeAgentSwarmSupervisor,
   type AutomationDefinition,
   type EffectiveProductToolSurface,
   type HostCapabilities,
@@ -1000,6 +1002,8 @@ export async function createMakaCliRuntimeContext(
           abortSignal,
           compactSession: (sessionId, input) => runtime.compactSession(sessionId, input),
         }),
+      shouldWake: shouldWakeAgentSwarmSupervisor,
+      renderWake: renderAgentSwarmSupervisorWake,
       newId: randomUUID,
       onDiagnostic: (diagnostic) => {
         console.warn('[agent-graph-supervisor-wake]', JSON.stringify(diagnostic));
@@ -1017,6 +1021,9 @@ export async function createMakaCliRuntimeContext(
       newId: randomUUID,
       onReconciliation: (rootSessionId, result) => {
         agentGraphSupervisorWakeCoordinator!.notify(rootSessionId, result);
+      },
+      onCheckpoint: (rootSessionId) => {
+        agentGraphSupervisorWakeCoordinator!.notify(rootSessionId);
       },
       onError: (rootSessionId, error) => {
         agentGraphErrors.set(rootSessionId, error);

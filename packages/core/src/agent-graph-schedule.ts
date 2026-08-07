@@ -4,6 +4,7 @@ import type {
   AgentGraphIntentClaimStore,
 } from './agent-graph-control.js';
 import type { AgentGraphTopologyStore } from './agent-graph-topology.js';
+import type { OrchestrationMode } from './orchestration.js';
 
 export const AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION = 1 as const;
 
@@ -19,6 +20,8 @@ export interface AgentGraphScheduleUpdateSource {
   runId: string;
   turnId: string;
   toolCallId: string;
+  /** Durable mode that created the graph; optional only on legacy updates. */
+  orchestrationMode?: OrchestrationMode;
 }
 
 export type AgentGraphWorkTarget =
@@ -246,11 +249,21 @@ export function decodeAgentGraphScheduleUpdate(value: unknown): AgentGraphSchedu
 
 function isScheduleSource(value: unknown): value is AgentGraphScheduleUpdateSource {
   return (
-    isExactRecord(value, ['sessionId', 'runId', 'turnId', 'toolCallId']) &&
+    isExactRecord(value, [
+      'sessionId',
+      'runId',
+      'turnId',
+      'toolCallId',
+      ...(hasOwn(value, 'orchestrationMode') ? ['orchestrationMode'] : []),
+    ]) &&
     isOpaqueIdentity(value.sessionId) &&
     isOpaqueIdentity(value.runId) &&
     isOpaqueIdentity(value.turnId) &&
-    isOpaqueIdentity(value.toolCallId)
+    isOpaqueIdentity(value.toolCallId) &&
+    (value.orchestrationMode === undefined ||
+      value.orchestrationMode === 'default' ||
+      value.orchestrationMode === 'graph' ||
+      value.orchestrationMode === 'swarm')
   );
 }
 

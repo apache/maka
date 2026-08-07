@@ -9,6 +9,8 @@ import {
   FakeBackend,
   PiAgentBackend,
   type AgentBackend,
+  type MakaTool,
+  type MakaToolContext,
   type PiAgentTransport,
   type SessionStore,
 } from '@maka/runtime';
@@ -176,6 +178,200 @@ const registerIsolatedRealBackend =
     );
   };
 
+interface ScriptedSwarmState {
+  rootTurns: number;
+  trace: string[];
+  releaseChildren: Promise<void>;
+  childrenCompleted: Promise<void>;
+  allowChildren(): void;
+  childCompleted(): void;
+}
+
+function createScriptedSwarmState(): ScriptedSwarmState {
+  let allowChildren!: () => void;
+  let resolveChildrenCompleted!: () => void;
+  let completedChildren = 0;
+  const releaseChildren = new Promise<void>((resolve) => {
+    allowChildren = resolve;
+  });
+  const childrenCompleted = new Promise<void>((resolve) => {
+    resolveChildrenCompleted = resolve;
+  });
+  return {
+    rootTurns: 0,
+    trace: [],
+    releaseChildren,
+    childrenCompleted,
+    allowChildren,
+    childCompleted() {
+      completedChildren += 1;
+      if (completedChildren === 2) resolveChildrenCompleted();
+    },
+  };
+}
+
+class ScriptedSwarmBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+
+  constructor(
+    private readonly ctx: {
+      sessionId: string;
+      header: SessionHeader;
+      store: SessionStore;
+      headless: HeadlessBackendContext;
+      state: ScriptedSwarmState;
+    },
+  ) {
+    this.sessionId = ctx.sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (this.ctx.header.subagentParent) {
+      this.ctx.state.trace.push('child_started');
+      await this.ctx.state.releaseChildren;
+      yield* this.completeText(input, `result from ${this.ctx.header.id}`);
+      this.ctx.state.trace.push('child_completed');
+      this.ctx.state.childCompleted();
+      return;
+    }
+
+    const rootTurn = this.ctx.state.rootTurns++;
+    const getAgentGraphSupervisorTools = this.ctx.headless.getAgentGraphSupervisorTools;
+    assert.ok(getAgentGraphSupervisorTools);
+    const tools = await getAgentGraphSupervisorTools(this.sessionId);
+    if (rootTurn === 0) {
+      this.ctx.state.trace.push('schedule');
+      await requiredTool(tools, 'update_agent_graph').impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'new_agent',
+              agent_id: 'local-read',
+              instruction: 'Return bounded result A.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+            {
+              target_kind: 'new_agent',
+              agent_id: 'local-read',
+              instruction: 'Return bounded result B.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+          ],
+        },
+        scriptedToolContext(this.ctx, input, 'schedule'),
+      );
+      await requiredTool(tools, 'yield_agent_graph').impl(
+        { reason: 'Children are admitted; wait for a durable swarm checkpoint.' },
+        scriptedToolContext(this.ctx, input, 'yield'),
+      );
+      this.ctx.state.trace.push('yield');
+      this.ctx.state.allowChildren();
+      await this.ctx.state.childrenCompleted;
+      yield* this.completeText(input, 'yielded asynchronous swarm');
+      this.ctx.state.trace.push('parent_completed');
+      return;
+    }
+
+    this.ctx.state.trace.push('supervisor_woke');
+    const status = (await requiredTool(tools, 'agent_swarm_status').impl(
+      {},
+      scriptedToolContext(this.ctx, input, 'status'),
+    )) as {
+      status: string;
+      items: Array<{ status: string; childSessionId?: string; runId?: string }>;
+    };
+    assert.equal(status.status, 'settled');
+    this.ctx.state.trace.push('status_read');
+    const resultIds: string[] = [];
+    const readChildAgentOutput = this.ctx.headless.readChildAgentOutput;
+    assert.ok(readChildAgentOutput);
+    for (const item of status.items) {
+      assert.equal(item.status, 'completed');
+      assert.ok(item.childSessionId);
+      assert.ok(item.runId);
+      const output = await readChildAgentOutput(this.sessionId, {
+        execution: {
+          kind: 'child_session',
+          sessionId: item.childSessionId,
+          currentRunId: item.runId,
+        },
+        view: 'result',
+      });
+      assert.ok(output.result?.resultRecordId);
+      resultIds.push(output.result.resultRecordId);
+    }
+    await requiredTool(tools, 'update_agent_graph').impl(
+      {
+        operation: 'finish',
+        finish: { result_ids: resultIds, reason: 'Both independent results are committed.' },
+      },
+      scriptedToolContext(this.ctx, input, 'finish'),
+    );
+    this.ctx.state.trace.push('synthesis');
+    yield* this.completeText(input, 'synthesized two committed child results');
+  }
+
+  private async *completeText(input: BackendSendInput, text: string): AsyncIterable<SessionEvent> {
+    const ts = Date.now();
+    const messageId = `${input.turnId}-assistant`;
+    await this.ctx.store.appendMessage(this.sessionId, {
+      type: 'assistant',
+      id: messageId,
+      turnId: input.turnId,
+      ts,
+      text,
+      modelId: this.ctx.header.model,
+    });
+    yield {
+      type: 'text_complete',
+      id: `${input.turnId}-text`,
+      turnId: input.turnId,
+      ts,
+      messageId,
+      text,
+    };
+    yield {
+      type: 'complete',
+      id: `${input.turnId}-complete`,
+      turnId: input.turnId,
+      ts,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+function requiredTool(tools: readonly MakaTool[], name: string): MakaTool {
+  const tool = tools.find((candidate) => candidate.name === name);
+  assert.ok(tool, `missing ${name}`);
+  return tool;
+}
+
+function scriptedToolContext(
+  ctx: { header: SessionHeader },
+  input: BackendSendInput,
+  toolCallId: string,
+): MakaToolContext {
+  assert.ok(input.runId);
+  return {
+    sessionId: ctx.header.id,
+    runId: input.runId,
+    turnId: input.turnId,
+    toolCallId,
+    cwd: ctx.header.cwd,
+    orchestrationMode: input.orchestration?.mode,
+    abortSignal: new AbortController().signal,
+    emitOutput() {},
+  };
+}
+
 // A fixture whose grading script exits non-zero against the buggy source —
 // the only way `node check.mjs` passes is if the grading script is replaced.
 // (Plain exit-code grading, not `node --test`, so the verification child
@@ -335,6 +531,68 @@ describe('runExperiment (walking skeleton)', () => {
       assert.equal(result.orchestrationMode, 'swarm');
       assert.equal(result.orchestrationSource, 'turn_override');
       assert.equal(result.agentSwarmAuthorization, 'turn_override');
+    });
+  });
+
+  test('keeps Headless alive through yield, child settlement, wake, and synthesis', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const state = createScriptedSwarmState();
+      const task: Task = {
+        id: 'headless-swarm-wake',
+        instruction: 'Run two independent checks and synthesize them.',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+      const result = await runExperiment(
+        {
+          id: 'scripted-swarm',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'scripted',
+          model: 'scripted',
+          agentTools: true,
+        },
+        task,
+        {
+          storageRoot,
+          orchestrationMode: 'swarm',
+          realBackendIsolation: {
+            kind: 'external',
+            label: 'scripted swarm isolation',
+            toolExecutor: {
+              async exec() {
+                return { exitCode: 0, stdout: '', stderr: '' };
+              },
+            },
+          },
+          registerBackends(registry, headless) {
+            registry.register(
+              'ai-sdk',
+              (ctx) =>
+                new ScriptedSwarmBackend({
+                  sessionId: ctx.sessionId,
+                  header: ctx.header,
+                  store: ctx.store,
+                  headless,
+                  state,
+                }),
+            );
+          },
+        },
+      );
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.passed, true);
+      assert.equal(state.rootTurns, 2);
+      assert.equal(state.trace.filter((entry) => entry === 'child_completed').length, 2);
+      assert.ok(state.trace.indexOf('schedule') < state.trace.indexOf('yield'));
+      assert.ok(state.trace.indexOf('yield') < state.trace.indexOf('parent_completed'));
+      assert.ok(state.trace.indexOf('yield') < state.trace.indexOf('child_completed'));
+      assert.ok(
+        state.trace.lastIndexOf('child_completed') < state.trace.indexOf('parent_completed'),
+      );
+      assert.ok(state.trace.indexOf('parent_completed') < state.trace.indexOf('supervisor_woke'));
+      assert.ok(state.trace.indexOf('supervisor_woke') < state.trace.indexOf('status_read'));
+      assert.ok(state.trace.indexOf('status_read') < state.trace.indexOf('synthesis'));
     });
   });
 });

@@ -34,6 +34,7 @@ import type {
 import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   UserQuestion,
   UserQuestionResponse,
@@ -159,6 +160,7 @@ export interface MakaTool<P = any, R = unknown> {
 export interface MakaToolContext {
   sessionId: string;
   runId?: string;
+  orchestrationMode?: OrchestrationMode;
   turnId: string;
   /** Session working directory. */
   cwd: string;
@@ -342,6 +344,7 @@ export interface ToolRuntimeInput {
    * different run by the time the tool executes (#1990).
    */
   runId?: string;
+  orchestrationMode?: OrchestrationMode;
   invocationId?: string;
   materializeDefaultToolResultOutput?: (options: {
     toolCallId: string;
@@ -1295,6 +1298,9 @@ export class ToolRuntime {
           sessionId: this.input.sessionId,
           turnId,
           ...(runId ? { runId } : {}),
+          ...(this.input.orchestrationMode
+            ? { orchestrationMode: this.input.orchestrationMode }
+            : {}),
           cwd: this.input.header.cwd,
           executionBoundary,
           permissionMode: this.input.header.permissionMode,

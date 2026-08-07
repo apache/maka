@@ -3,6 +3,8 @@ import { describe, test } from 'node:test';
 import {
   isAgentSwarmSupervisorCheckpoint,
   projectAgentSwarmStatus,
+  renderAgentSwarmSupervisorWake,
+  shouldWakeAgentSwarmSupervisor,
 } from '../agent-swarm-status-tool.js';
 import type {
   AgentGraphClientOperator,
@@ -44,6 +46,45 @@ describe('asynchronous agent swarm status', () => {
     assert.equal(projectAgentSwarmStatus(snapshot).status, 'settled');
     assert.equal(isAgentSwarmSupervisorCheckpoint(snapshot), true);
   });
+
+  test('projects a durable reconciliation failure without child runtime state', () => {
+    const snapshot = swarmSnapshot([]);
+    snapshot.work = [
+      {
+        workId: 'work-failed',
+        target: { kind: 'preset', presetId: 'deepseek-flash-reader' },
+        inputIds: [],
+        status: 'requested',
+        instructionPreview: 'Read one bounded area.',
+        instructionTruncated: false,
+        revision: 1,
+        committedAt: 1,
+      },
+    ];
+    snapshot.reconciliationFailures = [
+      { workId: 'work-failed', phase: 'dispatch', reason: 'provider unavailable' },
+    ];
+
+    const status = projectAgentSwarmStatus(snapshot);
+    assert.equal(status.status, 'needs_attention');
+    assert.deepEqual(status.items, [
+      {
+        workId: 'work-failed',
+        status: 'failed',
+        failurePhase: 'dispatch',
+        failureReason: 'provider unavailable',
+      },
+    ]);
+    assert.equal(shouldWakeAgentSwarmSupervisor('root', undefined, snapshot), true);
+  });
+
+  test('shares durable swarm policy without treating an ordinary graph as a swarm', () => {
+    const graph = swarmSnapshot([operator('work-1', 'failed')]);
+    graph.orchestrationMode = 'graph';
+
+    assert.equal(shouldWakeAgentSwarmSupervisor('root', undefined, graph), undefined);
+    assert.equal(renderAgentSwarmSupervisorWake('root', graph), undefined);
+  });
 });
 
 function swarmSnapshot(operators: AgentGraphClientOperator[]): AgentGraphClientSnapshot {
@@ -51,6 +92,7 @@ function swarmSnapshot(operators: AgentGraphClientOperator[]): AgentGraphClientS
     schemaVersion: 1,
     rootSessionId: 'root',
     graphId: 'graph-root',
+    orchestrationMode: 'swarm',
     snapshotVersion: 'snapshot-1',
     status: 'active',
     scheduleRevision: 1,
@@ -68,6 +110,7 @@ function swarmSnapshot(operators: AgentGraphClientOperator[]): AgentGraphClientS
       revision: 1,
       committedAt: 1,
     })),
+    reconciliationFailures: [],
     stoppedTargets: [],
     claims: [],
     recentControlDecisions: [],
@@ -77,6 +120,7 @@ function swarmSnapshot(operators: AgentGraphClientOperator[]): AgentGraphClientS
       operators: 0,
       edges: 0,
       work: 0,
+      reconciliationFailures: 0,
       stoppedTargets: 0,
       claims: 0,
       controlDecisions: 0,

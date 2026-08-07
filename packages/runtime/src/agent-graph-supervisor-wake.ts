@@ -173,7 +173,7 @@ export interface AgentGraphSupervisorWakeInput {
   ): Promise<AgentRunHeader['status'] | 'missing'>;
   shouldWake?(
     rootSessionId: string,
-    result: AgentGraphScheduleReconciliationResult,
+    result: AgentGraphScheduleReconciliationResult | undefined,
     snapshot: AgentGraphClientSnapshot,
   ): boolean | undefined | Promise<boolean | undefined>;
   renderWake?(
@@ -242,9 +242,12 @@ export class AgentGraphSupervisorWakeCoordinator {
 
   notify(
     rootSessionId: string,
-    result: AgentGraphScheduleReconciliationResult,
+    result?: AgentGraphScheduleReconciliationResult,
   ): Promise<void> | undefined {
-    if (this.#closed || (!this.#input.shouldWake && !isAgentGraphSupervisorMilestone(result))) {
+    if (
+      this.#closed ||
+      (!this.#input.shouldWake && (!result || !isAgentGraphSupervisorMilestone(result)))
+    ) {
       return undefined;
     }
     return this.#runTracked(rootSessionId, async () => {
@@ -317,14 +320,14 @@ export class AgentGraphSupervisorWakeCoordinator {
 
   async #wake(
     rootSessionId: string,
-    result: AgentGraphScheduleReconciliationResult,
+    result?: AgentGraphScheduleReconciliationResult,
   ): Promise<void> {
     if (!(await this.#isSessionDeliverable(rootSessionId))) return;
     const snapshot = await this.#input.readSnapshot(rootSessionId);
     const wakeDecision = await this.#input.shouldWake?.(rootSessionId, result, snapshot);
     if (
       wakeDecision === false ||
-      (wakeDecision === undefined && !isAgentGraphSupervisorMilestone(result))
+      (wakeDecision === undefined && (!result || !isAgentGraphSupervisorMilestone(result)))
     ) {
       return;
     }
