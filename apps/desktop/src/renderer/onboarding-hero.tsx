@@ -1,4 +1,4 @@
-// apps/desktop/src/renderer/OnboardingHero.tsx
+// apps/desktop/src/renderer/onboarding-hero.tsx
 //
 // First-run recovery rendered in place of the empty chat while setup is
 // incomplete. The core state machine owns what is missing; this component

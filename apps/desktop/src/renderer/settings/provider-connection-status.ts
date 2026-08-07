@@ -1,5 +1,5 @@
 // Pure status helper for the Settings → 模型 connection list. Kept out
-// of `ProvidersPanel.tsx` (no React, no DOM) so the decision logic can be
+// of `providers-panel.tsx` (no React, no DOM) so the decision logic can be
 // exercised directly from the desktop test runner. Behavioural tests live
 // in `provider-connection-status.test.ts`.
 
