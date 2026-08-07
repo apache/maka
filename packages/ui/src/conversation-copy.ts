@@ -355,7 +355,7 @@ const CONVERSATION_COPY = {
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
     },
     model: {
-      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
+      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '模型默认',
       // Short single-token labels — trigger + popout size to content.
       // Canonical ladder: 默认 / 关 / 低 / 中 / 高 / 超高 (minimal/max when offered).
       level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
@@ -496,7 +496,7 @@ const CONVERSATION_COPY = {
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {
-      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Default',
+      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this conversation', switchSession: 'Switch the model used by this conversation',
       pinnedSession: (connection, model) => `Model fixed for this conversation: ${connection} · ${model}`,

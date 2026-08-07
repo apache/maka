@@ -10,6 +10,7 @@ import {
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
+  ThinkingLevel,
   LlmConnection,
   NetworkProxySettings,
   UpdateAppSettingsResult,
@@ -35,6 +36,7 @@ import {
 } from "@maka/ui";
 import { ProviderBrandMark } from "./provider-brand-marks";
 import { PasswordInput } from "./password-input";
+import { getConversationCopy } from '@maka/ui';
 import { settingsActionErrorMessage } from "./settings-error-copy";
 import { useActionGuard, useKeyedActionGuard } from "./use-action-guard";
 import { useOptimisticSettingsDraft } from "./use-optimistic-settings-draft";
@@ -137,6 +139,7 @@ export function GeneralSettingsPage(props: {
         defaultSlug={props.defaultSlug}
         onRefresh={props.onRefreshConnections}
         permissionMode={props.settings.chatDefaults.permissionMode}
+        thinkingLevel={props.settings.chatDefaults.thinkingLevel}
         onUpdate={props.onUpdate}
       />
       <SettingsSection
@@ -171,26 +174,35 @@ export function GeneralSettingsPage(props: {
  * `PermissionModeSelect` so labels, hints, and markup can't drift from the
  * composer picker.
  */
+/** Sentinel for "no preference" — Selector needs a value, absence is not one. */
+const FOLLOW_MODEL_DEFAULT = "__follow_model__";
+const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 function GeneralDefaultsCard(props: {
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
+  thinkingLevel?: ThinkingLevel;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
+  // Level names come from the composer's own map — one vocabulary for the
+  // levels, so the settings row and the in-chat menu can never disagree.
+  const conversationCopy = getConversationCopy(locale);
   const sections = getSettingsPreferencesCopy(locale).sections;
   const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode"
+    "default-model" | "permission-mode" | "thinking-level"
   >();
   const [saving, setSaving] = useState(false);
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
+  const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -291,6 +303,22 @@ function GeneralDefaultsCard(props: {
     }
   }
 
+  async function persistThinkingLevel(next: ThinkingLevel | undefined) {
+    const releaseSave = persistGuard.begin("thinking-level");
+    if (!releaseSave) return;
+    setSavingThinkingLevel(true);
+    try {
+      await props.onUpdate({ chatDefaults: { thinkingLevel: next } });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.saveDefaultThinkingFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      releaseSave();
+      if (mountedRef.current) setSavingThinkingLevel(false);
+    }
+  }
+
   return (
     <SettingsSection
       title={sections.chatDefaults}
@@ -325,6 +353,34 @@ function GeneralDefaultsCard(props: {
             align="end"
             disabled={savingPermissionMode}
             ariaLabel={copy.defaultPermission}
+          />
+        }
+      />
+      {/* The absent option is first and means exactly that: no preference, so
+          each model uses its own. It is not a level, which is why the composer
+          menu now calls that same state 模型默认 rather than 默认 — the old
+          wording promised a knob that did not exist anywhere. */}
+      <SettingsRow
+        label={copy.defaultThinking}
+        description={copy.defaultThinkingHelp}
+        end={
+          <Selector
+            label={copy.defaultThinking}
+            isLabelHidden
+            value={props.thinkingLevel ?? FOLLOW_MODEL_DEFAULT}
+            onChange={(value) => {
+              void persistThinkingLevel(
+                value === FOLLOW_MODEL_DEFAULT ? undefined : (value as ThinkingLevel),
+              );
+            }}
+            options={[
+              { value: FOLLOW_MODEL_DEFAULT, label: copy.followModelDefault },
+              ...THINKING_LEVELS.map((level) => ({
+                value: level,
+                label: conversationCopy.model.level[level],
+              })),
+            ]}
+            isDisabled={savingThinkingLevel}
           />
         }
       />

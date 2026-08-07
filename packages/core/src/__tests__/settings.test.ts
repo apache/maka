@@ -200,3 +200,31 @@ test('web-search settings stay owned by their normalization boundary', () => {
     credentialVersion: 1,
   });
 });
+
+test('an unset chat-default thinking level stays unset rather than becoming a level', () => {
+  // The distinction this pins: "no preference" is not a rung on the ladder. If
+  // normalization ever invented one here (say, 'medium'), every new session
+  // would silently start on a level the user never chose and the settings row
+  // would claim they had.
+  const normalized = normalizeSettings(createDefaultSettings());
+  expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
+});
+
+test('a persisted chat-default thinking level survives normalization', () => {
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), { chatDefaults: { thinkingLevel: 'high' } }),
+  );
+  expect(normalized.chatDefaults.thinkingLevel).toBe('high');
+});
+
+test('a chat-default thinking level the app does not recognize drops to no preference', () => {
+  // Fail closed, matching permissionMode next to it: a level that reached
+  // settings.json from an older build or a hand edit must not travel on to
+  // session creation as a rung no picker can render.
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), {
+      chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
+    }),
+  );
+  expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
+});

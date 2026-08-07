@@ -1,3 +1,4 @@
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 import type { OnboardingMilestone } from './onboarding.js';
 import { sanitizeOnboardingMilestones } from './onboarding.js';
 import type { WebSearchSettingsPatch, WebSearchSettings } from './web-search.js';
@@ -230,6 +231,16 @@ export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaul
 /** Seeds new sessions' starting permission mode (Settings → 通用 → 默认权限模式). */
 export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
+  /**
+   * Seeds new sessions' thinking level. `undefined` means "whatever the model
+   * does on its own" — the absence of a preference, not a level.
+   *
+   * A chosen level is a wish, not a guarantee: models expose different ladders,
+   * so one that does not offer the chosen rung falls back to its own default
+   * for that session rather than being forced to the nearest neighbour. The
+   * composer already resolves it that way for the per-session picker.
+   */
+  thinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -647,6 +658,10 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
+    // Same fail-closed reasoning as the mode below: a garbage persisted level
+    // drops to "no preference" (the model's own default) rather than reaching
+    // session creation as a rung no picker recognizes.
+    thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
     permissionMode:
       (settings.permissionMode as unknown) === 'execute'
         ? 'ask'

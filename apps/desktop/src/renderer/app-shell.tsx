@@ -374,6 +374,7 @@ function AppShellContent({
     userLabel,
     setUserLabel,
     defaultPermissionMode,
+    defaultThinkingLevel,
     setDefaultPermissionMode,
     refreshShellSettings,
   } = useShellAppearance({
@@ -662,6 +663,7 @@ function AppShellContent({
     activationCandidate: onboardingActivationCandidate,
     activeSession,
     persistedComposerDefaults,
+    defaultThinkingLevel,
     openSettingsSection,
   });
   const newChatProviderType = newChatModel

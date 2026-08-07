@@ -1,6 +1,7 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import type {
   ChatDefaultPermissionMode,
+  ThinkingLevel,
   ThemePalette,
   ThemePreference,
   UiLocale,
@@ -47,6 +48,8 @@ export function useShellAppearance({
   // so a stale value here can briefly mislabel the chip but never changes
   // which mode a session is created with.
   const [defaultPermissionMode, setDefaultPermissionMode] = useState<ChatDefaultPermissionMode>('ask');
+  // undefined = the user expressed no preference, so each model uses its own.
+  const [defaultThinkingLevel, setDefaultThinkingLevel] = useState<ThinkingLevel | undefined>(undefined);
 
   async function refreshShellSettings() {
     const uiLocaleHydration = uiLocaleUpdateGate.beginHydration();
@@ -67,6 +70,7 @@ export function useShellAppearance({
       setThemePalette(palette);
       setUserLabel(name);
       setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
+      setDefaultThinkingLevel(next.chatDefaults?.thinkingLevel);
       applyTheme(pref);
       applyThemePalette(palette);
     } catch (error) {
@@ -87,6 +91,7 @@ export function useShellAppearance({
     userLabel,
     setUserLabel,
     defaultPermissionMode,
+    defaultThinkingLevel,
     setDefaultPermissionMode,
     refreshShellSettings,
   };
