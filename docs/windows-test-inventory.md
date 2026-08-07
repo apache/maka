@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 29 |
-| portable-candidate | 21 |
+| windows-backend-gap | 30 |
+| portable-candidate | 22 |
 | platform-contract | 16 |
 
-Total Windows-excluded declarations: **66**
+Total Windows-excluded declarations: **68**
 
 ## Inventory
 
@@ -40,7 +40,7 @@ Total Windows-excluded declarations: **66**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/deep-research-two-client-uds.test.ts` two UDS Clients and a restarted production Host share one Deep Research projection | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-host-queue.test.ts` a killed Host is recovered exactly once before its successor becomes ready | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-inspect-uds.test.ts` a live Host serves Interactive inspection over its real UDS while retaining exclusive ownership | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` a response timeout is connection-fatal and Client close stays local | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` an automatic failed liveness check is connection-fatal and Client close stays local | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` bounded election does not launch a Candidate after handshake exhausts the deadline | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` a non-reading Client overload is isolated to its connection | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` reports one shutdown failure through close and closed while releasing ownership | `process.platform === 'win32'` |
@@ -51,6 +51,7 @@ Total Windows-excluded declarations: **66**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/plan-two-client-uds.test.ts` two UDS Clients and a restarted production Host share one retry-safe Plan authority | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-process.test.ts` real Host Runtime Resource process lifecycle | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-two-client-uds.test.ts` a Host-owned PTY survives Desktop disconnect and transfers control to TUI | `process.platform === 'win32' ? 'POSIX UDS and shell integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` two UDS Clients share stable Session creation, CAS configuration, and catalog continuity | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` stable Session creation survives response loss and Host restart | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-effect-two-client-uds.test.ts` two UDS Clients share one durable Session recap effect | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
@@ -88,6 +89,7 @@ Total Windows-excluded declarations: **66**
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/storage/src/__tests__/sqlite-long-term-memory-crash.test.ts` retains one committed Item and its receipt when killed between COMMIT and return | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/storage/src/__tests__/sqlite-runtime-crash.test.ts` SqliteRuntimeStore real-process crash boundaries | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a non-Git workspace resolves when the Git executable is unavailable | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a Git workspace does not publish a marker when the Git executable is unavailable | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32'` |

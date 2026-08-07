@@ -38,20 +38,17 @@ import type {
   SessionResumeAvailability,
 } from '../session-driver.js';
 import { CliGoalContinuation, type CliGoalTurnHost } from '../cli-goal-continuation.js';
-import type { ModelChoice } from '../connection-target.js';
-import {
-  listApiKeyOnboardableProviders,
-  type MakaOnboardingSurface,
-  type OnboardingProviderEntry,
-  type OnboardingSaveResult,
-  type OnboardingVerifyResult,
-} from '../onboarding.js';
+import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
+import type {
+  MakaOnboardingSurface,
+  MakaPiTuiGoalLifecycle,
+  ModelChoice,
+  OnboardingProviderEntry,
+  OnboardingSaveResult,
+  OnboardingVerifyResult,
+} from '../pi-tui-contracts.js';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
-import {
-  runMakaPiTui as runMakaPiTuiImpl,
-  type MakaPiTuiGoalLifecycle,
-  type MakaPiTuiInput,
-} from '../pi-tui-runner.js';
+import { runMakaPiTui as runMakaPiTuiImpl, type MakaPiTuiInput } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';

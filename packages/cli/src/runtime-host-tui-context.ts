@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { SessionActivityRegistry, type InvocableSkillEntry } from '@maka/runtime';
 import { readRuntimeHostSkillCatalog, type RuntimeHostConnection } from '@maka/runtime-host/client';
-import type { ModelChoice } from './connection-target.js';
-import type { MakaPiTuiGoalLifecycle } from './pi-tui-runner.js';
-import type { SessionRecapGenerator } from './runtime-bootstrap.js';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
+import type {
+  MakaPiTuiGoalLifecycle,
+  ModelChoice,
+  SessionRecapGenerator,
+} from './pi-tui-contracts.js';
 import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,

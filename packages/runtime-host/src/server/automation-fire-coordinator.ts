@@ -44,6 +44,8 @@ export interface AutomationFireStateAuthority {
     expectedSchedule: number | null,
   ): Promise<AutomationPendingFire | undefined>;
   assertPendingFire(fire: AutomationPendingFire): Promise<void>;
+  recordFireDeferred(fire: AutomationPendingFire): Promise<void>;
+  failFire(fire: AutomationPendingFire, error: string): Promise<void>;
   markFireRunning(fire: AutomationPendingFire): Promise<void>;
   settleFire(fire: AutomationPendingFire, run: AgentRunHeader): Promise<void>;
   residencyState(): { readonly pending: boolean; readonly scheduled: boolean };
@@ -376,6 +378,20 @@ export class HostAutomationFireCoordinator {
         error instanceof RuntimeHostedRootConflictError ||
         error instanceof RuntimeHostedRootUnavailableError
       ) {
+        if (this.isDraining) {
+          established.resolve();
+          return;
+        }
+        try {
+          if (this.#now() - fire.admittedAt >= DEFER_WINDOW_MS) {
+            await this.#state.failFire(fire, automationAdmissionFailure(error));
+          } else {
+            await this.#state.recordFireDeferred(fire);
+          }
+        } catch (stateError) {
+          established.reject(stateError);
+          throw stateError;
+        }
         established.resolve();
         return;
       }
@@ -420,9 +436,6 @@ export class HostAutomationFireCoordinator {
       throw new AutomationFireDeferredError('Automation authority is draining');
     }
     await this.#state.assertPendingFire(fire);
-    if (this.#isSessionActive(fire.targetSessionId)) {
-      throw new AutomationFireDeferredError('Automation target Session is busy');
-    }
     const incognito = (await this.#runtimePolicy.runtimePolicy.getSnapshot()).policy.privacy
       .incognitoActive;
     if (incognito) throw new AutomationFireDeferredError('Incognito mode is active');
@@ -454,6 +467,10 @@ export class HostAutomationFireCoordinator {
       throw error;
     }
   }
+}
+
+function automationAdmissionFailure(error: Error): string {
+  return `Automation execution could not enter Runtime within its retry window: ${error.message}`;
 }
 
 export function fireContent(fire: AutomationPendingFire): MessageContent {
