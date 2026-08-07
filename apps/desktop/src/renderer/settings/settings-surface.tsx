@@ -29,7 +29,7 @@ import type {
 } from '@maka/core';
 import { createDefaultSettings } from '@maka/core/settings';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { ProvidersPanel } from './ProvidersPanel';
+import { ProvidersPanel } from './providers-panel';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { AboutSettingsPage } from './about-settings-page';

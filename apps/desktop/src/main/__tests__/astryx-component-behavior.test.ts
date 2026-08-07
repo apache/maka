@@ -237,7 +237,7 @@ async function importRendererComponents(): Promise<RendererComponents> {
         "export { ArtifactPreview } from './apps/desktop/src/renderer/artifact-preview.tsx';",
         "export { BotWeChatFields } from './apps/desktop/src/renderer/settings/bot-wechat-login.tsx';",
         "export { KeyboardHelpModal } from './apps/desktop/src/renderer/keyboard-help.tsx';",
-        "export { OnboardingHero } from './apps/desktop/src/renderer/OnboardingHero.tsx';",
+        "export { OnboardingHero } from './apps/desktop/src/renderer/onboarding-hero.tsx';",
         "export { ProviderCatalogPage } from './apps/desktop/src/renderer/settings/provider-catalog-page.tsx';",
         "export { UsageSettingsPage } from './apps/desktop/src/renderer/settings/usage-settings-page.tsx';",
         "export { LocaleProvider } from './packages/ui/dist/locale-context.js';",
