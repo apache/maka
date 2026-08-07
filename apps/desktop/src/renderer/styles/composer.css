@@ -98,107 +98,13 @@
   visibility: visible;
 }
 
-/* Staged non-image file — a two-line card in the idiom of contemporary agent
-   composers: kind icon on a tinted tile, filename, "EXT · size" meta. Fixed
-   64px height so cards and image thumbnails read as one row, not a staggered
-   pile; capped width + ellipsis so a full z-library book title cannot span
-   the card. */
-.maka-composer-attachment-card {
-  display: inline-flex;
-  align-items: center;
-  box-sizing: border-box;
-  height: 56px;
-  gap: var(--space-1-5);
+/* Staged attachments share the quote chips' Token rhythm (maintainer
+   decision on the #2367 follow-up); the drawer stays a flat chip row. Cap
+   the chip and let Astryx Token's own ellipsis truncate, so a full
+   z-library book title cannot span the drawer — the full name rides the
+   chip's hover Tooltip instead. */
+.maka-composer-context-drawer .maka-composer-attachment-token {
   max-width: min(280px, 100%);
-  padding: 0 var(--space-1-5);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-modal);
-  background: var(--background);
-}
-
-.maka-composer-attachment-card-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-surface);
-  background: var(--muted);
-  color: var(--foreground-secondary);
-}
-
-/* Kind accents keep to existing semantic tokens (no new hues): documents that
-   read as "PDF red" everywhere else, code as the accent. */
-.maka-composer-attachment-card[data-kind="pdf"] .maka-composer-attachment-card-icon {
-  background: color-mix(in oklch, var(--status-danger, var(--destructive)) 12%, var(--background));
-  color: var(--status-danger, var(--destructive));
-}
-
-.maka-composer-attachment-card[data-kind="code"] .maka-composer-attachment-card-icon {
-  background: color-mix(in oklch, var(--accent) 12%, var(--background));
-  color: var(--accent);
-}
-
-.maka-composer-attachment-card-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 2px;
-}
-
-.maka-composer-attachment-card-name {
-  font-size: 13px;
-  font-weight: var(--font-weight-medium);
-  line-height: 1.25;
-  color: var(--foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-composer-attachment-card-meta {
-  font-size: 11px;
-  line-height: 1.2;
-  color: var(--muted-foreground);
-  white-space: nowrap;
-}
-
-.maka-composer-attachment-card-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 auto;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background-color: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.maka-composer-attachment-card-remove:hover,
-.maka-composer-attachment-card-remove:focus-visible {
-  background-color: var(--muted);
-  color: var(--foreground);
-}
-
-/* Image thumbnails: hairline border + the same 12px radius as the file card,
-   so a mostly-white screenshot doesn't melt into the drawer surface.
-   `--radius-element` feeds Astryx Thumbnail's inner image container; 11px
-   (outer 12 − 1px border) nests the image corners flush against the border
-   instead of leaving a sliver of background in each corner. */
-.maka-composer-attachment-thumbnail {
-  /* local: --radius-element — Astryx Thumbnail's inner image radius; outer
-     radius minus the 1px border nests the image flush in the frame. */
-  --radius-element: calc(var(--radius-modal) - 1px);
-  width: 56px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-modal);
-  overflow: hidden;
-  background: var(--background);
 }
 
 .maka-composer-input {
