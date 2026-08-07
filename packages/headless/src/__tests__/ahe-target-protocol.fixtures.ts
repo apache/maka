@@ -54,7 +54,7 @@ export const INVALID_MAKA_AHE_COMPONENTS = [
     label: 'duplicate one',
     description: 'bad category',
     editable: true,
-    sourceRefs: [{ path: 'apps/desktop/src/main/system-prompt-main.ts' }],
+    sourceRefs: [{ path: 'packages/runtime-host/src/server/execution-model-composition.ts' }],
   },
   {
     id: 'maka-system-prompt',

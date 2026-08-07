@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { generalizedErrorMessage } from '@maka/core/redaction';
 import { isDeepResearchSession } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
@@ -186,7 +187,9 @@ export async function createExecutionRuntimeHostComposition(
       workspaceRoot: context.owner.capability.canonicalPath,
       stores: runtimePolicyStores,
       onDeferredError: (error) =>
-        console.error('[runtime-host] optional bootstrap target could not be configured:', error),
+        console.error(
+          `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
+        ),
     });
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedAutomationStore = await openInteractiveAutomationAuthorityForWrite(

@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { RUNTIME_HOST_OAUTH_IPC_CHANNELS } from '../runtime-host-oauth-ipc-main.js';
 
 const desktopRoot = process.cwd().endsWith(join('apps', 'desktop'))
   ? process.cwd()
@@ -54,6 +55,7 @@ describe('IPC surface contract', () => {
       preloadSource,
       /ipcRenderer\.invoke\(\s*['"]([^'"]+)['"]/g,
     );
+    for (const channel of RUNTIME_HOST_OAUTH_IPC_CHANNELS) mainChannels.add(channel);
 
     for (const channel of MAIN_ONLY_CHANNELS) {
       assert.ok(

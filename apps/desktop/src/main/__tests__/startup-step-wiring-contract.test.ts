@@ -70,13 +70,14 @@ describe('startup step wiring', () => {
 
   it('hands the repair dialog to the person rather than calling it a hang', async () => {
     const boot = stripLineComments(await readFile(BOOT, 'utf8'));
+    const repair = boot.slice(boot.indexOf('async function confirmDesktopStorageRootRepair'));
     assert.match(
-      boot,
+      repair,
       /await whileAwaitingPerson\(\s*dialog\.showMessageBox\(/,
       'the repair modal must run inside whileAwaitingPerson, or reading it prints "still waiting" every three seconds',
     );
     assert.doesNotMatch(
-      boot,
+      repair,
       /await\s+dialog\.showMessageBox\(/,
       'a bare await on the modal is the unwrapped form: it loses both the quiet and the one line naming a dialog that never opened',
     );

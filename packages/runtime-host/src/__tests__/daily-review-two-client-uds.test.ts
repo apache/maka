@@ -110,6 +110,7 @@ test('two UDS Clients share Daily Review config, generation, and restart recover
     const noModel = await desktop.mutateDailyReview({
       ...run,
       offsetDays: 0,
+      modelKeyOverride: 'missing-provider::missing-model',
     });
     assert.equal(noModel.kind, 'archive');
     if (noModel.kind !== 'archive') return;
@@ -119,7 +120,11 @@ test('two UDS Clients share Daily Review config, generation, and restart recover
     const enabled = await desktop.mutateDailyReview({
       kind: 'update_config',
       expectedRevision: 1,
-      config: { enabled: true, executeTime: '00:00', modelKey: '' },
+      config: {
+        enabled: true,
+        executeTime: '00:00',
+        modelKey: 'missing-provider::missing-model',
+      },
     });
     assert.equal(enabled.kind, 'config_committed');
     const scheduled = await waitForScheduledArchive(desktop);

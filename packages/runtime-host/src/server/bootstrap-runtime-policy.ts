@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ConnectionCatalogEntry, ProviderType } from '@maka/core';
+import type { ProviderType } from '@maka/core/llm-connections';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 
 const JOURNAL_FILE = '.runtime-host-bootstrap.json';

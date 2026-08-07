@@ -14,12 +14,10 @@ import type {
   RuntimePolicy,
 } from '@maka/core/runtime-policy';
 import type { AppSettings } from '@maka/core/settings';
-import {
-  createConnectionStore,
-  createFileCredentialStore,
-  createSettingsStore,
-} from '@maka/storage';
+import { createConnectionStore } from '@maka/storage/connection-store';
+import { createFileCredentialStore } from '@maka/storage/credential-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
+import { createSettingsStore } from '@maka/storage/settings-store';
 
 const JOURNAL_FILE = '.runtime-host-m5-migration.json';
 const LEGACY_FILES = ['llm-connections.json', 'credentials.json', 'settings.json'] as const;

@@ -111,6 +111,10 @@ const ALLOW = new Map([
     'packages/runtime-host/src/server/host-kernel.ts',
     'Host shutdown failure diagnostics print the full nested AggregateError chain (Node truncates it to [errors]: [Array] by default); error metadata only, no secrets (PR1760).',
   ],
+  [
+    'packages/runtime-host/src/server/execution-composition.ts',
+    'optional environment-backed bootstrap failure is generalized before startup logging; no credential or provider payloads.',
+  ],
 ]);
 
 async function walk(root) {

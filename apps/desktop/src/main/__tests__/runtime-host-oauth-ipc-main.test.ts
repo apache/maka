@@ -4,6 +4,7 @@ import type { IpcMainInvokeEvent } from 'electron';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
+  RUNTIME_HOST_OAUTH_IPC_CHANNELS,
   registerRuntimeHostOAuthIpc,
   type RuntimeHostOAuthIpcDeps,
 } from '../runtime-host-oauth-ipc-main.js';
@@ -184,6 +185,8 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     },
     isProviderEnabled: () => true,
   });
+
+  assert.deepEqual([...handlers.keys()].sort(), [...RUNTIME_HOST_OAUTH_IPC_CHANNELS].sort());
 
   for (const prefix of ['claude-subscription', 'openai-codex', 'xai-oauth']) {
     assert.equal(handlers.has(`${prefix}:get-auth-url`), true);

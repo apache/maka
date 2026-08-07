@@ -23,6 +23,30 @@ import type {
 } from './runtime-host-oauth-presentation.js';
 
 const OAUTH_POLL_INTERVAL_MS = 250;
+const SHARED_OAUTH_IPC_OPERATIONS = [
+  'get-auth-url',
+  'open-auth-url',
+  'complete-authorization',
+  'cancel-authorization',
+  'get-account-state',
+  'refresh-tokens',
+  'logout',
+] as const;
+const ANTIGRAVITY_OAUTH_IPC_OPERATIONS = [
+  'is-experimental-enabled',
+  ...SHARED_OAUTH_IPC_OPERATIONS,
+] as const;
+
+export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
+  ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) => [
+    ...(provider === 'xai-oauth' ? [] : [`${provider}:is-experimental-enabled`]),
+    ...SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
+    ...(provider === 'claude-subscription' ? [`${provider}:refresh-quota`] : []),
+  ]),
+  ...ANTIGRAVITY_OAUTH_IPC_OPERATIONS.map(
+    (operation) => `antigravity-subscription:${operation}`,
+  ),
+]);
 
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
   DesktopRuntimeHostClient,
@@ -53,7 +77,9 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
 
   for (const provider of OAUTH_LOGIN_PROVIDERS) {
     const channel = (operation: string) => `${provider}:${operation}`;
-    deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
+    if (provider !== 'xai-oauth') {
+      deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
+    }
     deps.ipcMain.handle(channel('get-auth-url'), async () => {
       if (!providerEnabled(provider)) return providerDisabled();
       const connection = await ensureRuntimeHostAccountConnection(deps.client, {
