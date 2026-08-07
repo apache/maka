@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import {
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   type ProviderType,
 } from '@maka/core';
 import {
@@ -142,6 +143,9 @@ export function AddProviderForm(props: {
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
         defaultModel: normalizedDefaultModel || recommendedDefaultModel,
+        ...(props.providerType === 'opencode-free'
+          ? { enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS] }
+          : {}),
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
       });
       if (!addProviderMountedRef.current) return;
