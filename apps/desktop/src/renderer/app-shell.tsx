@@ -109,6 +109,7 @@ import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
+import { CustomPetCompanion } from './custom-pet-companion';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
 import { useAppShellModuleData } from './use-module-data';
 import { useKeepSystemAwake } from './use-keep-system-awake';
@@ -2510,6 +2511,7 @@ function AppShellContent({
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>
+      {!hasModalOpen && !settingsOpen && <CustomPetCompanion />}
       <AppShellOverlays
         settingsOpen={settingsOpen}
         connections={connections}
