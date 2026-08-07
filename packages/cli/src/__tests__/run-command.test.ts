@@ -9,6 +9,19 @@ import { parseMakaRunArgs } from '../run-command.js';
 
 const fixturePath = fileURLToPath(new URL('./run-command-fixture.js', import.meta.url));
 
+/** Node may print ExperimentalWarning for node:sqlite on stderr; ignore it in process contracts. */
+function processContractStderr(stderr: string): string {
+  return stderr
+    .split('\n')
+    .filter(
+      (line) =>
+        !line.includes('ExperimentalWarning: SQLite is an experimental feature') &&
+        !line.includes('Use `node --trace-warnings') &&
+        line.trim().length > 0,
+    )
+    .join('\n');
+}
+
 describe('maka run argument parsing', () => {
   test('parses prompt, target, thinking, timeout, and max steps', () => {
     assert.deepEqual(
@@ -111,7 +124,7 @@ describe('maka run process contract', () => {
     const result = await runFixture(['hello'], { input: '' });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=hello\n');
-    assert.equal(result.stderr, '');
+    assert.equal(processContractStderr(result.stderr), '');
   });
 
   test('waits for the complete Graph before printing the final supervisor output', async () => {
@@ -121,7 +134,7 @@ describe('maka run process contract', () => {
     });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'graph completed\n');
-    assert.equal(result.stderr, '');
+    assert.equal(processContractStderr(result.stderr), '');
   });
 
   test('does not wait for Graph completion after the root invocation fails', async () => {
