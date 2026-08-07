@@ -1,16 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { type BigIntStats, constants as fsConstants } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import { chmod, lstat, mkdir, open, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { isAbsolute, join, normalize, parse, resolve } from 'node:path';
 import { tryLock, unlock, waitForLock } from 'fs-native-extensions';
 
+import { withArtifactWriterBootstrapLock } from './artifact-writer-bootstrap-lock.js';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 
 export const STORAGE_ROOT_MARKER_FILE = '.maka-storage-root.json';
 export const STORAGE_ROOT_MARKER_SCHEMA_VERSION = 1 as const;
 const MAX_STORAGE_ROOT_MARKER_BYTES = 1_024;
-const MAX_ROOT_MARKER_LOCK_ATTEMPTS = 2;
 const ARTIFACT_WRITER_BOOTSTRAP_DIRECTORY = 'artifact-writer-bootstrap';
 
 export type StorageRootKind = 'interactive' | 'headless';
@@ -691,6 +691,10 @@ async function acquireInteractiveRootLock(
   const capabilityRecord = requireCapability(capability, 'interactive');
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
   const lockPath = join(controlDirectory, 'owner.lock');
+  const existingLock = await lstatPathIfPresent(lockPath);
+  if (existingLock && !existingLock.isFile()) {
+    throw invalidLockArtifact(lockPath);
+  }
   const handle = await open(lockPath, 'a+', 0o600);
   try {
     await assertStableLockArtifact(handle, lockPath);
@@ -997,7 +1001,7 @@ async function replaceRootMarkerIdentity(
   identity: RootIdentity,
   sourceMarker: RootMarker,
 ): Promise<RootMarker> {
-  return withExclusiveRootMarker(root, sourceMarker.kind, async (current) => {
+  return withExclusiveRootMarker(root, identity, sourceMarker.kind, async (current) => {
     assertRootMarkerUnchanged(root, current, sourceMarker);
     const marker: RootMarker = {
       ...current,
@@ -1049,68 +1053,21 @@ async function replaceRootMarkerIdentity(
 
 async function withExclusiveRootMarker<T>(
   root: string,
+  identity: RootIdentity,
   expectedKind: StorageRootKind,
   operation: (marker: RootMarker) => Promise<T>,
 ): Promise<T> {
-  const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
-  for (let attempt = 0; attempt < MAX_ROOT_MARKER_LOCK_ATTEMPTS; attempt += 1) {
-    const handle = await openRootMarkerForWrite(root, markerPath);
-    let locked = false;
-    try {
-      await waitForLock(handle.fd);
-      locked = true;
-      const [handleStat, pathStat] = await Promise.all([
-        handle.stat({ bigint: true }),
-        lstat(markerPath, { bigint: true }),
-      ]);
-      if (
-        !handleStat.isFile() ||
-        !pathStat.isFile() ||
-        handleStat.size > BigInt(MAX_STORAGE_ROOT_MARKER_BYTES)
-      ) {
-        throw new StorageRootAuthorityError(
-          'invalid_marker',
-          `Storage root marker must be one bounded regular file: ${markerPath}`,
-        );
-      }
-      if (handleStat.dev !== pathStat.dev || handleStat.ino !== pathStat.ino) {
-        if (attempt + 1 < MAX_ROOT_MARKER_LOCK_ATTEMPTS) continue;
-        throw new StorageRootAuthorityError(
-          'root_identity_changed',
-          `Storage root marker changed while acquiring its lock: ${root}`,
-        );
-      }
-      const marker = parseRootMarker(await handle.readFile('utf8'), markerPath);
-      if (marker.kind !== expectedKind) {
-        throw new StorageRootAuthorityError(
-          'root_kind_mismatch',
-          `Storage root ${root} is ${marker.kind}, not ${expectedKind}`,
-        );
-      }
-      return await operation(marker);
-    } finally {
-      if (locked) unlock(handle.fd);
-      await handle.close();
-    }
-  }
-  throw new StorageRootAuthorityError(
-    'root_identity_changed',
-    `Storage root marker changed while acquiring its lock: ${root}`,
-  );
-}
-
-async function openRootMarkerForWrite(root: string, markerPath: string): Promise<FileHandle> {
-  try {
-    return await open(markerPath, markerWriteFlags());
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) {
-      throw new StorageRootAuthorityError('root_unmarked', `Storage root is not marked: ${root}`);
-    }
-    if (isInvalidMarkerPathError(error)) {
-      throw invalidRootMarker(markerPath, error);
-    }
-    throw error;
-  }
+  const controlRoot = await preparePrivateControlRoot();
+  const lockPath = await prepareArtifactWriterBootstrapLockPathForIdentity(controlRoot, identity);
+  return withArtifactWriterBootstrapLock(lockPath, async () => {
+    await assertRootPathIdentity(
+      root,
+      identity,
+      `Storage root identity changed while acquiring its marker publication lock: ${root}`,
+    );
+    const marker = await readAndValidateRootMarker(root, expectedKind);
+    return operation(marker);
+  });
 }
 
 function assertRootMarkerUnchanged(root: string, current: RootMarker, expected: RootMarker): void {
@@ -1120,10 +1077,6 @@ function assertRootMarkerUnchanged(root: string, current: RootMarker, expected: 
       `Storage root marker changed while updating its identity: ${root}`,
     );
   }
-}
-
-function markerWriteFlags(): number {
-  return fsConstants.O_RDWR | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0);
 }
 
 function invalidRootMarker(markerPath: string, cause?: unknown): StorageRootAuthorityError {
@@ -1315,11 +1268,15 @@ async function assertStableLockArtifact(handle: FileHandle, path: string): Promi
     if (!isMissingPathError(error)) throw error;
   }
   if (!stable) {
-    throw new StorageRootAuthorityError(
-      'invalid_lock_artifact',
-      `Storage root lock path is not one stable regular file: ${path}`,
-    );
+    throw invalidLockArtifact(path);
   }
+}
+
+function invalidLockArtifact(path: string): StorageRootAuthorityError {
+  return new StorageRootAuthorityError(
+    'invalid_lock_artifact',
+    `Storage root lock path is not one stable regular file: ${path}`,
+  );
 }
 
 function releaseLock(handle: FileHandle): void {
@@ -1353,6 +1310,15 @@ function isInvalidMarkerPathError(error: unknown): boolean {
 async function statRootIfPresent(path: string): Promise<BigIntStats | undefined> {
   try {
     return await stat(path, { bigint: true });
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
+}
+
+async function lstatPathIfPresent(path: string): Promise<BigIntStats | undefined> {
+  try {
+    return await lstat(path, { bigint: true });
   } catch (error) {
     if (isMissingPathError(error)) return undefined;
     throw error;
