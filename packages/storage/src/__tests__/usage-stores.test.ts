@@ -15,6 +15,7 @@ import {
   resolveStorageRoot,
   STORAGE_ROOT_MARKER_FILE,
   StorageRootAuthorityError,
+  tryAcquireInteractiveRootReader,
   tryAcquireInteractiveRootOwner,
   type StorageRootAuthorityErrorCode,
 } from '../root-authority.js';
@@ -27,6 +28,7 @@ import {
 import {
   classifyInteractiveUsageStoresFailure,
   InteractiveUsageStoresClosedError,
+  openInteractiveUsageStoresForRead,
   openInteractiveUsageStoresForWrite,
 } from '../usage-stores.js';
 
@@ -151,6 +153,7 @@ describe('InteractiveUsageStores', () => {
             },
           );
         } finally {
+          await stores.close();
           await owner.close();
         }
       });
@@ -200,6 +203,7 @@ describe('InteractiveUsageStores', () => {
             },
           );
         } finally {
+          await stores.close();
           await owner.close();
         }
       });
@@ -274,6 +278,28 @@ describe('InteractiveUsageStores', () => {
         () => stores.pricing.snapshot(),
         (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
       );
+      await stores.close();
+    });
+  });
+
+  test('reader close releases local resources after lease revocation', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const writer = await openInteractiveUsageStoresForWrite(owner.lease);
+      await writer.close();
+      await owner.close();
+
+      const readerOwner = await tryAcquireInteractiveRootReader(capability);
+      assert(readerOwner);
+      const reader = await openInteractiveUsageStoresForRead(readerOwner.lease);
+      await readerOwner.close();
+
+      await assert.rejects(
+        () => reader.pricing.snapshot(),
+        (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+      );
+      await reader.close();
     });
   });
 });

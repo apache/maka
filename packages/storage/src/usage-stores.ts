@@ -237,6 +237,7 @@ export async function openInteractiveUsageStoresForRead(
     openRepos(root, false),
   );
   let closed = false;
+  let closePromise: Promise<void> | undefined;
   const run = <T>(operation: () => T | Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(new InteractiveUsageStoresClosedError());
     return runWithStorageRootLease(lease, 'interactive', 'read', async () => operation());
@@ -248,10 +249,11 @@ export async function openInteractiveUsageStoresForRead(
     telemetry: telemetryReader(repos.telemetry, run),
     modelCalls: modelCallReader(repos.modelCalls, run),
     pricing: pricingReader(repos.pricing, run),
-    close: async () => {
-      if (closed) return;
-      await run(() => closeRepos(repos.telemetry, repos.modelCalls, repos.pricing));
+    close: () => {
+      if (closePromise) return closePromise;
       closed = true;
+      closePromise = closeRepos(repos.telemetry, repos.modelCalls, repos.pricing);
+      return closePromise;
     },
   };
   freezeFacade(stores);
@@ -372,9 +374,9 @@ function createWriterFacade(
     closePromise = accepted
       .then(async () => {
         const closed = await Promise.allSettled([
-          run(() => telemetry.close()),
-          run(() => modelCalls.close()),
-          run(() => pricing.close()),
+          telemetry.close(),
+          modelCalls.close(),
+          pricing.close(),
         ]);
         throwDeduplicatedFailures('Interactive usage stores close failed', [
           ...failures,
