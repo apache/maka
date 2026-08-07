@@ -239,6 +239,8 @@ export function QuoteCompanionPanel(props: {
               mentionSkills={props.mentionSkills}
               onSearchMentionFiles={props.onSearchMentionFiles}
               pendingQuotes={props.quotes.map((quote) => quote.value)}
+              contextDrawerDefaultCollapsed
+              showStaticModelUnavailableStatus={false}
               onRemoveQuote={(index) => {
                 const quote = props.quotes[index];
                 if (quote) {

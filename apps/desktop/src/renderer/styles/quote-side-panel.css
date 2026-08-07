@@ -81,7 +81,25 @@
 }
 
 .maka-session-workbar-panel[data-placement="right"] .maka-quote-companion .composer {
-  padding-inline: var(--space-3);
+  padding-inline: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-astryx {
+  --_chat-composer-radius: var(--radius-surface);
+
+  box-shadow:
+    0 1px 2px oklch(from var(--foreground) l c h / 0.06),
+    inset 0 0 0 var(--border-width-hairline) var(--border);
+}
+
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-context-drawer {
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
 }
 
 .maka-session-workbar-panel[data-placement="right"]
@@ -93,13 +111,15 @@
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion
   .maka-model-selection-controls {
-  max-width: min(160px, 42%);
+  max-width: min(200px, 56%);
   flex: 1 1 auto;
 }
 
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion
   .maka-composer-model-chip {
+  justify-content: flex-start;
   width: 100%;
-  max-width: 160px;
+  max-width: 200px;
+  padding-inline: var(--space-1-5);
 }

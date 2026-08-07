@@ -70,7 +70,13 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
 
   // Quiet composer stages quotes as drawer Tokens (Astryx Token + remove).
   const quoteTokens = panel.locator('.maka-composer-context-drawer .astryx-token');
+  const contextDrawerToggle = panel.getByRole('button', { name: '展开添加上下文' });
+  await expect(contextDrawerToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(quoteTokens).toHaveCount(2);
+  await contextDrawerToggle.click();
+  await expect(quoteTokens).toHaveCount(2);
+  await expect(quoteTokens.first()).toBeVisible();
+  await expect(panel.locator('.maka-composer-model-status')).toHaveCount(0);
   await quoteTokens.first().getByRole('button', { name: /^移除/ }).click();
   await expect(quoteTokens).toHaveCount(1);
 

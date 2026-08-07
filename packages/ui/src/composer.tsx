@@ -234,6 +234,10 @@ export const Composer = forwardRef<
     /** Quoted excerpts staged for the next send; rendered as removable chips. */
     pendingQuotes?: readonly QuoteRef[];
     onRemoveQuote?(index: number): void;
+    /** Start staged context collapsed on compact secondary composer surfaces. */
+    contextDrawerDefaultCollapsed?: boolean;
+    /** Hide the unavailable dot when an inherited model is intentionally read-only. */
+    showStaticModelUnavailableStatus?: boolean;
     /**
      * Stage a reference-sized paste as a quote chip rather than letting it
      * flood the textarea. Omitted by hosts that don't compose quotes, in which
@@ -1349,8 +1353,10 @@ export const Composer = forwardRef<
           isDisabled={props.disabled}
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer
+              className="maka-composer-drawer"
               count={drawerTokenCount}
               label={copy.stagedContext}
+              defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
               // The collapse band's tooltip (composer.css ::after) follows the
               // pointer instead of sitting at a fixed offset — on a full-width
               // band a fixed bubble can be half a window away from the cursor.
@@ -1645,7 +1651,11 @@ export const Composer = forwardRef<
                     onPick={props.onPickNewChatModel}
                   />
                 ) : (
-                  <ModelChipStatic label={modelChipLabel} onOpenSettings={props.onOpenModelSettings} />
+                  <ModelChipStatic
+                    label={modelChipLabel}
+                    onOpenSettings={props.onOpenModelSettings}
+                    showUnavailableStatus={props.showStaticModelUnavailableStatus}
+                  />
                 )}
                 {props.activeSession ? (
                   <ThinkingLevelSelector
