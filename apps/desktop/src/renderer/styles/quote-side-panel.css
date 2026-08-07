@@ -90,9 +90,9 @@
   .maka-composer-astryx {
   --_chat-composer-radius: var(--radius-surface);
 
-  box-shadow:
-    0 1px 2px oklch(from var(--foreground) l c h / 0.06),
-    inset 0 0 0 var(--border-width-hairline) var(--border);
+  overflow: hidden;
+  border-radius: var(--radius-surface);
+  box-shadow: 0 2px 8px oklch(from var(--foreground) l c h / 0.08);
 }
 
 .maka-session-workbar-panel[data-placement="right"]
