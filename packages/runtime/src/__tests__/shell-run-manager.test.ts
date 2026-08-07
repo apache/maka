@@ -1389,17 +1389,15 @@ describe('ShellRunProcessManager', () => {
   test('publishes raw PTY deltas and exposes a bounded replay snapshot', async () => {
     const cwd = await workspace();
     const events: ShellRunPtyDataEvent[] = [];
-    const manager = createManager(
-      createSqliteShellRunStore(cwd),
-      undefined,
-      { onPtyData: (event) => events.push(event) },
-    );
+    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
+      onPtyData: (event) => events.push(event),
+    });
     const run = await manager.runBackgroundBash(
       shellInput({
         cwd,
         command:
           "printf 'RAW-READY\\n'; IFS= read -r line; " +
-          "printf 'RAW-VALUE:%s\\n' \"$line\"; while :; do sleep 1; done",
+          'printf \'RAW-VALUE:%s\\n\' "$line"; while :; do sleep 1; done',
         pty: true,
         timeoutMs: 5_000,
       }),
@@ -1433,11 +1431,9 @@ describe('ShellRunProcessManager', () => {
   test('coalesces high-volume PTY renderer deltas without dropping bytes', async () => {
     const cwd = await workspace();
     const events: ShellRunPtyDataEvent[] = [];
-    const manager = createManager(
-      createSqliteShellRunStore(cwd),
-      undefined,
-      { onPtyData: (event) => events.push(event) },
-    );
+    const manager = createManager(createSqliteShellRunStore(cwd), undefined, {
+      onPtyData: (event) => events.push(event),
+    });
     const run = await manager.runBackgroundBash(
       shellInput({
         cwd,
@@ -1449,10 +1445,7 @@ describe('ShellRunProcessManager', () => {
     assert.equal(run.kind, 'shell_run');
     await waitForTerminalShellRun(manager, run.ref);
 
-    const bytes = events.reduce(
-      (total, event) => total + Buffer.byteLength(event.data, 'utf8'),
-      0,
-    );
+    const bytes = events.reduce((total, event) => total + Buffer.byteLength(event.data, 'utf8'), 0);
     assert.equal(bytes, 1024 * 1024);
     assert.ok(events.length <= 32, `expected bounded PTY IPC batches, got ${events.length}`);
     for (let index = 1; index < events.length; index += 1) {
