@@ -2,13 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import {
+  codexCwdSqlVariants,
   createForeignSessionStore,
   isClaudeCodeImportEnabled,
   isCodexImportEnabled,
@@ -294,6 +295,13 @@ describe('foreign session store — Claude scan', () => {
 });
 
 describe('foreign session store — Codex scan', () => {
+  it('includes POSIX-shaped SQL variants for a native Windows cwd', () => {
+    const native = win32.join('C:\\', 'Users', 'me', 'project');
+    const variants = codexCwdSqlVariants(native);
+    assert.ok(variants.includes('C:/Users/me/project'));
+    assert.ok(variants.includes('C:/Users/me/project/'));
+  });
+
   it('lists threads from sqlite, dropping archived and foreign-source rows', async () => {
     const home = await tempHome();
     await seedCodexSqlite(home, [
