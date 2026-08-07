@@ -196,7 +196,7 @@ export async function reconcileAgentGraphSchedule(
     let topologyStale = false;
 
     for (const work of orderedRequestedWork(snapshot.schedule)) {
-      if (work.target.kind !== 'agent' || provisionsByWork.has(work.workId)) continue;
+      if (work.target.kind === 'operator' || provisionsByWork.has(work.workId)) continue;
       if (snapshot.schedule.closed) {
         deferredWork.push({ work, reason: 'graph_closed' });
         continue;
@@ -262,7 +262,7 @@ export async function reconcileAgentGraphSchedule(
     }> = [];
 
     for (const work of orderedRequestedWork(snapshot.schedule)) {
-      if (work.target.kind === 'agent' && !provisionsByWork.has(work.workId)) continue;
+      if (work.target.kind !== 'operator' && !provisionsByWork.has(work.workId)) continue;
       let intent: AgentGraphRunnableIntent;
       try {
         intent = scheduledWorkIntent(
@@ -676,11 +676,11 @@ function scheduledWorkIntent(
   work: AgentGraphScheduleWorkView,
   provision?: AgentGraphOperatorProvision,
 ): AgentGraphRunnableIntent {
-  if (work.target.kind === 'agent') {
+  if (work.target.kind !== 'operator') {
     if (
       !provision ||
       provision.workId !== work.workId ||
-      provision.agentId !== work.target.agentId
+      (work.target.kind === 'agent' ? provision.agentId !== work.target.agentId : false)
     ) {
       throw new Error(`Graph work ${work.workId} has no matching topology provision`);
     }
@@ -747,8 +747,8 @@ function buildOperatorProvisionInput(
   source: AgentGraphScheduleUpdateSource,
   expectedScheduleRevision: number,
 ): ProvisionAgentGraphOperatorInput {
-  if (work.target.kind !== 'agent') {
-    throw new Error(`Graph work ${work.workId} does not target a catalog agent`);
+  if (work.target.kind === 'operator') {
+    throw new Error(`Graph work ${work.workId} targets an existing operator`);
   }
   const operatorHash = stableHash({
     schemaVersion: SCHEDULE_INTENT_SCHEMA_VERSION,
@@ -784,7 +784,9 @@ function buildOperatorProvisionInput(
   return {
     graphId: topology.graphId,
     workId: work.workId,
-    agentId: work.target.agentId,
+    ...(work.target.kind === 'preset'
+      ? { subagentId: work.target.presetId }
+      : { agentId: work.target.agentId }),
     operatorId,
     source,
     edges,

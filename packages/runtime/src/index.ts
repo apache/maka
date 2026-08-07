@@ -186,6 +186,17 @@ export {
   AgentGraphSupervisorWakeCoordinator,
   recoverAgentGraphSupervisorContextOverflow,
 } from './agent-graph-supervisor-wake.js';
+export {
+  AGENT_SWARM_STATUS_TOOL_NAME,
+  buildAgentSwarmStatusTool,
+  isAgentSwarmSupervisorCheckpoint,
+  projectAgentSwarmStatus,
+} from './agent-swarm-status-tool.js';
+export type {
+  AgentSwarmItemStatus,
+  AgentSwarmStatusItem,
+  AgentSwarmStatusResult,
+} from './agent-swarm-status-tool.js';
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,
   AgentGraphSupervisorPartialResult,

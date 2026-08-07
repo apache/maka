@@ -63,8 +63,9 @@ import {
   type AgentGraphTimelinePageOptions,
 } from './agent-graph-timeline.js';
 import { isAgentGraphSupervisorMilestone } from './agent-graph-supervisor-wake.js';
+import { buildAgentSwarmStatusTool } from './agent-swarm-status-tool.js';
 
-const DEFAULT_MAX_NEW_ACTIVATIONS = 8;
+const DEFAULT_MAX_NEW_ACTIVATIONS = 32;
 const MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS = 4;
 
 export interface AgentGraphCoordinatorSessionStore {
@@ -209,27 +210,30 @@ export class AgentGraphCoordinator {
   async toolsForSession(rootSessionId: string): Promise<MakaTool[]> {
     await this.#assertRootSupervisor(rootSessionId);
     const driver = this.#driver(rootSessionId);
-    return buildAgentGraphSupervisorTools({
-      graphId: driver.graphId,
-      scheduleStore: this.#input.controlStore,
-      observeGraph: () => this.observe(rootSessionId),
-      prepareYieldPermit: () => this.#prepareYieldPermit(driver),
-      authorizeScheduleUpdate: (request): ScheduleWakeFence => {
-        if (request.graphId !== driver.graphId || request.source.sessionId !== rootSessionId) {
-          throw new Error(
-            `Agent graph schedule update is not authorized for root Session ${rootSessionId}`,
-          );
-        }
-        return {
-          stopGeneration: driver.stopGeneration,
-          mayResumePaused: driver.paused && !driver.stopping,
-        };
-      },
-      onScheduleUpdateCommitted: (update, authorization) => {
-        this.#assertScheduleOwnedByRoot(update, rootSessionId, driver.graphId);
-        this.#wakeFromSchedule(driver, decodeScheduleWakeFence(authorization));
-      },
-    });
+    return [
+      ...buildAgentGraphSupervisorTools({
+        graphId: driver.graphId,
+        scheduleStore: this.#input.controlStore,
+        observeGraph: () => this.observe(rootSessionId),
+        prepareYieldPermit: () => this.#prepareYieldPermit(driver),
+        authorizeScheduleUpdate: (request): ScheduleWakeFence => {
+          if (request.graphId !== driver.graphId || request.source.sessionId !== rootSessionId) {
+            throw new Error(
+              `Agent graph schedule update is not authorized for root Session ${rootSessionId}`,
+            );
+          }
+          return {
+            stopGeneration: driver.stopGeneration,
+            mayResumePaused: driver.paused && !driver.stopping,
+          };
+        },
+        onScheduleUpdateCommitted: (update, authorization) => {
+          this.#assertScheduleOwnedByRoot(update, rootSessionId, driver.graphId);
+          this.#wakeFromSchedule(driver, decodeScheduleWakeFence(authorization));
+        },
+      }),
+      buildAgentSwarmStatusTool({ readSnapshot: () => this.getSnapshot(rootSessionId) }),
+    ];
   }
 
   /**

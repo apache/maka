@@ -363,7 +363,7 @@ describe('AiSdkBackend deferred tool loading', () => {
 });
 
 describe('AiSdkBackend deferred agent tools', () => {
-  test('Swarm Mode injects the shared prompt and pins agent_swarm at step 0', async () => {
+  test('Swarm Mode injects the async prompt and pins durable swarm controls at step 0', async () => {
     const capturedTools: string[][] = [];
     const capturedPrompts: string[] = [];
     const model = new MockLanguageModelV4({
@@ -384,7 +384,16 @@ describe('AiSdkBackend deferred agent tools', () => {
     });
 
     await drain(
-      agentBackend(model, []).send({
+      agentBackend(model, [], {
+        extraTools: ['update_agent_graph', 'yield_agent_graph', 'agent_swarm_status'].map(
+          (name) => ({
+            name,
+            description: name,
+            parameters: z.object({}),
+            impl: () => ({ ok: true }),
+          }),
+        ),
+      }).send({
         turnId: 'turn-swarm-mode',
         text: 'fan out',
         context: [],
@@ -396,11 +405,16 @@ describe('AiSdkBackend deferred agent tools', () => {
       }),
     );
 
-    assert.ok(capturedTools[0]?.includes(AGENT_SWARM_TOOL_NAME));
+    assert.ok(capturedTools[0]?.includes('agent_list'));
+    assert.ok(capturedTools[0]?.includes('update_agent_graph'));
+    assert.ok(capturedTools[0]?.includes('yield_agent_graph'));
+    assert.ok(capturedTools[0]?.includes('agent_swarm_status'));
+    assert.ok(capturedTools[0]?.includes('agent_output'));
+    assert.ok(!capturedTools[0]?.includes(AGENT_SWARM_TOOL_NAME));
     assert.match(capturedPrompts[0] ?? '', /Orchestration Mode: Swarm/);
-    assert.match(capturedPrompts[0] ?? '', /preferred default execution strategy/);
+    assert.match(capturedPrompts[0] ?? '', /preferred execution strategy/);
     assert.match(capturedPrompts[0] ?? '', /You may continue directly/);
-    assert.match(capturedPrompts[0] ?? '', /only tool in its assistant step/);
+    assert.match(capturedPrompts[0] ?? '', /Do not poll, sleep, watch child logs/);
   });
 
   test('Graph Mode injects the supervisor prompt and pins controls plus agent output at step 0', async () => {

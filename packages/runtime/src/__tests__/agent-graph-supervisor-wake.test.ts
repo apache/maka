@@ -56,6 +56,42 @@ describe('Agent Graph supervisor wake delivery', () => {
     });
   });
 
+  test('lets Swarm suppress dispatch wakes and choose a status-only wake turn', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let ready = false;
+    const starts: Array<{ text: string; mode: string | undefined }> = [];
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      shouldWake: async () => ready,
+      renderWake: async () => ({
+        text: 'Read compact swarm status only.',
+        displayText: 'Agent swarm needs attention.',
+        orchestrationMode: 'swarm',
+      }),
+      startTurn: async (_sessionId, input) => {
+        starts.push({ text: input.text, mode: input.turnOrchestration?.mode });
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.deepEqual(starts, []);
+
+      ready = true;
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.deepEqual(starts, [{ text: 'Read compact swarm status only.', mode: 'swarm' }]);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('retries failures before and after prompt persistence, delivering only a completed turn', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const persistedAttempts: string[] = [];

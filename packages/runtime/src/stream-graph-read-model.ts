@@ -113,7 +113,10 @@ export interface AgentGraphClientEdge {
 
 export interface AgentGraphClientScheduledWork {
   workId: string;
-  target: { kind: 'agent'; agentId: string } | { kind: 'operator'; operatorId: string };
+  target:
+    | { kind: 'agent'; agentId: string }
+    | { kind: 'preset'; presetId: string }
+    | { kind: 'operator'; operatorId: string };
   inputIds: string[];
   replaces?: string;
   status: AgentGraphScheduleWorkView['status'];

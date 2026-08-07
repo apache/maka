@@ -7,7 +7,7 @@ import type { AgentGraphTopologyStore } from './agent-graph-topology.js';
 
 export const AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION = 1 as const;
 
-export const AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK = 20;
+export const AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK = 32;
 export const AGENT_GRAPH_SCHEDULE_MAX_STOP = 20;
 export const AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS = 64;
 export const AGENT_GRAPH_SCHEDULE_MAX_RESULT_IDS = 64;
@@ -25,6 +25,10 @@ export type AgentGraphWorkTarget =
   | {
       kind: 'agent';
       agentId: string;
+    }
+  | {
+      kind: 'preset';
+      presetId: string;
     }
   | {
       kind: 'operator';
@@ -281,6 +285,13 @@ function isWorkTarget(value: unknown): value is AgentGraphWorkTarget {
     isExactRecord(value, ['kind', 'agentId']) &&
     value.kind === 'agent' &&
     isOpaqueIdentity(value.agentId)
+  ) {
+    return true;
+  }
+  if (
+    isExactRecord(value, ['kind', 'presetId']) &&
+    value.kind === 'preset' &&
+    isOpaqueIdentity(value.presetId)
   ) {
     return true;
   }

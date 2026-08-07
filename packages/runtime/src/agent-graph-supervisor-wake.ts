@@ -171,6 +171,30 @@ export interface AgentGraphSupervisorWakeInput {
     attemptId: string,
     turnId: string,
   ): Promise<AgentRunHeader['status'] | 'missing'>;
+  shouldWake?(
+    rootSessionId: string,
+    result: AgentGraphScheduleReconciliationResult,
+    snapshot: AgentGraphClientSnapshot,
+  ): boolean | undefined | Promise<boolean | undefined>;
+  renderWake?(
+    rootSessionId: string,
+    snapshot: AgentGraphClientSnapshot,
+    result?: AgentGraphScheduleReconciliationResult,
+  ):
+    | {
+        text: string;
+        displayText: string;
+        orchestrationMode: 'graph' | 'swarm';
+      }
+    | undefined
+    | Promise<
+        | {
+            text: string;
+            displayText: string;
+            orchestrationMode: 'graph' | 'swarm';
+          }
+        | undefined
+      >;
   recoverContextOverflow?(
     rootSessionId: string,
     input: {
@@ -220,7 +244,9 @@ export class AgentGraphSupervisorWakeCoordinator {
     rootSessionId: string,
     result: AgentGraphScheduleReconciliationResult,
   ): Promise<void> | undefined {
-    if (this.#closed || !isAgentGraphSupervisorMilestone(result)) return undefined;
+    if (this.#closed || (!this.#input.shouldWake && !isAgentGraphSupervisorMilestone(result))) {
+      return undefined;
+    }
     return this.#runTracked(rootSessionId, async () => {
       try {
         await this.#wake(rootSessionId, result);
@@ -295,6 +321,13 @@ export class AgentGraphSupervisorWakeCoordinator {
   ): Promise<void> {
     if (!(await this.#isSessionDeliverable(rootSessionId))) return;
     const snapshot = await this.#input.readSnapshot(rootSessionId);
+    const wakeDecision = await this.#input.shouldWake?.(rootSessionId, result, snapshot);
+    if (
+      wakeDecision === false ||
+      (wakeDecision === undefined && !isAgentGraphSupervisorMilestone(result))
+    ) {
+      return;
+    }
     if (this.#closed || snapshot.closed || snapshot.scheduleRevision === 0) return;
     const wakeId = `${snapshot.graphId}:${snapshot.snapshotVersion}`;
     if (this.#pendingWakeIds.has(wakeId)) return;
@@ -365,6 +398,11 @@ export class AgentGraphSupervisorWakeCoordinator {
     snapshot: AgentGraphClientSnapshot,
     result?: AgentGraphScheduleReconciliationResult,
   ): Promise<void> {
+    const presentation = (await this.#input.renderWake?.(wake.rootSessionId, snapshot, result)) ?? {
+      text: renderAgentGraphSupervisorWakePrompt(snapshot, result),
+      displayText: 'Agent graph reached a supervisor checkpoint.',
+      orchestrationMode: 'graph' as const,
+    };
     let lastFailure: string | undefined;
     let overflowRecoveryAttempted = false;
     for (let index = 0; index < this.#maxDeliveryAttempts; index += 1) {
@@ -398,9 +436,9 @@ export class AgentGraphSupervisorWakeCoordinator {
             wake.rootSessionId,
             {
               turnId,
-              text: renderAgentGraphSupervisorWakePrompt(snapshot, result),
-              displayText: 'Agent graph reached a supervisor checkpoint.',
-              turnOrchestration: { mode: 'graph', source: 'host_api' },
+              text: presentation.text,
+              displayText: presentation.displayText,
+              turnOrchestration: { mode: presentation.orchestrationMode, source: 'host_api' },
               origin: {
                 kind: 'agent_graph',
                 graphId: wake.graphId,

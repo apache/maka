@@ -172,7 +172,7 @@ describe('stream graph schedule reconciliation', () => {
             provisionFingerprint: `sha256:${'2'.repeat(64)}`,
             graphId: input.graphId,
             workId: input.workId,
-            agentId: input.agentId,
+            agentId: input.agentId!,
             operatorId: input.operatorId,
             initialTurnId: 'reserved-turn',
             initialRunId: 'reserved-run',

@@ -462,6 +462,19 @@ describe('SessionManager graph operator provisioning', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => ({
+          id,
+          name: 'Fast graph reader',
+          description: 'Cheap graph scans',
+          profile: 'local_read',
+          connectionSlug: 'worker-connection',
+          model: 'worker-model',
+          thinkingLevel: 'low',
+          enabled: true,
+        }),
+      },
       newId: nextId(),
       now: nextNow(10),
     });
@@ -478,7 +491,7 @@ describe('SessionManager graph operator provisioning', () => {
       .provisionAgentGraphOperator({
         graphId: 'graph-active-supervisor',
         workId: `graph_work_${'8'.repeat(32)}`,
-        agentId: LOCAL_READ_AGENT_ID,
+        subagentId: 'fast-reader',
         operatorId: `graph_operator_${'9'.repeat(32)}`,
         source: {
           sessionId: parent.id,
@@ -494,7 +507,14 @@ describe('SessionManager graph operator provisioning', () => {
       });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(provisionSettled).toBe(true);
-    expect((await provision).created).toBe(true);
+    const provisioned = await provision;
+    expect(provisioned.created).toBe(true);
+    expect(provisioned.header.name).toBe('Fast graph reader');
+    expect(provisioned.header.llmConnectionSlug).toBe('worker-connection');
+    expect(provisioned.header.model).toBe('worker-model');
+    expect(provisioned.header.thinkingLevel).toBe('low');
+    expect(provisioned.header.subagentRuntime?.presetId).toBe('fast-reader');
+    expect(provisioned.provision.agentId).toBe(LOCAL_READ_AGENT_ID);
 
     parentGate.release();
     while (!(await parentTurn.next()).done) {}
