@@ -634,6 +634,59 @@ describe('AgentSwarm adapter', () => {
     assert.equal(starts, 0);
   });
 
+  test('resumes a preset child when its display name differs from the built-in definition', async () => {
+    let resumed = false;
+    const result = await buildAgentSwarmTool().impl(
+      {
+        resume_run_ids: { 'preset-run': 'Continue the preset child.' },
+      },
+      context({
+        prepareChildAgentResume: async (sourceRunId) => ({
+          ...preparedResume(sourceRunId),
+          agentName: 'DeepSeek Flash Reader',
+        }),
+        resumeChildAgent: async (input) => {
+          resumed = true;
+          return {
+            ...childResult(0),
+            runId: 'resumed-preset-run',
+            resumedFromRunId: input.sourceRunId,
+          };
+        },
+      }),
+    );
+
+    assert.equal(resumed, true);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.items[0]?.resumedFromRunId, 'preset-run');
+  });
+
+  test('rejects a resume when the durable agent id changed', async () => {
+    let resumed = false;
+    await assert.rejects(
+      Promise.resolve(
+        buildAgentSwarmTool().impl(
+          {
+            resume_run_ids: { 'changed-agent-run': 'Continue the child.' },
+          },
+          context({
+            prepareChildAgentResume: async (sourceRunId) => ({
+              ...preparedResume(sourceRunId),
+              agentId: 'implementation',
+            }),
+            resumeChildAgent: async () => {
+              resumed = true;
+              return childResult(0);
+            },
+          }),
+        ),
+      ),
+      /resume profile changed/,
+    );
+
+    assert.equal(resumed, false);
+  });
+
   test('rejects resume inputs that resolve to the same linked child Session before starting work', async () => {
     let starts = 0;
     const tool = buildAgentSwarmTool();

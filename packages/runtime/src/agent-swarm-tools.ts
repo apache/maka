@@ -766,7 +766,8 @@ async function prepareAgentSwarmInput(
         throw new Error(`Child AgentRun resume identity changed for ${item.sourceRunId}`);
       }
       const definition = requireAgentDefinitionByProfile(definitions, prepared.profile);
-      if (definition.id !== prepared.agentId || definition.name !== prepared.agentName) {
+      // Resume identity is the durable agent key. Preset and display metadata may change.
+      if (definition.id !== prepared.agentId) {
         throw new Error(`Child AgentRun resume profile changed for ${item.sourceRunId}`);
       }
       return {
