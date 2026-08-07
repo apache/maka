@@ -1,5 +1,6 @@
 import { redactSecrets, type PersonalizationSettings } from '@maka/core';
 import {
+  assembleMainSessionSystemPrompt,
   buildPersonalizationPromptFragment,
   buildSessionEnvironmentPromptFragment,
   buildSkillsPromptFragmentWithReport,
@@ -72,10 +73,11 @@ export async function buildCliSystemPrompt(
   const workspaceInstructions = input.settings.workspaceInstructions.enabled
     ? await buildWorkspaceInstructionsPromptFragment(input.cwd, { homeDir: input.homeDir })
     : undefined;
-  const fragments = [personalization.text, skills, workspaceInstructions].filter((v): v is string =>
-    Boolean(v),
-  );
-  return fragments.length > 0 ? fragments.join('\n\n') : undefined;
+  return assembleMainSessionSystemPrompt({
+    personalization: personalization.text,
+    skills,
+    workspaceInstructions,
+  });
 }
 
 export async function buildCliTurnTailPrompt(input: {

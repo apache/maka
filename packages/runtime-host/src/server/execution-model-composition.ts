@@ -19,6 +19,7 @@ import {
   buildDefaultContextBudgetPolicy,
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
+  assembleMainSessionSystemPrompt,
   buildPersonalizationPromptFragment,
   buildCancelPlanTool,
   buildParentAgentTools,
@@ -219,18 +220,18 @@ export function createHostExecutionModelComposition(
           childInstruction,
         ]);
       }
-      return joinFragments([
-        buildPersonalizationPromptFragment(promptState.policy.personalization).text,
-        skills.text,
+      return assembleMainSessionSystemPrompt({
+        personalization: buildPersonalizationPromptFragment(promptState.policy.personalization).text,
+        skills: skills.text,
         workspaceInstructions,
-        promptState.memory,
-        input.plan?.mode === 'plan' ? renderPlanModePrompt() : undefined,
-        input.deepResearch
+        memory: promptState.memory,
+        planMode: input.plan?.mode === 'plan' ? renderPlanModePrompt() : undefined,
+        deepResearch: input.deepResearch
           ? buildDeepResearchSystemPromptFragment({
               exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
             })
           : undefined,
-      ]);
+      });
     },
     turnTailPrompt: async (context: HostModelPromptContext) => {
       const environment = buildSessionEnvironmentPromptFragment({

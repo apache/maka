@@ -15,6 +15,7 @@ import {
   type TaskLedgerStore,
 } from '@maka/core';
 import {
+  assembleMainSessionSystemPrompt,
   buildPersonalizationPromptFragment,
   buildWorkspaceInstructionsPromptFragment,
   resolveProjectGitInfo,
@@ -52,7 +53,7 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
   async function buildSystemPrompt(
     header: Pick<SessionHeader, 'labels'>,
     cwd?: string,
-    options?: { memoryFragment?: string | null; includePersonalization?: boolean; skillBudget?: SkillPromptBudgetContext; host?: HostCapabilities },
+    options?: { memoryFragment?: string | null; includePersonalization?: boolean; includeIdentity?: boolean; skillBudget?: SkillPromptBudgetContext; host?: HostCapabilities },
   ): Promise<string | undefined> {
     const settings = await deps.settingsStore.get();
     const includePersonalization = options?.includePersonalization !== false;
@@ -80,16 +81,16 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
     const memoryFragment = options && 'memoryFragment' in options
       ? options.memoryFragment ?? undefined
       : await buildLocalMemoryPromptFragment();
-    const fragments = [
-      personalization.text,
+    return assembleMainSessionSystemPrompt({
+      identity: options?.includeIdentity !== false,
+      personalization: personalization.text,
       deepResearch,
       botPlatformHint,
+      sideConversation,
       skills,
       workspaceInstructions,
-      memoryFragment,
-      sideConversation,
-    ].filter((fragment): fragment is string => Boolean(fragment));
-    return fragments.length > 0 ? fragments.join('\n\n') : undefined;
+      memory: memoryFragment,
+    });
   }
 
   async function buildBackendSystemPrompt(
@@ -99,7 +100,7 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
   ): Promise<string | undefined> {
     const childInstruction = options.childInstruction?.trim();
     const base = await buildSystemPrompt(header, cwd, childInstruction
-      ? { memoryFragment: null, includePersonalization: false, skillBudget: options.skillBudget, host: options.host }
+      ? { memoryFragment: null, includePersonalization: false, includeIdentity: false, skillBudget: options.skillBudget, host: options.host }
       : { memoryFragment: options.memoryFragment, skillBudget: options.skillBudget, host: options.host });
     if (!childInstruction) return base;
     return [

@@ -186,11 +186,11 @@ Project body.`,
         workspaceRoot: cwd,
         homeDir,
       });
-      assert.equal(
-        out,
-        undefined,
-        'gate must suppress AGENTS.md when workspaceInstructions is disabled',
-      );
+      // The always-on base identity fragment keeps the prompt defined, but the
+      // disabled workspaceInstructions gate must still suppress AGENTS.md.
+      assert.ok(out);
+      assert.doesNotMatch(out, /secret project rule/);
+      assert.doesNotMatch(out, /workspace-instructions/);
     });
   });
 
@@ -210,7 +210,7 @@ Project body.`,
     });
   });
 
-  test('returns undefined when there is no personalization and no readable instruction file', async () => {
+  test('leads with the base identity fragment even with no personalization or instructions', async () => {
     await withCwd(async (cwd, homeDir) => {
       const out = await buildCliSystemPrompt({
         settings: { personalization: {}, workspaceInstructions: { enabled: true } },
@@ -218,7 +218,8 @@ Project body.`,
         workspaceRoot: cwd,
         homeDir,
       });
-      assert.equal(out, undefined);
+      assert.ok(out, 'the always-on identity fragment keeps the prompt defined');
+      assert.match(out, /^You are Maka,/);
     });
   });
 

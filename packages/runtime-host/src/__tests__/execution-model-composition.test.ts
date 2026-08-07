@@ -2053,6 +2053,7 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   } as const;
 
   const firstPrompt = await composition.systemPrompt(firstContext);
+  assert.match(firstPrompt ?? '', /^You are Maka,/);
   assert.match(firstPrompt ?? '', /OLD_DESCRIPTION/);
   assert.match(firstPrompt ?? '', /MEMORY_BODY/);
   assert.equal(policyReads, 0);

@@ -1515,6 +1515,10 @@ export { resolveProjectGitInfo, resolveProjectRoot } from './system-prompt/proje
 export type { ProjectGitInfo } from './system-prompt/project-context.js';
 export { buildSessionEnvironmentPromptFragment } from './system-prompt/session-environment-prompt.js';
 export type { SessionEnvironmentPromptInput } from './system-prompt/session-environment-prompt.js';
+export {
+  assembleMainSessionSystemPrompt,
+  type MainSessionPromptFragments,
+} from './system-prompt/main-session-prompt.js';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Unified Automation (Codex-style: heartbeat + cron, single tool).
