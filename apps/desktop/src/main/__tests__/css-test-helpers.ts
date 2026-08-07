@@ -210,7 +210,7 @@ const DYNAMIC_CLASS_NAME = /\bclassName\s*=\s*\{/;
  * they are reported by `findUnreadableBadgeCallSites` instead, so a call site
  * cannot leave this contract just by moving its class into an expression.
  */
-export async function findBadgeClassNames(roots: string[]): Promise<{ file: string; className: string }[]> {
+async function findBadgeClassNames(roots: string[]): Promise<{ file: string; className: string }[]> {
   const out: { file: string; className: string }[] = [];
   for (const root of roots) {
     for (const file of await readTsxTree(root)) {
@@ -237,7 +237,7 @@ export async function findBadgeClassNames(roots: string[]): Promise<{ file: stri
  * which is what a scan looking only for `className=` concludes about
  * `<Badge {...props} />`, silently and while green.
  */
-export async function findUnreadableBadgeCallSites(roots: string[]): Promise<string[]> {
+async function findUnreadableBadgeCallSites(roots: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const root of roots) {
     for (const file of await readTsxTree(root)) {
@@ -297,7 +297,7 @@ export function cssRuleBody(css: string, selector: string): string | null {
  * Return the body of the first `@media <condition> { ... }` block.
  * `mediaCondition` is the part after `@media`, e.g. `(max-width: 620px)`.
  */
-export function cssMediaBody(css: string, mediaCondition: string): string | null {
+function cssMediaBody(css: string, mediaCondition: string): string | null {
   const stripped = stripCssComments(css);
   const cond = escapeCssSelector(mediaCondition);
   const re = new RegExp(`@media\\s*${cond}\\s*\\{`);
@@ -374,7 +374,7 @@ const TYPE_CUSTOM_PROP_RE =
  * rebinding the axis — it needs the longhand. See maka-tokens.css. */
 const FAMILY_ANCHOR = { selector: ':where(code, kbd, samp, pre)', prop: 'font-family' } as const;
 
-export function findTextRoleOffenders(css: string, tokensCss: string, label: string): string[] {
+function findTextRoleOffenders(css: string, tokensCss: string, label: string): string[] {
   const defined = new Set(parseCssCustomProps(tokensCss).keys());
   const offenders: string[] = [];
   /** Selectors that have already been given a role in this cascade context. */
@@ -577,7 +577,7 @@ const CONDITIONAL_AT = /^@(?:media|supports|container)\b/;
  *   - `!important` is not modelled. Nothing in this tree uses it on the
  *     properties these contracts read.
  */
-export function mergeBySelector(
+function mergeBySelector(
   css: string,
   options: { includeConditional?: boolean } = {},
 ): Map<string, string> {
@@ -688,7 +688,7 @@ export function parseCssCustomProps(css: string): Map<string, string[]> {
  * `--leading-normal: var(--leading-normal); --leading-normal: 1.55;`) still
  * passes because the first match satisfies `assert.match`. This helper fails
  * on duplicate declarations and on a single declaration with a drifted value. */
-export function assertCustomPropPinnedOnce(
+function assertCustomPropPinnedOnce(
   css: string,
   prop: string,
   expected: string,
