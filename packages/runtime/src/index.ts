@@ -780,22 +780,6 @@ export type {
 export { createConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
 export type { ConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
 export {
-  AGENT_SWARM_DEFAULT_CONCURRENCY,
-  AGENT_SWARM_MAX_CONCURRENCY,
-  AGENT_SWARM_MAX_ITEMS,
-  AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER,
-  AGENT_SWARM_TOOL_NAME,
-  buildAgentSwarmTool,
-} from './agent-swarm-tools.js';
-export type {
-  AgentSwarmExplicitItemInput,
-  AgentSwarmExplicitToolInput,
-  AgentSwarmResumeToolInput,
-  AgentSwarmTemplateToolInput,
-  AgentSwarmToolInput,
-  AgentSwarmToolResult,
-} from './agent-swarm-tools.js';
-export {
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
   AGENT_SPAWN_TOOL_NAME,

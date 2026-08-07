@@ -242,7 +242,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         },
       };
       const exclusive: MakaTool = {
-        name: 'agent_swarm',
+        name: 'exclusive_batch',
         description: 'exclusive',
         parameters: {},
         executionSemantics: 'exclusive_step',
@@ -277,7 +277,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
       // that held the step — the same wording swarm-orchestration asserts.
       assert.match(
         JSON.stringify(rejected.result),
-        /Tool agent_output did not run: agent_swarm cannot share an assistant step/i,
+        /Tool agent_output did not run: exclusive_batch cannot share an assistant step/i,
       );
 
       const memory = createSessionEventMapMemory();

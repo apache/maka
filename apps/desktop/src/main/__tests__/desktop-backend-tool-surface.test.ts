@@ -55,7 +55,6 @@ describe('Desktop backend tool surface', () => {
   it('uses the effective Agent surface as the complete child-runtime capability boundary', async () => {
     const agentTools = [
       tool('agent_spawn', 'subagent'),
-      tool('agent_swarm', 'subagent'),
       tool('agent_list', 'read'),
       tool('agent_output', 'read'),
     ];

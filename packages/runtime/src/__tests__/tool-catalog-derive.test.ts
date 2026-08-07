@@ -26,7 +26,6 @@ describe('projectEffectiveProductToolSurface', () => {
         tool('Bash'),
         tool('Read'),
         tool('agent_spawn'),
-        tool('agent_swarm'),
         tool('agent_list'),
         tool('agent_output'),
         tool('benchmark_progress'),
@@ -52,7 +51,6 @@ describe('projectEffectiveProductToolSurface', () => {
         tool('browser_navigate'),
         tool('browser_click'),
         tool('agent_spawn'),
-        tool('agent_swarm'),
         tool('agent_list'),
         tool('agent_output'),
         tool('benchmark_progress'),
@@ -160,13 +158,7 @@ describe('projectEffectiveProductToolSurface', () => {
   it('does not let a historical load call revive a disabled surface', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'headless',
-      tools: [
-        tool('Read'),
-        tool('agent_spawn'),
-        tool('agent_swarm'),
-        tool('agent_list'),
-        tool('agent_output'),
-      ],
+      tools: [tool('Read'), tool('agent_spawn'), tool('agent_list'), tool('agent_output')],
       policy: {
         economy: true,
         disabledSurfaceIds: ['agent'],
@@ -233,28 +225,20 @@ describe('projectEffectiveProductToolSurface', () => {
       tool('Read'),
       tool('browser_navigate'),
       tool('agent_spawn'),
-      tool('agent_swarm'),
       tool('agent_list'),
       tool('agent_output'),
     ];
     const expected = {
       desktop: {
-        productToolNames: [
-          'Read',
-          'agent_list',
-          'agent_output',
-          'agent_spawn',
-          'agent_swarm',
-          'browser_navigate',
-        ],
+        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn', 'browser_navigate'],
         groupIds: ['browser', 'agent'],
       },
       cli: {
-        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn', 'agent_swarm'],
+        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn'],
         groupIds: ['agent'],
       },
       headless: {
-        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn', 'agent_swarm'],
+        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn'],
         groupIds: ['agent'],
       },
     } as const;
@@ -350,7 +334,6 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
       'maka_computer',
       'RiveWorkflow',
       'agent_spawn',
-      'agent_swarm',
       'agent_list',
       'agent_output',
     ];

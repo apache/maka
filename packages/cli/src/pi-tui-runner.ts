@@ -2195,7 +2195,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       text:
         orchestrationMode === 'swarm'
           ? 'Swarm Mode is on for this session.'
-          : 'Swarm Mode is off. The main agent may still use agent_swarm opportunistically.',
+          : 'Swarm Mode is off for this session.',
     });
     requestRender();
   };

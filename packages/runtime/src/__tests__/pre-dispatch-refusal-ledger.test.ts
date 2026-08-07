@@ -34,7 +34,7 @@ const RUN_ID = 'run-1';
 const INVOCATION_ID = 'invocation-1';
 const TURN_ID = 'turn-1';
 
-/** `agent_swarm`'s shape: per-item cross-field rule, which is what DeepSeek tripped. */
+/** Batch-like per-item cross-field validation, which is what DeepSeek tripped. */
 const swarmLikeSchema = z
   .object({
     items: z.array(
@@ -162,7 +162,7 @@ function ledgerIssues(h: LedgerHarness): string[] {
 }
 
 const swarmTool: MakaTool = {
-  name: 'agent_swarm',
+  name: 'exclusive_batch',
   description: 'test',
   parameters: swarmLikeSchema,
   impl: async () => {
@@ -197,7 +197,7 @@ const REFUSAL_PATHS: Array<{
     name: 'exclusive-step admission',
     expect: /cannot share an assistant step/,
     drive: async (h) => {
-      // agent_swarm is `exclusive_step`: the second call in one step is refused.
+      // An `exclusive_step` tool refuses the second call in one step.
       const runtime = runtimeFor(h);
       const ok = { items: [{ item_id: 'a', task: 'one', subagent_id: 'reviewer' }] };
       const tool: MakaTool = {
@@ -342,7 +342,7 @@ test('arguments the schema rejects leave a matched call/response pair on the gen
   // The refusal still reaches the model, unchanged.
   assert.match(
     (result as { error?: string }).error ?? '',
-    /Tool "agent_swarm" arguments failed validation/,
+    /Tool "exclusive_batch" arguments failed validation/,
   );
 
   // Nothing crossed T1: no prepared/dispatch/outcome commit for a call that
@@ -372,7 +372,7 @@ test('arguments the schema rejects leave a matched call/response pair on the gen
 test('a dispatched call still claims the T1 lane and settles through the commit sink', async () => {
   const h = harness();
   const tool: MakaTool = {
-    name: 'agent_swarm',
+    name: 'exclusive_batch',
     description: 'test',
     parameters: swarmLikeSchema,
     impl: async () => ({ ok: true }),

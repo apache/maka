@@ -19,7 +19,6 @@ import {
   requireAgentDefinitionByProfile,
   type AgentDefinition,
 } from './agent-catalog.js';
-import { AGENT_SWARM_TOOL_NAME, buildAgentSwarmTool } from './agent-swarm-tools.js';
 import { ChildAgentProgressProjector } from './child-agent-progress.js';
 
 export const AGENT_SPAWN_TOOL_NAME = 'agent_spawn';
@@ -28,7 +27,6 @@ export const AGENT_OUTPUT_TOOL_NAME = 'agent_output';
 export const AGENT_TOOL_GROUP_ID = 'agent';
 export const AGENT_TOOL_NAMES = [
   AGENT_SPAWN_TOOL_NAME,
-  AGENT_SWARM_TOOL_NAME,
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
 ] as const;
@@ -378,7 +376,7 @@ export function buildSubagentListTool(): MakaTool<
     name: AGENT_LIST_TOOL_NAME,
     displayName: 'Agent List',
     description:
-      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by runnable legacy profiles. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn/agent_swarm with agent_output.',
+      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by runnable legacy profiles. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn or asynchronous graph work with agent_output.',
     parameters: z
       .object({
         view: z
@@ -651,7 +649,7 @@ export function buildSubagentOutputTool(): MakaTool<
         // Same reachability as `agent_list` above.
         throw new Error(
           'agent_output is not available in this session, so no child output could be read. ' +
-            'Retrying agent_output will fail the same way — use the summary the agent_spawn or agent_swarm call already returned for that child.',
+            'Retrying agent_output will fail the same way — use the summary returned when that child completed.',
           {
             cause: new Error(
               'readChildAgentOutput capability is unavailable in this runtime context',
@@ -744,9 +742,7 @@ export function buildParentAgentTools(
 ): MakaTool[] {
   const definitions = deps.definitions ?? BUILTIN_AGENT_DEFINITIONS;
   return [
-    ...(definitions.length > 0
-      ? [buildSubagentSpawnTool({ ...deps, definitions }), buildAgentSwarmTool({ definitions })]
-      : []),
+    ...(definitions.length > 0 ? [buildSubagentSpawnTool({ ...deps, definitions })] : []),
     ...buildSubagentProjectionTools(),
   ];
 }

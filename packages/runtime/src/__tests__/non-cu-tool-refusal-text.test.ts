@@ -26,7 +26,6 @@ import {
   buildSubagentProjectionTools,
   buildSubagentSpawnTool,
 } from '../subagent-tools.js';
-import { AGENT_SWARM_TOOL_NAME, buildAgentSwarmTool } from '../agent-swarm-tools.js';
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { buildGoalTools, GOAL_SET_TOOL_NAME, GOAL_STATUS_TOOL_NAME } from '../goal-tools.js';
@@ -131,118 +130,10 @@ describe('E1 — capability-missing refusals name the tool and a fallback', () =
   test('agent_output', async () => {
     const tool = buildSubagentOutputTool();
     const text = await refusalOf(() => tool.impl({ locator: 'legacy_run', run_id: 'r' }, ctx()));
-    assertActionable(text, AGENT_OUTPUT_TOOL_NAME, [AGENT_SPAWN_TOOL_NAME, AGENT_SWARM_TOOL_NAME]);
-  });
-
-  test('agent_swarm spawn', async () => {
-    const tool = buildAgentSwarmTool();
-    const text = await refusalOf(() =>
-      tool.impl(
-        {
-          items: [
-            {
-              item_id: 'item-0',
-              profile: 'local_read',
-              task: 'task-0',
-              write_back: 'summary',
-              isolation: 'same_workspace',
-            },
-          ],
-        },
-        ctx(),
-      ),
-    );
-    assertActionable(text, AGENT_SWARM_TOOL_NAME, ['yourself']);
-  });
-
-  test('agent_swarm resume points at the parameter to drop', async () => {
-    const tool = buildAgentSwarmTool();
-    const text = await refusalOf(() =>
-      tool.impl(
-        { resume_run_ids: ['run-1'] } as never,
-        ctx({ spawnChildSession: (async () => ({})) as never }),
-      ),
-    );
-    assertActionable(text, AGENT_SWARM_TOOL_NAME, ['resume_run_ids']);
-  });
-
-  test('agent_swarm resume does not point at new items when new items are gone too', async () => {
-    // The shape ToolRuntime actually produces. `buildChildAgentContext`
-    // returns `{}` wholesale when `getCurrentRunId()` is falsy, so spawn and
-    // resume leave together; "drop resume_run_ids and send that work as new
-    // items instead" then walks the model into the spawn refusal, which tells
-    // it retrying fails the same way. Following the advice is the assertion.
-    const tool = buildAgentSwarmTool();
-    const context = ctx();
-    assert.equal(context.spawnChildSession, undefined, 'this test needs the no-capability shape');
-
-    const text = await refusalOf(() => tool.impl({ resume_run_ids: ['run-1'] } as never, context));
-    assertNoHostInternals(text);
-    assert.ok(
-      !/Drop resume_run_ids and send that work as new items/.test(text),
-      `must not prescribe a move this context cannot make: ${text}`,
-    );
-    assert.ok(/do it yourself with the tools you already have/.test(text), text);
-
-    const followed = await refusalOf(() =>
-      tool.impl(
-        {
-          items: [
-            {
-              item_id: 'item-0',
-              profile: 'local_read',
-              task: 'task-0',
-              write_back: 'summary',
-              isolation: 'same_workspace',
-            },
-          ],
-        },
-        context,
-      ),
-    );
-    assert.ok(
-      /Retrying agent_swarm will fail the same way/.test(followed),
-      `the prescribed move really is a dead end here: ${followed}`,
-    );
+    assertActionable(text, AGENT_OUTPUT_TOOL_NAME, ['summary']);
   });
 
   test('the missing host callback still reaches an operator', async () => {
-    // Three distinct failures used to be three distinct sentences naming the
-    // callback. The sentences merged into model-facing advice; the callback
-    // name has to keep travelling, or a log cannot tell them apart.
-    const tool = buildAgentSwarmTool();
-    const spawn = await errorOf(() =>
-      tool.impl(
-        {
-          items: [
-            {
-              item_id: 'item-0',
-              profile: 'local_read',
-              task: 'task-0',
-              write_back: 'summary',
-              isolation: 'same_workspace',
-            },
-          ],
-        },
-        ctx(),
-      ),
-    );
-    assert.equal(
-      (spawn.cause as Error | undefined)?.message,
-      'spawnChildSession capability is unavailable in this runtime context',
-    );
-
-    const resume = await errorOf(() =>
-      tool.impl(
-        { resume_run_ids: ['run-1'] } as never,
-        ctx({ spawnChildSession: (async () => ({})) as never }),
-      ),
-    );
-    assert.equal(
-      (resume.cause as Error | undefined)?.message,
-      'Child AgentRun resume capability is unavailable in this runtime context',
-    );
-
     const spawned = await errorOf(() =>
       buildSubagentSpawnTool().impl({ profile: 'local_read', task: 'look' }, ctx()),
     );

@@ -13,7 +13,6 @@ export function renderSwarmModePrompt(): string {
     'After scheduling, call yield_agent_graph. Do not poll, sleep, watch child logs, or wait synchronously; the host will wake you only when work needs attention or the whole swarm is settled.',
     'On wake, call agent_swarm_status for compact statuses only. Read agent_output view=result only for completed final results or narrow failed-item diagnosis.',
     'Replace failed work with update_agent_graph using replaces=<failed work id> and replacement_mode=replace so the failed item no longer keeps the swarm in needs_attention. When all useful work is settled, finish the graph, deduplicate, verify, and semantically synthesize the results.',
-    'The legacy synchronous agent_swarm tool remains available for compatibility but is not the Swarm Mode default.',
     'Do not manufacture parallelism or create duplicate busywork merely because Swarm Mode is enabled.',
     '</orchestration_mode>',
   ].join('\n');
