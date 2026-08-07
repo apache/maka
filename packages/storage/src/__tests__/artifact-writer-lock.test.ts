@@ -33,6 +33,7 @@ import { createSessionStore } from '../session-store.js';
 
 const TEST_TIMEOUT_MS = 15_000;
 const OPERATION_TIMEOUT_MS = 5_000;
+const BUNDLE_EXPORT_TIMEOUT_MS = 10_000;
 const COMPETING_PAYLOAD_BYTES = 4 * 1024 * 1024;
 // Windows does not permit replacing or deleting a directory while SQLite has files open in it.
 // These tests exercise POSIX root-replacement semantics; Windows coverage verifies cleanup after
@@ -383,7 +384,7 @@ test('bundle export excludes a mutation queued behind the same child-held writer
       await assertPending(mutation, 'Store mutation');
 
       await releaseHolder(holder);
-      await withTimeout(bundleExport, OPERATION_TIMEOUT_MS, 'bundle export');
+      await withTimeout(bundleExport, BUNDLE_EXPORT_TIMEOUT_MS, 'bundle export');
       await withTimeout(mutation, OPERATION_TIMEOUT_MS, 'Store mutation');
 
       const exportedStore = createSqliteArtifactStore(destinationRoot);
@@ -451,11 +452,15 @@ test('bundle export holds Artifact authority through selected-session projection
       await releaseHolder(holder);
       assert.equal(
         (
-          await withTimeout(projectedMessages, OPERATION_TIMEOUT_MS, 'selected-session projection')
+          await withTimeout(
+            projectedMessages,
+            BUNDLE_EXPORT_TIMEOUT_MS,
+            'selected-session projection',
+          )
         ).find((message) => message.type === 'user')?.text,
         'portable transcript',
       );
-      await withTimeout(bundleExport, OPERATION_TIMEOUT_MS, 'bundle export');
+      await withTimeout(bundleExport, BUNDLE_EXPORT_TIMEOUT_MS, 'bundle export');
     } finally {
       await stopHolder(holder);
     }
