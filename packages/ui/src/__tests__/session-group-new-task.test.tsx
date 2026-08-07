@@ -53,12 +53,18 @@ describe('session group new-task trigger', () => {
 
     // One trigger per labeled group: Pinned + Recent.
     assert.equal(markup.match(/maka-group-new-task-button/g)?.length, 2);
-    assert.equal(markup.match(/aria-label="New task"/g)?.length, 2);
+    assert.equal(markup.match(/aria-label="New task in group"/g)?.length, 2);
+    // The trigger must NOT reuse the rail row's accessible name ("New task"):
+    // two same-named buttons are a strict-mode violation for
+    // getByRole('button', { name }) and an ambiguity for screen readers.
+    assert.doesNotMatch(markup, /aria-label="New task"/);
   });
 
-  it('localizes the accessible name with the shared new-task copy', () => {
+  it('localizes the accessible name with the group-specific new-task copy', () => {
     const zh = renderHistory({ locale: 'zh', sessions: MIXED, onNewTask: () => {} });
-    assert.equal(zh.match(/aria-label="新任务"/g)?.length, 2);
+    assert.equal(zh.match(/aria-label="新建任务"/g)?.length, 2);
+    // 新建任务 must stay distinct from the rail row's 新任务 (see above).
+    assert.doesNotMatch(zh, /aria-label="新任务"/);
   });
 
   it('stays absent without an onNewTask handler', () => {

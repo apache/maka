@@ -173,7 +173,7 @@ function SessionListGroups(props: {
   onNewTask?(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const newTaskCopy = getShellControlsCopy(useUiLocale()).navigation.newTask;
+  const newTaskCopy = getShellControlsCopy(useUiLocale()).navigation.groupNewTask;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -306,11 +306,14 @@ function SessionListGroups(props: {
     );
   }
 
-  // Group-header new-task trigger (time grouping). Same label and handler as
-  // the rail's top-level 新任务 SideNavItem — the header copy comes from the
-  // same shell-controls source so the two entries cannot drift. IconButton +
-  // Tooltip is the icon-only pattern SessionSidebarFooter already uses; the
-  // compact 24px box and column alignment belong to sidebar.css.
+  // Group-header new-task trigger (time grouping). Same HANDLER as the
+  // rail's top-level 新任务 SideNavItem, but a different NAME
+  // (navigation.groupNewTask): reusing copy.newTask would give two controls
+  // the same accessible name, a strict-mode collision for
+  // getByRole('button', { name: '新任务' }) and an ambiguity for screen
+  // readers. IconButton + Tooltip is the icon-only pattern
+  // SessionSidebarFooter already uses; the compact 24px box and column
+  // alignment belong to sidebar.css.
   const newTaskAction = props.onNewTask ? (
     <Tooltip content={newTaskCopy}>
       <IconButton
