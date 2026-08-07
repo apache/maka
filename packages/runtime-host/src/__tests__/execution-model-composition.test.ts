@@ -2430,7 +2430,7 @@ test('root model composition defers the canonical parent-agent tool group', () =
 
   assert.deepEqual(
     composition.toolAvailability.groups?.find((group) => group.id === 'agent')?.toolNames,
-    ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output'],
+    ['agent_spawn', 'agent_list', 'agent_output'],
   );
   assert.ok(parentAgentTools.every((tool) => composition.tools.includes(tool)));
 });
