@@ -398,10 +398,14 @@ export const TurnView = memo(function TurnView(props: {
   const { turn } = props;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
-  // The assistant `ChatMessage` mounts once the turn has any timeline content OR
-  // this is the live streaming tail (a thinking-only / textless streaming turn
-  // has an empty committed timeline but must still show its live answer block).
-  const showAssistantMessage = turn.timeline.length > 0 || !!props.liveStreaming;
+  // A recorded conversational terminal turn owns presentation beyond its
+  // timeline: failure/abort state and recovery actions must remain visible even
+  // when the provider produced no assistant event. Inferred legacy turns and
+  // internal operations do not carry enough evidence for a recovery action.
+  const showAssistantMessage =
+    turn.timeline.length > 0 ||
+    !!props.liveStreaming ||
+    (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
   // #1307: the collapsed "Processing" fold is derived at render time from the
   // flat timeline. Settled turn identities are stable (memoized projections),
   // so this only recomputes for the turn whose timeline actually changed.
