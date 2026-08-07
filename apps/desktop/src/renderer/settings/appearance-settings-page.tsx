@@ -28,6 +28,7 @@ import {
 } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { CustomPetSettingsSection } from './custom-pet-settings-section.js';
 
 export function AppearanceSettingsPage(props: {
   themePref: ThemePreference;
@@ -456,6 +457,8 @@ function ThemeSettingsPage(props: {
           </VStack>
         ))}
       </SettingsSection>
+
+      <CustomPetSettingsSection />
     </SettingsPage>
   );
 }

@@ -20,10 +20,21 @@ import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
+  defaultEnabledModelIdsWhenOmitted,
   resolveBootstrapConnections,
   resolveOpenCodeFreeBootstrapMigration,
 } from '../bootstrap-connections.js';
 import type { LlmConnection } from '../llm-connections.js';
+
+describe('defaultEnabledModelIdsWhenOmitted', () => {
+  it('fills OpenCode Free with the default free inventory and leaves others unset', () => {
+    assert.deepEqual(defaultEnabledModelIdsWhenOmitted('opencode-free'), [
+      ...OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+    ]);
+    assert.equal(defaultEnabledModelIdsWhenOmitted('openai'), undefined);
+    assert.equal(defaultEnabledModelIdsWhenOmitted('openrouter'), undefined);
+  });
+});
 
 describe('resolveBootstrapConnections — zero-credential default seed', () => {
   it('selects one default while keeping the credential-free fallback', () => {

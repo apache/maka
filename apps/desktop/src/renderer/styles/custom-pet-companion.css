@@ -1,0 +1,27 @@
+/* User-supplied desktop pet. It is decorative and never participates in hit
+   testing; the main shell remains the sole interaction surface beneath it. */
+.maka-custom-pet-companion {
+  position: absolute;
+  inset-inline-end: var(--space-5);
+  inset-block-end: var(--space-5);
+  z-index: var(--z-sticky);
+  display: grid;
+  place-items: end;
+  pointer-events: none;
+  filter: drop-shadow(0 var(--space-1) var(--space-2) oklch(0 0 0 / 0.18));
+}
+
+.maka-custom-pet-companion__canvas {
+  display: block;
+  inline-size: min(8rem, 22vw);
+  block-size: auto;
+  max-block-size: min(8rem, 22vh);
+  object-fit: contain;
+}
+
+@media (max-width: 640px), (max-height: 520px) {
+  .maka-custom-pet-companion__canvas {
+    inline-size: min(6rem, 22vw);
+    max-block-size: min(6rem, 22vh);
+  }
+}

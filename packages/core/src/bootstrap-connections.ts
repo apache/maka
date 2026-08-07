@@ -16,7 +16,7 @@
 import type { LlmConnection, ProviderType, UpdateConnectionInput } from './llm-connections.js';
 
 export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-/** Models enabled on a fresh OpenCode Free bootstrap (default first). */
+/** Models enabled on a fresh OpenCode Free connection (default first). */
 export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
   OPENCODE_FREE_DEFAULT_MODEL,
   'mimo-v2.5-free',
@@ -67,6 +67,25 @@ const OPENAI_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
   providerType: 'openai',
   defaultModel: 'gpt-4o-mini',
 };
+
+/**
+ * Default `enabledModelIds` when a create call omits them.
+ *
+ * Most providers stay on the historical "only the default model" seed. OpenCode
+ * Free is the exception: #2431 made the free inventory the product default for
+ * both bootstrap and a user-driven "保存供应商" create, so omitting the field
+ * must not collapse back to a one-model connection.
+ *
+ * Returns `undefined` when create should keep the generic single-default rule.
+ * An explicit empty or partial list from the caller is still honored — this
+ * only fills a missing selection.
+ */
+export function defaultEnabledModelIdsWhenOmitted(
+  providerType: ProviderType,
+): readonly string[] | undefined {
+  if (providerType === 'opencode-free') return OPENCODE_FREE_DEFAULT_ENABLED_MODELS;
+  return undefined;
+}
 
 /**
  * Resolve the bootstrap connection seeds for a fresh install.
