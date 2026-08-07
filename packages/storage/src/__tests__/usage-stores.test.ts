@@ -131,15 +131,20 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
-  test('classifies a renamed or replaced live root as a draining persistence failure', async () => {
+  test('classifies a renamed or replaced live root as a draining persistence failure', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows does not permit renaming a directory with an open SQLite database'
+        : false,
+  }, async () => {
     for (const replacement of [false, true]) {
       await withInteractiveRoot(async ({ root, capability }) => {
         const owner = await tryAcquireInteractiveRootOwner(capability);
         assert(owner);
         const stores = await openInteractiveUsageStoresForWrite(owner.lease);
-        await rename(root, `${root}-moved`);
-        if (replacement) await mkdir(root);
         try {
+          await rename(root, `${root}-moved`);
+          if (replacement) await mkdir(root);
           await assert.rejects(
             () => stores.pricing.snapshot(),
             (error: unknown) => {
