@@ -68,6 +68,12 @@ export interface ConversationCopy {
     continuing: string;
     interruptHint: string;
     addContext: string;
+    /** Noun label for the composer drawer's staged quotes/attachments — the
+     *  collapsed badge, the drawer group's accessible name, and the collapse
+     *  toggle's "收起{label}" interpolation. `addContext` stays the ＋ menu's
+     *  ACTION label; reusing the verb phrase here made the collapsed drawer
+     *  read like a button. */
+    stagedContext: string;
     selectModel: string;
     dropToImport: string;
     addingAttachment: string;
@@ -333,7 +339,7 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
-      interruptHint: '或点停止中断', addContext: '添加上下文',
+      interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       switchDisabledStreaming: '当前对话正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前对话正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
@@ -478,7 +484,7 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
-      interruptHint: 'or click Stop to interrupt', addContext: 'Add context',
+      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',

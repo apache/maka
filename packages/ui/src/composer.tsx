@@ -1262,8 +1262,45 @@ export const Composer = forwardRef<
           onSubmit={() => {}}
           isDisabled={props.disabled}
           drawer={drawerTokenCount > 0 ? (
-            <ChatComposerDrawer count={drawerTokenCount} label={copy.addContext}>
-              <div className="maka-composer-context-drawer" role="group" aria-label={copy.addContext}>
+            <ChatComposerDrawer
+              count={drawerTokenCount}
+              label={copy.stagedContext}
+              // The collapse band's tooltip (composer.css ::after) follows the
+              // pointer instead of sitting at a fixed offset — on a full-width
+              // band a fixed bubble can be half a window away from the cursor.
+              // The custom property feeds the ::after's `left`; clamped so the
+              // bubble never crosses the band's right edge.
+              onPointerMove={(event) => {
+                const toggle = event.currentTarget.querySelector<HTMLElement>(
+                  '[role="button"][aria-controls]',
+                );
+                if (!toggle) return;
+                const band = toggle.getBoundingClientRect();
+                if (event.clientY < band.top || event.clientY > band.bottom) return;
+                // Clamp against the bubble's border-box: computed width is
+                // content-box only, so the paddings must be priced in or the
+                // right edge overshoots by exactly their sum.
+                const bubbleStyle = getComputedStyle(toggle, '::after');
+                const bubbleWidth =
+                  (Number.parseFloat(bubbleStyle.width) || 124) +
+                  (Number.parseFloat(bubbleStyle.paddingLeft) || 0) +
+                  (Number.parseFloat(bubbleStyle.paddingRight) || 0);
+                const x = Math.min(
+                  Math.max(event.clientX - band.left + 14, 8),
+                  Math.max(8, band.width - bubbleWidth - 8),
+                );
+                toggle.style.setProperty('--maka-drawer-tooltip-x', `${x}px`);
+              }}
+              // Without this, keyboard focus after a hover would show the
+              // bubble at the last pointer position instead of the
+              // beside-the-pill fallback.
+              onPointerLeave={(event) => {
+                event.currentTarget
+                  .querySelector<HTMLElement>('[role="button"][aria-controls]')
+                  ?.style.removeProperty('--maka-drawer-tooltip-x');
+              }}
+            >
+              <div className="maka-composer-context-drawer" role="group" aria-label={copy.stagedContext}>
                 {props.pendingQuotes?.map((quote, index) => (
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}

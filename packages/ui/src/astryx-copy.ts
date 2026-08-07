@@ -109,8 +109,11 @@ export const ASTRYX_COPY_ZH: AstryxCopy = {
     statusRead: '已读',
     statusSending: '发送中',
     statusSent: '已发送',
-    drawerCollapse: '收起{label}',
-    drawerExpand: '展开{label}',
+    // «点击» is deliberate: the string doubles as the toggle band's visible
+    // hover tooltip (composer.css renders attr(aria-label)), where the click
+    // affordance is the whole point.
+    drawerCollapse: '点击收起{label}',
+    drawerExpand: '点击展开{label}',
     newMessages: '跳到最新消息',
     scrollToBottom: '滚动到底部',
     toolCallsError: '错误：{message}',

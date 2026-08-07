@@ -17,6 +17,19 @@ function renderChineseControl(children: React.ReactNode): string {
 }
 
 describe('Astryx form-control localization', () => {
+  it('spells out the drawer toggle click affordance in both locales', () => {
+    // These strings double as the composer drawer's visible hover tooltip
+    // (composer.css renders attr(aria-label)), so both locales must carry the
+    // click affordance — en is otherwise override-free and must not regress
+    // to Astryx's bare "Collapse {label}".
+    const zh = astryxMessageOverrides('zh')?.zh;
+    assert.equal(zh?.['@astryx.chatComposerDrawer.collapse'], '点击收起{label}');
+    assert.equal(zh?.['@astryx.chatComposerDrawer.expand'], '点击展开{label}');
+    const en = astryxMessageOverrides('en')?.en;
+    assert.equal(en?.['@astryx.chatComposerDrawer.collapse'], 'Click to collapse {label}');
+    assert.equal(en?.['@astryx.chatComposerDrawer.expand'], 'Click to expand {label}');
+  });
+
   it('sources every rendered Slice 4 default message from the Maka copy catalog', () => {
     const messages = astryxMessageOverrides('zh')?.zh;
 

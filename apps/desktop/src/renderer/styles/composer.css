@@ -48,6 +48,56 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* The collapse toggle is a full-width 20px band whose only visible affordance
+   is a 20×2px pill — its aria-label («收起附加内容» / «展开附加内容») was
+   unreadable for sighted users, and a native `title` needs a ~1s motionless
+   hover that a thin band rarely gets. Surface the label as an instant CSS
+   tooltip instead: `attr(aria-label)` tracks the live attribute, so the text
+   flips with the collapse state and stays localized with no JS.
+
+   Placement is the hard constraint: the drawer root clips its own box
+   (overflow:hidden for the collapse animation), so the bubble can't rise
+   above the band, and the input card paints ABOVE the drawer (body z-index 2
+   vs drawer 1 — that overlap is the card's design), so anything hanging
+   below the collapsed band gets covered. The one strip clear of both is the
+   band's own height — within it the bubble tracks the pointer horizontally
+   (--maka-drawer-tooltip-x, set by the drawer's onPointerMove in
+   composer.tsx), falling back to beside the pill for keyboard focus. */
+.maka-composer-astryx .astryx-chat-composer-drawer > [role='button'][aria-controls] {
+  position: relative;
+}
+
+.maka-composer-astryx .astryx-chat-composer-drawer > [role='button'][aria-controls]::after {
+  /* local: --maka-drawer-tooltip-x — bubble x within the band, written by
+     the drawer's onPointerMove in composer.tsx (cleared on pointer leave);
+     the fallback beside the pill serves keyboard focus. */
+  content: attr(aria-label);
+  position: absolute;
+  top: 50%;
+  left: var(--maka-drawer-tooltip-x, calc(50% + 20px));
+  transform: translateY(-50%);
+  padding: 3px 8px;
+  border-radius: var(--radius-control);
+  /* Astryx's fixed tooltip pair (same as Thumbnail's remove scrim): legible
+     in both themes without borrowing surface tokens for text. */
+  background-color: var(--color-overlay);
+  color: var(--color-on-dark);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--duration-fast, 120ms) var(--ease-standard, ease);
+  z-index: var(--z-tooltip);
+}
+
+.maka-composer-astryx .astryx-chat-composer-drawer > [role='button'][aria-controls]:hover::after,
+.maka-composer-astryx .astryx-chat-composer-drawer > [role='button'][aria-controls]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
 /* Staged non-image file — a two-line card in the idiom of contemporary agent
    composers: kind icon on a tinted tile, filename, "EXT · size" meta. Fixed
    64px height so cards and image thumbnails read as one row, not a staggered

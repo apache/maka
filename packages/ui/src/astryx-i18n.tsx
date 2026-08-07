@@ -54,7 +54,19 @@ export function AstryxLocaleProvider({
 }
 
 export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined {
-  if (locale === 'en') return undefined;
+  if (locale === 'en') {
+    // en otherwise resolves to Astryx's shipped defaults. These two are the
+    // sole exceptions: the drawer toggle's aria-label doubles as its visible
+    // hover tooltip (composer.css renders attr(aria-label)), and the shipped
+    // "Collapse {label}" / "Expand {label}" read as state names there — the
+    // click affordance is the tooltip's whole point.
+    return {
+      en: {
+        '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
+        '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
+      },
+    };
+  }
   const shared = getSharedUiCopy(locale);
   const form = shared.formControls;
   // `locale` is narrowed to 'zh' past the early return; the catalogue lives
