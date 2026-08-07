@@ -19,10 +19,7 @@ describe('assembleMainSessionSystemPrompt', () => {
     const { assembleMainSessionSystemPrompt } = await import(
       '../system-prompt/main-session-prompt.js'
     );
-    assert.equal(
-      assembleMainSessionSystemPrompt({}),
-      assembleMainSessionSystemPrompt({}),
-    );
+    assert.equal(assembleMainSessionSystemPrompt({}), assembleMainSessionSystemPrompt({}));
   });
 
   it('drops undefined parts and joins the rest in a fixed order after identity', async () => {

@@ -221,7 +221,8 @@ export function createHostExecutionModelComposition(
         ]);
       }
       return assembleMainSessionSystemPrompt({
-        personalization: buildPersonalizationPromptFragment(promptState.policy.personalization).text,
+        personalization: buildPersonalizationPromptFragment(promptState.policy.personalization)
+          .text,
         skills: skills.text,
         workspaceInstructions,
         memory: promptState.memory,

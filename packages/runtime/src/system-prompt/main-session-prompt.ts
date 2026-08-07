@@ -53,9 +53,7 @@ export interface MainSessionPromptFragments {
  * only on Desktop where the same fragments are shared; it passes
  * `identity: false` so the main-session identity is not injected into a child.
  */
-export function assembleMainSessionSystemPrompt(
-  parts: MainSessionPromptFragments,
-): string {
+export function assembleMainSessionSystemPrompt(parts: MainSessionPromptFragments): string {
   const includeIdentity = parts.identity !== false;
   return [
     includeIdentity ? buildIdentityPromptFragment() : undefined,
