@@ -201,25 +201,47 @@ test('the quote layer follows the selection while the transcript scrolls', async
 
   const quoteLayer = page.locator('.maka-quote-actions');
   await expect(quoteLayer).toBeVisible();
-  const selectionTop = () =>
-    page.evaluate(() => window.getSelection()?.getRangeAt(0).getBoundingClientRect().top ?? null);
-  const layerBefore = await quoteLayer.boundingBox();
-  const selectionBefore = await selectionTop();
 
-  await page.mouse.move(700, 350);
-  await page.mouse.wheel(0, -220);
+  // Both tops in one evaluate: read across two round-trips and a scroll still
+  // in flight would pair a fresh layer position with a stale selection one.
+  const geometry = () =>
+    page.evaluate(() => {
+      const layer = document.querySelector('.maka-quote-actions');
+      const selection = window.getSelection();
+      if (!layer || !selection || selection.rangeCount === 0) return null;
+      return {
+        layerTop: layer.getBoundingClientRect().top,
+        selectionTop: selection.getRangeAt(0).getBoundingClientRect().top,
+      };
+    });
+
+  /**
+   * Drives the scroller directly instead of `mouse.wheel`: wheel delivery is a
+   * host-level detail (it landed nowhere on CI's Linux runner), while what this
+   * test is about is the `scroll` event the hook listens to, which a scrollTop
+   * write raises just the same.
+   */
+  const scrollTranscriptBy = (delta: number) =>
+    page.evaluate((by) => {
+      let node = document.querySelector('.maka-chat-message-list')?.parentElement ?? null;
+      while (node && node.scrollHeight <= node.clientHeight) node = node.parentElement;
+      if (!node) throw new Error('no scrollable transcript ancestor');
+      node.scrollTop += by;
+      return node.scrollTop;
+    }, delta);
+
+  const before = await geometry();
+  expect(before).not.toBeNull();
+  await scrollTranscriptBy(-220);
 
   // The layer tracks the selection rather than merely surviving the scroll.
   await expect
     .poll(async () => {
-      const layerAfter = await quoteLayer.boundingBox();
-      const selectionAfter = await selectionTop();
-      if (!layerAfter || !layerBefore || selectionAfter === null || selectionBefore === null) {
-        return null;
-      }
-      const selectionShift = selectionAfter - selectionBefore;
+      const after = await geometry();
+      if (!after || !before) return null;
+      const selectionShift = after.selectionTop - before.selectionTop;
       if (selectionShift === 0) return null;
-      return Math.abs(layerAfter.y - layerBefore.y - selectionShift) <= 1;
+      return Math.abs(after.layerTop - before.layerTop - selectionShift) <= 1;
     })
     .toBe(true);
 
@@ -228,7 +250,7 @@ test('the quote layer follows the selection while the transcript scrolls', async
   // the window pointing at off-screen text is the noise this feature exists to
   // avoid. `getBoundingClientRect()` still reports a full-size rect for an
   // off-screen range, so this cannot be left to the zero-size guard.
-  await page.mouse.wheel(0, -6000);
+  await scrollTranscriptBy(-6000);
   await expect(quoteLayer).toBeHidden();
 });
 
