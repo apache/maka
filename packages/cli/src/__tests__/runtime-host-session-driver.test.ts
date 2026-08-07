@@ -46,6 +46,7 @@ describe('Runtime Host Maka Session driver', () => {
       turnId: 'turn-1',
       messageId: 'message-turn-1',
       ts: 50,
+      startOffset: 5,
       text: ' world',
     });
   });
