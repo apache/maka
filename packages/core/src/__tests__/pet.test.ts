@@ -4,6 +4,7 @@ import {
   PET_PACK_SCHEMA_V1,
   PetManifestValidationError,
   decodePetPackManifest,
+  isPetPackId,
   isPetPackManifestV1,
   isSafePetAssetPath,
   resolvePetAnimationFallback,
@@ -45,6 +46,12 @@ describe('maka.pet/v1 manifest', () => {
     assert.equal(result.ok, true);
     assert.equal(isPetPackManifestV1(manifest), true);
     assert.equal(decodePetPackManifest(manifest), manifest);
+  });
+
+  test('exposes the canonical package id guard to storage boundaries', () => {
+    assert.equal(isPetPackId('likun.maodie'), true);
+    assert.equal(isPetPackId('../maodie'), false);
+    assert.equal(isPetPackId('MAODIE'), false);
   });
 
   test('requires the five task-semantic animations', () => {

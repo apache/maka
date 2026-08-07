@@ -138,6 +138,10 @@ const PET_PACK_ID_PATTERN = new RegExp(
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 
+export function isPetPackId(value: unknown): value is string {
+  return typeof value === 'string' && PET_PACK_ID_PATTERN.test(value);
+}
+
 function addIssue(
   issues: PetManifestValidationIssue[],
   code: PetManifestValidationIssueCode,
@@ -473,7 +477,7 @@ export function validatePetPackManifest(value: unknown): PetManifestValidationRe
   }
 
   if (validateBoundedText(value.id, '$.id', PET_PACK_ID_MAX_CHARS, issues)) {
-    if (!PET_PACK_ID_PATTERN.test(value.id)) {
+    if (!isPetPackId(value.id)) {
       addIssue(
         issues,
         'invalid_value',
