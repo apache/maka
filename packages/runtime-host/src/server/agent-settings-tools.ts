@@ -33,9 +33,7 @@ type AgentSettingsPatch = z.infer<typeof agentSettingsPatchSchema>;
 
 export interface HostAgentSettingsToolAuthority {
   read(): Promise<RuntimePolicySnapshot>;
-  mutate(
-    input: MutateRuntimePolicyInput,
-  ): Promise<
+  mutate(input: MutateRuntimePolicyInput): Promise<
     | { readonly kind: 'committed'; readonly revision: number }
     | {
         readonly kind: 'revision_conflict';

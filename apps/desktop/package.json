@@ -51,7 +51,6 @@
     "@maka/runtime-host": "0.1.0",
     "@maka/storage": "0.1.0",
     "@maka/ui": "0.1.0",
-    "ai": "^7.0.31",
     "electron-updater": "^6.8.9",
     "qrcode": "^1.5.4",
     "react": "^19.2.1",

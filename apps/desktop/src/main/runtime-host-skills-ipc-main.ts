@@ -28,7 +28,7 @@ import type {
   DesktopRuntimeHostClient,
   DesktopSkillCatalogSnapshot,
 } from "./runtime-host-client.js";
-import { resolveSkillOpenPath } from "./skills.js";
+import { resolveSkillOpenPath } from "./skill-open-path.js";
 
 const MAX_REVISION_ATTEMPTS = 3;
 
@@ -323,9 +323,7 @@ export function registerRuntimeHostSkillsIpc(
         deps.workspaceRoot,
         idOrRef,
         target,
-        {
-          cwd: projectRoot,
-        },
+        projectRoot,
       );
       if (!resolved.ok) return resolved;
       const error = await deps.openPath(resolved.path);
@@ -523,9 +521,7 @@ async function resolveProjectedPath(
   projectRoot: string,
   ref: string,
 ): Promise<string> {
-  const resolved = await resolveSkillOpenPath(workspaceRoot, ref, "file", {
-    cwd: projectRoot,
-  });
+  const resolved = await resolveSkillOpenPath(workspaceRoot, ref, "file", projectRoot);
   return resolved.ok ? resolved.path : "";
 }
 
