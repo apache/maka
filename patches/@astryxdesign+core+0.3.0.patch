@@ -161,6 +161,25 @@ index 8c509bc..f108f3b 100644
    };
  }
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
+index 33ed78d..195a427 100644
+--- a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
++++ b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
+@@ -111,7 +111,13 @@ function detectMac() {
+   // Prefer User-Agent Client Hints API (not deprecated)
+   const uaData = 'userAgentData' in navigator ? navigator.userAgentData : null;
+   if (uaData && typeof uaData === 'object' && 'platform' in uaData) {
+-    return /mac/i.test(uaData.platform ?? '');
++    const uaPlatform = typeof uaData.platform === 'string' ? uaData.platform : '';
++    if (uaPlatform.trim().length > 0) {
++      return /mac/i.test(uaPlatform);
++    }
++    // Blank UA-CH platform: Electron bundles with a rewritten identity ship
++    // '' (and empty brands). Treat it as absent and fall through to
++    // navigator.platform instead of reading it as "not Apple".
+   }
+   // Fallback: navigator.platform (deprecated but still shipped everywhere)
+   return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
 index 08b5f7d..94c623b 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
@@ -181,3 +200,22 @@ index 08b5f7d..94c623b 100644
      "aria-labelledby": header != null ? headerId : undefined,
      ...(isOrdered && start != null && start !== 1 ? {
        start
+diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
+index 65f9278..c2e72d1 100644
+--- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
++++ b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
+@@ -54,7 +54,13 @@ function isApplePlatform() {
+   }
+   const uaData = 'userAgentData' in navigator ? navigator.userAgentData : null;
+   if (uaData && typeof uaData === 'object' && 'platform' in uaData) {
+-    return /mac/i.test(uaData.platform ?? '');
++    const uaPlatform = typeof uaData.platform === 'string' ? uaData.platform : '';
++    if (uaPlatform.trim().length > 0) {
++      return /mac/i.test(uaPlatform);
++    }
++    // Blank UA-CH platform: Electron bundles with a rewritten identity ship
++    // '' (and empty brands). Treat it as absent and fall through to
++    // navigator.platform instead of reading it as "not Apple".
+   }
+   return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
+ }
