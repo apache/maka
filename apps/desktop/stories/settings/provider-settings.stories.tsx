@@ -8,7 +8,7 @@ import type {
   ModelDiscoveryResult,
   ProviderType,
 } from '@maka/core';
-import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/ProvidersPanel';
+import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');

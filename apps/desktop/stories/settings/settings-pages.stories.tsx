@@ -30,7 +30,7 @@ import {
 } from '@maka/core';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
-import type { ConnectionsBridge } from '../../src/renderer/settings/ProvidersPanel';
+import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { withScopedMakaBridge } from '../maka-bridge';
 const STORY_PLATFORM = 'darwin' as const;
 
