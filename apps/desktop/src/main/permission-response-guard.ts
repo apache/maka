@@ -102,9 +102,13 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
     value.name === undefined
       ? undefined
       : normalizeOptionalString(value.name, 'Invalid branch name', MAX_BRANCH_NAME_LENGTH);
+  if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
+    throw new Error('Invalid branch sideConversation');
+  }
   return {
     sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
     ...(name ? { name } : {}),
+    ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };
 }
 

@@ -1,10 +1,12 @@
 import {
   buildBotPlatformPromptFragment,
   buildDeepResearchSystemPromptFragment,
+  buildSideConversationSystemPromptFragment,
   filterModelVisibleTaskLedgerTasks,
   buildLocalMemoryPromptBody,
   botPlatformFromSessionLabels,
   isDeepResearchSession,
+  isSideConversationSession,
   redactSecrets,
   renderTaskLedgerPromptText,
   type AppSettings,
@@ -70,6 +72,9 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
       ? await buildWorkspaceInstructionsPromptFragment(cwd)
       : undefined;
     const deepResearch = isDeepResearchSession(header.labels) ? buildDeepResearchSystemPromptFragment() : undefined;
+    const sideConversation = isSideConversationSession(header.labels)
+      ? buildSideConversationSystemPromptFragment()
+      : undefined;
     const botPlatform = botPlatformFromSessionLabels(header.labels);
     const botPlatformHint = botPlatform ? buildBotPlatformPromptFragment(botPlatform) : undefined;
     const memoryFragment = options && 'memoryFragment' in options
@@ -82,6 +87,7 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
       skills,
       workspaceInstructions,
       memoryFragment,
+      sideConversation,
     ].filter((fragment): fragment is string => Boolean(fragment));
     return fragments.length > 0 ? fragments.join('\n\n') : undefined;
   }

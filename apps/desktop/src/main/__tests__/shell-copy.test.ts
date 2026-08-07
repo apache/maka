@@ -30,6 +30,7 @@ describe('shell copy catalog', () => {
     });
 
     assert.equal(commands.find((command) => command.id === 'action:new-chat')?.label, 'New conversation');
+    assert.equal(commands.some((command) => command.id === 'action:side-chat'), false);
     assert.equal(commands.find((command) => command.id === 'action:open-settings')?.label, 'Open Settings');
     const mcpCommand = commands.find((command) => command.id === 'nav:mcp');
     assert.equal(mcpCommand?.label, 'Open · MCP');
@@ -61,6 +62,29 @@ describe('shell copy catalog', () => {
     assert.equal(sessionCommands[0]?.label, '用户原始标题');
     assert.equal(sessionCommands[0]?.hint, 'Current');
     assert.equal(sessionCommands[0]?.group, 'Conversations');
+
+    let sideChatOpened = false;
+    const commandsWithSession = buildCommandList({
+      locale: 'en',
+      activeSessionId: 'session-1',
+      themePref: 'auto',
+      connections: [],
+      defaultSlug: null,
+      onNewChat() {},
+      onOpenSideChat() {
+        sideChatOpened = true;
+      },
+      onOpenSettings() {},
+      onOpenSettingsSection() {},
+      onOpenShortcuts() {},
+      onSetTheme() {},
+    });
+    const sideChatCommand = commandsWithSession.find(
+      (command) => command.id === 'action:side-chat',
+    );
+    assert.equal(sideChatCommand?.label, 'Open side chat');
+    sideChatCommand?.run();
+    assert.equal(sideChatOpened, true);
   });
 
 });

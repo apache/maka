@@ -176,6 +176,24 @@ describe('composer quiet chrome', () => {
     assert.doesNotMatch(tagCarrying(atRest, 'maka-thinking-level-selector'), /aria-disabled/, 'at rest the thinking menu is enabled');
   });
 
+  it('keeps Stop and an explicit Steer submit available during a running turn', () => {
+    const markup = render(
+      <Composer
+        onSend={() => true}
+        onSteer={() => true}
+        onStop={() => {}}
+        streaming
+        modelLabel="demo-model"
+      />,
+    );
+
+    assert.match(markup, /maka-composer-running-actions/);
+    assert.match(markup, /aria-label="停止"/);
+    assert.match(markup, /aria-label="插入消息"/);
+    assert.match(markup, /lucide-square/);
+    assert.match(markup, /lucide-arrow-up/);
+  });
+
   it('reads active modes off the footer toolbar, after the model pair', () => {
     const markup = render(
       <Composer

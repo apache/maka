@@ -61,6 +61,7 @@ export { previewVariants } from './primitives/chat.js';
 // second answer to "what colour is this line". `apps/desktop` had one, and the
 // two had already diverged on `diff --git` / `index` headers.
 export { diffLineKind } from './tool-activity/tool-result-preview.js';
+export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { formatTurnDuration } from './chat-display-helpers.js';
 export * from './primitives/stat-tile.js';
 export * from './primitives/section-header.js';

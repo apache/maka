@@ -37,6 +37,10 @@ import type {
   UsageRange,
   UsageStats,
   E2eFixtureState,
+  GitReviewReadResult,
+  GitReviewMutationAction,
+  GitReviewMutationResult,
+  GitReviewSource,
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
   ArtifactDescriptor,
@@ -90,6 +94,8 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
   BotStatus,
+  ShellRunPtyDataEvent,
+  ShellRunPtySnapshot,
   WechatBridgeQrCodeResult,
 } from '@maka/runtime';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
@@ -377,7 +383,37 @@ export interface MakaBridge {
   };
   shellRuns: {
     list(sessionId: string): Promise<ShellRunUpdate[]>;
+    attach(input: {
+      sessionId: string;
+      ref: string;
+    }): Promise<ShellRunPtySnapshot | null>;
+    start(sessionId: string): Promise<ShellRunUpdate>;
+    write(input: {
+      sessionId: string;
+      ref: string;
+      input?: string;
+      size?: { cols: number; rows: number };
+    }): Promise<ShellRunUpdate | null>;
+    stop(input: {
+      sessionId: string;
+      ref: string;
+    }): Promise<ShellRunUpdate | null>;
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void;
+    subscribePtyData(handler: (event: ShellRunPtyDataEvent) => void): () => void;
+  };
+  gitReview: {
+    read(input: {
+      sessionId: string;
+      source: GitReviewSource;
+      baseBranch?: string;
+    }): Promise<GitReviewReadResult>;
+    mutate(input: {
+      sessionId: string;
+      source: Extract<GitReviewSource, 'unstaged' | 'staged'>;
+      revision: string;
+      path: string;
+      action: GitReviewMutationAction;
+    }): Promise<GitReviewMutationResult>;
   };
   goal: {
     /** The session's current goal (null when none is set). */

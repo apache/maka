@@ -8,6 +8,7 @@ import {
   createWorkspaceWritePermissionProfile,
   canonicalToolArgsHash,
   DEEP_RESEARCH_SESSION_LABEL,
+  SIDE_CONVERSATION_SESSION_LABEL,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
   buildImmutableRuntimePrefix,
   decodeContinuationClaim,
@@ -15792,6 +15793,39 @@ describe('SessionManager permission mode updates', () => {
       childMessages.some((message) => (message as { turnId?: string }).turnId === 'after'),
     ).toBe(false);
     expect(childMessages.some((message) => message.type === 'turn_state')).toBe(false);
+  });
+
+  test('branchFromTurn marks side conversations without changing ordinary branches', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register(
+      'fake',
+      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(15_500),
+    });
+    const session = await manager.createSession(makeInput({ name: 'Parent', labels: ['kept'] }));
+    await drain(manager.sendMessage(session.id, { turnId: 'source', text: 'context' }));
+
+    const ordinary = await manager.branchFromTurn(session.id, {
+      sourceTurnId: 'source',
+      name: 'Ordinary',
+    });
+    const side = await manager.branchFromTurn(session.id, {
+      sourceTurnId: 'source',
+      name: 'Side',
+      sideConversation: true,
+    });
+
+    expect(ordinary.labels).toEqual(['kept']);
+    expect(side.labels).toEqual(['kept', SIDE_CONVERSATION_SESSION_LABEL]);
   });
 
   test('conversation copies inherit the authoritative execution boundary', async () => {

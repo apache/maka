@@ -11,6 +11,7 @@ import {
 import type {
   SandboxBoundaryRequestEvent,
   SandboxBoundaryResponse,
+  PermissionMode,
   QuoteRef,
   SessionEvent,
   SessionSummary,
@@ -19,15 +20,18 @@ import type {
   UserQuestionRequestEvent,
   UserQuestionResponse,
 } from '@maka/core';
+import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
   cleanupCompanionCopy,
   createCompanionDismissalGuard,
   deriveCompanionComposerState,
+  ensureCompanionFork,
   isCompanionTurnTerminal,
   performCompanionTurn,
   type CompanionErrorCode,
+  type EnsureCompanionForkResult,
 } from './quote-companion-core';
 import { readSettledMessages } from './session-message-settlement';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -58,6 +62,8 @@ export interface UseQuoteCompanionInput {
 
 export interface UseQuoteCompanionResult {
   companionSession: SessionSummary | undefined;
+  /** True after this temporary conversation has accepted at least one turn. */
+  hasContent: boolean;
   /** The companion's OWN turns only — the forked parent history is context for
    *  the model but stays hidden from this side transcript (separate transcript,
    *  like Codex /side), so the panel isn't a duplicate of the main conversation. */
@@ -65,6 +71,10 @@ export interface UseQuoteCompanionResult {
   liveTurn: LiveTurnProjection | undefined;
   streaming: boolean;
   processing: boolean;
+  preparing: boolean;
+  permissionMode: PermissionMode | undefined;
+  permissionModePending: boolean;
+  regeneratePendingTurnId: string | null;
   /** A localized, retryable error (fork setup, run error, or a rejected send). */
   error: string | null;
   /** The model the companion inherited from the source (shown read-only). */
@@ -74,8 +84,11 @@ export interface UseQuoteCompanionResult {
   activeQuestion: UserQuestionRequestEvent | undefined;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
-  send: (text: string) => Promise<boolean>;
-  abandonPendingCopy: () => Promise<void>;
+  send: (text: string, attachmentItems?: RendererIngestInput[]) => Promise<boolean>;
+  /** Insert text into the active companion turn at the next model step. */
+  steer: (text: string) => Promise<boolean>;
+  setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
+  regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
@@ -99,8 +112,9 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * exchange never flickers away. Asking never writes back to the main conversation;
  * inherited history is hidden from the side transcript. The subscription is
  * established the moment the fork commits — before the run starts — so no
- * prompt/complete is missed. Reset only by unmount (退出 / switch / collapse),
- * which removes the ephemeral fork.
+ * prompt/complete is missed. Reset only by unmount (tab close or switching away
+ * from the owning source session), which removes the ephemeral fork. Workbar
+ * collapse and New Tab navigation keep the panel mounted.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
   const {
@@ -113,12 +127,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   } = input;
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
+  const companionRef = useRef<SessionSummary | undefined>(undefined);
   const companionIdRef = useRef<string | null>(null);
   // A created fork is hidden immediately, before its permission pin completes,
   // but is not considered usable until onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
   const sourceSessionIdRef = useRef(sourceSession?.id);
   sourceSessionIdRef.current = sourceSession?.id;
+  const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
+  const stopRequestedRef = useRef(false);
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
   const localeRef = useRef(locale);
@@ -132,6 +149,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   liveTurnRef.current = liveTurn;
   const [interactions, setInteractions] = useState<InteractionQueues>({});
   const [turnInFlight, setTurnInFlight] = useState(false);
+  const [preparing, setPreparing] = useState(Boolean(sourceSession));
+  const [permissionModePending, setPermissionModePending] = useState(false);
+  const [regeneratePendingTurnId, setRegeneratePendingTurnId] = useState<string | null>(
+    null,
+  );
+  const [hasContent, setHasContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Bumped whenever the own-turn set changes so the render picks up the new
   // filter result (the set lives in a ref to stay stable for the event handler).
@@ -153,10 +176,22 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       })
       .catch(() => {});
     unsubscribeRef.current = window.maka.sessions.subscribeEvents(forkId, (event: SessionEvent) => {
+      if (event.turnId && !ownTurnIdsRef.current.has(event.turnId)) {
+        ownTurnIdsRef.current.add(event.turnId);
+        setOwnTurnTick((tick) => tick + 1);
+      }
       // Interaction queue (so a boundary expansion surfaces) + live stream.
       setInteractions((current) => applyCompanionInteractionEvent(current, forkId, event));
       setLiveTurn((prev) => applyLiveTurnEvent(prev, event, localeRef.current));
-      if (event.type === 'error') setError(copyRef.current.errors.runError);
+      if (event.type === 'error' && !stopRequestedRef.current) {
+        setError(copyRef.current.errors.runError);
+      }
+      if (
+        event.type === 'abort' ||
+        (event.type === 'complete' && event.stopReason === 'user_stop')
+      ) {
+        setError(null);
+      }
       if (isCompanionTurnTerminal(event)) {
         // Settlement: wait for the assistant message to persist before handing
         // off from the live projection, then reconcile (shared with the main chat)
@@ -178,6 +213,71 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
     });
   }, [mountedRef]);
+
+  const commitFork = useCallback(
+    (session: SessionSummary) => {
+      pendingForkIdRef.current = null;
+      companionIdRef.current = session.id;
+      companionRef.current = session;
+      setCompanion(session);
+      subscribeToFork(session.id);
+    },
+    [subscribeToFork],
+  );
+
+  const ensureFork = useCallback(
+    (name: string): Promise<EnsureCompanionForkResult> => {
+      const existing = companionRef.current;
+      if (existing) return Promise.resolve({ status: 'ready', session: existing });
+      if (forkSetupPromiseRef.current) return forkSetupPromiseRef.current;
+      if (!sourceSession) {
+        return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
+      }
+
+      setPreparing(true);
+      const promise = ensureCompanionFork({
+        api: window.maka.sessions,
+        sourceSession,
+        name,
+        isDisposed: () => !mountedRef.current,
+        onForkCreated: (session) => {
+          pendingForkIdRef.current = session.id;
+          onForkVisibilityChangeRef.current?.({
+            type: 'fork-created',
+            sessionId: session.id,
+          });
+        },
+        onForkCleanupSucceeded: (sessionId) => {
+          if (pendingForkIdRef.current === sessionId) {
+            pendingForkIdRef.current = null;
+          }
+          onForkVisibilityChangeRef.current?.({
+            type: 'cleanup-succeeded',
+            sessionId,
+          });
+        },
+      })
+        .then((result) => {
+          if (result.status === 'ready' && mountedRef.current) {
+            commitFork(result.session);
+          } else if (result.status === 'error' && mountedRef.current) {
+            setError(copyRef.current.errors.forkSetupFailed);
+          }
+          return result;
+        })
+        .finally(() => {
+          forkSetupPromiseRef.current = null;
+          if (mountedRef.current) setPreparing(false);
+        });
+      forkSetupPromiseRef.current = promise;
+      return promise;
+    },
+    [commitFork, mountedRef, sourceSession],
+  );
+
+  useEffect(() => {
+    if (sourceSession) void ensureFork(copyRef.current.defaultName);
+  }, [ensureFork, sourceSession]);
 
   // The fork is ephemeral (用完即弃): when the panel is dismissed — 退出,
   // switching source session, or collapsing the workbar — unsubscribe and remove
@@ -209,44 +309,38 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, []);
 
   const send = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (
+      text: string,
+      attachmentItems?: RendererIngestInput[],
+    ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!trimmed || turnInFlight || !sourceSession) return false;
       setError(null);
       const turnId = crypto.randomUUID();
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
+      const fork = await ensureFork(`${copyRef.current.namePrefix}${label}`);
+      if (fork.status !== 'ready') return false;
       const result = await performCompanionTurn({
         api: window.maka.sessions,
         sourceSession,
         name: `${copyRef.current.namePrefix}${label}`,
         isDisposed: () => !mountedRef.current,
-        existingForkId: companionIdRef.current,
+        existingForkId: fork.session.id,
         turnId,
         text: trimmed,
         quotes: quoteSnapshot.quotes.length > 0 ? [...quoteSnapshot.quotes] : undefined,
-        onForkCreated: (session) => {
-          pendingForkIdRef.current = session.id;
-          onForkVisibilityChangeRef.current?.({
-            type: 'fork-created',
-            sessionId: session.id,
-          });
-        },
+        ...(attachmentItems?.length ? { attachmentItems } : {}),
+        onForkCreated: () => {},
         onForkCleanupSucceeded: (sessionId) =>
           onForkVisibilityChangeRef.current?.({
             type: 'cleanup-succeeded',
             sessionId,
           }),
-        onForkCommitted: (session) => {
-          pendingForkIdRef.current = null;
-          companionIdRef.current = session.id;
-          setCompanion(session);
-          // Establish the event subscription BEFORE the send starts (fixes the
-          // pre-subscription race). The host already hid it at creation time.
-          subscribeToFork(session.id);
-        },
+        onForkCommitted: () => {},
         // Arm the optimistic live turn right before the send.
         onBeforeSend: () => {
+          stopRequestedRef.current = false;
           setTurnInFlight(true);
           setLiveTurn(armLiveTurn(turnId));
           ownTurnIdsRef.current.add(turnId);
@@ -255,6 +349,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         onQuotesConsumed: () => onQuotesConsumed(quoteSnapshot),
       });
       if (result.status === 'sent') {
+        setHasContent(true);
         // Surface the just-sent user message immediately, and reflect any
         // automatic connection/model rebound in the read-only model label.
         void readSettledMessages(result.forkId)
@@ -266,7 +361,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           .list()
           .then((sessions) => {
             const updated = sessions.find((session) => session.id === result.forkId);
-            if (updated && mountedRef.current) setCompanion(updated);
+            if (updated && mountedRef.current) {
+              companionRef.current = updated;
+              setCompanion(updated);
+            }
           })
           .catch(() => {});
         return true;
@@ -275,13 +373,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const errors = copyRef.current.errors;
         const byCode: Record<CompanionErrorCode, string> = {
           fork_setup_failed: errors.forkSetupFailed,
-          permission_pin_failed: errors.permissionPinFailed,
           send_failed: errors.sendFailed,
           send_rejected: errors.sendRejected,
         };
-        if (result.code === 'permission_pin_failed') {
-          pendingForkIdRef.current = null;
-        }
         setError(byCode[result.code]);
         setTurnInFlight(false);
         setLiveTurn(undefined);
@@ -289,23 +383,89 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       // 'disposed' → the panel unmounted mid-create; nothing to update.
       return false;
     },
-    [turnInFlight, sourceSession, panelId, pendingQuotes, onQuotesConsumed, subscribeToFork, mountedRef],
+    [
+      turnInFlight,
+      sourceSession,
+      panelId,
+      pendingQuotes,
+      onQuotesConsumed,
+      ensureFork,
+      mountedRef,
+    ],
   );
-
-  const abandonPendingCopy = useCallback(async (): Promise<void> => {
-    if (!sourceSession) return;
-    await abandonPendingCompanionCopy(window.maka.sessions, sourceSession.id);
-  }, [sourceSession]);
 
   const stop = useCallback(async (): Promise<void> => {
     const id = companionIdRef.current;
     if (!id) return;
+    stopRequestedRef.current = true;
     try {
       await window.maka.sessions.stop(id);
     } catch {
+      stopRequestedRef.current = false;
       // best-effort; the terminal event still reconciles state
     }
   }, []);
+
+  const steer = useCallback(async (text: string): Promise<boolean> => {
+    const id = companionIdRef.current;
+    const trimmed = text.trim();
+    if (!id || !trimmed || !turnInFlight) return false;
+    try {
+      const outcome = await window.maka.sessions.steer(id, trimmed);
+      if (outcome.kind !== 'queued') return false;
+      setError(null);
+      return true;
+    } catch {
+      setError(copyRef.current.errors.sendFailed);
+      return false;
+    }
+  }, [turnInFlight]);
+
+  const setPermissionMode = useCallback(
+    async (mode: PermissionMode): Promise<boolean> => {
+      const id = companionIdRef.current;
+      if (!id || turnInFlight || permissionModePending) return false;
+      setPermissionModePending(true);
+      try {
+        const next = await window.maka.sessions.setPermissionMode(id, mode);
+        if (!mountedRef.current) return false;
+        companionRef.current = next;
+        setCompanion(next);
+        setError(null);
+        return true;
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        return false;
+      } finally {
+        if (mountedRef.current) setPermissionModePending(false);
+      }
+    },
+    [mountedRef, permissionModePending, turnInFlight],
+  );
+
+  const regenerate = useCallback(
+    async (turnId: string): Promise<boolean> => {
+      const id = companionIdRef.current;
+      if (!id || turnInFlight || regeneratePendingTurnId) return false;
+      setRegeneratePendingTurnId(turnId);
+      stopRequestedRef.current = false;
+      setTurnInFlight(true);
+      setError(null);
+      try {
+        await window.maka.sessions.regenerateTurn(id, { sourceTurnId: turnId });
+        return true;
+      } catch {
+        if (mountedRef.current) {
+          setTurnInFlight(false);
+          setError(copyRef.current.errors.sendFailed);
+        }
+        return false;
+      } finally {
+        if (mountedRef.current) setRegeneratePendingTurnId(null);
+      }
+    },
+    [mountedRef, regeneratePendingTurnId, turnInFlight],
+  );
 
   const respondToSandboxBoundary = useCallback(
     async (response: SandboxBoundaryResponse): Promise<void> => {
@@ -345,6 +505,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     : sourceSession
       ? { llmConnectionSlug: sourceSession.llmConnectionSlug, model: sourceSession.model }
       : undefined;
+  const permissionMode = (companion?.permissionMode ??
+    sourceSession?.permissionMode) as PermissionMode | undefined;
   const activeInteraction = companionIdRef.current
     ? activeInteractionFor(interactions, companionIdRef.current)
     : undefined;
@@ -355,16 +517,23 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   return {
     companionSession: companion,
+    hasContent,
     messages,
     liveTurn,
     streaming,
     processing,
+    preparing,
+    permissionMode,
+    permissionModePending,
+    regeneratePendingTurnId,
     error,
     activeModel,
     activeSandboxBoundary,
     activeQuestion,
     send,
-    abandonPendingCopy,
+    steer,
+    setPermissionMode,
+    regenerate,
     stop,
     respondToSandboxBoundary,
     respondToUserQuestion,

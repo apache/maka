@@ -116,7 +116,9 @@ export interface AppShellChatActions {
   retryMessages(sessionId: string): Promise<void>;
 }
 
-function toIngestItems(pending: readonly PendingAttachment[]): RendererIngestInput[] {
+export function toRendererIngestItems(
+  pending: readonly PendingAttachment[],
+): RendererIngestInput[] {
   return pending.map((p) =>
     p.source.type === 'approval'
       ? {
@@ -349,7 +351,10 @@ export function createAppShellChatActions(deps: {
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
-        const attachmentItems = pending && pending.length > 0 ? toIngestItems(pending) : undefined;
+        const attachmentItems =
+          pending && pending.length > 0
+            ? toRendererIngestItems(pending)
+            : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
           turnId,
@@ -401,7 +406,10 @@ export function createAppShellChatActions(deps: {
       optimisticSessionId = sessionId;
       optimisticTurnId = turnId;
       armTurnActive(sessionId, turnId);
-      const attachmentItems = pending && pending.length > 0 ? toIngestItems(pending) : undefined;
+      const attachmentItems =
+        pending && pending.length > 0
+          ? toRendererIngestItems(pending)
+          : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',
         turnId,

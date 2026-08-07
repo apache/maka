@@ -54,6 +54,8 @@ import {
   type PtyControlWriter,
   type RuntimeResourceReader,
   type ShellRunBashInput,
+  type ShellRunPtyDataEvent,
+  type ShellRunPtySnapshot,
   type ShellRunProcessManagerInput,
   type ShellRunWriteInput,
 } from './shell-run-contract.js';
@@ -70,6 +72,9 @@ import { CompletionLatch } from './completion-latch.js';
 import { closeChildFdSources } from './child-fd-input.js';
 
 type LifecycleCause = 'timeout' | 'cancel' | 'shutdown';
+const PTY_RAW_REPLAY_CHARS = 16_000;
+const PTY_RAW_PUBLISH_INTERVAL_MS = 16;
+const PTY_RAW_PUBLISH_BYTES = 64 * 1024;
 
 /**
  * Shown whenever a `ref` argument does not parse. Echoing the rejected string
@@ -190,6 +195,10 @@ interface LivePtyShellRun extends LiveShellRunBase {
   mode: 'pty';
   driver: PtyProcessDriver;
   collector: PtyScreenCollector;
+  rawBuffer: string;
+  rawSequence: number;
+  pendingRawData: string;
+  rawPublishTimer?: NodeJS.Timeout;
 }
 
 type LiveShellRun = LivePipeShellRun | LivePtyShellRun;
@@ -545,6 +554,20 @@ export class ShellRunProcessManager
     }
   }
 
+  getLivePtySnapshot(sessionId: string, ref: string): ShellRunPtySnapshot | null {
+    const target = parseShellRunResourceRef(ref);
+    if (!target) return null;
+    const live = this.live.get(target.shellRunId);
+    if (!live || live.sessionId !== sessionId || live.mode !== 'pty') return null;
+    return {
+      sessionId,
+      ref,
+      sequence: live.rawSequence,
+      buffer: live.rawBuffer,
+      size: live.collector.currentSize(),
+    };
+  }
+
   async recoverOrphanedSession(sessionId: string): Promise<number> {
     const records = await this.input.store.listSessionShellRuns(sessionId);
     let recovered = 0;
@@ -791,9 +814,12 @@ export class ShellRunProcessManager
         env: input.env ?? process.env,
         cols: PTY_INITIAL_COLS,
         rows: PTY_INITIAL_ROWS,
-        onData: (data) => dispatch((target) => target.collector.accept(data)),
+        onData: (data) => dispatch((target) => this.onPtyData(target, data)),
         onExit: (exit) => {
-          dispatch((target) => this.onNativeRootExit(target));
+          dispatch((target) => {
+            this.publishPtyData(target);
+            this.onNativeRootExit(target);
+          });
           dispatch((target) => this.onDriverExit(target, { mode: 'pty', value: exit }));
         },
         onInvariantFailure: (error) =>
@@ -821,6 +847,9 @@ export class ShellRunProcessManager
       mode: 'pty',
       driver,
       collector,
+      rawBuffer: '',
+      rawSequence: 0,
+      pendingRawData: '',
     };
     this.live.set(shellRunId, live);
     try {
@@ -916,6 +945,43 @@ export class ShellRunProcessManager
     live.pendingFlushChars += data.length;
     this.emitLivePipeOutput(live, stream, data);
     this.scheduleAutomaticFlush(live);
+  }
+
+  private onPtyData(live: LivePtyShellRun, data: string): void {
+    if (live.driverExit || live.finalizeOnce) return;
+    live.rawSequence += 1;
+    live.rawBuffer = `${live.rawBuffer}${data}`.slice(-PTY_RAW_REPLAY_CHARS);
+    live.collector.accept(data);
+    live.pendingRawData += data;
+    if (Buffer.byteLength(live.pendingRawData, 'utf8') >= PTY_RAW_PUBLISH_BYTES) {
+      this.publishPtyData(live);
+      return;
+    }
+    live.rawPublishTimer ??= setTimeout(() => {
+      live.rawPublishTimer = undefined;
+      this.publishPtyData(live);
+    }, PTY_RAW_PUBLISH_INTERVAL_MS);
+  }
+
+  private publishPtyData(live: LivePtyShellRun): void {
+    if (live.rawPublishTimer) {
+      clearTimeout(live.rawPublishTimer);
+      live.rawPublishTimer = undefined;
+    }
+    const data = live.pendingRawData;
+    if (!data) return;
+    live.pendingRawData = '';
+    const event: ShellRunPtyDataEvent = {
+      sessionId: live.sessionId,
+      ref: shellRunResourceRef(live.shellRunId),
+      sequence: live.rawSequence,
+      data,
+    };
+    try {
+      this.input.onPtyData?.(event);
+    } catch {
+      // The PTY and durable screen snapshot remain authoritative.
+    }
   }
 
   private emitLivePipeOutput(
@@ -1694,8 +1760,12 @@ export class ShellRunProcessManager
 
   private clearLiveTimers(live: LiveShellRun): void {
     if (live.timeoutTimer) clearTimeout(live.timeoutTimer);
+    if (live.mode === 'pty' && live.rawPublishTimer) {
+      clearTimeout(live.rawPublishTimer);
+    }
     live.cancelFlush?.();
     live.timeoutTimer = undefined;
+    if (live.mode === 'pty') live.rawPublishTimer = undefined;
     live.cancelFlush = undefined;
   }
 

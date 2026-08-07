@@ -314,7 +314,8 @@ export interface E2eFixtureState {
   sidebarCollapsed?: boolean;
   /** Fixture-only session workbar state for deterministic tab rendering. */
   workbarCollapsed?: boolean;
-  workbarTab?: 'tasks' | 'browser' | 'files';
+  workbarTab?: 'review' | 'terminal' | 'tasks' | 'browser' | 'files' | 'inspector';
+  workbarPreview?: boolean;
   /**
    * #1233 deferral — bot QR-onboarding modal fixture. When set, the Settings
    * 远程接入 page (bot-chat-settings-page) opens the given provider's detail

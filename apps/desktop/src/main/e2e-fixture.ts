@@ -467,7 +467,13 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
     case 'artifact-preview-image':
     case 'artifact-preview-unsupported':
     case 'artifact-preview-oversize':
-      return { ...state, activeSessionId: ARTIFACT_SESSION_ID, workbarCollapsed: false, workbarTab: 'files' };
+      return {
+        ...state,
+        activeSessionId: ARTIFACT_SESSION_ID,
+        workbarCollapsed: false,
+        workbarTab: 'files',
+        workbarPreview: true,
+      };
     case 'turn-narrative':
     case 'task-ledger':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };

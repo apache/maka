@@ -28,7 +28,7 @@ async function selectStarterSkill(
   } else {
     await composer.fill('/');
   }
-  const listbox = page.getByRole('listbox', { name: '技能' });
+  const listbox = page.getByRole('listbox', { name: /技能/ });
   await expect(listbox).toBeVisible();
   await expect(listbox.getByRole('option', { name: /示例技能/ })).toBeVisible();
   await composer.press('Enter');
@@ -40,7 +40,7 @@ test('slash suggestions follow Runtime project discovery and host gating', async
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('/');
-  const listbox = page.getByRole('listbox', { name: '技能' });
+  const listbox = page.getByRole('listbox', { name: /技能/ });
   await expect(listbox).toBeVisible();
   await expect(listbox).toContainText('Project Only');
   await expect(listbox).toContainText('Workspace Only');
@@ -59,7 +59,7 @@ test('slash suggestions in a Deep Research session drop non-research Skills', as
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
-  const listbox = page.getByRole('listbox', { name: '技能' });
+  const listbox = page.getByRole('listbox', { name: /技能/ });
 
   await composer.fill('/');
   await expect(listbox).toBeVisible();
@@ -95,7 +95,7 @@ test('open Skill suggestions follow current collaboration capabilities', async (
 
   await expect.poll(() => listNames(session.id)).toContain('Agent Write');
   await composer.fill('/');
-  const listbox = page.getByRole('listbox', { name: '技能' });
+  const listbox = page.getByRole('listbox', { name: /技能/ });
   await expect(listbox).toContainText('Agent Write');
 
   await expect
@@ -128,7 +128,7 @@ test('the ＋ Skills entry opens the `/` menu, before and after a chip', async (
   await createStarterSkillAndReload(page);
 
   const composer = page.locator(COMPOSER_INPUT);
-  const listbox = page.getByRole('listbox', { name: '技能' });
+  const listbox = page.getByRole('listbox', { name: /技能/ });
   const plus = page.locator('.maka-composer-plus-menu').getByRole('button');
   const skillsEntry = page.getByRole('menuitem', { name: '选择技能' });
   const openFromPlus = async () => {
@@ -188,7 +188,7 @@ test('staged Skills come back as chips after leaving and returning', async ({
   const pick = async (query: string, name: RegExp) => {
     await composer.click();
     await composer.pressSequentially(` /${query}`);
-    const option = page.getByRole('listbox', { name: '技能' }).getByRole('option', { name });
+    const option = page.getByRole('listbox', { name: /技能/ }).getByRole('option', { name });
     await expect(option).toBeVisible();
     // This journey owns draft restoration, while keyboard selection is covered
     // separately. Select the exact option without coupling setup to the

@@ -664,6 +664,9 @@ const shellRuns = new ShellRunProcessManager({
   onShellRunUpdate: (update) => {
     safeSendToRenderer('shell-runs:update', update);
   },
+  onPtyData: (event) => {
+    safeSendToRenderer('shell-runs:pty-data', event);
+  },
 });
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
@@ -1147,6 +1150,7 @@ function registerIpc(): void {
   registerSessionsIpc({
     workspaceRoot,
     runtime,
+    shellRuns,
     store,
     taskLedgerStore,
     goalWiring,

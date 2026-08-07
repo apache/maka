@@ -44,7 +44,7 @@ export function buildToolResultArchiveResourceRef(
 ): string {
   const artifactId = encodeURIComponent(input.artifactId);
   const sha256 = encodeURIComponent(input.bodySha256);
-  return `maka://archive/${artifactId}?sha256=${sha256}&bytes=${input.originalBytes}`;
+  return `maka://archive/${artifactId}/${sha256}/${input.originalBytes}`;
 }
 
 export function parseToolResultArchiveResourceRef(
@@ -66,23 +66,36 @@ export function parseToolResultArchiveResourceRef(
     return null;
   }
   const pathParts = url.pathname.split('/').filter(Boolean);
-  if (pathParts.length !== 1 || url.hash) return null;
+  if (url.hash) return null;
   let artifactId: string;
   try {
     artifactId = decodeURIComponent(pathParts[0] ?? '');
   } catch {
     return null;
   }
-  const queryKeys = [...url.searchParams.keys()];
-  if (
-    queryKeys.length !== 2 ||
-    queryKeys.filter((key) => key === 'sha256').length !== 1 ||
-    queryKeys.filter((key) => key === 'bytes').length !== 1
-  ) {
+  let bodySha256 = '';
+  let bytesText = '';
+  if (pathParts.length === 3 && url.search === '') {
+    try {
+      bodySha256 = decodeURIComponent(pathParts[1] ?? '');
+      bytesText = decodeURIComponent(pathParts[2] ?? '');
+    } catch {
+      return null;
+    }
+  } else if (pathParts.length === 1) {
+    const queryKeys = [...url.searchParams.keys()];
+    if (
+      queryKeys.length !== 2 ||
+      queryKeys.filter((key) => key === 'sha256').length !== 1 ||
+      queryKeys.filter((key) => key === 'bytes').length !== 1
+    ) {
+      return null;
+    }
+    bodySha256 = url.searchParams.get('sha256') ?? '';
+    bytesText = url.searchParams.get('bytes') ?? '';
+  } else {
     return null;
   }
-  const bodySha256 = url.searchParams.get('sha256') ?? '';
-  const bytesText = url.searchParams.get('bytes') ?? '';
   if (
     !ARCHIVE_ARTIFACT_ID_PATTERN.test(artifactId) ||
     !/^[a-f0-9]{64}$/i.test(bodySha256) ||

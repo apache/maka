@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  parseSideChatCommand,
+  sideChatTitleFromPrompt,
+} from '../../renderer/side-chat-command.js';
+
+describe('side chat slash command', () => {
+  it('matches only /side and preserves an optional multiline prompt', () => {
+    assert.deepEqual(parseSideChatCommand('/side'), { prompt: '' });
+    assert.deepEqual(parseSideChatCommand('  /side   inspect this\ncarefully  '), {
+      prompt: 'inspect this\ncarefully',
+    });
+    assert.equal(parseSideChatCommand('/sidebar'), null);
+    assert.equal(parseSideChatCommand('before /side'), null);
+  });
+
+  it('derives a compact single-line tab title without splitting Unicode', () => {
+    assert.equal(sideChatTitleFromPrompt('  inspect\n this   code  '), 'inspect this code');
+    assert.equal(sideChatTitleFromPrompt('   '), undefined);
+    assert.equal(
+      sideChatTitleFromPrompt('🙂'.repeat(70)),
+      '🙂'.repeat(60),
+    );
+  });
+});

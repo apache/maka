@@ -519,6 +519,15 @@ export {
   type UnifiedDiffRow,
   type UnifiedDiffRowKind,
 } from './unified-diff.js';
+export type {
+  GitReviewFile,
+  GitReviewFileStatus,
+  GitReviewMutationAction,
+  GitReviewMutationResult,
+  GitReviewReadResult,
+  GitReviewSnapshot,
+  GitReviewSource,
+} from './git-review.js';
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
@@ -1824,6 +1833,13 @@ export {
   isSessionStartModeLabel,
   isDeepResearchSession,
 } from './explore-agent.js';
+
+// side-conversation.ts — transient fork boundary for read-only side chats.
+export {
+  SIDE_CONVERSATION_SESSION_LABEL,
+  buildSideConversationSystemPromptFragment,
+  isSideConversationSession,
+} from './side-conversation.js';
 
 // tool-catalog.ts — shared product tool vocabulary (#1099).
 export type {

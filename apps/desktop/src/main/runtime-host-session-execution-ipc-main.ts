@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import {
   deriveTurnRecords,
+  SIDE_CONVERSATION_SESSION_LABEL,
   type AttachmentRef,
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -305,9 +306,19 @@ export function registerRuntimeHostSessionExecutionIpc(
         targetSessionId: normalized.copyId,
         sourceTurnId: normalized.sourceTurnId,
       });
-      if (normalized.name) {
+      if (normalized.name || normalized.sideConversation) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
-          name: normalized.name,
+          ...(normalized.name ? { name: normalized.name } : {}),
+          ...(normalized.sideConversation
+            ? {
+                labels: [
+                  ...new Set([
+                    ...branch.labels,
+                    SIDE_CONVERSATION_SESSION_LABEL,
+                  ]),
+                ],
+              }
+            : {}),
         });
       }
       deps.emitSessionsChanged("created", branch.id);

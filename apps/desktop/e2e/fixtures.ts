@@ -1,13 +1,16 @@
 import { _electron as electron, test as base, expect } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
+const execFileAsync = promisify(execFile);
 
 /**
  * The composer's text surface. It is Astryx's `ChatComposerInput`, so the
@@ -136,6 +139,48 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
   ]);
 }
 
+async function seedE2eGitReviewProject(
+  userDataDir: string,
+  extraUntrackedFiles = 0,
+): Promise<void> {
+  const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
+  const projectRoot = path.join(userDataDir, 'git-review-project');
+  await mkdir(projectRoot, { recursive: true });
+  const git = (...args: string[]) =>
+    execFileAsync('git', ['-C', projectRoot, ...args], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+  await git('init', '-b', 'main');
+  await git('config', 'user.name', 'Maka E2E');
+  await git('config', 'user.email', 'maka-e2e@example.invalid');
+  await writeFile(path.join(projectRoot, 'base.txt'), 'base\n', 'utf8');
+  await git('add', 'base.txt');
+  await git('commit', '-m', 'base');
+  await git('checkout', '-b', 'feature/review');
+  await writeFile(path.join(projectRoot, 'feature.txt'), 'feature\n', 'utf8');
+  await git('add', 'feature.txt');
+  await git('commit', '-m', 'feature');
+  await writeFile(path.join(projectRoot, 'base.txt'), 'base\nunstaged\n', 'utf8');
+  await writeFile(path.join(projectRoot, 'staged.txt'), 'staged\n', 'utf8');
+  await git('add', 'staged.txt');
+  await writeFile(path.join(projectRoot, 'untracked.txt'), 'untracked\n', 'utf8');
+  await Promise.all(
+    Array.from({ length: extraUntrackedFiles }, (_, index) =>
+      writeFile(
+        path.join(projectRoot, `bulk-${String(index).padStart(3, '0')}.txt`),
+        `bulk ${index}\n`,
+        'utf8',
+      ),
+    ),
+  );
+  await writeFile(
+    path.join(workspaceRoot, 'last-project-path.json'),
+    JSON.stringify({ projectPath: projectRoot }),
+    'utf8',
+  );
+}
+
 /**
  * The sandboxed HOME of the run currently under test. Set by withE2eWindow
  * before Electron launches.
@@ -166,6 +211,7 @@ async function withE2eWindow(
     locale,
     platform,
     invocableSkills,
+    gitReviewExtraFiles,
     extraConnectionCount,
   }: {
     seed: boolean;
@@ -175,6 +221,7 @@ async function withE2eWindow(
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
     invocableSkills?: boolean;
+    gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
   },
   use: (page: Page) => Promise<void>,
@@ -191,6 +238,9 @@ async function withE2eWindow(
   try {
     if (seed) await seedE2eConnection(userDataDir, extraConnectionCount);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
+    if (gitReviewExtraFiles !== undefined) {
+      await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
+    }
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
@@ -261,6 +311,9 @@ export const test = base.extend<{
   readOnlyBoundaryWindow: Page;
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
+  gitReviewWindow: Page;
+  gitReviewLargeWindow: Page;
+  artifactPaneWindow: Page;
   botSettingsWindow: Page;
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
@@ -446,8 +499,41 @@ export const test = base.extend<{
         // The data contract, not the tag: the panel's surface is an Astryx Card
         // (a div carrying role="complementary"), so a tag-anchored selector
         // would pin an implementation detail the design system owns.
-        readinessSelector: '[data-maka-contract="session-workbar"]',
+        readinessSelector: '[data-maka-contract="session-workbar-right"]',
         e2eFixtureScenario: 'task-ledger',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  gitReviewWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: COMPOSER_INPUT,
+        locale: 'zh',
+        gitReviewExtraFiles: 0,
+      },
+      use,
+    );
+  },
+  gitReviewLargeWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: COMPOSER_INPUT,
+        locale: 'zh',
+        gitReviewExtraFiles: 45,
+      },
+      use,
+    );
+  },
+  artifactPaneWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.maka-artifact-pane',
+        e2eFixtureScenario: 'artifact-pane',
         locale: 'zh',
       },
       use,

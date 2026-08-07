@@ -11,6 +11,7 @@ import {
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
+  'action:side-chat',
   'action:new-deep-research',
   'action:new-plan-reminder',
   'action:open-settings',
@@ -46,6 +47,17 @@ type CommandCopy = {
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   'action:new-chat': ['new', 'chat', 'start', '新', '建', '对话'],
+  'action:side-chat': [
+    'side',
+    'chat',
+    'btw',
+    'ask',
+    'explore',
+    '侧边',
+    '侧聊',
+    '对话',
+    '追问',
+  ],
   'action:new-deep-research': ['deep', 'research', 'explore', 'readonly', '研究', '深度', '探索', '只读'],
   'action:new-plan-reminder': ['plan', 'reminder', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
   'action:open-settings': ['settings', 'preferences', '设置', 'options'],
@@ -348,6 +360,7 @@ type ShellCopy = {
     expandSidebar: string;
     collapseSidebar: string;
     newTask: string;
+    openWorkbarLauncher: string;
     expandWorkbar: string;
     collapseWorkbar: string;
     workspaceActions: string;
@@ -359,6 +372,10 @@ type ShellCopy = {
     newConversation: string;
     compactErrorTitle: string;
     compactErrorFallback: string;
+    sideChatUnavailableTitle: string;
+    sideChatUnavailableDescription: string;
+    sideChatContextPendingTitle: string;
+    sideChatContextPendingDescription: string;
     resumeStartedTitle: string;
     resumeStartedDescription: string;
     resumeFailedTitle: string;
@@ -430,6 +447,11 @@ type ShellCopy = {
 
 const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建对话', hint: '开始新的会话', group: '操作' },
+  'action:side-chat': {
+    label: '打开侧边对话',
+    hint: '⌥⌘S',
+    group: '操作',
+  },
   'action:new-deep-research': {
     label: '新建深度研究',
     hint: '只读探索',
@@ -511,6 +533,11 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': {
     label: 'New conversation',
     hint: 'Start a new conversation',
+    group: 'Actions',
+  },
+  'action:side-chat': {
+    label: 'Open side chat',
+    hint: '⌥⌘S',
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -1009,6 +1036,7 @@ const SHELL_COPY_BY_LOCALE = {
       expandSidebar: '展开侧边栏',
       collapseSidebar: '收起侧边栏',
       newTask: '新任务',
+      openWorkbarLauncher: '打开工作栏工具',
       expandWorkbar: '展开会话工作栏',
       collapseWorkbar: '收起会话工作栏',
       workspaceActions: '工作区辅助操作',
@@ -1020,6 +1048,11 @@ const SHELL_COPY_BY_LOCALE = {
       newConversation: '新建对话',
       compactErrorTitle: '压缩失败',
       compactErrorFallback: '对话暂时无法压缩，请稍后重试。',
+      sideChatUnavailableTitle: '暂时无法打开侧边对话',
+      sideChatUnavailableDescription: '请先在主会话中发送一条消息，再使用 /side。',
+      sideChatContextPendingTitle: '先处理待发送的上下文',
+      sideChatContextPendingDescription:
+        '当前 Composer 还有附件、引用或文件 mention。请先发送或移除它们，再使用 /side。',
       resumeStartedTitle: '已开始安全恢复',
       resumeStartedDescription: '正在从最后一个完整执行边界继续',
       resumeFailedTitle: '恢复失败',
@@ -1508,6 +1541,7 @@ const SHELL_COPY_BY_LOCALE = {
       expandSidebar: 'Expand sidebar',
       collapseSidebar: 'Collapse sidebar',
       newTask: 'New task',
+      openWorkbarLauncher: 'Open workbar tools',
       expandWorkbar: 'Expand conversation workbar',
       collapseWorkbar: 'Collapse conversation workbar',
       workspaceActions: 'Workspace actions',
@@ -1519,6 +1553,12 @@ const SHELL_COPY_BY_LOCALE = {
       newConversation: 'New conversation',
       compactErrorTitle: 'Compaction failed',
       compactErrorFallback: 'The conversation could not be compacted. Try again later.',
+      sideChatUnavailableTitle: 'Side chat is not available yet',
+      sideChatUnavailableDescription:
+        'Send a message in the main conversation before using /side.',
+      sideChatContextPendingTitle: 'Resolve pending context first',
+      sideChatContextPendingDescription:
+        'The Composer still has attachments, quotes, or file mentions. Send or remove them before using /side.',
       resumeStartedTitle: 'Safe recovery started',
       resumeStartedDescription: 'Continuing from the last complete execution boundary',
       resumeFailedTitle: 'Recovery failed',

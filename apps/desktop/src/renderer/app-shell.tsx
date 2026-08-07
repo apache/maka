@@ -29,6 +29,7 @@ import {
   DailyReviewPage,
   ChatSurfaceLayout,
   type ComposerHandle,
+  type ComposerSlashCommandOption,
   type MakaUriDest,
   MakaUriContext,
   AstryxLocaleProvider,
@@ -50,6 +51,7 @@ import {
   getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
+import { MessageCircleQuestion } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
@@ -58,12 +60,29 @@ import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import { ChatWorkbar } from './chat-workbar';
+import type {
+  SessionWorkbarPlacement,
+  SessionWorkbarTab,
+  SessionWorkbarTabKind,
+} from './session-workbar-tabs';
 import {
+  findPreferredSideChatWorkbarTab,
+  terminalRefFromWorkbarTab,
+  terminalSessionWorkbarTabId,
+  staticSessionWorkbarTabId,
+} from './session-workbar-tabs';
+import {
+  consumeCompanionInitialPrompt,
   consumeCompanionQuoteSnapshot,
+  openCompanionPanel,
   removeStagedCompanionQuote,
   stageCompanionQuote,
   type QuoteCompanionPanelState,
 } from './quote-companion-panel-state';
+import {
+  parseSideChatCommand,
+  sideChatTitleFromPrompt,
+} from './side-chat-command';
 import {
   applyCompanionForkVisibilityEvent,
   reconcileCompanionForkVisibility,
@@ -84,6 +103,11 @@ import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
+import {
+  SideChatCloseConfirmation,
+  SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY,
+} from './side-chat-close-confirmation';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
@@ -156,6 +180,7 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
+import { filterUserVisibleArtifacts } from './artifact-visibility';
 
 function rebaseWorkspaceFileReferences(
   sourceText: string,
@@ -230,6 +255,30 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
         </ToastProvider>
       </AstryxLocaleProvider>
     </LocaleProvider>
+  );
+}
+
+function nextSideChatOrdinal(tabs: readonly SessionWorkbarTab[]): number {
+  return (
+    tabs.reduce(
+      (highest, tab, index) =>
+        tab.kind === 'side-chat'
+          ? Math.max(highest, tab.ordinal ?? index + 1)
+          : highest,
+      0,
+    ) + 1
+  );
+}
+
+function nextTerminalOrdinal(tabs: readonly SessionWorkbarTab[]): number {
+  return (
+    tabs.reduce(
+      (highest, tab, index) =>
+        tab.kind === 'terminal'
+          ? Math.max(highest, tab.ordinal ?? index + 1)
+          : highest,
+      0,
+    ) + 1
   );
 }
 
@@ -312,7 +361,7 @@ function AppShellContent({
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   // P3: session ids with a live embedded-browser view. The right-side
   // BrowserPanel mounts only for these, so ordinary chats reserve no space.
-  const [liveBrowserSessionIds, setLiveBrowserSessionIds] = useState<string[]>([]);
+  const [, setLiveBrowserSessionIds] = useState<string[]>([]);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
@@ -387,6 +436,9 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
+  const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
+  const terminalPanelCopy = desktopConversationCopy.terminalPanel;
+  const workbarCopy = desktopConversationCopy.workbar;
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;
@@ -508,12 +560,24 @@ function AppShellContent({
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
   const sessionSideNavHandleRef = useRef<SideNavImperativeCollapseHandle | null>(null);
-  // Codex-style quote side panel: a companion (fork of the main session) opened
-  // from text selections in the transcript, surfaced as a transient workbar tab.
-  // `quotes` accumulates excerpts staged for the next follow-up — selecting more
-  // text adds to the SAME panel rather than opening a new one; `sourceSessionId`
-  // pins it to the main session the companion forks from.
-  const [quotePanel, setQuotePanel] = useState<QuoteCompanionPanelState | null>(null);
+  // Codex-style side conversations: each workbar tab owns a separate transient
+  // read-only fork, composer draft, quote queue, and cleanup lifecycle.
+  const [quotePanels, setQuotePanels] = useState<QuoteCompanionPanelState[]>([]);
+  const [sideChatContentPanelIds, setSideChatContentPanelIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [sideChatPreparingPanelIds, setSideChatPreparingPanelIds] =
+    useState<ReadonlySet<string>>(() => new Set());
+  const [sideChatActivePanelIds, setSideChatActivePanelIds] =
+    useState<ReadonlySet<string>>(() => new Set());
+  const [pendingSideChatClose, setPendingSideChatClose] =
+    useState<Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>>(
+      [],
+    );
+  const [skipSideChatCloseConfirmation, setSkipSideChatCloseConfirmation] =
+    useState(
+      () => safeLocalStorageGet(SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY) === 'true',
+    );
   // Created companion forks stay hidden until authoritative cleanup succeeds or
   // a later authoritative session list confirms they are gone. A set preserves
   // earlier failed cleanups when another companion opens.
@@ -1212,20 +1276,409 @@ function AppShellContent({
     setSessionListCollapsed,
     workbarCollapsed,
     setWorkbarCollapsed,
+    bottomPanelOpen,
+    setBottomPanelOpen,
     workbarWidth,
     workbarResizable,
-    workbarTab,
-    setWorkbarTab,
+    bottomPanelHeight,
+    bottomPanelResizable,
+    workbarPanelsState,
+    openWorkbarTab,
+    openDynamicWorkbarTab,
+    activateWorkbarTab,
+    closeWorkbarTab,
+    closeWorkbarTabs,
+    reorderWorkbarTab,
+    moveWorkbarTab,
+    moveWorkbarTabToPanel,
+    titleWorkbarTab,
+    pinWorkbarTab,
+    openWorkbarLauncher,
   } = useShellLayout();
+  const workbarPanelsStateRef = useRef(workbarPanelsState);
+  workbarPanelsStateRef.current = workbarPanelsState;
 
-  // The companion panel unmounts (and its fork is removed) when the workbar
-  // collapses or the active session moves off the panel's source; clear the
-  // stale panel state too, so returning doesn't reopen a blank companion tab.
+  const revealWorkbarLauncher = useCallback(() => {
+    setWorkbarCollapsed(false);
+    openWorkbarLauncher('right');
+  }, [openWorkbarLauncher, setWorkbarCollapsed]);
+
+  const openSideConversation = useCallback((initialPrompt?: string) => {
+    const sourceSessionId = activeIdRef.current;
+    if (!sourceSessionId) return;
+    const panel = openCompanionPanel(null, {
+      sourceSessionId,
+      initialPrompt,
+      newId: () => crypto.randomUUID(),
+    });
+    setQuotePanels((current) => [...current, panel]);
+    setSideChatPreparingPanelIds((current) => new Set(current).add(panel.id));
+    openDynamicWorkbarTab({
+      id: `side-chat:${panel.id}`,
+      kind: 'side-chat',
+      title: sideChatTitleFromPrompt(initialPrompt ?? ''),
+      ordinal: nextSideChatOrdinal([
+        ...workbarPanelsState.right.tabs,
+        ...workbarPanelsState.bottom.tabs,
+      ]),
+    });
+    setWorkbarCollapsed(false);
+  }, [
+    openDynamicWorkbarTab,
+    setWorkbarCollapsed,
+    workbarPanelsState,
+  ]);
+  const openSideConversationRef = useRef(openSideConversation);
+  openSideConversationRef.current = openSideConversation;
+  const sideChatSlashCommands = useMemo<
+    readonly ComposerSlashCommandOption[]
+  >(
+    () =>
+      activeId
+        ? [
+            {
+              id: 'side',
+              name: workbarCopy.sideChat,
+              description: workbarCopy.launcher.sideChat,
+              keywords: ['side', 'btw', '侧聊', '追问'],
+              Icon: MessageCircleQuestion,
+              onSelect: () => openSideConversationRef.current(),
+            },
+          ]
+        : [],
+    [activeId, workbarCopy],
+  );
   useEffect(() => {
-    if (quotePanel && (workbarCollapsed || quotePanel.sourceSessionId !== activeId)) {
-      setQuotePanel(null);
+    return window.maka.artifacts.subscribeChanges((event) => {
+      if (
+        event.reason !== 'created' ||
+        event.sessionId !== activeIdRef.current ||
+        navSelectionRef.current.section !== 'sessions'
+      ) {
+        return;
+      }
+      const expectedSessionId = event.sessionId;
+      void window.maka.artifacts
+        .get(expectedSessionId, event.artifactId)
+        .then((artifact) => {
+          if (
+            !artifact ||
+            activeIdRef.current !== expectedSessionId ||
+            navSelectionRef.current.section !== 'sessions' ||
+            filterUserVisibleArtifacts([artifact]).length === 0
+          ) {
+            return;
+          }
+          const filesTabId = staticSessionWorkbarTabId('files');
+          const current = workbarPanelsStateRef.current;
+          const placement = current.right.tabs.some(
+            (tab) => tab.id === filesTabId,
+          )
+            ? 'right'
+            : current.bottom.tabs.some((tab) => tab.id === filesTabId)
+              ? 'bottom'
+              : 'right';
+          openDynamicWorkbarTab(
+            {
+              id: filesTabId,
+              kind: 'files',
+              preview: true,
+            },
+            placement,
+          );
+          if (placement === 'right') setWorkbarCollapsed(false);
+          else setBottomPanelOpen(true);
+        })
+        .catch(() => {});
+    });
+  }, [
+    openDynamicWorkbarTab,
+    setBottomPanelOpen,
+    setWorkbarCollapsed,
+  ]);
+
+  const openSideConversationWithQuote = useCallback(
+    (quote: QuoteRef) => {
+      if (!activeId) return;
+      const activeSideChat = findPreferredSideChatWorkbarTab(workbarPanelsState);
+      const activeSideChatTab = activeSideChat?.tab;
+      const activePanelId = activeSideChatTab?.id.slice('side-chat:'.length);
+      const activePanel = quotePanels.find(
+        (panel) =>
+          panel.id === activePanelId && panel.sourceSessionId === activeId,
+      );
+      const panel = stageCompanionQuote(
+        activePanel ?? null,
+        {
+          sourceSessionId: activeId,
+          quote,
+          newId: () => crypto.randomUUID(),
+        },
+      );
+      setQuotePanels((current) =>
+        activePanel
+          ? current.map((candidate) => (candidate.id === panel.id ? panel : candidate))
+          : [...current, panel],
+      );
+      if (!activePanel) {
+        setSideChatPreparingPanelIds((current) => new Set(current).add(panel.id));
+      }
+      const targetPlacement =
+        activeSideChat?.placement ?? 'right';
+      openDynamicWorkbarTab(
+        {
+          id: `side-chat:${panel.id}`,
+          kind: 'side-chat',
+          ordinal:
+            activeSideChatTab?.ordinal ??
+            nextSideChatOrdinal([
+              ...workbarPanelsState.right.tabs,
+              ...workbarPanelsState.bottom.tabs,
+            ]),
+        },
+        targetPlacement,
+      );
+      if (targetPlacement === 'right') setWorkbarCollapsed(false);
+      else setBottomPanelOpen(true);
+    },
+    [
+      activeId,
+      openDynamicWorkbarTab,
+      quotePanels,
+      setBottomPanelOpen,
+      setWorkbarCollapsed,
+      workbarPanelsState,
+    ],
+  );
+
+  const requestOpenWorkbarTab = useCallback(
+    (placement: SessionWorkbarPlacement, kind: SessionWorkbarTabKind) => {
+      if (kind === 'terminal') {
+        if (!activeId) return;
+        const ownerSessionId = activeId;
+        const tabs = [
+          ...workbarPanelsState.right.tabs,
+          ...workbarPanelsState.bottom.tabs,
+        ];
+        void window.maka.shellRuns
+          .start(ownerSessionId)
+          .then((update) => {
+            const ref = update.result.ref;
+            openDynamicWorkbarTab(
+              {
+                id: terminalSessionWorkbarTabId(ref),
+                kind: 'terminal',
+                ordinal: nextTerminalOrdinal(tabs),
+                resourceRef: ref,
+                ownerSessionId,
+              },
+              placement,
+            );
+            if (placement === 'right') setWorkbarCollapsed(false);
+            else setBottomPanelOpen(true);
+          })
+          .catch((error) => {
+            toastApi.error(
+              terminalPanelCopy.startFailed,
+              localizedShellErrorMessage(
+                error,
+                terminalPanelCopy.startFailed,
+                uiLocale,
+              ),
+            );
+          });
+        return;
+      }
+      if (kind === 'side-chat') {
+        if (!activeId) return;
+        const panel = openCompanionPanel(null, {
+          sourceSessionId: activeId,
+          newId: () => crypto.randomUUID(),
+        });
+        setQuotePanels((current) => [...current, panel]);
+        setSideChatPreparingPanelIds((current) => new Set(current).add(panel.id));
+        openDynamicWorkbarTab(
+          {
+            id: `side-chat:${panel.id}`,
+            kind: 'side-chat',
+            ordinal: nextSideChatOrdinal([
+              ...workbarPanelsState.right.tabs,
+              ...workbarPanelsState.bottom.tabs,
+            ]),
+          },
+          placement,
+        );
+        if (placement === 'right') setWorkbarCollapsed(false);
+        else setBottomPanelOpen(true);
+        return;
+      }
+      openWorkbarTab(kind, placement);
+      if (placement === 'right') setWorkbarCollapsed(false);
+      else setBottomPanelOpen(true);
+    },
+    [
+      activeId,
+      openDynamicWorkbarTab,
+      openWorkbarTab,
+      setBottomPanelOpen,
+      setWorkbarCollapsed,
+      terminalPanelCopy,
+      toastApi,
+      uiLocale,
+      workbarPanelsState,
+    ],
+  );
+
+  const closeWorkbarTabsImmediately = useCallback(
+    (
+      placement: SessionWorkbarPlacement,
+      tabs: readonly SessionWorkbarTab[],
+    ) => {
+      if (tabs.length === 0) return;
+      for (const tab of tabs) {
+        const ref = terminalRefFromWorkbarTab(tab);
+        if (!ref || !tab.ownerSessionId) continue;
+        void window.maka.shellRuns
+          .stop({ sessionId: tab.ownerSessionId, ref })
+          .catch(() => {});
+      }
+      closeWorkbarTabs(placement, tabs.map((tab) => tab.id));
+      const panelIds = new Set(
+        tabs
+          .filter((tab) => tab.kind === 'side-chat')
+          .map((tab) => tab.id.slice('side-chat:'.length)),
+      );
+      if (panelIds.size === 0) return;
+      setQuotePanels((current) =>
+        current.filter((panel) => !panelIds.has(panel.id)),
+      );
+      setSideChatContentPanelIds((current) => {
+        const next = new Set(
+          [...current].filter((panelId) => !panelIds.has(panelId)),
+        );
+        return next.size === current.size ? current : next;
+      });
+      setSideChatPreparingPanelIds((current) => {
+        const next = new Set(
+          [...current].filter((panelId) => !panelIds.has(panelId)),
+        );
+        return next.size === current.size ? current : next;
+      });
+      setSideChatActivePanelIds((current) => {
+        const next = new Set(
+          [...current].filter((panelId) => !panelIds.has(panelId)),
+        );
+        return next.size === current.size ? current : next;
+      });
+    },
+    [closeWorkbarTabs],
+  );
+
+  useEffect(() => {
+    const stale = (['right', 'bottom'] as const).flatMap((placement) =>
+      workbarPanelsState[placement].tabs
+        .filter(
+          (tab) =>
+            tab.kind === 'terminal' &&
+            tab.ownerSessionId !== activeId,
+        )
+        .map((tab) => ({ placement, tab })),
+    );
+    for (const placement of ['right', 'bottom'] as const) {
+      const tabs = stale
+        .filter((candidate) => candidate.placement === placement)
+        .map((candidate) => candidate.tab);
+      closeWorkbarTabsImmediately(placement, tabs);
     }
-  }, [quotePanel, workbarCollapsed, activeId]);
+  }, [activeId, closeWorkbarTabsImmediately, workbarPanelsState]);
+
+  const closeWorkbarTabsAndSurfaces = useCallback(
+    (
+      placement: SessionWorkbarPlacement,
+      tabs: readonly SessionWorkbarTab[],
+    ) => {
+      const closableTabs = tabs.filter(
+        (tab) =>
+          tab.kind !== 'side-chat' ||
+          !sideChatPreparingPanelIds.has(tab.id.slice('side-chat:'.length)),
+      );
+      if (closableTabs.length === 0) return;
+      const needsConfirmation =
+        !skipSideChatCloseConfirmation &&
+        closableTabs.some(
+          (tab) =>
+            tab.kind === 'side-chat' &&
+            sideChatContentPanelIds.has(tab.id.slice('side-chat:'.length)),
+        );
+      if (needsConfirmation) {
+        setPendingSideChatClose(
+          closableTabs.map((tab) => ({ placement, tab })),
+        );
+        return;
+      }
+      closeWorkbarTabsImmediately(placement, closableTabs);
+    },
+    [
+      closeWorkbarTabsImmediately,
+      sideChatContentPanelIds,
+      sideChatPreparingPanelIds,
+      skipSideChatCloseConfirmation,
+    ],
+  );
+
+  const closeWorkbarTabAndSurface = useCallback(
+    (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) =>
+      closeWorkbarTabsAndSurfaces(placement, [tab]),
+    [closeWorkbarTabsAndSurfaces],
+  );
+
+  const toggleWorkbar = useCallback(() => {
+    if (workbarCollapsed) {
+      setWorkbarCollapsed(false);
+      if (workbarPanelsState.right.tabs.length === 0) {
+        openWorkbarLauncher('right');
+      }
+      return;
+    }
+    setWorkbarCollapsed(true);
+  }, [
+    openWorkbarLauncher,
+    setWorkbarCollapsed,
+    workbarCollapsed,
+    workbarPanelsState.right.tabs.length,
+  ]);
+
+  // Side chats survive a panel collapse. They are cleaned up only when their
+  // tab closes or when navigation leaves the owning source session.
+  useEffect(() => {
+    const stalePanels = quotePanels.filter(
+      (panel) => panel.sourceSessionId !== activeId,
+    );
+    if (stalePanels.length === 0) return;
+    const staleIds = new Set(stalePanels.map((panel) => panel.id));
+    for (const panel of stalePanels) {
+      const tabId = `side-chat:${panel.id}`;
+      const placement = workbarPanelsState.right.tabs.some((tab) => tab.id === tabId)
+        ? 'right'
+        : 'bottom';
+      closeWorkbarTab(placement, tabId);
+    }
+    setQuotePanels((current) =>
+      current.filter((panel) => !staleIds.has(panel.id)),
+    );
+    setSideChatContentPanelIds((current) => {
+      const next = new Set([...current].filter((panelId) => !staleIds.has(panelId)));
+      return next.size === current.size ? current : next;
+    });
+    setSideChatPreparingPanelIds((current) => {
+      const next = new Set([...current].filter((panelId) => !staleIds.has(panelId)));
+      return next.size === current.size ? current : next;
+    });
+    setSideChatActivePanelIds((current) => {
+      const next = new Set([...current].filter((panelId) => !staleIds.has(panelId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [quotePanels, activeId, closeWorkbarTab, workbarPanelsState]);
 
   function isAutomationsSurfaceActive(): boolean {
     return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'plan-reminders';
@@ -1398,7 +1851,7 @@ function AppShellContent({
     setSearchModalOpen,
     setSessionListCollapsed,
     setWorkbarCollapsed,
-    setWorkbarTab,
+    openWorkbarTab,
     setThemePref,
     setUiLocaleOverride,
   });
@@ -1485,6 +1938,7 @@ function AppShellContent({
     const revisionSend = Boolean(
       revision && activeIdRef.current === revision.draftSessionId,
     );
+    const sideChatCommand = parseSideChatCommand(text);
     const swarmCommand = parseSwarmCommand(text);
     const graphCommand = parseGraphCommand(text);
     if (
@@ -1503,7 +1957,7 @@ function AppShellContent({
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
-      if (text.trim() === '/compact' || swarmCommand || graphCommand) {
+      if (text.trim() === '/compact' || sideChatCommand || swarmCommand || graphCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
@@ -1527,6 +1981,28 @@ function AppShellContent({
         }
         return false;
       }
+    }
+    if (sideChatCommand) {
+      if (!activeIdRef.current) {
+        toastApi.info(
+          shellCopy.sideChatUnavailableTitle,
+          shellCopy.sideChatUnavailableDescription,
+        );
+        return false;
+      }
+      if (
+        pendingAttachments.length > 0 ||
+        pendingQuotes.length > 0 ||
+        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+      ) {
+        toastApi.info(
+          shellCopy.sideChatContextPendingTitle,
+          shellCopy.sideChatContextPendingDescription,
+        );
+        return false;
+      }
+      openSideConversation(sideChatCommand.prompt || undefined);
+      return true;
     }
     if (swarmCommand) {
       if (swarmCommand.kind === 'status') {
@@ -1638,6 +2114,24 @@ function AppShellContent({
     return ok;
   }
 
+  async function steerWithText(text: string): Promise<boolean> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId || !text.trim()) return false;
+    try {
+      const outcome = await window.maka.sessions.steer(sessionId, text.trim());
+      return outcome.kind === 'queued';
+    } catch (error) {
+      if (activeIdRef.current === sessionId) {
+        const copy = getDesktopConversationCopy(uiLocale).actions;
+        toastApi.error(
+          copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
+      }
+      return false;
+    }
+  }
+
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
@@ -1688,6 +2182,45 @@ function AppShellContent({
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
+
+  useEffect(() => {
+    const handleWorkbarShortcut = (event: KeyboardEvent) => {
+      if (
+        hasModalOpen ||
+        navSelectionRef.current.section !== 'sessions' ||
+        !activeId
+      ) {
+        return;
+      }
+      const primary = navigator.platform.toLowerCase().includes('mac')
+        ? event.metaKey
+        : event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey && event.shiftKey && !event.altKey && key === 'g') {
+        event.preventDefault();
+        requestOpenWorkbarTab('right', 'review');
+      } else if (
+        event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        (key === '`' || event.code === 'Backquote')
+      ) {
+        event.preventDefault();
+        requestOpenWorkbarTab('right', 'terminal');
+      } else if (primary && !event.altKey && !event.shiftKey && key === 't') {
+        event.preventDefault();
+        requestOpenWorkbarTab('right', 'browser');
+      } else if (primary && !event.altKey && !event.shiftKey && key === 'p') {
+        event.preventDefault();
+        requestOpenWorkbarTab('right', 'files');
+      } else if (primary && event.altKey && !event.shiftKey && key === 's') {
+        event.preventDefault();
+        requestOpenWorkbarTab('right', 'side-chat');
+      }
+    };
+    window.addEventListener('keydown', handleWorkbarShortcut, true);
+    return () => window.removeEventListener('keydown', handleWorkbarShortcut, true);
+  }, [activeId, hasModalOpen, requestOpenWorkbarTab]);
 
   useAppShellNavRefSync({
     navSelection,
@@ -1740,7 +2273,9 @@ function AppShellContent({
     sessionListWidth,
     workbarCollapsed,
     workbarWidth,
-    workbarTab,
+    bottomPanelOpen,
+    bottomPanelHeight,
+    workbarPanelsState,
     themePalette,
     themePref,
   });
@@ -1935,6 +2470,7 @@ function AppShellContent({
     openPlanReminderForm,
     openProjectFolder,
     openSessionInChat,
+    openSideConversation,
     openSettings,
     openSettingsSection,
     openSkillsFolder,
@@ -2039,7 +2575,8 @@ function AppShellContent({
           <AppShellWorkspaceTopActions
             workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
             workbarCollapsed={workbarCollapsed}
-            onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
+            onOpenWorkbarLauncher={revealWorkbarLauncher}
+            onToggleWorkbar={toggleWorkbar}
           />
         )}
       </header>
@@ -2218,6 +2755,7 @@ function AppShellContent({
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendWithAttachments}
+                  onSteer={steerWithText}
                   onStop={stop}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
@@ -2230,6 +2768,7 @@ function AppShellContent({
                       : undefined
                   }
                   mentionSkills={mentionSkills}
+                  slashCommands={sideChatSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
@@ -2433,19 +2972,7 @@ function AppShellContent({
                           text: input.text,
                           sourceTurnId: input.turnId,
                         };
-                        // Accumulate onto the open panel for this session rather
-                        // than spawning a new one; otherwise start a fresh panel.
-                        setQuotePanel((prev) =>
-                          stageCompanionQuote(prev, {
-                            sourceSessionId: activeId,
-                            quote,
-                            newId: () => crypto.randomUUID(),
-                          }),
-                        );
-                        // Surface it inside the session workbar (as a tab) rather
-                        // than a second right column — open the bar on the quote tab.
-                        setWorkbarCollapsed(false);
-                        setWorkbarTab('quote');
+                        openSideConversationWithQuote(quote);
                       }
                     : undefined
                 }
@@ -2495,27 +3022,101 @@ function AppShellContent({
             {navSelection.section === 'sessions' && activeId && (
               <ChatWorkbar
                 activeId={activeId}
-                collapsed={workbarCollapsed}
-                browserLive={liveBrowserSessionIds.includes(activeId)}
+                rightCollapsed={workbarCollapsed}
+                bottomOpen={bottomPanelOpen}
                 hidden={hasModalOpen}
-                width={workbarWidth}
-                onDismiss={() => setWorkbarCollapsed(true)}
-                activeTab={workbarTab}
-                onActiveTabChange={setWorkbarTab}
-                workbarResizable={workbarResizable}
-                quote={
-                  quotePanel && quotePanel.sourceSessionId === activeId ? quotePanel : null
-                }
-                onClearQuote={() => setQuotePanel(null)}
+                rightWidth={workbarWidth}
+                bottomHeight={bottomPanelHeight}
+                onDismissPanel={(placement) => {
+                  if (placement === 'right') setWorkbarCollapsed(true);
+                  else setBottomPanelOpen(false);
+                }}
+                panelsState={workbarPanelsState}
+                onActivateTab={activateWorkbarTab}
+                onCloseTab={closeWorkbarTabAndSurface}
+                onCloseTabs={closeWorkbarTabsAndSurfaces}
+                onReorderTab={reorderWorkbarTab}
+                onMoveTab={moveWorkbarTab}
+                onMoveTabToPanel={moveWorkbarTabToPanel}
+                onPinTab={pinWorkbarTab}
+                onOpenLauncher={(placement) => {
+                  openWorkbarLauncher(placement);
+                  if (placement === 'right') setWorkbarCollapsed(false);
+                  else setBottomPanelOpen(true);
+                }}
+                onRequestOpenTab={requestOpenWorkbarTab}
+                rightResizable={workbarResizable}
+                bottomResizable={bottomPanelResizable}
+                quotes={quotePanels.filter(
+                  (panel) => panel.sourceSessionId === activeId,
+                )}
                 onQuotesConsumed={(snapshot) =>
-                  setQuotePanel((prev) => consumeCompanionQuoteSnapshot(prev, snapshot))
+                  setQuotePanels((current) =>
+                    current.map((panel) =>
+                      panel.id === snapshot.panelId
+                        ? consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel
+                        : panel,
+                    ),
+                  )
                 }
                 onRemoveQuote={(target) =>
-                  setQuotePanel((prev) => removeStagedCompanionQuote(prev, target))
+                  setQuotePanels((current) =>
+                    current.map((panel) =>
+                      panel.id === target.panelId
+                        ? removeStagedCompanionQuote(panel, target) ?? panel
+                        : panel,
+                    ),
+                  )
                 }
                 onForkVisibilityChange={onCompanionForkVisibilityChange}
+                onContentStateChange={(panelId, hasContent) =>
+                  setSideChatContentPanelIds((current) => {
+                    if (current.has(panelId) === hasContent) return current;
+                    const next = new Set(current);
+                    if (hasContent) next.add(panelId);
+                    else next.delete(panelId);
+                    return next;
+                  })
+                }
+                preparingSideChatPanelIds={sideChatPreparingPanelIds}
+                activeSideChatPanelIds={sideChatActivePanelIds}
+                onPreparingStateChange={(panelId, preparing) =>
+                  setSideChatPreparingPanelIds((current) => {
+                    if (current.has(panelId) === preparing) return current;
+                    const next = new Set(current);
+                    if (preparing) next.add(panelId);
+                    else next.delete(panelId);
+                    return next;
+                  })
+                }
+                onInitialPromptStarted={(panelId) =>
+                  setQuotePanels((current) =>
+                    current.map((panel) =>
+                      panel.id === panelId
+                        ? consumeCompanionInitialPrompt(panel, panelId) ?? panel
+                        : panel,
+                    ),
+                  )
+                }
+                onPromptAccepted={(panelId, prompt) => {
+                  const title = sideChatTitleFromPrompt(prompt);
+                  if (title) {
+                    titleWorkbarTab(`side-chat:${panelId}`, title);
+                  }
+                }}
+                onActivityStateChange={(panelId, active) =>
+                  setSideChatActivePanelIds((current) => {
+                    if (current.has(panelId) === active) return current;
+                    const next = new Set(current);
+                    if (active) next.add(panelId);
+                    else next.delete(panelId);
+                    return next;
+                  })
+                }
                 sourceSession={activeSessionForView}
                 modelChoices={chatModelChoices}
+                mentionSkills={mentionSkills}
+                onSearchMentionFiles={searchMentionFiles}
               />
             )}
           </div>
@@ -2529,6 +3130,34 @@ function AppShellContent({
           contextKey={activeId}
         />
       )}
+      <SideChatCloseConfirmation
+        key={pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed'}
+        open={pendingSideChatClose.length > 0}
+        sideChatCount={
+          pendingSideChatClose.filter(({ tab }) => tab.kind === 'side-chat').length
+        }
+        onCancel={() => setPendingSideChatClose([])}
+        onConfirm={(skipFutureConfirmations) => {
+          const pending = pendingSideChatClose;
+          if (pending.length === 0) return;
+          if (skipFutureConfirmations) {
+            setSkipSideChatCloseConfirmation(true);
+            safeLocalStorageSet(SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY, 'true');
+          }
+          setPendingSideChatClose([]);
+          const byPlacement = {
+            right: pending
+              .filter(({ placement }) => placement === 'right')
+              .map(({ tab }) => tab),
+            bottom: pending
+              .filter(({ placement }) => placement === 'bottom')
+              .map(({ tab }) => tab),
+          };
+          closeWorkbarTabsImmediately('right', byPlacement.right);
+          closeWorkbarTabsImmediately('bottom', byPlacement.bottom);
+        }}
+      />
+
       <AppShellOverlays
         settingsOpen={settingsOpen}
         connections={connections}

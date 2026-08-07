@@ -62,6 +62,7 @@ export interface AppShellCommandListOptions {
   captureComposerImportOwner: () => ComposerImportOwner;
   composerRef: RefBox<ComposerAppendHandle | null>;
   createSession: () => void;
+  openSideConversation: () => void;
   startModeSession: (mode: SessionStartMode) => Promise<boolean>;
   isComposerImportOwnerActive: (owner: ComposerImportOwner) => boolean;
   openHelp: () => void;
@@ -101,6 +102,7 @@ export function buildAppShellCommandList(
     connections: options.connections,
     defaultSlug: options.defaultConnection,
     onNewChat: () => optionsRef.current.createSession(),
+    onOpenSideChat: () => optionsRef.current.openSideConversation(),
     onStartDeepResearch: async () => {
       const { startModeSession } = optionsRef.current;
       await startModeSession("deep_research");

@@ -9,6 +9,7 @@ export interface QuoteCompanionPanelState {
   id: string;
   sourceSessionId: string;
   quotes: StagedCompanionQuote[];
+  initialPrompt?: string;
 }
 
 /**
@@ -28,6 +29,34 @@ export interface CompanionQuoteTarget {
   quoteId: string;
 }
 
+export function openCompanionPanel(
+  current: QuoteCompanionPanelState | null,
+  input: {
+    sourceSessionId: string;
+    initialPrompt?: string;
+    newId: () => string;
+  },
+): QuoteCompanionPanelState {
+  if (current?.sourceSessionId === input.sourceSessionId) return current;
+  return {
+    id: input.newId(),
+    sourceSessionId: input.sourceSessionId,
+    quotes: [],
+    ...(input.initialPrompt ? { initialPrompt: input.initialPrompt } : {}),
+  };
+}
+
+export function consumeCompanionInitialPrompt(
+  current: QuoteCompanionPanelState | null,
+  panelId: string,
+): QuoteCompanionPanelState | null {
+  if (!current || current.id !== panelId || current.initialPrompt === undefined) {
+    return current;
+  }
+  const { initialPrompt: _initialPrompt, ...next } = current;
+  return next;
+}
+
 export function stageCompanionQuote(
   current: QuoteCompanionPanelState | null,
   input: {
@@ -41,8 +70,7 @@ export function stageCompanionQuote(
     return { ...current, quotes: [...current.quotes, staged] };
   }
   return {
-    id: input.newId(),
-    sourceSessionId: input.sourceSessionId,
+    ...openCompanionPanel(null, input),
     quotes: [staged],
   };
 }
