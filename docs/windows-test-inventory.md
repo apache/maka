@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 30 |
-| portable-candidate | 22 |
+| portable-candidate | 24 |
 | platform-contract | 16 |
 
-Total Windows-excluded declarations: **68**
+Total Windows-excluded declarations: **70**
 
 ## Inventory
 
@@ -77,6 +77,8 @@ Total Windows-excluded declarations: **68**
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects a source tree containing a non-UTF-8 Git path | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-workspace-owner.test.ts` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
 | portable-candidate | `packages/storage/src/__tests__/memory-bundle-store.test.ts` rejects a symbolic-link Memory parent without reading or writing outside the root | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/pet-pack-store.test.ts` rejects a store root redirected outside the state root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' \|\| (typeof process.getuid === 'function' && process.getuid() === 0)` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32'` |
