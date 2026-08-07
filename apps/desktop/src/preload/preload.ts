@@ -124,6 +124,12 @@ const makaBridge = {
     list() {
       return ipcRenderer.invoke('pets:list');
     },
+    getSelection() {
+      return ipcRenderer.invoke('pets:getSelection');
+    },
+    select(petId: string | null) {
+      return ipcRenderer.invoke('pets:select', petId);
+    },
     readSpriteSheet(petId: string) {
       return ipcRenderer.invoke('pets:readSpriteSheet', petId);
     },

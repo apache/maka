@@ -1137,7 +1137,7 @@ function registerIpc(): void {
     getSkillSelectionReport: systemPromptService.getLastSkillSelectionReport,
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
   });
-  registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController });
+  registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
   registerWorkspaceSearchIpc({ getProjectRoot: resolveProjectRootForContext });
   registerPlanReminderIpc({ planReminders, getWorkspacePrivacyContext });
   registerAgentGraphIpc({

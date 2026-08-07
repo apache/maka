@@ -364,9 +364,17 @@ function toClientOwnedPatch(
   patch: UpdateAppSettingsInput,
 ): UpdateAppSettingsInput {
   const personalization =
-    patch.personalization?.uiLocale === undefined
+    patch.personalization?.uiLocale === undefined &&
+    patch.personalization?.selectedPetId === undefined
       ? undefined
-      : { uiLocale: patch.personalization.uiLocale };
+      : {
+          ...(patch.personalization.uiLocale === undefined
+            ? {}
+            : { uiLocale: patch.personalization.uiLocale }),
+          ...(patch.personalization.selectedPetId === undefined
+            ? {}
+            : { selectedPetId: patch.personalization.selectedPetId }),
+        };
   return {
     ...(patch.botChat ? { botChat: patch.botChat } : {}),
     ...(patch.usage ? { usage: patch.usage } : {}),

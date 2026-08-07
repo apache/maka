@@ -238,7 +238,7 @@ mcpManager.onChange(() => {
 });
 
 registerPersistentClientIpc();
-registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController });
+registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
 registerBrowserIpc({ mainWindowController });
 registerNotificationsIpc({
   ipcMain,

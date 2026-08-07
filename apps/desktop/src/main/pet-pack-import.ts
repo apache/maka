@@ -11,6 +11,7 @@ import {
   PetPackStoreError,
   type PetPackStore,
 } from '@maka/storage/pet-pack-store';
+import type { SettingsStore } from '@maka/storage';
 import type { createMainWindowController } from './main-window.js';
 
 type MainWindowController = Pick<
@@ -44,6 +45,13 @@ export type PetPackSpriteSheetResult =
 export type PetPackRemoveResult =
   | { readonly ok: true; readonly removed: boolean }
   | { readonly ok: false; readonly reason: 'invalid_id' | 'remove_failed' };
+
+export type PetPackSelectResult =
+  | { readonly ok: true; readonly selectedPetId: string | null }
+  | {
+      readonly ok: false;
+      readonly reason: 'invalid_id' | 'not_found' | 'read_failed' | 'write_failed';
+    };
 
 export class PetPackImportError extends Error {
   readonly reason: Exclude<PetPackImportFailureReason, 'cancelled'>;
@@ -93,6 +101,7 @@ export function registerPetPackIpc(input: {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
+  readonly settingsStore: Pick<SettingsStore, 'get' | 'update'>;
   readonly store?: PetPackStore;
   readonly now?: () => number;
 }): void {
@@ -100,6 +109,44 @@ export function registerPetPackIpc(input: {
   const now = input.now ?? Date.now;
 
   input.ipcMain.handle('pets:list', () => store.list());
+  input.ipcMain.handle('pets:getSelection', () =>
+    resolveSelectedPetId(input.settingsStore, store),
+  );
+  input.ipcMain.handle(
+    'pets:select',
+    async (_event, petId: unknown): Promise<PetPackSelectResult> => {
+      if (petId !== null && typeof petId !== 'string') {
+        return { ok: false, reason: 'invalid_id' };
+      }
+      if (petId !== null) {
+        try {
+          if (!(await store.get(petId))) return { ok: false, reason: 'not_found' };
+        } catch (error) {
+          return {
+            ok: false,
+            reason:
+              error instanceof PetPackStoreError && error.code === 'invalid_id'
+                ? 'invalid_id'
+                : 'read_failed',
+          };
+        }
+      }
+      try {
+        const current = await input.settingsStore.get();
+        if (current.personalization.selectedPetId === petId) {
+          return { ok: true, selectedPetId: petId };
+        }
+        const settings = await input.settingsStore.update({
+          personalization: { selectedPetId: petId },
+        });
+        const selectedPetId = settings.personalization.selectedPetId;
+        emitChanged(input.mainWindowController, 'selected', selectedPetId, now());
+        return { ok: true, selectedPetId };
+      } catch {
+        return { ok: false, reason: 'write_failed' };
+      }
+    },
+  );
   input.ipcMain.handle(
     'pets:readSpriteSheet',
     async (_event, petId: unknown): Promise<PetPackSpriteSheetResult> => {
@@ -123,7 +170,10 @@ export function registerPetPackIpc(input: {
       if (typeof petId !== 'string') return { ok: false, reason: 'invalid_id' };
       try {
         const removed = await store.remove(petId);
-        if (removed) emitChanged(input.mainWindowController, 'removed', petId, now());
+        if (removed) {
+          await clearSelectedPetIfMatching(input.settingsStore, petId);
+          emitChanged(input.mainWindowController, 'removed', petId, now());
+        }
         return { ok: true, removed };
       } catch (error) {
         return {
@@ -161,6 +211,35 @@ export function registerPetPackIpc(input: {
   });
 }
 
+async function resolveSelectedPetId(
+  settingsStore: Pick<SettingsStore, 'get' | 'update'>,
+  store: PetPackStore,
+): Promise<string | null> {
+  const selectedPetId = (await settingsStore.get()).personalization.selectedPetId;
+  if (selectedPetId === null) return null;
+  try {
+    if (await store.get(selectedPetId)) return selectedPetId;
+  } catch {
+    return null;
+  }
+  await clearSelectedPetIfMatching(settingsStore, selectedPetId);
+  return null;
+}
+
+async function clearSelectedPetIfMatching(
+  settingsStore: Pick<SettingsStore, 'get' | 'update'>,
+  petId: string,
+): Promise<void> {
+  try {
+    const settings = await settingsStore.get();
+    if (settings.personalization.selectedPetId !== petId) return;
+    await settingsStore.update({ personalization: { selectedPetId: null } });
+  } catch {
+    // The library mutation already committed. Reads still fail closed while
+    // this stale selection points at a missing pack.
+  }
+}
+
 function spriteSheetFailureReason(
   error: unknown,
 ): Extract<PetPackSpriteSheetResult, { readonly ok: false }>['reason'] {
@@ -172,8 +251,8 @@ function spriteSheetFailureReason(
 
 function emitChanged(
   mainWindowController: MainWindowController,
-  reason: 'installed' | 'removed',
-  petId: string,
+  reason: 'installed' | 'removed' | 'selected',
+  petId: string | null,
   ts: number,
 ): void {
   mainWindowController.send('pets:changed', {

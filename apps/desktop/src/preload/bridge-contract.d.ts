@@ -202,8 +202,8 @@ export type WindowCommand = { id: 'newTask' | 'openSettings' | 'openHelp' };
 
 export interface PetPackChangedEvent {
   readonly type: 'pet_pack_changed';
-  readonly reason: 'installed' | 'removed';
-  readonly petId: string;
+  readonly reason: 'installed' | 'removed' | 'selected';
+  readonly petId: string | null;
   readonly ts: number;
 }
 
@@ -211,6 +211,14 @@ export interface MakaBridge {
 
   pets: {
     list(): Promise<PetPackManifestV1[]>;
+    getSelection(): Promise<string | null>;
+    select(petId: string | null): Promise<
+      | { ok: true; selectedPetId: string | null }
+      | {
+          ok: false;
+          reason: 'invalid_id' | 'not_found' | 'read_failed' | 'write_failed';
+        }
+    >;
     readSpriteSheet(petId: string): Promise<
       | { ok: true; mimeType: 'image/png' | 'image/webp'; bytes: Uint8Array }
       | {

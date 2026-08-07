@@ -22,6 +22,7 @@ import {
   type UiLocalePreference,
 } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
+import { isPetPackId } from './pet.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -184,6 +185,8 @@ export interface PersonalizationSettings {
    * stays for fixture tests. Defaults to `'auto'`.
    */
   uiLocale: UiLocalePreference;
+  /** User-selected custom PetPack. `null` keeps the pet surface disabled. */
+  selectedPetId: string | null;
 }
 
 /**
@@ -448,6 +451,7 @@ export function createDefaultSettings(): AppSettings {
       displayName: '',
       assistantTone: '',
       uiLocale: 'auto',
+      selectedPetId: null,
     },
     onboarding: {
       milestones: [],
@@ -494,6 +498,11 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
     personalization: {
       ...current.personalization,
       ...(patch.personalization ?? {}),
+      selectedPetId: normalizeSelectedPetId(
+        patch.personalization?.selectedPetId === undefined
+          ? current.personalization.selectedPetId
+          : patch.personalization.selectedPetId,
+      ),
     },
     onboarding: {
       ...current.onboarding,
@@ -602,6 +611,7 @@ export function normalizeSettings(input: unknown): AppSettings {
       uiLocale: isUiLocalePreference(base.personalization.uiLocale)
         ? base.personalization.uiLocale
         : 'auto',
+      selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),
     onboarding: {
@@ -633,6 +643,10 @@ export function normalizeSettings(input: unknown): AppSettings {
     },
     subagents: normalizeSubagentSettings(base.subagents),
   };
+}
+
+function normalizeSelectedPetId(value: unknown): string | null {
+  return isPetPackId(value) ? value : null;
 }
 
 function normalizeWorkspaceInstructionsSettings(

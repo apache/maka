@@ -142,6 +142,33 @@ describe('appearance settings boundaries', () => {
   });
 });
 
+describe('custom pet selection settings', () => {
+  test('stays disabled by default and preserves a canonical user selection', () => {
+    const defaults = createDefaultSettings();
+    expect(defaults.personalization.selectedPetId).toBe(null);
+
+    const selected = mergeSettings(defaults, {
+      personalization: { selectedPetId: 'likun.maodie' },
+    });
+    expect(selected.personalization.selectedPetId).toBe('likun.maodie');
+    expect(normalizeSettings(selected).personalization.selectedPetId).toBe('likun.maodie');
+  });
+
+  test('fails closed for missing, unsafe, or malformed persisted selections', () => {
+    for (const selectedPetId of [undefined, '../maodie', 'MAODIE', '', 42, {}]) {
+      const normalized = normalizeSettings({
+        personalization: {
+          displayName: '',
+          assistantTone: '',
+          uiLocale: 'auto',
+          selectedPetId,
+        },
+      });
+      expect(normalized.personalization.selectedPetId).toBe(null);
+    }
+  });
+});
+
 test('boolean settings default, normalize, and merge through their shared boundary', () => {
   const defaults = createDefaultSettings();
   expect(defaults.notifications.runComplete).toBe(true);

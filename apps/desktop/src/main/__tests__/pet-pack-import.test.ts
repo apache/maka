@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { PET_PACK_SCHEMA_V1 } from '@maka/core/pet';
+import { createSettingsStore } from '@maka/storage';
 import { createPetPackStore } from '@maka/storage/pet-pack-store';
 import {
   importPetPackFromDirectory,
@@ -153,6 +154,7 @@ test('IPC imports only the native picker result and returns stable envelopes', a
         showOpenDialog: async () => ({ canceled: false, filePaths: [source] }),
         send: (channel, payload) => events.push({ channel, payload }),
       },
+      settingsStore: createSettingsStore(stateRoot),
       now: () => 42,
     });
 
@@ -178,6 +180,7 @@ test('IPC returns sprite bytes, removes the pack, and emits only real mutations'
     await writeSourcePack(source);
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     const events: unknown[] = [];
+    const settingsStore = createSettingsStore(stateRoot);
     registerPetPackIpc({
       ipcMain: {
         handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
@@ -187,9 +190,40 @@ test('IPC returns sprite bytes, removes the pack, and emits only real mutations'
         showOpenDialog: async () => ({ canceled: false, filePaths: [source] }),
         send: (_channel, payload) => events.push(payload),
       },
+      settingsStore,
       now: () => 84,
     });
+    await settingsStore.update({ personalization: { selectedPetId: 'likun.missing' } });
+    assert.equal(await handlers.get('pets:getSelection')?.({}), null);
+    assert.equal((await settingsStore.get()).personalization.selectedPetId, null);
     await handlers.get('pets:importLocalDirectory')?.({});
+
+    assert.deepEqual(await handlers.get('pets:select')?.({}, 'likun.unknown'), {
+      ok: false,
+      reason: 'not_found',
+    });
+    assert.deepEqual(await handlers.get('pets:select')?.({}, '../escape'), {
+      ok: false,
+      reason: 'invalid_id',
+    });
+    assert.deepEqual(await handlers.get('pets:select')?.({}, 'likun.maodie'), {
+      ok: true,
+      selectedPetId: 'likun.maodie',
+    });
+    assert.equal(await handlers.get('pets:getSelection')?.({}), 'likun.maodie');
+    assert.deepEqual(await handlers.get('pets:select')?.({}, 'likun.maodie'), {
+      ok: true,
+      selectedPetId: 'likun.maodie',
+    });
+    assert.deepEqual(await handlers.get('pets:select')?.({}, null), {
+      ok: true,
+      selectedPetId: null,
+    });
+    assert.equal(await handlers.get('pets:getSelection')?.({}), null);
+    assert.deepEqual(await handlers.get('pets:select')?.({}, 'likun.maodie'), {
+      ok: true,
+      selectedPetId: 'likun.maodie',
+    });
 
     const asset = (await handlers.get('pets:readSpriteSheet')?.({}, 'likun.maodie')) as {
       ok: true;
@@ -221,10 +255,30 @@ test('IPC returns sprite bytes, removes the pack, and emits only real mutations'
       removed: false,
     });
     assert.deepEqual(await handlers.get('pets:list')?.(), []);
+    assert.equal(await handlers.get('pets:getSelection')?.({}), null);
+    assert.equal((await settingsStore.get()).personalization.selectedPetId, null);
     assert.deepEqual(events, [
       {
         type: 'pet_pack_changed',
         reason: 'installed',
+        petId: 'likun.maodie',
+        ts: 84,
+      },
+      {
+        type: 'pet_pack_changed',
+        reason: 'selected',
+        petId: 'likun.maodie',
+        ts: 84,
+      },
+      {
+        type: 'pet_pack_changed',
+        reason: 'selected',
+        petId: null,
+        ts: 84,
+      },
+      {
+        type: 'pet_pack_changed',
+        reason: 'selected',
         petId: 'likun.maodie',
         ts: 84,
       },
@@ -248,6 +302,14 @@ test('IPC reports picker cancellation without touching storage', async () => {
     mainWindowController: {
       showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
       send: () => {},
+    },
+    settingsStore: {
+      get: async () => {
+        throw new Error('settings get must not run');
+      },
+      update: async () => {
+        throw new Error('settings update must not run');
+      },
     },
     store: {
       list: async () => [],
