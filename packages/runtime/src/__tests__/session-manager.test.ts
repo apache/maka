@@ -158,7 +158,6 @@ describe('SessionManager running-turn projection', () => {
     const after = await manager.listSessions();
     expect(after.find((session) => session.id === busy.id)?.runningTurnIds).toEqual(undefined);
   });
-
 });
 
 describe('SessionManager Plan control boundaries', () => {
@@ -1506,7 +1505,6 @@ describe('SessionManager claimed graph intent execution', () => {
     expect(await store.readMessages(child.id)).toEqual([]);
     expect((await runStore.readRun(child.id, claim.targetRunId)).status).toBe('completed');
   });
-
 
   test('hosted explicit abort stops only the exact claimed root identity', async () => {
     const store = new MemorySessionStore();
@@ -4355,7 +4353,6 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     expect(abortErrorRun?.status).toBe('cancelled');
   });
 
-
   test('stopSession waits for compaction blocked before Run reservation', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -4498,7 +4495,6 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     sendGate.release();
     await sendPromise;
   });
-
 
   test('configuration transitions fence active runs and unavailable resource side effects', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
@@ -5071,10 +5067,6 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 });
 
 describe('SessionManager permission mode updates', () => {
-
-
-
-
   test('revokes background shell authority before narrowing Auto to Explore', async () => {
     const store = new AtomicBoundaryMemorySessionStore();
     const calls: string[] = [];
@@ -5220,7 +5212,6 @@ describe('SessionManager permission mode updates', () => {
     expect(store.disposeCount).toBe(3);
   });
 
-
   test('keeps mode changes blocked until all overlapping turns finish', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -5275,7 +5266,6 @@ describe('SessionManager permission mode updates', () => {
     const summary = await manager.setPermissionMode(session.id, 'execute');
     expect(summary.permissionMode).toBe('execute');
   });
-
 
   test('persists orchestration mode changes and records a dimensioned audit note', async () => {
     const store = new MemorySessionStore();
@@ -5450,8 +5440,6 @@ describe('SessionManager permission mode updates', () => {
       'ai-sdk:zai-coding-plan:glm-4.7:/tmp/worktree-cwd',
     ]);
   });
-
-
 
   test('records the authoritative workspace identity on a new AgentRun', async () => {
     const store = new MemorySessionStore();
@@ -7171,7 +7159,6 @@ describe('SessionManager permission mode updates', () => {
     expect(await runStore.readEvents(session.id, runId)).toHaveLength(0);
   });
 
-
   test('rejects continuation when the authoritative workspace identity changes after planning', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -7625,11 +7612,6 @@ describe('SessionManager permission mode updates', () => {
     }).getSessionView(session.id);
     expect(view.terminalFacts.map((fact) => fact.runStatus)).toEqual(['completed']);
   });
-
-
-
-
-
 
   test('terminal header is never persisted without a terminal RuntimeEvent', async () => {
     const store = new MemorySessionStore();
@@ -8219,8 +8201,6 @@ describe('SessionManager permission mode updates', () => {
     ).toEqual(['legacy-user', 'legacy-assistant', 'legacy-state']);
   });
 
-
-
   test('RuntimeReadModel projects messages turns replay and terminal facts without SessionStore messages', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -8409,7 +8389,6 @@ describe('SessionManager permission mode updates', () => {
       );
     }
   });
-
 
   test('RuntimeReadModel bounds concurrent hosted permission outcome reads', {
     timeout: 2_000,
@@ -8935,7 +8914,6 @@ describe('SessionManager permission mode updates', () => {
     expect(runtimeEvents.at(-1)?.refs?.storedMessageId).toBe('legacy-state');
   });
 
-
   test('getMessages does not trust failed legacy terminal state for a completed run header', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -9093,7 +9071,6 @@ describe('SessionManager permission mode updates', () => {
     expect(runtimeEvents.at(-1)?.status).toBe('failed');
   });
 
-
   test('getMessages preserves failed legacy terminal state when failureClass is missing', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -9172,7 +9149,6 @@ describe('SessionManager permission mode updates', () => {
     });
     expect(runtimeEvents.at(-1)?.status).toBe('failed');
   });
-
 
   test('getMessages waits for legacy messages before fallback repair', async () => {
     const store = new MemorySessionStore();
@@ -9260,7 +9236,6 @@ describe('SessionManager permission mode updates', () => {
     expect(terminalEvents).toHaveLength(1);
     expect(terminalEvents[0]?.status).toBe('completed');
   });
-
 
   test('getMessages repair writes terminal turn_state for a continuation run', async () => {
     const store = new MemorySessionStore();
@@ -9566,7 +9541,6 @@ describe('SessionManager permission mode updates', () => {
     expect(runtimeEvents.filter((event) => event.status === 'failed')).toHaveLength(1);
   });
 
-
   test('getMessages serializes concurrent terminal repairs for the same run', async () => {
     const store = new MemorySessionStore();
     let repairReads = 0;
@@ -9630,7 +9604,6 @@ describe('SessionManager permission mode updates', () => {
     const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
     expect(runtimeEvents.filter((event) => event.status === 'failed')).toHaveLength(1);
   });
-
 
   test('getMessages includes continuation output without inlining child agent output', async () => {
     const store = new MemorySessionStore();
@@ -10068,8 +10041,6 @@ describe('SessionManager permission mode updates', () => {
     ).toEqual(['boundary-pending']);
   });
 
-
-
   test('MAKA_RUNTIME_READ_SOURCE does not force legacy reads when RuntimeEvents are complete', async () => {
     const previous = process.env.MAKA_RUNTIME_READ_SOURCE;
     process.env.MAKA_RUNTIME_READ_SOURCE = 'legacy';
@@ -10442,7 +10413,6 @@ describe('SessionManager permission mode updates', () => {
     expect(regenUser?.type === 'user' ? regenUser.text : undefined).toBe('aborted turn text');
   });
 
-
   test('branchFromTurn copies through the RuntimeEvent-primary message boundary', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -10786,9 +10756,6 @@ describe('SessionManager permission mode updates', () => {
       branchOfTurnId: 'root',
     });
   });
-
-
-
 
   test('next turn projects failed prior RuntimeEvents with the terminal fact failure class', async () => {
     const store = new MemorySessionStore();
@@ -11566,7 +11533,6 @@ describe('SessionManager permission mode updates', () => {
     ).toEqual([]);
   });
 
-
   test('parent and child runs can read their ledger while only parents may compact session history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -11975,8 +11941,6 @@ describe('SessionManager permission mode updates', () => {
     expect(run?.status).toBe('cancelled');
     expect((await store.readHeader(session.id)).status === 'blocked').toBe(false);
   });
-
-
 
   test('a factory AbortError is not normalized as execution cancellation', async () => {
     const store = new MemorySessionStore();
@@ -12578,7 +12542,6 @@ describe('SessionManager permission mode updates', () => {
     childGate.release();
     while (!(await child.next()).done) {}
   });
-
 
   test('stopSession does not reenter a failed backend in a multi-generation stop', async () => {
     const store = new MemorySessionStore();
@@ -13258,9 +13221,6 @@ describe('SessionManager permission mode updates', () => {
     expect(output.budget.projectedBytes <= output.budget.maxBytes).toBe(true);
   });
 
-
-
-
   test('rejects backend configuration updates while a turn is actively streaming', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
@@ -13601,7 +13561,6 @@ describe('SessionManager permission mode updates', () => {
     );
   });
 
-
   test('complete(stopReason=error) without a prior error event classifies as runtime_error not unknown', async () => {
     // Reproduces the DeepSeek-reasoner smoke failure: the backend ended with
     // stopReason='error' but never emitted a preceding error event, so the
@@ -13698,7 +13657,6 @@ describe('SessionManager permission mode updates', () => {
     expect(turn?.errorClass).toBe('tool_failed');
   });
 
-
   test('stopSession records renderer abort source for diagnostics', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
@@ -13723,7 +13681,6 @@ describe('SessionManager permission mode updates', () => {
     if (abortNote?.type !== 'system_note') throw new Error('abort note missing');
     expect(abortNote.data).toEqual({ source: 'renderer.stop_button' });
   });
-
 
   test('stopSession persists abortSource on a terminal RuntimeEvent emitted during backend stop', async () => {
     const store = new MemorySessionStore();
@@ -13942,7 +13899,6 @@ describe('SessionManager permission mode updates', () => {
     expect(JSON.stringify(events).includes('sk-live-secret-token-value')).toBe(false);
   });
 
-
   test('required capture and later attempt still write after an attempt append fails', async () => {
     const store = new MemorySessionStore();
     const attemptFailureRecorded = makeGate();
@@ -14068,8 +14024,6 @@ describe('SessionManager permission mode updates', () => {
     expect(run?.status).toBe('failed');
     expect(run?.completedAt).toBeDefined();
   });
-
-
 
   test('schedules legacy artifact cleanup only after the V2 checkpoint is durable', async () => {
     const store = new MemorySessionStore();
@@ -14546,7 +14500,6 @@ describe('SessionManager permission mode updates', () => {
     expect(physicalCoverage).toEqual([1, 2]);
   });
 
-
   test('rejects checkpoint recording after the current AgentRun store becomes unavailable', async () => {
     const store = new MemorySessionStore();
     const runStoreUnavailable = makeGate();
@@ -14975,8 +14928,6 @@ describe('SessionManager permission mode updates', () => {
     expect(activeTurn?.status).toBe('completed');
   });
 
-
-
   test('startup recovery writes terminal turn_state for a stale continuation run', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -15040,7 +14991,6 @@ describe('SessionManager permission mode updates', () => {
       parentTurnId: 'source-turn',
     });
   });
-
 
   test('startup recovery maps failed aborted and cancelled RuntimeEvent terminal facts consistently', async () => {
     const store = new MemorySessionStore();
@@ -15303,7 +15253,6 @@ describe('SessionManager permission mode updates', () => {
     ).toBe('model_stream_completed_without_runtime_terminal');
   });
 
-
   test('startup recovery derives the interrupted outcome sink from the runtime store', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -15520,7 +15469,6 @@ describe('SessionManager permission mode updates', () => {
     ]);
   });
 
-
   test('startup recovery re-reads a closure it settled before an earlier crash', async () => {
     // Stands in for a first recovery that settled the request and then died
     // before committing the run's terminal fact: the row is no longer pending,
@@ -15623,10 +15571,6 @@ describe('SessionManager permission mode updates', () => {
     const [turn] = await store.listTurns(session.id);
     expect(turn?.errorClass).toBe('app_restarted');
   });
-
-
-
-
 
   test('startup recovery treats terminal AgentRun headers without RuntimeEvent facts as missing terminal events', async () => {
     const store = new MemorySessionStore();
@@ -15747,7 +15691,6 @@ describe('SessionManager permission mode updates', () => {
       'missing_terminal_event',
     );
   });
-
 
   test('regenerate creates a new sibling turn from an aborted source turn (retry merged)', async () => {
     const store = new MemorySessionStore();
@@ -15897,7 +15840,6 @@ describe('SessionManager permission mode updates', () => {
       }
     }
   });
-
 
   test('branch and revision sessions rewrite tool operation authority facts', async () => {
     const store = new MemorySessionStore();
@@ -16593,7 +16535,6 @@ describe('SessionManager permission mode updates', () => {
     expect(version3.parentSessionId).toBeUndefined();
   });
 
-
   test('startup recovery removes empty preparing revisions and commits admitted edits', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -16920,7 +16861,6 @@ describe('SessionManager steering and followup queues', () => {
     expect(failure instanceof RuntimeInteractionInvariantError).toBe(true);
     expect(releases).toBe(1);
   });
-
 
   test('hosted owner is released when backend execution fails', async () => {
     const store = new MemorySessionStore();
