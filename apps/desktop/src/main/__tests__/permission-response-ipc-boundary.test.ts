@@ -5,6 +5,8 @@ import {
   normalizeBranchFromTurnInput,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
+  normalizeRuntimeHostBranchFromTurnInput,
+  normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
@@ -57,18 +59,33 @@ describe('permission response IPC boundary', () => {
       turnId: 'turn-3',
     });
     assert.deepEqual(
-      normalizeBranchFromTurnInput({ sourceTurnId: 'turn-3', name: '  Branch name  ', ignored: 1 }),
-      { sourceTurnId: 'turn-3', name: 'Branch name' },
+      normalizeRuntimeHostBranchFromTurnInput({
+        sourceTurnId: 'turn-3',
+        name: '  Branch name  ',
+        copyId: 'branch-copy-1',
+        ignored: 1,
+      }),
+      { sourceTurnId: 'turn-3', name: 'Branch name', copyId: 'branch-copy-1' },
     );
-    assert.deepEqual(normalizeReviseBeforeTurnInput({ sourceTurnId: 'turn-4', ignored: true }), {
-      sourceTurnId: 'turn-4',
-    });
+    assert.deepEqual(
+      normalizeRuntimeHostReviseBeforeTurnInput({
+        sourceTurnId: 'turn-4',
+        copyId: 'revision-copy-1',
+        ignored: true,
+      }),
+      {
+        sourceTurnId: 'turn-4',
+        copyId: 'revision-copy-1',
+      },
+    );
 
     const invalidActions: Array<() => unknown> = [
       () => normalizeRegenerateTurnInput({ sourceTurnId: 'turn-1', turnId: 1 }),
       () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', name: 1 }),
       () => normalizeBranchFromTurnInput({ sourceTurnId: 'x'.repeat(129) }),
       () => normalizeReviseBeforeTurnInput({ sourceTurnId: 1 }),
+      () => normalizeRuntimeHostBranchFromTurnInput({ sourceTurnId: 'turn-1' }),
+      () => normalizeRuntimeHostReviseBeforeTurnInput({ sourceTurnId: 'turn-1', copyId: '' }),
     ];
     for (const action of invalidActions) assert.throws(action, /Invalid/);
   });

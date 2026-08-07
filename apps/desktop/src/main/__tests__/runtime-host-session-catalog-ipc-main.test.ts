@@ -27,6 +27,7 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
       workspaceRoot: '/workspace',
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
       releaseSessionResources() {},
+      sessionCopyCleanup: cleanupAuthority(),
       newId: () => `session-${++sequence}`,
     },
     ipc,
@@ -83,6 +84,7 @@ test('filters linked subagents without exposing the filter to the Host protocol'
       workspaceRoot: '/workspace',
       emitSessionsChanged() {},
       releaseSessionResources() {},
+      sessionCopyCleanup: cleanupAuthority(),
     },
     ipc,
   );
@@ -99,6 +101,64 @@ test('filters linked subagents without exposing the filter to the Host protocol'
     agentName: 'Worker',
     profile: 'default',
   });
+});
+
+test('recovers and records Session copy cleanup through the Runtime Host catalog facade', async () => {
+  const cleanupCalls: string[] = [];
+  let recoveries = 0;
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(
+    {
+      client: catalogClient({ listSessions: async () => [] }),
+      workspaceRoot: '/workspace',
+      emitSessionsChanged() {},
+      releaseSessionResources() {},
+      sessionCopyCleanup: {
+        cleanup: async (sessionId) => { cleanupCalls.push(`cleanup:${sessionId}`); },
+        schedule: async (sessionId) => { cleanupCalls.push(`abandon:${sessionId}`); },
+        recover: async () => {
+          recoveries += 1;
+          return { removed: [], failed: [] };
+        },
+      },
+    },
+    ipc,
+  );
+
+  await ipc.invoke('sessions:list');
+  await ipc.invoke('sessions:cleanupSessionCopy', 'copy-cleanup');
+  await ipc.invoke('sessions:abandonSessionCopy', 'copy-abandon');
+
+  assert.equal(recoveries, 1);
+  assert.deepEqual(cleanupCalls, ['cleanup:copy-cleanup', 'abandon:copy-abandon']);
+});
+
+test('keeps abandoned copies hidden while durable cleanup is still pending', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(
+    {
+      client: catalogClient({
+        listSessions: async () => [session('visible'), session('abandoned-copy')],
+      }),
+      workspaceRoot: '/workspace',
+      emitSessionsChanged() {},
+      releaseSessionResources() {},
+      sessionCopyCleanup: {
+        cleanup: async () => undefined,
+        schedule: async () => undefined,
+        recover: async () => ({
+          removed: [],
+          failed: [{ sessionId: 'abandoned-copy', error: new Error('remove failed') }],
+        }),
+      },
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    (await ipc.invoke('sessions:list') as Array<{ id: string }>).map(({ id }) => id),
+    ['visible'],
+  );
 });
 
 test('applies family metadata and retirement actions through Host-owned operations', async () => {
@@ -131,6 +191,7 @@ test('applies family metadata and retirement actions through Host-owned operatio
       releaseSessionResources: async (sessionId) => {
         released.push(sessionId);
       },
+      sessionCopyCleanup: cleanupAuthority(),
     },
     ipc,
   );
@@ -163,6 +224,7 @@ test('normalizes renderer configuration actions into Host patches', async () => 
       workspaceRoot: '/workspace',
       emitSessionsChanged() {},
       releaseSessionResources() {},
+      sessionCopyCleanup: cleanupAuthority(),
     },
     ipc,
   );
@@ -192,6 +254,14 @@ test('normalizes renderer configuration actions into Host patches', async () => 
 });
 
 type CatalogClient = RuntimeHostSessionCatalogIpcDeps['client'];
+
+function cleanupAuthority(): RuntimeHostSessionCatalogIpcDeps['sessionCopyCleanup'] {
+  return {
+    cleanup: async () => undefined,
+    schedule: async () => undefined,
+    recover: async () => ({ removed: [], failed: [] }),
+  };
+}
 
 function catalogClient(overrides: Partial<CatalogClient>): CatalogClient {
   const unavailable = async (): Promise<never> => {

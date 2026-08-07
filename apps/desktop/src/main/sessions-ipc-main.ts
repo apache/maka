@@ -57,7 +57,7 @@ import { handleReviseBeforeTurn } from './session-revision.js';
 import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
 import type { DesktopCreateSessionInput } from './new-session-project.js';
 import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
-import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
+import { createSessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
 import { mergeSentInlineReferences } from './session-send-inline-references.js';
 import { resolveSessionActionIds } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
@@ -234,7 +234,7 @@ export function registerSessionsIpc(
     automationManager.removeAllForSession(sessionId);
     emitSessionsChanged('deleted', sessionId);
   };
-  const quoteCompanionCleanup = createQuoteCompanionCleanupAuthority({
+  const sessionCopyCleanup = createSessionCopyCleanupAuthority({
     workspaceRoot,
     removeSession,
   });
@@ -252,7 +252,7 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:list', async (_event, filter?: SessionListFilter) => {
     // Listing is also a recovery trigger. Await it so an orphaned hidden
     // companion is removed before it can reappear in the sidebar after restart.
-    const recovery = await quoteCompanionCleanup.recover();
+    const recovery = await sessionCopyCleanup.recover();
     const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
     return (await runtime.listSessions(filter)).filter(
       ({ id }) => !pendingCleanup.has(id),
@@ -742,8 +742,13 @@ export function registerSessionsIpc(
       await removeSession(id);
     }
   });
-  ipcMain.handle('sessions:cleanupQuoteCompanion', async (_event, sessionId: string) => {
-    await quoteCompanionCleanup.cleanup(sessionId);
+  ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
+    if (!(await runtime.listSessions()).some((session) => session.id === sessionId)) return;
+    await sessionCopyCleanup.cleanup(sessionId);
+  });
+  ipcMain.handle('sessions:abandonSessionCopy', async (_event, sessionId: string) => {
+    if (!(await runtime.listSessions()).some((session) => session.id === sessionId)) return;
+    await sessionCopyCleanup.schedule(sessionId);
   });
 }
 

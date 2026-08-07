@@ -7,7 +7,6 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import type {
-  CreateSessionInput,
   PermissionMode,
   QuoteRef,
   SessionEvent,
@@ -15,6 +14,14 @@ import type {
   StoredMessage,
   TurnRecord,
 } from '@maka/core';
+import {
+  acquireSessionCopyAttempt,
+  abandonSessionCopyAttempt,
+  completeSessionCopyAttempt,
+  readSessionCopyAttempt,
+  startSessionCopyAttempt,
+  type SessionCopyAttemptKey,
+} from './session-copy-attempt.js';
 
 /** The companion is a read-only explanation surface: reads + local search are
  *  available and web/custom tools follow the normal permission path, while
@@ -33,10 +40,13 @@ type CompanionSendResult = { ok: true } | { ok: false; reason?: string };
 export interface CompanionSessionApi {
   readMessages(sessionId: string): Promise<StoredMessage[]>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
-  branchFromTurn(sessionId: string, input: { sourceTurnId: string; name?: string }): Promise<SessionSummary>;
-  create(input: Partial<CreateSessionInput>): Promise<SessionSummary>;
+  branchFromTurn(
+    sessionId: string,
+    input: { sourceTurnId: string; name?: string; copyId: string },
+  ): Promise<SessionSummary>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary>;
-  cleanupQuoteCompanion(sessionId: string): Promise<void>;
+  cleanupSessionCopy(sessionId: string): Promise<void>;
+  abandonSessionCopy(sessionId: string): Promise<void>;
   send(
     sessionId: string,
     command: { type: 'send'; turnId: string; text: string; quotes?: QuoteRef[] },
@@ -58,6 +68,20 @@ export type EnsureCompanionForkResult =
   | { status: 'disposed' }
   | { status: 'error'; code: CompanionErrorCode };
 
+export interface CompanionDismissalGuard {
+  beginMount(): () => boolean;
+}
+
+export function createCompanionDismissalGuard(): CompanionDismissalGuard {
+  let generation = 0;
+  return {
+    beginMount: () => {
+      const mountedGeneration = ++generation;
+      return () => generation === mountedGeneration;
+    },
+  };
+}
+
 export interface EnsureCompanionForkDeps {
   api: CompanionSessionApi;
   sourceSession: SessionSummary;
@@ -76,6 +100,44 @@ export interface EnsureCompanionForkDeps {
  *  A `running` turn is skipped so a fork never branches mid-turn. */
 export function latestSettledTurnId(turns: readonly TurnRecord[]): string | undefined {
   return [...turns].reverse().find((turn) => turn.status !== 'running')?.turnId;
+}
+
+function companionCopyAttemptKey(sourceSessionId: string): SessionCopyAttemptKey {
+  return { scope: 'quote-companion', kind: 'branch', sourceSessionId };
+}
+
+export async function abandonPendingCompanionCopy(
+  api: CompanionSessionApi,
+  sourceSessionId: string,
+): Promise<boolean> {
+  const key = companionCopyAttemptKey(sourceSessionId);
+  const attempt = readSessionCopyAttempt(key);
+  if (!attempt) return true;
+  abandonSessionCopyAttempt(key, attempt.copyId);
+  try {
+    await api.abandonSessionCopy(attempt.copyId);
+    completeSessionCopyAttempt(key, attempt.copyId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cleanupCompanionCopy(
+  api: CompanionSessionApi,
+  sourceSessionId: string,
+  companionSessionId: string,
+): Promise<boolean> {
+  const key = companionCopyAttemptKey(sourceSessionId);
+  const attempt = readSessionCopyAttempt(key);
+  if (attempt) abandonSessionCopyAttempt(key, attempt.copyId);
+  try {
+    await api.cleanupSessionCopy(companionSessionId);
+    if (attempt) completeSessionCopyAttempt(key, attempt.copyId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -102,10 +164,9 @@ export function deriveCompanionComposerState(
  * lifecycle paths can remain fire-and-forget without losing recovery.
  */
 function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
-  void deps.api
-    .cleanupQuoteCompanion(sessionId)
-    .then(() => deps.onForkCleanupSucceeded?.(sessionId))
-    .catch(() => {});
+  void cleanupCompanionCopy(deps.api, deps.sourceSession.id, sessionId).then((cleaned) => {
+    if (cleaned) deps.onForkCleanupSucceeded?.(sessionId);
+  });
 }
 
 /**
@@ -136,23 +197,34 @@ export async function ensureCompanionFork(
   }
   if (isDisposed()) return { status: 'disposed' };
   const boundaryTurnId = latestSettledTurnId(turns);
-
-  let created: SessionSummary;
-  try {
-    created = boundaryTurnId
-      ? await api.branchFromTurn(sourceSession.id, { sourceTurnId: boundaryTurnId, name })
-      : await api.create({
-          ...(sourceSession.cwd ? { cwd: sourceSession.cwd } : {}),
-          backend: sourceSession.backend,
-          llmConnectionSlug: sourceSession.llmConnectionSlug,
-          model: sourceSession.model,
-          parentSessionId: sourceSession.id,
-          name,
-        });
-  } catch {
+  if (!boundaryTurnId) return { status: 'error', code: 'fork_setup_failed' };
+  let copyAttempt = acquireSessionCopyAttempt(
+    companionCopyAttemptKey(sourceSession.id),
+    boundaryTurnId,
+  );
+  if (copyAttempt.phase === 'abandoning') {
+    if (!(await abandonPendingCompanionCopy(api, sourceSession.id))) {
+      return { status: 'error', code: 'fork_setup_failed' };
+    }
+    copyAttempt = acquireSessionCopyAttempt(
+      companionCopyAttemptKey(sourceSession.id),
+      boundaryTurnId,
+    );
+  }
+  if (!startSessionCopyAttempt(companionCopyAttemptKey(sourceSession.id), copyAttempt.copyId)) {
     return { status: 'error', code: 'fork_setup_failed' };
   }
 
+  let created: SessionSummary;
+  try {
+    created = await api.branchFromTurn(sourceSession.id, {
+      sourceTurnId: copyAttempt.sourceTurnId,
+      name,
+      copyId: copyAttempt.copyId,
+    });
+  } catch {
+    return { status: 'error', code: 'fork_setup_failed' };
+  }
   if (isDisposed()) {
     scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };

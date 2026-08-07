@@ -112,6 +112,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.read_marker.set',
       'session.recap.generate',
       'session.remove',
+      'session.revision.abandon',
       'session.revision.create',
       'session.transcript.query',
       'skill.catalog.mutate',

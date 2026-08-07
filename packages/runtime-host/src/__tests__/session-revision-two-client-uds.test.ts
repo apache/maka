@@ -255,6 +255,13 @@ async function verifyConcurrentRevisionAuthority(
     if (renamed.kind !== 'committed') assert.fail('Source rename must commit');
     const renamedSource = requireSessionProjection(renamed.session);
     assert.deepEqual(await tui.request('session.branch.create', branchInput), desktopBranch);
+    assert.deepEqual(
+      await tui.request('session.branch.create', {
+        ...branchInput,
+        expectedSourceRevision: renamedSource.revision,
+      }),
+      desktopBranch,
+    );
 
     const revisionInput = {
       sourceSessionId,
@@ -271,6 +278,28 @@ async function verifyConcurrentRevisionAuthority(
     assert.equal(revision.revisionOfTurnId, 'turn-2');
     assert.equal(revision.revisionIndex, 2);
     assert.equal(revision.revisionState, 'preparing');
+
+    const abandonedTargetId = 'abandoned-revision-target';
+    const abandonedRevision = await desktop.request('session.revision.create', {
+      ...revisionInput,
+      targetSessionId: abandonedTargetId,
+    });
+    assert.equal(abandonedRevision.kind, 'committed');
+    assert.deepEqual(
+      await desktop.request('session.revision.abandon', {
+        targetSessionId: abandonedTargetId,
+      }),
+      { kind: 'abandoned', sessionId: abandonedTargetId },
+    );
+    assert.equal((await querySession(desktop, sourceSessionId)).id, sourceSessionId);
+    assert.equal((await querySession(desktop, REVISION_TARGET_ID)).id, REVISION_TARGET_ID);
+    assert.deepEqual(
+      await desktop.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: abandonedTargetId,
+      }),
+      { kind: 'session', session: null },
+    );
 
     const sourceAfterRevision = await querySession(tui, sourceSessionId);
     const staleExpectedRevision = sourceAfterRevision.revision + 1;
@@ -354,6 +383,16 @@ async function verifyRestartRecoveryAndAdmission(
       (await querySession(restarted, ADMITTED_REVISION_TARGET_ID)).revisionState,
       'committed',
     );
+    assert.deepEqual(
+      await restarted.request('session.revision.abandon', {
+        targetSessionId: ADMITTED_REVISION_TARGET_ID,
+      }),
+      { kind: 'retained', sessionId: ADMITTED_REVISION_TARGET_ID },
+    );
+    assert.equal(
+      (await querySession(restarted, ADMITTED_REVISION_TARGET_ID)).id,
+      ADMITTED_REVISION_TARGET_ID,
+    );
 
     const lineageRevision = await restarted.request('session.revision.create', {
       sourceSessionId,
@@ -372,6 +411,20 @@ async function verifyRestartRecoveryAndAdmission(
       expectedSourceRevision: lineageSource.revision,
     });
     assert.equal(lineageBranch.kind, 'committed');
+    assert.deepEqual(
+      await restarted.request('session.revision.abandon', {
+        targetSessionId: LINEAGE_REVISION_TARGET_ID,
+      }),
+      { kind: 'retained', sessionId: LINEAGE_REVISION_TARGET_ID },
+    );
+    assert.equal(
+      (await querySession(restarted, LINEAGE_REVISION_TARGET_ID)).id,
+      LINEAGE_REVISION_TARGET_ID,
+    );
+    assert.equal(
+      (await querySession(restarted, LINEAGE_BRANCH_TARGET_ID)).id,
+      LINEAGE_BRANCH_TARGET_ID,
+    );
   } finally {
     await restarted.close();
   }

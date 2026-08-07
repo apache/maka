@@ -20,7 +20,10 @@ import type {
   UserQuestionResponse,
 } from '@maka/core';
 import {
+  abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
+  cleanupCompanionCopy,
+  createCompanionDismissalGuard,
   deriveCompanionComposerState,
   isCompanionTurnTerminal,
   performCompanionTurn,
@@ -72,6 +75,7 @@ export interface UseQuoteCompanionResult {
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
   send: (text: string) => Promise<boolean>;
+  abandonPendingCopy: () => Promise<void>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
@@ -113,6 +117,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // A created fork is hidden immediately, before its permission pin completes,
   // but is not considered usable until onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
+  const sourceSessionIdRef = useRef(sourceSession?.id);
+  sourceSessionIdRef.current = sourceSession?.id;
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
   const localeRef = useRef(locale);
@@ -135,6 +141,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // StrictMode-safe mounted guard (re-arms on the dev mount → unmount → remount
   // double-invoke; a hand-rolled disposed flag would stay tripped after replay).
   const mountedRef = useMountedRef();
+  const dismissalGuardRef = useRef(createCompanionDismissalGuard());
 
   // Subscribe to the fork's event stream + load its transcript. Called
   // synchronously the moment the fork is committed, BEFORE the run starts, so
@@ -176,22 +183,28 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // switching source session, or collapsing the workbar — unsubscribe and remove
   // the fork so it never lingers in the session list. Runs only on unmount.
   useEffect(() => {
+    const shouldDismiss = dismissalGuardRef.current.beginMount();
     return () => {
-      unsubscribeRef.current?.();
-      const id = companionIdRef.current ?? pendingForkIdRef.current;
-      if (id) {
-        // The main-process authority records this intent before attempting the
-        // full removal, and retries it on a later session list / app restart.
-        void window.maka.sessions
-          .cleanupQuoteCompanion(id)
-          .then(() =>
-            onForkVisibilityChangeRef.current?.({
-              type: 'cleanup-succeeded',
-              sessionId: id,
-            }),
-          )
-          .catch(() => {});
-      }
+      queueMicrotask(() => {
+        // React StrictMode immediately replays mount effects in development.
+        // A later setup generation means this was not a real panel dismissal.
+        if (!shouldDismiss()) return;
+        unsubscribeRef.current?.();
+        const sourceSessionId = sourceSessionIdRef.current;
+        const id = companionIdRef.current ?? pendingForkIdRef.current;
+        if (id && sourceSessionId) {
+          void cleanupCompanionCopy(window.maka.sessions, sourceSessionId, id).then((cleaned) => {
+            if (cleaned) {
+              onForkVisibilityChangeRef.current?.({
+                type: 'cleanup-succeeded',
+                sessionId: id,
+              });
+            }
+          });
+        } else if (sourceSessionId) {
+          void abandonPendingCompanionCopy(window.maka.sessions, sourceSessionId);
+        }
+      });
     };
   }, []);
 
@@ -279,6 +292,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [turnInFlight, sourceSession, panelId, pendingQuotes, onQuotesConsumed, subscribeToFork, mountedRef],
   );
 
+  const abandonPendingCopy = useCallback(async (): Promise<void> => {
+    if (!sourceSession) return;
+    await abandonPendingCompanionCopy(window.maka.sessions, sourceSession.id);
+  }, [sourceSession]);
+
   const stop = useCallback(async (): Promise<void> => {
     const id = companionIdRef.current;
     if (!id) return;
@@ -346,6 +364,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeSandboxBoundary,
     activeQuestion,
     send,
+    abandonPendingCopy,
     stop,
     respondToSandboxBoundary,
     respondToUserQuestion,

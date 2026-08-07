@@ -119,6 +119,16 @@ export type RendererIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
   | { file: File };
 
+export type DesktopBranchFromTurnInput = BranchFromTurnInput & {
+  /** Stable target identity for retrying one Desktop copy action. */
+  copyId: string;
+};
+
+export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
+  /** Stable target identity for retrying one Desktop copy action. */
+  copyId: string;
+};
+
 export type LocalMemoryMutationResult =
   | { ok: true; state: LocalMemoryState; entry?: LocalMemoryEntryPreview; proposal?: LocalMemoryEntryPreview }
   | { ok: false; state: LocalMemoryState; reason: string; message: string };
@@ -267,8 +277,8 @@ export interface MakaBridge {
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     >;
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
-    branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary>;
-    reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary>;
+    branchFromTurn(sessionId: string, input: DesktopBranchFromTurnInput): Promise<SessionSummary>;
+    reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<SessionSummary>;
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
     saveConversationToFile(input: {
@@ -307,7 +317,8 @@ export interface MakaBridge {
     setModel(sessionId: string, input: { llmConnectionSlug: string; model: string }): Promise<SessionSummary>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<SessionSummary>;
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
-    cleanupQuoteCompanion(sessionId: string): Promise<void>;
+    cleanupSessionCopy(sessionId: string): Promise<void>;
+    abandonSessionCopy(sessionId: string): Promise<void>;
   };
   projects: {
     list(): Promise<ProjectRecord[]>;

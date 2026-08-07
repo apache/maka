@@ -1,40 +1,49 @@
 import { acquireOperationalStateDatabase } from '@maka/storage';
 
-interface QuoteCompanionCleanupStore {
+interface SessionCopyCleanupStore {
   list(): Promise<string[]>;
   track(sessionId: string): Promise<void>;
   forget(sessionId: string): Promise<void>;
 }
 
-export interface QuoteCompanionCleanupRecovery {
+export type SessionCopyCleanupDisposition = 'removed' | 'retained';
+
+export interface SessionCopyCleanupRecovery {
   removed: string[];
   failed: Array<{ sessionId: string; error: unknown }>;
 }
 
-export interface QuoteCompanionCleanupAuthority {
+export interface SessionCopyCleanupAuthority {
   cleanup(sessionId: string): Promise<void>;
-  recover(): Promise<QuoteCompanionCleanupRecovery>;
+  schedule(sessionId: string): Promise<void>;
+  recover(): Promise<SessionCopyCleanupRecovery>;
 }
 
-export function createQuoteCompanionCleanupAuthority(input: {
+export function createSessionCopyCleanupAuthority(input: {
   workspaceRoot: string;
-  removeSession: (sessionId: string) => Promise<void>;
-}): QuoteCompanionCleanupAuthority {
-  return new QuoteCompanionCleanupAuthorityImpl(
-    new SqliteQuoteCompanionCleanupStore(input.workspaceRoot),
+  removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition | void>;
+}): SessionCopyCleanupAuthority {
+  return new SessionCopyCleanupAuthorityImpl(
+    new SqliteSessionCopyCleanupStore(input.workspaceRoot),
     input.removeSession,
   );
 }
 
-class QuoteCompanionCleanupAuthorityImpl implements QuoteCompanionCleanupAuthority {
-  private readonly inFlight = new Map<string, Promise<void>>();
+class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
+  private readonly inFlight = new Map<string, Promise<SessionCopyCleanupDisposition>>();
 
   constructor(
-    private readonly store: QuoteCompanionCleanupStore,
-    private readonly removeSession: (sessionId: string) => Promise<void>,
+    private readonly store: SessionCopyCleanupStore,
+    private readonly removeSession: (
+      sessionId: string,
+    ) => Promise<SessionCopyCleanupDisposition | void>,
   ) {}
 
   cleanup(sessionId: string): Promise<void> {
+    return this.cleanupDisposition(sessionId).then(() => undefined);
+  }
+
+  private cleanupDisposition(sessionId: string): Promise<SessionCopyCleanupDisposition> {
     const normalized = normalizeSessionId(sessionId);
     const active = this.inFlight.get(normalized);
     if (active) return active;
@@ -45,13 +54,19 @@ class QuoteCompanionCleanupAuthorityImpl implements QuoteCompanionCleanupAuthori
     return operation;
   }
 
-  async recover(): Promise<QuoteCompanionCleanupRecovery> {
+  async schedule(sessionId: string): Promise<void> {
+    const normalized = normalizeSessionId(sessionId);
+    await this.store.track(normalized);
+    void this.cleanup(normalized).catch(() => undefined);
+  }
+
+  async recover(): Promise<SessionCopyCleanupRecovery> {
     const removed: string[] = [];
-    const failed: QuoteCompanionCleanupRecovery['failed'] = [];
+    const failed: SessionCopyCleanupRecovery['failed'] = [];
     for (const sessionId of await this.store.list()) {
       try {
-        await this.cleanup(sessionId);
-        removed.push(sessionId);
+        const disposition = await this.cleanupDisposition(sessionId);
+        if (disposition === 'removed') removed.push(sessionId);
       } catch (error) {
         failed.push({ sessionId, error });
       }
@@ -59,14 +74,15 @@ class QuoteCompanionCleanupAuthorityImpl implements QuoteCompanionCleanupAuthori
     return { removed, failed };
   }
 
-  private async cleanupOnce(sessionId: string): Promise<void> {
+  private async cleanupOnce(sessionId: string): Promise<SessionCopyCleanupDisposition> {
     await this.store.track(sessionId);
-    await this.removeSession(sessionId);
+    const disposition = (await this.removeSession(sessionId)) ?? 'removed';
     await this.store.forget(sessionId);
+    return disposition;
   }
 }
 
-class SqliteQuoteCompanionCleanupStore implements QuoteCompanionCleanupStore {
+class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
   constructor(private readonly workspaceRoot: string) {}
 
   async list(): Promise<string[]> {

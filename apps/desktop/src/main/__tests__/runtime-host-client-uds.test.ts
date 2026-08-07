@@ -209,6 +209,11 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       emitModeChanged() {},
       completeComputerUseTurn() {},
+      createSessionCopyCleanup: () => ({
+        cleanup: async () => undefined,
+        schedule: async () => undefined,
+        recover: async () => ({ removed: [], failed: [] }),
+      }),
       newId: () => 'session-ipc',
     });
     assert.equal(started.kind, 'ready');

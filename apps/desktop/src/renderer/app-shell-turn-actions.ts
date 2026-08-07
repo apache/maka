@@ -6,6 +6,7 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
+import { acquireSessionCopyAttempt } from './session-copy-attempt.js';
 
 type RefBox<T> = { current: T };
 type MessageListUpdater = (next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[])) => void;
@@ -66,7 +67,19 @@ export function createAppShellTurnActions(deps: {
           toastApi.info(copy.regenerateStartedTitle, copy.regenerateStartedDescription);
         }
       } else if (actionId === 'branch') {
-        const newSession = await window.maka.sessions.branchFromTurn(sessionId, { sourceTurnId: turnId });
+        const copyAttempt = acquireSessionCopyAttempt(
+          {
+            scope: `turn-footer:${turnId}`,
+            kind: 'branch',
+            sourceSessionId: sessionId,
+          },
+          turnId,
+        );
+        const newSession = await window.maka.sessions.branchFromTurn(sessionId, {
+          sourceTurnId: copyAttempt.sourceTurnId,
+          copyId: copyAttempt.copyId,
+        });
+        copyAttempt.complete();
         upsertSessionSummary(newSession);
         if (activeIdRef.current === sessionId) {
           openSessionInChat(newSession.id);

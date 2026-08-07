@@ -680,6 +680,18 @@ export class DesktopRuntimeHostClient {
     throw revisionConflict("remove", sessionId);
   }
 
+  async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
+    const current = await this.#requireSession(sessionId);
+    if (current.revisionOfTurnId !== undefined) {
+      const result = await this.#request('session.revision.abandon', {
+        targetSessionId: sessionId,
+      });
+      return result.kind === 'abandoned' ? 'removed' : 'retained';
+    }
+    await this.removeSession(sessionId);
+    return 'removed';
+  }
+
   async copySession(
     kind: "branch" | "revision",
     input: Omit<SessionConversationCopyInput, "expectedSourceRevision">,

@@ -66,7 +66,7 @@ export type SessionContinuityOperationKey = Extract<
 >;
 export type SessionRevisionOperationKey = Extract<
   OperationKey,
-  'session.branch.create' | 'session.revision.create'
+  'session.branch.create' | 'session.revision.create' | 'session.revision.abandon'
 >;
 export type SessionRetirementOperationKey = Extract<
   OperationKey,

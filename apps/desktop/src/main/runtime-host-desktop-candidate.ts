@@ -15,6 +15,10 @@ import {
 } from "./bot-incoming-main.js";
 import { createRuntimeHostBotSessionAdapter } from "./runtime-host-bot-session-adapter.js";
 import { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type {
+  SessionCopyCleanupAuthority,
+  SessionCopyCleanupDisposition,
+} from "./quote-companion-cleanup.js";
 import {
   createDesktopNativeCapabilityProvider,
   type DesktopNativeCapabilityProvider,
@@ -55,6 +59,9 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly newId?: () => string;
   readonly now?: () => number;
+  readonly createSessionCopyCleanup: (input: {
+    removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition>;
+  }) => SessionCopyCleanupAuthority;
   readonly registerClientIpc?: (
     client: DesktopRuntimeHostClient,
     ipcMain: Pick<IpcMain, "handle">,
@@ -330,12 +337,22 @@ export async function createDesktopRuntimeHostCandidate(
         });
       return capabilityRefresh;
     };
+    const sessionCopyCleanup = deps.createSessionCopyCleanup({
+      removeSession: async (sessionId) => {
+        const disposition = await client.removeSessionCopy(sessionId);
+        if (disposition === "retained") return disposition;
+        await releaseNativeSession(sessionId).catch((error) => deps.onError?.(error));
+        deps.emitSessionsChanged("deleted", sessionId);
+        return disposition;
+      },
+    });
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
         workspaceRoot: deps.workspaceRoot,
         emitSessionsChanged: deps.emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,
+        sessionCopyCleanup,
         ...(deps.newId ? { newId: deps.newId } : {}),
       },
       ipc,

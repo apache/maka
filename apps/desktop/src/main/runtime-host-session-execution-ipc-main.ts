@@ -14,9 +14,9 @@ import {
   resolveIngestItems,
 } from "./attachment-ingest.js";
 import {
-  normalizeBranchFromTurnInput,
+  normalizeRuntimeHostBranchFromTurnInput,
   normalizeRegenerateTurnInput,
-  normalizeReviseBeforeTurnInput,
+  normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeUserQuestionResponse,
@@ -302,10 +302,10 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     "sessions:branchFromTurn",
     async (_event, sessionId: string, input: unknown) => {
-      const normalized = normalizeBranchFromTurnInput(input);
+      const normalized = normalizeRuntimeHostBranchFromTurnInput(input);
       let branch = await deps.client.copySession("branch", {
         sourceSessionId: sessionId,
-        targetSessionId: newId(),
+        targetSessionId: normalized.copyId,
         sourceTurnId: normalized.sourceTurnId,
       });
       if (normalized.name) {
@@ -320,10 +320,10 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     "sessions:reviseBeforeTurn",
     async (_event, sessionId: string, input: unknown) => {
-      const normalized = normalizeReviseBeforeTurnInput(input);
+      const normalized = normalizeRuntimeHostReviseBeforeTurnInput(input);
       const revision = await deps.client.copySession("revision", {
         sourceSessionId: sessionId,
-        targetSessionId: newId(),
+        targetSessionId: normalized.copyId,
         sourceTurnId: normalized.sourceTurnId,
       });
       deps.emitSessionsChanged("created", revision.id);

@@ -52,6 +52,7 @@ import {
 import { resolveProjectContextRoot } from "./project-context-root.js";
 import { createProjectManagementService } from "./project-management-service.js";
 import { createProjectRootController } from "./project-root-controller.js";
+import { createSessionCopyCleanupAuthority } from "./quote-companion-cleanup.js";
 import {
   projectHostConnections,
   registerRuntimeHostConnectionsIpc,
@@ -282,6 +283,8 @@ owner = await startRuntimeHostDesktopOwner(
     emitModeChanged: (sessionId) =>
       emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
+    createSessionCopyCleanup: ({ removeSession }) =>
+      createSessionCopyCleanupAuthority({ workspaceRoot, removeSession }),
     sendToRenderer: (channel, payload) =>
       mainWindowController.send(channel, payload),
     onError: (error) =>

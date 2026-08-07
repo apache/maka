@@ -15,6 +15,7 @@ import {
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
 const MAX_TURN_ID_LENGTH = 128;
+const MAX_COPY_ID_LENGTH = 128;
 const MAX_BRANCH_NAME_LENGTH = 200;
 const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
@@ -27,6 +28,9 @@ interface WorkspaceFileReferencePosition {
   value: string;
   start: number;
 }
+
+export type RuntimeHostBranchFromTurnInput = BranchFromTurnInput & { copyId: string };
+export type RuntimeHostReviseBeforeTurnInput = ReviseBeforeTurnInput & { copyId: string };
 
 interface NormalizedSendSessionCommand {
   type: 'send';
@@ -113,6 +117,26 @@ export function normalizeReviseBeforeTurnInput(input: unknown): ReviseBeforeTurn
       'Invalid revision sourceTurnId',
       MAX_TURN_ID_LENGTH,
     ),
+  };
+}
+
+export function normalizeRuntimeHostBranchFromTurnInput(
+  input: unknown,
+): RuntimeHostBranchFromTurnInput {
+  const value = requireObject(input, 'Invalid branch turn input');
+  return {
+    ...normalizeBranchFromTurnInput(value),
+    copyId: normalizeRequiredString(value.copyId, 'Invalid conversation copyId', MAX_COPY_ID_LENGTH),
+  };
+}
+
+export function normalizeRuntimeHostReviseBeforeTurnInput(
+  input: unknown,
+): RuntimeHostReviseBeforeTurnInput {
+  const value = requireObject(input, 'Invalid revision turn input');
+  return {
+    ...normalizeReviseBeforeTurnInput(value),
+    copyId: normalizeRequiredString(value.copyId, 'Invalid conversation copyId', MAX_COPY_ID_LENGTH),
   };
 }
 

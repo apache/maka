@@ -70,6 +70,98 @@ test("advances the Host read marker through the last visible message", async () 
   await observer.close();
 });
 
+test("retries committed Branch and Revision copies with the renderer-owned identity", async () => {
+  const committed = new Map<string, SessionCatalogProjection>();
+  const lostResponses = new Set(["branch-copy-1", "revision-copy-1"]);
+  const calls: Array<{
+    kind: "branch" | "revision";
+    targetSessionId: string;
+    sourceTurnId: string;
+  }> = [];
+  let fallbackIds = 0;
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        copySession: async (kind, input) => {
+          calls.push({
+            kind,
+            targetSessionId: input.targetSessionId,
+            sourceTurnId: input.sourceTurnId,
+          });
+          let copy = committed.get(input.targetSessionId);
+          if (!copy) {
+            copy = { ...session(), id: input.targetSessionId, name: input.targetSessionId };
+            committed.set(input.targetSessionId, copy);
+          }
+          if (lostResponses.delete(input.targetSessionId)) {
+            throw new Error("Committed response was lost");
+          }
+          return copy;
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => `fallback-${++fallbackIds}`,
+    },
+    ipc,
+  );
+
+  for (const input of [
+    {
+      channel: "sessions:branchFromTurn",
+      copyId: "branch-copy-1",
+      sourceTurnId: "branch-source-turn",
+    },
+    {
+      channel: "sessions:reviseBeforeTurn",
+      copyId: "revision-copy-1",
+      sourceTurnId: "revision-source-turn",
+    },
+  ] as const) {
+    await assert.rejects(
+      ipc.invoke(input.channel, "source-session", {
+        sourceTurnId: input.sourceTurnId,
+        copyId: input.copyId,
+      }),
+      /response was lost/,
+    );
+    const retried = (await ipc.invoke(input.channel, "source-session", {
+      sourceTurnId: input.sourceTurnId,
+      copyId: input.copyId,
+    })) as { id: string };
+    assert.equal(retried.id, input.copyId);
+  }
+
+  assert.deepEqual(calls, [
+    { kind: "branch", targetSessionId: "branch-copy-1", sourceTurnId: "branch-source-turn" },
+    { kind: "branch", targetSessionId: "branch-copy-1", sourceTurnId: "branch-source-turn" },
+    {
+      kind: "revision",
+      targetSessionId: "revision-copy-1",
+      sourceTurnId: "revision-source-turn",
+    },
+    {
+      kind: "revision",
+      targetSessionId: "revision-copy-1",
+      sourceTurnId: "revision-source-turn",
+    },
+  ]);
+  assert.equal(committed.size, 2);
+  assert.equal(fallbackIds, 0);
+
+  const newBranch = (await ipc.invoke("sessions:branchFromTurn", "source-session", {
+    sourceTurnId: "branch-source-turn",
+    copyId: "branch-copy-2",
+  })) as { id: string };
+  assert.equal(newBranch.id, "branch-copy-2");
+  assert.equal(committed.size, 3);
+});
+
 test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
   const starts: unknown[] = [];
   const uploads: unknown[] = [];

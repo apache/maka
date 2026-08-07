@@ -125,7 +125,9 @@ export function QuoteCompanionPanel(props: {
                   size="sm"
                   className="maka-quote-panel-clear"
                   label={copy.exit}
-                  onClick={props.onClear}
+                  onClick={() => {
+                    void companion.abandonPendingCopy().finally(() => props.onClear?.());
+                  }}
                 />
               </div>
             )}

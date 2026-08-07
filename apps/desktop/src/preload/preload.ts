@@ -6,6 +6,8 @@ import type {
   PermissionActionResult,
   PermissionOverlayStartResult,
   RendererIngestInput,
+  DesktopBranchFromTurnInput,
+  DesktopReviseBeforeTurnInput,
   AppUpdateInstallRequest,
   AppUpdateInstallResult,
   AppUpdateStatus,
@@ -55,10 +57,8 @@ import type {
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
-  BranchFromTurnInput,
   CapabilitySnapshotCollection,
   RegenerateTurnInput,
-  ReviseBeforeTurnInput,
   TurnRecord,
   PermissionSnapshot,
   LocalMemoryEntryPreview,
@@ -255,10 +255,10 @@ const makaBridge = {
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return ipcRenderer.invoke('sessions:regenerateTurn', sessionId, input);
     },
-    branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
+    branchFromTurn(sessionId: string, input: DesktopBranchFromTurnInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:branchFromTurn', sessionId, input);
     },
-    reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
+    reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:reviseBeforeTurn', sessionId, input);
     },
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
@@ -364,8 +364,11 @@ const makaBridge = {
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return ipcRenderer.invoke('sessions:remove', sessionId, options);
     },
-    cleanupQuoteCompanion(sessionId: string): Promise<void> {
-      return ipcRenderer.invoke('sessions:cleanupQuoteCompanion', sessionId);
+    cleanupSessionCopy(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('sessions:cleanupSessionCopy', sessionId);
+    },
+    abandonSessionCopy(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('sessions:abandonSessionCopy', sessionId);
     },
   },
   projects: {

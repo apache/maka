@@ -121,6 +121,8 @@ import {
 } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
+  abandonTurnRevisionCopyAttempt,
+  completeTurnRevisionCopyAttempt,
   createAppShellRevisionActions,
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
@@ -546,6 +548,8 @@ function AppShellContent({
     if (draft.sourceSessionId !== draft.draftSessionId) {
       composerRef.current?.clearDraft(draft.sourceSessionId);
     }
+    if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
+    else void abandonTurnRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
   }, [sessions, commitRevisionDraft]);
 
@@ -1740,6 +1744,7 @@ function AppShellContent({
     if (ok !== false && quotes) clearQuotes();
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
+        completeTurnRevisionCopyAttempt(expectedRevisionDraft);
         composerRef.current?.clearDraft(expectedRevisionDraft.draftSessionId);
         if (expectedRevisionDraft.sourceSessionId !== expectedRevisionDraft.draftSessionId) {
           composerRef.current?.clearDraft(expectedRevisionDraft.sourceSessionId);
