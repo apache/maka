@@ -72,7 +72,6 @@
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "esbuild": "^0.27.7",
-    "postcss": "^8.5.20",
     "simple-icons": "16.28.0",
     "storybook": "^10.4.6",
     "vite": "^8.1.5"
