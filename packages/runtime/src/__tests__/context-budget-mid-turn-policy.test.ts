@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
-import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
+import {
+  buildDefaultContextBudgetPolicy,
+  resolveContextBudgetCapacity,
+} from '../context-budget-policy.js';
 
 describe('mid-turn history compact policy env plumbing', () => {
   test('defaults on: the runtime derives midTurn with the shared reserve when history compaction is enabled', () => {
@@ -89,6 +92,18 @@ describe('window-bounded reserve derivation (issue #882 PR 3 review P2)', () => 
     // No window: the flat 32_000 fallback budget and the classic reserve.
     assert.equal(policy?.maxHistoryEstimatedTokens, 32_000);
     assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
+    assert.deepEqual(
+      resolveContextBudgetCapacity(
+        {
+          ...gpt4Connection(),
+          defaultModel: 'custom-model',
+          models: [{ id: 'custom-model' }],
+        } as LlmConnection,
+        'custom-model',
+        policy,
+      ),
+      { tokens: 48_384, source: 'policy_fallback' },
+    );
   });
 
   test('respects an explicit reserve override verbatim even on a small window', () => {

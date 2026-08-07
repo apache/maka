@@ -1292,11 +1292,10 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // The verdict measured the pinned, steering-inclusive payload and refused
     // it explicitly instead of completing on an unmeasured over-window request
     // (unpinned, the fold hides the first steer from the measurement and the
-    // turn ends happily on end_turn). The third doStream invocation is the
-    // verdict's own abort landing before the stream starts — the mock counts
-    // the call, but no request chunk was ever produced.
+    // turn ends happily on end_turn). The third request is rejected locally
+    // before the provider adapter is called.
     assert.equal(complete(fixture)?.stopReason, 'context_budget_exhausted');
-    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.model.doStreamCalls.length, 2);
     // Both steers were durably delivered to the ledger before the verdict —
     // they are owned by history, not lost.
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 2);

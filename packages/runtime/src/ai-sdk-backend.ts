@@ -37,6 +37,7 @@ import type {
   StorageRef,
   AttachmentRef,
   QuoteRef,
+  ContextBudgetExhaustedDetail,
 } from '@maka/core/events';
 import type {
   StoredMessage,
@@ -211,6 +212,7 @@ import {
   buildHistorySearchSource,
   buildPromptSegmentEstimates,
   estimateRuntimeEventsTokens,
+  hasOversizedRetainedHistoryTurn,
   mergeContextBudgetDiagnostic,
   mergeContextBudgetDiagnosticPatches,
   mergeRuntimeEventsInOriginalOrder,
@@ -919,6 +921,22 @@ class TurnScope {
   ) {}
 }
 
+type PriorReplayResult =
+  | {
+      status: 'ready';
+      messages: ModelMessage[];
+      gate: RuntimeEventReplayFallbackGate | 'stored_message_projection';
+      diagnostics: RuntimeEventModelReplayPlan['diagnostics'];
+      runtimeEventCount?: number;
+      contextBudget?: ContextBudgetDiagnostic;
+      latestHistoryCompactCheckpoint?: HistoryCompactCheckpoint;
+    }
+  | {
+      status: 'context_budget_exhausted';
+      detail: ContextBudgetExhaustedDetail;
+      contextBudget?: ContextBudgetDiagnostic;
+    };
+
 export class AiSdkBackend implements AgentBackend {
   readonly kind: BackendKind = 'ai-sdk';
   readonly sessionId: string;
@@ -1472,7 +1490,41 @@ export class AiSdkBackend implements AgentBackend {
     }
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
-    const priorReplay = await this.buildPriorMessages(scope, input);
+    const priorReplayResult = await this.buildPriorMessages(scope, input);
+    if (scope.aborted) {
+      queue.push({
+        type: 'abort',
+        id: this.newId(),
+        turnId,
+        ts: this.now(),
+        reason: 'user_stop',
+      } satisfies AbortEvent);
+      queue.push({
+        type: 'complete',
+        id: this.newId(),
+        turnId,
+        ts: this.now(),
+        stopReason: 'user_stop',
+      } satisfies CompleteEvent);
+      queue.close();
+      yield* this.drain(queue);
+      return;
+    }
+    if (priorReplayResult.status === 'context_budget_exhausted') {
+      trace.modelStreamCompleted('context_budget_exhausted');
+      queue.push({
+        type: 'complete',
+        id: this.newId(),
+        turnId,
+        ts: this.now(),
+        stopReason: 'context_budget_exhausted',
+        contextBudgetExhaustedDetail: priorReplayResult.detail,
+      } satisfies CompleteEvent);
+      queue.close();
+      yield* this.drain(queue);
+      return;
+    }
+    const priorReplay = priorReplayResult;
     if (input.continuation && priorReplay.messages.length === 0) {
       const replay = priorReplayFailureTrace(priorReplay);
       const error = new ContinuationReplayEmptyError(replay.gate, replay.diagnosticCodes);
@@ -1856,6 +1908,11 @@ export class AiSdkBackend implements AgentBackend {
                 messages: requestMessages,
               })
             : undefined;
+          if (midTurnState?.exhaustedDetail) {
+            throw new Error(
+              `context budget exhausted before provider dispatch: ${midTurnState.exhaustedDetail}`,
+            );
+          }
           const projectedMessages = shaped?.messages ?? requestMessages;
           const finalChildSummaryStep =
             this.input.header.collaborationMode === 'agent' &&
@@ -3002,18 +3059,11 @@ export class AiSdkBackend implements AgentBackend {
   private async buildPriorMessages(
     scope: TurnScope,
     input: BackendSendInput,
-  ): Promise<{
-    messages: ModelMessage[];
-    gate: RuntimeEventReplayFallbackGate | 'stored_message_projection';
-    diagnostics: RuntimeEventModelReplayPlan['diagnostics'];
-    runtimeEventCount?: number;
-    contextBudget?: ContextBudgetDiagnostic;
-    /** Latest durable checkpoint (loaded or written this turn) for mid-turn roll-forward. */
-    latestHistoryCompactCheckpoint?: HistoryCompactCheckpoint;
-  }> {
+  ): Promise<PriorReplayResult> {
     const priorStored = input.context.filter((message) => message.turnId !== input.turnId);
     if (!input.runtimeContext) {
       return {
+        status: 'ready',
         messages: await this.materializePriorMessages(scope.imageBudget, priorStored),
         gate: 'stored_message_projection',
         diagnostics: [],
@@ -3029,14 +3079,40 @@ export class AiSdkBackend implements AgentBackend {
     );
     const preparedContextBudget =
       await this.compaction.prepareContextBudgetPolicy(priorRuntimeContext);
-    const contextBudget = preparedContextBudget.policy;
-    const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget, {
+    let contextBudget = preparedContextBudget.policy;
+    let budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget, {
       historyCompactProtocol:
         contextBudget?.historyCompact?.checkpoint ||
         this.compaction.hasHistoryCompactCheckpointWriter()
           ? 'checkpoint_v2'
           : 'legacy_v1',
     });
+    const oversizedRetainedTurn = hasOversizedRetainedHistoryTurn(
+      budgeted?.events ?? priorRuntimeContext,
+      contextBudget,
+    );
+    let contextBudgetExhaustedDetail: ContextBudgetExhaustedDetail | undefined =
+      oversizedRetainedTurn && contextBudget?.historyCompact?.enabled !== true
+        ? 'no_safe_completed_span'
+        : undefined;
+    if (oversizedRetainedTurn && contextBudget?.historyCompact?.enabled === true) {
+      const overflowRecoveryPolicy: ContextBudgetPolicy = {
+        ...contextBudget,
+        minRecentTurns: 0,
+        historyCompact: {
+          ...contextBudget.historyCompact,
+          minRecentTurns: 0,
+        },
+      };
+      contextBudget = overflowRecoveryPolicy;
+      budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, overflowRecoveryPolicy, {
+        historyCompactProtocol:
+          overflowRecoveryPolicy.historyCompact?.checkpoint ||
+          this.compaction.hasHistoryCompactCheckpointWriter()
+            ? 'checkpoint_v2'
+            : 'legacy_v1',
+      });
+    }
     let runtimeContext = budgeted?.events ?? priorRuntimeContext;
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let latestHistoryCompactCheckpoint = contextBudget?.historyCompact?.checkpoint;
@@ -3078,6 +3154,9 @@ export class AiSdkBackend implements AgentBackend {
               ...runtimeContext.filter((event) => !event.id.startsWith('history-compact:')),
             ];
           } else {
+            if (oversizedRetainedTurn && !writePatch.fallbackCheckpoint) {
+              contextBudgetExhaustedDetail = 'summarizer_failed';
+            }
             runtimeContext = writePatch.fallbackCheckpoint
               ? buildHistoryCompactCheckpointFailOpenContext(
                   writePatch.fallbackCheckpoint,
@@ -3121,6 +3200,22 @@ export class AiSdkBackend implements AgentBackend {
           );
         }
       }
+    }
+
+    if (
+      oversizedRetainedTurn &&
+      contextBudget?.maxHistoryEstimatedTokens !== undefined &&
+      estimateRuntimeEventsTokens(runtimeContext, contextBudget.charsPerToken) >
+        contextBudget.maxHistoryEstimatedTokens
+    ) {
+      contextBudgetExhaustedDetail ??= 'no_safe_completed_span';
+    }
+    if (contextBudgetExhaustedDetail) {
+      return {
+        status: 'context_budget_exhausted',
+        detail: contextBudgetExhaustedDetail,
+        ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
+      };
     }
 
     const historySearchSource = buildHistorySearchSource(priorRuntimeContext, contextBudget);
@@ -3258,6 +3353,7 @@ export class AiSdkBackend implements AgentBackend {
     );
     if (plan.items.length === 0) {
       return {
+        status: 'ready',
         messages: input.continuation
           ? await this.materializeRuntimeReplayTextOnly(scope.imageBudget, plan)
           : projectedMessages,
@@ -3271,6 +3367,7 @@ export class AiSdkBackend implements AgentBackend {
 
     if (hasBlockingReplayDiagnostics(plan)) {
       return {
+        status: 'ready',
         messages: input.continuation
           ? await this.materializeRuntimeReplayTextOnly(scope.imageBudget, plan)
           : projectedMessages,
@@ -3286,6 +3383,7 @@ export class AiSdkBackend implements AgentBackend {
 
     if (!plan.hasProviderNativeSemantics) {
       return {
+        status: 'ready',
         messages: await this.materializeRuntimeReplayPlan(plan, scope.imageBudget),
         gate: 'runtime_replay_text_only',
         diagnostics: plan.diagnostics,
@@ -3297,6 +3395,7 @@ export class AiSdkBackend implements AgentBackend {
 
     if (!this.canReplayProviderNative(plan)) {
       return {
+        status: 'ready',
         messages: input.continuation
           ? await this.materializeRuntimeReplayTextOnly(scope.imageBudget, plan)
           : projectedMessages,
@@ -3311,6 +3410,7 @@ export class AiSdkBackend implements AgentBackend {
     }
 
     return {
+      status: 'ready',
       messages: await this.materializeRuntimeReplayPlan(plan, scope.imageBudget),
       gate: 'runtime_replay_provider_native',
       diagnostics: plan.diagnostics,

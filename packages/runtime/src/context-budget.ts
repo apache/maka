@@ -304,6 +304,18 @@ export function applyRuntimeEventContextBudget(
   };
 }
 
+export function hasOversizedRetainedHistoryTurn(
+  events: readonly RuntimeEvent[],
+  policy: ContextBudgetPolicy | undefined,
+): boolean {
+  const maxTokens = finitePositive(policy?.maxHistoryEstimatedTokens);
+  if (maxTokens === undefined) return false;
+  const charsPerToken = policy?.charsPerToken ?? 4;
+  return groupEventsByTurn(events.filter(isHistoryCompactContentEvent), charsPerToken).some(
+    (turn) => turn.estimatedTokens > maxTokens,
+  );
+}
+
 export function buildPromptSegmentEstimates(input: PromptSegmentInput): PromptSegmentEstimate[] {
   const charsPerToken = input.charsPerToken ?? 4;
   return [

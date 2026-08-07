@@ -89,7 +89,10 @@ import {
   exceedsHighWater,
   planMidTurnCapacityCompaction,
 } from './mid-turn-capacity-compact.js';
-import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
+import {
+  resolveContextBudgetCapacity,
+  type ContextBudgetCapacity,
+} from './context-budget-policy.js';
 
 /**
  * Image byte allowance for one turn, accumulated across its provider steps.
@@ -1236,7 +1239,7 @@ export class AiSdkCompaction {
    * Mid-turn capacity compaction eligibility (issue #882 PR 1). Explicit
    * opt-in via `historyCompact.midTurn.enabled`; requires the checkpoint
    * writer seams plus the durable turn-ledger read, the persisted head anchor
-   * for this turn, and a known model context window.
+   * for this turn, and a bounded capacity window.
    */
   public buildMidTurnCapacityCompactState(
     input: BackendSendInput,
@@ -1267,15 +1270,16 @@ export class AiSdkCompaction {
     ) {
       return undefined;
     }
-    const contextWindow = resolveSelectedModelContextWindow(
+    const capacity = resolveContextBudgetCapacity(
       this.input.connection,
       this.input.modelId,
+      policy,
     );
-    if (contextWindow === undefined) return undefined;
+    if (capacity === undefined) return undefined;
     const priorContentEvents = (input.runtimeContext ?? [])
       .filter((event) => event.turnId !== input.turnId)
       .filter(isHistoryCompactContentEvent);
-    return new MidTurnCapacityCompactState(headAnchor, priorContentEvents, contextWindow);
+    return new MidTurnCapacityCompactState(headAnchor, priorContentEvents, capacity);
   }
 
   /**
@@ -1423,7 +1427,7 @@ export class AiSdkCompaction {
         });
       if (
         forcedEstimate === undefined &&
-        !exceedsHighWater(estimate, state.contextWindow, reserveTokens)
+        !exceedsHighWater(estimate, state.capacity.tokens, reserveTokens)
       ) {
         return keepProjection();
       }
@@ -1590,7 +1594,7 @@ export class AiSdkCompaction {
       orderedEvents,
       headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
       estimatedNextRequestTokens: input.estimatedNextRequestTokens,
-      contextWindow: state.contextWindow,
+      contextWindow: state.capacity.tokens,
       reserveTokens,
       reserveTailEvents: midTurn.reserveTailEvents ?? 1,
       charsPerToken,
@@ -1774,7 +1778,7 @@ export class AiSdkCompaction {
       minFlushedSteps: state.flushedSteps,
       // The provider rejected the request outright, so force the fold past the
       // high water regardless of the (evidently under-counting) estimate.
-      estimatedNextRequestTokens: state.contextWindow + 1,
+      estimatedNextRequestTokens: state.capacity.tokens + 1,
       referencePayloadChars,
       providerTools: input.providerTools,
       activeToolsForStep: input.activeTools,
@@ -1851,7 +1855,8 @@ export class AiSdkCompaction {
    *    remainder exceeds capacity); a recorded shaping failure keeps its own
    *    detail and diagnostic reason.
    *
-   * Step 0 is shaped by the pre_turn path and only records the baseline here.
+   * Step 0 is shaped by the pre_turn path. It is still measured here so an
+   * unshapable first request cannot bypass the capacity invariant.
    */
   public buildMidTurnFinalRequestVerdict(input: {
     shaped: RequestProjectionStage;
@@ -1885,7 +1890,10 @@ export class AiSdkCompaction {
           systemPromptChars,
         );
       let payloadChars = finalPayloadChars();
-      if (options.stepNumber >= 1 && !state.exhaustedDetail) {
+      if (
+        (options.stepNumber >= 1 || state.capacity.source === 'policy_fallback') &&
+        !state.exhaustedDetail
+      ) {
         const estimateFinal = (): number =>
           estimateNextRequestTokens({
             ...(state.lastRequestInputTokens !== undefined
@@ -1899,7 +1907,11 @@ export class AiSdkCompaction {
         const capacityAttemptedThisStep =
           state.replacedStepNumber === options.stepNumber ||
           state.lastShapeFailure?.stepNumber === options.stepNumber;
-        if (estimate > state.contextWindow && !capacityAttemptedThisStep) {
+        if (
+          options.stepNumber >= 1 &&
+          estimate > state.capacity.tokens &&
+          !capacityAttemptedThisStep
+        ) {
           // One bounded capacity re-entry: the trigger threshold is
           // approximate on purpose (recoverable), so a miss must become a
           // rescue attempt before it can become a terminal verdict. Re-run
@@ -1926,7 +1938,7 @@ export class AiSdkCompaction {
           payloadChars = finalPayloadChars();
           estimate = estimateFinal();
         }
-        if (estimate > state.contextWindow) {
+        if (estimate > state.capacity.tokens) {
           const failure =
             state.lastShapeFailure?.stepNumber === options.stepNumber
               ? state.lastShapeFailure
@@ -2200,7 +2212,7 @@ export class MidTurnCapacityCompactState {
   constructor(
     readonly headAnchor: RuntimeEvent,
     readonly priorContentEvents: readonly RuntimeEvent[],
-    readonly contextWindow: number,
+    readonly capacity: ContextBudgetCapacity,
   ) {}
 }
 

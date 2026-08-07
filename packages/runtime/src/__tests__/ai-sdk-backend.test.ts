@@ -10332,7 +10332,7 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       turnTailPrompt: 'volatile tail',
       contextBudget: {
         name: 'test-budget',
-        maxHistoryEstimatedTokens: 1,
+        maxHistoryEstimatedTokens: 40,
         minRecentTurns: 1,
         charsPerToken: 1,
       },

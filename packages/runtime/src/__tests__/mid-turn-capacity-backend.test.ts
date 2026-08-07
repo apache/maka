@@ -73,6 +73,9 @@ interface MidTurnFixtureOptions {
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
+  /** Exercise the supported explicit history-compaction escape hatch. */
+  historyCompactOff?: boolean;
+  historyBudgetTokens?: number;
   reserveTokens?: number;
   summarize?: () => Promise<string | undefined> | string | undefined;
   branch?: string;
@@ -90,8 +93,9 @@ interface MidTurnFixtureOptions {
   meteredSummarizer?: boolean;
   /** Override the checkpoint recorder (e.g. to simulate a write failure). */
   record?: (checkpoint: HistoryCompactCheckpoint) => void;
-  /** Make the prior turns large so folding them rescues an over-window turn. */
-  bigPriors?: boolean;
+  /** Payload size for each text prior, or for the tool result in a tool-heavy prior. */
+  priorChars?: number;
+  priorShape?: 'text' | 'tool_heavy';
   /** First tool result is huge (finding C: prune must be able to rescue it). */
   hugeFirstResult?: boolean;
   /** The model finishes on the second request instead of running three steps. */
@@ -106,10 +110,8 @@ interface MidTurnFixtureOptions {
   firstStepUsage?: { input: number; output: number } | 'missing';
   /** Volatile per-request turn tail (cwd/task state) appended to the user message. */
   volatileTurnTail?: boolean;
-  /** Very large prior turns (~20k chars) so a large summary still shrinks the fold. */
-  giantPriors?: boolean;
-  /** Large system prompt sent via the separate `system` field (finding: cold start). */
-  bigSystemPrompt?: boolean;
+  /** System prompt size sent through the provider's separate system field. */
+  systemPromptChars?: number;
 }
 
 /**
@@ -206,23 +208,49 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       };
     },
   });
-  const priorChars = options.giantPriors ? 10_000 : options.bigPriors ? 2_000 : 120;
+  const priorChars = options.priorChars ?? 120;
   const priorEvents: RuntimeEvent[] = options.withoutPriorTurns
     ? []
-    : [
-        runtimeTextEvent(
-          'prior-user',
-          'turn-0',
-          'user',
-          `PRIOR_FACT question ${'p'.repeat(priorChars)}`,
-        ),
-        runtimeTextEvent(
-          'prior-model',
-          'turn-0',
-          'model',
-          `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
-        ),
-      ];
+    : options.priorShape === 'tool_heavy'
+      ? [
+          runtimeTextEvent('prior-user', 'turn-0', 'user', 'PRIOR_FACT inspect the artifact'),
+          {
+            ...runtimeTextEvent('prior-call', 'turn-0', 'model', ''),
+            content: {
+              kind: 'function_call' as const,
+              id: 'prior-tool-1',
+              name: 'Read',
+              args: { path: 'artifact.log' },
+            },
+          },
+          {
+            ...runtimeTextEvent('prior-result', 'turn-0', 'model', ''),
+            role: 'tool' as const,
+            author: 'tool' as const,
+            content: {
+              kind: 'function_response' as const,
+              id: 'prior-tool-1',
+              name: 'Read',
+              result: `OVERSIZED_TOOL_RESULT_${'r'.repeat(priorChars)}`,
+              isError: false,
+            },
+          },
+          runtimeTextEvent('prior-model', 'turn-0', 'model', 'PRIOR_FACT inspection complete'),
+        ]
+      : [
+          runtimeTextEvent(
+            'prior-user',
+            'turn-0',
+            'user',
+            `PRIOR_FACT question ${'p'.repeat(priorChars)}`,
+          ),
+          runtimeTextEvent(
+            'prior-model',
+            'turn-0',
+            'model',
+            `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
+          ),
+        ];
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
     ...(options.branch !== undefined ? { branch: options.branch } : {}),
@@ -317,10 +345,15 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.volatileTurnTail
       ? { turnTailPrompt: 'VOLATILE_TAIL_SENTINEL cwd=/tmp/maka task=keep-going' }
       : {}),
-    ...(options.bigSystemPrompt ? { systemPrompt: 'SYSTEM_CONTEXT '.repeat(400) } : {}),
+    ...(options.systemPromptChars ? { systemPrompt: 'S'.repeat(options.systemPromptChars) } : {}),
     contextBudget: options.useRuntimeDefaultPolicy
       ? buildDefaultContextBudgetPolicy(
-          { ...connection(), models: [{ id: 'mock-model-id', contextWindow }] },
+          {
+            ...connection(),
+            models: [
+              { id: 'mock-model-id', ...(options.withoutContextWindow ? {} : { contextWindow }) },
+            ],
+          },
           {
             name: 'runtime-default-mid-turn',
             modelId: 'mock-model-id',
@@ -328,10 +361,17 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
             // default-on midTurn derivation and the window-bounded reserve
             // under test); a test may still size the reserve to its toy window
             // through the first-class env knob by passing reserveTokens.
-            env:
-              options.reserveTokens !== undefined
-                ? { MAKA_CONTEXT_HISTORY_COMPACT_RESERVE_TOKENS: String(options.reserveTokens) }
-                : {},
+            env: {
+              ...(options.reserveTokens !== undefined
+                ? {
+                    MAKA_CONTEXT_HISTORY_COMPACT_RESERVE_TOKENS: String(options.reserveTokens),
+                  }
+                : {}),
+              ...(options.historyCompactOff ? { MAKA_CONTEXT_HISTORY_COMPACT: 'off' } : {}),
+              ...(options.historyBudgetTokens !== undefined
+                ? { MAKA_CONTEXT_HISTORY_BUDGET_TOKENS: String(options.historyBudgetTokens) }
+                : {}),
+            },
           },
         )
       : {
@@ -663,7 +703,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     const fixture = buildFixture({
       contextWindow: 150,
       reserveTokens: 100,
-      bigPriors: true,
+      priorChars: 2_000,
       firstStepUsage: { input: 1_400, output: 20 },
     });
     await runFixtureTurn(fixture, consumer);
@@ -754,7 +794,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     const fixture = buildFixture({
       contextWindow: 150,
       reserveTokens: 100,
-      bigPriors: true,
+      priorChars: 2_000,
       record: () => {
         throw new Error('disk full');
       },
@@ -846,7 +886,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // real replacement projection instead: the third step's huge result makes
     // even [second block, anchor, tail] exceed the window, so the turn must
     // end with the explicit outcome — never send the over-window request.
-    const fixture = buildFixture({ bigPriors: true, rollingOverflow: true });
+    const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
     await runFixtureTurn(fixture, consumer);
 
     // The first fold happened and its projection was used (three requests ran).
@@ -875,7 +915,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // verdict diagnostics ride this record and the completed steps' cost is
     // real. Three steps stream (100/20 + 150/30 + 150/30) before the step-4
     // verdict aborts the send.
-    const fixture = buildFixture({ bigPriors: true, rollingOverflow: true });
+    const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
     await runFixtureTurn(fixture, consumer);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
@@ -883,9 +923,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       complete?.type === 'complete' ? complete.stopReason : undefined,
       'context_budget_exhausted',
     );
-    // Three requests streamed; the fourth doStream call rejects immediately on
-    // the already-aborted signal and never reports usage.
-    assert.equal(fixture.model.doStreamCalls.length, 4);
+    // Three requests streamed; the fourth is rejected locally before the
+    // provider adapter is called and therefore reports no usage.
+    assert.equal(fixture.model.doStreamCalls.length, 3);
     const lastCall = fixture.llmCalls.at(-1);
     assert.equal(lastCall?.status, 'error');
     assert.equal(lastCall?.errorClass, 'ContextBudgetExhausted');
@@ -902,7 +942,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // the whole call — so the truthful outcome is no record at all; the
     // terminal result stays observable on the durable CompleteEvent.
     const fixture = buildFixture({
-      bigPriors: true,
+      priorChars: 2_000,
       rollingOverflow: true,
       firstStepUsage: 'missing',
     });
@@ -1035,7 +1075,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     const fixture = buildFixture({
       contextWindow: 1_000,
       reserveTokens: 100,
-      bigPriors: true,
+      priorChars: 2_000,
       finalAtSecondCall: true,
       firstStepUsage: 'missing',
     });
@@ -1096,7 +1136,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
   test('persists a complete summary above the legacy block cap when the full replay shrinks and fits', async () => {
     const fixture = buildFixture({
-      giantPriors: true,
+      priorChars: 10_000,
       summarize: () => 'S'.repeat(5_000),
     });
     await runFixtureTurn(fixture, consumer);
@@ -1124,7 +1164,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       hugeFirstResult: true,
       finalAtSecondCall: true,
       firstStepUsage: 'missing',
-      bigSystemPrompt: true,
+      systemPromptChars: 6_000,
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1251,12 +1291,10 @@ describe('mid-turn capacity compaction flow plumbing', () => {
 });
 
 describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
-  test('does not fire when the selected model has no known context window (conservative default)', async () => {
-    // PR 3 sinks midTurn on by default, but the backend only activates it when
-    // resolveSelectedModelContextWindow yields a window. An unknown model (no
-    // metadata, no models[].contextWindow) must never compact. Durable replay
-    // remains active because it is the Runtime loop's independent source of
-    // truth.
+  test('keeps the fallback capacity guard inert below its unknown-model bound', async () => {
+    // The unknown model derives a 48,384-token capacity from the default
+    // 32,000-token history budget plus its 16,384-token reserve. This small
+    // turn stays below that bound, so no compaction runs.
     const fixture = buildFixture({ withoutContextWindow: true });
     await runFixtureTurn(fixture);
 
@@ -1267,6 +1305,178 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
     // The raw span is never folded away, proving no compaction ran.
     assert.equal(promptJson(fixture, 2).includes('RAW_SPAN_ONE_'), true);
+  });
+
+  test('compacts one oversized prior turn before an unknown-model request', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      priorChars: 180_000,
+      priorShape: 'tool_heavy',
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]?.coverage.eventCount, 4);
+    assert.match(fixture.summarizedSources[0] ?? '', /function_call/);
+    assert.match(fixture.summarizedSources[0] ?? '', /function_response/);
+    const firstPrompt = promptJson(fixture, 0);
+    assert.match(firstPrompt, /maka_history_compact_checkpoint/);
+    assert.match(firstPrompt, /MID_TURN_SUMMARY_SENTINEL/);
+    assert.equal(firstPrompt.includes('OVERSIZED_TOOL_RESULT_'), false);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+  });
+
+  test('rejects one oversized prior turn locally when its summary fails', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      priorChars: 180_000,
+      priorShape: 'tool_heavy',
+      summarize: () => undefined,
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.model.doStreamCalls.length, 0);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
+  });
+
+  test('compacts an oversized latest turn when an older turn is also retained', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      priorChars: 180_000,
+      priorShape: 'tool_heavy',
+    });
+    fixture.priorEvents.unshift(
+      runtimeTextEvent('older-user', 'turn-older', 'user', 'older question'),
+      runtimeTextEvent('older-model', 'turn-older', 'model', 'older answer'),
+    );
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(promptJson(fixture, 0).includes('OVERSIZED_TOOL_RESULT_'), false);
+  });
+
+  test('rejects an oversized prior turn when history compaction is disabled', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      historyCompactOff: true,
+      priorChars: 180_000,
+      priorShape: 'tool_heavy',
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.equal(fixture.model.doStreamCalls.length, 0);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+  });
+
+  test('rejects an oversized penultimate turn when history compaction is disabled', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      historyCompactOff: true,
+      priorChars: 180_000,
+      priorShape: 'tool_heavy',
+    });
+    fixture.priorEvents.push(
+      runtimeTextEvent('latest-user', 'turn-latest', 'user', 'small latest question'),
+      runtimeTextEvent('latest-model', 'turn-latest', 'model', 'small latest answer'),
+    );
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 0);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+  });
+
+  test('keeps multiple bounded recent turns when only their aggregate exceeds the history budget', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      contextWindow: 100_000,
+      historyCompactOff: true,
+      historyBudgetTokens: 32_000,
+      priorChars: 40_000,
+    });
+    fixture.priorEvents.push(
+      runtimeTextEvent('second-user', 'turn-second', 'user', `SECOND_USER_${'u'.repeat(40_000)}`),
+      runtimeTextEvent(
+        'second-model',
+        'turn-second',
+        'model',
+        `SECOND_MODEL_${'m'.repeat(40_000)}`,
+      ),
+    );
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+  });
+
+  test('rejects an oversized complete step-zero payload before provider dispatch', async () => {
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      systemPromptChars: 200_000,
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 0);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+  });
+
+  test('keeps user_stop when stopping an oversized pre-turn summary', async () => {
+    let markSummaryStarted: (() => void) | undefined;
+    const summaryStarted = new Promise<void>((resolve) => {
+      markSummaryStarted = resolve;
+    });
+    let finishSummary: (() => void) | undefined;
+    const fixture = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      withoutContextWindow: true,
+      priorChars: 180_000,
+      priorShape: 'tool_heavy',
+      summarize: () =>
+        new Promise<undefined>((resolve) => {
+          finishSummary = () => resolve(undefined);
+          markSummaryStarted?.();
+        }),
+    });
+    const turn = runFixtureTurn(fixture);
+    await summaryStarted;
+    await fixture.backend.stop('user_stop');
+    finishSummary?.();
+    await turn;
+
+    assert.equal(fixture.model.doStreamCalls.length, 0);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'abort'),
+      true,
+    );
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'user_stop');
   });
 
   test('does not fire for a session without a persisted head anchor (child sessions have no seam)', async () => {
@@ -1324,7 +1534,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 1_000,
-      bigPriors: true,
+      priorChars: 1_400,
       firstStepUsage: { input: 900, output: 20 },
     });
     await runFixtureTurn(fixture);
