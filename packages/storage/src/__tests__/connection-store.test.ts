@@ -139,6 +139,30 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  test('create keeps relay profiles for every model in the seeded enabled set', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'import-relay',
+        name: 'Imported Relay',
+        providerType: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+        defaultModel: 'reasoner',
+        enabledModelIds: ['reasoner', 'plain'],
+        relayModelProfiles: {
+          reasoner: { thinkingLevels: ['high'], vision: true },
+          plain: { contextWindow: 16_000 },
+          // Still outside the selection — must not survive create.
+          ghost: { vision: false },
+        },
+      });
+      assert.deepEqual(created.enabledModelIds, ['reasoner', 'plain']);
+      assert.deepEqual(created.relayModelProfiles, {
+        reasoner: { thinkingLevels: ['high'], vision: true },
+        plain: { contextWindow: 16_000 },
+      });
+    });
+  });
+
   test('relay profile invariants match the catalog codec on every write shape', async () => {
     await withConnectionStore(async (store) => {
       // Foreign providers carry no table at all — in create, update, and

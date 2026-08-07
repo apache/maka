@@ -77,10 +77,19 @@ class FileConnectionStore implements ConnectionStore {
       const now = Date.now();
       const baseUrl = persistedBaseUrl(input.providerType, input.baseUrl);
       const defaultModel = input.defaultModel || defaults.fallbackModels[0] || '';
+      // Profiles prune against the same selection the connection will store —
+      // not just the default. Import/create can seed enabledModelIds + profiles
+      // together; using only defaultModel would drop every non-default profile.
+      const enabledModelIds = connectionEnabledModelIds({
+        defaultModel,
+        // Only fill a missing selection. Explicit [] / subset stays as stated.
+        enabledModelIds:
+          input.enabledModelIds ?? defaultEnabledModelIdsWhenOmitted(input.providerType),
+      });
       const relayModelProfiles = relayProfilesForStorage(
         input.providerType,
         input.relayModelProfiles,
-        connectionEnabledModelIds({ defaultModel }),
+        enabledModelIds,
       );
       const next: LlmConnection = {
         slug: input.slug,
@@ -89,12 +98,7 @@ class FileConnectionStore implements ConnectionStore {
         ...(baseUrl ? { baseUrl } : {}),
         defaultModel,
         enabled: true,
-        enabledModelIds: connectionEnabledModelIds({
-          defaultModel,
-          // Only fill a missing selection. Explicit [] / subset stays as stated.
-          enabledModelIds:
-            input.enabledModelIds ?? defaultEnabledModelIdsWhenOmitted(input.providerType),
-        }),
+        enabledModelIds,
         createdAt: now,
         updatedAt: now,
         ...(input.extras ? { extras: input.extras } : {}),
