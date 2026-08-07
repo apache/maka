@@ -7,6 +7,7 @@ import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
+import { quoteActionsFixedTop } from './quote-actions-geometry.js';
 import type {
   DeepResearchClientProgress,
   ProviderType,
@@ -722,7 +723,7 @@ export function ChatView(props: {
             </div>,
             {
               x: selectionQuote.anchor.x,
-              y: Math.max(8, selectionQuote.anchor.y - 42),
+              y: quoteActionsFixedTop(selectionQuote.anchor.y),
               style: { transform: 'translateX(-50%)' },
             },
           )

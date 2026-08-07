@@ -16,7 +16,9 @@
   -webkit-app-region: no-drag;
   /* The hook already waits for the selection to settle before rendering this;
      the fade keeps that arrival from reading as a pop. Short enough not to
-     add to the wait the user has already served. */
+     add to the wait the user has already served. Opacity only: a Y transform
+     here offsets getBoundingClientRect from the live selection anchor and
+     fails scroll-follow E2E by that residual (#2377, #2379). */
   animation: maka-quote-actions-in 120ms var(--ease-standard, ease-out);
 }
 

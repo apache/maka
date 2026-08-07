@@ -213,6 +213,12 @@ test('the quote layer follows the selection while the transcript scrolls', async
    * — the flake this test kept hitting. In here the scroll and both rects are
    * one synchronous layout, and the wait for the layer to catch up is by frame.
    *
+   * Each frame re-reads both tops: freezing selectionShift at the scroll write
+   * used to compare a settled layer against a selection that had not finished
+   * layout, and a residual of ~2 CSS px looked like product drift (#2379). The
+   * entry animation must not add a Y transform either (#2377); that path is
+   * locked by the CSS contract test.
+   *
    * Writing `scrollTop` rather than sending a wheel: wheel delivery is a
    * host-level detail (it landed nowhere on CI's Linux runner), while what this
    * test is about is the `scroll` event the hook listens to, which a scrollTop
@@ -232,17 +238,33 @@ test('the quote layer follows the selection while the transcript scrolls', async
       document.querySelector('.maka-quote-actions')?.getBoundingClientRect().top ?? null;
 
     const before = { selection: selectionTop(), layer: layerTop() };
+    if (before.selection === null || before.layer === null) {
+      return { selectionShift: 0, layerShift: null as number | null, residual: null as number | null };
+    }
     scroller.scrollTop -= 220;
-    const selectionShift = selectionTop()! - before.selection!;
 
     for (let frame = 0; frame < 120; frame += 1) {
       await nextFrame();
-      const now = layerTop();
-      if (now !== null && Math.abs(now - before.layer! - selectionShift) <= 1) {
-        return { selectionShift, layerShift: now - before.layer! };
+      const selection = selectionTop();
+      const layer = layerTop();
+      if (selection === null || layer === null) continue;
+      const selectionShift = selection - before.selection;
+      const layerShift = layer - before.layer;
+      // Vacuous until the selection has actually moved with the scroll.
+      if (selectionShift === 0) continue;
+      const residual = Math.abs(layerShift - selectionShift);
+      if (residual <= 1) {
+        return { selectionShift, layerShift, residual };
       }
     }
-    return { selectionShift, layerShift: layerTop() === null ? null : layerTop()! - before.layer! };
+    const selection = selectionTop();
+    const layer = layerTop();
+    const selectionShift =
+      selection === null ? 0 : selection - before.selection;
+    const layerShift = layer === null ? null : layer - before.layer;
+    const residual =
+      layerShift === null ? null : Math.abs(layerShift - selectionShift);
+    return { selectionShift, layerShift, residual };
   });
 
   // A scroll that moved nothing would make the assertion below vacuous.
@@ -250,7 +272,10 @@ test('the quote layer follows the selection while the transcript scrolls', async
   // The layer tracks the selection rather than merely surviving the scroll.
   // Sub-pixel tolerance, not exactness: the layer is positioned in CSS pixels
   // and rounded to the device grid, so it lands within a pixel of the anchor.
-  expect(Math.abs(follow.layerShift! - follow.selectionShift)).toBeLessThanOrEqual(1);
+  expect(
+    follow.residual,
+    `quote layer did not track selection (selectionShift=${follow.selectionShift}, layerShift=${follow.layerShift}, residual=${follow.residual})`,
+  ).toBeLessThanOrEqual(1);
 
   // Following stops at the edge of the scroller. Once the anchor leaves the
   // visible band there is nothing to point at, and a bar clamped to the top of
