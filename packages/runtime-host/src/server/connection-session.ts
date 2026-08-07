@@ -48,6 +48,7 @@ export class RuntimeHostConnectionSession {
   readonly #options: RuntimeHostConnectionSessionOptions;
   readonly #writer: BoundedSerialOutboundWriter;
   readonly #requests = new Map<string, Promise<void>>();
+  #inFlightStatusRequests = 0;
   #continuityService: SessionContinuityService | undefined;
   #continuity: SessionContinuityConnection | undefined;
   #clientCapabilityService: ClientCapabilityService | undefined;
@@ -108,7 +109,13 @@ export class RuntimeHostConnectionSession {
         }
         throw new Error('Unexpected handshake frame after acceptance');
       }
-      if (this.#requests.has(frame.requestId) || this.#requests.size >= MAX_IN_FLIGHT_REQUESTS) {
+      const usesLivenessReserve =
+        this.#requests.size === MAX_IN_FLIGHT_REQUESTS &&
+        (frame.operation === 'host.status' || this.#inFlightStatusRequests > 0);
+      if (
+        this.#requests.has(frame.requestId) ||
+        (this.#requests.size >= MAX_IN_FLIGHT_REQUESTS && !usesLivenessReserve)
+      ) {
         this.#teardown();
         return;
       }
@@ -117,11 +124,13 @@ export class RuntimeHostConnectionSession {
   }
 
   #dispatch(frame: RequestFrame): void {
+    if (frame.operation === 'host.status') this.#inFlightStatusRequests += 1;
     const task = this.#handleRequest(frame)
       .catch(() => this.#teardown())
       .finally(() => {
         if (this.#requests.get(frame.requestId) === task) {
           this.#requests.delete(frame.requestId);
+          if (frame.operation === 'host.status') this.#inFlightStatusRequests -= 1;
         }
       });
     this.#requests.set(frame.requestId, task);
