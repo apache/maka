@@ -124,6 +124,21 @@ test('recovery matching includes override provenance and delete consequence', ()
     modelKey: 'provider:model',
     expected: 'unpriced',
   }, snapshot([])), true);
+  assert.equal(pricingTargetMatchesSnapshot({
+    kind: 'delete',
+    modelKey: 'provider:model',
+    expected: 'no_override',
+  }, snapshot([equalBuiltin])), true);
+  assert.equal(pricingTargetMatchesSnapshot({
+    kind: 'delete',
+    modelKey: 'provider:model',
+    expected: 'no_override',
+  }, snapshot([])), true);
+  assert.equal(pricingTargetMatchesSnapshot({
+    kind: 'delete',
+    modelKey: 'provider:model',
+    expected: 'no_override',
+  }, snapshot([equalCustom])), false);
 });
 
 test('a revision or connection change invalidates the editor save base', () => {

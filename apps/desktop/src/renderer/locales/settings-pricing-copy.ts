@@ -38,7 +38,6 @@ export type PricingSettingsCopy = {
     cancel: string;
     save: string;
     saveAgain: string;
-    saving: string;
   };
   validation(field: PricingDraftField, error: PricingDraftError): string;
   confirm: {
@@ -113,7 +112,6 @@ const SETTINGS_PRICING_COPY = {
       cancel: '取消',
       save: '保存',
       saveAgain: '复核后保存',
-      saving: '正在保存定价',
     },
     validation: (field, error) => {
       if (error === 'required') return '此费率为必填项';
@@ -193,7 +191,6 @@ const SETTINGS_PRICING_COPY = {
       cancel: 'Cancel',
       save: 'Save',
       saveAgain: 'Save after review',
-      saving: 'Saving pricing',
     },
     validation: (field, error) => {
       if (error === 'required') return 'This rate is required';

@@ -371,7 +371,9 @@ export function PricingSettingsPanel(props: { port: DesktopPricingSettingsPort }
 
   function closeDelete() {
     if (operationGateRef.current.activeKind === 'write') return;
+    const current = deleteSessionRef.current;
     replaceDeleteSession(null);
+    if (current?.review) setNotice(null);
     requestFocusRestore();
   }
 
@@ -763,7 +765,7 @@ function PricingEditorDialog(props: {
                   label={props.copy.editor.modelKey}
                   description={props.copy.editor.modelKeyDescription}
                   isRequired
-                  hasAutoFocus
+                  hasAutoFocus={props.session.draft.mode === 'add'}
                   value={props.session.draft.modelKey}
                   isDisabled={interactionDisabled || props.session.draft.mode === 'edit'}
                   status={fieldStatus('modelKey')}
@@ -774,6 +776,7 @@ function PricingEditorDialog(props: {
                     label={props.copy.editor.inputRate}
                     description={props.copy.editor.rateDescription}
                     isRequired
+                    hasAutoFocus={props.session.draft.mode === 'edit'}
                     value={props.session.draft.inputUsdPer1M}
                     isDisabled={interactionDisabled}
                     status={fieldStatus('inputUsdPer1M')}

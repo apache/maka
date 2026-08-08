@@ -10,6 +10,8 @@ export interface PricingSettingsOperationToken {
  * Serializes Pricing Settings reads and writes and invalidates completions from
  * a replaced semantic port. React state mirrors this gate for presentation;
  * the token remains the authority at every async completion boundary.
+ * Unlike the shared action guards, the generation is part of correctness here:
+ * replacing the port must invalidate an already-running read or write.
  */
 export class PricingSettingsOperationGate {
   #generation = 0;

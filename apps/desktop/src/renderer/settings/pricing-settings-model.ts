@@ -1,11 +1,13 @@
 import {
-  canonicalPricingConfigsEqual,
   normalizePricingConfig,
   normalizePricingModelKey,
 } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import type { EffectivePricingEntry } from '@maka/runtime-host/protocol';
-import type { DesktopPricingSnapshot } from '../../shared/runtime-host-pricing';
+export {
+  pricingTargetMatchesSnapshot,
+} from '../../shared/runtime-host-pricing.js';
+import type { DesktopPricingSnapshot } from '../../shared/runtime-host-pricing.js';
 
 export type PricingDraftField =
   | 'modelKey'
@@ -156,23 +158,6 @@ export function validatePricingDraft(
 /** Display is deliberately separate from editor seeding and persisted input. */
 export function formatPricingRate(rate: number): string {
   return `$${String(rate)}`;
-}
-
-export function pricingTargetMatchesSnapshot(
-  target: PricingMutationTarget,
-  snapshot: DesktopPricingSnapshot,
-): boolean {
-  const modelKey = target.kind === 'upsert' ? target.pricing.modelKey : target.modelKey;
-  const current = snapshot.entries.find(
-    (entry) => entry.pricing.modelKey === modelKey,
-  );
-  if (target.kind === 'upsert') {
-    return current?.source === 'custom'
-      && canonicalPricingConfigsEqual(current.pricing, target.pricing);
-  }
-  return target.expected === 'builtin'
-    ? current?.source === 'builtin'
-    : current === undefined;
 }
 
 export function pricingSnapshotIdentityChanged(

@@ -1,3 +1,5 @@
+import { canonicalPricingConfigsEqual } from '@maka/core/usage-stats/pricing';
+import type { PricingConfig } from '@maka/core/usage-stats/types';
 import type { EffectivePricingEntry, PricingMutation } from '@maka/runtime-host/protocol';
 
 /**
@@ -15,6 +17,39 @@ export interface DesktopPricingSnapshot {
 export interface DesktopPricingMutationInput {
   readonly base: DesktopPricingSnapshot;
   readonly mutation: PricingMutation;
+}
+
+export type PricingReconciliationTarget =
+  | { readonly kind: 'upsert'; readonly pricing: Readonly<PricingConfig> }
+  | {
+      readonly kind: 'delete';
+      readonly modelKey: string;
+      readonly expected: 'builtin' | 'unpriced' | 'no_override';
+    };
+
+/**
+ * Shared reconciliation semantics for the Host adapter and renderer recovery
+ * path. Keeping provenance here prevents the two callers from drifting on
+ * what counts as an already-applied mutation.
+ */
+export function pricingTargetMatchesSnapshot(
+  target: PricingReconciliationTarget,
+  snapshot: DesktopPricingSnapshot,
+): boolean {
+  const modelKey = target.kind === 'upsert' ? target.pricing.modelKey : target.modelKey;
+  const current = snapshot.entries.find((entry) => entry.pricing.modelKey === modelKey);
+  if (target.kind === 'upsert') {
+    return current?.source === 'custom'
+      && canonicalPricingConfigsEqual(current.pricing, target.pricing);
+  }
+  switch (target.expected) {
+    case 'builtin':
+      return current?.source === 'builtin';
+    case 'unpriced':
+      return current === undefined;
+    case 'no_override':
+      return current === undefined || current.source === 'builtin';
+  }
 }
 
 export type DesktopPricingMutationOutcome =
