@@ -76,10 +76,14 @@ describe('SqliteRuntimeStore', () => {
         (error: unknown) => error instanceof RunSealedError,
       );
       await assert.rejects(
-        store.appendRuntimeEvent(opening.sessionId, opening.runId, functionCallEvent({
-          id: 'late-tool-straggler',
-          ts: 4,
-        })),
+        store.appendRuntimeEvent(
+          opening.sessionId,
+          opening.runId,
+          functionCallEvent({
+            id: 'late-tool-straggler',
+            ts: 4,
+          }),
+        ),
         (error: unknown) => error instanceof RunSealedError,
       );
       // Exact-id retry of an already-stored event keeps its dedup answer.
