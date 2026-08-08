@@ -180,11 +180,10 @@ describe('runShellWithBoundedTail', () => {
     }
   });
 
-  test('on abort, kills descendants that detach from the shell process group', async () => {
+  test('on abort, kills detached descendants of a directly spawned process', async () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'shell-exec-tree-'));
     const pidFile = join(dir, 'child.pid');
     const parentFile = join(dir, 'parent.cjs');
-    const runtime = JSON.stringify(process.execPath);
     const childScript = 'setInterval(() => {}, 1000)';
     await fs.writeFile(
       parentFile,
@@ -200,10 +199,10 @@ describe('runShellWithBoundedTail', () => {
       setInterval(() => {}, 1000);
     `,
     );
-    const cmd = `${runtime} ${JSON.stringify(parentFile)}`;
     const abort = new AbortController();
-    const running = runShellWithBoundedTail(
-      cmd,
+    const running = runProcessWithBoundedTail(
+      process.execPath,
+      [parentFile],
       base({
         timeoutMs: 10_000,
         killGraceMs: 150,
