@@ -111,7 +111,11 @@
      built on. zinc-family hue 286 at the same chroma reads clean and
      cool like the reference sidebar. */
   --foreground: oklch(0.17 0.005 286);
-  --foreground-dimmed: color-mix(in srgb, var(--foreground) 80%, var(--background));
+  /* Alias, not a tier. It was written as "80% ink" like --foreground-secondary
+     but mixed in srgb where that one mixes in oklch, so the same words gave
+     two different colours (10.51:1 vs 12.01:1 measured). One family, one
+     colour space: derive every ink in oklch. */
+  --foreground-dimmed: var(--foreground-secondary);
 
   /* Brand accent = logo blue (oklch L0.70 C0.135 h250), sampled from
      apps/desktop/assets/icon.png (owner decision 2026-07-03). --success stays
@@ -234,8 +238,18 @@
   --border-width-thick:    2px;
   --border-width-accent:   3px;
   --muted:         oklch(from var(--foreground) l c h / 0.05);
-  --muted-foreground: color-mix(in oklch, var(--foreground) 50%, var(--background));
-  --foreground-secondary: color-mix(in oklch, var(--foreground) 80%, var(--background));
+  /* Ink ladder (visual system 2.0, T1): three tiers about 2x apart, all above
+     4.5:1. Measured against --surface-raised, light reads 19.1 / 9.8 / 4.8.
+
+     The audit asked for a 3x gap, copied from a reference that reaches 3.6x
+     with only TWO text tiers. Three tiers standing on a 4.5:1 AA floor cannot
+     span 3x without the bottom two colliding, so the rhythm is even instead:
+     roughly geometric, which is what three tiers can actually hold.
+
+     50% muted was the one real defect — 4.21:1 in light and 3.89:1 in dark,
+     already under AA in the mode nobody checked. */
+  --muted-foreground: color-mix(in oklch, var(--foreground) 54%, var(--background));
+  --foreground-secondary: color-mix(in oklch, var(--foreground) 74%, var(--background));
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
   /* PR5 FOREGROUND-ALPHA-TOKEN-0: raw foreground-alpha tiers for component
@@ -788,7 +802,11 @@
   --surface-raised: var(--background);
   --surface-overlay: color-mix(in srgb, var(--foreground) 2%, var(--background));
   --background-elevated: var(--surface-overlay);
-  --foreground: oklch(0.92 0.004 286);
+  /* 0.92 measured 14.11:1, just under the 15:1 the reading tier asks for. */
+  --foreground: oklch(0.95 0.004 286);
+  /* Dark's ink-to-surface gap differs, so one percentage cannot put secondary
+     in the 8.5-10:1 band for both modes: 74% gives 9.8 light but 8.2 dark. */
+  --foreground-secondary: color-mix(in oklch, var(--foreground) 78%, var(--background));
 
   --accent: oklch(0.74 0.15 250);
   /* Dark mode keeps the same pale-blue CTA chip + deep-blue text as light
