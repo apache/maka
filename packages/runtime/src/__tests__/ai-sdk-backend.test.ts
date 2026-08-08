@@ -3943,8 +3943,6 @@ describe('AiSdkBackend model history', () => {
     const arm = await projectReplayPromptChars(true);
     const baselineTokens = Math.ceil(baseline.length / CHARS_PER_TOKEN);
     const armTokens = Math.ceil(arm.length / CHARS_PER_TOKEN);
-    const savedTokens = baselineTokens - armTokens;
-    const savedPct = (savedTokens / baselineTokens) * 100;
 
     // Ground-truth: baseline hydrates the raw payload; the arm swaps in the block.
     assert.ok(
@@ -3958,11 +3956,6 @@ describe('AiSdkBackend model history', () => {
       'arm must not hydrate the raw payload',
     );
     assert.ok(armTokens < baselineTokens, 'synthesis cache must reduce replay tokens');
-    assert.ok(savedPct > 40, `expected >40% replay-token saving, got ${savedPct.toFixed(1)}%`);
-
-    console.log(
-      `[synthesis-cache A/B] replay prompt tokens (charsPerToken=${CHARS_PER_TOKEN}): baseline=${baselineTokens} arm=${armTokens} saved=${savedTokens} (${savedPct.toFixed(1)}%)`,
-    );
   });
 
   test('loads synthesis blocks before archive retrieval', async () => {

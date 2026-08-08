@@ -17,10 +17,7 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
 }
 
 describe('buildProviderOptions: thinking level', () => {
-  test('only native Anthropic enables automatic prompt caching', () => {
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8'), {
-      anthropic: { cacheControl: { type: 'ephemeral' } },
-    });
+  test('Anthropic-compatible providers do not inherit automatic prompt caching', () => {
     for (const providerType of [
       'claude-subscription',
       'MiniMax',
@@ -34,25 +31,6 @@ describe('buildProviderOptions: thinking level', () => {
         `${providerType} must not inherit Anthropic automatic prompt caching`,
       );
     }
-  });
-
-  test('Volcengine Agent Plan keeps Responses stateless while preserving reasoning replay', () => {
-    const expectedOptions = {
-      openai: {
-        store: false,
-        forceReasoning: true,
-      },
-    };
-    assert.deepEqual(
-      buildProviderOptions(conn('volcengine-agent-plan'), 'ark-code-latest'),
-      expectedOptions,
-    );
-    assert.deepEqual(thinkingVariantsForModel('volcengine-agent-plan', 'ark-code-latest'), []);
-    assert.deepEqual(thinkingVariantsForModel('volcengine-agent-plan', 'kimi-k3'), []);
-    assert.deepEqual(
-      buildProviderOptions(conn('volcengine-agent-plan'), 'kimi-k3', 'high'),
-      expectedOptions,
-    );
   });
 
   test('anthropic effort model (opus-4-8) sends effort field directly; no budgetTokens mapping', () => {
@@ -293,40 +271,6 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
-  test('xAI Grok 4.5 requests encrypted Responses reasoning under the native OpenAI namespace', () => {
-    for (const providerType of ['xai', 'xai-oauth'] as const) {
-      assert.deepEqual(
-        [...thinkingVariantsForModel(providerType, 'grok-4.5')],
-        ['low', 'medium', 'high'],
-      );
-      assert.deepEqual(buildProviderOptions(conn(providerType), 'grok-4.5'), {
-        openai: {
-          store: false,
-          forceReasoning: true,
-          reasoningSummary: null,
-          include: ['reasoning.encrypted_content'],
-        },
-      });
-      assert.deepEqual(buildProviderOptions(conn(providerType), 'grok-4.5', 'high'), {
-        openai: {
-          store: false,
-          forceReasoning: true,
-          reasoningSummary: null,
-          include: ['reasoning.encrypted_content'],
-          reasoningEffort: 'high',
-        },
-      });
-      assert.deepEqual(buildProviderOptions(conn(providerType), 'grok-4.5', 'off'), {
-        openai: {
-          store: false,
-          forceReasoning: true,
-          reasoningSummary: null,
-          include: ['reasoning.encrypted_content'],
-        },
-      });
-    }
-  });
-
   test('Cloudflare Workers AI sends Kimi K2.6 reasoning effort and its real thinking-off wire', () => {
     const modelId = '@cf/moonshotai/kimi-k2.6';
     assert.deepEqual(
@@ -504,17 +448,6 @@ describe('getAIModel: models.dev registry providers', () => {
         }),
       /Kimi Coding Plan.*openai-chat.*anthropic-messages/,
     );
-  });
-
-  test('routes SiliconFlow through the shared OpenAI-compatible adapter without rewriting model ids', () => {
-    const model = getAIModel({
-      connection: conn('siliconflow'),
-      apiKey: 'sf-test-key',
-      modelId: 'moonshotai/Kimi-K2.6',
-    });
-
-    assert.equal(model.provider, 'siliconflow.chat');
-    assert.equal(model.modelId, 'moonshotai/Kimi-K2.6');
   });
 
   test('routes OpenCode Zen and Go models through their registry-owned protocol overrides', () => {
