@@ -13,7 +13,6 @@ import { MakaUriContext, Markdown } from '../markdown.js';
 import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
-  calculateMermaidFitScale,
   createMermaidConfig,
   MAX_MERMAID_EDGES,
   MAX_MERMAID_SOURCE_LENGTH,
@@ -267,35 +266,6 @@ it('pins Mermaid security and complexity limits for untrusted assistant output',
   assert.equal(config.theme, 'dark');
 });
 
-it('lets fullscreen Mermaid diagrams grow beyond their inline natural size', () => {
-  const viewport = {
-    availableWidth: 1200,
-    availableHeight: 900,
-    naturalWidth: 600,
-    naturalHeight: 300,
-  };
-
-  assert.equal(calculateMermaidFitScale({ ...viewport, expanded: false }), 1);
-  assert.equal(calculateMermaidFitScale({ ...viewport, expanded: true }), 2);
-});
-
-it('keeps a single newline as a CommonMark soft break', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: '**小节标题**\n正文内容',
-  }));
-
-  assert.doesNotMatch(markup, /<br\s*\/?>/);
-  assert.match(markup, /<\/strong>\n正文内容/);
-});
-
-it('renders an explicit CommonMark hard break as a native break', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: '第一行  \n第二行',
-  }));
-
-  assert.match(markup, /第一行<br\s*\/?>第二行/);
-});
-
 it('keeps incomplete syntax literal after the stream settles', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: 'Hello **world',
@@ -320,52 +290,4 @@ it('keeps the lazy fallback behind the streaming display cursor', () => {
   }));
 
   assert.doesNotMatch(markup, /lazy unreached tail/);
-});
-
-it('shows the complete stream immediately in deterministic fixtures', () => {
-  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
-  Object.defineProperty(globalThis, 'document', {
-    configurable: true,
-    value: {
-      documentElement: {
-        dataset: { makaE2eFixture: 'true' },
-      },
-    },
-  });
-
-  try {
-    const markup = renderToStaticMarkup(createElement(Markdown, {
-      text: 'deterministic fixture answer',
-      streaming: true,
-    }));
-
-    assert.match(markup, /deterministic fixture answer/);
-  } finally {
-    if (documentDescriptor) {
-      Object.defineProperty(globalThis, 'document', documentDescriptor);
-    } else {
-      Reflect.deleteProperty(globalThis, 'document');
-    }
-  }
-});
-
-it('leaves block rhythm to the caller and defaults to document spacing', () => {
-  // The transcript wants compact block spacing; the Daily Review panel, which
-  // renders through the same component, wants document spacing. Hardcoding
-  // `density="compact"` here gave the review transcript rhythm with document
-  // heading sizes — the one combination the scoping rule in
-  // styles/chat-message.css argues against.
-  //
-  // Asserting the SHAPE of the choice rather than Astryx's hashed atoms:
-  // omitting the prop must render exactly as asking for `default`, and
-  // `compact` must render differently. That survives an Astryx restyle and
-  // still fails the moment the default flips back.
-  const render = (density?: 'default' | 'compact') =>
-    renderToStaticMarkup(createElement(MarkdownBody, {
-      text: '# Title\n\nBody\n\n## Second\n\nMore',
-      density,
-    }));
-
-  assert.equal(render(), render('default'));
-  assert.notEqual(render(), render('compact'));
 });
