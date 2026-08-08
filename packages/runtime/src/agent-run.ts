@@ -1508,19 +1508,14 @@ export class AgentRun {
     // A corruption latch is the exception (#2313). The health scan refuses
     // tool-bearing appends only, so the terminal event is a write the
     // damaged ledger would have taken, and no recovery pass will ever be
-    // safer than landing it now: the run must be able to say it ended.
-    // Probe with a read; a store that answers commits, one that cannot
-    // keeps the silent skip.
-    let recoveredFromCorruptionLatch = false;
+    // safer than landing it now: the run must be able to say it ended. The
+    // latch itself stays closed, nothing else may write; the terminal
+    // durability barrier below doubles as the scoped probe, and if even
+    // that write is refused the silent skip stands.
+    let corruptionRecovery = false;
     if (!this.runtimeEventStoreAvailable) {
       if (!(this.runtimeEventStoreFailure instanceof ToolLedgerCorruptionError)) return;
-      try {
-        await runtimeEventStore.readRuntimeEvents(this.sessionId, this.runId);
-        this.runtimeEventStoreAvailable = true;
-        recoveredFromCorruptionLatch = true;
-      } catch {
-        return;
-      }
+      corruptionRecovery = true;
     }
     if (!this.runStoreAvailable) return;
     const fallbackStatus =
@@ -1535,12 +1530,12 @@ export class AgentRun {
       try {
         await terminalClaim.write;
       } catch (error) {
-        // Behind a lifted corruption latch the claimed event's write is the
-        // failure the probe just disproved: clear it so
+        // Under a corruption latch the claimed event's write is the stale
+        // latched failure, not the barrier's own verdict: clear it so
         // commitOrCreateTerminalRunFact lands the same claimed fact fresh
         // (#2313). On a store that was never latched the failure is live
         // and keeps propagating exactly as before.
-        if (!recoveredFromCorruptionLatch) throw error;
+        if (!corruptionRecovery) throw error;
         terminalClaim.write = undefined;
       }
       // Re-check after the await, not only at entry. Two callers — a stop
@@ -1549,12 +1544,25 @@ export class AgentRun {
       // dedupes the RuntimeEvent, but the run-store projection would append a
       // second terminal AgentRunEvent for the one run.
       if (this.terminalRunHeaderCommitted) return;
-      if (this.continuationActive) {
+      // On the recovery path the claimed event's write never committed, so
+      // the boundary named after that commit must wait for the durability
+      // barrier inside commitOrCreateTerminalRunFact; firing it here would
+      // let a crash leave a durable continuation start without the terminal
+      // fact it is contracted to follow.
+      const deferContinuationBoundary = corruptionRecovery && !terminalClaim.write;
+      if (this.continuationActive && !deferContinuationBoundary) {
         await this.input.continuationFailpoint?.('after_terminal_event_committed');
       }
       const commit = commitOrCreateTerminalRunFact({
         runStore,
         runtimeEventStore,
+        ...(this.continuationActive && deferContinuationBoundary
+          ? {
+              afterTerminalDurable: async () => {
+                await this.input.continuationFailpoint?.('after_terminal_event_committed');
+              },
+            }
+          : {}),
         newId: this.input.newId,
         sessionId: this.sessionId,
         runId: this.runId,
@@ -1587,18 +1595,16 @@ export class AgentRun {
         await this.enqueueTraceWriteFailure(result.headerCommitError, 'commit terminal run header');
       }
     } catch (error) {
-      this.runStoreAvailable = false;
-      await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
-      if (recoveredFromCorruptionLatch) {
-        // The probe's bet lost: the store answered a read but refused the
-        // write after all. Re-latch and keep the finalize path's historical
-        // silence for a store that stays broken; the stop path never
-        // reaches here latched, it probes and fails loudly before the
-        // commit.
-        this.runtimeEventStoreAvailable = false;
-        this.runtimeEventStoreFailure = error;
+      if (corruptionRecovery) {
+        // The scoped barrier lost its bet: the ledger refused even the
+        // terminal fact. The latch never lifted, so there is nothing to
+        // restore; record the failure and keep the finalize path's
+        // historical silence for a store that stays broken.
+        await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
         return;
       }
+      this.runStoreAvailable = false;
+      await this.enqueueTraceWriteFailure(error, 'commit terminal run header');
       throw error;
     }
     await this.traceQueue.catch(() => {});
@@ -1725,10 +1731,10 @@ export class AgentRun {
       // a damaged ledger. What the latch must not cost is the terminal fact
       // (#2313): the health scan gates only tool-bearing appends, so the
       // terminal event is a write the damaged ledger would have taken.
-      // `commitTerminalRun` therefore treats a corruption latch as history
-      // rather than truth: it probes the store with a read, commits when
-      // the store answers, and the run still says it ended while everything
-      // routed through here keeps failing closed.
+      // `commitTerminalRun` therefore carries the one exception: under a
+      // corruption latch it still attempts the terminal durability barrier
+      // (the barrier is its own scoped probe), so the run says it ended
+      // while everything routed through here keeps failing closed.
       if (error instanceof RunSealedError) {
         // A refusal that is correct in itself (#2311): the run already owns
         // its terminal fact, and a straggler from the still-draining stream

@@ -2429,10 +2429,21 @@ export class SqliteRuntimeStore
       this.assertRunNotSealed(canonicalEvent);
       return this.upsertRuntimePartial(canonicalEvent, partial);
     }
+    const existing = this.readRuntimeEventJson(canonicalEvent.id) !== undefined;
+    // Seal before tool-ledger semantics, so every post-terminal append
+    // refuses the same way (#2311): a late tool-bearing straggler must read
+    // as the sealed-run boundary it is, not as a producer bug or ledger
+    // corruption. Continuation authority stays ahead of the seal, its
+    // refusals are more specific, and an exact-id retry keeps its dedup
+    // semantics: the event is already inside the seal, so only new events
+    // consult either.
+    if (!existing) {
+      this.assertContinuationAuthorityAllowsEvent(canonicalEvent);
+      this.assertRunNotSealed(canonicalEvent);
+    }
     if (isToolLedgerBearingEvent(canonicalEvent)) {
       this.assertToolLedgerTransition([canonicalEvent], 'generic_append');
     }
-    const existing = this.readRuntimeEventJson(canonicalEvent.id) !== undefined;
     this.insertRuntimeEvent(canonicalEvent, canonicalEvent.ts, true);
     return !existing;
   }

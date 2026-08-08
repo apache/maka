@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
+import { RunSealedError } from '@maka/core';
 import type { RuntimeEvent } from '@maka/core';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
@@ -38,6 +39,51 @@ describe('SqliteRuntimeStore', () => {
       } finally {
         reopened.close();
       }
+    });
+  });
+
+  it('refuses every post-terminal append as the typed sealed-run boundary', async () => {
+    await withStore(async (store) => {
+      const opening = functionCallEvent({
+        id: 'sealed-run-opening',
+        content: { kind: 'text', text: 'hello' },
+      });
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const terminal: RuntimeEvent = {
+        id: 'sealed-run-terminal',
+        invocationId: 'invocation-1',
+        runId: opening.runId,
+        sessionId: opening.sessionId,
+        turnId: 'turn-1',
+        ts: 2,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'aborted',
+        actions: { endInvocation: true, stateDelta: { abortSource: 'user_stop' } },
+      };
+      await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+
+      // A plain straggler and a tool-bearing one refuse identically: the
+      // seal is checked before tool-ledger semantics (#2311), so a late
+      // function_call cannot surface as a producer bug or as corruption.
+      await assert.rejects(
+        store.appendRuntimeEvent(opening.sessionId, opening.runId, {
+          ...opening,
+          id: 'late-plain-straggler',
+          ts: 3,
+        }),
+        (error: unknown) => error instanceof RunSealedError,
+      );
+      await assert.rejects(
+        store.appendRuntimeEvent(opening.sessionId, opening.runId, functionCallEvent({
+          id: 'late-tool-straggler',
+          ts: 4,
+        })),
+        (error: unknown) => error instanceof RunSealedError,
+      );
+      // Exact-id retry of an already-stored event keeps its dedup answer.
+      await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
     });
   });
 
