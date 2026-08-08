@@ -1457,6 +1457,7 @@ export class AiSdkBackend implements AgentBackend {
           ])
         : scope.orchestration.mode === 'graph'
           ? new Set([
+              'agent_list',
               'view_agent_graph',
               'update_agent_graph',
               'yield_agent_graph',

@@ -1202,6 +1202,7 @@ describe('subagent tools', () => {
       ],
       legacy_profiles: [
         {
+          agent_id: LOCAL_READ_AGENT_ID,
           profile: LOCAL_READ_AGENT_PROFILE,
           name: 'Local Read',
           description: 'Read-only repository exploration.',
@@ -1247,6 +1248,7 @@ describe('subagent tools', () => {
     const catalog = {
       definitions: [
         {
+          id: LOCAL_READ_AGENT_ID,
           profile: LOCAL_READ_AGENT_PROFILE,
           name: 'Local Read',
           description: 'Read-only repository exploration.',

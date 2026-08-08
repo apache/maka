@@ -376,7 +376,7 @@ export function buildSubagentListTool(): MakaTool<
     name: AGENT_LIST_TOOL_NAME,
     displayName: 'Agent List',
     description:
-      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by runnable legacy profiles. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn or asynchronous graph work with agent_output.',
+      'List a compact page of subagents to select. The default selection view returns runnable user-approved subagent_id values first, followed by legacy choices with separate agent_id (Graph) and profile (agent_spawn) selectors. Use view=catalog only to diagnose unavailable routes. Child execution history is intentionally excluded; use refs returned by agent_spawn or asynchronous graph work with agent_output.',
     parameters: z
       .object({
         view: z
@@ -473,6 +473,7 @@ function projectAgentList(
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
     const definition = candidate as Record<string, unknown>;
     if (
+      typeof definition.id !== 'string' ||
       typeof definition.profile !== 'string' ||
       typeof definition.name !== 'string' ||
       typeof definition.description !== 'string'
@@ -489,6 +490,7 @@ function projectAgentList(
         : undefined;
     return [
       {
+        agent_id: definition.id,
         profile: definition.profile,
         name: boundedCatalogText(definition.name, 128),
         description: boundedCatalogText(definition.description, AGENT_LIST_DESCRIPTION_MAX_CHARS),
