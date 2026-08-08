@@ -4,6 +4,7 @@ import type { LlmConnection } from '@maka/core';
 import {
   buildDefaultContextBudgetPolicy,
   resolveContextBudgetCapacity,
+  resolveSelectedModelContextWindow,
 } from '../context-budget-policy.js';
 
 describe('mid-turn history compact policy env plumbing', () => {
@@ -194,6 +195,41 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
+
+describe('input-limited models budget against limit.input', () => {
+  const openai = (): LlmConnection =>
+    ({
+      slug: 'openai-main',
+      name: 'OpenAI',
+      providerType: 'openai',
+      defaultModel: 'gpt-5.2',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    }) as LlmConnection;
+
+  test('gpt-5.2 budgets against its 272K input limit, not its 400K window', () => {
+    // The window *report* stays the advertised context size…
+    assert.equal(resolveSelectedModelContextWindow(openai(), 'gpt-5.2'), 400_000);
+    // …but capacity and the derived history budget cap at what the model
+    // actually admits as input.
+    assert.deepEqual(resolveContextBudgetCapacity(openai(), 'gpt-5.2', undefined), {
+      tokens: 272_000,
+      source: 'selected_model',
+    });
+    const policy = buildDefaultContextBudgetPolicy(openai(), { env: {}, modelId: 'gpt-5.2' });
+    assert.equal(policy?.maxHistoryEstimatedTokens, 272_000 - 16_384);
+  });
+
+  test('models without limit.input keep budgeting against the full window', () => {
+    const window = resolveSelectedModelContextWindow(connection(), 'claude-sonnet-4-5-20250929');
+    assert.ok(window !== undefined);
+    assert.deepEqual(
+      resolveContextBudgetCapacity(connection(), 'claude-sonnet-4-5-20250929', undefined),
+      { tokens: window, source: 'selected_model' },
+    );
+  });
+});
 
 describe('declared relay context window', () => {
   test('a user declaration outranks the relay /models report and metadata', () => {

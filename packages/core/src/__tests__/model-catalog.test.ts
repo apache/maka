@@ -63,6 +63,17 @@ test('provider facts override static metadata while missing facts are enriched',
   assert.deepEqual(enriched?.capabilities, { reasoning: true, functionCalling: true });
 });
 
+test('entries surface the synced description and knowledge cutoff for the picker', () => {
+  const [entry] = buildModelCatalogEntries({
+    providerType: 'anthropic',
+    defaultModel: 'claude-sonnet-4-5',
+    models: [{ id: 'claude-sonnet-4-5' }],
+    modelSource: 'fetched',
+  });
+  assert.ok(entry?.description, 'the sync carries a description for every Anthropic model');
+  assert.match(entry.knowledgeCutoff ?? '', /^\d{4}-\d{2}-\d{2}$/);
+});
+
 test('live inventory blocks missing defaults and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,

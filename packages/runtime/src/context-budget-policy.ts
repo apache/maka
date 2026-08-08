@@ -16,7 +16,7 @@ export function buildDefaultContextBudgetPolicy(
 ): ContextBudgetPolicy | undefined {
   const env = options.env ?? process.env;
   if (env.MAKA_CONTEXT_BUDGET === 'off') return undefined;
-  const contextWindow = resolveSelectedModelContextWindow(connection, options.modelId);
+  const contextWindow = resolveSelectedModelInputBudgetTokens(connection, options.modelId);
   const reserveTokens = defaultCompactReserveTokens(env, contextWindow);
   const maxHistoryEstimatedTokens =
     parseOptionalPositiveInt(env.MAKA_CONTEXT_HISTORY_BUDGET_TOKENS) ??
@@ -409,6 +409,28 @@ function defaultHistoryBudgetTokens(
   return 32_000;
 }
 
+/**
+ * The tokens the budget may actually fill. models.dev `limit.input`
+ * (ModelMetadata.maxInputTokens) can sit below the advertised context window
+ * (e.g. gpt-5.2: 400K context, 272K input); budgeting against the full window
+ * would admit history the model rejects outright. Window *reporting* stays on
+ * resolveSelectedModelContextWindow — only budgeting caps by the input limit.
+ */
+export function resolveSelectedModelInputBudgetTokens(
+  connection: RuntimeExecutionConnection,
+  modelId: string | undefined,
+): number | undefined {
+  const contextWindow = resolveSelectedModelContextWindow(connection, modelId);
+  const selectedModelId = modelId ?? connection.defaultModel;
+  const maxInputTokens =
+    selectedModelId === undefined
+      ? undefined
+      : lookupModelMetadata(connection.providerType, selectedModelId).maxInputTokens;
+  if (contextWindow === undefined) return maxInputTokens;
+  if (maxInputTokens === undefined) return contextWindow;
+  return Math.min(contextWindow, maxInputTokens);
+}
+
 export function resolveSelectedModelContextWindow(
   connection: RuntimeExecutionConnection,
   modelId: string | undefined,
@@ -437,7 +459,7 @@ export function resolveContextBudgetCapacity(
   modelId: string | undefined,
   policy: ContextBudgetPolicy | undefined,
 ): ContextBudgetCapacity | undefined {
-  const selectedWindow = resolveSelectedModelContextWindow(connection, modelId);
+  const selectedWindow = resolveSelectedModelInputBudgetTokens(connection, modelId);
   if (selectedWindow !== undefined) {
     return { tokens: selectedWindow, source: 'selected_model' };
   }

@@ -77,6 +77,10 @@ export interface ModelCatalogEntry {
   lifecycle: ModelCatalogLifecycle;
   recommendedRank?: number;
   docsUrl?: string;
+  /** One-line vendor description from the models.dev sync. */
+  description?: string;
+  /** ISO date of the model's knowledge cutoff from the models.dev sync. */
+  knowledgeCutoff?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
   pricing?: ModelCatalogPricing;
@@ -289,6 +293,8 @@ function makeEntry(
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
+    ...(metadata.description ? { description: metadata.description } : {}),
+    ...(metadata.knowledgeCutoff ? { knowledgeCutoff: metadata.knowledgeCutoff } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(pricing ? { pricing } : {}),
@@ -348,6 +354,8 @@ function makeMissingDefaultEntry(
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
+    ...(metadata.description ? { description: metadata.description } : {}),
+    ...(metadata.knowledgeCutoff ? { knowledgeCutoff: metadata.knowledgeCutoff } : {}),
     ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
     ...(metadata.maxOutputTokens !== undefined
       ? { maxOutputTokens: metadata.maxOutputTokens }
@@ -386,6 +394,8 @@ function makeMissingUserChoiceEntry(
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
+    ...(metadata.description ? { description: metadata.description } : {}),
+    ...(metadata.knowledgeCutoff ? { knowledgeCutoff: metadata.knowledgeCutoff } : {}),
     ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
     ...(metadata.maxOutputTokens !== undefined
       ? { maxOutputTokens: metadata.maxOutputTokens }
