@@ -10746,6 +10746,61 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
+  test('stops after one recovered idle watchdog timeout in the same provider step', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: `reasoning-${calls}` },
+              {
+                type: 'reasoning-delta',
+                id: `reasoning-${calls}`,
+                delta: `partial thought ${calls}`,
+              },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text.startsWith('partial thought')) {
+        timers.fire();
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
+        .length,
+      1,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('does not retry an idle watchdog timeout after partial answer text', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;
