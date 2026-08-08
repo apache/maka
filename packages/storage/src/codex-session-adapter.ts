@@ -338,7 +338,9 @@ function convertCodexRollout(
       }
 
       if (eventType === 'error') {
-        if (activeTurnId) failedTurnIds.add(activeTurnId);
+        if (activeTurnId && codexErrorAffectsTurnStatus(payload)) {
+          failedTurnIds.add(activeTurnId);
+        }
         messages.push({
           type: 'system_note',
           id: generatedCodexId(expectedSessionId, 'error', record.line),
@@ -352,15 +354,17 @@ function convertCodexRollout(
 
       if (eventType === 'task_complete' || eventType === 'turn_complete') {
         const turnId = stringField(payload, 'turn_id') ?? ensureTurnId(record.line);
+        const failed = failedTurnIds.has(turnId) || payload.error != null;
         messages.push({
           type: 'turn_state',
           id: generatedCodexId(expectedSessionId, 'turn-state', record.line),
           turnId,
           ts: timestampFor(record),
-          status: failedTurnIds.has(turnId) ? 'failed' : 'completed',
-          ...(failedTurnIds.has(turnId) ? { errorClass: 'codex_error' } : {}),
+          status: failed ? 'failed' : 'completed',
+          ...(failed ? { errorClass: 'codex_error' } : {}),
           partialOutputRetained: true,
         });
+        failedTurnIds.delete(turnId);
         if (activeTurnId === turnId) {
           activeTurnId = undefined;
           activeTurnIsExplicit = false;
@@ -485,6 +489,7 @@ function catalogEntryFromRolloutHead(
     const payload = asRecord(record.payload);
     if (!payload) continue;
     if (record.type === 'session_meta') {
+      if (!isRootCodexSource(payload.source)) return undefined;
       id = stringField(payload, 'session_id') ?? stringField(payload, 'id') ?? id;
       cwd = safeCodexCwd(payload.cwd) || cwd;
       createdAt =
@@ -696,16 +701,23 @@ function firstNonEmptyTitle(...values: unknown[]): string | undefined {
 
 function isRootCodexSource(value: unknown): boolean {
   if (value === undefined || value === null) return true;
-  if (typeof value !== 'string') return false;
-  if (CODEX_ROOT_SOURCE_TOKENS.has(value)) return true;
-  if (!value.startsWith('{')) return false;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    const custom = isRecord(parsed) ? parsed.custom : undefined;
-    return custom === 'atlas' || custom === 'chatgpt';
-  } catch {
-    return false;
+  if (typeof value === 'string') {
+    if (CODEX_ROOT_SOURCE_TOKENS.has(value)) return true;
+    if (!value.startsWith('{')) return false;
+    try {
+      return isRootCodexSource(JSON.parse(value) as unknown);
+    } catch {
+      return false;
+    }
   }
+  if (!isRecord(value)) return false;
+  return value.custom === 'atlas' || value.custom === 'chatgpt';
+}
+
+function codexErrorAffectsTurnStatus(payload: JsonRecord): boolean {
+  const info = payload.codex_error_info;
+  if (info === 'thread_rollback_failed' || info === 'active_turn_not_steerable') return false;
+  return !(isRecord(info) && Object.hasOwn(info, 'active_turn_not_steerable'));
 }
 
 function normalizeEpochMs(value: unknown): number | undefined {

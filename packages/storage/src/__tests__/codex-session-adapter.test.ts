@@ -160,6 +160,54 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('imports terminal errors as failed without failing turns on non-terminal errors', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-error-semantics';
+      await seedRawRollout(codexHome, sessionId, errorSemanticsRollout(sessionId));
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.deepEqual(
+        session.messages
+          .filter((message) => message.type === 'turn_state')
+          .map(({ turnId, status, errorClass }) => ({ turnId, status, errorClass })),
+        [
+          { turnId: 'turn-terminal', status: 'failed', errorClass: 'codex_error' },
+          { turnId: 'turn-rollback', status: 'completed', errorClass: undefined },
+          { turnId: 'turn-not-steerable', status: 'completed', errorClass: undefined },
+        ],
+      );
+    });
+  });
+
+  test('filesystem fallback excludes internal subagent rollouts', async () => {
+    await withCodexHome(async (codexHome) => {
+      await seedMinimalRollout(
+        codexHome,
+        'codex-root-fallback',
+        false,
+        '/workspace/root',
+        'Root task',
+      );
+      const subagentId = 'codex-subagent-fallback';
+      await seedRawRollout(
+        codexHome,
+        subagentId,
+        minimalRollout(subagentId, '/workspace/root', 'Internal task', {
+          subagent: {
+            thread_spawn: { parent_thread_id: 'parent', depth: 1 },
+          },
+        }),
+      );
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listSessions()).map((session) => session.id),
+        ['codex-root-fallback'],
+      );
+      await assert.rejects(adapter.readSession(subagentId), /not found/);
+    });
+  });
+
   test('rejects corrupt interior records, tolerates a torn tail, and bounds full reads', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
@@ -277,18 +325,63 @@ async function seedRawRollout(
   return path;
 }
 
-function minimalRollout(sessionId: string, cwd: string, userText: string): string {
+function minimalRollout(
+  sessionId: string,
+  cwd: string,
+  userText: string,
+  source: unknown = 'cli',
+): string {
   return [
     JSON.stringify({
       timestamp: '2026-08-08T00:00:00.000Z',
       type: 'session_meta',
-      payload: { session_id: sessionId, id: sessionId, cwd, source: 'cli' },
+      payload: { session_id: sessionId, id: sessionId, cwd, source },
     }),
     JSON.stringify({
       timestamp: '2026-08-08T00:00:01.000Z',
       type: 'event_msg',
       payload: { type: 'user_message', message: userText },
     }),
+    '',
+  ].join('\n');
+}
+
+function errorSemanticsRollout(sessionId: string): string {
+  const event = (second: number, payload: Record<string, unknown>): string =>
+    JSON.stringify({
+      timestamp: `2026-08-08T00:00:${String(second).padStart(2, '0')}.000Z`,
+      type: 'event_msg',
+      payload,
+    });
+  return [
+    JSON.stringify({
+      timestamp: '2026-08-08T00:00:00.000Z',
+      type: 'session_meta',
+      payload: { session_id: sessionId, id: sessionId, cwd: '/workspace', source: 'cli' },
+    }),
+    event(1, { type: 'task_started', turn_id: 'turn-terminal' }),
+    event(2, { type: 'user_message', message: 'Fail terminally' }),
+    event(3, {
+      type: 'task_complete',
+      turn_id: 'turn-terminal',
+      error: { message: 'capacity', codex_error_info: 'server_overloaded' },
+    }),
+    event(4, { type: 'task_started', turn_id: 'turn-rollback' }),
+    event(5, { type: 'user_message', message: 'Rollback warning' }),
+    event(6, {
+      type: 'error',
+      message: 'rollback failed',
+      codex_error_info: 'thread_rollback_failed',
+    }),
+    event(7, { type: 'task_complete', turn_id: 'turn-rollback' }),
+    event(8, { type: 'task_started', turn_id: 'turn-not-steerable' }),
+    event(9, { type: 'user_message', message: 'Steer review' }),
+    event(10, {
+      type: 'error',
+      message: 'cannot steer review',
+      codex_error_info: { active_turn_not_steerable: { turn_kind: 'review' } },
+    }),
+    event(11, { type: 'task_complete', turn_id: 'turn-not-steerable' }),
     '',
   ].join('\n');
 }
