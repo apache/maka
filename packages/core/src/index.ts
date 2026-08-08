@@ -936,6 +936,21 @@ export {
   isHealthSignalStatus,
 } from './health.js';
 
+// task-submission-readiness.ts
+export type {
+  DeriveTaskSubmissionReadinessInput,
+  TaskSubmissionCapabilityReadinessInput,
+  TaskSubmissionReadinessBlockerCode,
+  TaskSubmissionReadinessDimension,
+  TaskSubmissionReadinessRepairTarget,
+  TaskSubmissionReadinessSnapshot,
+  TaskSubmissionReadinessState,
+} from './task-submission-readiness.js';
+export {
+  TASK_SUBMISSION_READINESS_STATES,
+  deriveTaskSubmissionReadiness,
+} from './task-submission-readiness.js';
+
 // search.ts (PR-SEARCH-0 + PR-SEARCH-1.5)
 export type {
   SearchError,
