@@ -584,8 +584,20 @@
      It is corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */
+  /* Radius language (visual system 2.0, T1). Two vocabularies were running in
+     parallel and disagreeing on the card: this file said 8, Astryx's own scale
+     said 10 (--radius-element), and --radius-modal said 12. Three numbers for
+     one idea is how a radius stops meaning anything.
+
+     They land on one set: 4 inner / 6 control / 10 card / 12 modal / full.
+     The card tier resolves to 10 rather than 8 — Astryx's element rung is the
+     one its own components already round to, so meeting it there is what stops
+     our cards from disagreeing with the controls inside them.
+
+     Assignment is monotonic in box height, and `border-radius: 0` is legal
+     only on an edge-to-edge row. See DESIGN.md, Radius language. */
   --radius-control: 6px;
-  --radius-surface: 8px;
+  --radius-surface: 10px;
   --radius-modal: 12px;
   --radius-pill: 999px;
   /* Square icon plates (provider logo, about logo, feature status) are
