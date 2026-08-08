@@ -244,7 +244,7 @@ export {
 
 // runtime-event-store.ts
 export type { RuntimeEventStore } from './runtime-event-store.js';
-export { DurableStoreWriteError } from './runtime-event-store.js';
+export { DurableStoreWriteError, RunSealedError } from './runtime-event-store.js';
 export type {
   ContinuationClaimResult,
   ContinuationClaimStateV1,

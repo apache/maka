@@ -33,6 +33,7 @@ import {
   type WorkspaceProjectionRebuildResult,
   type WorkspaceVersionRecordV1,
 } from '@maka/core';
+import { RunSealedError } from '@maka/core';
 import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
@@ -2415,7 +2416,7 @@ export class SqliteRuntimeStore
       .all(event.sessionId, event.runId) as unknown as RuntimeEventStorageRow[];
     const terminal = rows.map(decodeRuntimeEventStorageRow).find(isTerminalRuntimeEvent);
     if (terminal) {
-      throw new Error(`RuntimeEvent run ${event.runId} is sealed by its terminal fact`);
+      throw new RunSealedError(event.runId);
     }
   }
 

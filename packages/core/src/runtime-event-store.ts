@@ -22,6 +22,22 @@ export interface RuntimeRecoveryBundleCommit {
   decisionRuntimeEvent: RuntimeEvent;
 }
 
+/**
+ * An append arrived after the run's terminal fact was already written. The
+ * refusal is the store doing its job: once a run has said it ended, a late
+ * stream event is by definition not part of it. Typed so callers can tell
+ * this expected boundary apart from store failure (#2311): pressing stop
+ * seals the run ahead of the still-draining stream, and the stragglers that
+ * window refuses must not read as "the store is sick".
+ */
+export class RunSealedError extends Error {
+  readonly name = 'RunSealedError';
+
+  constructor(readonly runId: string) {
+    super(`RuntimeEvent run ${runId} is sealed by its terminal fact`);
+  }
+}
+
 /** A requested stable-storage barrier failed; read-back cannot upgrade it to success. */
 export class DurableStoreWriteError extends Error {
   readonly name = 'DurableStoreWriteError';
