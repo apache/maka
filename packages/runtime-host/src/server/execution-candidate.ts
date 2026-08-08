@@ -2,7 +2,6 @@ import {
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
-import { join } from 'node:path';
 import type { RuntimeHostCandidateOptions } from './candidate.js';
 import type {
   ManagedDependencyEnvironmentProducer,
@@ -24,7 +23,6 @@ export interface ExecutionRuntimeHostCandidateOptions extends RuntimeHostCandida
   readonly managedWorkspaceDependencyProducer?: ManagedDependencyEnvironmentProducer;
   /** Packaged resource root containing bundled-npm.json and the npm runtime. */
   readonly bundledNpmResourcesRoot?: string;
-  readonly dependencyCacheRoot?: string;
   readonly dependencyNodeExecutablePath?: string;
 }
 
@@ -43,9 +41,6 @@ export async function startExecutionRuntimeHostCandidate(
   const managedWorkspaceDependencyProducer = options.bundledNpmResourcesRoot
     ? await resolveBundledNpmDependencyProducer({
         resourcesRoot: options.bundledNpmResourcesRoot,
-        cacheRoot:
-          options.dependencyCacheRoot ??
-          join(options.rootPath, 'managed-workspaces', 'dependency-runtime'),
         nodeExecutablePath: options.dependencyNodeExecutablePath ?? process.execPath,
       })
     : options.managedWorkspaceDependencyProducer;

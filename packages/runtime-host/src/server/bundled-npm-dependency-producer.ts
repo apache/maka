@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, relative } from 'node:path';
 import { promisify } from 'node:util';
 import type {
@@ -14,6 +13,40 @@ const execFileAsync = promisify(execFile);
 const EXPECTED_NPM_VERSION = '12.0.2';
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const PRODUCER_RUNTIME_IDENTITY_DOMAIN = 'maka.bundled_npm.producer_runtime.v1\0';
+const EXPECTED_SECURITY_PATCHES = Object.freeze([
+  Object.freeze({
+    packageName: 'tar',
+    fromVersion: '7.5.19',
+    toVersion: '7.5.22',
+    advisories: Object.freeze(['GHSA-r292-9mhp-454m']),
+  }),
+  Object.freeze({
+    packageName: 'brace-expansion',
+    fromVersion: '5.0.7',
+    toVersion: '5.0.9',
+    advisories: Object.freeze(['GHSA-mh99-v99m-4gvg', 'GHSA-rgw5-rvv9-x895']),
+  }),
+  Object.freeze({
+    packageName: 'ip-address',
+    fromVersion: '10.2.0',
+    toVersion: '10.4.0',
+    advisories: Object.freeze([
+      'GHSA-mwp4-54f8-5fhr',
+      'GHSA-4xrf-jv44-h6hh',
+      'GHSA-22jq-vg5j-6vgg',
+    ]),
+  }),
+  Object.freeze({
+    packageName: 'undici',
+    fromVersion: '6.27.0',
+    toVersion: '6.28.0',
+    advisories: Object.freeze([
+      'GHSA-8xcm-r25x-g524',
+      'GHSA-m8rv-5g2x-5cg5',
+      'GHSA-v3r7-h72x-cjcm',
+    ]),
+  }),
+]);
 const MANIFEST_KEYS = [
   'schemaVersion',
   'protocol',
@@ -31,18 +64,18 @@ const MANIFEST_KEYS = [
 
 export interface ResolveBundledNpmDependencyProducerInput {
   readonly resourcesRoot: string;
-  readonly cacheRoot: string;
   readonly nodeExecutablePath: string;
   readonly manifestPath?: string;
   readonly platform?: NodeJS.Platform;
   readonly arch?: string;
+  readonly maxProvisionBytes?: number;
+  readonly maxProvisionEntries?: number;
 }
 
 export async function resolveBundledNpmDependencyProducer(
   input: ResolveBundledNpmDependencyProducerInput,
 ): Promise<ManagedDependencyEnvironmentProducer> {
   const resourcesRoot = normalize(await realpath(input.resourcesRoot));
-  const cacheRoot = await ensureCanonicalDirectory(input.cacheRoot);
   const nodeExecutablePath = normalize(await realpath(input.nodeExecutablePath));
   await requireRegularFile(nodeExecutablePath, 'Node runtime');
   const nodeExecutableSha256 = await sha256File(nodeExecutablePath);
@@ -90,7 +123,8 @@ export async function resolveBundledNpmDependencyProducer(
         input: provisionInput,
         nodeExecutablePath,
         cliPath,
-        cacheRoot,
+        maxProvisionBytes: input.maxProvisionBytes ?? 2 * 1024 * 1024 * 1024,
+        maxProvisionEntries: input.maxProvisionEntries ?? 250_000,
       });
     },
   });
@@ -154,14 +188,7 @@ interface BundledNpmManifestV1 {
   readonly npmVersion: typeof EXPECTED_NPM_VERSION;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
-  readonly securityPatches: readonly [
-    {
-      readonly packageName: 'tar';
-      readonly fromVersion: '7.5.19';
-      readonly toVersion: '7.5.22';
-      readonly advisory: 'GHSA-r292-9mhp-454m';
-    },
-  ];
+  readonly securityPatches: typeof EXPECTED_SECURITY_PATCHES;
   readonly runtimeRootRelativePath: 'npm';
   readonly cliRelativePath: 'npm/bin/npm-cli.js';
   readonly files: readonly BundledNpmManifestFileV1[];
@@ -222,20 +249,7 @@ function decodeManifest(value: unknown): BundledNpmManifestV1 {
 }
 
 function isExpectedSecurityPatches(value: unknown): boolean {
-  if (!Array.isArray(value) || value.length !== 1) return false;
-  const patch = value[0];
-  return (
-    Boolean(patch) &&
-    typeof patch === 'object' &&
-    !Array.isArray(patch) &&
-    Object.keys(patch as object)
-      .sort()
-      .join('\0') === 'advisory\0fromVersion\0packageName\0toVersion' &&
-    (patch as Record<string, unknown>).packageName === 'tar' &&
-    (patch as Record<string, unknown>).fromVersion === '7.5.19' &&
-    (patch as Record<string, unknown>).toVersion === '7.5.22' &&
-    (patch as Record<string, unknown>).advisory === 'GHSA-r292-9mhp-454m'
-  );
+  return JSON.stringify(value) === JSON.stringify(EXPECTED_SECURITY_PATCHES);
 }
 
 function decodeManifestFile(value: unknown): BundledNpmManifestFileV1 {
@@ -298,14 +312,20 @@ async function provisionWithNpm(input: {
   readonly input: ManagedDependencyEnvironmentProducerInput;
   readonly nodeExecutablePath: string;
   readonly cliPath: string;
-  readonly cacheRoot: string;
+  readonly maxProvisionBytes: number;
+  readonly maxProvisionEntries: number;
 }) {
   assertSafeNpmInputs(input.input);
   const projectRoot = dirname(input.input.outputRoot);
-  const homeRoot = join(input.cacheRoot, 'home');
-  const npmCache = join(input.cacheRoot, 'cache');
-  await mkdir(homeRoot, { recursive: true });
-  await mkdir(npmCache, { recursive: true });
+  const scratchRoot = await ensureCanonicalDirectory(input.input.scratchRoot);
+  const canonicalProjectRoot = normalize(await realpath(projectRoot));
+  assertWithin(canonicalProjectRoot, scratchRoot, 'Bundled npm scratch root');
+  const [homeRoot, npmCache, temporaryRoot, compileCacheRoot] = await Promise.all([
+    createOwnedScratchDirectory(scratchRoot, 'home'),
+    createOwnedScratchDirectory(scratchRoot, 'cache'),
+    createOwnedScratchDirectory(scratchRoot, 'temp'),
+    createOwnedScratchDirectory(scratchRoot, 'node-compile-cache'),
+  ]);
   const userConfig = join(homeRoot, 'npmrc');
   const globalConfig = join(homeRoot, 'global-npmrc');
   const exactConfig = 'registry=https://registry.npmjs.org/\n';
@@ -315,7 +335,7 @@ async function provisionWithNpm(input: {
   await writeFile(join(projectRoot, 'package-lock.json'), input.input.lockfileBytes, {
     flag: 'wx',
   });
-  await execFileAsync(
+  await runNpmProcess(
     input.nodeExecutablePath,
     [
       input.cliPath,
@@ -330,10 +350,17 @@ async function provisionWithNpm(input: {
     ],
     {
       cwd: projectRoot,
-      env: hermeticNpmEnvironment(homeRoot, userConfig, globalConfig),
-      timeout: 10 * 60 * 1_000,
-      maxBuffer: 8 * 1024 * 1024,
-      windowsHide: true,
+      env: hermeticNpmEnvironment(
+        homeRoot,
+        userConfig,
+        globalConfig,
+        temporaryRoot,
+        compileCacheRoot,
+      ),
+      signal: input.input.abortSignal,
+      monitorRoot: projectRoot,
+      maxBytes: input.maxProvisionBytes,
+      maxEntries: input.maxProvisionEntries,
     },
   );
 }
@@ -368,7 +395,11 @@ function assertSafeNpmInputs(input: ManagedDependencyEnvironmentProducerInput): 
   ) {
     throw new Error('Bundled npm producer accepts only exact non-workspace package-lock v3 input');
   }
-  for (const [packagePath, value] of Object.entries(lockfile.packages as Record<string, unknown>)) {
+  const packageEntries = Object.entries(lockfile.packages as Record<string, unknown>);
+  if (packageEntries.length > 25_000) {
+    throw new Error('Bundled npm producer lockfile exceeds its package-count policy');
+  }
+  for (const [packagePath, value] of packageEntries) {
     if (!value || typeof value !== 'object') continue;
     const entry = value as {
       resolved?: unknown;
@@ -400,6 +431,8 @@ function hermeticNpmEnvironment(
   homeRoot: string,
   userConfig: string,
   globalConfig: string,
+  temporaryRoot: string,
+  compileCacheRoot: string,
 ): NodeJS.ProcessEnv {
   return {
     HOME: homeRoot,
@@ -411,9 +444,13 @@ function hermeticNpmEnvironment(
     npm_config_registry: 'https://registry.npmjs.org/',
     npm_config_userconfig: userConfig,
     npm_config_globalconfig: globalConfig,
+    TEMP: temporaryRoot,
+    TMP: temporaryRoot,
+    TMPDIR: temporaryRoot,
+    NODE_COMPILE_CACHE: compileCacheRoot,
     ...(process.platform === 'win32'
-      ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP }
-      : { TMPDIR: process.env.TMPDIR ?? '/tmp' }),
+      ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR }
+      : {}),
     ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
   };
 }
@@ -463,8 +500,30 @@ async function ensureExactConfigFile(path: string, content: string): Promise<voi
 }
 
 async function ensureCanonicalDirectory(path: string): Promise<string> {
-  await mkdir(path, { recursive: true });
+  const info = await lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error('Bundled npm scratch root is not an owned directory');
+  }
   return normalize(await realpath(path));
+}
+
+async function createOwnedScratchDirectory(root: string, name: string): Promise<string> {
+  const path = join(root, name);
+  try {
+    await mkdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    throw new Error('Bundled npm scratch entry was not created by this provision', {
+      cause: error,
+    });
+  }
+  const info = await lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error('Bundled npm scratch entry is not an owned directory');
+  }
+  const canonical = normalize(await realpath(path));
+  assertWithin(root, canonical, 'Bundled npm scratch entry');
+  return canonical;
 }
 
 async function requireRegularFile(path: string, label: string): Promise<void> {
@@ -489,8 +548,143 @@ function assertWithin(root: string, path: string, label: string): void {
 
 async function sha256File(path: string): Promise<`sha256:${string}`> {
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let offset = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, offset);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
   return `sha256:${hash.digest('hex')}`;
+}
+
+async function runNpmProcess(
+  executable: string,
+  args: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly signal?: AbortSignal;
+    readonly monitorRoot: string;
+    readonly maxBytes: number;
+    readonly maxEntries: number;
+  },
+): Promise<void> {
+  if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes <= 0) {
+    throw new TypeError('Bundled npm provision byte quota must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(options.maxEntries) || options.maxEntries <= 0) {
+    throw new TypeError('Bundled npm provision entry quota must be a positive safe integer');
+  }
+  options.signal?.throwIfAborted();
+  const child = spawn(executable, [...args], {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  const output = createBoundedOutput(8 * 1024 * 1024);
+  child.stdout.on('data', (chunk: Buffer) => output.append(chunk));
+  child.stderr.on('data', (chunk: Buffer) => output.append(chunk));
+  let terminalError: Error | undefined;
+  const stop = (error: Error) => {
+    terminalError ??= error;
+    child.kill('SIGKILL');
+  };
+  const onAbort = () => stop(new Error('Bundled npm dependency provisioning was aborted'));
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  const timeout = setTimeout(
+    () => stop(new Error('Bundled npm dependency provisioning timed out')),
+    10 * 60 * 1_000,
+  );
+  const monitor = setInterval(() => {
+    void measureTree(options.monitorRoot)
+      .then(({ bytes, entries }) => {
+        if (bytes > options.maxBytes || entries > options.maxEntries) {
+          stop(new Error('Bundled npm dependency provisioning exceeded its filesystem quota'));
+        }
+      })
+      .catch((error: unknown) => stop(asError(error)));
+  }, 250);
+  try {
+    const exitCode = await new Promise<number>((resolvePromise, rejectPromise) => {
+      child.once('error', rejectPromise);
+      child.once('close', (code) => resolvePromise(code ?? -1));
+    });
+    if (terminalError) throw terminalError;
+    if (exitCode !== 0) {
+      throw new Error(
+        output.text
+          ? `Bundled npm dependency provisioning failed: ${output.text}`
+          : `Bundled npm dependency provisioning failed with exit code ${exitCode}`,
+      );
+    }
+    const measured = await measureTree(options.monitorRoot);
+    if (measured.bytes > options.maxBytes || measured.entries > options.maxEntries) {
+      throw new Error('Bundled npm dependency provisioning exceeded its filesystem quota');
+    }
+  } finally {
+    clearTimeout(timeout);
+    clearInterval(monitor);
+    options.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+function createBoundedOutput(maxBytes: number) {
+  let bytes = 0;
+  const chunks: Buffer[] = [];
+  return {
+    append(chunk: Buffer) {
+      if (bytes >= maxBytes) return;
+      const accepted = chunk.subarray(0, Math.min(chunk.byteLength, maxBytes - bytes));
+      chunks.push(Buffer.from(accepted));
+      bytes += accepted.byteLength;
+    },
+    get text() {
+      return Buffer.concat(chunks).toString('utf8').trim();
+    },
+  };
+}
+
+async function measureTree(root: string): Promise<{ readonly bytes: number; readonly entries: number }> {
+  let bytes = 0;
+  let entries = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let directoryEntries;
+    try {
+      directoryEntries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const entry of directoryEntries) {
+      entries += 1;
+      const path = join(directory, entry.name);
+      let info;
+      try {
+        info = await lstat(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (entry.isDirectory() && !info.isSymbolicLink()) pending.push(path);
+      else if (entry.isFile() && !info.isSymbolicLink()) bytes += info.size;
+      else throw new Error('Bundled npm producer created an unsupported filesystem entry');
+    }
+  }
+  return Object.freeze({ bytes, entries });
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function sha256(value: Uint8Array): `sha256:${string}` {

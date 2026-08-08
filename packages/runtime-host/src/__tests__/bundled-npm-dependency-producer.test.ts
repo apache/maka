@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
   isBundledNpmNodeVersionSupported,
@@ -25,7 +34,6 @@ test('runs the exact bundled npm runtime with scripts disabled', async (t) => {
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
-    cacheRoot: fixture.cacheRoot,
     nodeExecutablePath: fixture.nodeExecutablePath,
   });
   assert.deepEqual(producer.nodeRuntime, {
@@ -43,11 +51,12 @@ test('runs the exact bundled npm runtime with scripts disabled', async (t) => {
   assert.equal(producer.capability.childProcess, 'verified_runtime_only');
   const stagingRoot = join(fixture.root, 'staging');
   const outputRoot = join(stagingRoot, 'node_modules');
-  await mkdir(outputRoot, { recursive: true });
+  await createProducerStaging(stagingRoot);
 
   await producer.provision({
     identity: dependencyIdentity(),
     outputRoot,
+    scratchRoot: join(stagingRoot, '.maka-runtime'),
     manifestBytes: Buffer.from('{"name":"fixture","packageManager":"npm@12.0.2"}\n'),
     lockfileBytes: Buffer.from('{"name":"fixture","lockfileVersion":3,"packages":{}}\n'),
   });
@@ -60,8 +69,10 @@ test('runs the exact bundled npm runtime with scripts disabled', async (t) => {
   assert.equal(invocation.audit, false);
   assert.equal(invocation.fund, false);
   assert.equal(invocation.registry, 'https://registry.npmjs.org/');
-  assert.equal(invocation.userconfig, join(fixture.cacheRoot, 'home', 'npmrc'));
-  assert.equal(invocation.globalconfig, join(fixture.cacheRoot, 'home', 'global-npmrc'));
+  assert.equal(invocation.userconfig, join(stagingRoot, '.maka-runtime', 'home', 'npmrc'));
+  assert.equal(invocation.globalconfig, join(stagingRoot, '.maka-runtime', 'home', 'global-npmrc'));
+  assert.equal(invocation.temp, join(stagingRoot, '.maka-runtime', 'temp'));
+  assert.equal(invocation.compileCache, join(stagingRoot, '.maka-runtime', 'node-compile-cache'));
 });
 
 test('revalidates the complete npm runtime before every provision', async (t) => {
@@ -69,17 +80,17 @@ test('revalidates the complete npm runtime before every provision', async (t) =>
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
-    cacheRoot: fixture.cacheRoot,
     nodeExecutablePath: fixture.nodeExecutablePath,
   });
   await writeFile(fixture.cliPath, 'throw new Error("tampered");\n', 'utf8');
   const outputRoot = join(fixture.root, 'tampered-staging', 'node_modules');
-  await mkdir(outputRoot, { recursive: true });
+  await createProducerStaging(dirname(outputRoot));
 
   await assert.rejects(
     producer.provision({
       identity: dependencyIdentity(),
       outputRoot,
+      scratchRoot: join(dirname(outputRoot), '.maka-runtime'),
       manifestBytes: Buffer.from('{"packageManager":"npm@12.0.2"}\n'),
       lockfileBytes: Buffer.from('{"lockfileVersion":3,"packages":{}}\n'),
     }),
@@ -92,17 +103,17 @@ test('rejects Node runtime drift before provisioning', async (t) => {
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
-    cacheRoot: fixture.cacheRoot,
     nodeExecutablePath: fixture.nodeExecutablePath,
   });
   await writeFile(fixture.nodeExecutablePath, 'tampered node runtime\n', 'utf8');
   const outputRoot = join(fixture.root, 'node-tampered-staging', 'node_modules');
-  await mkdir(outputRoot, { recursive: true });
+  await createProducerStaging(dirname(outputRoot));
 
   await assert.rejects(
     producer.provision({
       identity: dependencyIdentity(),
       outputRoot,
+      scratchRoot: join(dirname(outputRoot), '.maka-runtime'),
       manifestBytes: Buffer.from('{"packageManager":"npm@12.0.2"}\n'),
       lockfileBytes: Buffer.from('{"lockfileVersion":3,"packages":{}}\n'),
     }),
@@ -115,16 +126,16 @@ test('rejects registry dependency entries without lockfile integrity evidence', 
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot: fixture.resourcesRoot,
-    cacheRoot: fixture.cacheRoot,
     nodeExecutablePath: fixture.nodeExecutablePath,
   });
   const outputRoot = join(fixture.root, 'unsafe-staging', 'node_modules');
-  await mkdir(outputRoot, { recursive: true });
+  await createProducerStaging(dirname(outputRoot));
 
   await assert.rejects(
     producer.provision({
       identity: dependencyIdentity(),
       outputRoot,
+      scratchRoot: join(dirname(outputRoot), '.maka-runtime'),
       manifestBytes: Buffer.from('{"packageManager":"npm@12.0.2"}\n'),
       lockfileBytes: Buffer.from(
         '{"lockfileVersion":3,"packages":{"":{"name":"fixture"},"node_modules/pkg":{"version":"1.0.0","resolved":"https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz"}}}\n',
@@ -132,6 +143,111 @@ test('rejects registry dependency entries without lockfile integrity evidence', 
     }),
     /unsafe dependency entry/u,
   );
+});
+
+test('aborts the owned npm process and keeps temp state inside staging', async (t) => {
+  const fixture = await bundledNpmFixture('slow');
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const producer = await resolveBundledNpmDependencyProducer({
+    resourcesRoot: fixture.resourcesRoot,
+    nodeExecutablePath: fixture.nodeExecutablePath,
+  });
+  const projectRoot = join(fixture.root, 'abort-staging');
+  const outputRoot = join(projectRoot, 'node_modules');
+  const scratchRoot = join(projectRoot, '.maka-runtime');
+  await createProducerStaging(projectRoot);
+  const controller = new AbortController();
+  const task = producer.provision({
+    identity: dependencyIdentity(),
+    outputRoot,
+    scratchRoot,
+    manifestBytes: Buffer.from('{"name":"fixture","packageManager":"npm@12.0.2"}\n'),
+    lockfileBytes: Buffer.from('{"name":"fixture","lockfileVersion":3,"packages":{}}\n'),
+    abortSignal: controller.signal,
+  });
+  await waitForFile(join(projectRoot, 'started'));
+  controller.abort();
+  await assert.rejects(task, /aborted/u);
+  assert.equal(await readFile(join(projectRoot, 'temp-path'), 'utf8'), join(scratchRoot, 'temp'));
+});
+
+test('kills provisioning when the staging tree exceeds its configured quota', async (t) => {
+  const fixture = await bundledNpmFixture('large');
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const producer = await resolveBundledNpmDependencyProducer({
+    resourcesRoot: fixture.resourcesRoot,
+    nodeExecutablePath: fixture.nodeExecutablePath,
+    maxProvisionBytes: 1024,
+  });
+  const projectRoot = join(fixture.root, 'quota-staging');
+  const outputRoot = join(projectRoot, 'node_modules');
+  await createProducerStaging(projectRoot);
+  await assert.rejects(
+    producer.provision({
+      identity: dependencyIdentity(),
+      outputRoot,
+      scratchRoot: join(projectRoot, '.maka-runtime'),
+      manifestBytes: Buffer.from('{"name":"fixture","packageManager":"npm@12.0.2"}\n'),
+      lockfileBytes: Buffer.from('{"name":"fixture","lockfileVersion":3,"packages":{}}\n'),
+    }),
+    /filesystem quota/u,
+  );
+});
+
+test('counts empty files toward the provisioning entry quota', async (t) => {
+  const fixture = await bundledNpmFixture('many');
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const producer = await resolveBundledNpmDependencyProducer({
+    resourcesRoot: fixture.resourcesRoot,
+    nodeExecutablePath: fixture.nodeExecutablePath,
+    maxProvisionEntries: 20,
+  });
+  const projectRoot = join(fixture.root, 'entry-quota-staging');
+  await createProducerStaging(projectRoot);
+  await assert.rejects(
+    producer.provision({
+      identity: dependencyIdentity(),
+      outputRoot: join(projectRoot, 'node_modules'),
+      scratchRoot: join(projectRoot, '.maka-runtime'),
+      manifestBytes: Buffer.from('{"name":"fixture","packageManager":"npm@12.0.2"}\n'),
+      lockfileBytes: Buffer.from('{"name":"fixture","lockfileVersion":3,"packages":{}}\n'),
+    }),
+    /filesystem quota/u,
+  );
+});
+
+test('rejects a pre-positioned scratch symlink or junction before npm starts', async (t) => {
+  const fixture = await bundledNpmFixture();
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const producer = await resolveBundledNpmDependencyProducer({
+    resourcesRoot: fixture.resourcesRoot,
+    nodeExecutablePath: fixture.nodeExecutablePath,
+  });
+  const projectRoot = join(fixture.root, 'redirected-staging');
+  const scratchRoot = join(projectRoot, '.maka-runtime');
+  const outsideRoot = join(fixture.root, 'outside');
+  await Promise.all([
+    mkdir(join(projectRoot, 'node_modules'), { recursive: true }),
+    mkdir(scratchRoot, { recursive: true }),
+    mkdir(outsideRoot, { recursive: true }),
+  ]);
+  await symlink(
+    outsideRoot,
+    join(scratchRoot, 'home'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+
+  await assert.rejects(
+    producer.provision({
+      identity: dependencyIdentity(),
+      outputRoot: join(projectRoot, 'node_modules'),
+      scratchRoot,
+      manifestBytes: Buffer.from('{"name":"fixture","packageManager":"npm@12.0.2"}\n'),
+      lockfileBytes: Buffer.from('{"name":"fixture","lockfileVersion":3,"packages":{}}\n'),
+    }),
+    /scratch entry was not created by this provision/u,
+  );
+  await assert.rejects(readFile(join(outsideRoot, 'npmrc'), 'utf8'), { code: 'ENOENT' });
 });
 
 function dependencyIdentity() {
@@ -154,7 +270,14 @@ function dependencyIdentity() {
   };
 }
 
-async function bundledNpmFixture() {
+async function createProducerStaging(projectRoot: string): Promise<void> {
+  await Promise.all([
+    mkdir(join(projectRoot, 'node_modules'), { recursive: true }),
+    mkdir(join(projectRoot, '.maka-runtime'), { recursive: true }),
+  ]);
+}
+
+async function bundledNpmFixture(mode: 'normal' | 'slow' | 'large' | 'many' = 'normal') {
   const root = await mkdtemp(join(tmpdir(), 'maka-bundled-npm-producer-'));
   const resourcesRoot = join(root, 'resources');
   const npmRoot = join(resourcesRoot, 'npm');
@@ -176,6 +299,27 @@ async function bundledNpmFixture() {
       "const path = require('node:path');",
       'const args = process.argv.slice(2);',
       'const root = process.cwd();',
+      ...(mode === 'slow'
+        ? [
+            "fs.writeFileSync(path.join(root, 'started'), '1');",
+            "fs.writeFileSync(path.join(root, 'temp-path'), process.env.TEMP || process.env.TMPDIR);",
+            'setInterval(() => {}, 1000);',
+          ]
+        : []),
+      ...(mode === 'large'
+        ? [
+            "fs.writeFileSync(path.join(root, 'oversized'), Buffer.alloc(4096));",
+            'setInterval(() => {}, 1000);',
+          ]
+        : []),
+      ...(mode === 'many'
+        ? [
+            "const many = path.join(root, 'many-empty-files');",
+            'fs.mkdirSync(many, { recursive: true });',
+            "for (let index = 0; index < 100; index += 1) fs.writeFileSync(path.join(many, String(index)), '');",
+            'setInterval(() => {}, 1000);',
+          ]
+        : []),
       "fs.mkdirSync(path.join(root, 'node_modules', 'fixture-package'), { recursive: true });",
       "fs.writeFileSync(path.join(root, 'node_modules', 'fixture-package', 'index.js'), 'safe\\n');",
       "fs.writeFileSync(path.join(root, 'invocation.json'), JSON.stringify({",
@@ -185,6 +329,8 @@ async function bundledNpmFixture() {
       '  registry: process.env.npm_config_registry,',
       '  userconfig: process.env.npm_config_userconfig,',
       '  globalconfig: process.env.npm_config_globalconfig,',
+      '  temp: process.env.TEMP || process.env.TMPDIR,',
+      '  compileCache: process.env.NODE_COMPILE_CACHE,',
       '}));',
     ].join('\n'),
     'utf8',
@@ -200,14 +346,7 @@ async function bundledNpmFixture() {
     npmVersion: '12.0.2',
     platform: process.platform,
     arch: process.arch,
-    securityPatches: [
-      {
-        packageName: 'tar',
-        fromVersion: '7.5.19',
-        toVersion: '7.5.22',
-        advisory: 'GHSA-r292-9mhp-454m',
-      },
-    ],
+    securityPatches: securityPatches(),
     files,
   });
   const runtimeIdentitySha256 = sha256(Buffer.from(identity));
@@ -220,14 +359,7 @@ async function bundledNpmFixture() {
       npmVersion: '12.0.2',
       platform: process.platform,
       arch: process.arch,
-      securityPatches: [
-        {
-          packageName: 'tar',
-          fromVersion: '7.5.19',
-          toVersion: '7.5.22',
-          advisory: 'GHSA-r292-9mhp-454m',
-        },
-      ],
+      securityPatches: securityPatches(),
       runtimeRootRelativePath: 'npm',
       cliRelativePath: 'npm/bin/npm-cli.js',
       files,
@@ -243,6 +375,49 @@ async function bundledNpmFixture() {
     nodeExecutablePath,
     runtimeIdentitySha256,
   };
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
+function securityPatches() {
+  return [
+    {
+      packageName: 'tar',
+      fromVersion: '7.5.19',
+      toVersion: '7.5.22',
+      advisories: ['GHSA-r292-9mhp-454m'],
+    },
+    {
+      packageName: 'brace-expansion',
+      fromVersion: '5.0.7',
+      toVersion: '5.0.9',
+      advisories: ['GHSA-mh99-v99m-4gvg', 'GHSA-rgw5-rvv9-x895'],
+    },
+    {
+      packageName: 'ip-address',
+      fromVersion: '10.2.0',
+      toVersion: '10.4.0',
+      advisories: ['GHSA-mwp4-54f8-5fhr', 'GHSA-4xrf-jv44-h6hh', 'GHSA-22jq-vg5j-6vgg'],
+    },
+    {
+      packageName: 'undici',
+      fromVersion: '6.27.0',
+      toVersion: '6.28.0',
+      advisories: ['GHSA-8xcm-r25x-g524', 'GHSA-m8rv-5g2x-5cg5', 'GHSA-v3r7-h72x-cjcm'],
+    },
+  ];
 }
 
 function sha256(value: Uint8Array): `sha256:${string}` {
