@@ -10653,6 +10653,272 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  test('retries one idle watchdog timeout after preserving partial thinking', async () => {
+    const timers = manualWatchdogTimer();
+    const assistants: AssistantMessage[] = [];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            stream: hangingProviderStream(
+              [
+                { type: 'stream-start', warnings: [] },
+                { type: 'reasoning-start', id: 'reasoning-1' },
+                {
+                  type: 'reasoning-delta',
+                  id: 'reasoning-1',
+                  delta: 'partial thought',
+                },
+              ],
+              options.abortSignal,
+              'close',
+            ),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+              { type: 'text-end', id: 'text-1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'partial thought') timers.fire();
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'timeout' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'timeout' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(assistants.length, 2);
+    assert.equal(assistants[0]?.thinking?.text, 'partial thought');
+    assert.equal(assistants[0]?.text, '');
+    assert.equal(assistants[1]?.text, 'recovered');
+    assert.notEqual(assistants[0]?.id, assistants[1]?.id);
+  });
+
+  test('does not retry an idle watchdog timeout after partial answer text', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'partial answer' },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'text_delta' && event.text === 'partial answer') timers.fire();
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('does not retry an idle watchdog timeout after provider continuation metadata', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'reasoning-1' },
+              {
+                type: 'reasoning-delta',
+                id: 'reasoning-1',
+                delta: 'completed provider reasoning',
+              },
+              {
+                type: 'reasoning-end',
+                id: 'reasoning-1',
+                providerMetadata: {
+                  openai: {
+                    itemId: 'reasoning-item-1',
+                    reasoningEncryptedContent: 'encrypted-reasoning',
+                  },
+                },
+              },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
+      events,
+    );
+    await waitFor(() => timers.armCount() >= 5);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('Stop aborts the turn while an idle-timeout retry is waiting', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'reasoning-1' },
+              {
+                type: 'reasoning-delta',
+                id: 'reasoning-1',
+                delta: 'partial thought',
+              },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async (_delayMs, signal) =>
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () =>
+            reject(signal.reason ?? Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          if (signal.aborted) abort();
+          else signal.addEventListener('abort', abort, { once: true });
+        }),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'partial thought') timers.fire();
+      if (event.type === 'provider_retry' && event.phase === 'scheduled') {
+        await backend.stop('user_stop');
+      }
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry' && event.phase === 'started'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'user_stop');
+  });
+
   test('records the continuation replay gate and blocking diagnostics on stream failure', async () => {
     const trace: RunTraceEvent[] = [];
     const model = new MockLanguageModelV4({
@@ -15096,6 +15362,53 @@ function makeGate(): { promise: Promise<void>; release: () => void } {
     release = resolve;
   });
   return { promise, release };
+}
+
+function manualWatchdogTimer(): {
+  clock: NonNullable<AiSdkBackendInput['streamWatchdogTimer']>;
+  fire: () => void;
+  armCount: () => number;
+} {
+  let pending: { readonly token: object; readonly callback: () => void } | undefined;
+  let armCount = 0;
+  return {
+    clock: {
+      setTimer: (callback) => {
+        armCount += 1;
+        const token = {};
+        pending = { token, callback };
+        return token;
+      },
+      clearTimer: (token) => {
+        if (pending?.token === token) pending = undefined;
+      },
+    },
+    fire: () => {
+      assert.ok(pending, 'watchdog timer must be armed');
+      const callback = pending.callback;
+      pending = undefined;
+      callback();
+    },
+    armCount: () => armCount,
+  };
+}
+
+function hangingProviderStream(
+  chunks: readonly LanguageModelV4StreamPart[],
+  signal: AbortSignal | undefined,
+  abortMode: 'error' | 'close' = 'error',
+): ReadableStream<LanguageModelV4StreamPart> {
+  return new ReadableStream<LanguageModelV4StreamPart>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      const abort = () => {
+        if (abortMode === 'close') controller.close();
+        else controller.error(signal?.reason ?? new Error('aborted'));
+      };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+    },
+  });
 }
 
 function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): SessionHeader {

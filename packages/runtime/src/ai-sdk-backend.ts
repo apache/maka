@@ -107,7 +107,12 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
-import { StreamWatchdog, formatStreamWatchdogError } from './stream-watchdog.js';
+import {
+  StreamWatchdog,
+  formatStreamWatchdogError,
+  type StreamWatchdogInput,
+  type StreamWatchdogPhase,
+} from './stream-watchdog.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
   MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN,
@@ -683,6 +688,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   streamConnectTimeoutMs?: number;
   /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */
   streamIdleTimeoutMs?: number;
+  /** Test seam for the Runtime-owned stream watchdog clock. */
+  streamWatchdogTimer?: Pick<StreamWatchdogInput, 'setTimer' | 'clearTimer'>;
   /** Test seam for the Runtime-owned provider retry clock. */
   providerRetrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
@@ -816,6 +823,7 @@ function toolResultText(text: string): ToolResultOutput {
 }
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
+const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -1565,28 +1573,30 @@ export class AiSdkBackend implements AgentBackend {
 
     // --- Background pump: streamText → stream → normalize → queue ---
     const pumpDone: Promise<void> = (async () => {
-      let watchdog: StreamWatchdog | null = null;
-      let watchdogTimeoutError: Error | null = null;
+      const watchdogState: { current: StreamWatchdog | null } = { current: null };
+      let providerRequestAbortController = new AbortController();
+      const watchdogTimeoutState: {
+        current: { readonly phase: StreamWatchdogPhase; readonly error: Error } | null;
+      } = { current: null };
+      const currentWatchdogTimeout = () => watchdogTimeoutState.current;
       try {
-        const streamWatchdog = new StreamWatchdog({
-          now: this.now,
-          connectTimeoutMs: this.input.streamConnectTimeoutMs,
-          idleTimeoutMs: this.input.streamIdleTimeoutMs,
-          onTimeout: (timeout) => {
-            const message = formatStreamWatchdogError(timeout);
-            watchdogTimeoutError = new Error(message);
-            queue.push(this.makeErrorEvent(turnId, watchdogTimeoutError));
-            trace.modelStreamFailed(
-              'Timeout',
-              watchdogTimeoutError,
-              priorReplayFailureTrace(priorReplay),
-            );
-            turnAbortController.abort(watchdogTimeoutError);
-          },
-        });
-        watchdog = streamWatchdog;
-        scope.watchdog = watchdog;
-        watchdog.start();
+        const startWatchdog = (): void => {
+          watchdogState.current?.stop();
+          const next = new StreamWatchdog({
+            now: this.now,
+            connectTimeoutMs: this.input.streamConnectTimeoutMs,
+            idleTimeoutMs: this.input.streamIdleTimeoutMs,
+            ...this.input.streamWatchdogTimer,
+            onTimeout: (timeout) => {
+              const error = new Error(formatStreamWatchdogError(timeout));
+              watchdogTimeoutState.current = { phase: timeout.phase, error };
+              providerRequestAbortController.abort(error);
+            },
+          });
+          watchdogState.current = next;
+          scope.watchdog = next;
+          next.start();
+        };
         const activeTools = plan.activeTools;
         const systemPrompt = joinPromptFragments([
           await this.resolveSystemPrompt(scope),
@@ -1934,18 +1944,35 @@ export class AiSdkBackend implements AgentBackend {
           providerRequestTracker?.setStep(runtimeSteps);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
+          let idleWatchdogRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
           const providerStepId = currentStepMessageId;
           let providerStepUsage: NormalizedUsage | undefined;
-          const attemptHasNoObservableOutput = () =>
-            returnedToolCalls.length === 0 &&
-            providerToolActivityCount === 0 &&
-            stepText.length === 0 &&
-            stepThinking.length === 0 &&
-            stepSignature === undefined;
           for (;;) {
+            providerRequestAbortController = new AbortController();
+            watchdogTimeoutState.current = null;
+            startWatchdog();
+            // Monotonic facts for this physical request. The step accumulators
+            // are cleared after flushStep(), so they cannot decide whether a
+            // later stream failure is safe to retry.
+            let attemptSawText = false;
+            let attemptSawThinking = false;
+            let attemptSawToolActivity = false;
+            let attemptSawContinuationMetadata = false;
+            let attemptReachedStepBoundary = false;
+            const attemptHasNoObservableOutput = () =>
+              !attemptSawText &&
+              !attemptSawThinking &&
+              !attemptSawToolActivity &&
+              !attemptSawContinuationMetadata &&
+              !attemptReachedStepBoundary;
+            const attemptCanRecoverFromIdleTimeout = () =>
+              !attemptSawText &&
+              !attemptSawToolActivity &&
+              !attemptSawContinuationMetadata &&
+              !attemptReachedStepBoundary;
             scope.memorySourceMessages = [...attemptMessages];
             scope.memorySourceEventMessagePositions =
               this.memoryEventMessagePositions(attemptMessages);
@@ -1957,12 +1984,13 @@ export class AiSdkBackend implements AgentBackend {
               toolMode === 'code_mode'
                 ? nestableToolSnapshot(providerTools, activeToolsForRequest)
                 : undefined;
+            const requestWatchdog = watchdogState.current;
             result = await this.modelAdapter.startStream({
               model,
               messages: attemptMessages,
               tools: modelTools,
               activeTools: activeToolsForRequest,
-              onStreamActivity: () => streamWatchdog.markActivity(),
+              onStreamActivity: () => requestWatchdog?.markActivity(),
               repairToolCall: async ({
                 toolCall,
                 error,
@@ -1981,7 +2009,10 @@ export class AiSdkBackend implements AgentBackend {
                 });
               },
               system: requestSystemPrompt,
-              abortSignal: turnAbortController.signal,
+              abortSignal: AbortSignal.any([
+                turnAbortController.signal,
+                providerRequestAbortController.signal,
+              ]),
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
               continuationKey: scope.turnId,
             });
@@ -2000,6 +2031,7 @@ export class AiSdkBackend implements AgentBackend {
                   break;
                 }
                 if (event.kind === 'step-finish') {
+                  attemptReachedStepBoundary = true;
                   // Step boundary: AI SDK 7 delimits steps with `finish-step`
                   // (and `step-finish` for legacy replay fixtures); the adapter
                   // reduces both to this event. A duplicate boundary is harmless:
@@ -2031,6 +2063,7 @@ export class AiSdkBackend implements AgentBackend {
                   stepTextPartStartOffset = stepText.length;
                 } else if (event.kind === 'text') {
                   stepText += event.text;
+                  if (event.text.length > 0) attemptSawText = true;
                   queue.push({
                     type: 'text_delta',
                     id: this.newId(),
@@ -2050,7 +2083,9 @@ export class AiSdkBackend implements AgentBackend {
                 } else if (event.kind === 'thinking') {
                   sawStepThinking = true;
                   stepThinking += event.text;
+                  if (event.text.length > 0) attemptSawThinking = true;
                   if (event.providerOptions !== undefined) {
+                    attemptSawContinuationMetadata = true;
                     stepThinkingProviderOptions = event.providerOptions;
                   }
                   const openai = event.providerOptions?.openai;
@@ -2089,8 +2124,10 @@ export class AiSdkBackend implements AgentBackend {
                     text: event.text,
                   } satisfies ThinkingDeltaEvent);
                 } else if (event.kind === 'thinking-signature') {
+                  attemptSawContinuationMetadata = true;
                   stepSignature = event.signature;
                 } else if (event.kind === 'tool-call') {
+                  attemptSawToolActivity = true;
                   if (event.toolCall.providerExecuted) {
                     providerToolActivityCount += 1;
                     providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
@@ -2116,6 +2153,7 @@ export class AiSdkBackend implements AgentBackend {
                     returnedToolCalls.push(event.toolCall);
                   }
                 } else if (event.kind === 'provider-tool-result') {
+                  attemptSawToolActivity = true;
                   providerToolActivityCount += 1;
                   const providerOutput = stripUndefinedDeep(event.output);
                   queue.push({
@@ -2156,9 +2194,16 @@ export class AiSdkBackend implements AgentBackend {
               streamFailure = error;
               sawStreamError = true;
             }
+            watchdogState.current?.stop();
+            const settledWatchdogTimeout = currentWatchdogTimeout();
+            if (!sawStreamError && settledWatchdogTimeout) {
+              streamFailure = settledWatchdogTimeout.error;
+              sawStreamError = true;
+            }
 
             if (sawStreamError && !scope.aborted) {
-              if (scope.loopStopRequested) throw streamFailure;
+              const attemptFailure = settledWatchdogTimeout?.error ?? streamFailure;
+              if (scope.loopStopRequested) throw attemptFailure;
               // A retry is a fresh provider request that would run at least one
               // more step; with the send-level budget already spent there is
               // nothing left to grant it, so the error is terminal.
@@ -2166,7 +2211,7 @@ export class AiSdkBackend implements AgentBackend {
               const recovered =
                 stepBudgetRemains && attemptHasNoObservableOutput()
                   ? await this.compaction.recoverFromOverflowError({
-                      error: streamFailure,
+                      error: attemptFailure,
                       retryAlreadyUsed: overflowRetryUsed,
                       midTurnState,
                       turnId,
@@ -2199,18 +2244,32 @@ export class AiSdkBackend implements AgentBackend {
                 attemptMessages = recoveredProjection?.messages ?? recovered.messages;
                 continue;
               }
-              const failure = this.modelAdapter.normalizeFailure(streamFailure);
+              const failure = this.modelAdapter.normalizeFailure(attemptFailure);
+              const idleWatchdogRecovery =
+                settledWatchdogTimeout?.phase === 'idle' &&
+                idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
+                attemptCanRecoverFromIdleTimeout();
               if (
-                failure.retryable &&
+                (failure.retryable || idleWatchdogRecovery) &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                attemptHasNoObservableOutput()
+                (attemptHasNoObservableOutput() || idleWatchdogRecovery)
               ) {
+                if (idleWatchdogRecovery) {
+                  idleWatchdogRetryCount += 1;
+                  if (stepThinking.length > 0) {
+                    await flushStep();
+                    currentStepMessageId = this.newId();
+                  }
+                }
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
+                const maxAttempts = idleWatchdogRecovery
+                  ? nextAttempt
+                  : MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
                 queue.push({
                   type: 'provider_retry',
@@ -2219,16 +2278,11 @@ export class AiSdkBackend implements AgentBackend {
                   ts: this.now(),
                   phase: 'scheduled',
                   attempt: nextAttempt,
-                  maxAttempts: MAX_PROVIDER_ATTEMPTS_PER_STEP,
+                  maxAttempts,
                   delayMs,
                   reason,
                 } satisfies ProviderRetryEvent);
-                watchdog.pause();
-                try {
-                  await this.providerRetrySleep(delayMs, turnAbortController.signal);
-                } finally {
-                  watchdog.resume();
-                }
+                await this.providerRetrySleep(delayMs, turnAbortController.signal);
                 providerAttempt = nextAttempt;
                 queue.push({
                   type: 'provider_retry',
@@ -2237,7 +2291,7 @@ export class AiSdkBackend implements AgentBackend {
                   ts: this.now(),
                   phase: 'started',
                   attempt: providerAttempt,
-                  maxAttempts: MAX_PROVIDER_ATTEMPTS_PER_STEP,
+                  maxAttempts,
                   reason,
                 } satisfies ProviderRetryEvent);
                 continue;
@@ -2245,7 +2299,7 @@ export class AiSdkBackend implements AgentBackend {
               // Unrecoverable (not context-length, latch spent, no seam, or no
               // safe fold): surface the real provider error via the terminal
               // handler — never a fabricated success.
-              throw streamFailure;
+              throw attemptFailure;
             }
             break;
           }
@@ -2594,7 +2648,7 @@ export class AiSdkBackend implements AgentBackend {
         }
       } catch (err) {
         streamStatus = scope.aborted ? 'aborted' : 'error';
-        streamErrorClass = this.modelAdapter.classifyError(watchdogTimeoutError ?? err);
+        streamErrorClass = this.modelAdapter.classifyError(currentWatchdogTimeout()?.error ?? err);
         // Flush the in-flight step's partial text/thinking before the terminal
         // abort/error events. Earlier steps already flushed at their
         // `finish-step`; this keeps their and this step's streamed-out output on
@@ -2630,10 +2684,13 @@ export class AiSdkBackend implements AgentBackend {
             stopReason: 'user_stop',
           } satisfies CompleteEvent);
         } else {
-          if (!watchdogTimeoutError) {
-            queue.push(this.makeErrorEvent(turnId, err));
-            trace.modelStreamFailed(streamErrorClass, err, priorReplayFailureTrace(priorReplay));
-          }
+          const terminalError = currentWatchdogTimeout()?.error ?? err;
+          queue.push(this.makeErrorEvent(turnId, terminalError));
+          trace.modelStreamFailed(
+            streamErrorClass,
+            terminalError,
+            priorReplayFailureTrace(priorReplay),
+          );
           queue.push({
             type: 'complete',
             id: this.newId(),
@@ -2643,8 +2700,8 @@ export class AiSdkBackend implements AgentBackend {
           } satisfies CompleteEvent);
         }
       } finally {
-        watchdog?.stop();
-        if (scope.watchdog === watchdog) scope.watchdog = null;
+        watchdogState.current?.stop();
+        if (scope.watchdog === watchdogState.current) scope.watchdog = null;
         contextBudgetForTelemetry = contextBudgetWithActiveProjectionDiagnostics(
           contextBudgetForTelemetry,
           activeToolResultPruneDiagnosticPatch,
