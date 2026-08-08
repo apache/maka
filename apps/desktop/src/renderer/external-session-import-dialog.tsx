@@ -16,6 +16,7 @@ import { Spinner, useUiLocale } from '@maka/ui';
 import { Upload } from '@maka/ui/icons';
 import { getExternalSessionImportCopy } from './locales/external-session-import-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import { ExternalSessionImportLifecycle } from './external-session-import-lifecycle.js';
 
 type CatalogState = {
   sessions: ExternalSessionSummary[];
@@ -44,7 +45,11 @@ export function ExternalSessionImportDialog(props: {
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [uncertainSourceId, setUncertainSourceId] = useState<string | null>(null);
   const requestGeneration = useRef(0);
+  const importLifecycle = useRef(new ExternalSessionImportLifecycle());
+  const isOpenRef = useRef(props.isOpen);
+  isOpenRef.current = props.isOpen;
 
   const loadSources = useCallback(async () => {
     const generation = ++requestGeneration.current;
@@ -112,10 +117,12 @@ export function ExternalSessionImportDialog(props: {
   useEffect(() => {
     if (!props.isOpen) {
       requestGeneration.current += 1;
+      importLifecycle.current.invalidate();
       setSourceResolved(false);
       setSourceLoading(false);
       setCatalogLoading(false);
       setLoadingMore(false);
+      setImporting(false);
       setAdapterIds([]);
       setAdapterId(null);
       setCatalog(EMPTY_CATALOG);
@@ -123,6 +130,7 @@ export function ExternalSessionImportDialog(props: {
       setSourceError(null);
       setCatalogError(null);
       setImportError(null);
+      setUncertainSourceId(null);
       return;
     }
     void loadSources();
@@ -132,6 +140,13 @@ export function ExternalSessionImportDialog(props: {
     if (!props.isOpen || adapterId === null) return;
     void loadCatalog(adapterId);
   }, [adapterId, includeArchived, loadCatalog, props.isOpen]);
+
+  useEffect(
+    () => () => {
+      importLifecycle.current.invalidate();
+    },
+    [],
+  );
 
   const dateFormatter = useMemo(
     () =>
@@ -143,22 +158,44 @@ export function ExternalSessionImportDialog(props: {
   );
 
   const importSelected = useCallback(async () => {
-    if (adapterId === null || selectedId === null || importing) return;
+    if (
+      adapterId === null ||
+      selectedId === null ||
+      importing ||
+      !importLifecycle.current.canClose()
+    ) {
+      return;
+    }
+    const requestToken = importLifecycle.current.begin();
     setImporting(true);
     setImportError(null);
     try {
-      const session = await window.maka.externalSessions.import({
+      const outcome = await window.maka.externalSessions.import({
         adapterId,
         sourceSessionId: selectedId,
       });
-      props.onImported(session);
+      if (!isOpenRef.current || !importLifecycle.current.isCurrent(requestToken)) return;
+      if (!outcome.ok) {
+        setUncertainSourceId(selectedId);
+        return;
+      }
+      props.onImported(outcome.session);
       props.onOpenChange(false);
     } catch (error) {
+      if (!isOpenRef.current || !importLifecycle.current.isCurrent(requestToken)) return;
       setImportError(localizedShellErrorMessage(error, copy.importFailedFallback, locale));
     } finally {
-      setImporting(false);
+      if (importLifecycle.current.finish(requestToken)) setImporting(false);
     }
   }, [adapterId, copy.importFailedFallback, importing, locale, props, selectedId]);
+
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && !importLifecycle.current.canClose()) return;
+      props.onOpenChange(open);
+    },
+    [props.onOpenChange],
+  );
 
   const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;
   const catalogEmpty =
@@ -167,7 +204,7 @@ export function ExternalSessionImportDialog(props: {
   return (
     <Dialog
       isOpen={props.isOpen}
-      onOpenChange={props.onOpenChange}
+      onOpenChange={handleOpenChange}
       purpose="form"
       width={640}
       maxHeight="calc(100dvh - 96px)"
@@ -179,7 +216,7 @@ export function ExternalSessionImportDialog(props: {
           <DialogHeader
             startContent={<Upload aria-hidden="true" />}
             title={copy.title}
-            onOpenChange={props.onOpenChange}
+            onOpenChange={handleOpenChange}
           />
         }
         content={
@@ -260,6 +297,14 @@ export function ExternalSessionImportDialog(props: {
 
               {importError && (
                 <Banner status="error" title={copy.importFailedTitle} description={importError} />
+              )}
+
+              {uncertainSourceId !== null && (
+                <Banner
+                  status="warning"
+                  title={copy.importOutcomeUnknownTitle}
+                  description={copy.importOutcomeUnknownDescription}
+                />
               )}
 
               {catalogLoading && (
@@ -346,12 +391,14 @@ export function ExternalSessionImportDialog(props: {
                 variant="ghost"
                 label={copy.cancel}
                 isDisabled={importing}
-                onClick={() => props.onOpenChange(false)}
+                onClick={() => handleOpenChange(false)}
               />
               <Button
                 variant="primary"
                 label={importing ? copy.importing : copy.import}
-                isDisabled={selectedId === null || importing}
+                isDisabled={
+                  selectedId === null || importing || selectedId === uncertainSourceId
+                }
                 isLoading={importing}
                 onClick={() => void importSelected()}
               />

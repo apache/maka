@@ -29,6 +29,7 @@ test('fixture launch state comes only from explicit arguments', () => {
     scenario: 'first-run',
     theme: 'light',
     timezone: 'UTC',
+    desktopRuntimeOwner: 'runtime-host',
   });
 
   assert.equal(env.MAKA_E2E, '1');
@@ -43,4 +44,5 @@ test('fixture launch state comes only from explicit arguments', () => {
   assert.equal(env.USERPROFILE, '/tmp/data/home');
   assert.equal(env.MAKA_E2E_USER_DATA_DIR, '/tmp/data');
   assert.equal(env.MAKA_E2E_FIXTURE_TIMEZONE, 'UTC');
+  assert.equal(env.MAKA_DESKTOP_RUNTIME_OWNER, 'runtime-host');
 });

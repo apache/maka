@@ -9,6 +9,7 @@
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
+    "./external-sessions": "./dist/server/external-session-coordinator.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js"
   },

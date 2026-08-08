@@ -43,6 +43,7 @@ function isDeniedEnvKey(key) {
  *   theme?: 'light' | 'dark',
  *   timezone?: string,
  *   showWindow?: boolean,
+ *   desktopRuntimeOwner?: 'embedded' | 'runtime-host',
  * }} [options]
  * @returns {NodeJS.ProcessEnv}
  */
@@ -58,6 +59,9 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   // under xvfb).
   env.MAKA_SKIP_SHELL_ENV = '1';
   env.MAKA_E2E_USER_DATA_DIR = userDataDir;
+  if (options.desktopRuntimeOwner) {
+    env.MAKA_DESKTOP_RUNTIME_OWNER = options.desktopRuntimeOwner;
+  }
   // Sandbox the home directory. User-scope skill discovery reads
   // `~/.maka/skills` and `~/.agents/skills` via `os.homedir()`, and the Skills
   // panel can now DELETE from those (#1517) — so without this a run would

@@ -41,6 +41,7 @@ import { registerAttachmentPreviewIpc } from './attachment-preview.js';
 import { readFileCapped } from './attachment-ingest.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
+import { mergeDurableAndRuntimeMessages } from './session-message-projection.js';
 import { resolveCreateSessionInput } from './create-session-input.js';
 import {
   normalizeSandboxBoundaryResponse,
@@ -538,7 +539,11 @@ export function registerSessionsIpc(
     if (e2eFixture) return store.readMessages(sessionId);
     let messages: StoredMessage[];
     try {
-      messages = await runtime.getMessages(sessionId);
+      const [durable, runtimeProjection] = await Promise.all([
+        store.readMessages(sessionId),
+        runtime.getMessages(sessionId),
+      ]);
+      messages = mergeDurableAndRuntimeMessages(durable, runtimeProjection);
     } catch (error) {
       throw new Error(sessionReadMessagesFailureMessage(error));
     }

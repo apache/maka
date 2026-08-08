@@ -42,9 +42,9 @@ export interface HostExternalSessionCoordinatorOptions {
 /** Source discovery/conversion stays host-side so raw transcripts never cross the wire. */
 export class HostExternalSessionCoordinator {
   readonly handlers: ExternalSessionOperationHandlerMap = {
-    'external-session.source.query': () => this.#listSources(),
-    'external-session.catalog.query': (input) => this.#listSessions(input),
-    'external-session.import': (input) => this.#import(input),
+    'external-session.source.query': () => this.listSources(),
+    'external-session.catalog.query': (input) => this.listSessions(input),
+    'external-session.import': (input) => this.importSession(input),
   };
 
   readonly #adapters: ExternalSessionAdapterRegistry;
@@ -59,7 +59,7 @@ export class HostExternalSessionCoordinator {
     this.#requestDrain = options.requestDrain;
   }
 
-  async #listSources(): Promise<OperationOutcome<'external-session.source.query'>> {
+  async listSources(): Promise<OperationOutcome<'external-session.source.query'>> {
     const detected = await Promise.all(
       this.#adapters.list().map(async (adapter) => {
         try {
@@ -79,7 +79,7 @@ export class HostExternalSessionCoordinator {
     };
   }
 
-  async #listSessions(
+  async listSessions(
     input: ExternalSessionCatalogQueryInput,
   ): Promise<OperationOutcome<'external-session.catalog.query'>> {
     const adapter = this.#adapters.get(input.adapterId);
@@ -113,7 +113,7 @@ export class HostExternalSessionCoordinator {
     }
   }
 
-  async #import(
+  async importSession(
     input: ExternalSessionImportInput,
   ): Promise<OperationOutcome<'external-session.import'>> {
     const adapter = this.#adapters.get(input.adapterId);

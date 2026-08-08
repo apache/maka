@@ -13,6 +13,7 @@ import type {
   AppSettings,
   BotProvider,
   ConnectionEvent,
+  CreateSessionInput,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
@@ -80,6 +81,7 @@ import {
   createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
 } from '@maka/storage';
+import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { McpClientManager } from '@maka/mcp';
@@ -150,6 +152,8 @@ import {
   resolveDesktopSessionSkillHost,
 } from './desktop-backend-tool-surface.js';
 import { registerSessionsIpc } from './sessions-ipc-main.js';
+import { registerEmbeddedExternalSessionsIpc } from './embedded-external-sessions-ipc-main.js';
+import { resolveCreateSessionInput } from './create-session-input.js';
 import { registerAgentGraphIpc } from './agent-graph-ipc-main.js';
 import {
   assertSessionCanSendFromHeader,
@@ -1154,6 +1158,15 @@ function registerIpc(): void {
     coordinator: agentGraphCoordinator,
     sendToRenderer: safeSendToRenderer,
   });
+  registerEmbeddedExternalSessionsIpc(
+    {
+      adapters: createExternalSessionAdapterRegistry(),
+      store,
+      resolveTarget: resolveEmbeddedExternalSessionImportTarget,
+      emitSessionsChanged,
+    },
+    ipcMain,
+  );
   registerSessionsIpc({
     workspaceRoot,
     runtime,
@@ -1406,6 +1419,23 @@ const readyConnectionDeps = {
 
 function getReadyConnection(slug: string | null | undefined, model?: string) {
   return requireReadyConnection(slug, readyConnectionDeps, model);
+}
+
+async function resolveEmbeddedExternalSessionImportTarget(): Promise<
+  Omit<CreateSessionInput, 'cwd' | 'name'>
+> {
+  const [defaults, ready] = await Promise.all([
+    resolveCreateSessionInput(undefined, { readSettings: () => settingsStore.get() }),
+    connectionStore.getDefault().then((slug) => getReadyConnection(slug)),
+  ]);
+  return {
+    backend: 'ai-sdk',
+    llmConnectionSlug: ready.connection.slug,
+    model: ready.model,
+    permissionMode: defaults.permissionMode,
+    collaborationMode: defaults.collaborationMode,
+    orchestrationMode: defaults.orchestrationMode,
+  };
 }
 
 async function resolveDesktopSkillHostForSession(

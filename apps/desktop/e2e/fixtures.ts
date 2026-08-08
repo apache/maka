@@ -213,6 +213,7 @@ async function withE2eWindow(
     invocableSkills,
     gitReviewExtraFiles,
     extraConnectionCount,
+    desktopRuntimeOwner,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -223,6 +224,7 @@ async function withE2eWindow(
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
+    desktopRuntimeOwner?: 'embedded' | 'runtime-host';
   },
   use: (page: Page) => Promise<void>,
 ): Promise<void> {
@@ -251,6 +253,7 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
+        desktopRuntimeOwner,
         // xvfb throttles a hidden window's compositor to ~1fps; only that
         // isolated display gets a visible window.
         showWindow: isCiLinuxDisplay(),
@@ -300,6 +303,8 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
+  externalSessionImportWindow: Page;
+  runtimeHostExternalSessionImportWindow: Page;
   firstRunWindow: Page;
   modelPickerLongWindow: Page;
   sandboxBoundaryWindow: Page;
@@ -314,6 +319,29 @@ export const test = base.extend<{
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  // The product-default embedded owner. This is deliberately separate from
+  // the Runtime Host fixture so both IPC registrations stay covered.
+  externalSessionImportWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: '.maka-session-panel',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  runtimeHostExternalSessionImportWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: '.maka-session-panel',
+        locale: 'zh',
+        desktopRuntimeOwner: 'runtime-host',
+      },
+      use,
+    );
   },
   // No connection: the real main process derives `needs_connection`, and the
   // renderer replaces the empty chat with the first-task activation card.

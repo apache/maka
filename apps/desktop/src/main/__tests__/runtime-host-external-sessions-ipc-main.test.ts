@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   registerRuntimeHostExternalSessionsIpc,
   type RuntimeHostExternalSessionsIpcDeps,
 } from '../runtime-host-external-sessions-ipc-main.js';
+import { toDesktopHostSessionSummary } from '../runtime-host-session-catalog-ipc-main.js';
 
 test('forwards bounded external Session requests and publishes imported Sessions', async () => {
   const requests: unknown[] = [];
@@ -48,13 +50,42 @@ test('forwards bounded external Session requests and publishes imported Sessions
       adapterId: 'codex',
       sourceSessionId: 'source-1',
     }),
-    session('imported-1'),
+    { ok: true, session: toDesktopHostSessionSummary(session('imported-1')) },
   );
   assert.deepEqual(requests, [
     { adapterId: 'codex', includeArchived: true, cursor: '16' },
     { adapterId: 'codex', sourceSessionId: 'source-1' },
   ]);
   assert.deepEqual(events, [{ reason: 'created', sessionId: 'imported-1' }]);
+});
+
+test('preserves commit uncertainty as a structured non-retryable IPC result', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'commit_outcome_unknown',
+            'check the Session list before retrying',
+          );
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'commit_outcome_unknown' },
+  );
+  assert.deepEqual(events, []);
 });
 
 test('rejects malformed renderer requests before they reach the Host client', async () => {

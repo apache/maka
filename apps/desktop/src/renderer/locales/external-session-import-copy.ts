@@ -23,6 +23,8 @@ type ExternalSessionImportCopy = {
   importing: string;
   importFailedTitle: string;
   importFailedFallback: string;
+  importOutcomeUnknownTitle: string;
+  importOutcomeUnknownDescription: string;
 };
 
 const COPY = {
@@ -49,6 +51,9 @@ const COPY = {
     importing: '正在导入…',
     importFailedTitle: '导入失败',
     importFailedFallback: '该会话无法转换或保存。请检查来源后重试。',
+    importOutcomeUnknownTitle: '需要确认导入结果',
+    importOutcomeUnknownDescription:
+      '导入结果暂时无法确认。请先关闭此窗口并检查 Maka 会话列表；如果会话已经出现，请不要再次导入。',
   },
   en: {
     title: 'Import external conversation',
@@ -73,6 +78,9 @@ const COPY = {
     importing: 'Importing…',
     importFailedTitle: 'Import failed',
     importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
+    importOutcomeUnknownTitle: 'Check the import result',
+    importOutcomeUnknownDescription:
+      'Maka could not confirm whether the import completed. Close this window and check the Maka Session list. If the Session appears there, do not import it again.',
   },
 } satisfies UiCatalog<ExternalSessionImportCopy>;
 

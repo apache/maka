@@ -81,6 +81,7 @@ import type {
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
+import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
 import type {
@@ -373,7 +374,10 @@ export interface MakaBridge {
       cwd?: string;
       cursor?: string;
     }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
-    import(input: { adapterId: string; sourceSessionId: string }): Promise<SessionSummary>;
+    import(input: {
+      adapterId: string;
+      sourceSessionId: string;
+    }): Promise<ExternalSessionImportIpcResult>;
   };
   projects: {
     list(): Promise<ProjectRecord[]>;
