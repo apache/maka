@@ -5,22 +5,10 @@ import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { parseMakaRunArgs } from '../run-command.js';
+import { parseMakaRunArgs, runMakaTextCli } from '../run-command.js';
+import { createRunCommandFake, type RunCommandFakeOptions } from './run-command-fake.js';
 
 const fixturePath = fileURLToPath(new URL('./run-command-fixture.js', import.meta.url));
-
-/** Node may print ExperimentalWarning for node:sqlite on stderr; ignore it in process contracts. */
-function processContractStderr(stderr: string): string {
-  return stderr
-    .split('\n')
-    .filter(
-      (line) =>
-        !line.includes('ExperimentalWarning: SQLite is an experimental feature') &&
-        !line.includes('Use `node --trace-warnings') &&
-        line.trim().length > 0,
-    )
-    .join('\n');
-}
 
 describe('maka run argument parsing', () => {
   test('parses prompt, target, thinking, timeout, and max steps', () => {
@@ -119,28 +107,31 @@ describe('maka run argument parsing', () => {
   });
 });
 
-describe('maka run process contract', () => {
+// Ordinary command semantics run in process against the injectable
+// MakaRunDeps seam: same fake runtime as the subprocess fixture, but without
+// paying a Node startup per assertion. Real-process coverage for stdin
+// piping, SIGINT, and fail-closed boundary handling stays below in
+// 'maka run process contract'.
+describe('maka run command semantics (in process)', () => {
   test('writes only the final answer to stdout', async () => {
-    const result = await runFixture(['hello'], { input: '' });
+    const result = await runInProcess(['hello']);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=hello\n');
-    assert.equal(processContractStderr(result.stderr), '');
+    // The injected stderr channel sees only the CLI's own writes, so no Node
+    // runtime warning can leak in here — the exact-empty assertion is safe.
+    assert.equal(result.stderr, '');
   });
 
   test('waits for the complete Graph before printing the final supervisor output', async () => {
-    const result = await runFixture(['implement it', '--graph'], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_GRAPH: '1' },
-    });
+    const result = await runInProcess(['implement it', '--graph'], { expectGraph: true });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'graph completed\n');
-    assert.equal(processContractStderr(result.stderr), '');
+    assert.equal(result.stderr, '');
   });
 
   test('does not wait for Graph completion after the root invocation fails', async () => {
-    const result = await runFixture(['implement it', '--graph'], {
+    const result = await runInProcess(['implement it', '--graph'], {
       scenario: 'graph-runtime-error',
-      input: '',
     });
 
     assert.equal(result.code, 1);
@@ -149,6 +140,217 @@ describe('maka run process contract', () => {
     assert.doesNotMatch(result.stderr, /graph-wait-called/);
   });
 
+  test('returns exit 2 for missing input and pre-invocation configuration errors', async () => {
+    const missing = await runInProcess([]);
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /missing prompt input/);
+
+    const config = await runInProcess(['hello'], { scenario: 'config-error' });
+    assert.equal(config.code, 2);
+    assert.match(config.stderr, /unknown connection/);
+  });
+
+  test('returns exit 1 for runtime failure and missing final output', async () => {
+    const runtime = await runInProcess(['hello'], { scenario: 'runtime-error' });
+    assert.equal(runtime.code, 1);
+    assert.match(runtime.stderr, /provider failed after startup/);
+
+    const missing = await runInProcess(['hello'], { scenario: 'missing-output' });
+    assert.equal(missing.code, 1);
+    assert.match(missing.stderr, /no final output/);
+  });
+
+  test('returns exit 1 without successful output when the explicit step limit is reached', async () => {
+    const result = await runInProcess(['hello'], { scenario: 'step-limit' });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /tool-step limit reached/);
+  });
+
+  test('fails closed when a tool reports an unresolved sandbox boundary requirement', async () => {
+    const result = await runInProcess(['hello'], { scenario: 'sandbox-boundary-tool-result' });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('accepts a completed boundary-safe alternative', async () => {
+    const result = await runInProcess(['hello'], { scenario: 'sandbox-boundary-recovered' });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'recovered safely\n');
+  });
+
+  test('creates an Auto boundary by default', async () => {
+    const result = await runInProcess(['hello'], { expectPermissionMode: 'ask' });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=hello\n');
+  });
+
+  test('passes max steps as an invocation-local context limit', async () => {
+    const result = await runInProcess(['hello', '--max-steps', '3'], { expectMaxSteps: 3 });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^maxSteps=3;/);
+  });
+
+  test('creates a bypass boundary only when --yolo is explicit', async () => {
+    const result = await runInProcess(['hello', '--yolo'], { expectPermissionMode: 'bypass' });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=hello\n');
+  });
+
+  test('returns exit 2 for removed permission flags before runtime startup', async () => {
+    const result = await runInProcess(['hello', '--permission-mode', 'ask']);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /unknown option: --permission-mode/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('resumes an explicit session without creating a new identity', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-me',
+      cwd,
+      llmConnectionSlug: 'fixture',
+      model: 'fixture-model',
+      permissionMode: 'execute',
+    });
+    const result = await runInProcess(
+      [
+        'continue this',
+        '--resume',
+        resumed.id,
+        '--connection',
+        resumed.llmConnectionSlug,
+        '--model',
+        resumed.model,
+      ],
+      {
+        sessions: [resumed],
+        expectNoCreate: true,
+        expectSessionId: resumed.id,
+        expectContextCwd: cwd,
+        expectContextConnection: resumed.llmConnectionSlug,
+        expectContextModel: resumed.model,
+        expectCwdOverride: JSON.stringify({ sessionId: resumed.id, cwd }),
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=continue this\n');
+  });
+
+  test('names the mode the same way the desktop and TUI do (#1616)', async () => {
+    const help = await runInProcess(['--help']);
+
+    assert.equal(help.code, 0, help.stderr);
+    assert.match(help.stdout, /--yolo\s+Give this session full access to your files and network/);
+    assert.doesNotMatch(help.stdout, /sandbox/i);
+    assert.doesNotMatch(help.stdout, /bypass/i);
+  });
+
+  test('fails closed when resuming a bypass session without --yolo', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-bypass',
+      cwd,
+      permissionMode: 'bypass',
+    });
+    const result = await runInProcess(['continue this', '--resume', resumed.id], {
+      sessions: [resumed],
+      boundaryKind: 'bypass',
+      expectNoSend: true,
+    });
+
+    assert.equal(result.code, 2);
+    // The session id in this fixture is literally `resume-bypass`, so only the
+    // sentence itself is checked for the old name.
+    assert.match(result.stderr, /resuming a full-access session .* requires --yolo/i);
+    assert.doesNotMatch(result.stderr, /Bypass session/i);
+    assert.equal(result.stdout, '');
+  });
+
+  test('resumes in Bypass only when --yolo is explicit', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-bypass',
+      cwd,
+      permissionMode: 'bypass',
+    });
+    const result = await runInProcess(['continue this', '--resume', resumed.id, '--yolo'], {
+      sessions: [resumed],
+      boundaryKind: 'bypass',
+      expectBoundaryKind: 'bypass',
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=continue this\n');
+  });
+
+  test('returns exit 2 when explicit configuration conflicts with a resumed session', async () => {
+    const resumed = fixtureSession({ id: 'resume-me', cwd: process.cwd() });
+    const result = await runInProcess(
+      ['continue this', '--resume', resumed.id, '--model', 'different-model'],
+      { sessions: [resumed] },
+    );
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--model conflicts with resumed session/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('continues the deterministic latest cwd-compatible session', async () => {
+    const cwd = await realpath(process.cwd());
+    const sessions = [
+      fixtureSession({ id: 'b', cwd, lastMessageAt: 200 }),
+      fixtureSession({ id: 'a', cwd, lastMessageAt: 200, status: 'aborted' }),
+      fixtureSession({ id: 'newer-other-cwd', cwd: '/missing-other', lastMessageAt: 300 }),
+    ];
+    const result = await runInProcess(['continue this', '--continue'], {
+      sessions,
+      expectNoCreate: true,
+      expectSessionId: 'a',
+      expectContextCwd: cwd,
+      expectContextConnection: 'fixture',
+      expectContextModel: 'fixture-model',
+      expectCwdOverride: JSON.stringify({ sessionId: 'a', cwd }),
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=continue this\n');
+  });
+
+  test('returns exit 2 when continue finds no compatible session', async () => {
+    const result = await runInProcess(['continue this', '--continue'], { sessions: [] });
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /no compatible session found for cwd/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('returns exit 1 when the invocation timeout stops the run', async () => {
+    const result = await runInProcess(['hello', '--timeout', '0.05'], { scenario: 'slow' });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /timed out after 50ms/);
+  });
+
+  test('returns exit 1 when a graph descendant leaves a boundary failure unresolved', async () => {
+    const result = await runInProcess(['graph task', '--graph'], {
+      expectGraph: true,
+      graphBoundaryFailure: true,
+    });
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(result.stdout, '');
+  });
+});
+
+// Retained real-subprocess coverage. Each test here exercises a contract the
+// in-process seam cannot: piped non-TTY stdin, OS signal delivery, and the
+// fail-closed path observed through a real process boundary.
+describe('maka run process contract', () => {
   test('uses stdin as the complete prompt for run -', async () => {
     const result = await runFixture(['-'], { input: 'from stdin\nsecond line' });
     assert.equal(result.code, 0, result.stderr);
@@ -167,255 +369,10 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, 'prompt=summarize\n\ndocument body\n');
   });
 
-  test('returns exit 2 for missing input and pre-invocation configuration errors', async () => {
-    const missing = await runFixture([], { input: '' });
-    assert.equal(missing.code, 2);
-    assert.match(missing.stderr, /missing prompt input/);
-
-    const config = await runFixture(['hello'], { scenario: 'config-error', input: '' });
-    assert.equal(config.code, 2);
-    assert.match(config.stderr, /unknown connection/);
-  });
-
-  test('returns exit 1 for runtime failure and missing final output', async () => {
-    const runtime = await runFixture(['hello'], { scenario: 'runtime-error', input: '' });
-    assert.equal(runtime.code, 1);
-    assert.match(runtime.stderr, /provider failed after startup/);
-
-    const missing = await runFixture(['hello'], { scenario: 'missing-output', input: '' });
-    assert.equal(missing.code, 1);
-    assert.match(missing.stderr, /no final output/);
-  });
-
-  test('returns exit 1 without successful output when the explicit step limit is reached', async () => {
-    const result = await runFixture(['hello'], { scenario: 'step-limit', input: '' });
-
-    assert.equal(result.code, 1);
-    assert.equal(result.stdout, '');
-    assert.match(result.stderr, /tool-step limit reached/);
-  });
-
   test('fails closed when a sandbox boundary request reaches non-interactive run', async () => {
     const result = await runFixture(['hello'], { scenario: 'sandbox-boundary', input: '' });
     assert.equal(result.code, 1);
     assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
-    assert.equal(result.stdout, '');
-  });
-
-  test('fails closed when a tool reports an unresolved sandbox boundary requirement', async () => {
-    const result = await runFixture(['hello'], {
-      scenario: 'sandbox-boundary-tool-result',
-      input: '',
-    });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
-    assert.equal(result.stdout, '');
-  });
-
-  test('accepts a completed boundary-safe alternative', async () => {
-    const result = await runFixture(['hello'], {
-      scenario: 'sandbox-boundary-recovered',
-      input: '',
-    });
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'recovered safely\n');
-  });
-
-  test('creates an Auto boundary by default', async () => {
-    const result = await runFixture(['hello'], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'ask' },
-    });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=hello\n');
-  });
-
-  test('passes max steps as an invocation-local context limit', async () => {
-    const result = await runFixture(['hello', '--max-steps', '3'], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_MAX_STEPS: '3' },
-    });
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /^maxSteps=3;/);
-  });
-
-  test('creates a bypass boundary only when --yolo is explicit', async () => {
-    const result = await runFixture(['hello', '--yolo'], {
-      input: '',
-      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'bypass' },
-    });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=hello\n');
-  });
-
-  test('returns exit 2 for removed permission flags before runtime startup', async () => {
-    const result = await runFixture(['hello', '--permission-mode', 'ask'], { input: '' });
-    assert.equal(result.code, 2);
-    assert.match(result.stderr, /unknown option: --permission-mode/);
-    assert.equal(result.stdout, '');
-  });
-
-  test('resumes an explicit session without creating a new identity', async () => {
-    const cwd = await realpath(process.cwd());
-    const resumed = fixtureSession({
-      id: 'resume-me',
-      cwd,
-      llmConnectionSlug: 'fixture',
-      model: 'fixture-model',
-      permissionMode: 'execute',
-    });
-    const result = await runFixture(
-      [
-        'continue this',
-        '--resume',
-        resumed.id,
-        '--connection',
-        resumed.llmConnectionSlug,
-        '--model',
-        resumed.model,
-      ],
-      {
-        input: '',
-        env: {
-          MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
-          MAKA_RUN_EXPECT_NO_CREATE: '1',
-          MAKA_RUN_EXPECT_SESSION_ID: resumed.id,
-          MAKA_RUN_EXPECT_CONTEXT_CWD: cwd,
-          MAKA_RUN_EXPECT_CONTEXT_CONNECTION: resumed.llmConnectionSlug,
-          MAKA_RUN_EXPECT_CONTEXT_MODEL: resumed.model,
-          MAKA_RUN_EXPECT_CWD_OVERRIDE: JSON.stringify({ sessionId: resumed.id, cwd }),
-        },
-      },
-    );
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=continue this\n');
-  });
-
-  test('names the mode the same way the desktop and TUI do (#1616)', async () => {
-    const help = await runFixture(['--help'], { input: '' });
-
-    assert.equal(help.code, 0, help.stderr);
-    assert.match(help.stdout, /--yolo\s+Give this session full access to your files and network/);
-    assert.doesNotMatch(help.stdout, /sandbox/i);
-    assert.doesNotMatch(help.stdout, /bypass/i);
-  });
-
-  test('fails closed when resuming a bypass session without --yolo', async () => {
-    const cwd = await realpath(process.cwd());
-    const resumed = fixtureSession({
-      id: 'resume-bypass',
-      cwd,
-      permissionMode: 'bypass',
-    });
-    const result = await runFixture(['continue this', '--resume', resumed.id], {
-      input: '',
-      env: {
-        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
-        MAKA_RUN_BOUNDARY_KIND: 'bypass',
-        MAKA_RUN_EXPECT_NO_SEND: '1',
-      },
-    });
-
-    assert.equal(result.code, 2);
-    // The session id in this fixture is literally `resume-bypass`, so only the
-    // sentence itself is checked for the old name.
-    assert.match(result.stderr, /resuming a full-access session .* requires --yolo/i);
-    assert.doesNotMatch(result.stderr, /Bypass session/i);
-    assert.equal(result.stdout, '');
-  });
-
-  test('resumes in Bypass only when --yolo is explicit', async () => {
-    const cwd = await realpath(process.cwd());
-    const resumed = fixtureSession({
-      id: 'resume-bypass',
-      cwd,
-      permissionMode: 'bypass',
-    });
-    const result = await runFixture(['continue this', '--resume', resumed.id, '--yolo'], {
-      input: '',
-      env: {
-        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
-        MAKA_RUN_BOUNDARY_KIND: 'bypass',
-        MAKA_RUN_EXPECT_BOUNDARY_KIND: 'bypass',
-      },
-    });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=continue this\n');
-  });
-
-  test('returns exit 2 when explicit configuration conflicts with a resumed session', async () => {
-    const resumed = fixtureSession({ id: 'resume-me', cwd: process.cwd() });
-    const result = await runFixture(
-      ['continue this', '--resume', resumed.id, '--model', 'different-model'],
-      {
-        input: '',
-        env: { MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]) },
-      },
-    );
-
-    assert.equal(result.code, 2);
-    assert.match(result.stderr, /--model conflicts with resumed session/);
-    assert.equal(result.stdout, '');
-  });
-
-  test('continues the deterministic latest cwd-compatible session', async () => {
-    const cwd = await realpath(process.cwd());
-    const sessions = [
-      fixtureSession({ id: 'b', cwd, lastMessageAt: 200 }),
-      fixtureSession({ id: 'a', cwd, lastMessageAt: 200, status: 'aborted' }),
-      fixtureSession({ id: 'newer-other-cwd', cwd: '/missing-other', lastMessageAt: 300 }),
-    ];
-    const result = await runFixture(['continue this', '--continue'], {
-      input: '',
-      env: {
-        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify(sessions),
-        MAKA_RUN_EXPECT_NO_CREATE: '1',
-        MAKA_RUN_EXPECT_SESSION_ID: 'a',
-        MAKA_RUN_EXPECT_CONTEXT_CWD: cwd,
-        MAKA_RUN_EXPECT_CONTEXT_CONNECTION: 'fixture',
-        MAKA_RUN_EXPECT_CONTEXT_MODEL: 'fixture-model',
-        MAKA_RUN_EXPECT_CWD_OVERRIDE: JSON.stringify({ sessionId: 'a', cwd }),
-      },
-    });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'prompt=continue this\n');
-  });
-
-  test('returns exit 2 when continue finds no compatible session', async () => {
-    const result = await runFixture(['continue this', '--continue'], {
-      input: '',
-      env: { MAKA_RUN_FIXTURE_SESSIONS: '[]' },
-    });
-
-    assert.equal(result.code, 2);
-    assert.match(result.stderr, /no compatible session found for cwd/);
-    assert.equal(result.stdout, '');
-  });
-
-  test('returns exit 1 when the invocation timeout stops the run', async () => {
-    const result = await runFixture(['hello', '--timeout', '0.05'], {
-      scenario: 'slow',
-      input: '',
-    });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /timed out after 50ms/);
-  });
-
-  test('returns exit 1 when a graph descendant leaves a boundary failure unresolved', async () => {
-    const result = await runFixture(['graph task', '--graph'], {
-      input: '',
-      env: {
-        MAKA_RUN_EXPECT_GRAPH: '1',
-        MAKA_RUN_GRAPH_BOUNDARY_FAILURE: '1',
-      },
-    });
-
-    assert.equal(result.code, 1, result.stderr);
     assert.equal(result.stdout, '');
   });
 
@@ -485,12 +442,35 @@ describe('maka run process contract', () => {
   });
 });
 
+async function runInProcess(
+  args: string[],
+  options: RunCommandFakeOptions = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const fake = createRunCommandFake(options);
+  let stdout = '';
+  let stderr = '';
+  const code = await runMakaTextCli(args, {
+    createContext: fake.createContext,
+    listSessions: fake.listSessions,
+    // Mirror the subprocess fixture's environment: stdin is a piped (non-TTY)
+    // stream that is already at EOF.
+    stdinIsTTY: () => false,
+    readStdin: async () => '',
+    writeStdout: (text) => {
+      stdout += text;
+    },
+    writeStderr: (text) => {
+      stderr += text;
+    },
+  });
+  return { code, stdout, stderr };
+}
+
 function runFixture(
   args: string[],
   options: {
     scenario?: string;
     input?: string;
-    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
@@ -498,7 +478,6 @@ function runFixture(
       env: {
         ...process.env,
         ...(options.scenario ? { MAKA_RUN_FIXTURE_SCENARIO: options.scenario } : {}),
-        ...options.env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
