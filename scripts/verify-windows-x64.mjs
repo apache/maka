@@ -16,6 +16,8 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const executableName = 'Maka.exe';
 const amd64Machine = 0x8664;
+const temporaryCleanupRetries = 20;
+const temporaryCleanupRetryDelayMs = 250;
 // conpty echoes the command and terminates lines with CRLF, so the probe keeps
 // matching on a substring rather than the whole output.
 const ptyProbe = makePtyProbe(process.env.ComSpec || 'cmd.exe', ['/c', 'echo', 'maka-node-pty-ok']);
@@ -177,7 +179,17 @@ export async function verifyWindowsX64Release(
     }
     return { exePath, zipPath, unpackedDirectory, checksums };
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    // The Runtime Host intentionally outlives its last Desktop client for its
+    // idle grace period. On Windows, SQLite keeps the temporary workspace files
+    // locked until that Host exits. fs.rm retries only the transient filesystem
+    // errors for recursive removal, so cleanup follows the actual lock lifetime
+    // without changing the production continuity policy.
+    await rm(temporaryDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: temporaryCleanupRetries,
+      retryDelay: temporaryCleanupRetryDelayMs,
+    });
   }
 }
 
