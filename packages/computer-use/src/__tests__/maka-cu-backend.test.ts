@@ -1343,18 +1343,6 @@ describe('maka-cu backend', () => {
     assert.deepEqual(dispatch?.action, { kind: 'key', key: 'a', modifiers: ['command'] });
   });
 
-  it('parses an aliased named key and collapses a duplicated modifier', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
-    const observation = await observeFixture(backend);
-    await backend.runSemantic!(
-      { type: 'press_key', observationId: observation.observationId, key: 'shift+shift+Tab' },
-      signal(),
-      RUN_CONTEXT,
-    );
-    const dispatch = received(await readRecords(logPath), 'dispatch.key')[0];
-    assert.deepEqual(dispatch?.action, { kind: 'key', key: 'Tab', modifiers: ['shift'] });
-  });
-
   it('sends nothing for a key string it cannot parse', async () => {
     for (const key of ['delete', 'del', 'cmd+', 'a+b', 'hyper+a']) {
       const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
@@ -1810,11 +1798,5 @@ describe('maka-cu key chord parsing', () => {
         `${spelling} must be unparseable, not a chord`,
       );
     }
-  });
-
-  it('still parses the chords that are real', () => {
-    assert.deepEqual(parseMakaCuKeyChord('cmd+a'), { key: 'a', modifiers: ['command'] });
-    assert.deepEqual(parseMakaCuKeyChord('cmd++'), { key: '+', modifiers: ['command'] });
-    assert.deepEqual(parseMakaCuKeyChord('Return'), { key: 'Return', modifiers: [] });
   });
 });

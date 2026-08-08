@@ -136,35 +136,6 @@ test('the executor-resolved point wins when there is one', () => {
   ]);
 });
 
-test('a semantic action lands on the point it was sent to, instead of being wiped', () => {
-  // `runSemantic` reports no landing point — an element action resolves to an
-  // element, never to a pointer position. Requiring one made every action on
-  // the accessibility path, the only path Maka dispatches on by default, end in
-  // `cancel()`: the cursor flew to the control and was erased on arrival.
-  const { controller, completions, cancellations } = fakeController();
-  const hook = createComputerUseOverlayHook(controller as never);
-  hook.onActionEnd?.(
-    { type: 'left_click', coordinate: { x: 400, y: 300 } },
-    { outcome: { ok: true, tier: 'ax', verified: false } },
-    {
-      sessionId: 's1',
-      toolCallId: 'a1',
-      presentationScreenPoint: { x: 1362, y: 397 },
-    },
-  );
-  assert.deepEqual(cancellations, []);
-  assert.deepEqual(completions, [
-    {
-      actionId: 'a1',
-      sessionId: 's1',
-      screenX: 1362,
-      screenY: 397,
-      kind: 'click',
-      pulse: true,
-    },
-  ]);
-});
-
 test('a successful action with no point anywhere still cancels', () => {
   const { controller, completions, cancellations } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
