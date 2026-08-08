@@ -11,6 +11,7 @@ import {
   applyMakaSessionEventToTranscript,
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  renderMakaPiActivityStrip,
   renderMakaPiTranscript,
   refreshRunningShellRunElapsed,
   reconcileToolsWithStoredMessages,
@@ -28,6 +29,30 @@ import {
 before(() => _setColorLevelForTesting(3));
 
 describe('Maka Pi TUI transcript', () => {
+  test('formats long-running turn durations with readable units', () => {
+    const metadata = (turnElapsedMs: number) => ({
+      title: 'Test session',
+      connectionSlug: 'test',
+      cwd: '/repo',
+      model: 'test-model',
+      permissionMode: 'ask',
+      turnElapsedMs,
+    });
+
+    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(0), 80)), 'Working… 0s');
+    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(59_999), 80)), 'Working… 59s');
+    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(60_000), 80)), 'Working… 1m');
+    assert.equal(stripAnsi(renderMakaPiActivityStrip(metadata(83_000), 80)), 'Working… 1m 23s');
+    assert.equal(
+      stripAnsi(renderMakaPiActivityStrip(metadata(3_661_000), 80)),
+      'Working… 1h 1m 1s',
+    );
+    assert.equal(
+      stripAnsi(renderMakaPiActivityStrip(metadata(90_061_000), 80)),
+      'Working… 1d 1h 1m 1s',
+    );
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');

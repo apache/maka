@@ -1354,7 +1354,7 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
 
 /**
  * One-line activity strip shown between the transcript and the editor.
- * Renders `Working… Ns` while a turn runs, or a blank reserved row when idle
+ * Renders `Working… <elapsed>` while a turn runs, or a blank reserved row when idle
  * so the layout does not jump when a turn starts or ends.
  */
 export function renderMakaPiActivityStrip(
@@ -1371,8 +1371,28 @@ export function renderMakaPiActivityStrip(
     return fitLine(ansi.dim(text), safeWidth);
   }
   if (metadata.turnElapsedMs === undefined) return '';
-  const seconds = Math.floor(metadata.turnElapsedMs / 1000);
-  return fitLine(ansi.dim(`Working… ${seconds}s`), safeWidth);
+  return fitLine(ansi.dim(`Working… ${formatElapsedDuration(metadata.turnElapsedMs)}`), safeWidth);
+}
+
+function formatElapsedDuration(elapsedMs: number): string {
+  let remainingSeconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+  const units = [
+    ['d', 86_400],
+    ['h', 3_600],
+    ['m', 60],
+  ] as const;
+  const parts: string[] = [];
+
+  for (const [suffix, secondsPerUnit] of units) {
+    const value = Math.floor(remainingSeconds / secondsPerUnit);
+    if (value > 0) {
+      parts.push(`${value}${suffix}`);
+      remainingSeconds %= secondsPerUnit;
+    }
+  }
+
+  if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds}s`);
+  return parts.join(' ');
 }
 
 /**
