@@ -10,8 +10,8 @@
  *
  * Titlebar and sidebar use the same product components as app-shell
  * (TitlebarSessionIdentity, SessionListPanel, deriveSessionRail). The
- * multi-spawn tool group still maps through ChatToolCalls the way
- * production ToolTrow does, with real ToolCallDetail for Open.
+ * The multi-spawn group renders through the production ToolTrow; each child
+ * session is one native Astryx row and the row itself opens the session.
  */
 import type { CSSProperties, ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
@@ -22,8 +22,6 @@ import {
   ChatMessageBubble,
   ChatMessageList,
   ChatMessageMetadata,
-  ChatToolCalls,
-  type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
 import { Text } from '@astryxdesign/core/Text';
 import type { SessionSummary, ToolResultContent } from '@maka/core';
@@ -31,12 +29,8 @@ import {
   SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
-import { formatDuration } from '../../../packages/ui/src/tool-activity/preview-utils.js';
-import { formatToolIntent } from '../../../packages/ui/src/tool-format.js';
-import { resolveToolDisplayName } from '../../../packages/ui/src/tool-activity/display-name.js';
-import { ToolCallDetail } from '../../../packages/ui/src/tool-activity.js';
+import { ToolTrow } from '../../../packages/ui/src/tool-activity.js';
 import type { ToolActivityItem } from '../../../packages/ui/src/materialize.js';
-import { useUiLocale } from '../../../packages/ui/src/locale-context.js';
 import { deriveSessionRail } from '../src/renderer/session-rail.js';
 
 // ---------------------------------------------------------------------------
@@ -168,52 +162,18 @@ function childObjective(item: ToolActivityItem): string {
   return childLabel(item);
 }
 
-function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
-  switch (item.status) {
-    case 'completed':
-      return 'complete';
-    case 'errored':
-    case 'interrupted':
-      return 'error';
-    case 'running':
-      return 'running';
-    default:
-      return 'pending';
-  }
-}
-
 /**
- * Same data mapping as product `ToolTrow`, with optional expand control for the
- * fold story. Hosted under `.maka-turn` so product hover paint applies:
+ * Hosted under `.maka-turn` so product hover paint applies:
  * `apps/desktop/src/renderer/styles/chat-message.css` scopes
  * `.astryx-chat-tool-calls [role="button"]:hover` to that turn root.
- * Bare ChatToolCalls outside a turn is the wrong frame, not a different component.
  */
 function SubagentToolGroup(props: {
   items: ToolActivityItem[];
-  defaultIsExpanded?: boolean;
   onOpenLinkedSession?(sessionId: string): void;
 }) {
-  const locale = useUiLocale();
-  if (props.items.length === 0) return null;
-  const calls: ChatToolCallItem[] = props.items.map((item) => ({
-    key: item.toolUseId,
-    name: resolveToolDisplayName(item, locale),
-    status: astryxToolStatus(item),
-    target: item.intent ? formatToolIntent(item.intent) : undefined,
-    duration: formatDuration(item.durationMs) ?? undefined,
-    resultDetail: (
-      <div className="maka-tool-call-detail">
-        <ToolCallDetail item={item} onOpenLinkedSession={props.onOpenLinkedSession} />
-      </div>
-    ),
-  }));
   return (
     <div className="maka-turn">
-      <ChatToolCalls
-        calls={calls}
-        defaultIsExpanded={props.defaultIsExpanded}
-      />
+      <ToolTrow items={props.items} onOpenLinkedSession={props.onOpenLinkedSession} />
     </div>
   );
 }
@@ -417,7 +377,7 @@ function ParentShell() {
       </header>
       <Caption>
         侧栏为 SessionListPanel + deriveSessionRail（仅 root）。流内一组可折叠
-        spawn_subagent；Open 走 ToolCallDetail。无 ComposerDrawer / strip。
+        spawn_subagent；每个子会话是可直接打开的 Astryx 行。无 ComposerDrawer / strip。
       </Caption>
       <div style={shell.body}>
         <ProductRail activeSessionId={PARENT_SESSION_ID} />
@@ -437,7 +397,6 @@ function ParentShell() {
                 <div style={{ marginTop: 10, width: '100%' }}>
                   <SubagentToolGroup
                     items={MULTI_SUBAGENT_ITEMS}
-                    defaultIsExpanded
                     onOpenLinkedSession={() => undefined}
                   />
                 </div>
@@ -485,37 +444,21 @@ export const ParentSession: Story = {
   render: () => <ParentShell />,
 };
 
-// Real path: multi spawn_subagent group collapsed vs expanded via ChatToolCalls + ToolCallDetail Open.
+// Real path: one native Astryx row per linked child session.
 export const ToolGroupFold: Story = {
-  name: '工具组 · 折叠 vs 展开',
+  name: '工具组 · 原生子会话行',
   render: () => (
-    <div style={shell.compareRoot}>
-      <div style={shell.comparePane}>
-        <Text type="body" style={{ fontWeight: 600 }}>
-          折叠
-        </Text>
-        <Text type="supporting" color="secondary">
-          {MULTI_SUBAGENT_ITEMS.length} 个 spawn_subagent 一组；头上数量 + 最近行（同 ContiguousGroup）。
-        </Text>
-        <SubagentToolGroup
-          items={MULTI_SUBAGENT_ITEMS}
-          defaultIsExpanded={false}
-          onOpenLinkedSession={() => undefined}
-        />
-      </div>
-      <div style={shell.comparePane}>
-        <Text type="body" style={{ fontWeight: 600 }}>
-          展开
-        </Text>
-        <Text type="supporting" color="secondary">
-          每行 + resultDetail = 现有 ToolCallDetail / SubagentPreview（含打开会话）。
-        </Text>
-        <SubagentToolGroup
-          items={MULTI_SUBAGENT_ITEMS}
-          defaultIsExpanded
-          onOpenLinkedSession={() => undefined}
-        />
-      </div>
+    <div style={shell.comparePane}>
+      <Text type="body" style={{ fontWeight: 600 }}>
+        {MULTI_SUBAGENT_ITEMS.length} 个子代理会话
+      </Text>
+      <Text type="supporting" color="secondary">
+        展开工具组后，每个子会话是一条原生工具行；点击该行直接打开会话。
+      </Text>
+      <SubagentToolGroup
+        items={MULTI_SUBAGENT_ITEMS}
+        onOpenLinkedSession={() => undefined}
+      />
     </div>
   ),
 };

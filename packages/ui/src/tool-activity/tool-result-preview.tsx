@@ -13,7 +13,7 @@ import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
-import { AgentSwarmPreview, ExploreAgentPreview, SubagentPreview } from './agent-preview.js';
+import { ExploreAgentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
 import { DiffCodePreview } from './diff-code-preview.js';
@@ -131,8 +131,6 @@ export function ToolResultPreview(props: {
   toolName?: string;
   args?: unknown;
   shellRunSource?: 'owned' | 'unavailable';
-  /** Open a linked subagent child session in the main chat column. */
-  onOpenLinkedSession?(sessionId: string): void;
   fileDiffActions?: ReactNode;
 }) {
   const { content } = props;
@@ -187,24 +185,6 @@ export function ToolResultPreview(props: {
 
   if (content.kind === 'explore_agent') {
     return <ExploreAgentPreview result={content} />;
-  }
-
-  if (content.kind === 'subagent') {
-    return (
-      <SubagentPreview
-        result={content}
-        onOpenSession={props.onOpenLinkedSession}
-      />
-    );
-  }
-
-  if (content.kind === 'agent_swarm') {
-    return (
-      <AgentSwarmPreview
-        result={content}
-        onOpenSession={props.onOpenLinkedSession}
-      />
-    );
   }
 
   if (content.kind === 'rive_workflow') {

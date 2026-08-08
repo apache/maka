@@ -201,7 +201,7 @@ export function ChatView(props: {
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
    * Open a linked subagent child session in the main chat column (option A).
-   * Threaded into SubagentPreview / AgentSwarmPreview inside tool detail.
+   * Threaded into linked subagent rows inside ToolTrow.
    * Pass an identity-stable reference so memoized TurnViews keep skipping
    * reconciliation on the hot streaming path (ChatView also ref-wraps this).
    */
