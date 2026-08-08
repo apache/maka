@@ -81,16 +81,22 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
     const memoryFragment = options && 'memoryFragment' in options
       ? options.memoryFragment ?? undefined
       : await buildLocalMemoryPromptFragment();
-    return assembleMainSessionSystemPrompt({
-      identity: options?.includeIdentity !== false,
-      personalization: personalization.text,
-      deepResearch,
-      botPlatformHint,
-      sideConversation,
-      skills,
-      workspaceInstructions,
-      memory: memoryFragment,
-    });
+    // Fragment order is load-bearing: the Side Chat isolation boundary
+    // (sideConversation) is a trailing assertion that constrains the fragments
+    // before it, so it must stay last. Keep this order in sync with the
+    // entry-level prompt-order test.
+    return assembleMainSessionSystemPrompt(
+      [
+        personalization.text,
+        deepResearch,
+        botPlatformHint,
+        skills,
+        workspaceInstructions,
+        memoryFragment,
+        sideConversation,
+      ],
+      { identity: options?.includeIdentity !== false },
+    );
   }
 
   async function buildBackendSystemPrompt(

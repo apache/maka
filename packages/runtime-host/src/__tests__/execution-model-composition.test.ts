@@ -2209,6 +2209,12 @@ test('Deep Research composition keeps one read-only research surface and prompt'
     })) ?? '';
   assert.match(prompt, /Deep research mode is active/);
   assert.doesNotMatch(prompt, /ExploreAgent/);
+  // The Deep Research contract is a trailing assertion that constrains the
+  // fragments before it; it must be the last non-empty fragment. With no skills
+  // or workspace instructions in this fixture, the contract follows identity.
+  const drIndex = prompt.indexOf('Deep research mode is active');
+  assert.ok(drIndex > 0, 'deep research contract must be present');
+  assert.ok(prompt.indexOf('You are Maka,') < drIndex, 'identity must lead the contract');
 });
 
 test('Plan composition admits only planning tools before approval and execution controls after', async () => {

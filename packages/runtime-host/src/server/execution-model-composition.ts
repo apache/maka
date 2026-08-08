@@ -220,19 +220,22 @@ export function createHostExecutionModelComposition(
           childInstruction,
         ]);
       }
-      return assembleMainSessionSystemPrompt({
-        personalization: buildPersonalizationPromptFragment(promptState.policy.personalization)
-          .text,
-        skills: skills.text,
+      // Fragment order is load-bearing: the Deep Research mode contract
+      // (deepResearch) is a trailing assertion that constrains the fragments
+      // before it, so it must stay last. Keep this order in sync with the
+      // entry-level prompt-order test.
+      return assembleMainSessionSystemPrompt([
+        buildPersonalizationPromptFragment(promptState.policy.personalization).text,
+        skills.text,
         workspaceInstructions,
-        memory: promptState.memory,
-        planMode: input.plan?.mode === 'plan' ? renderPlanModePrompt() : undefined,
-        deepResearch: input.deepResearch
+        promptState.memory,
+        input.plan?.mode === 'plan' ? renderPlanModePrompt() : undefined,
+        input.deepResearch
           ? buildDeepResearchSystemPromptFragment({
               exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
             })
           : undefined,
-      });
+      ]);
     },
     turnTailPrompt: async (context: HostModelPromptContext) => {
       const environment = buildSessionEnvironmentPromptFragment({

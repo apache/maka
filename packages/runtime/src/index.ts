@@ -1517,7 +1517,7 @@ export { buildSessionEnvironmentPromptFragment } from './system-prompt/session-e
 export type { SessionEnvironmentPromptInput } from './system-prompt/session-environment-prompt.js';
 export {
   assembleMainSessionSystemPrompt,
-  type MainSessionPromptFragments,
+  type AssembleMainSessionSystemPromptOptions,
 } from './system-prompt/main-session-prompt.js';
 
 // ───────────────────────────────────────────────────────────────────────────

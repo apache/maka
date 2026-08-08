@@ -73,11 +73,7 @@ export async function buildCliSystemPrompt(
   const workspaceInstructions = input.settings.workspaceInstructions.enabled
     ? await buildWorkspaceInstructionsPromptFragment(input.cwd, { homeDir: input.homeDir })
     : undefined;
-  return assembleMainSessionSystemPrompt({
-    personalization: personalization.text,
-    skills,
-    workspaceInstructions,
-  });
+  return assembleMainSessionSystemPrompt([personalization.text, skills, workspaceInstructions]);
 }
 
 export async function buildCliTurnTailPrompt(input: {
