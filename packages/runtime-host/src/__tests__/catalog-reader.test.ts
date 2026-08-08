@@ -8,36 +8,37 @@ import {
   readRuntimeHostSkillCatalog,
 } from '../client/catalog-reader.js';
 
-test('restarts a Session catalog read when its revision changes between pages', async () => {
+test('waits out a burst of Session catalog revisions', async () => {
   let starts = 0;
   const connection = fakeConnection(async (operation, input) => {
     assert.equal(operation, 'session.catalog.query');
     if (input.kind === 'list_start') {
       starts += 1;
-      return starts === 1
-        ? {
-            kind: 'page',
-            revision: 'sha256:first',
-            sessions: [],
-            nextCursor: 'next',
-          }
-        : {
-            kind: 'page',
-            revision: 'sha256:second',
-            sessions: [],
-            nextCursor: null,
-          };
+      return {
+        kind: 'page',
+        revision: `sha256:${starts}`,
+        sessions: [],
+        nextCursor: 'next',
+      };
     }
     assert.equal(input.kind, 'list_continue');
+    if (starts <= 3) {
+      return {
+        kind: 'revision_changed',
+        expectedRevision: `sha256:${starts}`,
+        actualRevision: `sha256:${starts + 1}`,
+      };
+    }
     return {
-      kind: 'revision_changed',
-      expectedRevision: 'sha256:first',
-      actualRevision: 'sha256:second',
+      kind: 'page',
+      revision: `sha256:${starts}`,
+      sessions: [],
+      nextCursor: null,
     };
   });
 
   assert.deepEqual(await readRuntimeHostSessions(connection), []);
-  assert.equal(starts, 2);
+  assert.equal(starts, 4);
 });
 
 test('rejects a repeated Skill catalog cursor instead of looping forever', async () => {

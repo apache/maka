@@ -53,6 +53,7 @@
  *   - `truncated: false` when no cap hit
  */
 
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import type { ToolOutputChunk } from './materialize.js';
 import { redactSecrets } from './redact.js';
 import type { UiLocale } from '@maka/core';
@@ -66,14 +67,14 @@ import { getSharedUiCopy } from './shared-ui-copy.js';
  *   - 200 chunks: enough headroom that streamed line-by-line
  *     output of a 100-line script never hits the cap, while still
  *     bounding state churn for runaway tools.
- *   - 4 KB per chunk: matches runtime's
+ *   - Runtime event limit per chunk: matches
  *     `TOOL_OUTPUT_DELTA_MAX_CHARS` so renderer cap is consistent
  *     with main-side truncation; a chunk that arrives larger than
  *     this is a contract violation and we tail-truncate defensively.
  */
 export const TOOL_STREAM_MAX_CHUNKS = 200;
 export const TOOL_STREAM_MAX_TOTAL_CHARS = 16 * 1024;
-export const TOOL_STREAM_MAX_CHUNK_CHARS = 4 * 1024;
+export const TOOL_STREAM_MAX_CHUNK_CHARS = TOOL_OUTPUT_DELTA_MAX_CHARS;
 
 export interface ApplyToolOutputChunkOptions {
   maxChunks?: number;

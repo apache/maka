@@ -16,7 +16,9 @@ import type {
 } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 
-const MAX_STABLE_READ_ATTEMPTS = 3;
+const MAX_STABLE_READ_ATTEMPTS = 8;
+const STABLE_READ_RETRY_BASE_DELAY_MS = 8;
+const STABLE_READ_RETRY_MAX_DELAY_MS = 64;
 type RuntimeHostCatalogConnection = Pick<RuntimeHostConnection, 'request'>;
 
 export interface RuntimeHostSkillCatalogSnapshot {
@@ -214,6 +216,14 @@ async function collectStablePages<Page extends StableCatalogPage>(
       page = next;
     }
     if (!retry) return { first, pages };
+    if (attempt + 1 < MAX_STABLE_READ_ATTEMPTS) {
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.min(STABLE_READ_RETRY_BASE_DELAY_MS * 2 ** attempt, STABLE_READ_RETRY_MAX_DELAY_MS),
+        ),
+      );
+    }
   }
   throw new RuntimeHostCatalogReadError(catalog, 'unstable');
 }

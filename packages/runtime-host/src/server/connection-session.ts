@@ -168,6 +168,7 @@ export class RuntimeHostConnectionSession {
 
     try {
       if (this.#closed) return;
+      this.#attachGlobalChanges();
       const continuity =
         frame.operation === 'subscription.open' ||
         frame.operation === 'subscription.close' ||
@@ -270,6 +271,11 @@ export class RuntimeHostConnectionSession {
         }
       },
     });
+  }
+
+  #attachGlobalChanges(): void {
+    this.#attachConfigurationChanges();
+    this.#attachSessionCatalogChanges();
   }
 
   #detachConfigurationChanges(): void {

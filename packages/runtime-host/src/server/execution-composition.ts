@@ -8,6 +8,7 @@ import {
   AgentGraphSupervisorWakeCoordinator,
   agentGraphIdForRootSession,
   BackendRegistry,
+  buildToolsForAgentDefinition,
   buildHostCapabilitiesFromBinding,
   createLocalContinuationSafetyInspector,
   createConfiguredSubagentCatalog,
@@ -614,15 +615,30 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
     resolveAvailableToolNames = async (sessionId: string): Promise<string[]> => {
+      const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+      if (header.subagentRuntime) {
+        if (!header.subagentParent) {
+          throw new Error('Subagent runtime snapshot requires a linked child session');
+        }
+        const tools = buildToolsForAgentDefinition(childAgentTools.childTools, {
+          id: header.subagentRuntime.agentId,
+          permissionMode: header.permissionMode,
+          tools: header.subagentRuntime.toolNames,
+        });
+        if (tools.length !== header.subagentRuntime.toolNames.length) {
+          throw new Error('Subagent runtime tool snapshot is unavailable');
+        }
+        return tools.map((tool) => tool.name);
+      }
+      if (header.subagentParent) {
+        throw new Error('Linked child session is missing its durable runtime snapshot');
+      }
       const capabilitySnapshot =
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
         const graphTools =
           await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId);
-        const [header, planState] = await Promise.all([
-          stores.sessionStore.readHeaderSnapshot(sessionId),
-          openedPlanStore.readState(sessionId),
-        ]);
+        const planState = await openedPlanStore.readState(sessionId);
         return createHostExecutionModelComposition({
           policy: runtimePolicyStores.runtimePolicy,
           skills,

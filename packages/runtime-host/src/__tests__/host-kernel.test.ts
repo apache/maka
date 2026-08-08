@@ -19,7 +19,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { promisify } from 'node:util';
-import { connectOrSpawnRuntimeHost, connectRuntimeHost } from '../client/index.js';
+import {
+  connectOrSpawnRuntimeHost,
+  connectRuntimeHost,
+  type RuntimeHostConnection,
+} from '../client/index.js';
 import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
 import {
   launchDetachedRuntimeHostCandidate,
@@ -1190,7 +1194,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('delivers canonical authority changes to every connected Client', async () => {
+  test('delivers canonical authority changes to a Client admitted during recovery', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -1198,34 +1202,52 @@ describe('non-serving Runtime Host kernel', () => {
       if (!owner) return;
       const configurationChanges = new HostConfigurationChangeService();
       const sessionCatalogChanges = new HostSessionCatalogChangeService();
-      const host = await RuntimeHostKernel.start({
+      let releaseFactory!: () => void;
+      let markFactoryEntered!: () => void;
+      const factoryEntered = new Promise<void>((resolve) => {
+        markFactoryEntered = resolve;
+      });
+      const factoryReleased = new Promise<void>((resolve) => {
+        releaseFactory = resolve;
+      });
+      const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        compositionFactory: async () => ({
-          handlers: createUnavailableDomainOperationHandlers(),
-          configurationChanges,
-          sessionCatalogChanges,
-          beginDrain() {},
-          async recover() {},
-          async close() {},
-        }),
+        compositionFactory: async () => {
+          markFactoryEntered();
+          await factoryReleased;
+          return {
+            handlers: createUnavailableDomainOperationHandlers(),
+            configurationChanges,
+            sessionCatalogChanges,
+            beginDrain() {},
+            async recover() {},
+            async close() {},
+          };
+        },
       });
-      const connected = await connectRuntimeHost({
-        rootPath: paths.root,
-        surface: 'desktop',
-        protocol: CURRENT_PROTOCOL,
-      });
-      assert.equal(connected.kind, 'connected');
-      if (connected.kind !== 'connected') return;
+      let host: RuntimeHostKernel | undefined;
+      let connection: RuntimeHostConnection | undefined;
       try {
+        await withTimeout(factoryEntered, 1_000, 'Runtime Host did not enter composition');
+        const connected = await connectRuntimeHost({
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+        });
+        assert.equal(connected.kind, 'connected');
+        if (connected.kind !== 'connected') return;
+        const activeConnection = connected.connection;
+        connection = activeConnection;
         const observed = new Promise<number>((resolve) => {
-          connected.connection.subscribeConfigurationChanges(resolve);
+          activeConnection.subscribeConfigurationChanges(resolve);
         });
         const observedCatalog = new Promise<string>((resolve) => {
-          connected.connection.subscribeSessionCatalogChanges(({ sessionId }) =>
-            resolve(sessionId),
-          );
+          activeConnection.subscribeSessionCatalogChanges(({ sessionId }) => resolve(sessionId));
         });
+        releaseFactory();
+        host = await hostTask;
+        assert.equal((await activeConnection.status()).state, 'ready');
         configurationChanges.publish();
         sessionCatalogChanges.publish('session-1');
         assert.equal(
@@ -1241,8 +1263,10 @@ describe('non-serving Runtime Host kernel', () => {
           'session-1',
         );
       } finally {
-        await connected.connection.close();
-        await host.close();
+        releaseFactory();
+        await connection?.close();
+        host ??= await hostTask.catch(() => undefined);
+        await host?.close().catch(() => undefined);
       }
     });
   });

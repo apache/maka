@@ -109,7 +109,7 @@ test('bootstrap does not alter an existing user catalog', async () => {
   });
 });
 
-test('an invalid optional environment credential does not block the free target', async () => {
+test('an invalid optional environment credential does not keep bootstrap active', async () => {
   await withFixture(async ({ root, stores }) => {
     const errors: unknown[] = [];
     await ensureBootstrapRuntimePolicy({
@@ -126,13 +126,13 @@ test('an invalid optional environment credential does not block the free target'
       connectionId: free?.connectionId,
       modelId: 'nemotron-3-ultra-free',
     });
-    await assert.doesNotReject(() =>
-      ensureBootstrapRuntimePolicy({
-        workspaceRoot: root,
-        stores,
-        environment: {},
-      }),
-    );
+    await ensureBootstrapRuntimePolicy({
+      workspaceRoot: root,
+      stores,
+      environment: { OPENAI_API_KEY: 'x'.repeat(64 * 1024 + 1) },
+      onDeferredError: (error) => errors.push(error),
+    });
+    assert.equal(errors.length, 1);
   });
 });
 

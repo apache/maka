@@ -46,6 +46,7 @@ export async function ensureBootstrapRuntimePolicy(input: {
   const seeds = bootstrapSeeds(input.environment ?? process.env);
   const { connection: free } = await ensureConnection(input.stores, seeds[0]!);
   await setDefaultIfMissing(input.stores, free);
+  await rm(journalPath, { force: true });
 
   try {
     let preferred = free;
@@ -63,7 +64,6 @@ export async function ensureBootstrapRuntimePolicy(input: {
       preferred = connection;
     }
     await replaceBootstrapDefault(input.stores, free, preferred);
-    await rm(journalPath, { force: true });
   } catch (error) {
     input.onDeferredError?.(error);
   }
