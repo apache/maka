@@ -421,7 +421,8 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  scrollbar-color: var(--border-strong) transparent;
+  /* Ink tint, not a border — see --foreground-alpha-16 (same alpha, right family). */
+  scrollbar-color: var(--foreground-alpha-16) transparent;
   scrollbar-width: thin;
 }
 

@@ -1172,7 +1172,9 @@
   height: 100%;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: white;
+  /* Paper, not a ladder tier — see --surface-document in maka-tokens.css. The
+     srcDoc we render declares no background of its own. */
+  background: var(--surface-document);
   /* iframe sandbox attribute on the JSX side carries the real boundary;
      this is only visual. NEVER ship `allow-same-origin` here. */
 }
@@ -1271,7 +1273,8 @@
 .maka-artifact-preview-pdf embed {
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: white;
+  /* Same document viewport as the HTML artifact above. */
+  background: var(--surface-document);
   min-height: 240px;
 }
 
@@ -1373,11 +1376,19 @@
  * This styles the `.maka-turn` container (NOT a per-turn marker), so it
  * stays hand-written here alongside the other model-catalog-preview turn
  * chrome. */
+/* Visual System 2.0 (T3): derived from `--accent`, not `--link`. Zero pixels
+ * move — `--link` is defined exactly twice and both are `var(--accent)`, and
+ * palettes override --accent alone — but the two names mean different things.
+ * DESIGN.md §3 scopes the link tier to link TEXT (and to `--accent-solid` at
+ * that, for contrast); this is a selection wash and an outline, i.e. the
+ * interaction accent doing its normal job. Deriving a surface from the link
+ * name is how a text-contrast constraint ends up silently governing a
+ * background. */
 .maka-turn[data-search-highlight="true"] {
   border-radius: var(--radius-surface);
-  outline: 1px solid oklch(from var(--link) l c h / 0.34);
+  outline: 1px solid oklch(from var(--accent) l c h / 0.34);
   outline-offset: 6px;
-  background: oklch(from var(--link) l c h / 0.045);
+  background: oklch(from var(--accent) l c h / 0.045);
 }
 
 /* Turn aborted marker / failed banner / lineage rows + badges / footer +

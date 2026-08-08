@@ -131,7 +131,7 @@
    out this transition before rewriting the word. */
 .maka-turn-working-phrase { font-weight: 500; transition: opacity 300ms var(--ease-out-strong); }
 .maka-turn-working-phrase[data-fading="true"] { opacity: 0; }
-.maka-turn-status-separator { color: var(--border-strong); }
+.maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { font-variant-numeric: tabular-nums; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
@@ -544,7 +544,7 @@
 .maka-turn-failed-recovery { color: var(--text-muted); }
 .maka-turn-failed-recovery::before {
   margin-right: var(--space-1-5);
-  color: var(--border-strong);
+  color: var(--foreground-alpha-16);
   content: "·";
 }
 

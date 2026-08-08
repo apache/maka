@@ -102,6 +102,19 @@
      which read as a faint gray on the new shell. Pinning it to the
      same `--background` keeps card surfaces consistently white. */
   --background-elevated: var(--surface-overlay);
+  /* Visual System 2.0 (T3). NOT a ladder tier, and deliberately outside it.
+     This is the viewport we hand to a document we did not author and cannot
+     restyle: the HTML-artifact iframe (`srcDoc`, sandboxed) and the PDF embed.
+     Such documents assume paper — an HTML artifact usually declares no
+     background and black body text, so the backdrop IS its readability.
+     Resolving these two call sites to `--surface-raised` would satisfy
+     DESIGN.md §10's "no literal surface color" and make dark mode render black
+     text on a dark plate; that rule exists to stop OUR surfaces drifting off
+     the ladder, and a document viewport is not one of our surfaces.
+     Mode-invariant on purpose — it does not get a `.dark` override. Two
+     consumers, both in chat-detail.css; if a third appears that is really app
+     chrome, it belongs on the ladder instead. */
+  --surface-document: oklch(1 0 0);
   /* PR-UI-ALIGN-0: warm near-black (#141414-like) at a faint warm hue, so
      ALL derived grays (#636261/#838280-like) pick up the reference's warm cast
      instead of reading as cold neutral. */
@@ -286,6 +299,16 @@
   --foreground-alpha-6:  oklch(from var(--foreground) l c h / 0.06);
   --foreground-alpha-10: oklch(from var(--foreground) l c h / 0.10);
   --foreground-alpha-12: oklch(from var(--foreground) l c h / 0.12);
+  /* Visual System 2.0 (T2/T3). Added so the three sites that were borrowing
+     `--border-strong` as a strong neutral TINT can say what they mean: a
+     scrollbar thumb (composer.css) and two separator glyphs (packages/ui).
+     DESIGN.md §4 scopes --border-strong to emphasis chrome — selected outlines
+     and emphasized boundaries — and flags exactly these borrows for migration.
+     Deliberately 0.16, the same alpha they were already getting, so the
+     migration moves them between FAMILIES without moving a pixel; the point is
+     that a future retune of the border ladder must not silently repaint a
+     scrollbar and a "·". */
+  --foreground-alpha-16: oklch(from var(--foreground) l c h / 0.16);
   /* User bubble color is intentionally distinct from `--accent` so users can
      re-tint the accent without ruining chat legibility.
      PR-GRAY-CARD-LIFT-0: bubble shifts to neutral gray (hue 0)
