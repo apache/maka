@@ -1117,35 +1117,29 @@ test('bounds the values retained by Array.filter rather than its predicates', as
   assert.match(result.ok ? '' : result.error.message, /Array\.filter byte limit/i);
 });
 
-test('bounds collection-producing array and object helpers', async () => {
+test('rejects oversized collections at the tool-result boundary', async () => {
   const largeArray = Array.from({ length: 100_001 }, () => 0);
-  const spreadResult = await executeCodeCell({
-    code: 'const values = await tools.load({}); return [...values].length;',
+  const arrayResult = await executeCodeCell({
+    code: 'return await tools.load({});',
     tools: [{ name: 'load' }],
     callTool: async () => largeArray,
   });
-  assert.equal(spreadResult.ok, false);
-  assert.equal(spreadResult.ok ? undefined : spreadResult.error.kind, 'limit_exceeded');
-
-  const mapResult = await executeCodeCell({
-    code: 'const values = await tools.load({}); return values.map((value) => value).length;',
-    tools: [{ name: 'load' }],
-    callTool: async () => largeArray,
-  });
-  assert.equal(mapResult.ok, false);
-  assert.equal(mapResult.ok ? undefined : mapResult.error.kind, 'limit_exceeded');
+  assert.equal(arrayResult.ok, false);
+  assert.equal(arrayResult.ok ? undefined : arrayResult.error.kind, 'limit_exceeded');
+  assert.match(arrayResult.ok ? '' : arrayResult.error.message, /result from load item limit/i);
 
   const largeRecord = Object.fromEntries(
     Array.from({ length: 100_001 }, (_value, index) => [`key${index}`, index]),
   );
-  const keysResult = await executeCodeCell({
-    code: 'return Object.keys(await tools.load({})).length;',
+  const recordResult = await executeCodeCell({
+    code: 'return await tools.load({});',
     tools: [{ name: 'load' }],
     callTool: async () => largeRecord,
     limits: { maxResultBytes: 8 * 1024 * 1024 },
   });
-  assert.equal(keysResult.ok, false);
-  assert.equal(keysResult.ok ? undefined : keysResult.error.kind, 'limit_exceeded');
+  assert.equal(recordResult.ok, false);
+  assert.equal(recordResult.ok ? undefined : recordResult.error.kind, 'limit_exceeded');
+  assert.match(recordResult.ok ? '' : recordResult.error.message, /result from load item limit/i);
 });
 
 test('enforces source, call, concurrency, result, and output byte limits', async (t) => {
