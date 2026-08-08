@@ -104,7 +104,7 @@ Prose uses exactly three tiers, spaced at an even ~2× contrast rhythm, all abov
 | secondary | `--foreground-secondary` | 9.8:1 | 9.2:1 |
 | muted | `--muted-foreground` | 4.8:1 | 4.7:1 |
 
-- **The Three-Tier Reading Rule.** Prose uses primary, secondary, or muted. Neutral washes are surfaces, not extra text tiers. `--foreground-dimmed` is an alias of secondary and must never regain its own definition (contract-tested).
+- **The Three-Tier Reading Rule.** Prose uses primary, secondary, or muted. Neutral washes are surfaces, not extra text tiers. `--foreground-dimmed` is retired — its call sites name secondary directly — and must never come back with a definition of its own (contract-tested).
 - **The One Colorspace Rule.** Every derivation inside a token family uses one colorspace (`oklch` for ink, contract-tested). Mixing `srgb` and `oklch` derivations produces "same literal, different value" drift. This held one exception, dark `--surface-overlay`'s srgb mix, until T4 unified it onto oklch at its measured value; the ladder now derives every rung in one space.
 - **Links use the solid accent tier** (`--accent-solid`), never raw `--accent` — the accent identifies interaction; the solid tier is the only accent variant that clears text contrast on every palette.
 

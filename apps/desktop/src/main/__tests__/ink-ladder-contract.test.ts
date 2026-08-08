@@ -20,13 +20,17 @@ import { REPO_ROOT } from './css-test-helpers.js';
 const TOKENS_PATH = join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'maka-tokens.css');
 
 describe('ink ladder', () => {
-  it('keeps --foreground-dimmed an alias, never its own mix', async () => {
+  it('never lets --foreground-dimmed hold its own mix', async () => {
     const css = await readFile(TOKENS_PATH, 'utf8');
     const declarations = [...css.matchAll(/^\s*--foreground-dimmed:\s*([^;]+);/gm)].map(
       (match) => match[1].trim(),
     );
 
-    assert.ok(declarations.length > 0, '--foreground-dimmed must still be defined');
+    // T4 retired the alias: its five consumers now name --foreground-secondary
+    // directly, so zero declarations is the expected steady state and satisfies
+    // this invariant outright. The assertion below is what still has work to do
+    // — it fails the moment anyone reintroduces the token with a mix of its own,
+    // which is the drift being pinned, not the token's mere existence.
     for (const value of declarations) {
       assert.equal(
         value,

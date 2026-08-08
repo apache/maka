@@ -19,7 +19,7 @@
   min-height: 30px;
   padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) + var(--task-depth) * var(--space-5));
   border-radius: var(--radius-control);
-  color: var(--foreground-dimmed);
+  color: var(--foreground-secondary);
 }
 
 .maka-task-ledger-group {
@@ -36,7 +36,7 @@
 
 .maka-task-ledger-key {
   font: var(--maka-text-supporting);
-  color: var(--foreground-dimmed);
+  color: var(--foreground-secondary);
   white-space: nowrap;
 }
 
@@ -55,7 +55,7 @@
 .maka-task-ledger-meta > span + span::before { content: "·"; margin-right: var(--space-1-5); }
 .maka-task-ledger-detail {
   font: var(--maka-text-supporting);
- grid-column: 3 / -1; color: var(--foreground-dimmed); }
+ grid-column: 3 / -1; color: var(--foreground-secondary); }
 
 .maka-task-ledger-terminal {
   margin-top: var(--space-1);
@@ -71,7 +71,7 @@
   min-height: 30px;
   justify-content: space-between;
   padding: var(--space-1) var(--space-2);
-  color: var(--foreground-dimmed);
+  color: var(--foreground-secondary);
 }
 
 .maka-task-ledger-terminal-trigger > span { display: inline-flex; align-items: center; gap: var(--space-1-5); }
@@ -83,7 +83,7 @@
   justify-content: space-between;
   min-height: 34px;
   padding: var(--space-1) var(--space-2);
-  color: var(--foreground-dimmed);
+  color: var(--foreground-secondary);
 }
 
 .maka-task-ledger-retry {
