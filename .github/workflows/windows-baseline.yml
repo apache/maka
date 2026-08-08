@@ -110,17 +110,6 @@ jobs:
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
           exit $exitCode
 
-      - id: storage
-        name: Capture storage test baseline
-        if: always() && steps.build.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
-          $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
-          exit $exitCode
-
       - id: runtime_pty_input
         name: Run Runtime PTY input gates
         if: always() && steps.build.outcome == 'success'
@@ -136,6 +125,17 @@ jobs:
             Write-Error 'Runtime PTY input gate did not run exactly two passing tests'
             exit 1
           }
+          exit $exitCode
+
+      - id: storage
+        name: Capture storage test baseline
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
           exit $exitCode
 
       - id: managed_workspace_crash

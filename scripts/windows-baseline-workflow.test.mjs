@@ -65,8 +65,8 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'inventory',
     'scripts',
     'smoke',
-    'storage',
     'runtime_pty_input',
+    'storage',
     'managed_workspace_crash',
     'processes',
   ]);
