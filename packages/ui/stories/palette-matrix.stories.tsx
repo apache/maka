@@ -85,7 +85,7 @@ export const AllPalettes: Story = {
                 gap: 8,
                 padding: 12,
                 borderRadius: 'var(--radius-surface)',
-                boxShadow: 'var(--shadow-minimal-flat)',
+                boxShadow: 'var(--ring-soft)',
                 background: 'var(--background)',
                 color: 'var(--foreground)',
               }}

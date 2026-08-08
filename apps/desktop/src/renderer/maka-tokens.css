@@ -11,7 +11,7 @@
      - Borders / dividers / hovers / muted text never use a "gray" — they're foreground at low alpha.
 
    Visual foundation:
-     - Small tokenized radii + subtle border rings (--shadow-minimal-flat).
+     - Small tokenized radii + subtle border rings (--ring-soft).
      - Multi-layer soft shadows with very low opacity (0.06) instead of one heavy shadow.
      - System UI fonts with optical antialiasing.
      - 14px base font, 4px spacing unit → dense but readable.
@@ -393,7 +393,15 @@
      packages/ui/src/styles.css). The T1 audit read its three DEFINITION
      sites as its only mentions and called it dead; deleting it would have
      taken two production styles with it. It stays, named for what it is. */
-  --shadow-minimal-flat:
+  /* Visual System 2.0 (T4): renamed from `--shadow-minimal-flat`, which
+     DESIGN.md §4 had already diagnosed — a 1px ring (`0 0 0 1px`) wearing
+     box-shadow clothing, filed under elevation because of the property it
+     happens to use rather than the job it does. It is a border-family value at
+     the soft tier's own 6% alpha, and the name now says so, which matters
+     because "shadow" invited call sites to reach for it when they wanted
+     lift. Same pixels; the two leading transparent layers are kept so the
+     shadow list's shape (and any transition against it) is unchanged. */
+  --ring-soft:
     rgba(0,0,0,0) 0 0 0 0,
     rgba(0,0,0,0) 0 0 0 0,
     oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px;
@@ -921,7 +929,16 @@
   --surface-sunken: oklch(from var(--background) calc(l - 0.065) c h);
   --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
   --surface-raised: var(--background);
-  --surface-overlay: color-mix(in srgb, var(--foreground) 2%, var(--background));
+  /* Visual System 2.0 (T4): derived in oklch like the three rungs above it.
+     It was the ladder's last `color-mix(in srgb, ...)`, which DESIGN.md §3
+     named as the one known exception to the One Colorspace Rule and scheduled
+     for exactly this round. Two derivations in one family that read as the
+     same intent but resolve differently is the drift that rule exists to stop —
+     and the ladder is the family where it would matter most, since the rungs
+     are only meaningful relative to each other. Pinned to the measured value
+     the srgb mix produced (rgb 27,27,29 / OKLab L 0.223) so the unification
+     moves no pixels; the contract holds the number. */
+  --surface-overlay: oklch(from var(--background) calc(l + 0.018) c h);
   --background-elevated: var(--surface-overlay);
   /* 0.92 measured 14.11:1, just under the 15:1 the reading tier asks for. */
   --foreground: oklch(0.95 0.004 286);
@@ -972,7 +989,7 @@
      (interface-design: "dark mode shadows collapse to a single ring");
      modal keeps one deep drop so overlays still separate from the
      backdrop. */
-  --shadow-minimal-flat:
+  --ring-soft:
     0 0 0 1px oklch(1 0 0 / 0.08);
   /* Slate user bubble for dark mode — distinct from --accent and readable
      against the dark background.

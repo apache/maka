@@ -105,7 +105,7 @@ Prose uses exactly three tiers, spaced at an even ~2× contrast rhythm, all abov
 | muted | `--muted-foreground` | 4.8:1 | 4.7:1 |
 
 - **The Three-Tier Reading Rule.** Prose uses primary, secondary, or muted. Neutral washes are surfaces, not extra text tiers. `--foreground-dimmed` is an alias of secondary and must never regain its own definition (contract-tested).
-- **The One Colorspace Rule.** Every derivation inside a token family uses one colorspace (`oklch` for ink, contract-tested). Mixing `srgb` and `oklch` derivations produces "same literal, different value" drift. Known exception: dark `--surface-overlay` still derives via an srgb mix — a scheduled unification in T2–T4, not a precedent.
+- **The One Colorspace Rule.** Every derivation inside a token family uses one colorspace (`oklch` for ink, contract-tested). Mixing `srgb` and `oklch` derivations produces "same literal, different value" drift. This held one exception, dark `--surface-overlay`'s srgb mix, until T4 unified it onto oklch at its measured value; the ladder now derives every rung in one space.
 - **Links use the solid accent tier** (`--accent-solid`), never raw `--accent` — the accent identifies interaction; the solid tier is the only accent variant that clears text contrast on every palette.
 
 ## 4. Borders
@@ -115,7 +115,7 @@ Three strengths, each a job, spaced at ~1.6× like the ink ladder:
 - `--border-soft` (6% ink): quiet separation inside a plate — rails, row dividers that fills can't carry.
 - `--border` (10% ink): structural boundaries between regions.
 - `--border-strong` (16% ink): emphasis chrome only. Its legitimate jobs, from the live inventory: selected/active outlines and emphasized boundaries (onboarding, plan-mode, chat turn/quote chrome, the Astryx `--color-border-emphasized` mapping). Two call sites borrow it as a strong neutral *tint* rather than a border — a scrollbar thumb color and a separator glyph color — and are queued to migrate onto ink-derived tokens in T2–T4. It is not "the border for when you're unsure."
-- `--shadow-minimal-flat` is historically a 1px ring wearing box-shadow clothing (`0 0 0 1px`), not an elevation step; it belongs to this chapter in spirit and migrates to a ring-named border token in T2–T4 (cross-package consumers exist in `packages/ui`).
+- `--ring-soft` is a 1px ring drawn with box-shadow (`0 0 0 1px`) at the soft tier's own 6% alpha, not an elevation step. It was called `--shadow-minimal-flat` until T4, which is why it kept attracting call sites that wanted lift; the name now states the job, and it belongs to this chapter rather than §5.
 
 **The One Means Rule.** Each boundary picks one separator: a fill step, a line, or a shadow — never stacked on the same edge.
 

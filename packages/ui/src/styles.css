@@ -638,7 +638,7 @@
   padding: 0;
   border-radius: var(--radius-surface);
   background: var(--background);
-  box-shadow: var(--shadow-minimal-flat);
+  box-shadow: var(--ring-soft);
   white-space: normal;
 }
 .maka-tool-diff-paths,
@@ -832,7 +832,7 @@
 
 .maka-load-tool-preview {
   font: var(--maka-text-supporting);
- display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--shadow-minimal-flat); }
+ display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--ring-soft); }
 .maka-load-tool-preview p { margin: 0; }
 .maka-load-tool-title {
   font: var(--maka-text-heading-5);

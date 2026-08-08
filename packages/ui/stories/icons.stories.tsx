@@ -50,7 +50,7 @@ export const LucideIcons: Story = {
               gap: 6,
               padding: 10,
               borderRadius: 'var(--radius-surface)',
-              boxShadow: 'var(--shadow-minimal-flat)',
+              boxShadow: 'var(--ring-soft)',
               placeItems: 'center',
               textAlign: 'center',
             }}
@@ -82,7 +82,7 @@ export const BotBrandIcons: Story = {
               gap: 6,
               padding: 12,
               borderRadius: 'var(--radius-surface)',
-              boxShadow: 'var(--shadow-minimal-flat)',
+              boxShadow: 'var(--ring-soft)',
               placeItems: 'center',
               textAlign: 'center',
             }}
