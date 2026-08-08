@@ -856,11 +856,10 @@ export async function applyConnectionDefaults(
     env.MAKA_CONNECTIONS_PATH ?? join(resolveMakaWorkspaceRoot(), 'llm-connections.json');
   const store = createConnectionStoreForFile(connectionsPath);
   try {
-    const slug = await store.getDefault();
-    if (!slug) return;
-    const conn = await store.get(slug);
-    // A default that resolves to null, or that carries no usable model, is
-    // treated as "no default" — matching the store's own normalizeDefaultSlug.
+    // Single-snapshot default resolution: slug + connection come from one read
+    // (no TOCTOU between getDefault and get), and an unrelated invalid entry is
+    // skipped rather than failing the whole read.
+    const conn = await store.getDefaultConnection();
     if (!conn || !conn.defaultModel) return;
     // providerType is already normalized by the store's migrateConnectionV1ToV2
     // on read. Guard against an unknown provider (a connection persisted on a

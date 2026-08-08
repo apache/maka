@@ -1152,6 +1152,73 @@ describe('FileConnectionStore', () => {
       assert.equal(await readFile(filePath, 'utf8'), invalid);
     });
   });
+
+  describe('getDefaultConnection', () => {
+    test('resolves the default connection in a single snapshot', async () => {
+      await withConnectionStore(async (store) => {
+        await store.create({
+          slug: 'default-conn',
+          name: 'Default',
+          providerType: 'anthropic',
+          defaultModel: 'claude-sonnet-4-20250514',
+        });
+        await store.setDefault('default-conn');
+
+        const conn = await store.getDefaultConnection();
+
+        assert.equal(conn?.slug, 'default-conn');
+        assert.equal(conn?.defaultModel, 'claude-sonnet-4-20250514');
+      });
+    });
+
+    test('returns null when there is no default', async () => {
+      await withConnectionStore(async (store) => {
+        await store.create({
+          slug: 'no-default',
+          name: 'No Default',
+          providerType: 'anthropic',
+          defaultModel: 'claude-sonnet-4-20250514',
+        });
+        // create() auto-claims the first connection as default, so clear it
+        // explicitly to reach the "no default" state.
+        await store.setDefault(null);
+
+        assert.equal(await store.getDefaultConnection(), null);
+      });
+    });
+
+    test('tolerates an unrelated invalid entry instead of failing the read', async () => {
+      await withConnectionStore(async (store, dir) => {
+        // A valid default plus an unrelated stale entry that cannot migrate
+        // (no providerType, no slug, unknown backend). getDefaultConnection must
+        // drop the bad entry and still resolve the valid default.
+        await writeFile(
+          join(dir, 'llm-connections.json'),
+          JSON.stringify({
+            defaultSlug: 'valid-default',
+            connections: [
+              {
+                slug: 'valid-default',
+                name: 'Valid',
+                providerType: 'anthropic',
+                defaultModel: 'claude-sonnet-4-20250514',
+                enabled: true,
+                createdAt: 1,
+                updatedAt: 1,
+              },
+              { backend: 'totally-unknown-legacy-backend' },
+            ],
+          }),
+          'utf8',
+        );
+
+        const conn = await store.getDefaultConnection();
+
+        assert.equal(conn?.slug, 'valid-default');
+        assert.equal(conn?.defaultModel, 'claude-sonnet-4-20250514');
+      });
+    });
+  });
 });
 
 async function withConnectionStore<T>(

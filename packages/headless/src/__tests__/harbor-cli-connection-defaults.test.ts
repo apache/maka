@@ -202,6 +202,33 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_BASE_URL, 'https://chatgpt.com/backend-api/codex');
   });
 
+  test('an unrelated invalid entry does not strand a valid default', async () => {
+    // A valid default plus an unrelated stale entry (no slug, unknown backend)
+    // that cannot migrate must not lose the whole default. The store's
+    // default-resolution path drops the bad entry instead of failing the read.
+    const connectionsPath = makeTempConnections({
+      defaultSlug: 'harbor-anthropic',
+      connections: [
+        {
+          slug: 'harbor-anthropic',
+          providerType: 'anthropic',
+          defaultModel: 'claude-sonnet-4-20250514',
+          baseUrl: 'http://127.0.0.1:8537',
+          enabled: true,
+        },
+        // Un-migratable stale entry: no providerType, no slug, unknown backend.
+        { backend: 'totally-unknown-legacy-backend' },
+      ],
+    });
+    const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
+
+    await applyConnectionDefaults(env);
+
+    assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
+    assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
+    assert.equal(env.MAKA_BASE_URL, 'http://127.0.0.1:8537');
+  });
+
   test('MAKA_CONNECTIONS_PATH honors a non-standard filename (file-path contract)', async () => {
     // MAKA_CONNECTIONS_PATH is the connections FILE path, and any filename is
     // honored — pinning the existing file-path contract so it does not silently
