@@ -764,6 +764,21 @@ export function materializeTurns(
 }
 
 /**
+ * The turn's final reply: the last answer step on the timeline. Intermediate
+ * steps (text emitted between tool calls) narrate the work in progress; the
+ * clipboard wants only the answer the turn settled on (#2407), not the
+ * `\n\n`-joined `assistant.text` aggregate. Falls back to the aggregate for
+ * turns with no timeline text entry.
+ */
+export function finalAssistantReplyText(turn: TurnViewModel): string {
+  for (let index = turn.timeline.length - 1; index >= 0; index -= 1) {
+    const item = turn.timeline[index];
+    if (item?.kind === "text" && item.text.length > 0) return item.text;
+  }
+  return turn.assistant?.text ?? "";
+}
+
+/**
  * Fold a background command's child tools (its `Read`s and `StopBackgroundTask`)
  * into the `Bash` that owns the run.
  *
