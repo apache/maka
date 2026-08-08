@@ -414,11 +414,16 @@ describe('SQLite workflow stores', () => {
 function seedLegacyPlanLedger(root: string, eventCount = 3): void {
   const lease = acquireOperationalStateDatabase(root);
   try {
-    const steps = Array.from({ length: 50 }, (_, index) => ({
+    // Each dimension exceeds its projection bound by just enough to force
+    // truncation: 51 files > PLAN_MAX_FILES_PER_STEP, 21 risks >
+    // PLAN_MAX_RISKS, 31 title chars > PLAN_STEP_TITLE_MAX_CHARS, and four
+    // 4_000-byte descriptions oversubscribe PLAN_PROJECTION_ITEM_MAX_BYTES so
+    // the shared text budget must settle below 4_000 bytes.
+    const steps = Array.from({ length: 4 }, (_, index) => ({
       id: `legacy step ${index}`,
-      title: '"'.repeat(100),
+      title: '"'.repeat(31),
       description: '"'.repeat(4_000),
-      files: Array.from({ length: 60 }, () => '"'.repeat(100)),
+      files: Array.from({ length: 51 }, () => '"'.repeat(100)),
     }));
     const proposal = {
       planId: 'legacy-plan',
@@ -428,7 +433,7 @@ function seedLegacyPlanLedger(root: string, eventCount = 3): void {
       revision: 1,
       title: '"'.repeat(16 * 1024),
       steps,
-      risks: Array.from({ length: 25 }, (_, index) => `Legacy risk ${index}`),
+      risks: Array.from({ length: 21 }, (_, index) => `Legacy risk ${index}`),
       status: 'pending_approval',
       submittedAt: 1,
     };
