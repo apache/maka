@@ -543,29 +543,31 @@ function registerHostClientIpc(
   const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
     workspaceRoot,
     runtimeState: () => ({ state: client.lifecycleState, checkedAt: Date.now() }),
-    listConnections: async () =>
-      projectHostConnections(await client.loadConnectionCatalog()),
-    getDefaultSlug: async () => {
+    resolveModelTarget: async (requestedSlug) => {
       const catalog = await client.loadConnectionCatalog();
-      const target = catalog.defaultTarget;
-      return target === null
-        ? null
-        : (catalog.connections.find(
-            ({ connectionId }) => connectionId === target.connectionId,
-          )?.slug ?? null);
-    },
-    hasCredential: async (connection) => {
-      if (!providerAuthRequiresSecret(connection.providerType)) return true;
-      const catalog = await client.loadConnectionCatalog();
+      const connections = projectHostConnections(catalog);
+      const connectionSlug = requestedSlug ?? (catalog.defaultTarget === null
+        ? undefined
+        : catalog.connections.find(
+            ({ connectionId }) => connectionId === catalog.defaultTarget?.connectionId,
+          )?.slug);
+      if (!connectionSlug) return { kind: "missing_default" };
+      const connection = connections.find(({ slug }) => slug === connectionSlug);
+      if (!connection) return { kind: "connection_missing", connectionSlug };
+      if (!providerAuthRequiresSecret(connection.providerType)) {
+        return { kind: "resolved", connection, hasSecret: true };
+      }
       const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
-      if (!entry) return false;
+      if (!entry) return { kind: "connection_missing", connectionSlug };
       const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
-      const status = await client.queryCredential({
-        scope: "connection",
-        connectionId: entry.connectionId,
-        kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
-      });
-      return status?.configured === true;
+      const hasSecret = await client.queryCredential({
+          scope: "connection",
+          connectionId: entry.connectionId,
+          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+        })
+        .then((status) => status?.configured === true)
+        .catch(() => undefined);
+      return { kind: "resolved", connection, hasSecret };
     },
   });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });

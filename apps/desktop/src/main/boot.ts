@@ -134,6 +134,7 @@ import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import {
   createDesktopTaskSubmissionReadinessService,
   registerTaskSubmissionReadinessIpc,
+  resolveStoredModelTarget,
 } from './task-submission-readiness-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
 import { ensureBundledSkillInstalled } from './skills.js';
@@ -1115,9 +1116,11 @@ const onboardingService = createOnboardingService(
 const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
   workspaceRoot,
   runtimeState: () => ({ state: 'ready', checkedAt: Date.now() }),
-  listConnections: () => connectionStore.list(),
-  getDefaultSlug: () => connectionStore.getDefault(),
-  hasCredential: hasConnectionSecret,
+  resolveModelTarget: (requestedSlug) =>
+    resolveStoredModelTarget(requestedSlug, {
+      getSnapshot: () => connectionStore.getSnapshot(),
+      hasCredential: hasConnectionSecret,
+    }),
 });
 
 function registerIpc(): void {
