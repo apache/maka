@@ -41,7 +41,9 @@ canonical identity validation
   -> process owner claim + cross-process OS lock
   -> pending reservation
   -> producer-owned random staging
-  -> extract only node_modules into artifact staging
+  -> producer provision resolves (PR 2 must prove its process tree has exited)
+  -> deep-copy node_modules into new authority-owned inodes
+  -> delete the producer-owned tree
   -> complete tree hash / ADS-reparse validation
   -> fsync artifact where supported
   -> atomic rename artifact
@@ -62,6 +64,7 @@ filesystem rename 与 SQLite 不是共同事务，恢复依靠可收敛状态而
 - authority 根据 manifest/lockfile bytes、package manager、Node ABI、platform/arch、producer runtime/policy 重新计算 identity；调用者提供的 `environmentId` 不能自证。
 - publication digest 必须是固定 64 位小写十六进制 SHA-256，所有 join/realpath/rename 后重新检查 containment。
 - Linux/macOS 的相对 symlink 只有在目标仍位于 dependency root 内时允许，link path/target 进入 tree digest；绝对或逃逸 link 拒绝。
+- Linux/macOS 上 rename 不会撤销 producer 保留的 writable file descriptor，因此 producer tree 绝不直接 rename 成 artifact。authority 必须复制到新 inode、删除 producer tree，再做完整内容证明；旧 descriptor 后续只能修改已 unlink 的 producer inode。
 - Windows 拒绝 symlink/reparse point，并通过系统绝对路径 PowerShell 枚举、拒绝 NTFS named stream。
 - 每次 acquisition 都重新验证完整内容树。不能用目录 mtime 作为终裁，因为内容变化不保证可靠改变父目录 mtime；性能优化不能削弱内容证明。
 
@@ -90,6 +93,7 @@ Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断
 | 同进程第二个 authority               | 接触 receipt/artifact/GC 前拒绝         |
 | 另一进程持有同 root authority         | OS lock 处拒绝；不得观察或删除其 lease  |
 | close 与 lease 安装并发               | drain 后因 active lease 拒绝 close      |
+| POSIX producer 保留 output writable fd | late write 不得改变 authority-owned artifact |
 
 ## 6. Extraction ledger
 
@@ -121,7 +125,7 @@ Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断
 后续平铺顺序固定为：
 
 1. PR 1：本文件定义的 storage authority；
-2. PR 2：producer boundary，包含真实 npm `.bin` symlink 的配额与取消/超时测试；
+2. PR 2：producer boundary，必须证明 producer 进程树退出后 `provision()` 才 resolve，并包含真实 npm `.bin` symlink 的配额与取消/超时测试；
 3. PR 3：bundled npm runtime 供应链、发布审计与许可证材料；
 4. PR 4：唯一生产 consumer，把真实 baseline、environment lease 和 Read/Glob/Grep worker 串成闭环。
 

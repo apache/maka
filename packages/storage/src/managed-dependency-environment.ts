@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import {
+  cp,
   lstat,
   mkdir,
   open,
@@ -666,7 +667,13 @@ async function openOrPublishEnvironment(input: {
     if (!isPathWithin(canonicalOutput, producerRoot)) {
       throw new Error('Managed dependency producer output escapes its staging authority');
     }
-    await rename(producerOutputRoot, dependencyRoot);
+    await cp(producerOutputRoot, dependencyRoot, {
+      recursive: true,
+      dereference: false,
+      errorOnExist: true,
+      force: false,
+      verbatimSymlinks: true,
+    });
     await rm(producerRoot, { recursive: true, force: true });
     const content = await hashDependencyTree(dependencyRoot);
     const receipt: ManagedDependencyEnvironmentReceiptV1 = Object.freeze({

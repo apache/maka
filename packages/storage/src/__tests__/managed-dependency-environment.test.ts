@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  type FileHandle,
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -367,6 +378,71 @@ test('accepts a POSIX package bin symlink whose target remains inside the depend
     await readFile(join(lease.dependencyRoot, '.bin', 'fixture-cli'), 'utf8'),
     'trusted\n',
   );
+  await lease.release();
+  await authority.close();
+});
+
+test('publishes authority-owned file inodes instead of producer-owned inodes', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-inode-handoff-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let producerFileIdentity: { dev: bigint; ino: bigint } | undefined;
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      const producerFile = join(input.outputRoot, 'payload');
+      await writeFile(producerFile, 'trusted\n', 'utf8');
+      const producerInfo = await stat(producerFile, { bigint: true });
+      producerFileIdentity = { dev: producerInfo.dev, ino: producerInfo.ino };
+    },
+  };
+  const source = dependencySourceForName('inode-handoff');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+
+  const lease = await authority.acquire(identity, source);
+  const publishedInfo = await stat(join(lease.dependencyRoot, 'payload'), { bigint: true });
+  assert.notDeepEqual(
+    { dev: publishedInfo.dev, ino: publishedInfo.ino },
+    producerFileIdentity,
+    'published content retained the producer-owned inode',
+  );
+  await lease.release();
+  await authority.close();
+});
+
+test('isolates published POSIX content from a producer-retained writable handle', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-retained-handle-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let retainedHandle: FileHandle | undefined;
+  t.after(async () => retainedHandle?.close().catch(() => undefined));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      retainedHandle = await open(join(input.outputRoot, 'payload'), 'w+');
+      await retainedHandle.writeFile('trusted\n', 'utf8');
+      await retainedHandle.sync();
+    },
+  };
+  const source = dependencySourceForName('retained-handle');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+
+  const lease = await authority.acquire(identity, source);
+  const malicious = Buffer.from('MALICIOUS\n', 'utf8');
+  await retainedHandle?.write(malicious, 0, malicious.length, 0);
+  await retainedHandle?.truncate(malicious.length);
+  await retainedHandle?.sync();
+  assert.equal(await readFile(join(lease.dependencyRoot, 'payload'), 'utf8'), 'trusted\n');
+  await retainedHandle?.close();
+  retainedHandle = undefined;
   await lease.release();
   await authority.close();
 });
