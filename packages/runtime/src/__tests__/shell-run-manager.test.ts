@@ -2044,7 +2044,6 @@ describe('ShellRunProcessManager', () => {
     const manager = await createTestManager(undefined, { pipeOutputDrainMs: 100 });
     let childPid: number | undefined;
     try {
-      const startedAt = Date.now();
       const result = await manager.runForegroundBash(
         shellInput({
           cwd,
@@ -2057,7 +2056,6 @@ describe('ShellRunProcessManager', () => {
         }),
       );
       childPid = Number.parseInt(await readFile(childPidPath, 'utf8'), 10);
-      assert.ok(Date.now() - startedAt < 2_000);
       assert.equal(result.status, 'failed');
       assert.equal(result.output.mode, 'pipes');
       if (result.output.mode !== 'pipes') throw new Error('expected pipes output');

@@ -1224,19 +1224,27 @@ export async function waitForTerminalTurn(
   sessionId: string,
   turnId: string,
 ): Promise<TurnSnapshot> {
-  const deadline = Date.now() + PROCESS_TIMEOUT_MS;
-  while (true) {
-    const snapshot = await connection.queryTurn({ sessionId, turnId });
-    if (
-      snapshot.status === 'completed' ||
-      snapshot.status === 'failed' ||
-      snapshot.status === 'cancelled'
-    ) {
-      return snapshot;
+  const subscription = await connection.openSessionSubscription({ sessionId });
+  try {
+    const current = await connection.queryTurn({ sessionId, turnId });
+    if (isTerminalTurnSnapshot(current)) return current;
+    for await (const frame of subscription) {
+      if (frame.kind !== 'subscription.session_projection') continue;
+      const projected = frame.snapshot.rootTurn;
+      if (projected?.turnId === turnId && isTerminalTurnSnapshot(projected)) return projected;
     }
-    if (Date.now() >= deadline) throw new Error('Turn did not reach a terminal fact');
-    await sleep(20);
+    throw new Error('Session subscription closed before the Turn reached a terminal fact');
+  } finally {
+    await subscription.close();
   }
+}
+
+function isTerminalTurnSnapshot(snapshot: TurnSnapshot): boolean {
+  return (
+    snapshot.status === 'completed' ||
+    snapshot.status === 'failed' ||
+    snapshot.status === 'cancelled'
+  );
 }
 
 export async function waitForRunningTurn(
