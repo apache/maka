@@ -382,7 +382,6 @@
 .maka-composer-revision-notice-cancel:disabled {
   opacity: var(--opacity-disabled);
 }
-
 /* The project picker, last in the composer footer's send-context group. It is
    rendered only while no session owns the composer — the project is a
    session-creation parameter. See packages/ui/src/workspace-picker.tsx. */
@@ -441,4 +440,217 @@
   font: var(--maka-text-supporting);
   margin-left: auto;
   color: var(--muted-foreground);
+}
+
+.maka-composer-queue {
+  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  max-width: var(--maka-chat-measure);
+  margin: 0 auto var(--space-1);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+  border-radius: var(--radius-control);
+  background: var(--background-elevated);
+  box-shadow:
+    0 1px 3px color-mix(in srgb, var(--foreground) 10%, transparent),
+    inset 0 0 0 var(--border-width-hairline) color-mix(in srgb, var(--border) 70%, transparent);
+  animation: maka-composer-queue-enter 160ms var(--ease-out-strong);
+}
+
+.maka-composer-queue-list {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.maka-composer-queue-paused {
+  min-height: var(--h-control-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
+}
+
+.maka-composer-queue-resume {
+  flex: 0 0 auto;
+  min-height: var(--h-control-sm);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--accent);
+  font: var(--maka-text-label);
+  transition:
+    background-color var(--duration-fast) var(--ease-out-strong),
+    transform var(--duration-fast) var(--ease-out-strong);
+}
+
+.maka-composer-queue-resume:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.maka-composer-queue-resume:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-composer-queue-resume:disabled {
+  opacity: var(--opacity-disabled);
+}
+
+@media (hover: hover) {
+  .maka-composer-queue-resume:hover:not(:disabled) {
+    background: var(--state-hover-bg);
+  }
+}
+
+.maka-composer-queue-row {
+  min-width: 0;
+  min-height: var(--h-control-sm);
+  display: grid;
+  grid-template-columns: 14px 16px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-control);
+  color: var(--foreground-secondary);
+}
+
+.maka-composer-queue-row[draggable="true"] {
+  cursor: grab;
+}
+
+.maka-composer-queue-row[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.maka-composer-queue-grip {
+  color: var(--muted-foreground);
+  opacity: 0.45;
+}
+
+.maka-composer-queue-row[data-state="in_flight"] .maka-composer-queue-grip {
+  visibility: hidden;
+}
+
+.maka-composer-queue-row[data-placement="current"] > svg {
+  color: var(--accent);
+}
+
+.maka-composer-queue-row[data-placement="next"] > svg {
+  color: var(--warning);
+}
+
+.maka-composer-queue-kind {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.maka-composer-queue-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--maka-text-label);
+  color: var(--foreground);
+}
+
+.maka-composer-queue-content {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-composer-queue-content .maka-composer-queue-text {
+  flex: 1 1 auto;
+}
+
+.maka-composer-queue-context {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-composer-queue-edit {
+  min-width: 0;
+  width: 100%;
+  height: var(--h-control-sm);
+  padding: 0 var(--space-1-5);
+  border: var(--border-width-hairline) solid var(--focus-ring);
+  border-radius: var(--radius-control);
+  background: var(--background);
+  color: var(--foreground);
+  font: var(--maka-text-label);
+  outline: none;
+}
+
+.maka-composer-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0.45;
+  transition: opacity var(--duration-fast) var(--ease-out-strong);
+}
+
+.maka-composer-queue-row:focus-within .maka-composer-queue-actions {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .maka-composer-queue-row:hover .maka-composer-queue-actions {
+    opacity: 1;
+  }
+}
+
+.maka-composer-queue-retract {
+  flex: 0 0 auto;
+}
+
+.maka-composer-follow-up-mode {
+  flex: 0 0 auto;
+}
+
+.maka-composer-stop-button {
+  color: var(--foreground-secondary);
+}
+
+@keyframes maka-composer-queue-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .maka-composer-queue {
+    width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-3))));
+  }
+
+  .maka-composer-follow-up-mode [role="radio"] {
+    min-width: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-composer-queue {
+    animation: none;
+  }
 }

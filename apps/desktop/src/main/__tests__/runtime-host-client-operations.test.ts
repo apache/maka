@@ -342,9 +342,10 @@ test('reads the bounded Host execution boundary summary', async () => {
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
-    { queueRevision: 3, retracted: [] },
+    { disposition: 'reordered', queueRevision: 3 },
+    { queueRevision: 4, retracted: [] },
     {
-      queueRevision: 4,
+      queueRevision: 5,
       retracted: [],
       turn: {
         sessionId: 'session-1',
@@ -363,6 +364,16 @@ test('binds message controls to the current Host Epoch', async () => {
     content: { text: 'Steer it' },
     placement: 'current_turn',
   });
+  await client.mutateQueue({
+    sessionId: 'session-1',
+    mutationId: 'mutation-1',
+    expectedQueueRevision: 2,
+    mutation: {
+      kind: 'reorder',
+      placement: 'next_turn',
+      entryIds: ['entry-2', 'entry-1'],
+    },
+  });
   await client.retractQueue({ sessionId: 'session-1', retractId: 'retract-1' });
   await client.interruptTurn({
     sessionId: 'session-1',
@@ -379,6 +390,20 @@ test('binds message controls to the current Host Epoch', async () => {
         messageId: 'message-1',
         content: { text: 'Steer it' },
         placement: 'current_turn',
+        originHostEpoch: 'host-current',
+      },
+    },
+    {
+      operation: 'queue.mutate',
+      input: {
+        sessionId: 'session-1',
+        mutationId: 'mutation-1',
+        expectedQueueRevision: 2,
+        mutation: {
+          kind: 'reorder',
+          placement: 'next_turn',
+          entryIds: ['entry-2', 'entry-1'],
+        },
         originHostEpoch: 'host-current',
       },
     },

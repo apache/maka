@@ -10,6 +10,7 @@ import type {
 import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+  type QueueMutation,
   type SessionMessageQueueProjection,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -165,6 +166,86 @@ test('invalidates the canonical projection after each observable queue mutation'
     changedSessions,
     Array.from({ length: 4 }, () => ROOT.sessionId),
   );
+  await fixture.coordinator.close();
+});
+
+test('queue mutations update, reorder, promote, and remove exact queued entries', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  await submit(fixture, 'follow-2', 'second', 'next_turn');
+  let projection = fixture.coordinator.projection(ROOT.sessionId);
+  const [first, second] = projection.followup;
+  assert.ok(first && second);
+
+  const mutate = (mutationId: string, mutation: QueueMutation) =>
+    fixture.coordinator.handlers['queue.mutate'](
+      {
+        originHostEpoch: 'epoch-1',
+        sessionId: ROOT.sessionId,
+        mutationId,
+        expectedQueueRevision: projection.queueRevision,
+        mutation,
+      },
+      operationContext(),
+    );
+
+  assert.equal(
+    (
+      await mutate('mutation-update', {
+        kind: 'update',
+        entryId: first.entryId,
+        text: 'first edited',
+      })
+    ).ok,
+    true,
+  );
+  projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(projection.followup[0]?.content, {
+    text: 'first edited',
+  });
+
+  assert.equal(
+    (
+      await mutate('mutation-reorder', {
+        kind: 'reorder',
+        placement: 'next_turn',
+        entryIds: [second.entryId, first.entryId],
+      })
+    ).ok,
+    true,
+  );
+  projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(
+    projection.followup.map((entry) => entry.entryId),
+    [second.entryId, first.entryId],
+  );
+
+  assert.equal(
+    (await mutate('mutation-promote', { kind: 'promote', entryId: second.entryId })).ok,
+    true,
+  );
+  projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.equal(projection.steering.at(-1)?.entryId, second.entryId);
+
+  assert.equal(
+    (await mutate('mutation-remove', { kind: 'remove', entryId: first.entryId })).ok,
+    true,
+  );
+  projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(projection.followup, []);
+
+  await fixture.coordinator.handlers['queue.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      retractId: 'cleanup-mutations',
+    },
+    operationContext(),
+  );
+  owner.release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
   await fixture.coordinator.close();
 });
 
@@ -893,14 +974,14 @@ test('release folds unpulled steering ahead of follow-up without changing source
   assert.equal(second.ok, true, JSON.stringify(second));
 
   owner.release();
-  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
-  assert.deepEqual(batch.content, {
-    text: '<model>first</model>\n\nsecond\n\n<model>third</model>',
-    displayText: 'first\n\nsecond\n\nthird',
-    attachments: [firstAttachment, secondAttachment, thirdAttachment],
-    quotes: [...firstQuotes, ...secondQuotes, ...thirdQuotes],
+  const firstBatch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(firstBatch.content, {
+    text: '<model>first</model>',
+    displayText: 'first',
+    attachments: [firstAttachment],
+    quotes: firstQuotes,
   });
-  assert.deepEqual(batch.sources, [
+  assert.deepEqual(firstBatch.sources, [
     {
       messageId: 'steer-1',
       content: {
@@ -918,53 +999,61 @@ test('release folds unpulled steering ahead of follow-up without changing source
       placement: 'current_turn',
       disposition: 'steering',
     },
-    {
-      messageId: 'steer-2',
-      content: { text: 'second', attachments: [secondAttachment], quotes: secondQuotes },
-      submittedContentDigest: messageContentDigest({
-        text: 'second',
-        attachments: [secondAttachment],
-        quotes: secondQuotes,
-      }),
-      placement: 'current_turn',
-      disposition: 'steering',
-    },
-    {
-      messageId: 'follow-1',
-      content: {
-        text: '<model>third</model>',
-        displayText: 'third',
-        attachments: [thirdAttachment],
-        quotes: thirdQuotes,
-      },
-      submittedContentDigest: messageContentDigest({
-        text: '<model>third</model>',
-        displayText: 'third',
-        attachments: [thirdAttachment],
-        quotes: thirdQuotes,
-      }),
-      placement: 'next_turn',
-      disposition: 'followup',
-    },
   ]);
   assert.equal(fixture.liveResidencies(), 3);
 
-  fixture.coordinator.commitNextRoot(batch, {
+  fixture.coordinator.commitNextRoot(firstBatch, {
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
     runId: 'run-2',
+  });
+  assert.equal(fixture.liveResidencies(), 2);
+  const secondOwner = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  secondOwner.release();
+  const secondBatch = fixture.coordinator.beginTerminalTransition({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  assert.deepEqual(secondBatch.sources.map((source) => source.messageId), ['steer-2']);
+  fixture.coordinator.commitNextRoot(secondBatch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  assert.equal(fixture.liveResidencies(), 1);
+  const thirdOwner = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  thirdOwner.release();
+  const thirdBatch = fixture.coordinator.beginTerminalTransition({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  assert.deepEqual(thirdBatch.sources.map((source) => source.messageId), ['follow-1']);
+  fixture.coordinator.commitNextRoot(thirdBatch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-4',
+    runId: 'run-4',
   });
   assert.equal(fixture.liveResidencies(), 0);
-  const next = fixture.coordinator.bindRun({
+  const fourthOwner = fixture.coordinator.bindRun({
     sessionId: ROOT.sessionId,
-    turnId: 'turn-2',
-    runId: 'run-2',
+    turnId: 'turn-4',
+    runId: 'run-4',
   });
-  next.release();
+  fourthOwner.release();
   const empty = fixture.coordinator.beginTerminalTransition({
     sessionId: ROOT.sessionId,
-    turnId: 'turn-2',
-    runId: 'run-2',
+    turnId: 'turn-4',
+    runId: 'run-4',
   });
   fixture.coordinator.completeIdle(empty);
 });

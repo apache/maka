@@ -3,10 +3,28 @@ import { expect } from '../test-helpers.js';
 import {
   THEME_PALETTES,
   createDefaultSettings,
+  isFollowUpMode,
   isThemePalette,
   mergeSettings,
   normalizeSettings,
 } from '../settings.js';
+
+test('follow-up behavior defaults to Queue and normalizes as a closed setting', () => {
+  expect(createDefaultSettings().chatDefaults.followUpMode).toBe('queue');
+  expect(isFollowUpMode('queue')).toBe(true);
+  expect(isFollowUpMode('steer')).toBe(true);
+  expect(isFollowUpMode('interrupt')).toBe(false);
+  expect(normalizeSettings({ chatDefaults: { followUpMode: 'steer' } }).chatDefaults.followUpMode).toBe(
+    'steer',
+  );
+  expect(
+    normalizeSettings({ chatDefaults: { followUpMode: 'unknown' } }).chatDefaults.followUpMode,
+  ).toBe('queue');
+  expect(
+    mergeSettings(createDefaultSettings(), { chatDefaults: { followUpMode: 'steer' } }).chatDefaults
+      .followUpMode,
+  ).toBe('steer');
+});
 
 test('normalizes user-approved subagent presets without widening the catalog', () => {
   const normalized = normalizeSettings({

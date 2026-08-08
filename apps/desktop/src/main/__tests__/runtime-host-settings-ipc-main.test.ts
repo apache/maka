@@ -43,3 +43,33 @@ test('persists a project-only patch in the client-owned settings document', asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('keeps the Desktop follow-up mode in client-owned settings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-host-settings-'));
+  try {
+    const settingsStore = createSettingsStore(root);
+    const client = {
+      queryRuntimePolicy: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+      queryCredential: async () => null,
+      deleteCredential: async () => { throw new Error('not used'); },
+      setCredential: async () => { throw new Error('not used'); },
+      testNetworkProxy: async () => { throw new Error('not used'); },
+      updateRuntimePolicy: async () => { throw new Error('follow-up mode is not Host policy'); },
+    } satisfies RuntimeHostSettingsIpcDeps['client'];
+
+    const result = await updateRuntimeHostSettings(
+      {
+        ipcMain: { handle() {} },
+        client,
+        settingsStore,
+        applyClientSettings: async () => {},
+      },
+      { chatDefaults: { followUpMode: 'steer' } },
+    );
+
+    assert.equal(result.chatDefaults.followUpMode, 'steer');
+    assert.equal((await settingsStore.get()).chatDefaults.followUpMode, 'steer');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

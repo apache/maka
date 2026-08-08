@@ -1,3 +1,4 @@
+import { normalizeMessageContent } from '@maka/core/events';
 import type {
   AgentRunHeader,
   AgentRunStore,
@@ -12,6 +13,8 @@ import { isSessionInlineRun } from '@maka/core';
 import type {
   ActiveInteractionRequestEvent,
   CompleteEvent,
+  MessageContent,
+  MessageQueuePlacement,
   QueueEnqueueOutcome,
   QueueUpdateEvent,
   SessionEvent,
@@ -151,11 +154,22 @@ export interface RuntimeKernelLike {
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   /** Queue a user message for mid-turn injection at the next step boundary. */
-  steer(sessionId: string, text: string): QueueEnqueueOutcome;
+  steer(sessionId: string, content: string | MessageContent): QueueEnqueueOutcome;
   /** Queue a user message to open the turn after the current one finishes. */
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome;
+  queueMessage(sessionId: string, content: string | MessageContent): QueueEnqueueOutcome;
   /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
   drainFollowup(sessionId: string): string | null;
+  /** Take the next queued followup as canonical content, preserving entry order. */
+  takeNextFollowup(sessionId: string): MessageContent | null;
+  updateQueuedMessage(sessionId: string, entryId: string, text: string): boolean;
+  removeQueuedMessage(sessionId: string, entryId: string): boolean;
+  reorderQueuedMessages(
+    sessionId: string,
+    placement: MessageQueuePlacement,
+    entryIds: readonly string[],
+  ): boolean;
+  promoteQueuedFollowup(sessionId: string, entryId: string): QueueEnqueueOutcome;
+  resumeQueuedMessages(sessionId: string): boolean;
   /** Take back every queued message (both queues) as one `\n\n`-joined string. */
   retractQueue(sessionId: string): string;
   hasActiveRuns(sessionId: string): boolean;
@@ -273,9 +287,12 @@ interface SessionSteeringState {
    */
   inFlight: LeasedSteeringMessage[];
   /** Messages waiting to open the next turn. */
-  followup: string[];
+  followup: PendingSteeringMessage[];
   /** Pushes a `queue_update` into the active turn's stream; unset when idle. */
   sink?: (event: QueueUpdateEvent) => void;
+  /** Queue changed while idle; publish the latest snapshot when the next owner binds. */
+  projectionPending?: boolean;
+  paused?: boolean;
   activeTurnId?: string;
 }
 
@@ -1544,6 +1561,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         void sessionEvents.push(event).catch(() => {});
       };
       state.activeTurnId = run.turnId;
+      if (state.projectionPending) this.emitQueueUpdate(sessionId, state);
       // Lease, don't consume: pulled messages move to in-flight and only an
       // ack (durable + injected) removes them; a nack or a retract/clear/
       // release reclaims them, so an abort window can never drop text.
@@ -1597,7 +1615,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // queue is its only safe home — the same direction a release-time
           // fold takes.
           current.followup = [
-            ...returned.map((message) => message.content.text),
+            ...returned.map(pendingFromLease),
             ...current.followup,
           ];
         }
@@ -2092,10 +2110,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private async stopSessionAttempt(sessionId: string, intent: SessionStopIntent): Promise<void> {
-    // Interrupt clears both queues before the abort lands; the emitted empty
-    // snapshot lets the UI collapse its pending bar, and callers refill their
-    // editor from the mirror captured before the clear.
-    this.clearSteering(sessionId);
+    if (intent.input.preserveQueuedMessages) {
+      const state = this.steeringBySession.get(sessionId);
+      if (state && (state.steering.length > 0 || state.followup.length > 0)) {
+        state.paused = true;
+        this.emitQueueUpdate(sessionId, state);
+      }
+    } else {
+      // Legacy CLI and non-composer stops retract queued work before aborting.
+      this.clearSteering(sessionId);
+    }
     const failures: unknown[] = [];
     let operation = this.stopOperations.get(sessionId);
     try {
@@ -2394,7 +2418,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   // Steering / followup queues (authoritative source of truth)
   // --------------------------------------------------------------------------
 
-  steer(sessionId: string, text: string): QueueEnqueueOutcome {
+  steer(sessionId: string, input: string | MessageContent): QueueEnqueueOutcome {
     this.assertEmbeddedMessageQueue('steer');
     // Steering's delivery contract is anchored to the runtime event ledger
     // (fail-closed persist + durable-consume ack). Without a RuntimeEventStore
@@ -2409,16 +2433,25 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const state = this.liveSteeringState(sessionId);
     if (!state) return { kind: 'fallback' };
     const messageId = this.deps.newId();
-    state.steering.push({ id: messageId, messageId, content: { text } });
+    state.steering.push({
+      id: messageId,
+      messageId,
+      content: normalizeQueueContent(input),
+    });
     this.emitQueueUpdate(sessionId, state);
     return { kind: 'queued' };
   }
 
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome {
+  queueMessage(sessionId: string, input: string | MessageContent): QueueEnqueueOutcome {
     this.assertEmbeddedMessageQueue('queueMessage');
     const state = this.liveSteeringState(sessionId);
     if (!state) return { kind: 'fallback' };
-    state.followup.push(text);
+    const messageId = this.deps.newId();
+    state.followup.push({
+      id: messageId,
+      messageId,
+      content: normalizeQueueContent(input),
+    });
     this.emitQueueUpdate(sessionId, state);
     return { kind: 'queued' };
   }
@@ -2426,10 +2459,92 @@ export class RuntimeKernel implements RuntimeKernelLike {
   drainFollowup(sessionId: string): string | null {
     this.assertEmbeddedMessageQueue('drainFollowup');
     const state = this.steeringBySession.get(sessionId);
-    if (!state || state.followup.length === 0) return null;
+    if (!state || state.paused || state.followup.length === 0) return null;
     const drained = state.followup.splice(0);
     this.emitQueueUpdate(sessionId, state);
-    return drained.join('\n\n');
+    return drained.map((entry) => entry.content.text).join('\n\n');
+  }
+
+  takeNextFollowup(sessionId: string): MessageContent | null {
+    this.assertEmbeddedMessageQueue('takeNextFollowup');
+    const state = this.steeringBySession.get(sessionId);
+    const entry = state?.paused ? undefined : state?.followup.shift();
+    if (!state || !entry) return null;
+    this.emitQueueUpdate(sessionId, state);
+    return structuredClone(entry.content);
+  }
+
+  updateQueuedMessage(sessionId: string, entryId: string, text: string): boolean {
+    this.assertEmbeddedMessageQueue('updateQueuedMessage');
+    const state = this.steeringBySession.get(sessionId);
+    if (!state) return false;
+    const entry = [...state.steering, ...state.followup].find((candidate) => candidate.id === entryId);
+    if (!entry) return false;
+    entry.content = normalizeMessageContent({
+      ...entry.content,
+      text,
+      displayText: text,
+    });
+    this.emitQueueUpdate(sessionId, state);
+    return true;
+  }
+
+  removeQueuedMessage(sessionId: string, entryId: string): boolean {
+    this.assertEmbeddedMessageQueue('removeQueuedMessage');
+    const state = this.steeringBySession.get(sessionId);
+    if (!state) return false;
+    const before = state.steering.length + state.followup.length;
+    state.steering = state.steering.filter((entry) => entry.id !== entryId);
+    state.followup = state.followup.filter((entry) => entry.id !== entryId);
+    if (state.steering.length + state.followup.length === before) return false;
+    this.emitQueueUpdate(sessionId, state);
+    return true;
+  }
+
+  reorderQueuedMessages(
+    sessionId: string,
+    placement: MessageQueuePlacement,
+    entryIds: readonly string[],
+  ): boolean {
+    this.assertEmbeddedMessageQueue('reorderQueuedMessages');
+    const state = this.steeringBySession.get(sessionId);
+    if (!state) return false;
+    const lane = placement === 'current_turn' ? state.steering : state.followup;
+    if (
+      lane.length !== entryIds.length ||
+      new Set(entryIds).size !== entryIds.length ||
+      lane.some((entry) => !entryIds.includes(entry.id))
+    ) {
+      return false;
+    }
+    const byId = new Map(lane.map((entry) => [entry.id, entry]));
+    const reordered = entryIds.map((entryId) => byId.get(entryId)!);
+    if (placement === 'current_turn') state.steering = reordered;
+    else state.followup = reordered;
+    this.emitQueueUpdate(sessionId, state);
+    return true;
+  }
+
+  promoteQueuedFollowup(sessionId: string, entryId: string): QueueEnqueueOutcome {
+    this.assertEmbeddedMessageQueue('promoteQueuedFollowup');
+    if (!this.deps.runtimeEventStore) return { kind: 'fallback' };
+    const state = this.liveSteeringState(sessionId);
+    if (!state || state.paused) return { kind: 'fallback' };
+    const index = state.followup.findIndex((entry) => entry.id === entryId);
+    if (index < 0) return { kind: 'fallback' };
+    const [entry] = state.followup.splice(index, 1);
+    state.steering.push(entry);
+    this.emitQueueUpdate(sessionId, state);
+    return { kind: 'queued' };
+  }
+
+  resumeQueuedMessages(sessionId: string): boolean {
+    this.assertEmbeddedMessageQueue('resumeQueuedMessages');
+    const state = this.steeringBySession.get(sessionId);
+    if (!state?.paused) return false;
+    state.paused = false;
+    this.emitQueueUpdate(sessionId, state);
+    return true;
   }
 
   retractQueue(sessionId: string): string {
@@ -2442,9 +2557,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // handing its text back to the user here would refill AND execute the
     // same directive. An in-flight lease settles only by the persistence
     // fact (ack when the ledger owns it, nack back to a queue otherwise).
-    const all = [...state.steering.map((message) => message.content.text), ...state.followup];
+    const all = [
+      ...state.steering.map((message) => message.content.text),
+      ...state.followup.map((message) => message.content.text),
+    ];
     state.steering = [];
     state.followup = [];
+    state.paused = false;
     this.emitQueueUpdate(sessionId, state);
     return all.join('\n\n');
   }
@@ -2477,16 +2596,45 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private emitQueueUpdate(sessionId: string, state: SessionSteeringState): void {
-    state.sink?.({
+    if (!state.sink) {
+      state.projectionPending = true;
+      return;
+    }
+    state.projectionPending = false;
+    state.sink({
       type: 'queue_update',
       id: this.deps.newId(),
       turnId: state.activeTurnId ?? '',
       ts: this.deps.now(),
+      paused: state.paused === true,
       steering: [
         ...state.inFlight.map((message) => message.content.text),
         ...state.steering.map((message) => message.content.text),
       ],
-      followup: [...state.followup],
+      followup: state.followup.map((message) => message.content.text),
+      steeringEntries: [
+        ...state.inFlight.map((message) => ({
+          entryId: message.id,
+          messageId: message.messageId,
+          content: structuredClone(message.content),
+          placement: 'current_turn' as const,
+          state: 'in_flight' as const,
+        })),
+        ...state.steering.map((message) => ({
+          entryId: message.id,
+          messageId: message.messageId,
+          content: structuredClone(message.content),
+          placement: 'current_turn' as const,
+          state: 'queued' as const,
+        })),
+      ],
+      followupEntries: state.followup.map((message) => ({
+        entryId: message.id,
+        messageId: message.messageId,
+        content: structuredClone(message.content),
+        placement: 'next_turn' as const,
+        state: 'queued' as const,
+      })),
     });
   }
 
@@ -2496,9 +2644,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // Same commit-point rule as retractQueue: only QUEUED messages are
     // clearable. An in-flight lease is already committed to the running
     // turn's delivery and settles only by the persistence fact.
-    if (state.steering.length === 0 && state.followup.length === 0) return;
+    if (state.steering.length === 0 && state.followup.length === 0 && !state.paused) return;
     state.steering = [];
     state.followup = [];
+    state.paused = false;
     this.emitQueueUpdate(sessionId, state);
   }
 
@@ -2515,7 +2664,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // backstop that keeps a never-settled lease from stranding invisibly.
       if (own.length === 0) return;
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.followup = [...own.map((message) => message.content.text), ...state.followup];
+      state.followup = [...own.map(pendingFromLease), ...state.followup];
       this.emitQueueUpdate(sessionId, state);
       return;
     }
@@ -2526,8 +2675,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // is cleared; otherwise observers stay on the stale pre-fold snapshot.
     if (state.steering.length > 0 || own.length > 0) {
       state.followup = [
-        ...own.map((message) => message.content.text),
-        ...state.steering.map((message) => message.content.text),
+        ...own.map(pendingFromLease),
+        ...state.steering,
         ...state.followup,
       ];
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
@@ -3890,6 +4039,18 @@ class FailureCollector {
 
 function interactionOwnerKey(sessionId: string, requestId: string): string {
   return `${sessionId}\0${requestId}`;
+}
+
+function normalizeQueueContent(input: string | MessageContent): MessageContent {
+  return normalizeMessageContent(typeof input === 'string' ? { text: input } : input);
+}
+
+function pendingFromLease(message: LeasedSteeringMessage): PendingSteeringMessage {
+  return {
+    id: message.id,
+    messageId: message.messageId,
+    content: structuredClone(message.content),
+  };
 }
 
 export type { AgentRunLineage };

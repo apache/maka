@@ -10,6 +10,8 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
+  FollowUpMode,
+  MessageQueueMutation,
   ScheduledTask,
   QuoteRef,
   SessionSummary,
@@ -148,6 +150,7 @@ import { createAppShellSessionEventHandlers } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
+  toRendererIngestItems,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
@@ -354,6 +357,7 @@ function AppShellContent({
     confirmLiveTurn,
     setShellRunUpdatesBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     setSessionEventHealthBySession,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
@@ -402,6 +406,7 @@ function AppShellContent({
     messageRetryPendingBySession,
     stopPendingBySession,
     interactionBySession,
+    messageQueueBySession,
     pendingPermissionModeBySession,
     pendingSessionModelBySession,
     streamingSessionIds,
@@ -452,6 +457,8 @@ function AppShellContent({
     defaultPermissionMode,
     defaultThinkingLevel,
     setDefaultPermissionMode,
+    followUpMode,
+    setFollowUpMode,
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -463,6 +470,26 @@ function AppShellContent({
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
   const terminalPanelCopy = desktopConversationCopy.terminalPanel;
   const workbarCopy = desktopConversationCopy.workbar;
+  const followUpModeSaveRevisionRef = useRef(0);
+  const changeFollowUpMode = useCallback((nextMode: FollowUpMode) => {
+    const previousMode = followUpMode;
+    const revision = ++followUpModeSaveRevisionRef.current;
+    setFollowUpMode(nextMode);
+    void window.maka.settings
+      .update({ chatDefaults: { followUpMode: nextMode } })
+      .then((result) => {
+        if (followUpModeSaveRevisionRef.current !== revision) return;
+        setFollowUpMode(result.settings.chatDefaults.followUpMode);
+      })
+      .catch((error) => {
+        if (followUpModeSaveRevisionRef.current !== revision) return;
+        setFollowUpMode(previousMode);
+        toastApi.error(
+          getConversationCopy(uiLocale).composer.followUpModeLabel,
+          localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+        );
+      });
+  }, [followUpMode, setFollowUpMode, shellCopy.tryAgainLater, toastApi, uiLocale]);
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;
@@ -702,6 +729,7 @@ function AppShellContent({
     toastApi,
   });
   const activeInteraction = activeInteractionFor(interactionBySession, activeId);
+  const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
@@ -1917,6 +1945,46 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
+    if (metadata?.followUpMode && activeIdRef.current) {
+      const sessionId = activeIdRef.current;
+      try {
+        const attachments =
+          pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
+        const quotes = pendingQuotes.length > 0 ? [...pendingQuotes] : undefined;
+        const outcome = await window.maka.sessions.enqueue(
+          sessionId,
+          metadata.followUpMode === 'queue' ? 'next_turn' : 'current_turn',
+          {
+            text,
+            ...(attachments
+              ? { attachmentItems: toRendererIngestItems(attachments) }
+              : {}),
+            ...(quotes ? { quotes } : {}),
+            ...(metadata.workspaceFileReferences?.length
+              ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
+              : {}),
+          },
+        );
+        if (attachments) clearSubmittedAttachments(attachments);
+        if (quotes) clearQuotes();
+        if (outcome.kind === 'started') {
+          await refreshMessages(sessionId);
+          await refreshSessions();
+        }
+        return true;
+      } catch (error) {
+        if (activeIdRef.current !== sessionId) return false;
+        toastApi.error(
+          getShellCopy(uiLocale).chatActions.sendFailedTitle,
+          localizedShellErrorMessage(
+            error,
+            getShellCopy(uiLocale).chatActions.sendFailedFallback,
+            uiLocale,
+          ),
+        );
+        return false;
+      }
+    }
     if (
       revisionSend &&
       revision &&
@@ -2127,7 +2195,60 @@ function AppShellContent({
     setStopPendingBySession,
     stopPendingRef,
     toastApi,
+    shouldPreserveQueuedMessages: (sessionId) => {
+      const queue = messageQueueBySession[sessionId];
+      return (queue?.steering.length ?? 0) + (queue?.followup.length ?? 0) > 0;
+    },
   });
+
+  async function retractQueuedMessages(): Promise<void> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      const text = await window.maka.sessions.retractQueue(sessionId);
+      setMessageQueueBySession((current) => {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      if (!text || activeIdRef.current !== sessionId) return;
+      composerRef.current?.appendDraft?.(sessionId, text);
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      const copy = getConversationCopy(uiLocale).composer;
+      toastApi.error(
+        copy.retractQueued,
+        localizedShellErrorMessage(error, getShellCopy(uiLocale).chatActions.sendFailedFallback, uiLocale),
+      );
+    }
+  }
+
+  async function mutateQueuedMessage(mutation: MessageQueueMutation): Promise<boolean> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return false;
+    const queue = messageQueueBySession[sessionId];
+    try {
+      const result = await window.maka.sessions.mutateQueue(sessionId, {
+        ...(queue?.queueRevision !== undefined
+          ? { expectedQueueRevision: queue.queueRevision }
+          : {}),
+        mutation,
+      });
+      return result.ok;
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return false;
+      toastApi.error(
+        getConversationCopy(uiLocale).composer.followUpModeLabel,
+        localizedShellErrorMessage(
+          error,
+          getShellCopy(uiLocale).chatActions.sendFailedFallback,
+          uiLocale,
+        ),
+      );
+      return false;
+    }
+  }
 
   const { handleEvent, reconcilePersistedMessages, settleAssistantStreaming } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
@@ -2137,6 +2258,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
@@ -2746,6 +2868,11 @@ function AppShellContent({
                   onSend={sendWithAttachments}
                   onStreamingSubmit={submitWhileStreaming}
                   onStop={stop}
+                  followUpMode={followUpMode}
+                  queuedMessages={activeMessageQueue}
+                  onFollowUpModeChange={changeFollowUpMode}
+                  onRetractQueued={activeId ? retractQueuedMessages : undefined}
+                  onQueueMutation={activeId ? mutateQueuedMessage : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {

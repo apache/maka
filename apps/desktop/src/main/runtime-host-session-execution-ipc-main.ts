@@ -37,6 +37,7 @@ import {
 } from "./runtime-host-session-observer.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
+import { normalizeQueueMutationInput } from "./queue-mutation-guard.js";
 
 type RuntimeHostSessionExecutionClient = Pick<
   DesktopRuntimeHostClient,
@@ -49,6 +50,8 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
+  | "retractQueue"
+  | "mutateQueue"
   | "setSessionReadMarker"
   | "startTurn"
   | "startTurnResume"
@@ -251,6 +254,121 @@ export function registerRuntimeHostSessionExecutionIpc(
         placement: "current_turn",
       });
       return { kind: "queued" as const };
+    },
+  );
+  ipcMain.handle(
+    "sessions:queueMessage",
+    async (_event, sessionId: string, text: unknown) => {
+      const content = steeringContent(text);
+      await deps.client.submitMessage({
+        sessionId,
+        messageId: newId(),
+        content: { text: content },
+        placement: "next_turn",
+      });
+      return { kind: "queued" as const };
+    },
+  );
+  ipcMain.handle(
+    "sessions:enqueue",
+    async (event, sessionId: string, placement: unknown, value: unknown) => {
+      if (placement !== "current_turn" && placement !== "next_turn") {
+        throw new Error("Invalid message placement");
+      }
+      const command = normalizeSessionSendCommand({
+        ...(value && typeof value === "object" ? value : {}),
+        type: "send",
+        turnId: newId(),
+      });
+      if (!command) throw new Error("Invalid queued message");
+      if ((command.skillIds?.length ?? 0) > 0) {
+        throw new Error("Queued Skill input is not available");
+      }
+      const session = await deps.client.getSession(sessionId);
+      if (!session) {
+        throw new Error(`Runtime Host Session not found: ${sessionId}`);
+      }
+      let attachments: AttachmentRef[] = [];
+      if (command.attachmentItems !== undefined) {
+        const files = await resolveIngestItems({
+          senderId: event.sender.id,
+          items: command.attachmentItems,
+          approvals: deps.attachmentApprovals,
+          stat: deps.stat,
+        });
+        attachments = await resolveAttachmentRefs({
+          files,
+          cwd: session.cwd,
+          sessionId,
+          workspaceFiles: "snapshot",
+          resizeImage: deps.resizeImage,
+          snapshot: ({ name, mimeType, content }) =>
+            deps.client.ingestAttachment({
+              sessionId,
+              name,
+              mimeType,
+              content,
+            }),
+        });
+      }
+      const displayText = command.displayText ?? command.text;
+      const inlineReferences = mergeWorkspaceFileInlineReferences({
+        displayText,
+        workspaceFileReferences: command.workspaceFileReferences,
+      });
+      const result = await deps.client.submitMessage({
+        sessionId,
+        messageId: newId(),
+        placement,
+        content: {
+          text: command.text,
+          ...(command.displayText !== undefined
+            ? { displayText: command.displayText }
+            : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.quotes ? { quotes: command.quotes } : {}),
+          inlineReferences,
+        },
+      });
+      if (result.disposition === "turn_started") {
+        deps.emitSessionsChanged("status-change", sessionId, {
+          turnId: result.turnId,
+        });
+        return {
+          kind: "started" as const,
+          turnId: result.turnId,
+          attachments,
+          inlineReferences,
+        };
+      }
+      return {
+        kind: "queued" as const,
+        attachments,
+        inlineReferences,
+      };
+    },
+  );
+  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
+    const result = await deps.client.retractQueue({
+      sessionId,
+      retractId: newId(),
+    });
+    return result.retracted.map((entry) => entry.content.text).join("\n\n");
+  });
+  ipcMain.handle(
+    "sessions:mutateQueue",
+    async (_event, sessionId: string, value: unknown) => {
+      const input = normalizeQueueMutationInput(value);
+      const queueRevision =
+        input.expectedQueueRevision ??
+        (await deps.observer.snapshot(sessionId)).queue.queueRevision;
+      const result = await deps.client.mutateQueue({
+        sessionId,
+        mutationId: newId(),
+        expectedQueueRevision: queueRevision,
+        mutation: input.mutation,
+      });
+      return { ok: true, queueRevision: result.queueRevision };
     },
   );
   ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>

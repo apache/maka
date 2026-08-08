@@ -43,7 +43,10 @@ interface NormalizedSendSessionCommand {
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
-type NormalizedStopSessionInput = { source?: 'stop_button' };
+type NormalizedStopSessionInput = {
+  source?: 'stop_button';
+  preserveQueuedMessages?: boolean;
+};
 
 export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
   if (!input || typeof input !== 'object') {
@@ -275,11 +278,19 @@ export function normalizeSessionSkillIds(input: unknown): string[] {
 export function normalizeStopSessionInput(input: unknown): NormalizedStopSessionInput {
   if (input === undefined) return {};
   const value = requireObject(input, 'Invalid stop session input');
-  if (value.source === undefined) return {};
-  if (value.source !== 'stop_button') {
+  if (value.source !== undefined && value.source !== 'stop_button') {
     throw new Error('Invalid stop session source');
   }
-  return { source: 'stop_button' };
+  if (
+    value.preserveQueuedMessages !== undefined &&
+    typeof value.preserveQueuedMessages !== 'boolean'
+  ) {
+    throw new Error('Invalid preserve queued messages flag');
+  }
+  return {
+    ...(value.source === 'stop_button' ? { source: 'stop_button' as const } : {}),
+    ...(value.preserveQueuedMessages === true ? { preserveQueuedMessages: true } : {}),
+  };
 }
 
 function requireObject(input: unknown, errorMessage: string): Record<string, unknown> {

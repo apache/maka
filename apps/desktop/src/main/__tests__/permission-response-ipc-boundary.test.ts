@@ -204,7 +204,18 @@ describe('permission response IPC boundary', () => {
     assert.deepEqual(normalizeStopSessionInput({ source: 'stop_button', extra: true }), {
       source: 'stop_button',
     });
+    assert.deepEqual(
+      normalizeStopSessionInput({
+        source: 'stop_button',
+        preserveQueuedMessages: true,
+      }),
+      { source: 'stop_button', preserveQueuedMessages: true },
+    );
     assert.throws(() => normalizeStopSessionInput(null), /stop session input/);
     assert.throws(() => normalizeStopSessionInput({ source: 'toolbar' }), /stop session source/);
+    assert.throws(
+      () => normalizeStopSessionInput({ preserveQueuedMessages: 'yes' }),
+      /preserve queued messages/,
+    );
   });
 });

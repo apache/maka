@@ -24,6 +24,7 @@ export function createAppShellStopAction(deps: {
   ) => void;
   setStopPendingBySession: BooleanRecordUpdater;
   stopPendingRef: RefBox<Set<string>>;
+  shouldPreserveQueuedMessages?: (sessionId: string) => boolean;
   toastApi: ToastApi;
 }): () => Promise<void> {
   const {
@@ -33,6 +34,7 @@ export function createAppShellStopAction(deps: {
     clearPendingSessionAction,
     setStopPendingBySession,
     stopPendingRef,
+    shouldPreserveQueuedMessages,
     toastApi,
   } = deps;
 
@@ -40,7 +42,12 @@ export function createAppShellStopAction(deps: {
     const sessionId = activeIdRef.current;
     if (!sessionId || !addPendingSessionAction(sessionId, stopPendingRef, setStopPendingBySession)) return;
     try {
-      await window.maka.sessions.stop(sessionId, { source: 'stop_button' });
+      await window.maka.sessions.stop(sessionId, {
+        source: 'stop_button',
+        ...(shouldPreserveQueuedMessages?.(sessionId)
+          ? { preserveQueuedMessages: true }
+          : {}),
+      });
     } catch (error) {
       // The Composer wires this through both the Stop button onClick
       // and the Escape key. Both invoke `onStop` without awaiting, so

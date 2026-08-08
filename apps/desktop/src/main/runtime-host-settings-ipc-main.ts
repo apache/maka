@@ -179,7 +179,10 @@ export async function loadRuntimeHostSettings(
     localMemory: policy.memory,
     workspaceInstructions: policy.workspaceInstructions,
     privacy: policy.privacy,
-    chatDefaults: policy.chatDefaults,
+    chatDefaults: {
+      ...policy.chatDefaults,
+      followUpMode: local.chatDefaults.followUpMode,
+    },
     webSearch: {
       ...local.webSearch,
       ...policy.webSearch,
@@ -266,12 +269,18 @@ async function applyHostPatch(
   if (patch.privacy)
     await mergePolicy(client, "privacy", patch.privacy, "set_privacy");
   if (patch.chatDefaults) {
-    await mergePolicy(
-      client,
-      "chatDefaults",
-      patch.chatDefaults,
-      "set_chat_defaults",
-    );
+    const {
+      followUpMode: _followUpMode,
+      ...hostChatDefaults
+    } = patch.chatDefaults;
+    if (Object.keys(hostChatDefaults).length > 0) {
+      await mergePolicy(
+        client,
+        "chatDefaults",
+        hostChatDefaults,
+        "set_chat_defaults",
+      );
+    }
   }
   if (patch.webSearch) {
     const webSearch = patch.webSearch;
@@ -388,10 +397,15 @@ function toClientOwnedPatch(
             ? {}
             : { selectedPetId: patch.personalization.selectedPetId }),
         };
+  const chatDefaults =
+    patch.chatDefaults?.followUpMode === undefined
+      ? undefined
+      : { followUpMode: patch.chatDefaults.followUpMode };
   return {
     ...(patch.botChat ? { botChat: patch.botChat } : {}),
     ...(patch.usage ? { usage: patch.usage } : {}),
     ...(patch.appearance ? { appearance: patch.appearance } : {}),
+    ...(chatDefaults ? { chatDefaults } : {}),
     ...(personalization ? { personalization } : {}),
     ...(patch.notifications ? { notifications: patch.notifications } : {}),
     ...(patch.projects ? { projects: patch.projects } : {}),

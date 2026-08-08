@@ -68,6 +68,26 @@ export interface ConversationCopy {
     processing: string;
     continuing: string;
     interruptHint: string;
+    followUpModeLabel: string;
+    queueLabel: string;
+    followUpSteerLabel: string;
+    queueTooltip: string;
+    steerTooltip: string;
+    queuedMessagesAriaLabel(count: number): string;
+    steerQueuedLabel: string;
+    steerDeliveringLabel: string;
+    followUpQueuedLabel: string;
+    retractQueued: string;
+    editQueuedMessage: string;
+    saveQueuedMessage: string;
+    cancelQueuedEdit: string;
+    deleteQueuedMessage: string;
+    sendQueuedNow: string;
+    sendQueuedNowTooltip: string;
+    queuePaused: string;
+    resumeQueue: string;
+    queuedAttachmentCount(count: number): string;
+    queuedQuoteCount(count: number): string;
     addContext: string;
     /** Noun label for the composer drawer's staged quotes/attachments — the
      *  collapsed badge, the drawer group's accessible name, and the collapse
@@ -347,6 +367,15 @@ const CONVERSATION_COPY = {
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
+      followUpModeLabel: '跟进行为', queueLabel: '排队', followUpSteerLabel: '引导',
+      queueTooltip: '加入下一轮队列', steerTooltip: '不中断模型，调整当前运行',
+      queuedMessagesAriaLabel: (count) => `待处理消息 ${count} 条`,
+      steerQueuedLabel: '本轮', steerDeliveringLabel: '提交中', followUpQueuedLabel: '下一轮', retractQueued: '取回队列并继续编辑',
+      editQueuedMessage: '编辑排队消息', saveQueuedMessage: '保存排队消息', cancelQueuedEdit: '取消编辑',
+      deleteQueuedMessage: '删除排队消息', sendQueuedNow: '立即引导', sendQueuedNowTooltip: '不中断模型，把这条消息提交到当前运行',
+      queuePaused: '由于你中断了当前响应，队列已暂停', resumeQueue: '继续',
+      queuedAttachmentCount: (count) => `附件 ${count} 个`,
+      queuedQuoteCount: (count) => `引用 ${count} 条`,
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       switchDisabledStreaming: '当前对话正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前对话正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
@@ -488,6 +517,15 @@ const CONVERSATION_COPY = {
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
+      followUpModeLabel: 'Follow-up behavior', queueLabel: 'Queue', followUpSteerLabel: 'Steer',
+      queueTooltip: 'Queue for the next turn', steerTooltip: 'Guide the current run without interrupting it',
+      queuedMessagesAriaLabel: (count) => `${count} queued ${count === 1 ? 'message' : 'messages'}`,
+      steerQueuedLabel: 'Current', steerDeliveringLabel: 'Sending', followUpQueuedLabel: 'Next', retractQueued: 'Take queued messages back to edit',
+      editQueuedMessage: 'Edit queued message', saveQueuedMessage: 'Save queued message', cancelQueuedEdit: 'Cancel edit',
+      deleteQueuedMessage: 'Delete queued message', sendQueuedNow: 'Steer now', sendQueuedNowTooltip: 'Submit this message to the current run without interrupting it',
+      queuePaused: 'Queue paused because you interrupted the current response', resumeQueue: 'Resume',
+      queuedAttachmentCount: (count) => `${count} ${count === 1 ? 'attachment' : 'attachments'}`,
+      queuedQuoteCount: (count) => `${count} ${count === 1 ? 'quote' : 'quotes'}`,
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',

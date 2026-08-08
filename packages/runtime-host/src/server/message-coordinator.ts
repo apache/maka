@@ -27,6 +27,9 @@ import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_OPERATION_SPECS,
   type MessagePlacement,
+  type QueueMutateInput,
+  type QueueMutateResult,
+  type QueueMutation,
   type QueueRetractInput,
   type QueueRetractResult,
   type QueuedMessageSnapshot,
@@ -75,7 +78,7 @@ export type HostMessageRootState =
 
 export interface HostMessageStartInput {
   readonly sessionId: string;
-  readonly content: MessageContent;
+  content: MessageContent;
   readonly sourceMessage: RootTurnSourceMessage;
   readonly initiatingConnectionId: string;
 }
@@ -160,11 +163,11 @@ export type CandidateSnapshotPreflight = (
 interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
-  readonly content: MessageContent;
-  readonly modelContent: MessageContent;
+  content: MessageContent;
+  modelContent: MessageContent;
   readonly initiatingConnectionId: string;
-  readonly placement: MessagePlacement;
-  readonly disposition: 'steering' | 'followup';
+  placement: MessagePlacement;
+  disposition: 'steering' | 'followup';
   readonly generation: number;
   readonly residency: RuntimeHostResidency;
   state: 'queued' | 'in_flight' | 'released';
@@ -189,6 +192,11 @@ interface PendingSubmit {
 interface PendingRetract {
   readonly payload: QueueRetractInput;
   readonly result: Promise<MessageOutcome<QueueRetractResult>>;
+}
+
+interface PendingMutation {
+  readonly payload: QueueMutateInput;
+  readonly result: Promise<MessageOutcome<QueueMutateResult>>;
 }
 
 interface InterruptDeferred {
@@ -253,6 +261,7 @@ const SUBMIT_ADMISSION_RETRY_LIMIT = 4;
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
     'turn.message.submit': (input, context) => this.submit(input, context),
+    'queue.mutate': (input) => this.mutate(input),
     'queue.retract': (input) => this.retract(input),
     'turn.interrupt': (input) => this.interrupt(input),
   };
@@ -269,6 +278,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly #preflightSessionSnapshot: CandidateSnapshotPreflight;
   readonly #sessions = new Map<string, SessionState>();
   readonly #pendingSubmits = new Map<string, PendingSubmit>();
+  readonly #pendingMutations = new Map<string, PendingMutation>();
   readonly #pendingRetracts = new Map<string, PendingRetract>();
   #draining = false;
   #failStopped = false;
@@ -406,7 +416,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       this.#mutated(state);
     }
     state.run = undefined;
-    const entries = sameInitiatingClientPrefix(state.followup);
+    const entries = nextFollowupEntry(state.followup);
     const followup = canonicalFollowupBatch(entries);
     const transition: TerminalTransition = {
       transitionId: this.#createId(),
@@ -742,6 +752,97 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return result;
   }
 
+  private mutate(input: QueueMutateInput): Promise<MessageOutcome<QueueMutateResult>> {
+    const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
+    if (isCurrentEpoch) {
+      const pending = this.#pendingMutations.get(operationKey(input.sessionId, input.mutationId));
+      if (pending) {
+        return samePayload(pending.payload, input)
+          ? pending.result
+          : Promise.resolve(
+              failure('operation_conflict', 'Queue mutation identity has a different payload'),
+            );
+      }
+    }
+    if (this.#failStopped) {
+      return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
+    }
+    if (!isCurrentEpoch) {
+      return Promise.resolve(
+        failure('outcome_unknown', 'Queue mutation outcome is not durable across Host Epochs'),
+      );
+    }
+    const key = operationKey(input.sessionId, input.mutationId);
+    const result = this.#mutateAdmitted(input);
+    this.#pendingMutations.set(key, { payload: input, result });
+    void result.then(
+      () => this.#deletePendingMutation(key, result),
+      () => this.#deletePendingMutation(key, result),
+    );
+    return result;
+  }
+
+  #mutateAdmitted(input: QueueMutateInput): Promise<MessageOutcome<QueueMutateResult>> {
+    return this.#sessionAdmission.run(input.sessionId, async () => {
+      if (this.#failStopped) {
+        return failure('host_draining', 'Runtime Host message authority has failed');
+      }
+      const receipt = await this.#readMutationReceipt(input.sessionId, input.mutationId);
+      if (receipt) {
+        return samePayload(receipt.payload, input)
+          ? success(receipt.result)
+          : failure('operation_conflict', 'Queue mutation identity has a different payload');
+      }
+      const header = await this.#root.readSessionHeader(input.sessionId);
+      if (!header) return failure('not_found', 'Session does not exist');
+      if (header.isArchived) return failure('session_archived', 'Session is archived');
+      if (header.unavailableReason) {
+        return failure('operation_unavailable', header.unavailableReason);
+      }
+      const state = this.#state(input.sessionId);
+      if (state.phase !== 'open' || state.transition) {
+        return failure('session_busy', 'Message queue mutation is unavailable during transition');
+      }
+      if (state.revision !== input.expectedQueueRevision) {
+        return failure('operation_conflict', 'Message queue revision changed');
+      }
+      const candidate = mutateQueueProjection(this.#project(state), input.mutation);
+      if (!candidate) {
+        return failure('operation_conflict', 'Queued message no longer matches the mutation');
+      }
+      if (!projectionFitsEveryEntryState(candidate)) {
+        return failure('session_busy', 'Message queue projection capacity is full');
+      }
+      if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: candidate }))) {
+        return failure('session_busy', 'Session projection capacity is full');
+      }
+      if (!mutationPreservesRootAdmission(state, input.mutation)) {
+        return failure('session_busy', 'Message queue mutation exceeds root admission capacity');
+      }
+      if (input.mutation.kind === 'promote' && (!state.run || state.run.released)) {
+        return failure('session_busy', 'No active root Turn can accept steering');
+      }
+      applyLiveQueueMutation(state, input.mutation, (entry) => this.#releaseEntry(entry));
+      this.#mutated(state);
+      const result = {
+        queueRevision: state.revision,
+        disposition: mutationDisposition(input.mutation),
+      } satisfies QueueMutateResult;
+      if (!isDeepStrictEqual(candidate, this.#project(state))) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Queue mutation did not match its prepared projection',
+        );
+      }
+      try {
+        await this.#commitReceipt('mutate', input.sessionId, input.mutationId, input, result);
+      } catch (error) {
+        this.#failStop();
+        throw error;
+      }
+      return success(result);
+    });
+  }
+
   #retractAdmitted(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
     return this.#sessionAdmission.run(input.sessionId, async () => {
       if (this.#failStopped) {
@@ -1045,6 +1146,24 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
+  async #readMutationReceipt(
+    sessionId: string,
+    mutationId: string,
+  ): Promise<{ payload: QueueMutateInput; result: QueueMutateResult } | undefined> {
+    const receipt = await this.#receipts.read(this.#hostEpoch, 'mutate', sessionId, mutationId);
+    if (!receipt) return undefined;
+    try {
+      return {
+        payload: MESSAGE_OPERATION_SPECS['queue.mutate'].decodeInput(receipt.payload),
+        result: MESSAGE_OPERATION_SPECS['queue.mutate'].decodeOutput(receipt.result),
+      };
+    } catch (error) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        `Invalid durable queue mutation receipt: ${error instanceof Error ? error.message : 'malformed'}`,
+      );
+    }
+  }
+
   async #readInterruptReceipt(
     sessionId: string,
     interruptId: string,
@@ -1066,7 +1185,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   async #commitReceipt(
-    operation: 'submit' | 'retract' | 'interrupt',
+    operation: 'submit' | 'mutate' | 'retract' | 'interrupt',
     sessionId: string,
     operationId: string,
     payload: object,
@@ -1096,6 +1215,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   #deletePendingRetract(key: string, result: Promise<MessageOutcome<QueueRetractResult>>): void {
     if (this.#pendingRetracts.get(key)?.result === result) this.#pendingRetracts.delete(key);
+  }
+
+  #deletePendingMutation(key: string, result: Promise<MessageOutcome<QueueMutateResult>>): void {
+    if (this.#pendingMutations.get(key)?.result === result) this.#pendingMutations.delete(key);
   }
 
   #deleteInterruptReceipt(sessionId: string, state: SessionState, interruptId: string): void {
@@ -1344,6 +1467,164 @@ function success<T>(result: T): MessageOutcome<T> {
   return { ok: true, result };
 }
 
+function mutateQueueProjection(
+  current: SessionMessageQueueProjection,
+  mutation: QueueMutation,
+): SessionMessageQueueProjection | null {
+  const nextRevision = current.queueRevision + 1;
+  if (mutation.kind === 'update') {
+    let matched = false;
+    const update = <T extends SteeringMessageSnapshot | QueuedMessageSnapshot>(entry: T): T => {
+      if (entry.entryId !== mutation.entryId || entry.state !== 'queued') return entry;
+      matched = true;
+      return {
+        ...entry,
+        content: normalizeMessageContent({
+          ...entry.content,
+          text: mutation.text,
+          displayText: mutation.text,
+        }),
+      };
+    };
+    const steering = current.steering.map(update);
+    const followup = current.followup.map(update);
+    return matched ? { ...current, queueRevision: nextRevision, steering, followup } : null;
+  }
+  if (mutation.kind === 'remove') {
+    const steering = current.steering.filter(
+      (entry) => entry.state !== 'queued' || entry.entryId !== mutation.entryId,
+    );
+    const followup = current.followup.filter((entry) => entry.entryId !== mutation.entryId);
+    if (
+      steering.length === current.steering.length &&
+      followup.length === current.followup.length
+    ) {
+      return null;
+    }
+    return { ...current, queueRevision: nextRevision, steering, followup };
+  }
+  if (mutation.kind === 'promote') {
+    const entry = current.followup.find((candidate) => candidate.entryId === mutation.entryId);
+    if (!entry) return null;
+    return {
+      ...current,
+      queueRevision: nextRevision,
+      steering: [
+        ...current.steering,
+        { ...entry, placement: 'current_turn', state: 'queued' },
+      ],
+      followup: current.followup.filter((candidate) => candidate.entryId !== mutation.entryId),
+    };
+  }
+  if (mutation.kind === 'resume') return null;
+  const lane =
+    mutation.placement === 'current_turn'
+      ? current.steering.filter((entry) => entry.state === 'queued')
+      : current.followup;
+  if (
+    lane.length !== mutation.entryIds.length ||
+    lane.some((entry) => !mutation.entryIds.includes(entry.entryId))
+  ) {
+    return null;
+  }
+  const byId = new Map(lane.map((entry) => [entry.entryId, entry]));
+  const reordered = mutation.entryIds.map((entryId) => byId.get(entryId)!);
+  return mutation.placement === 'current_turn'
+    ? {
+        ...current,
+        queueRevision: nextRevision,
+        steering: [
+          ...current.steering.filter((entry) => entry.state === 'in_flight'),
+          ...reordered,
+        ] as SteeringMessageSnapshot[],
+      }
+    : { ...current, queueRevision: nextRevision, followup: reordered };
+}
+
+function applyLiveQueueMutation(
+  state: SessionState,
+  mutation: QueueMutation,
+  release: (entry: LiveEntry) => void,
+): void {
+  if (mutation.kind === 'update') {
+    const entry = [...state.steering, ...state.followup].find(
+      (candidate) => candidate.entryId === mutation.entryId,
+    );
+    if (!entry) throw new RuntimeMessageAuthorityInvariantError('Missing queue update target');
+    entry.content = normalizeMessageContent({
+      ...entry.content,
+      text: mutation.text,
+      displayText: mutation.text,
+    });
+    entry.modelContent = normalizeMessageContent({
+      ...entry.modelContent,
+      text: mutation.text,
+      displayText: mutation.text,
+    });
+    return;
+  }
+  if (mutation.kind === 'remove') {
+    const entry = [...state.steering, ...state.followup].find(
+      (candidate) => candidate.entryId === mutation.entryId,
+    );
+    if (!entry) throw new RuntimeMessageAuthorityInvariantError('Missing queue remove target');
+    state.steering = state.steering.filter((candidate) => candidate !== entry);
+    state.followup = state.followup.filter((candidate) => candidate !== entry);
+    release(entry);
+    return;
+  }
+  if (mutation.kind === 'promote') {
+    const index = state.followup.findIndex((entry) => entry.entryId === mutation.entryId);
+    if (index < 0) throw new RuntimeMessageAuthorityInvariantError('Missing queue promote target');
+    const [entry] = state.followup.splice(index, 1);
+    entry.placement = 'current_turn';
+    entry.disposition = 'steering';
+    state.steering.push(entry);
+    return;
+  }
+  if (mutation.kind === 'resume') {
+    throw new RuntimeMessageAuthorityInvariantError('Queue resume is not hosted here');
+  }
+  const lane = mutation.placement === 'current_turn' ? state.steering : state.followup;
+  const byId = new Map(lane.map((entry) => [entry.entryId, entry]));
+  const reordered = mutation.entryIds.map((entryId) => byId.get(entryId));
+  if (reordered.some((entry) => entry === undefined)) {
+    throw new RuntimeMessageAuthorityInvariantError('Missing queue reorder target');
+  }
+  if (mutation.placement === 'current_turn') state.steering = reordered as LiveEntry[];
+  else state.followup = reordered as LiveEntry[];
+}
+
+function mutationDisposition(mutation: QueueMutation): QueueMutateResult['disposition'] {
+  if (mutation.kind === 'update') return 'updated';
+  if (mutation.kind === 'remove') return 'removed';
+  if (mutation.kind === 'reorder') return 'reordered';
+  if (mutation.kind === 'promote') return 'promoted';
+  return 'resumed';
+}
+
+function mutationPreservesRootAdmission(state: SessionState, mutation: QueueMutation): boolean {
+  if (mutation.kind !== 'update') return true;
+  const sources = allLiveEntries(state).map((entry) => {
+    if (entry.entryId !== mutation.entryId) return sourceFromEntry(entry);
+    const submittedContent = normalizeMessageContent({
+      ...entry.content,
+      text: mutation.text,
+      displayText: mutation.text,
+    });
+    return {
+      ...sourceFromEntry(entry),
+      content: normalizeMessageContent({
+        ...entry.modelContent,
+        text: mutation.text,
+        displayText: mutation.text,
+      }),
+      submittedContentDigest: messageContentDigest(submittedContent),
+    };
+  }) satisfies RootTurnSourceMessage[];
+  return rootAdmissionPayloadFits(sources);
+}
+
 function failure(
   code: MessageOperationErrorCode,
   message: string,
@@ -1566,13 +1847,8 @@ function canonicalFollowupBatch(entries: readonly LiveEntry[]): {
   }
 }
 
-function sameInitiatingClientPrefix(entries: readonly LiveEntry[]): LiveEntry[] {
-  const initiatingConnectionId = entries[0]?.initiatingConnectionId;
-  if (!initiatingConnectionId) return [];
-  const boundary = entries.findIndex(
-    (entry) => entry.initiatingConnectionId !== initiatingConnectionId,
-  );
-  return entries.slice(0, boundary === -1 ? entries.length : boundary);
+function nextFollowupEntry(entries: readonly LiveEntry[]): LiveEntry[] {
+  return entries.length > 0 ? [entries[0]!] : [];
 }
 
 function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): boolean {

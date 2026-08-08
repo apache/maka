@@ -63,6 +63,8 @@ import type {
   ProjectRecord,
   DailyReviewArchive,
   QueueEnqueueOutcome,
+  MessageContent,
+  MessageQueueMutation,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
   DailyReviewRange,
@@ -320,8 +322,35 @@ export interface MakaBridge {
           skillInvocation: import('@maka/runtime').SkillInvocationResult;
         }
     >;
-    stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+    stop(
+      sessionId: string,
+      input?: { source?: 'stop_button'; preserveQueuedMessages?: boolean },
+    ): Promise<void>;
+    steer(sessionId: string, content: string | MessageContent): Promise<QueueEnqueueOutcome>;
+    queueMessage(sessionId: string, content: string | MessageContent): Promise<QueueEnqueueOutcome>;
+    enqueue(
+      sessionId: string,
+      placement: 'current_turn' | 'next_turn',
+      command: {
+        text: string;
+        displayText?: string;
+        attachmentItems?: RendererIngestInput[];
+        quotes?: import('@maka/core').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core').InlineReference, 'value' | 'start'>
+        >;
+      },
+    ): Promise<{
+      kind: 'queued' | 'started';
+      turnId?: string;
+      attachments: import('@maka/core').AttachmentRef[];
+      inlineReferences: import('@maka/core').InlineReference[];
+    }>;
+    mutateQueue(
+      sessionId: string,
+      input: { expectedQueueRevision?: number; mutation: MessageQueueMutation },
+    ): Promise<{ ok: boolean; queueRevision?: number }>;
+    retractQueue(sessionId: string): Promise<string>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;

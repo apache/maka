@@ -764,6 +764,21 @@ describe('Runtime Host bootstrap protocol', () => {
       operation: 'queue.retract' as const,
       input: { originHostEpoch: 'epoch-1', sessionId: 'session-1', retractId: 'retract-1' },
     };
+    const mutate = {
+      requestId: 'mutate-request-1',
+      operation: 'queue.mutate' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        mutationId: 'mutation-1',
+        expectedQueueRevision: 2,
+        mutation: {
+          kind: 'reorder' as const,
+          placement: 'next_turn' as const,
+          entryIds: ['entry-2', 'entry-1'],
+        },
+      },
+    };
     const interrupt = {
       requestId: 'interrupt-request-1',
       operation: 'turn.interrupt' as const,
@@ -776,6 +791,7 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeClientFrame(submit), submit);
+    assert.deepEqual(decodeClientFrame(mutate), mutate);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
     assert.throws(
@@ -785,6 +801,17 @@ describe('Runtime Host bootstrap protocol', () => {
     );
     assert.throws(
       () => decodeClientFrame({ ...retract, input: { ...retract.input, generation: 1 } }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...mutate,
+          input: {
+            ...mutate.input,
+            mutation: { ...mutate.input.mutation, entryIds: ['entry-1', 'entry-1'] },
+          },
+        }),
       isInvalidFrame,
     );
     assert.throws(
@@ -1087,6 +1114,20 @@ describe('Runtime Host bootstrap protocol', () => {
           result: { disposition: 'turn_started', turnId: 'turn-2', queueRevision: 4 },
         }),
       isInvalidFrame,
+    );
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'mutate-response',
+        operation: 'queue.mutate',
+        ok: true,
+        result: { queueRevision: 4, disposition: 'reordered' },
+      }),
+      {
+        requestId: 'mutate-response',
+        operation: 'queue.mutate',
+        ok: true,
+        result: { queueRevision: 4, disposition: 'reordered' },
+      },
     );
     const retracted = [retractedMessage()];
     assert.doesNotThrow(() =>

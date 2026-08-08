@@ -23,6 +23,7 @@ import type {
   PermissionDecisionAckEvent,
   PermissionRequestEvent,
   QueueEnqueueOutcome,
+  MessageQueuePlacement,
   ShellRunUpdate,
   MessageContent,
 } from '@maka/core/events';
@@ -248,6 +249,7 @@ function runtimeCommitSinkFromEventStore(
 export interface StopSessionInput {
   source?: 'stop_button' | 'graph_supervisor';
   mode?: BackendStopMode;
+  preserveQueuedMessages?: boolean;
 }
 
 interface CompactSessionOptions {
@@ -4930,18 +4932,50 @@ export class SessionManager {
   }
 
   /** Queue a user message for mid-turn injection at the next step boundary. */
-  steer(sessionId: string, text: string): QueueEnqueueOutcome {
-    return this.runtimeKernel.steer(sessionId, text);
+  steer(sessionId: string, content: string | MessageContent): QueueEnqueueOutcome {
+    return this.runtimeKernel.steer(sessionId, content);
   }
 
   /** Queue a user message to open the turn after the current one finishes. */
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome {
-    return this.runtimeKernel.queueMessage(sessionId, text);
+  queueMessage(sessionId: string, content: string | MessageContent): QueueEnqueueOutcome {
+    return this.runtimeKernel.queueMessage(sessionId, content);
   }
 
   /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
   drainFollowup(sessionId: string): string | null {
     return this.runtimeKernel.drainFollowup(sessionId);
+  }
+
+  takeNextFollowup(sessionId: string): MessageContent | null {
+    return this.runtimeKernel.takeNextFollowup(sessionId);
+  }
+
+  updateQueuedMessage(sessionId: string, entryId: string, text: string): boolean {
+    return this.runtimeKernel.updateQueuedMessage(sessionId, entryId, text);
+  }
+
+  removeQueuedMessage(sessionId: string, entryId: string): boolean {
+    return this.runtimeKernel.removeQueuedMessage(sessionId, entryId);
+  }
+
+  reorderQueuedMessages(
+    sessionId: string,
+    placement: MessageQueuePlacement,
+    entryIds: readonly string[],
+  ): boolean {
+    return this.runtimeKernel.reorderQueuedMessages(sessionId, placement, entryIds);
+  }
+
+  promoteQueuedFollowup(sessionId: string, entryId: string): QueueEnqueueOutcome {
+    return this.runtimeKernel.promoteQueuedFollowup(sessionId, entryId);
+  }
+
+  resumeQueuedMessages(sessionId: string): boolean {
+    return this.runtimeKernel.resumeQueuedMessages(sessionId);
+  }
+
+  hasActiveRuns(sessionId: string): boolean {
+    return this.runtimeKernel.hasActiveRuns(sessionId);
   }
 
   /** Take back every queued message (both queues) as one `\n\n`-joined string. */
