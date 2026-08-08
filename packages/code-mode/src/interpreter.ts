@@ -2052,11 +2052,15 @@ function parseCell(code: string): AstNode {
     );
   }
   const root = asAst(parsed);
-  const wrapper = nodes(root, 'body').find(
-    (node) =>
-      node.type === 'FunctionDeclaration' && optionalAst(node, 'id')?.name === '__maka_cell__',
-  );
-  if (!wrapper) throw new InterpreterError('parse_error', 'Cell wrapper could not be parsed');
+  const body = nodes(root, 'body');
+  const wrapper = body[0];
+  if (
+    body.length !== 1 ||
+    wrapper?.type !== 'FunctionDeclaration' ||
+    optionalAst(wrapper, 'id')?.name !== '__maka_cell__'
+  ) {
+    throw new InterpreterError('parse_error', 'Cell source escaped its wrapper');
+  }
   return ast(wrapper, 'body');
 }
 

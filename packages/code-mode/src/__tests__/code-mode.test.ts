@@ -182,6 +182,19 @@ test('rejects Promise.race before starting nested tool calls', async () => {
   assert.match(result.ok ? '' : result.error.message, /Promise\.race/);
 });
 
+test('rejects source that escapes the cell wrapper', async () => {
+  const result = await executeCodeCell({
+    code: `}
+      const escaped = 1;
+    {`,
+    tools: [],
+    callTool: async () => null,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'parse_error');
+});
+
 test('rejects unsupported operators before starting nested tool calls', async () => {
   let calls = 0;
   const result = await executeCodeCell({
