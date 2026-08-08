@@ -43,7 +43,7 @@ test('the @ trigger: empty-menu sends, caret boundaries, trigger grammar, and th
   // Withhold, retype into something distinguishable, and pin the total.
   await composer.press('Enter');
   await composer.press('Enter');
-  await expect(page.getByText('Fake backend received: @zzzznomatchzzzz')).toBeVisible();
+  await expect(page.getByRole('log').getByText('Fake backend received: @zzzznomatchzzzz')).toBeVisible();
   await expect(page.getByLabel('你发送的消息')).toHaveCount(1);
   // Settle before the next phase sends: an Enter during a streaming turn
   // becomes steering instead of a new message.
@@ -56,7 +56,7 @@ test('the @ trigger: empty-menu sends, caret boundaries, trigger grammar, and th
   await expect.poll(() => composer.getAttribute('aria-expanded')).toBe('false');
 
   await composer.press('Enter');
-  await expect(page.getByText('Fake backend received: 看一下 @agent')).toBeVisible();
+  await expect(page.getByRole('log').getByText('Fake backend received: 看一下 @agent')).toBeVisible();
   await expect(composer.locator('[data-astryx-token]')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(2, { timeout: 20_000 });
 
@@ -106,8 +106,11 @@ test('the @ trigger: empty-menu sends, caret boundaries, trigger grammar, and th
   );
   // The transcript replays the selected token's label, while the model still
   // receives the exact serialized path with normalized spacing.
+  // Scope to the transcript log: after several turns the prompt rail also
+  // previews this reply text, and a page-wide getByText is ambiguous under
+  // Playwright strict mode.
   await expect(
-    page.getByText(
+    page.getByRole('log').getByText(
       'Fake backend received: 看一下 @.maka/skills/agent-write/SKILL.md 里的说明；普通文本 @.maka/skills/agent-write/SKILL.md',
     ),
   ).toBeVisible();
