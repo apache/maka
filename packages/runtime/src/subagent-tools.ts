@@ -139,7 +139,9 @@ export function buildSubagentSpawnTool(
           if (!input.profile && !input.subagent_id) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message: 'Provide subagent_id or legacy profile.',
+              message:
+                'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, ' +
+                `or pass one legacy profile: ${profiles.join(', ')}.`,
             });
             return;
           }

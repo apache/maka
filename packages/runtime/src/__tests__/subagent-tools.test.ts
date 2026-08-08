@@ -140,6 +140,23 @@ describe('subagent tools', () => {
     });
   });
 
+  test('agent_spawn names both recovery routes when no child selector is provided', () => {
+    const schema = buildSubagentSpawnTool({
+      definitions: [LOCAL_READ_AGENT_DEFINITION, WEB_RESEARCH_AGENT_DEFINITION],
+    }).parameters as {
+      safeParse(input: unknown): {
+        success: boolean;
+        error?: { issues: Array<{ message: string }> };
+      };
+    };
+
+    const parsed = schema.safeParse({ task: 'Inspect the repo.' });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message)).toContain(
+      'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, or pass one legacy profile: local_read, web_research.',
+    );
+  });
+
   test('built-in catalog exposes local-read without shell, web, nested, or write tools', () => {
     expect(LOCAL_READ_AGENT_DEFINITION.id).toBe(LOCAL_READ_AGENT_ID);
     expect(LOCAL_READ_AGENT_DEFINITION.profile).toBe(LOCAL_READ_AGENT_PROFILE);
