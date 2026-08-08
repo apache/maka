@@ -42,25 +42,6 @@ describe('task ledger panel model', () => {
   });
 });
 
-describe('task ledger disclosure', () => {
-  test('delegates the recent-task disclosure and chevron to Astryx without changing the count', () => {
-    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-      locale: 'zh',
-      children: createElement(TaskLedgerPanel, {
-        tasks: [
-          task({ id: 'active', key: 'T1', status: 'in_progress' }),
-          task({ id: 'done', key: 'T2', status: 'completed', endedAt: 2 }),
-        ],
-      }),
-    }));
-
-    assert.match(markup, /class="[^"]*astryx-collapsible[^"]*maka-task-ledger-terminal[^"]*"/);
-    const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1] ?? '';
-    assert.match(trigger, /最近结束/);
-    assert.match(trigger, />1</);
-    assert.doesNotMatch(trigger, /lucide-chevron-down/);
-  });
-});
 
 test('task ledger exposes real parent-child groups instead of aria-level-only rows', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, {

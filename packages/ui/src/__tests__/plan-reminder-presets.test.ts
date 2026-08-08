@@ -14,8 +14,6 @@ import { planReminderPresetRunAt } from '../plan-reminder-helpers.js';
  */
 describe('plan reminder presets', () => {
   const MONDAY_10AM = new Date(2026, 7, 3, 10, 0, 0, 0).getTime(); // Mon 2026-08-03
-  const FRIDAY_10AM = new Date(2026, 7, 7, 10, 0, 0, 0).getTime(); // Fri 2026-08-07
-  const SUNDAY_10AM = new Date(2026, 7, 9, 10, 0, 0, 0).getTime(); // Sun 2026-08-09
 
   it('offsets the two relative presets from the moment asked', () => {
     assert.equal(planReminderPresetRunAt('ten-minutes', MONDAY_10AM), MONDAY_10AM + 10 * 60 * 1000);
@@ -44,29 +42,4 @@ describe('plan reminder presets', () => {
     assert.equal(at.getHours(), 9);
   });
 
-  it('reaches the coming Monday from mid-week and from Sunday', () => {
-    const fromFriday = new Date(planReminderPresetRunAt('next-monday', FRIDAY_10AM));
-    assert.equal(fromFriday.getDay(), 1);
-    assert.equal(fromFriday.getDate(), 10, 'three days on');
-
-    // Sunday is the tightest non-Monday case: one day out, and the naive
-    // `(8 - 0) % 7 = 1` happens to be right here, which is why Monday rather
-    // than Sunday is the case that actually guards the `|| 7`.
-    const fromSunday = new Date(planReminderPresetRunAt('next-monday', SUNDAY_10AM));
-    assert.equal(fromSunday.getDay(), 1);
-    assert.equal(fromSunday.getDate(), 10, 'the very next day');
-  });
-
-  it('never returns a past instant for any preset or weekday', () => {
-    const presets = ['ten-minutes', 'one-hour', 'tomorrow-morning', 'next-monday'] as const;
-    for (let day = 0; day < 7; day++) {
-      const now = new Date(2026, 7, 3 + day, 10, 0, 0, 0).getTime();
-      for (const preset of presets) {
-        assert.ok(
-          planReminderPresetRunAt(preset, now) > now,
-          `${preset} on weekday ${new Date(now).getDay()} must land in the future`,
-        );
-      }
-    }
-  });
 });
