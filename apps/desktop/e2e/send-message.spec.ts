@@ -35,7 +35,7 @@ test('Enter mid-IME commits the candidate, then an ordinary send streams a reply
   // different and pin the total instead.
   await composer.fill('中文草稿 已提交');
   await composer.press('Enter');
-  await expect(page.getByText(/Fake backend received: 中文草稿 已提交/)).toBeVisible();
+  await expect(page.getByRole('log').getByText(/Fake backend received: 中文草稿 已提交/)).toBeVisible();
   await expect(page.getByLabel('你发送的消息')).toHaveCount(1);
 
   // Settle before the ordinary send: an Enter during a streaming turn would
@@ -50,7 +50,7 @@ test('Enter mid-IME commits the candidate, then an ordinary send streams a reply
   await composer.fill('hello e2e');
   await composer.press('Enter');
 
-  await expect(page.getByText(/Fake backend received: hello e2e/)).toBeVisible();
+  await expect(page.getByRole('log').getByText(/Fake backend received: hello e2e/)).toBeVisible();
 });
 
 // Mermaid rendering and sanitization share one transcript: the settled
