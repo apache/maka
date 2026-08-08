@@ -79,6 +79,59 @@ test('malformed reasoning_options are rejected as an unsupported shape', () => {
   );
 });
 
+test('the full models.dev fact set flows into metadata', () => {
+  const metadata = toMetadata('test', 'm', PROVIDER, {
+    ...BASE_MODEL,
+    description: 'Balanced coding model',
+    knowledge: '2025-07-31',
+    last_updated: '2025-09-29',
+    structured_output: true,
+    limit: { context: 400_000, input: 272_000, output: 128_000 },
+    modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+  });
+  assert.equal(metadata.description, 'Balanced coding model');
+  assert.equal(metadata.knowledgeCutoff, '2025-07-31');
+  assert.equal(metadata.lastUpdated, '2025-09-29');
+  assert.equal(metadata.structuredOutput, true);
+  assert.equal(metadata.contextWindow, 400_000);
+  assert.equal(metadata.maxInputTokens, 272_000);
+  assert.equal(metadata.maxOutputTokens, 128_000);
+  assert.deepEqual(metadata.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
+});
+
+test('models without the optional facts omit them instead of faking values', () => {
+  const metadata = toMetadata('test', 'm', PROVIDER, BASE_MODEL);
+  for (const key of [
+    'description',
+    'knowledgeCutoff',
+    'lastUpdated',
+    'structuredOutput',
+    'maxInputTokens',
+  ]) {
+    assert.equal(key in metadata, false, key);
+  }
+});
+
+test('beta and alpha status map distinctly instead of collapsing to active', () => {
+  assert.equal(toMetadata('test', 'm', PROVIDER, BASE_MODEL).lifecycle, 'active');
+  assert.equal(
+    toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, status: 'deprecated' }).lifecycle,
+    'deprecated',
+  );
+  assert.equal(
+    toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, status: 'beta' }).lifecycle,
+    'beta',
+  );
+  assert.equal(
+    toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, status: 'alpha' }).lifecycle,
+    'alpha',
+  );
+  assert.throws(
+    () => toMetadata('test', 'm', PROVIDER, { ...BASE_MODEL, status: 'preview' }),
+    /unsupported status/,
+  );
+});
+
 test('main() syncs only the mapped providers into the generated snapshot', async () => {
   // End-to-end over the real main() path (the place the kimi/stepfun orphan
   // bug lived): a fixture catalog covering every mapped source id plus one
@@ -100,6 +153,13 @@ test('main() syncs only the mapped providers into the generated snapshot', async
     reasoning: true,
     tool_call: true,
     reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
+    cost: { input: 0.6, output: 2.5, cache_read: 0.15, tiers: [{ input: 0.3 }] },
+  };
+  catalog['kimi-for-coding'].models['k3-free'] = {
+    name: 'Kimi K3 Free',
+    limit: { context: 262_144, output: 32_768 },
+    reasoning: false,
+    tool_call: true,
   };
   catalog['unmapped-provider'] = {
     id: 'unmapped-provider',
@@ -121,10 +181,12 @@ test('main() syncs only the mapped providers into the generated snapshot', async
   const dir = await mkdtemp(join(tmpdir(), 'maka-sync-'));
   const input = join(dir, 'catalog.json');
   const output = join(dir, 'out.ts');
+  const pricingOutput = join(dir, 'pricing.ts');
   await writeFile(input, JSON.stringify(catalog));
   const { main } = await import('./sync-model-metadata.mjs');
-  await main(['--input', input, '--output', output]);
+  await main(['--input', input, '--output', output, '--pricing-output', pricingOutput]);
   const out = await readFile(output, 'utf8');
+  const pricingOut = await readFile(pricingOutput, 'utf8');
   await rm(dir, { recursive: true, force: true });
 
   assert.match(out, /"kimi-coding-plan": \{/);
@@ -138,4 +200,14 @@ test('main() syncs only the mapped providers into the generated snapshot', async
   assert.ok(directoryStart > 0);
   assert.doesNotMatch(out.slice(0, directoryStart), /unmapped-provider/);
   assert.match(out.slice(directoryStart), /"unmapped-provider": \{/);
+
+  // Pricing carries base rates only; a costless model gets no row rather than
+  // a fake zero, and unmapped providers never price.
+  assert.match(pricingOut, /"kimi-coding-plan": \{/);
+  assert.match(
+    pricingOut,
+    /"k3": \{"inputUsdPer1M":0\.6,"outputUsdPer1M":2\.5,"cacheReadUsdPer1M":0\.15\}/,
+  );
+  assert.doesNotMatch(pricingOut, /"k3-free"/);
+  assert.doesNotMatch(pricingOut, /unmapped-provider/);
 });

@@ -116,10 +116,14 @@ describe('model-metadata vision capability', () => {
   it('publishes the Kimi Coding Plan K3 limits and effort levels from models.dev', () => {
     assert.deepEqual(lookupModelMetadata('kimi-coding-plan', 'k3'), {
       displayName: 'Kimi K3',
+      description:
+        'Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work',
       lifecycle: 'active',
       docsUrl: 'https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html',
       contextWindow: 1_048_576,
       maxOutputTokens: 131_072,
+      lastUpdated: '2026-07-16',
+      structuredOutput: true,
       capabilities: { vision: true, reasoning: true, functionCalling: true },
       thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
       modalities: { input: ['text', 'image'], output: ['text'] },

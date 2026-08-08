@@ -7,10 +7,23 @@ import {
 
 export interface ModelMetadata {
   displayName?: string;
-  lifecycle?: 'active' | 'deprecated' | 'retired';
+  /** One-line vendor description, mirroring models.dev `description`. */
+  description?: string;
+  lifecycle?: 'active' | 'beta' | 'alpha' | 'deprecated' | 'retired';
   docsUrl?: string;
   contextWindow?: number;
+  /**
+   * Per-request input ceiling when it is lower than `contextWindow`
+   * (models.dev `limit.input`, e.g. gpt-5.2: 400K context but 272K input).
+   */
+  maxInputTokens?: number;
   maxOutputTokens?: number;
+  /** ISO date of the model's knowledge cutoff, mirroring models.dev `knowledge`. */
+  knowledgeCutoff?: string;
+  /** ISO date the upstream fact set last changed, mirroring models.dev `last_updated`. */
+  lastUpdated?: string;
+  /** Native structured JSON output support; distinct from `functionCalling`. */
+  structuredOutput?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
