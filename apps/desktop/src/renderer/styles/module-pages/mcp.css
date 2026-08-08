@@ -1,40 +1,8 @@
-/* MCP page-specific bits.
-   The skeleton (Astryx Layout: header, toolbar, content, resizable inspector)
-   lives in the shared ModulePage primitive; rows are Astryx List/ListItem.
-   What is left here is the brand tiles, the install button's phase swap, the
-   row endpoint's truncation, the inspector's diagnostics, and the editor
-   dialog's own layout. */
-
-.maka-mcp-market-icon {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-control);
-  background: var(--muted);
-  color: var(--foreground-secondary);
-}
-
-.maka-mcp-market-icon span {
-  font: var(--maka-text-heading-5);
-  letter-spacing: var(--tracking-normal);
-}
-
-/* Tiles that carry an official brand logo (mcp-brand-marks.tsx) drop the
-   per-brand tint and ride a quiet neutral plate — a colourful logo already
-   supplies the brand identity, so tinting the plate too would double up and
-   fight the mark. Mirrors provider-brand-marks' neutral `.providerLogo`. */
-.maka-mcp-market-icon[data-logo="true"] {
-  background: var(--foreground-5);
-  color: var(--foreground);
-  box-shadow: inset 0 0 0 1px oklch(from var(--foreground) l c h / 0.06);
-}
-
 /* Library brand marks (simple-icons) render as inline <svg>. Light theme fills
    each with its official brand hex, carried on the --mcp-brand-fill custom
    property set per-mark in mcp-brand-marks.tsx. Marks sit at the same 64% ratio
    as the provider plates. */
-.maka-mcp-market-icon .maka-mcp-brand-mark {
+.maka-module-market-icon .maka-mcp-brand-mark {
   width: 64%;
   height: 64%;
   display: block;
@@ -44,7 +12,7 @@
 /* Dark theme: near-black brand marks (Vercel ▲, Notion, Slack aubergine) are
    flagged data-contrast="low" by the luminance gate and inherit the plate's
    light foreground instead of vanishing on the dark neutral plate. */
-.dark .maka-mcp-market-icon .maka-mcp-brand-mark[data-contrast="low"] {
+.dark .maka-module-market-icon .maka-mcp-brand-mark[data-contrast="low"] {
   fill: currentColor;
 }
 
@@ -83,18 +51,11 @@
   opacity: 0;
 }
 
-/* The row description is one truncating line: transport, then the endpoint
-   in mono, then the live tool count. The title on the code keeps the full
-   endpoint one hover away. */
-.maka-mcp-row-description {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.maka-mcp-row-description code {
+/* The endpoint <code> inside a browse row's supporting line. Follows the
+   description to the shared class; the rule is still live, it just lost its
+   old parent selector when the class moved. */
+.maka-module-row-description code {
   font: var(--maka-text-supporting);
 }
 

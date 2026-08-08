@@ -108,6 +108,12 @@
 .maka-module-page-panel {
   min-height: 0;
   display: grid;
+  /* The column must be allowed to be narrower than its content. A grid track
+     sizes to max-content by default, so a panel holding SEVERAL row groups
+     stretched to the widest row and pushed each row's trailing action off
+     screen — a single group happened to collapse and hid this. `minmax(0, 1fr)`
+     is what makes "one column, never wider than the panel" explicit. */
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: var(--space-4);
   padding: var(--space-3) var(--space-5) var(--space-6);
@@ -152,4 +158,51 @@
     display: grid;
     align-items: stretch;
   }
+}
+
+/* Browse-row icon plate, shared by the MCP and Skills module pages.
+   Lifted out of mcp.css so the two pages cannot drift into two icon
+   languages: a skill row and an MCP row are the same kind of thing (a
+   browsable entity) and must read the same.
+
+   The tinting BOUNDARY moves with it, because it is the part that took
+   thinking: a tile carrying a colourful official logo drops the tint and
+   rides the quiet neutral plate, since the logo already supplies identity
+   and tinting the plate too would fight the mark. Skills ship no logos, so
+   they always take the neutral plate. */
+.maka-module-market-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-control);
+  background: var(--muted);
+  color: var(--foreground-secondary);
+}
+
+.maka-module-market-icon span {
+  font: var(--maka-text-heading-5);
+  letter-spacing: var(--tracking-normal);
+}
+
+/* Tiles that carry an official brand logo (mcp-brand-marks.tsx) drop the
+   per-brand tint and ride a quiet neutral plate — a colourful logo already
+   supplies the brand identity, so tinting the plate too would double up and
+   fight the mark. Mirrors provider-brand-marks' neutral `.providerLogo`. */
+.maka-module-market-icon[data-logo="true"] {
+  background: var(--foreground-5);
+  color: var(--foreground);
+  box-shadow: inset 0 0 0 1px oklch(from var(--foreground) l c h / 0.06);
+}
+
+/* A browse row's supporting line is ONE truncating line, on both module
+   pages: metadata joined with `·`, clipped rather than wrapped, so rows keep
+   a predictable height and the column reads as a list instead of ragged
+   paragraphs. */
+.maka-module-row-description {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -418,7 +418,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 ].filter(Boolean).join(' · ')}
                 startContent={(
                   <span
-                    className="maka-mcp-market-icon"
+                    className="maka-module-market-icon"
                     data-brand={entry.id}
                     data-logo={hasMcpBrandMark(entry.id) ? 'true' : undefined}
                     aria-hidden="true"
@@ -495,7 +495,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 key={serverId}
                 label={serverId}
                 description={(
-                  <span className="maka-mcp-row-description" data-maka-contract="mcp-server-description">
+                  <span className="maka-module-row-description" data-maka-contract="mcp-server-description">
                     {/* Exceptional state leads as TEXT; the healthy label
                         rides the dot's accessible name only. */}
                     {state.exception ? <span>{state.label} · </span> : null}
