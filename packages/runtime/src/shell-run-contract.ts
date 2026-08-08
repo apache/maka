@@ -1,9 +1,8 @@
 import {
   encodeTerminalInputActions,
   isShellRunId,
-  isTerminalCharacterKey,
-  isTerminalInputModifier,
-  isTerminalInputNamedKey,
+  isWellFormedTerminalInput,
+  parseTerminalInputAction,
   SHELL_RUN_ID_MAX_CHARS,
   type TerminalInputAction,
   type ShellRunStore,
@@ -33,6 +32,8 @@ export const SHELL_RUN_CONTEXT_SUMMARY_LIMIT = 8;
 export const SHELL_RUN_RESOURCE_PREFIX = 'maka://runtime/background-tasks';
 export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
   SHELL_RUN_RESOURCE_PREFIX.length + 1 + SHELL_RUN_ID_MAX_CHARS;
+
+export { isWellFormedTerminalInput };
 
 const SHELL_RUN_RESOURCE_PATH_PATTERN = /^\/background-tasks\/([^/]+)$/;
 
@@ -172,58 +173,12 @@ function validateTerminalInputActions(actions: readonly TerminalInputAction[]): 
     throw new Error(`WriteStdin actions must not exceed ${MAX_WRITE_STDIN_ACTIONS} entries`);
   }
   for (const action of actions) {
-    if (!action || typeof action !== 'object') throw new Error('Invalid WriteStdin action');
-    if (action.type === 'text') {
-      if (typeof action.text !== 'string' || action.text.length === 0) {
-        throw new Error('WriteStdin text actions must contain text');
-      }
-      if (!isWellFormedTerminalInput(action.text)) {
-        throw new Error('WriteStdin text actions must be well-formed Unicode');
-      }
-      if (hasTerminalControlCharacter(action.text)) {
-        throw new Error('WriteStdin text actions cannot contain terminal control characters');
-      }
-      continue;
-    }
-    if (action.type !== 'key') throw new Error('Invalid WriteStdin action type');
-    if (typeof action.key !== 'string') throw new Error('WriteStdin key must be a string');
-    if (!isTerminalInputNamedKey(action.key) && !isTerminalCharacterKey(action.key)) {
-      throw new Error('WriteStdin key must be a supported named key or printable ASCII character');
-    }
-    if (action.modifiers?.some((modifier) => !isTerminalInputModifier(modifier))) {
-      throw new Error('WriteStdin key modifier is not supported');
-    }
-    if (action.modifiers && new Set(action.modifiers).size !== action.modifiers.length) {
-      throw new Error('WriteStdin key modifiers must be unique');
-    }
+    parseTerminalInputAction(action);
   }
   const encoded = encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
   if (Buffer.byteLength(encoded, 'utf8') > MAX_WRITE_STDIN_INPUT_BYTES) {
     throw new Error(`WriteStdin actions exceed the ${MAX_WRITE_STDIN_INPUT_BYTES}-byte limit`);
   }
-}
-
-function hasTerminalControlCharacter(value: string): boolean {
-  for (const char of value) {
-    const codePoint = char.codePointAt(0) ?? 0;
-    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
-  }
-  return false;
-}
-
-export function isWellFormedTerminalInput(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      if (index + 1 >= value.length) return false;
-      const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
 }
 
 export function shellRunResourceRef(shellRunId: string): string {

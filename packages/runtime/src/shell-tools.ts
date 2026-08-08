@@ -3,8 +3,8 @@ import { jsonSchema, zodSchema } from 'ai';
 import {
   encodeTerminalInputActions,
   isActiveShellRunStatus,
-  isTerminalCharacterKey,
-  isTerminalInputNamedKey,
+  normalizeTerminalInputActionDefaults,
+  parseTerminalInputAction,
   TERMINAL_INPUT_MODIFIERS,
   TERMINAL_INPUT_NAMED_KEYS,
   type TerminalInputAction,
@@ -349,42 +349,17 @@ export function buildStopBackgroundTaskTool(backgroundTasks: BackgroundTaskStopp
 }
 
 export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
-  const textAction = z
-    .object({
-      type: z.literal('text'),
-      text: z
-        .string()
-        .refine((value) => value.length > 0, 'text must not be empty')
-        .refine(isWellFormedTerminalInput, 'text must be well-formed Unicode')
-        .refine(hasNoTerminalControlCharacters, 'text cannot contain terminal control characters'),
-    })
-    .strict();
-  const keyAction = z
-    .object({
-      type: z.literal('key'),
-      key: z
-        .string()
-        .refine(
-          (value) => isTerminalInputNamedKey(value) || isTerminalCharacterKey(value),
-          'key must be a supported named key or one printable ASCII character',
-        ),
-      modifiers: z
-        .array(z.enum(TERMINAL_INPUT_MODIFIERS))
-        .max(TERMINAL_INPUT_MODIFIERS.length)
-        .refine((value) => new Set(value).size === value.length, 'modifiers must be unique')
-        .optional(),
-    })
-    .strict()
-    .superRefine((value, context) => {
-      try {
-        encodeTerminalInputActions([value], { applicationCursorKeysMode: false });
-      } catch (error) {
-        context.addIssue({
-          code: 'custom',
-          message: error instanceof Error ? error.message : 'Unsupported terminal key',
-        });
-      }
-    });
+  const terminalAction = z.unknown().transform((value, context): TerminalInputAction => {
+    try {
+      return parseTerminalInputAction(value);
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : 'Invalid terminal input action',
+      });
+      return value as TerminalInputAction;
+    }
+  });
   const strictParameters = z.preprocess(
     normalizeProviderWriteStdinInput,
     z
@@ -393,11 +368,16 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
           .string()
           .max(MAX_SHELL_RUN_RESOURCE_REF_CHARS)
           .refine(isShellRunResourceRef, 'ref must be a canonical PTY Bash runtime ref'),
-        actions: z
-          .array(z.discriminatedUnion('type', [textAction, keyAction]))
-          .min(1)
-          .max(MAX_WRITE_STDIN_ACTIONS)
+        input: z
+          .string()
+          .min(1, 'input must not be empty')
+          .refine(isWellFormedTerminalInput, 'input must be well-formed Unicode')
+          .refine(
+            (value) => Buffer.byteLength(value, 'utf8') <= MAX_WRITE_STDIN_INPUT_BYTES,
+            `input must not exceed ${MAX_WRITE_STDIN_INPUT_BYTES} bytes`,
+          )
           .optional(),
+        actions: z.array(terminalAction).min(1).max(MAX_WRITE_STDIN_ACTIONS).optional(),
         size: z
           .object({
             cols: z.number().int().min(MIN_PTY_COLS).max(MAX_PTY_COLS),
@@ -407,9 +387,16 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
           .optional(),
       })
       .strict()
-      .refine((value) => value.actions !== undefined || value.size !== undefined, {
-        message: 'actions and/or size is required',
+      .refine((value) => value.input === undefined || value.actions === undefined, {
+        message: 'raw input and terminal actions are mutually exclusive',
       })
+      .refine(
+        (value) =>
+          value.input !== undefined || value.actions !== undefined || value.size !== undefined,
+        {
+          message: 'input, actions, and/or size is required',
+        },
+      )
       .superRefine((value, context) => {
         if (!value.actions) return;
         try {
@@ -491,10 +478,11 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
     parameters,
     permissionArgs: (input) => parseInput(input),
     impl: (input, ctx) => {
-      const { ref, actions, size } = parseInput(input);
+      const { ref, input: rawInput, actions, size } = parseInput(input);
       return ptyControls.writeStdin({
         sessionId: ctx.sessionId,
         ref,
+        ...(rawInput !== undefined ? { input: rawInput } : {}),
         ...(actions !== undefined ? { actions } : {}),
         ...(size !== undefined ? { size } : {}),
         abortSignal: ctx.abortSignal,
@@ -509,22 +497,9 @@ function normalizeProviderWriteStdinInput(value: unknown): unknown {
   if (normalized.actions === null || isEmptyArray(normalized.actions)) {
     delete normalized.actions;
   } else if (Array.isArray(normalized.actions)) {
-    normalized.actions = normalized.actions.map(normalizeProviderTerminalAction);
+    normalized.actions = normalized.actions.map(normalizeTerminalInputActionDefaults);
   }
   if (normalized.size === null || isEmptyProviderSize(normalized.size)) delete normalized.size;
-  return normalized;
-}
-
-function normalizeProviderTerminalAction(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const normalized = { ...(value as Record<string, unknown>) };
-  if (normalized.type === 'text') {
-    if (normalized.key === '') delete normalized.key;
-    if (isEmptyArray(normalized.modifiers)) delete normalized.modifiers;
-  } else if (normalized.type === 'key') {
-    if (normalized.text === '') delete normalized.text;
-    if (isEmptyArray(normalized.modifiers)) delete normalized.modifiers;
-  }
   return normalized;
 }
 
@@ -539,14 +514,6 @@ function isEmptyProviderSize(value: unknown): boolean {
     entries.every(([key]) => key === 'cols' || key === 'rows') &&
     entries.every(([, field]) => field === undefined || field === null || field === 0)
   );
-}
-
-function hasNoTerminalControlCharacters(value: string): boolean {
-  for (const char of value) {
-    const codePoint = char.codePointAt(0) ?? 0;
-    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return false;
-  }
-  return true;
 }
 
 export function shapeTerminalResult(input: {

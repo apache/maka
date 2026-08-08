@@ -1433,7 +1433,7 @@ describe('builtin Bash streaming output', () => {
     if (!write) throw new Error('WriteStdin tool missing');
     const parameters = write.parameters as {
       jsonSchema: PromiseLike<{
-        properties?: { ref?: { maxLength?: number } };
+        properties?: { ref?: { maxLength?: number }; input?: unknown };
       }>;
       validate(value: unknown): PromiseLike<{ success: boolean; value?: unknown }>;
     };
@@ -1442,12 +1442,13 @@ describe('builtin Bash streaming output', () => {
 
     expect(maxRef.length).toBe(MAX_SHELL_RUN_RESOURCE_REF_CHARS);
     expect(refSchema.properties?.ref?.maxLength).toBe(MAX_SHELL_RUN_RESOURCE_REF_CHARS);
+    expect(refSchema.properties?.input).toBeUndefined();
     expect(
       await parameters.validate({
         ref: maxRef,
         actions: [
-          { type: 'text', text: 'hello', key: '', modifiers: [] },
-          { type: 'key', key: 'enter', text: '', modifiers: [] },
+          { type: 'text', text: 'hello', key: null, modifiers: null },
+          { type: 'key', key: 'enter', text: null, modifiers: null },
         ],
         size: { cols: 0, rows: 0 },
       }),
@@ -1475,6 +1476,14 @@ describe('builtin Bash streaming output', () => {
         await parameters.validate({
           ref: `${SHELL_RUN_RESOURCE_PREFIX}/shell-run-1`,
           actions: [{ type: 'key', key: 'b', text: 'not-empty' }],
+        })
+      ).success,
+    ).toBe(false);
+    expect(
+      (
+        await parameters.validate({
+          ref: `${SHELL_RUN_RESOURCE_PREFIX}/shell-run-1`,
+          actions: [{ type: 'text', text: null, key: null }],
         })
       ).success,
     ).toBe(false);

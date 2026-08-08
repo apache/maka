@@ -2,11 +2,9 @@ import { redactSecrets } from './redaction.js';
 import {
   encodeTerminalInputActions,
   formatTerminalInputActions,
-  isTerminalCharacterKey,
-  isTerminalInputModifier,
-  isTerminalInputNamedKey,
+  normalizeTerminalInputActionDefaults,
+  parseTerminalInputAction,
   type TerminalInputAction,
-  type TerminalInputModifier,
 } from './terminal-input.js';
 
 export const WRITE_STDIN_INPUT_PREVIEW_MAX_CHARS = 160;
@@ -217,50 +215,13 @@ function readTerminalInputActions(value: unknown): readonly TerminalInputAction[
   if (!Array.isArray(value) || value.length === 0) return undefined;
   const actions: TerminalInputAction[] = [];
   for (const item of value) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
-    const action = item as Record<string, unknown>;
-    if (action.type === 'text') {
-      if (typeof action.text !== 'string' || action.text.length === 0) return undefined;
-      if ((action.key !== undefined && action.key !== '') || !isEmptyModifiers(action.modifiers)) {
-        return undefined;
-      }
-      actions.push({ type: 'text', text: action.text });
-      continue;
-    }
-    if (action.type !== 'key' || typeof action.key !== 'string') return undefined;
-    if (action.text !== undefined && action.text !== '') return undefined;
-    if (!isTerminalInputNamedKey(action.key) && !isTerminalCharacterKey(action.key)) {
+    try {
+      actions.push(parseTerminalInputAction(normalizeTerminalInputActionDefaults(item)));
+    } catch {
       return undefined;
     }
-    const modifiers = readTerminalInputModifiers(action.modifiers);
-    if (action.modifiers !== undefined && !modifiers) return undefined;
-    actions.push({
-      type: 'key',
-      key: action.key,
-      ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
-    });
-  }
-  try {
-    encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
-  } catch {
-    return undefined;
   }
   return actions;
-}
-
-function isEmptyModifiers(value: unknown): boolean {
-  return value === undefined || (Array.isArray(value) && value.length === 0);
-}
-
-function readTerminalInputModifiers(value: unknown): readonly TerminalInputModifier[] | undefined {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) return undefined;
-  const modifiers: TerminalInputModifier[] = [];
-  for (const modifier of value) {
-    if (typeof modifier !== 'string' || !isTerminalInputModifier(modifier)) return undefined;
-    modifiers.push(modifier);
-  }
-  return new Set(modifiers).size === modifiers.length ? modifiers : undefined;
 }
 
 function formatTerminalActionsForInspection(actions: readonly TerminalInputAction[]): string {

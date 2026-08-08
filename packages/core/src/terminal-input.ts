@@ -64,6 +64,84 @@ export function isTerminalCharacterKey(value: string): boolean {
   return value.length === 1 && value.charCodeAt(0) >= 0x20 && value.charCodeAt(0) <= 0x7e;
 }
 
+export function isWellFormedTerminalInput(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function parseTerminalInputAction(value: unknown): TerminalInputAction {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Terminal input action must be an object');
+  }
+  const action = value as Record<string, unknown>;
+  if (action.type === 'text') {
+    assertOnlyActionFields(action, ['type', 'text']);
+    if (typeof action.text !== 'string' || action.text.length === 0) {
+      throw new Error('Terminal text action must contain text');
+    }
+    if (!isWellFormedTerminalInput(action.text)) {
+      throw new Error('Terminal text action must be well-formed Unicode');
+    }
+    if (hasTerminalControlCharacter(action.text)) {
+      throw new Error('Terminal text action cannot contain terminal control characters');
+    }
+    return { type: 'text', text: action.text };
+  }
+  if (action.type !== 'key') throw new Error('Terminal input action type must be text or key');
+  assertOnlyActionFields(action, ['type', 'key', 'modifiers']);
+  if (typeof action.key !== 'string') throw new Error('Terminal key must be a string');
+  if (!isTerminalInputNamedKey(action.key) && !isTerminalCharacterKey(action.key)) {
+    throw new Error('Terminal key must be a supported named key or printable ASCII character');
+  }
+  if (action.modifiers !== undefined && !Array.isArray(action.modifiers)) {
+    throw new Error('Terminal key modifiers must be an array');
+  }
+  const modifiers = action.modifiers as unknown[] | undefined;
+  if (
+    modifiers?.some(
+      (modifier) => typeof modifier !== 'string' || !isTerminalInputModifier(modifier),
+    )
+  ) {
+    throw new Error('Terminal key modifier is not supported');
+  }
+  if (modifiers && new Set(modifiers).size !== modifiers.length) {
+    throw new Error('Terminal key modifiers must be unique');
+  }
+  const parsed: TerminalKeyInputAction = {
+    type: 'key',
+    key: action.key,
+    ...(modifiers && modifiers.length > 0
+      ? { modifiers: modifiers as TerminalInputModifier[] }
+      : {}),
+  };
+  encodeTerminalInputAction(parsed, { applicationCursorKeysMode: false });
+  return parsed;
+}
+
+export function normalizeTerminalInputActionDefaults(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const normalized = { ...(value as Record<string, unknown>) };
+  if (normalized.type === 'text') {
+    if (normalized.key === '' || normalized.key === null) delete normalized.key;
+  } else if (normalized.type === 'key') {
+    if (normalized.text === '' || normalized.text === null) delete normalized.text;
+  }
+  if (normalized.modifiers === null || isEmptyArray(normalized.modifiers)) {
+    delete normalized.modifiers;
+  }
+  return normalized;
+}
+
 export function encodeTerminalInputActions(
   actions: readonly TerminalInputAction[],
   modes: TerminalInputModes,
@@ -266,4 +344,24 @@ function formatNamedKey(key: TerminalInputNamedKey): string {
         ? key.toUpperCase()
         : `${key[0]?.toUpperCase()}${key.slice(1)}`;
   }
+}
+
+function assertOnlyActionFields(
+  action: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+): void {
+  const unsupported = Object.keys(action).find((field) => !allowed.includes(field));
+  if (unsupported) throw new Error(`Terminal input action has unsupported field: ${unsupported}`);
+}
+
+function hasTerminalControlCharacter(value: string): boolean {
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
+  }
+  return false;
+}
+
+function isEmptyArray(value: unknown): value is [] {
+  return Array.isArray(value) && value.length === 0;
 }

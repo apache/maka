@@ -127,9 +127,13 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          node.exe --test --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js *> "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
+          $output = node.exe --test --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js 2>&1
           $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
+          $output | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
+          if ($exitCode -eq 0 -and ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2')) {
+            Write-Error 'Runtime PTY input gate did not run exactly two passing tests'
+            exit 1
+          }
           exit $exitCode
 
       - id: managed_workspace_crash

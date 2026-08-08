@@ -80,8 +80,8 @@ it('projects ordered terminal actions without exposing encoded control bytes', (
   const args = {
     ref: 'maka://runtime/background-tasks/one',
     actions: [
-      { type: 'key', key: 'b', modifiers: ['ctrl'], text: '' },
-      { type: 'text', text: 'c', key: '', modifiers: [] },
+      { type: 'key', key: 'b', modifiers: ['ctrl'], text: null },
+      { type: 'text', text: 'c', key: null, modifiers: null },
     ],
     size: { cols: 0, rows: 0 },
   };
