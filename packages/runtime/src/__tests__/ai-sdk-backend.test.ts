@@ -10746,6 +10746,120 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
+  test('links a recovered tool call to the retry assistant step', async () => {
+    const timers = manualWatchdogTimer();
+    const durable = durableTurnHarness('turn-1', 'read notes');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            stream: hangingProviderStream(
+              [
+                { type: 'stream-start', warnings: [] },
+                { type: 'reasoning-start', id: 'reasoning-timeout' },
+                {
+                  type: 'reasoning-delta',
+                  id: 'reasoning-timeout',
+                  delta: 'timed-out thought',
+                },
+              ],
+              options.abortSignal,
+            ),
+          };
+        }
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 2
+            ? [
+                { type: 'stream-start', warnings: [] },
+                { type: 'reasoning-start', id: 'reasoning-retry' },
+                {
+                  type: 'reasoning-delta',
+                  id: 'reasoning-retry',
+                  delta: 'recovered thought',
+                },
+                {
+                  type: 'reasoning-delta',
+                  id: 'reasoning-retry',
+                  delta: '',
+                  providerMetadata: { anthropic: { signature: 'sig-retry' } },
+                },
+                { type: 'reasoning-end', id: 'reasoning-retry' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'read-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                { type: 'text-delta', id: 'text-final', delta: 'done' },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'timed-out thought') timers.fire();
+    }
+
+    const timeoutThinking = events.find(
+      (event) => event.type === 'thinking_complete' && event.text === 'timed-out thought',
+    );
+    const recoveredThinking = events.find(
+      (event) => event.type === 'thinking_complete' && event.text === 'recovered thought',
+    );
+    const toolStart = events.find(
+      (event): event is Extract<SessionEvent, { type: 'tool_start' }> =>
+        event.type === 'tool_start' && event.toolUseId === 'read-1',
+    );
+
+    assert.equal(calls, 3);
+    assert.equal(timeoutThinking?.type, 'thinking_complete');
+    assert.equal(recoveredThinking?.type, 'thinking_complete');
+    assert.equal(toolStart?.stepId, recoveredThinking?.messageId);
+    assert.notEqual(toolStart?.stepId, timeoutThinking?.messageId);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
   test('stops after one recovered idle watchdog timeout in the same provider step', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;

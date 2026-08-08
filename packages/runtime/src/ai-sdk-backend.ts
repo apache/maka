@@ -689,7 +689,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */
   streamIdleTimeoutMs?: number;
   /** Test seam for the Runtime-owned stream watchdog clock. */
-  streamWatchdogTimer?: Pick<StreamWatchdogInput, 'setTimer' | 'clearTimer'>;
+  streamWatchdogTimer?: Pick<Required<StreamWatchdogInput>, 'setTimer' | 'clearTimer'>;
   /** Test seam for the Runtime-owned provider retry clock. */
   providerRetrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
@@ -1948,7 +1948,6 @@ export class AiSdkBackend implements AgentBackend {
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
-          const providerStepId = currentStepMessageId;
           let providerStepUsage: NormalizedUsage | undefined;
           for (;;) {
             providerRequestAbortController = new AbortController();
@@ -2142,7 +2141,7 @@ export class AiSdkBackend implements AgentBackend {
                       providerExecuted: true,
                       activityKind: 'websearch',
                       displayName: 'Web search',
-                      stepId: providerStepId,
+                      stepId: currentStepMessageId,
                       ...(event.toolCall.providerOptions !== undefined
                         ? {
                             providerOptions: stripUndefinedDeep(event.toolCall.providerOptions),
@@ -2324,6 +2323,7 @@ export class AiSdkBackend implements AgentBackend {
 
           // Catch-all: flush any residual step content if the provider closed the
           // stream without a trailing `finish-step` for the last step.
+          const providerStepId = currentStepMessageId;
           await flushStep();
 
           // The settled promise reports only the SDK's unified enum; the stream
