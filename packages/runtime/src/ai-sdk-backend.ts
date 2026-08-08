@@ -3752,14 +3752,19 @@ export class AiSdkBackend implements AgentBackend {
             }
           : undefined;
       }
-      if (replaySupport.openAiResponsesThinking) {
+      if (replaySupport.openAiResponsesEncryptedThinking) {
         const openai = item.providerOptions?.openai;
         if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
           const { itemId, reasoningEncryptedContent } = openai as {
             itemId?: unknown;
             reasoningEncryptedContent?: unknown;
           };
-          if (typeof itemId === 'string' && itemId.length > 0) {
+          if (
+            typeof itemId === 'string' &&
+            itemId.length > 0 &&
+            typeof reasoningEncryptedContent === 'string' &&
+            reasoningEncryptedContent.length > 0
+          ) {
             return {
               part: {
                 type: 'reasoning' as const,
@@ -3767,10 +3772,7 @@ export class AiSdkBackend implements AgentBackend {
                 providerOptions: {
                   openai: {
                     itemId,
-                    ...(typeof reasoningEncryptedContent === 'string' ||
-                    reasoningEncryptedContent === null
-                      ? { reasoningEncryptedContent }
-                      : {}),
+                    reasoningEncryptedContent,
                   },
                 },
               },

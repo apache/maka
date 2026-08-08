@@ -185,7 +185,8 @@ export class ModelAdapter {
       // relays that don't need the field ignore it. Reasoning is still
       // recorded to the event log and rendered regardless.
       unsignedThinking: this.runtime.reasoningReplay.kind === 'openai-chat-plaintext',
-      openAiResponsesThinking: this.runtime.reasoningReplay.kind === 'openai-responses-item',
+      openAiResponsesEncryptedThinking:
+        this.runtime.reasoningReplay.kind === 'openai-responses-encrypted',
     };
   }
 
@@ -634,7 +635,7 @@ export interface ModelAdapterRuntimeEventReplaySupport {
   toolResults: boolean;
   signedThinking: boolean;
   unsignedThinking: boolean;
-  openAiResponsesThinking: boolean;
+  openAiResponsesEncryptedThinking: boolean;
 }
 
 /**

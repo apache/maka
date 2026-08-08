@@ -10809,6 +10809,90 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(prompt.indexOf('reasoning about the tool result') < prompt.indexOf('tool-1'));
   });
 
+  test('does not replay plaintext Responses reasoning through the encrypted OpenAI shape', async () => {
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const priorEvents: SessionEvent[] = [
+      {
+        type: 'tool_start',
+        id: 'e1',
+        turnId: 'turn-prev',
+        ts: 1,
+        toolUseId: 'tool-1',
+        toolName: 'Read',
+        args: { path: 'package.json' },
+        stepId: 'm1',
+      },
+      {
+        type: 'tool_result',
+        id: 'e2',
+        turnId: 'turn-prev',
+        ts: 2,
+        toolUseId: 'tool-1',
+        isError: false,
+        content: { kind: 'text', text: 'file contents' },
+      },
+      {
+        type: 'thinking_complete',
+        id: 'e3',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: 'plaintext reasoning from DeepSeek',
+        providerOptions: { openai: { itemId: 'rs_deepseek' } },
+      },
+      {
+        type: 'text_complete',
+        id: 'e4',
+        turnId: 'turn-prev',
+        ts: 4,
+        messageId: 'm1',
+        text: '',
+      },
+    ];
+    const runtimeContext = priorEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
+    const secondModel = completionModel();
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-test-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(secondModel));
+    assert.doesNotMatch(prompt, /plaintext reasoning from DeepSeek|rs_deepseek/);
+    assert.match(prompt, /"toolName":"Read"|"toolCallId":"tool-1"/);
+    assert.match(prompt, /file contents/);
+  });
+
   test('OpenAI Responses reasoning from a tool step is replayed with its encrypted content', async () => {
     const ctx = {
       sessionId: 'session-1',
