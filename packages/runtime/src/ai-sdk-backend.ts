@@ -82,6 +82,7 @@ import {
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
 } from '@maka/core/attachments';
 import { stripUndefinedDeep } from '@maka/core/tool-args-identity';
+import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 import type {
   LlmCallRecord,
   PricingConfig,
@@ -3264,7 +3265,7 @@ export class AiSdkBackend implements AgentBackend {
   private computeTokenUsageCostUsd(usage: NormalizedAiSdkUsage): number | undefined {
     try {
       const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
-        `${this.input.connection.providerType}:${this.input.modelId}`,
+        pricingModelKey(this.input.connection.providerType, this.input.modelId),
       );
       if (pricing === null) return undefined;
       return computeCost(
@@ -3399,7 +3400,7 @@ export class AiSdkBackend implements AgentBackend {
   ): ResolvedModelCallCost | undefined {
     try {
       const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
-        `${this.input.connection.providerType}:${modelId}`,
+        pricingModelKey(this.input.connection.providerType, modelId),
       );
       if (pricing === null) return undefined;
       const costUsd = computeCost(
