@@ -11028,6 +11028,123 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
+  test('does not retry an idle watchdog timeout after text continuation metadata', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              {
+                type: 'text-end',
+                id: 'text-1',
+                providerMetadata: { openai: { itemId: 'message-item-1' } },
+              },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
+      events,
+    );
+    await waitFor(() => timers.armCount() >= 4);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('does not retry an idle watchdog timeout after a terminal finish boundary', async () => {
+    const timers = manualWatchdogTimer();
+    const finishConsumed = makeGate();
+    let calls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+    type FakeStreamInput = {
+      abortSignal: AbortSignal;
+      onStreamActivity: () => void;
+    };
+    (
+      backend as unknown as {
+        modelAdapter: { startStream: (input: FakeStreamInput) => Promise<unknown> };
+      }
+    ).modelAdapter.startStream = async (input: FakeStreamInput) => {
+      calls += 1;
+      return {
+        events: (async function* () {
+          input.onStreamActivity();
+          yield { kind: 'finish' as const, finishReason: 'stop' };
+          finishConsumed.release();
+          await new Promise<void>((_resolve, reject) => {
+            const abort = () => reject(input.abortSignal.reason ?? new Error('aborted'));
+            if (input.abortSignal.aborted) abort();
+            else input.abortSignal.addEventListener('abort', abort, { once: true });
+          });
+        })(),
+        usage: Promise.resolve(undefined),
+        finishReason: Promise.resolve('stop'),
+      };
+    };
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
+      events,
+    );
+    await finishConsumed.promise;
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('Stop aborts the turn while an idle-timeout retry is waiting', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;

@@ -2029,8 +2029,10 @@ export class AiSdkBackend implements AgentBackend {
                   sawStreamError = true;
                   break;
                 }
-                if (event.kind === 'step-finish') {
+                if (event.kind === 'finish' || event.kind === 'step-finish') {
                   attemptReachedStepBoundary = true;
+                }
+                if (event.kind === 'step-finish') {
                   // Step boundary: AI SDK 7 delimits steps with `finish-step`
                   // (and `step-finish` for legacy replay fixtures); the adapter
                   // reduces both to this event. A duplicate boundary is harmless:
@@ -2072,6 +2074,7 @@ export class AiSdkBackend implements AgentBackend {
                     text: event.text,
                   } satisfies TextDeltaEvent);
                 } else if (event.kind === 'text-metadata') {
+                  attemptSawContinuationMetadata = true;
                   stepTextProviderOptions = mergeTextProviderOptions(
                     stepTextProviderOptions,
                     stripUndefinedDeep(event.providerOptions) as NonNullable<
