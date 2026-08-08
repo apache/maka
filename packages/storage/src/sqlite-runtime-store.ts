@@ -13,8 +13,6 @@ import {
   scanWorkspaceBaselineAuthority,
   TOOL_BOUNDARY_PROTOCOL_V1,
   TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
-  ToolLedgerCorruptionError,
-  ToolLedgerRejectionError,
   WORKSPACE_AUTHORITY_SESSION_ID,
   WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
   type ContinuationClaimResult,
@@ -39,6 +37,8 @@ import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   scanToolLedger,
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
   validateGenericToolLedgerAppend,
   validateToolLedgerEventLane,
   validateToolLedgerTransition,

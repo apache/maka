@@ -1,5 +1,3 @@
-import * as nodeUtil from 'node:util';
-
 export const SHELL_RUN_STATUSES = [
   'starting',
   'running',
@@ -410,12 +408,48 @@ export function nextShellRunRecord(current: ShellRunRecord, patch: ShellRunPatch
   ) {
     throw new Error(`ShellRun terminal outcome is immutable: ${current.status}`);
   }
-  if (nodeUtil.isDeepStrictEqual(candidate, current)) return current;
+  if (shellRunRecordsEqual(candidate, current)) return current;
   return normalizeShellRunRecord(
     { ...candidate, revision: current.revision + 1 },
     sessionId,
     shellRunId,
   );
+}
+
+/**
+ * Structural equality for normalized ShellRun records. Records are plain
+ * JSON-safe data (string/number/boolean/null/arrays/objects), so a small
+ * recursive comparison is sufficient and keeps this module free of node:*
+ * imports so the renderer-facing `@maka/core` barrel stays browser-safe.
+ */
+function shellRunRecordsEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    if (left.length !== (right as unknown[]).length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (!shellRunRecordsEqual(left[index], (right as unknown[])[index])) return false;
+    }
+    return true;
+  }
+  const leftKeys = Object.keys(left as Record<string, unknown>);
+  const rightKeys = Object.keys(right as Record<string, unknown>);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+    if (
+      !shellRunRecordsEqual(
+        (left as Record<string, unknown>)[key],
+        (right as Record<string, unknown>)[key],
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function isShellRunSandboxExecution(value: unknown): boolean {

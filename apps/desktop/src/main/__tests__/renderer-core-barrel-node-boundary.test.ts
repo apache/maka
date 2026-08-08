@@ -1,13 +1,15 @@
 /**
  * Executable regression guard for the renderer-facing `@maka/core` barrel.
  *
- * The Electron renderer imports values from the `@maka/core` barrel in a
- * browser-like environment where `node:*` modules cannot be evaluated (Vite
- * externalizes them, so a browser import of `node:crypto` / `node:util`
- * throws before `createRoot()` runs and leaves the preload skeleton on
- * screen — see #1573). This test spawns a child Node process whose loader
- * throws on every `node:*` import and then imports the built barrel; the
- * child exits non-zero the moment the barrel graph evaluates Node-only code.
+ * This test intentionally enforces a stronger structural invariant than the
+ * current tree-shaking behavior: the renderer-facing root barrel must remain
+ * loadable without evaluating any Node built-ins. The Electron renderer runs
+ * in a browser-like environment where `node:*` modules cannot resolve (Vite
+ * externalizes them; today they happen to be tree-shaken out of the renderer
+ * graph, but nothing about that is guaranteed). This test spawns a child Node
+ * process whose loader throws on every `node:*` import and then imports the
+ * built barrel; the child exits non-zero the moment the barrel graph evaluates
+ * Node-only code.
  *
  * This is the executable form of the source-regex contract that #1727 pruned
  * (the previous form asserted on `packages/core/src/index.ts` text; this one
@@ -20,7 +22,6 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 const DESKTOP_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-const FIXTURES_DIR = fileURLToPath(new URL('./fixtures/', import.meta.url));
 
 function runChild(
   args: string[],

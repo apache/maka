@@ -7,12 +7,8 @@ import type {
   RuntimeEventStore,
   ToolBoundaryProtocol,
 } from '@maka/core';
-import {
-  DurableStoreWriteError,
-  ToolLedgerRejectionError,
-  isSessionInlineRun,
-  isTerminalRuntimeEvent,
-} from '@maka/core';
+import { DurableStoreWriteError, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
+import { ToolLedgerRejectionError } from '@maka/core/tool-ledger-scanner';
 import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';

@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  scanToolLedger,
   type LlmConnection,
   type RuntimeEvent,
   type SessionEvent,
   type SessionHeader,
 } from '@maka/core';
+import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import { z } from 'zod';
 
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';

@@ -13,7 +13,7 @@ import type {
   SessionHeader,
   StorageRef,
 } from '@maka/core';
-import { encodeCanonicalRuntimeEvent } from '@maka/core';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';

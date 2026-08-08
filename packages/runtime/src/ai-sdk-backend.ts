@@ -80,8 +80,8 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
-  stripUndefinedDeep,
 } from '@maka/core';
+import { stripUndefinedDeep } from '@maka/core/tool-args-identity';
 import type {
   LlmCallRecord,
   PricingConfig,

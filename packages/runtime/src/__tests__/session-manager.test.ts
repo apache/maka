@@ -6,7 +6,6 @@ import {
   applySandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
   createWorkspaceWritePermissionProfile,
-  canonicalToolArgsHash,
   DEEP_RESEARCH_SESSION_LABEL,
   SIDE_CONVERSATION_SESSION_LABEL,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
@@ -15,6 +14,7 @@ import {
   isSessionInlineRun,
   isTerminalRuntimeEvent,
 } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { buildImmutableRuntimePrefix, decodeContinuationClaim } from '@maka/core/runtime-boundary';
 import type {
   CreateSandboxBoundaryRequest,

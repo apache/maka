@@ -10,11 +10,13 @@ import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,
-  ToolLedgerCorruptionError,
-  ToolLedgerRejectionError,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
 } from '@maka/core/runtime-boundary';
+import {
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
+} from '@maka/core/tool-ledger-scanner';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,

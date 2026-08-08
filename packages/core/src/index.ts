@@ -268,8 +268,8 @@ export type {
   ToolLedgerTransitionKind,
   ToolLedgerTransitionValidation,
 } from './tool-ledger-scanner.js';
-  export type {
-    ToolReconcileObservation,
+export type {
+  ToolReconcileObservation,
   ToolReconcileResultFact,
   ToolRecoveryCompletedDecisionFact,
   ToolRecoveryDecisionFact,
@@ -293,8 +293,8 @@ export type {
   ToolRecoveryOperationIdentity,
 } from './tool-recovery-bundle.js';
 export type { CanonicalRuntimeEventEncoding } from './canonical-runtime-event.js';
-  export type {
-    ContinuationClaimV1,
+export type {
+  ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
   RuntimeBoundaryCursorV1,
   RuntimePrefixIdentityV1,
