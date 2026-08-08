@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 
 export type MakaCliCommand =
-  | { kind: 'tui'; resumeSessionId?: string }
+  | { kind: 'tui'; resumeSessionId?: string; resumeCwd?: string }
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
@@ -25,11 +25,19 @@ export function parseMakaCliArgs(argv: string[], version: string): MakaCliComman
     if (!sessionId || sessionId.startsWith('-')) {
       return { kind: 'error', message: '--resume requires a session id', exitCode: 2 };
     }
-    const extra = argv[2];
+    if (argv[2] === undefined) return { kind: 'tui', resumeSessionId: sessionId };
+    if (argv[2] !== '--cwd') {
+      return { kind: 'error', message: `Unexpected argument: ${argv[2]}`, exitCode: 2 };
+    }
+    const resumeCwd = argv[3];
+    if (!resumeCwd || resumeCwd.startsWith('-')) {
+      return { kind: 'error', message: '--cwd requires a directory', exitCode: 2 };
+    }
+    const extra = argv[4];
     if (extra !== undefined) {
       return { kind: 'error', message: `Unexpected argument: ${extra}`, exitCode: 2 };
     }
-    return { kind: 'tui', resumeSessionId: sessionId };
+    return { kind: 'tui', resumeSessionId: sessionId, resumeCwd };
   }
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
@@ -93,6 +101,7 @@ function helpText(): string {
     '  -h, --help        Show help',
     '  -v, --version     Show version',
     '  --resume <session-id>  Reopen a previous session in the TUI',
+    '  --resume <id> --cwd <path>  Reopen a session after its directory moved',
   ].join('\n');
 }
 
@@ -138,6 +147,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
+        ...(command.resumeCwd ? { resumeCwd: command.resumeCwd } : {}),
       });
     }
   }

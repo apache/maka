@@ -13,6 +13,7 @@ export interface RunRuntimeHostTuiInput {
   readonly workspaceRoot: string;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly resumeCwd?: string;
   readonly onProcessExit: (exitCode: number, error?: Error) => void;
 }
 
@@ -55,6 +56,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
       resumeSessionId: input.resumeSessionId,
+      resumeCwd: input.resumeCwd,
     });
     const sessionId = context.driver.getSessionId();
     if (sessionId)

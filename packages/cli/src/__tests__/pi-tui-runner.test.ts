@@ -32,6 +32,7 @@ import type {
   MakaSessionMoveResult,
   MakaSessionDriver,
   MakaSessionRewindResult,
+  MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   RewindTarget,
   SessionResumeAvailability,
@@ -6340,6 +6341,56 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('relocates a moved session before resuming it at startup', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([
+      fakeSessionSummary('session-2', '/repo/old', 'Moved chat'),
+    ]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo/current-shell',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: 'session-2',
+      resumeCwd: '../new-worktree',
+    });
+
+    await waitFor(() => driver.sessionIds.length === 1);
+
+    assert.deepEqual(driver.sessionSwitchOptions, [{ relocateCwd: '../new-worktree' }]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('points a missing-cwd resume failure at the explicit recovery command', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new MissingCwdSwitchSessionDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: 'session-moved',
+    });
+
+    await waitFor(() => terminal.output().includes('--cwd <new-path>'));
+    const normalized = plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+    assert.match(
+      normalized,
+      /Retry with: maka --resume session-moved --cwd <new-path>\. Starting fresh\./,
+    );
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('resumes an active Host turn from its atomic transcript and continues live output', async () => {
     const terminal = new FakeTerminal();
     const driver = new ActiveResumeDriver();
@@ -7655,6 +7706,7 @@ class SlashCommandDriver implements MakaSessionDriver {
   readonly orchestrationModes: OrchestrationMode[] = [];
   readonly turnOrchestrations: Array<MakaPreparePromptOptions['turnOrchestration']> = [];
   readonly sessionIds: string[] = [];
+  readonly sessionSwitchOptions: Array<MakaSessionSwitchOptions | undefined> = [];
   readonly renames: string[] = [];
   readonly moves: string[] = [];
   startNewSessionCalls = 0;
@@ -7779,8 +7831,12 @@ class SlashCommandDriver implements MakaSessionDriver {
     this.orchestrationModes.push(mode);
     this.orchestrationMode = mode;
   }
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+  async switchSession(
+    sessionId: string,
+    options?: MakaSessionSwitchOptions,
+  ): Promise<MakaSessionSwitchResult> {
     this.sessionIds.push(sessionId);
+    this.sessionSwitchOptions.push(options);
     this.sessionId = sessionId;
     const summary = this.sessions.find((session) => session.id === sessionId);
     const nextSummary = summary ?? fakeSessionSummary(sessionId);
@@ -7830,6 +7886,12 @@ class HostSkillDriver extends SlashCommandDriver {
 class FailingSwitchSessionDriver extends SlashCommandDriver {
   async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
     throw new Error('session not found');
+  }
+}
+
+class MissingCwdSwitchSessionDriver extends SlashCommandDriver {
+  override async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
+    throw new Error('Session cwd no longer exists: /repo/old');
   }
 }
 

@@ -45,6 +45,7 @@ import type {
   MakaSessionDriver,
   MakaSessionMoveResult,
   MakaSessionRewindResult,
+  MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   RewindTarget,
   SessionResumeAvailability,
@@ -377,32 +378,40 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       return { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
     }
     const oldCwdDirty = await this.#inspectCwdChanges(previousCwd).catch(() => undefined);
-    const session = await updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.cwd.relocate', {
-        sessionId,
-        expectedRevision: current.revision,
-        cwd: nextCwd,
-      }),
-    );
+    const session = await this.#commitCwdRelocation(sessionId, nextCwd);
     this.#cwd = session.cwd;
     return { previousCwd, cwd: this.#cwd, changed: true, oldCwdDirty };
   }
 
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    const session = await getRuntimeHostSession(this.#connection, sessionId);
+  async switchSession(
+    sessionId: string,
+    options: MakaSessionSwitchOptions = {},
+  ): Promise<MakaSessionSwitchResult> {
+    let session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    const summary = runtimeHostSessionSummary(session);
-    const availability = await inspectSessionResumeAvailability(summary);
-    if (!availability.available) {
-      throw new Error(
-        summary.cwd ? `Session cwd no longer exists: ${summary.cwd}` : availability.reason,
-      );
+    let summary = runtimeHostSessionSummary(session);
+    if (options.relocateCwd === undefined) {
+      await assertSessionResumeAvailable(summary);
     }
     const boundary = await this.#request('session.execution_boundary.query', { sessionId });
     if (boundary.kind === 'external') {
       throw new Error(
         `Cannot resume externally isolated session ${sessionId} outside its owning harness.`,
       );
+    }
+    let relocation: MakaSessionMoveResult | undefined;
+    if (options.relocateCwd !== undefined) {
+      const nextCwd = await resolveMoveCwd(options.relocateCwd, this.#cwd);
+      const previousCwd = session.cwd;
+      if (nextCwd === previousCwd) {
+        relocation = { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
+      } else {
+        const oldCwdDirty = await this.#inspectCwdChanges(previousCwd).catch(() => undefined);
+        session = await this.#commitCwdRelocation(sessionId, nextCwd);
+        relocation = { previousCwd, cwd: session.cwd, changed: true, oldCwdDirty };
+      }
+      summary = runtimeHostSessionSummary(session);
+      await assertSessionResumeAvailable(summary);
     }
     const expectedChannelGeneration = this.#channelGeneration;
     const nextSessionGeneration = this.#sessionGeneration + 1;
@@ -424,6 +433,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return {
       summary,
       messages: opened.messages,
+      ...(relocation === undefined ? {} : { relocation }),
       ...(attachedTurnId
         ? {
             activeTurn: {
@@ -437,6 +447,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           }
         : {}),
     };
+  }
+
+  #commitCwdRelocation(sessionId: string, cwd: string): Promise<SessionCatalogProjection> {
+    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
+      this.#request('session.cwd.relocate', {
+        sessionId,
+        expectedRevision: current.revision,
+        cwd,
+      }),
+    );
   }
 
   async listRewindTargets(): Promise<RewindTarget[]> {
@@ -886,6 +906,15 @@ function representableSession(item: SessionCatalogItem): SessionCatalogProjectio
 function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
   if (!('kind' in item)) return item;
   throw new Error(`Runtime Host Session is not representable by this CLI: ${item.id}`);
+}
+
+async function assertSessionResumeAvailable(summary: SessionSummary): Promise<void> {
+  const availability = await inspectSessionResumeAvailability(summary);
+  if (!availability.available) {
+    throw new Error(
+      summary.cwd ? `Session cwd no longer exists: ${summary.cwd}` : availability.reason,
+    );
+  }
 }
 
 async function updateRuntimeHostSession(

@@ -18,6 +18,10 @@ describe('Maka CLI args', () => {
       [['--version'], { kind: 'version', text: '0.1.0' }],
       [['headless'], { kind: 'error', message: 'Unexpected argument: headless', exitCode: 2 }],
       [['--resume', 'abc'], { kind: 'tui', resumeSessionId: 'abc' }],
+      [
+        ['--resume', 'abc', '--cwd', '../moved repo'],
+        { kind: 'tui', resumeSessionId: 'abc', resumeCwd: '../moved repo' },
+      ],
       [['--resume'], { kind: 'error', message: '--resume requires a session id', exitCode: 2 }],
       [
         ['--resume', '--help'],
@@ -25,6 +29,14 @@ describe('Maka CLI args', () => {
       ],
       [
         ['--resume', 'abc', 'extra'],
+        { kind: 'error', message: 'Unexpected argument: extra', exitCode: 2 },
+      ],
+      [
+        ['--resume', 'abc', '--cwd'],
+        { kind: 'error', message: '--cwd requires a directory', exitCode: 2 },
+      ],
+      [
+        ['--resume', 'abc', '--cwd', '/repo', 'extra'],
         { kind: 'error', message: 'Unexpected argument: extra', exitCode: 2 },
       ],
     ];
@@ -35,6 +47,7 @@ describe('Maka CLI args', () => {
     const help = parseMakaCliArgs(['--help'], '0.1.0');
     assert.equal(help.kind, 'help');
     if (help.kind === 'help') assert.match(help.text, /Usage: maka/);
+    if (help.kind === 'help') assert.match(help.text, /--resume <id> --cwd <path>/);
   });
 
   test('preserves an established process exit code', () => {

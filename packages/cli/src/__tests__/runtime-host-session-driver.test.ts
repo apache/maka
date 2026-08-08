@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
 import type { StoredMessage } from '@maka/core';
@@ -22,6 +25,83 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('relocates a moved Session through Host authority before attaching', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tui-resume-moved-cwd-'));
+    const target = join(root, 'new-worktree');
+    await mkdir(target);
+    try {
+      const oldCwd = join(root, 'old-worktree');
+      const connection = new FakeConnection([
+        new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+      ]);
+      connection.sessionQueries.push(
+        sessionProjection({ cwd: oldCwd }),
+        sessionProjection({ cwd: oldCwd }),
+      );
+      const inspected: string[] = [];
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: root,
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        inspectCwdChanges: async (cwd) => {
+          inspected.push(cwd);
+          return undefined;
+        },
+      });
+
+      const switched = await driver.switchSession('session-1', {
+        relocateCwd: './new-worktree',
+      });
+      const canonicalTarget = await realpath(target);
+
+      assert.equal(switched.summary.cwd, canonicalTarget);
+      assert.deepEqual(switched.relocation, {
+        previousCwd: oldCwd,
+        cwd: canonicalTarget,
+        changed: true,
+        oldCwdDirty: undefined,
+      });
+      assert.deepEqual(inspected, [oldCwd]);
+      assert.deepEqual(
+        connection.requests.map(({ operation }) => operation),
+        [
+          'session.catalog.query',
+          'session.execution_boundary.query',
+          'session.catalog.query',
+          'session.cwd.relocate',
+        ],
+      );
+      assert.deepEqual(connection.requests.at(-1)?.input, {
+        sessionId: 'session-1',
+        expectedRevision: 1,
+        cwd: canonicalTarget,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not relocate an externally isolated Session during resume', async () => {
+    const connection = new FakeConnection([]);
+    connection.executionBoundary = { kind: 'external', harness: 'harbor', revision: 1 };
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: process.cwd(),
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+
+    await assert.rejects(
+      driver.switchSession('session-1', { relocateCwd: process.cwd() }),
+      /Cannot resume externally isolated session/,
+    );
+    assert.equal(
+      connection.requests.some(({ operation }) => operation === 'session.cwd.relocate'),
+      false,
+    );
+  });
+
   test('atomically joins an active turn without losing output produced during transcript load', async () => {
     const transcript = deferred<StoredMessage[]>();
     const subscription = new FakeSubscription(continuitySnapshot(), transcript.promise);
@@ -767,6 +847,7 @@ class FakeConnection {
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
   openedSubscriptions = 0;
   interactionQuery: unknown;
+  executionBoundary: unknown = { kind: 'managed', access: 'read_write', revision: 1 };
   skillStartBlocked = false;
   readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
@@ -790,6 +871,15 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
+    if (operation === 'session.cwd.relocate') {
+      return {
+        kind: 'committed',
+        session: sessionProjection({
+          revision: 2,
+          cwd: (input as OperationInput<'session.cwd.relocate'>).cwd,
+        }),
+      } as OperationOutput<K>;
+    }
     const turnInput = input as {
       sessionId?: string;
       turnId?: string;
@@ -802,7 +892,7 @@ class FakeConnection {
             session: await (this.sessionQueries.shift() ?? sessionProjection()),
           }
         : operation === 'session.execution_boundary.query'
-          ? { kind: 'managed', access: 'read_write', revision: 1 }
+          ? this.executionBoundary
           : operation === 'turn.message.submit'
             ? { disposition: 'queued', queueRevision: 2 }
             : operation === 'queue.retract'

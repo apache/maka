@@ -17,6 +17,11 @@ export interface MakaSessionMoveResult {
   oldCwdDirty?: boolean;
 }
 
+export interface MakaSessionSwitchOptions {
+  /** Explicitly relocate the durable Session cwd before attaching to it. */
+  relocateCwd?: string;
+}
+
 export type InspectCwdChanges = (cwd: string) => Promise<boolean | undefined>;
 
 export interface RewindTarget {
@@ -28,6 +33,7 @@ export interface MakaSessionSwitchResult {
   summary: SessionSummary;
   messages: StoredMessage[];
   activeTurn?: MakaPreparedSessionTurn;
+  relocation?: MakaSessionMoveResult;
 }
 
 export interface MakaSessionRewindResult extends MakaSessionSwitchResult {
@@ -83,7 +89,10 @@ export interface MakaSessionDriver {
   setOrchestrationMode?(mode: OrchestrationMode): Promise<void>;
   renameSession(name: string): Promise<string | void>;
   moveSession?(cwd: string): Promise<MakaSessionMoveResult>;
-  switchSession(sessionId: string): Promise<MakaSessionSwitchResult>;
+  switchSession(
+    sessionId: string,
+    options?: MakaSessionSwitchOptions,
+  ): Promise<MakaSessionSwitchResult>;
   listRewindTargets(): Promise<RewindTarget[]>;
   rewindToTurn(turnId: string): Promise<MakaSessionRewindResult>;
   subscribeStartedTurns?(listener: (turn: MakaAttachedSessionTurn) => void): () => void;

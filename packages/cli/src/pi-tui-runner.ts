@@ -176,6 +176,11 @@ export interface MakaPiTuiInput {
    */
   resumeSessionId?: string;
   /**
+   * Explicit replacement cwd used only while attaching `resumeSessionId`.
+   * The Session driver owns validation and durable relocation.
+   */
+  resumeCwd?: string;
+  /**
    * Read-only store of sessions from other coding agents (Claude Code,
    * Codex). When present, the session picker lists foreign sessions for the
    * current cwd; selecting one distills it into a handoff digest and opens a
@@ -1280,10 +1285,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The driver validates the durable cwd before adopting the resumed session.
   // A failure leaves the active session untouched and the next prompt still
   // lands on the old one.
-  const switchSession = async (sessionId: string) => {
+  const switchSession = async (sessionId: string, relocateCwd?: string) => {
     resolvedInteractionIds.clear();
-    const result = await input.driver.switchSession(sessionId);
+    const result = await input.driver.switchSession(
+      sessionId,
+      relocateCwd === undefined ? undefined : { relocateCwd },
+    );
     await applySwitchResult(result);
+    if (result.relocation?.changed) {
+      const warning =
+        result.relocation.oldCwdDirty === true
+          ? ` Warning: the old directory "${result.relocation.previousCwd}" has uncommitted changes.`
+          : '';
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: `Session moved to "${result.relocation.cwd}".${warning}`,
+      });
+    }
     if (result.messages.length === 0) {
       state.entries.push({
         kind: 'notice',
@@ -2778,12 +2797,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   if (input.resumeSessionId) {
     void runControl(async () => {
       try {
-        await switchSession(input.resumeSessionId!);
+        await switchSession(input.resumeSessionId!, input.resumeCwd);
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const recoveryHint =
+          input.resumeCwd === undefined && message.startsWith('Session cwd no longer exists:')
+            ? ` Retry with: maka --resume ${input.resumeSessionId} --cwd <new-path>.`
+            : '';
         state.entries.push({
           kind: 'notice',
           level: 'error',
-          text: `Could not resume session ${input.resumeSessionId}: ${error instanceof Error ? error.message : String(error)}. Starting fresh.`,
+          text: `Could not resume session ${input.resumeSessionId}: ${message}.${recoveryHint} Starting fresh.`,
         });
         requestRender();
       }
