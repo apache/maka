@@ -6,7 +6,7 @@ After bumping a patched dependency, re-run `npx patch-package <name>` so the fil
 
 Every patch needs a reason and a deletion condition, and that is all this file carries — the derivation belongs in the guard test, and the measurements in the upstream issue.
 
-Patch every runtime entrypoint the repository actually resolves. Node and TypeScript normally use `dist/`, while the desktop Vite build honors Astryx's `exports.source` condition and compiles `src/`; a behavior patch used by the renderer therefore keeps source, JavaScript, and declarations paired. The `.map` files stay stale.
+Patch every runtime entrypoint the repository actually resolves. Node and TypeScript normally use `dist/`; the desktop excludes patched Astryx Chat modules from Vite dependency optimization so a lockfile-keyed cache cannot hide patch-package changes. A renderer behavior patch therefore keeps source, JavaScript, and declarations paired. The `.map` files stay stale.
 
 ## `@ai-sdk/provider-utils`: a tool-call delta must agree with the call it continues
 
@@ -43,6 +43,8 @@ The patch adds group-level `additions` / `deletions` and renders them beside the
 Some tool calls produce a durable surface rather than inline detail. A linked subagent session is the first consumer: its transcript is the detail, and Maka opens it in the main chat column. `ChatToolCalls` only supported disclosure, so the product had to nest a custom card and Open button inside `resultDetail`.
 
 The patch adds generic per-call `onActivate` and `activateLabel` fields. An activatable row uses the existing hover and keyboard treatment, announces the action, and shows Astryx's `externalLink` icon; activation takes precedence over inline detail. Maka keeps those modes mutually exclusive.
+
+Desktop development transforms `@astryxdesign/core/Chat` in place instead of prebundling it. Patch-package does not change `package-lock.json`, which is part of Vite's dependency-cache key; without that exclusion an old `ChatToolCalls` can survive a patch and lose both the row activation and the product's interactive-row typography.
 
 **Delete it when `packages/ui/src/__tests__/subagent-open-session.test.tsx` and the desktop CU path pass without the patch** — linked subagent rows must be directly activatable without a Maka-owned nested card in both Node and Vite resolution modes.
 

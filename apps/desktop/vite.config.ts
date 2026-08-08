@@ -19,6 +19,12 @@ export default defineConfig({
   root: 'src/renderer',
   base: './',
   plugins: [react()],
+  // patch-package changes Astryx without changing package-lock.json, so Vite's
+  // dependency cache cannot know ChatToolCalls changed. Transform Chat in place
+  // to keep development on the same patched row implementation as production.
+  optimizeDeps: {
+    exclude: ['@astryxdesign/core/Chat'],
+  },
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [
