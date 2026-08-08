@@ -2,6 +2,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -607,14 +608,11 @@ function WorkbarLauncher(props: {
   const firstEnabledActionIndex = actions.findIndex(
     (action) => !action.disabled,
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!props.active) return;
-    const frame = window.requestAnimationFrame(() => {
-      menuRef.current
-        ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
-        ?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      ?.focus();
   }, [props.active]);
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const menu = menuRef.current;

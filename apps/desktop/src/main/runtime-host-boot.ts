@@ -1,8 +1,9 @@
-import { app, ipcMain, powerSaveBlocker, shell } from "electron";
+import { app, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import {
   type ConnectionEvent,
+  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
   resolveSystemUiLocale,
@@ -33,15 +34,31 @@ import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
 import { readFileCapped } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { releaseBrowserSession } from "./browser/session.js";
+import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
+import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
+import {
+  getE2eFixtureState,
+  resolveE2eFixture,
+  retireE2eFixtureSandboxBoundaryRequest,
+  seedE2eFixture,
+} from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
 import { createMainWindowController } from "./main-window.js";
+import {
+  resolveDesktopSessionSelection,
+  resolveNewSessionProjectInput,
+} from "./new-session-project.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
+import {
+  createDesktopTaskSubmissionReadinessService,
+  registerTaskSubmissionReadinessIpc,
+} from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerPlanReminderIpc } from "./plan-reminders-ipc-main.js";
 import { createPlanReminderMainService } from "./plan-reminders-main.js";
@@ -52,6 +69,7 @@ import {
 } from "./permission-overlay/permission-overlay-main.js";
 import { resolveProjectContextRoot } from "./project-context-root.js";
 import { createProjectManagementService } from "./project-management-service.js";
+import type { ProjectManagementService } from "./project-management-service.js";
 import { createProjectRootController } from "./project-root-controller.js";
 import { createSessionCopyCleanupAuthority } from "./quote-companion-cleanup.js";
 import {
@@ -60,6 +78,9 @@ import {
 } from "./runtime-host-connections-ipc-main.js";
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
+import { buildClientSettingsTools } from "./client-settings-tools.js";
+import { createClientSettingsEffects } from "./client-settings-effects.js";
+import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { registerRuntimeHostDailyReviewIpc } from "./runtime-host-daily-review-ipc-main.js";
@@ -86,18 +107,51 @@ import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js"
 import { hasRuntimeHostInterruptibleWork } from "./runtime-host-update-activity.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWebSearchIpc } from "./runtime-host-web-search-ipc-main.js";
+import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
 import { resolveShellEnv } from "./shell-env.js";
 import {
   registerSettingsBotsIpc,
   type SettingsBotsIpcHandle,
 } from "./settings-bots-ipc-main.js";
+import {
+  isComputerUseRealModelE2e,
+  isE2e,
+  isIsolatedE2e,
+} from "./startup-context.js";
+import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
+import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 
 await resolveShellEnv();
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
-const workspaceRoot = join(userDataDir, "workspaces", "default");
+const e2eFixture = resolveDesktopE2eFixture();
+const useBotOnboardingFixture =
+  e2eFixture?.scenario === "settings-bots" ||
+  e2eFixture?.scenario === "settings-bots-onboarding";
+const workspaceRoot = join(
+  userDataDir,
+  "workspaces",
+  e2eFixture?.workspaceName ?? "default",
+);
+if (e2eFixture) {
+  console.log(
+    `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
+  );
+  await seedE2eFixture({ workspaceRoot, fixture: e2eFixture });
+} else {
+  const storageRoot = await startupStep(
+    "storage root",
+    resolveDesktopStorageRoot(workspaceRoot, {
+      confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
+    }),
+  );
+  if (!storageRoot) {
+    app.exit(0);
+    await new Promise<never>(() => {});
+  }
+}
 const settingsStore = createSettingsStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot, {
   onLegacyImportFailure: (error) =>
@@ -123,20 +177,24 @@ function ensureMcpReady(): Promise<void> {
 }
 const planReminderStore = createSqlitePlanReminderStore(workspaceRoot);
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
+const startHidden =
+  (Boolean(e2eFixture) || isIsolatedE2e) &&
+  process.env.MAKA_E2E_SHOW_WINDOW !== "1";
 let onMainWindowClose = (): void => {};
 const mainWindowController = createMainWindowController({
   workspaceRoot,
-  e2eFixture: null,
+  e2eFixture,
   settingsStore,
-  startHidden: false,
+  startHidden,
   onClose: () => onMainWindowClose(),
 });
 const native = assembleDesktopNativeCapabilities({
-  isComputerUseRealModelE2e: false,
+  isComputerUseRealModelE2e,
   settings: settingsStore,
   keepSystemAwake,
   mainWindow: mainWindowController,
 });
+const riveWorkflowTool = buildRiveWorkflowTool();
 const completeComputerUseTurn = (sessionId: string): void => {
   native.computerUseOverlay.clearForSession(sessionId);
   native.computerUsePip.complete(sessionId);
@@ -164,17 +222,38 @@ onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
   native.computerUsePip.destroyAll();
 };
-
 const projectRoot = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, "last-project-path.json"),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
 const attachmentApprovals = createAttachmentApprovalRegistry();
-const oauthPresentation = new RuntimeHostOAuthPresentation((url) =>
-  shell.openExternal(url),
+const oauthPresentation = new RuntimeHostOAuthPresentation(
+  e2eFixture?.scenario === "oauth-relogin"
+    ? async () => undefined
+    : (url) => shell.openExternal(url),
 );
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
+const projectManagement: ProjectManagementService = createProjectManagementService({
+  catalog: projectCatalog,
+  sessions: {
+    listHeaders: () => runtimeHostProjectSessionCatalog().listHeaders(),
+    updateHeader: (sessionId, patch) =>
+      runtimeHostProjectSessionCatalog().updateHeader(sessionId, patch),
+  },
+  chooseDirectory: async () => {
+    const result = await mainWindowController.showOpenDialog({
+      title: "Add project",
+      properties: ["openDirectory"],
+    });
+    return result.canceled ? undefined : result.filePaths[0];
+  },
+  selection: projectRoot,
+});
+function runtimeHostProjectSessionCatalog() {
+  if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
+  return createRuntimeHostProjectSessionCatalog(runtimePolicyClient);
+}
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshotRevision(),
 );
@@ -187,6 +266,49 @@ const botRegistry = new BotRegistry({
     mainWindowController.send("settings:bots:statusChanged", status);
   },
 });
+const clientSettingsEffects = createClientSettingsEffects({
+  settingsStore,
+  applyKeepSystemAwake: async (enabled) => {
+    keepSystemAwake.apply(enabled);
+  },
+  applyBotSettings: useBotOnboardingFixture
+    ? async () => undefined
+    : (settings) => botRegistry.applySettings(settings),
+  emitExternalChanged: () =>
+    mainWindowController.send("settings:externalChanged", { ts: Date.now() }),
+});
+const clientSettingsTools = buildClientSettingsTools({
+  read: () => settingsStore.get(),
+  update: async (patch) => {
+    const settings = await settingsStore.update(patch);
+    await clientSettingsEffects.apply(settings, true);
+    return settings;
+  },
+  confirm: async (changes) => {
+    const result = await dialog.showMessageBox({
+      type: "question",
+      message: "Allow Maka to update this client's settings?",
+      detail: changes.join("\n"),
+      buttons: ["Apply changes", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return result.response === 0;
+  },
+});
+const clientSettingsWatcher = startClientSettingsWatcher(
+  workspaceRoot,
+  () => {
+    void clientSettingsEffects.refresh(true).catch((error) =>
+      console.error("[runtime-host] Client settings refresh failed:", error),
+    );
+  },
+  {
+    onError: (error) =>
+      console.error("[runtime-host] Client settings watcher failed:", error),
+  },
+);
 const updateMockState =
   process.env.MAKA_UPDATE_MOCK_STATE === "available" ||
   process.env.MAKA_UPDATE_MOCK_STATE === "downloading" ||
@@ -244,14 +366,19 @@ registerNotificationsIpc({
   ipcMain,
   settingsStore,
   mainWindowController,
-  e2e: false,
+  e2e: isE2e,
 });
 
+const sessionCopyOwnerProcessId = randomUUID();
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
     candidateEntrypoint: new URL(
-      import.meta.resolve("@maka/runtime-host/execution-candidate-main"),
+      import.meta.resolve(
+        isE2e
+          ? "@maka/runtime-host/desktop-e2e-execution-candidate-main"
+          : "@maka/runtime-host/execution-candidate-main",
+      ),
     ),
     ipcMain,
     workspaceRoot,
@@ -263,29 +390,87 @@ owner = await startRuntimeHostDesktopOwner(
       releaseBrowserSession,
       computerUseTools: native.computerUseTools,
       additionalGroups: () => {
-        const tools = buildMcpTools(mcpManager);
-        return tools.length === 0
-          ? []
-          : [
-              {
-                offerId: "desktop_mcp",
-                label: "MCP",
-                description: "Use MCP tools connected by this Desktop client.",
-                tools,
-              },
-            ];
+        const mcpTools = buildMcpTools(mcpManager);
+        return [
+          {
+            offerId: "desktop_settings",
+            label: "Client settings",
+            description:
+              "Read or update UI and operating-system settings owned by this Desktop client.",
+            tools: clientSettingsTools,
+          },
+          {
+            offerId: "desktop_rive",
+            label: "Rive",
+            description:
+              "Use durable Rive workflows through this Desktop client.",
+            tools: [riveWorkflowTool],
+          },
+          ...(mcpTools.length === 0
+            ? []
+            : [
+                {
+                  offerId: "desktop_mcp",
+                  label: "MCP",
+                  description:
+                    "Use MCP tools connected by this Desktop client.",
+                  tools: mcpTools,
+                },
+              ]),
+        ];
       },
       oauthPresentation,
       releaseComputerUseSession,
     },
     botRegistry,
     resolveBotCreateTarget: async () => ({ cwd: await projectRoot.current() }),
+    resolveSessionCreateProject: async (input) => {
+      const selected = await resolveDesktopSessionSelection(input, {
+        ...projectManagement,
+        defaultProjectId: async () =>
+          (await settingsStore.get()).projects.defaultProjectId,
+      });
+      return resolveNewSessionProjectInput(selected, projectCatalog);
+    },
     emitSessionsChanged,
     emitModeChanged: (sessionId) =>
       emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
-    createSessionCopyCleanup: ({ removeSession }) =>
-      createSessionCopyCleanupAuthority({ workspaceRoot, removeSession }),
+    ...(e2eFixture
+      ? {
+          e2eInteractions: {
+            list: (sessionId: string) => {
+              const request = getE2eFixtureState(e2eFixture)
+                ?.sandboxBoundaryBySession?.[sessionId];
+              return request ? [request] : [];
+            },
+            respondToSandboxBoundary: async (
+              sessionId: string,
+              response: SandboxBoundaryResponse,
+            ) => {
+              const request = getE2eFixtureState(e2eFixture)
+                ?.sandboxBoundaryBySession?.[sessionId];
+              if (request?.requestId !== response.requestId) {
+                return { handled: false as const };
+              }
+              retireE2eFixtureSandboxBoundaryRequest(response.requestId);
+              return {
+                handled: true as const,
+                ...(response.decision === "allow"
+                  ? { permissionMode: "ask" as const }
+                  : {}),
+              };
+            },
+          },
+        }
+      : {}),
+    createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
+      createSessionCopyCleanupAuthority({
+        workspaceRoot,
+        removeSession,
+        resumeSessionCopy,
+        processId: sessionCopyOwnerProcessId,
+      }),
     sendToRenderer: (channel, payload) =>
       mainWindowController.send(channel, payload),
     onError: (error) =>
@@ -313,12 +498,8 @@ void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
   .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
 
-void settingsStore
-  .get()
-  .then(async (settings) => {
-    await keepSystemAwake.apply(settings.system.keepSystemAwake);
-    await botRegistry.applySettings(settings.botChat);
-  })
+void clientSettingsEffects
+  .refresh(false)
   .catch((error) =>
     console.error("[runtime-host] Client settings startup failed:", error),
   );
@@ -330,6 +511,13 @@ function registerHostClientIpc(
   scopedIpc: Pick<typeof ipcMain, "handle">,
   controls: DesktopRuntimeHostCandidateControls,
 ): () => Promise<void> {
+  const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
+    emitConnectionListChanged();
+    mainWindowController.send("settings:externalChanged", { ts: Date.now() });
+  });
+  const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
+    ({ sessionId }) => emitSessionsChanged("updated", sessionId),
+  );
   const capabilityBinding = mcpCapabilityPublisher.bind(
     controls.refreshClientCapabilities,
   );
@@ -342,7 +530,9 @@ function registerHostClientIpc(
     store: mcpConfigStore,
     manager: mcpManager,
     ensureReady: ensureMcpReady,
-    refreshIdleBackends: mcpCapabilityPublisher.refreshIfChanged,
+    publishCapabilities: mcpCapabilityPublisher.refreshIfChanged,
+    onPublicationError: (error) =>
+      console.error("[runtime-host] MCP capability publication failed:", error),
     emitChanged: (statuses) =>
       mainWindowController.send("mcp:changed", statuses),
   });
@@ -386,12 +576,9 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     settingsStore,
-    botRegistry,
-    applyKeepSystemAwake: async (enabled) => {
-      await keepSystemAwake.apply(enabled);
+    applyClientSettings: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
     },
-    emitExternalChanged: () =>
-      mainWindowController.send("settings:externalChanged", { ts: Date.now() }),
   } satisfies Parameters<typeof registerRuntimeHostSettingsIpc>[0];
   registerRuntimeHostSettingsIpc(settingsIpcDeps);
   registerRuntimeHostConfigIpc({
@@ -409,10 +596,16 @@ function registerHostClientIpc(
     settingsStore,
     botRegistry,
     applySettingsRuntimeEffects: async (settings) => {
-      await botRegistry.applySettings(settings.botChat);
+      await clientSettingsEffects.apply(settings, true);
     },
     productVersion: app.getVersion(),
     openExternal: (url) => shell.openExternal(url),
+    ...(useBotOnboardingFixture
+      ? {
+          botOnboardingAdapters: createE2eFixtureBotOnboardingAdapters(),
+          botOnboardingReadChannelStatus: () => ({ running: true }),
+        }
+      : {}),
   });
   settingsBotsIpc = candidateSettingsBotsIpc;
   registerRuntimeHostPermissionsIpc({
@@ -453,6 +646,7 @@ function registerHostClientIpc(
       mainWindowController.send(channel, ...args),
   });
   registerRuntimeHostWebSearchIpc({ ipcMain: scopedIpc, client });
+  registerRuntimeHostWorkspaceIpc({ ipcMain: scopedIpc, client });
   registerPlanReminderIpc({
     ipcMain: scopedIpc,
     planReminders,
@@ -460,18 +654,6 @@ function registerHostClientIpc(
       incognitoActive: (await client.queryRuntimePolicy()).policy.privacy
         .incognitoActive,
     }),
-  });
-  const projectManagement = createProjectManagementService({
-    catalog: projectCatalog,
-    sessions: createRuntimeHostProjectSessionCatalog(client),
-    chooseDirectory: async () => {
-      const result = await mainWindowController.showOpenDialog({
-        title: "Add project",
-        properties: ["openDirectory"],
-      });
-      return result.canceled ? undefined : result.filePaths[0];
-    },
-    selection: projectRoot,
   });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
@@ -491,7 +673,7 @@ function registerHostClientIpc(
       getProjectRoot: resolveProjectRootForContext,
       workspaceRoot,
       buildInfo,
-      e2eFixture: null,
+      e2eFixture,
       projectManagement,
       updateService,
     },
@@ -536,8 +718,41 @@ function registerHostClientIpc(
       return status?.configured === true;
     },
   });
+  const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot,
+    runtimeState: () => ({ state: client.lifecycleState, checkedAt: Date.now() }),
+    resolveModelTarget: async (requestedSlug) => {
+      const catalog = await client.loadConnectionCatalog();
+      const connections = projectHostConnections(catalog);
+      const connectionSlug = requestedSlug ?? (catalog.defaultTarget === null
+        ? undefined
+        : catalog.connections.find(
+            ({ connectionId }) => connectionId === catalog.defaultTarget?.connectionId,
+          )?.slug);
+      if (!connectionSlug) return { kind: "missing_default" };
+      const connection = connections.find(({ slug }) => slug === connectionSlug);
+      if (!connection) return { kind: "connection_missing", connectionSlug };
+      if (!providerAuthRequiresSecret(connection.providerType)) {
+        return { kind: "resolved", connection, hasSecret: true };
+      }
+      const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
+      if (!entry) return { kind: "connection_missing", connectionSlug };
+      const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+      const hasSecret = await client.queryCredential({
+          scope: "connection",
+          connectionId: entry.connectionId,
+          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+        })
+        .then((status) => status?.configured === true)
+        .catch(() => undefined);
+      return { kind: "resolved", connection, hasSecret };
+    },
+  });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
+  registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
+    unsubscribeConfigurationChanges();
+    unsubscribeSessionCatalogChanges();
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;
@@ -615,7 +830,7 @@ function wireLifecycle(): void {
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
-    startHidden: false,
+    startHidden,
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
     onIconError: (error) =>
@@ -623,6 +838,9 @@ function wireLifecycle(): void {
   });
   app.on("second-instance", quitCoordinator.focusOrCreateWindow);
   app.on("activate", quitCoordinator.focusOrCreateWindow);
+  app.on("browser-window-focus", () => {
+    void updateService.checkForUpdatesOnFocus();
+  });
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
@@ -634,6 +852,7 @@ function wireLifecycle(): void {
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
+  clientSettingsWatcher.stop();
   planReminders.stopTimers();
   updateService.dispose();
   settingsBotsIpc?.dispose();
@@ -654,4 +873,53 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     if (result.status === "rejected")
       console.error("[runtime-host] shutdown failed:", result.reason);
   }
+}
+
+function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
+  try {
+    return resolveE2eFixture(
+      process.env.MAKA_E2E_FIXTURE,
+      app.isPackaged,
+      process.env.MAKA_E2E_FIXTURE_REDUCED_MOTION,
+      process.env.MAKA_E2E_FIXTURE_THEME,
+      process.env.MAKA_E2E_FIXTURE_LOCALE,
+      process.env.MAKA_E2E_FIXTURE_TIMEZONE,
+      process.env.MAKA_E2E_FIXTURE_PLATFORM,
+    );
+  } catch (error) {
+    if (!process.env.MAKA_E2E_FIXTURE) throw error;
+    console.error(
+      `[e2e-fixture] fatal: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1);
+  }
+}
+
+async function confirmDesktopStorageRootRepair(
+  workspaceRoot: string,
+): Promise<boolean> {
+  console.log(
+    "[storage-root] root-identity conflict; parking at repair dialog",
+  );
+  const isChinese =
+    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const { response } = await whileAwaitingPerson(
+    dialog.showMessageBox({
+      type: "warning",
+      title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
+      message: isChinese
+        ? "Maka 无法验证这个工作区。"
+        : "Maka cannot verify this workspace.",
+      detail: isChinese
+        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
+        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+      buttons: isChinese
+        ? ["修复工作区", "退出"]
+        : ["Repair Workspace", "Exit"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    }),
+  );
+  return response === 0;
 }

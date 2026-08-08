@@ -83,13 +83,13 @@ type SessionConfigurationAuthority = Pick<
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
-type SessionOperationFailureCode =
+export type SessionOperationFailureCode =
   | 'operation_unavailable'
   | 'invalid_request'
   | 'persistence_failed'
   | 'operation_conflict';
 
-class SessionOperationFailure extends Error {
+export class SessionOperationFailure extends Error {
   constructor(
     readonly code: SessionOperationFailureCode,
     message: string,
@@ -139,6 +139,21 @@ export class HostSessionCatalogCoordinator {
     this.#admission = options.admission;
     this.#continuity = options.continuity;
     this.#requestDrain = options.requestDrain;
+  }
+
+  async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    const [model, policy] = await Promise.all([
+      this.#resolveModel({ kind: 'default' }, undefined),
+      this.#readRuntimePolicy(),
+    ]);
+    return {
+      backend: 'ai-sdk',
+      llmConnectionSlug: model.connectionSlug,
+      model: model.model,
+      permissionMode: policy.policy.chatDefaults.permissionMode,
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+    };
   }
 
   async #query(

@@ -7,6 +7,7 @@ type ShellControlsCopy = {
   navigation: {
     mainLabel: string;
     newTask: string;
+    importSession: string;
     /**
      * Accessible name of the session-group header's new-task trigger
      * (session-history-list.tsx). Deliberately NOT `newTask`: that copy is
@@ -48,6 +49,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
     navigation: {
       mainLabel: '主导航',
       newTask: '新任务',
+      importSession: '导入会话',
       groupNewTask: '新建任务',
       automations: '定时任务',
       extensions: '扩展',
@@ -80,6 +82,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
     navigation: {
       mainLabel: 'Main navigation',
       newTask: 'New task',
+      importSession: 'Import conversation',
       groupNewTask: 'New task in group',
       automations: 'Scheduled tasks',
       extensions: 'Extensions',

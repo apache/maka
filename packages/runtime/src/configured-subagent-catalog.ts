@@ -1,9 +1,4 @@
-import {
-  connectionEnabledModelIds,
-  type AppSettings,
-  type LlmConnection,
-  type SubagentPreset,
-} from '@maka/core';
+import { connectionEnabledModelIds, type SubagentPreset } from '@maka/core';
 import type { SubagentPresetListItem } from './agent-catalog.js';
 
 export interface ConfiguredSubagentCatalog {
@@ -12,8 +7,12 @@ export interface ConfiguredSubagentCatalog {
 }
 
 export function createConfiguredSubagentCatalog(deps: {
-  getSettings(): Promise<AppSettings>;
-  getConnection(slug: string): Promise<LlmConnection | null>;
+  getPresets(): Promise<readonly SubagentPreset[]>;
+  getConnection(slug: string): Promise<{
+    readonly enabled: boolean;
+    readonly defaultModel?: string;
+    readonly enabledModelIds?: readonly string[];
+  } | null>;
 }): ConfiguredSubagentCatalog {
   const inspect = async (preset: SubagentPreset): Promise<SubagentPresetListItem> => {
     if (!preset.enabled)
@@ -45,12 +44,10 @@ export function createConfiguredSubagentCatalog(deps: {
 
   return {
     async list() {
-      const settings = await deps.getSettings();
-      return await Promise.all(settings.subagents.presets.map(inspect));
+      return await Promise.all((await deps.getPresets()).map(inspect));
     },
     async resolve(id) {
-      const settings = await deps.getSettings();
-      const preset = settings.subagents.presets.find((candidate) => candidate.id === id);
+      const preset = (await deps.getPresets()).find((candidate) => candidate.id === id);
       if (!preset) throw new Error(`Unknown subagent_id "${id}". Call agent_list before spawning.`);
       const inspected = await inspect(preset);
       if (inspected.availability.status !== 'available') {

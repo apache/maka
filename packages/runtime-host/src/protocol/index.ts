@@ -16,6 +16,14 @@ import {
   type ClientCapabilityHostFrame,
 } from './client-capability.js';
 import {
+  decodeConfigurationChangedFrame,
+  type ConfigurationChangedFrame,
+} from './configuration-change.js';
+import {
+  decodeSessionCatalogChangedFrame,
+  type SessionCatalogChangedFrame,
+} from './session-catalog-change.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -29,13 +37,16 @@ export * from './interaction.js';
 export * from './automation.js';
 export * from './daily-review.js';
 export * from './client-capability.js';
+export * from './configuration-change.js';
 export * from './goal.js';
 export * from './plan.js';
 export * from './execution-inspect.js';
+export * from './external-session.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
+export * from './session-catalog-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './task-ledger.js';
@@ -45,17 +56,15 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // The wire version remains v0 before the first release. This independent epoch
 // lets a new Client retire a stale same-version Host whose closed schema is no
 // longer safe to use.
-// 5: relay capability declarations moved off the connection header onto
-// each enabled_model_id item (`relayProfile`) — header items are atomic to
-// the paginator, so a per-model table there could make an entry unreadable.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 5 as const;
+// 8: external Session discovery and import added three closed operation keys.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 8 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
 // as Session continuity retain their own limits.
 export const RUNTIME_HOST_MAX_FRAME_BYTES = 96 * 1024;
 
-export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'inspect';
+export type ClientSurface = 'desktop' | 'tui' | 'run' | 'activation' | 'bot' | 'inspect';
 
 export interface ProtocolRange {
   min: number;
@@ -105,7 +114,9 @@ export type HostFrame =
   | HostHandshakeResult
   | ResponseFrame
   | SubscriptionFrame
-  | ClientCapabilityHostFrame;
+  | ClientCapabilityHostFrame
+  | ConfigurationChangedFrame
+  | SessionCatalogChangedFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -201,6 +212,8 @@ export function decodeHostFrame(value: unknown): HostFrame {
   if (isClientCapabilityHostFrameKind(frame.kind)) {
     return decodeClientCapabilityHostFrame(frame);
   }
+  if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
   return decodeResponseFrame(frame);
 }
 
@@ -328,6 +341,7 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'desktop' ||
     value === 'tui' ||
     value === 'run' ||
+    value === 'activation' ||
     value === 'bot' ||
     value === 'inspect'
   )

@@ -63,6 +63,9 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
     const desktop = await connectClient(root, 'desktop');
     const tui = await connectClient(root, 'tui');
     try {
+      const catalogChanged = new Promise<string>((resolve) => {
+        tui.subscribeSessionCatalogChanges(({ sessionId }) => resolve(sessionId));
+      });
       const createInput: SessionCreateInput = {
         sessionId: 'stable-session',
         cwd: root,
@@ -72,6 +75,10 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       };
       const created = requireSessionProjection(
         await desktop.request('session.create', createInput),
+      );
+      assert.equal(
+        await withTimeout(catalogChanged, PROCESS_TIMEOUT_MS, 'Session catalog change timed out'),
+        createInput.sessionId,
       );
       assert.equal(created.id, createInput.sessionId);
       assert.equal(created.permissionMode, 'ask');

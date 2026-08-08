@@ -7661,7 +7661,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.ok(events.some((event) => event.type === 'error'));
   });
 
-  test('keeps an explicitly configured step limit', async () => {
+  test('lets a trusted turn override the configured step limit', async () => {
     const loop = countingToolLoopModel();
     const durable = durableTurnHarness('turn-1', 'hi');
     const backend = createTestAiSdkBackend({
@@ -7679,9 +7679,9 @@ describe('AiSdkBackend usage telemetry', () => {
       now: monotonicClock(),
     });
 
-    await drainDurably(backend.send(durable.input()), durable);
+    await drainDurably(backend.send({ ...durable.input(), maxSteps: 1 }), durable);
 
-    assert.equal(loop.callCount(), 3);
+    assert.equal(loop.callCount(), 1);
   });
 
   test('reserves the final child-agent step for a tool-free evidence summary', async () => {

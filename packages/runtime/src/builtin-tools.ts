@@ -205,21 +205,27 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       ref: refField,
     })
     .strict();
-  // Some providers serialize unused optional fields as empty strings, so a
-  // model may send `ref: ""` on an ordinary file read. A blank ref means "no
-  // ref provided": drop the key before the strict union judges it, keeping the
-  // canonical input a pure file-or-ref union — `{path, ref: ""}` reads the
-  // file, while a lone `{ref: ""}` fails validation (no readable target).
-  const dropEmptyRef = (value: unknown): unknown => {
-    if (typeof value !== 'object' || value === null || !('ref' in value)) return value;
-    const ref = (value as { ref?: unknown }).ref;
+  // Some providers serialize every optional field with a default. Normalize
+  // only empty fields that cannot carry intent, then let the strict union keep
+  // rejecting genuinely ambiguous file-and-resource requests.
+  const normalizeProviderReadInput = (value: unknown): unknown => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+    const input = value as Record<string, unknown>;
+    const ref = input.ref;
+    const path = input.path;
+    if (typeof ref === 'string' && ref.trim() !== '') {
+      if (typeof path !== 'string' || path.trim() !== '') return value;
+      return Object.fromEntries(
+        Object.entries(input).filter(
+          ([key]) => key !== 'path' && key !== 'offset' && key !== 'limit',
+        ),
+      );
+    }
     if (typeof ref !== 'string' || ref.trim() !== '') return value;
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).filter(([key]) => key !== 'ref'),
-    );
+    return Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'ref'));
   };
   const strictReadParameters = z.preprocess(
-    dropEmptyRef,
+    normalizeProviderReadInput,
     z
       .union([fileReadParameters, runtimeResourceReadParameters])
       .describe('Read a file with path, or a whole runtime resource with ref; provide exactly one'),

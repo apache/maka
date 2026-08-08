@@ -6,6 +6,8 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core';
 import {
+  connectionEnabledModelIds,
+  defaultEnabledModelIdsWhenOmitted,
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
@@ -96,7 +98,10 @@ export function registerRuntimeHostConnectionsIpc(
       providerType: input.providerType,
       ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
       enabled: true,
-      enabledModelIds: input.defaultModel ? [input.defaultModel] : [],
+      enabledModelIds: connectionEnabledModelIds({
+        defaultModel: input.defaultModel,
+        enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
+      }),
       ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
     });
     if (created.kind !== 'committed') {
@@ -230,7 +235,7 @@ export function projectHostConnections(catalog: ConnectionCatalogSnapshot): LlmC
     const defaultModel =
       catalog.defaultTarget?.connectionId === connection.connectionId
         ? catalog.defaultTarget.modelId
-        : connection.enabledModelIds[0] ?? '';
+        : '';
     return {
       slug: connection.slug,
       name: connection.name,

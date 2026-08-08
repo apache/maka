@@ -1,5 +1,6 @@
 import {
   isConnectionReady,
+  NO_REAL_CONNECTION_CODE,
   normalizeOpenAiCodexConnection,
   normalizeRequestedModelForReadiness,
   projectSessionSendOutcome,
@@ -14,9 +15,7 @@ import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 // The rebind-eligibility taxonomy moved to `@maka/core/session-send-projection`
 // (#1038) so the send gate and the renderer health notice share one
 // decision source. Re-exported here for back-compat.
-export { shouldRebindSessionToDefault } from '@maka/core';
-
-export const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
+export { NO_REAL_CONNECTION_CODE, shouldRebindSessionToDefault } from '@maka/core';
 
 // `ChatConfigurationReason` moved to `@maka/core/connection-readiness`
 // (PR110a) so the same taxonomy is shared between the send path and

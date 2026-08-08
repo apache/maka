@@ -6,6 +6,7 @@ import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
+import { normalizeUserSessionName } from '@maka/core/session-name';
 import { selectMakaRunSession } from './run-session-selection.js';
 import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
@@ -41,6 +42,7 @@ export interface MakaRunRuntime {
   ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
   setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;
+  resumeLatest?(sessionId: string): Promise<AsyncIterable<SessionEvent> | null>;
 }
 
 export interface MakaRunContext {
@@ -62,7 +64,7 @@ export interface MakaRunOutcome {
 }
 
 export interface MakaRunContextInput {
-  surface: 'run';
+  surface: 'run' | 'activation';
   workspaceRoot: string;
   cwd: string;
   requestedConnectionSlug?: string;
@@ -283,7 +285,7 @@ export async function runMakaTextCliCore(
         ? selection.session
         : await context.runtime.createSession({
             cwd: selection.cwd,
-            name: firstLine(prompt).slice(0, 42) || 'Maka run',
+            name: makaRunSessionName(prompt),
             backend: 'ai-sdk',
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
@@ -494,6 +496,11 @@ function firstLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ''
   );
+}
+
+function makaRunSessionName(prompt: string): string {
+  const normalized = normalizeUserSessionName(firstLine(prompt).slice(0, 42));
+  return normalized.ok ? normalized.value : 'Maka run';
 }
 
 function withTrailingNewline(text: string): string {

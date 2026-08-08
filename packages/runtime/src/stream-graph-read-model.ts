@@ -900,6 +900,7 @@ function projectClientSessionEvent(
     case 'thinking_delta':
     case 'tool_output_delta':
     case 'tool_progress':
+    case 'tool_result_preview':
     case 'queue_update':
     case 'provider_retry':
       return undefined;

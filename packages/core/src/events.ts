@@ -454,6 +454,7 @@ export type SessionEvent =
   | ToolStartEvent
   | ToolOutputDeltaEvent
   | ToolProgressEvent
+  | ToolResultPreviewEvent
   | ToolResultEvent
   | AnyPermissionRequestEvent
   | SandboxBoundaryRequestEvent
@@ -558,6 +559,30 @@ export interface ToolProgressEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_progress';
   toolUseId: string;
   chunk: string | { kind: 'stdout' | 'stderr'; text: string };
+}
+
+/**
+ * Live-only open-facts for a tool that is still running (e.g. agent_spawn child ready).
+ * Not a durable transcript commit and not model-visible function_response.
+ * Terminal outcome remains a later tool_result.
+ */
+export type ToolResultPreviewContent = {
+  kind: 'subagent';
+  /** Required: the sole purpose of this preview is mid-flight Open. */
+  childSessionId: string;
+  agentId?: string;
+  agentName: string;
+  turnId: string;
+  runId?: string;
+  status: 'running';
+  permissionMode: PermissionMode;
+};
+
+export interface ToolResultPreviewEvent extends BaseEvent, ToolActivityIdentity {
+  type: 'tool_result_preview';
+  toolUseId: string;
+  isError: boolean;
+  content: ToolResultPreviewContent;
 }
 
 export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {

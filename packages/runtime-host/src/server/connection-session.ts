@@ -23,6 +23,14 @@ import type {
   ClientCapabilityConnection,
   ClientCapabilityService,
 } from './client-capability-service.js';
+import type {
+  ConfigurationChangeConnection,
+  HostConfigurationChangeService,
+} from './configuration-change-service.js';
+import type {
+  HostSessionCatalogChangeService,
+  SessionCatalogChangeConnection,
+} from './session-catalog-change-service.js';
 
 const MAX_IN_FLIGHT_REQUESTS = 64;
 
@@ -40,6 +48,8 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveHandlers(): OperationHandlerMap;
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
+  resolveConfigurationChanges?(): HostConfigurationChangeService | undefined;
+  resolveSessionCatalogChanges?(): HostSessionCatalogChangeService | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -53,6 +63,8 @@ export class RuntimeHostConnectionSession {
   #continuity: SessionContinuityConnection | undefined;
   #clientCapabilityService: ClientCapabilityService | undefined;
   #clientCapabilities: ClientCapabilityConnection | undefined;
+  #configurationChanges: ConfigurationChangeConnection | undefined;
+  #sessionCatalogChanges: SessionCatalogChangeConnection | undefined;
   #inputClosed = false;
   #closed = false;
 
@@ -62,6 +74,7 @@ export class RuntimeHostConnectionSession {
   }
 
   async run(): Promise<void> {
+    this.attachGlobalChanges();
     try {
       try {
         await this.#pumpInbound();
@@ -82,6 +95,8 @@ export class RuntimeHostConnectionSession {
     this.#inputClosed = true;
     this.#detachContinuity();
     this.#detachClientCapabilities();
+    this.#detachConfigurationChanges();
+    this.#detachSessionCatalogChanges();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
       this.#options.transport.closed.then(() => 'closed' as const),
@@ -242,12 +257,58 @@ export class RuntimeHostConnectionSession {
     this.#clientCapabilityService = undefined;
   }
 
+  #attachConfigurationChanges(): void {
+    const service = this.#options.resolveConfigurationChanges?.();
+    if (!service || this.#configurationChanges) return;
+    this.#configurationChanges = service.attachConnection(this.#options.connection.connectionId, {
+      send: (frame) => {
+        try {
+          return this.#writer.enqueue(frame).flushed;
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    });
+  }
+
+  attachGlobalChanges(): void {
+    if (this.#closed || this.#inputClosed) return;
+    this.#attachConfigurationChanges();
+    this.#attachSessionCatalogChanges();
+  }
+
+  #detachConfigurationChanges(): void {
+    this.#configurationChanges?.close();
+    this.#configurationChanges = undefined;
+  }
+
+  #attachSessionCatalogChanges(): void {
+    const service = this.#options.resolveSessionCatalogChanges?.();
+    if (!service || this.#sessionCatalogChanges) return;
+    this.#sessionCatalogChanges = service.attachConnection(this.#options.connection.connectionId, {
+      send: (frame) => {
+        try {
+          return this.#writer.enqueue(frame).flushed;
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    });
+  }
+
+  #detachSessionCatalogChanges(): void {
+    this.#sessionCatalogChanges?.close();
+    this.#sessionCatalogChanges = undefined;
+  }
+
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#inputClosed = true;
     this.#detachContinuity();
     this.#detachClientCapabilities();
+    this.#detachConfigurationChanges();
+    this.#detachSessionCatalogChanges();
     this.#writer.close();
     this.#options.transport.destroy();
     this.#options.onTeardown();

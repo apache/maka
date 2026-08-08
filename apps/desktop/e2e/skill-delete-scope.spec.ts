@@ -64,4 +64,3 @@ test('offers delete only for deletable scopes and removes a user-scope skill fro
   // which would drop a keyboard user at the top of the document.
   await expect(page.locator('.maka-module-page-rows > li button:focus')).toHaveCount(1);
 });
-

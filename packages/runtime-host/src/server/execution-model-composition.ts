@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { buildSideConversationSystemPromptFragment, isSideConversationSession } from '@maka/core';
 import {
   buildDeepResearchSystemPromptFragment,
   isDeepResearchSession,
@@ -17,6 +18,7 @@ import {
   AiSdkBackend,
   buildAskUserQuestionTool,
   buildBuiltinTools,
+  buildExploreAgentTool,
   buildDefaultContextBudgetPolicy,
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
@@ -25,6 +27,7 @@ import {
   buildCancelPlanTool,
   buildParentAgentTools,
   buildPricingLookup,
+  buildRequestSandboxBoundaryTool,
   buildProviderOptions,
   buildSubmitPlanTool,
   buildSessionEnvironmentPromptFragment,
@@ -115,6 +118,7 @@ export interface HostExecutionModelCompositionInput {
   readonly memory: HostMemoryCoordinator;
   readonly taskLedger: TaskLedgerStore;
   readonly childInstruction?: string;
+  readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
@@ -236,6 +240,7 @@ export function createHostExecutionModelComposition(
               exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
             })
           : undefined,
+        input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
       ]);
     },
     turnTailPrompt: async (context: HostModelPromptContext) => {
@@ -402,6 +407,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       memory: input.memory,
       taskLedger: input.taskLedger,
       ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
+      ...(isSideConversationSession(input.context.header.labels) ? { sideConversation: true } : {}),
       ...(boundTools ? { boundTools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
@@ -708,6 +714,8 @@ function buildDefaultHostTools(
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
+  const sandboxBoundary = buildRequestSandboxBoundaryTool();
+  const exploreAgent = buildExploreAgentTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -727,6 +735,8 @@ function buildDefaultHostTools(
     ...builtins.map((tool) => tool.name),
     ...hostTools.map((tool) => tool.name),
     question.name,
+    sandboxBoundary.name,
+    exploreAgent.name,
     'Skill',
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
@@ -742,6 +752,8 @@ function buildDefaultHostTools(
     ...builtins,
     ...hostTools,
     question,
+    sandboxBoundary,
+    exploreAgent,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, {
       shadowTracker,
     }),

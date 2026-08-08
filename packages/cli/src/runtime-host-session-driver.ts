@@ -16,6 +16,7 @@ import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime';
 import {
@@ -48,7 +49,7 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
-import { inspectSessionResumeAvailability } from './session-driver.js';
+import { inspectSessionResumeAvailability, SkillInvocationBlockedError } from './session-driver.js';
 import {
   cwdRank,
   firstLine,
@@ -58,7 +59,7 @@ import {
 const MAX_CATALOG_ATTEMPTS = 3;
 
 export interface RuntimeHostMakaSessionDriverInput {
-  connection: RuntimeHostConnection;
+  connection: RuntimeHostSessionDriverConnection;
   cwd: string;
   llmConnectionSlug: string;
   model: string;
@@ -69,9 +70,16 @@ export interface RuntimeHostMakaSessionDriverInput {
   inspectCwdChanges?: InspectCwdChanges;
 }
 
+type RuntimeHostSessionDriverConnection = Pick<
+  RuntimeHostConnection,
+  'hostEpoch' | 'openSessionSubscription' | 'request' | 'startTurn'
+>;
+
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  moveSession(cwd: string): Promise<MakaSessionMoveResult>;
   readMessages(): Promise<StoredMessage[]>;
+  resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions(
@@ -91,7 +99,7 @@ export function createRuntimeHostMakaSessionDriver(
 }
 
 class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
-  readonly #connection: RuntimeHostConnection;
+  readonly #connection: RuntimeHostSessionDriverConnection;
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
@@ -180,7 +188,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const events = channel.eventsForTurn(turnId);
     const modelText = options.modelText ?? prompt;
     try {
-      const started = await this.#request('turn.start', {
+      const startInput = {
         sessionId,
         turnId,
         content: {
@@ -188,13 +196,24 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           ...(modelText === prompt ? {} : { displayText: prompt }),
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-      });
+        ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+      };
+      const result = await this.#connection.startTurn(startInput);
+      if (result.kind === 'blocked') {
+        throw new SkillInvocationBlockedError(result.skillInvocation);
+      }
+      const started = result.turn;
+      const skillInvocation =
+        result.skillInvocation.loaded.length > 0 || result.skillInvocation.failed.length > 0
+          ? result.skillInvocation
+          : undefined;
       return {
         sessionId,
         turnId,
         runId: started.runId,
         events,
         summary: runtimeHostSessionSummary(configuration.session),
+        ...(skillInvocation ? { skillInvocation } : {}),
       };
     } catch (error) {
       channel.failTurn(turnId, error);
@@ -852,7 +871,7 @@ interface LoadedSessionConfiguration {
 }
 
 async function getRuntimeHostSession(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
 ): Promise<SessionCatalogProjection | null> {
   const result = await connection.request('session.catalog.query', { kind: 'get', sessionId });
@@ -870,7 +889,7 @@ function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
 }
 
 async function updateRuntimeHostSession(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
   update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
 ): Promise<SessionCatalogProjection> {
@@ -884,7 +903,7 @@ async function updateRuntimeHostSession(
 }
 
 async function loadCurrentMessages(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
 ): Promise<StoredMessage[]> {
   const subscription = await connection.openSessionSubscription({ sessionId });

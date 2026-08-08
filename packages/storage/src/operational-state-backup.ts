@@ -402,6 +402,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'core_agent_run_events',
         'core_agent_run_projections',
         'core_root_turn_admissions',
+        'core_root_turn_start_rejections',
         'core_root_source_message_proofs',
         'core_interaction_requests',
         'core_interaction_outcomes',

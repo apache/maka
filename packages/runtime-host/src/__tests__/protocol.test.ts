@@ -47,6 +47,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 8);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'agent.graph.operator.query',
       'agent.graph.query',
@@ -65,6 +66,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.catalog.set-default-target',
       'connection.catalog.update',
       'connection.models.fetch',
+      'connection.onboarding.save',
+      'connection.onboarding.verify',
       'connection.test.run',
       'context.compact',
       'context.diagnostics.query',
@@ -76,6 +79,9 @@ describe('Runtime Host bootstrap protocol', () => {
       'deep-research.query',
       'execution.inspect.query',
       'execution.inspect.resolve',
+      'external-session.catalog.query',
+      'external-session.import',
+      'external-session.source.query',
       'goal.control',
       'goal.query',
       'host.status',
@@ -100,6 +106,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'runtime.resource.controller.control',
       'runtime.resource.controller.release',
       'runtime.resource.query',
+      'runtime.resource.start',
       'runtime.resource.stop',
       'session.branch.create',
       'session.catalog.query',
@@ -115,6 +122,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.revision.abandon',
       'session.revision.create',
       'session.transcript.query',
+      'skill.catalog.invocable.query',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',
       'skill.catalog.query',
@@ -280,6 +288,19 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       { ...identity, type: 'tool_progress', chunk: 'working' },
       { ...identity, type: 'tool_result', status: 'completed', durationMs: 3 },
+      {
+        ...identity,
+        type: 'tool_result_preview',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          childSessionId: 'child-1',
+          agentName: 'Local Read',
+          turnId: 'turn-child',
+          status: 'running',
+          permissionMode: 'explore',
+        },
+      },
     ]) {
       assert.doesNotThrow(() => decodeHostFrame({ ...envelope, event }));
     }
@@ -301,6 +322,20 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_result',
         status: 'errored',
         error: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result_preview',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          childSessionId: 'child-1',
+          agentName: 'Local Read',
+          turnId: 'turn-child',
+          status: 'running',
+          permissionMode: 'explore',
+          summary: 'bulk is not open-facts',
+        },
       },
     ]) {
       assert.throws(() => decodeHostFrame({ ...envelope, event }), isInvalidFrame);
@@ -651,6 +686,24 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('accepts protocol v0 in handshakes and Host registration while rejecting negatives', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        kind: 'hello',
+        clientInstanceId: 'activation-client',
+        surface: 'activation',
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      }),
+      {
+        kind: 'hello',
+        clientInstanceId: 'activation-client',
+        surface: 'activation',
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      },
+    );
     const accepted = {
       kind: 'accepted' as const,
       hostEpoch: 'epoch-1',
@@ -931,6 +984,7 @@ describe('Runtime Host bootstrap protocol', () => {
           quotes,
         },
         turnOrchestration: { mode: 'swarm', source: 'host_api' } as const,
+        maxSteps: 4,
       },
     };
     const start = decodeClientFrame(JSON.parse(encodeProtocolFrame(startWire).toString('utf8')));
@@ -942,6 +996,7 @@ describe('Runtime Host bootstrap protocol', () => {
         turnId: 'turn-1',
         content: { text: 'model text', attachments: [attachment], quotes },
         turnOrchestration: { mode: 'swarm', source: 'host_api' },
+        maxSteps: 4,
       },
     });
     assert.notEqual(start.input.content.quotes, quotes);
@@ -970,6 +1025,16 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    for (const maxSteps of [0, 1.5]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            ...startWire,
+            input: { ...startWire.input, maxSteps },
+          }),
+        isInvalidFrame,
+      );
+    }
     assert.throws(
       () =>
         decodeClientFrame({
@@ -1008,7 +1073,7 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('accepts bounded explicit Skill identities only on turn.start', () => {
+  test('accepts bounded explicit Skill identities on turn.start', () => {
     const start = (skillIds: unknown, text = '') =>
       decodeClientFrame({
         requestId: 'skill-start',
@@ -1042,7 +1107,15 @@ describe('Runtime Host bootstrap protocol', () => {
     ]) {
       assert.throws(() => start(skillIds), isInvalidFrame);
     }
-    assert.throws(() => start(undefined), isInvalidFrame);
+    assert.deepEqual(start(undefined, 'plain'), {
+      requestId: 'skill-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-skill-1',
+        content: { text: 'plain' },
+      },
+    });
     assert.deepEqual(start([], 'plain'), {
       requestId: 'skill-start',
       operation: 'turn.start',
@@ -1052,6 +1125,63 @@ describe('Runtime Host bootstrap protocol', () => {
         content: { text: 'plain' },
       },
     });
+  });
+
+  test('bounds turn.start feedback as one transport-safe result', () => {
+    const receipt = {
+      invocation: 'explicit' as const,
+      request: 'writer',
+      success: true as const,
+      ref: 'workspace:legacy:writer',
+      id: 'writer',
+      name: 'Writer',
+      scope: 'workspace' as const,
+      source: 'legacy' as const,
+      truncated: false,
+    };
+    const response = {
+      requestId: 'skill-start-response',
+      operation: 'turn.start' as const,
+      ok: true as const,
+      result: {
+        kind: 'started' as const,
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'turn-skill-1',
+          runId: 'run-skill-1',
+          status: 'running' as const,
+        },
+        skillInvocation: {
+          loaded: [{ id: receipt.id, name: receipt.name }],
+          failed: [],
+          receipts: [receipt],
+        },
+      },
+    };
+    assert.deepEqual(decodeHostFrame(response), response);
+    assert.ok(encodeProtocolFrame(response).byteLength < RUNTIME_HOST_MAX_FRAME_BYTES);
+
+    const request = 'r'.repeat(TURN_SKILL_ID_MAX_LENGTH);
+    const id = 'i'.repeat(81);
+    const name = '"'.repeat(256);
+    const oversized = {
+      ...response,
+      result: {
+        ...response.result,
+        skillInvocation: {
+          loaded: Array.from({ length: TURN_SKILL_ID_MAX_COUNT }, () => ({ id, name })),
+          failed: [],
+          receipts: Array.from({ length: TURN_SKILL_ID_MAX_COUNT }, () => ({
+            ...receipt,
+            request,
+            ref: `workspace:legacy:${id}`,
+            id,
+            name,
+          })),
+        },
+      },
+    };
+    assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
   });
 
   test('decodes a closed regenerate identity without accepting replacement content', () => {

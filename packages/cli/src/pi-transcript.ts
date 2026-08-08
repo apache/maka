@@ -693,6 +693,10 @@ export function applyMakaSessionEventToTranscript(
       break;
     }
 
+    case 'tool_result_preview':
+      // Live-only open-facts for desktop Open; TUI has no mid-flight Open surface.
+      break;
+
     case 'tool_output_delta': {
       const tool = findToolEntry(state, event.toolUseId);
       if (tool && (event.chunk || event.redacted)) {

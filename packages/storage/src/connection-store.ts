@@ -17,6 +17,7 @@ import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { relayProfilesForStorage } from './relay-profile-store.js';
 
 export interface ConnectionStore {
+  getSnapshot(): Promise<ConnectionStoreSnapshot>;
   list(): Promise<LlmConnection[]>;
   get(slug: string): Promise<LlmConnection | null>;
   create(input: CreateConnectionInput): Promise<LlmConnection>;
@@ -39,6 +40,11 @@ export interface ConnectionStore {
    * when there is no default, or when the default entry itself is unusable.
    */
   getDefaultConnection(): Promise<LlmConnection | null>;
+}
+
+export interface ConnectionStoreSnapshot {
+  defaultSlug: string | null;
+  connections: LlmConnection[];
 }
 
 interface ConnectionsFile {
@@ -69,6 +75,10 @@ class FileConnectionStore implements ConnectionStore {
 
   constructor(workspaceRoot: string, explicitPath?: string) {
     this.path = explicitPath ?? join(workspaceRoot, 'llm-connections.json');
+  }
+
+  async getSnapshot(): Promise<ConnectionStoreSnapshot> {
+    return await this.read();
   }
 
   async list(): Promise<LlmConnection[]> {

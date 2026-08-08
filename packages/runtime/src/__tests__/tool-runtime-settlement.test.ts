@@ -421,11 +421,88 @@ describe('ToolRuntime settlement', () => {
     });
     assert.deepEqual(events[0]?.args, { safe: true });
   });
+
+  it('publishes a live tool_result_preview when a linked child becomes ready', async () => {
+    const events: Array<{ type: string; content?: unknown }> = [];
+    const runtime = makeRuntime({
+      runId: 'parent-run',
+      spawnChildSession: async (input) => {
+        await input.onReady?.({
+          childSessionId: 'child-session',
+          turnId: 'child-turn',
+          runId: 'child-run',
+          agentId: 'local_read',
+          agentName: 'Local Read',
+          permissionMode: 'explore',
+        });
+        return {
+          kind: 'subagent',
+          childSessionId: 'child-session',
+          agentId: 'local_read',
+          agentName: 'Local Read',
+          turnId: 'child-turn',
+          runId: 'child-run',
+          status: 'completed',
+          permissionMode: 'explore',
+          summary: 'done',
+          artifactIds: [],
+        };
+      },
+    });
+
+    const settlement = await runtime.settleToolCall({
+      tool: {
+        name: 'agent_spawn',
+        description: 'spawn',
+        parameters: {},
+        impl: async (_args, ctx) => {
+          assert.equal(typeof ctx.spawnChildSession, 'function');
+          return await ctx.spawnChildSession!({
+            agentProfile: 'local_read',
+            prompt: 'Inspect',
+          });
+        },
+      },
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'spawn-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    const preview = events.find((event) => event.type === 'tool_result_preview');
+    assert.deepEqual(preview?.content, {
+      kind: 'subagent',
+      childSessionId: 'child-session',
+      agentId: 'local_read',
+      agentName: 'Local Read',
+      turnId: 'child-turn',
+      runId: 'child-run',
+      status: 'running',
+      permissionMode: 'explore',
+    });
+    const previewIndex = events.findIndex((event) => event.type === 'tool_result_preview');
+    const resultIndex = events.findIndex((event) => event.type === 'tool_result');
+    assert.ok(resultIndex > previewIndex);
+    assert.equal(
+      (settlement.result as { childSessionId?: string }).childSessionId,
+      'child-session',
+    );
+  });
 });
 
 function makeRuntime(
   overrides: Partial<
-    Pick<ToolRuntimeInput, 'materializeDefaultToolResultOutput' | 'readExecutionBoundary'>
+    Pick<
+      ToolRuntimeInput,
+      'materializeDefaultToolResultOutput' | 'readExecutionBoundary' | 'spawnChildSession' | 'runId'
+    >
   > = {},
 ): ToolRuntime {
   return createTestToolRuntime({

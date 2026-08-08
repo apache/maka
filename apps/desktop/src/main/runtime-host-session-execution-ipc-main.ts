@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { IpcMain } from "electron";
+import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import {
   deriveTurnRecords,
   SIDE_CONVERSATION_SESSION_LABEL,
+  type ActiveInteractionRequestEvent,
   type AttachmentRef,
+  type PermissionMode,
+  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
   type StoredMessage,
 } from "@maka/core";
-import type { SkillInvocationResult } from "@maka/runtime";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
   resolveAttachmentRefs,
@@ -23,18 +25,13 @@ import {
   normalizeUserQuestionResponse,
 } from "./permission-response-guard.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
 } from "./runtime-host-session-observer.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
-
-const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
-  loaded: [],
-  failed: [],
-  receipts: [],
-};
 
 type RuntimeHostSessionExecutionClient = Pick<
   DesktopRuntimeHostClient,
@@ -52,6 +49,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "startTurnResume"
   | "submitMessage"
   | "updateSessionMetadata"
+  | "updateSessionConfiguration"
 >;
 
 export interface RuntimeHostSessionExecutionIpcDeps {
@@ -66,18 +64,46 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   stat(path: string): Promise<{ size: number }>;
   resizeImage(bytes: Uint8Array): Promise<Uint8Array>;
   beforeStop(sessionId: string): void | Promise<void>;
+  sessionCopyCleanup: SessionCopyCleanupAuthority;
+  onBackgroundError(error: unknown): void;
+  e2eInteractions?: {
+    list(sessionId: string): readonly ActiveInteractionRequestEvent[];
+    respondToSandboxBoundary(
+      sessionId: string,
+      response: SandboxBoundaryResponse,
+    ): Promise<
+      | { readonly handled: false }
+      | { readonly handled: true; readonly permissionMode?: PermissionMode }
+    >;
+  };
   newId?: () => string;
 }
 
 /**
- * Register the isolated Runtime Host-backed half of the existing Desktop
- * Session IPC facade. Production continues to register the embedded facade
- * until M5 performs the atomic owner switch.
+ * Project Host-owned Session execution onto the Desktop renderer IPC contract.
+ * The adapter owns client validation and presentation events, never Runtime
+ * execution or Session persistence.
  */
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
   ipcMain: Pick<IpcMain, "handle">,
 ): (sessionId: string) => Promise<void> {
+  const observedCopyOwners = new Set<string>();
+  const bindCopyOwner = (event: IpcMainInvokeEvent): string => {
+    const ownerId = `web-contents:${event.sender.id}`;
+    if (!observedCopyOwners.has(ownerId)) {
+      observedCopyOwners.add(ownerId);
+      const abandon = () => {
+        if (!observedCopyOwners.delete(ownerId)) return;
+        event.sender.removeListener('render-process-gone', abandon);
+        event.sender.removeListener('destroyed', abandon);
+        void deps.sessionCopyCleanup.abandonOwner(ownerId).catch(deps.onBackgroundError);
+      };
+      event.sender.once('render-process-gone', abandon);
+      event.sender.once('destroyed', abandon);
+    }
+    return ownerId;
+  };
   const newId = deps.newId ?? randomUUID;
   const stopSession = createRuntimeHostSessionStop(deps, newId);
 
@@ -115,8 +141,10 @@ export function registerRuntimeHostSessionExecutionIpc(
   );
   ipcMain.handle(
     "sessions:listActiveInteractions",
-    (_event, sessionId: string) =>
-      deps.observer.readActiveInteractions(sessionId),
+    async (_event, sessionId: string) => [
+      ...(deps.e2eInteractions?.list(sessionId) ?? []),
+      ...(await deps.observer.readActiveInteractions(sessionId)),
+    ],
   );
 
   ipcMain.handle(
@@ -160,7 +188,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
-      await deps.client.startTurn({
+      const startInput = {
         sessionId,
         turnId,
         content: {
@@ -178,14 +206,23 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(command.turnOrchestration
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
-      });
+      };
+      const startResult = await deps.client.startTurn(startInput);
+      if (startResult.kind === "blocked") {
+        return {
+          ok: false as const,
+          attachments,
+          inlineReferences,
+          skillInvocation: startResult.skillInvocation,
+        };
+      }
       deps.emitSessionsChanged("status-change", sessionId, { turnId });
       return {
         ok: true as const,
         turnId,
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: startResult.skillInvocation,
       };
     },
   );
@@ -211,6 +248,19 @@ export function registerRuntimeHostSessionExecutionIpc(
     "sessions:respondToSandboxBoundary",
     async (_event, sessionId: string, input: unknown) => {
       const response = normalizeSandboxBoundaryResponse(input);
+      const fixtureResult = await deps.e2eInteractions?.respondToSandboxBoundary(
+        sessionId,
+        response,
+      );
+      if (fixtureResult?.handled) {
+        if (fixtureResult.permissionMode) {
+          await deps.client.updateSessionConfiguration(sessionId, {
+            permissionMode: fixtureResult.permissionMode,
+          });
+          deps.emitSessionsChanged("mode-change", sessionId);
+        }
+        return;
+      }
       const pending = await requireInteraction(
         deps.observer,
         sessionId,
@@ -299,13 +349,26 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle(
     "sessions:branchFromTurn",
-    async (_event, sessionId: string, input: unknown) => {
+    async (event, sessionId: string, input: unknown) => {
       const normalized = normalizeRuntimeHostBranchFromTurnInput(input);
-      let branch = await deps.client.copySession("branch", {
-        sourceSessionId: sessionId,
-        targetSessionId: normalized.copyId,
-        sourceTurnId: normalized.sourceTurnId,
-      });
+      const createBranch = () =>
+        deps.client.copySession("branch", {
+          sourceSessionId: sessionId,
+          targetSessionId: normalized.copyId,
+          sourceTurnId: normalized.sourceTurnId,
+        });
+      let branch = normalized.sideConversation
+        ? await deps.sessionCopyCleanup.ownCreation(
+            {
+              sessionId: normalized.copyId,
+              kind: 'branch',
+              sourceSessionId: sessionId,
+              sourceTurnId: normalized.sourceTurnId,
+              ownerId: bindCopyOwner(event),
+            },
+            createBranch,
+          )
+        : await createBranch();
       if (normalized.name || normalized.sideConversation) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
           ...(normalized.name ? { name: normalized.name } : {}),

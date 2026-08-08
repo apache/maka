@@ -76,9 +76,9 @@ export async function loadApprovalPreview(input: {
 }
 
 /**
- * One registration for both execution modes (embedded sessions IPC and the
- * Runtime Host boot path), so the channel's validation and wiring cannot
- * drift between them.
+ * Register the client-owned attachment preview boundary used by Runtime Host
+ * Desktop. Preview admission and byte validation remain local because the
+ * renderer consumes this native presentation capability directly.
  */
 export function registerAttachmentPreviewIpc(input: {
   ipcMain: {

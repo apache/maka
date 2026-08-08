@@ -62,6 +62,8 @@ export interface FlowInput {
   orchestration?: EffectiveOrchestration;
   /** Trusted effective tool protocol snapshot for this invocation. */
   toolMode?: ToolMode;
+  /** Trusted per-turn cap on provider tool-call steps. */
+  maxSteps?: number;
   /** User turn text. */
   text: string;
   /** Optional attachments bound to the user message. */

@@ -994,7 +994,11 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     ...createUnavailableDomainOperationHandlers(),
     'turn.start': async (input) => ({
       ok: true,
-      result: runningSnapshot(input.sessionId, input.turnId),
+      result: {
+        kind: 'started',
+        turn: runningSnapshot(input.sessionId, input.turnId),
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
     }),
     'turn.query': queryTurn,
     'turn.stop': async (input) => ({

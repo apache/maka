@@ -9,6 +9,7 @@
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
+    "./desktop-e2e-execution-candidate-main": "./dist/desktop-e2e-execution-candidate-main.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js"
   },
@@ -22,7 +23,8 @@
   "dependencies": {
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
-    "@maka/storage": "0.1.0"
+    "@maka/storage": "0.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "electron": "^43.2.0"

@@ -1,6 +1,5 @@
 import { app, dialog } from 'electron';
 import { isIsolatedE2e } from './startup-context.js';
-import { resolveDesktopRuntimeOwner } from './desktop-runtime-owner.js';
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.
@@ -24,7 +23,7 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 // Electron does not enforce single-instance by default. Must run before any
 // workspace/store setup below -- a losing second process exits immediately,
 // before touching shared state. See the 'second-instance' listener in
-// boot.ts for what the surviving process does about it.
+// runtime-host-boot.ts for what the surviving process does about it.
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
@@ -39,15 +38,12 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(() => {
       console.log('[startup] app ready');
-      const owner = resolveDesktopRuntimeOwner(process.env.MAKA_DESKTOP_RUNTIME_OWNER);
-      return owner === 'runtime-host'
-        ? import('./runtime-host-boot.js')
-        : import('./boot.js');
+      return import('./runtime-host-boot.js');
     })
     .catch((error: unknown) => {
       console.error('[startup] fatal:', error);
       // E2E runs must not hang on a modal error box (same reasoning as the
-      // fixture-fatal path in boot.ts: print a parseable line and exit fast).
+      // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
       if (!isIsolatedE2e) {
         const message = error instanceof Error ? error.message : String(error);
         dialog.showErrorBox('Maka failed to start', message);

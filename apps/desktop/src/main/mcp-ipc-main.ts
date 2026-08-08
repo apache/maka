@@ -8,7 +8,8 @@ export interface McpIpcMainDeps {
   store: McpConfigStore;
   manager: Pick<McpClientManager, 'sync' | 'statuses' | 'test' | 'reconnect' | 'cancelConnect'>;
   ensureReady(): Promise<void>;
-  refreshIdleBackends(): Promise<void>;
+  publishCapabilities(): Promise<void>;
+  onPublicationError(error: unknown): void;
   emitChanged(statuses: McpServerStatus[]): void;
 }
 
@@ -25,13 +26,13 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   deps.ipcMain.handle('mcp:setConfig', async (_event, config: McpConfigFile) => {
     const next = await deps.store.set(config);
     await deps.manager.sync(next);
-    await changed(deps);
+    changed(deps);
     return next;
   });
   deps.ipcMain.handle('mcp:upsert', async (_event, serverId: string, config: McpServerConfig) => {
     const next = await deps.store.upsert(serverId, config);
     await deps.manager.sync(next);
-    await changed(deps);
+    changed(deps);
     return next;
   });
   deps.ipcMain.handle('mcp:install', async (_event, serverId: string, config: McpServerConfig) => {
@@ -51,7 +52,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       } catch (error) {
         if (!operation.cancelled) throw error;
       }
-      if (!operation.cancelled) await changed(deps);
+      if (!operation.cancelled) changed(deps);
       return next;
     } finally {
       if (installs.get(serverId) === operation) installs.delete(serverId);
@@ -61,7 +62,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   deps.ipcMain.handle('mcp:remove', async (_event, serverId: string) => {
     const next = await deps.store.remove(serverId);
     await deps.manager.sync(next);
-    await changed(deps);
+    changed(deps);
     return next;
   });
   deps.ipcMain.handle('mcp:cancelInstall', async (_event, serverId: string) => {
@@ -71,7 +72,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     await operation?.settled;
     const next = await deps.store.remove(serverId);
     await deps.manager.sync(next);
-    await changed(deps);
+    changed(deps);
     return next;
   });
   deps.ipcMain.handle('mcp:test', async (_event, serverId: string) => {
@@ -83,12 +84,14 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   deps.ipcMain.handle('mcp:reconnect', async (_event, serverId: string) => {
     await deps.ensureReady();
     const result = await deps.manager.reconnect(serverId);
-    await changed(deps);
+    changed(deps);
     return result;
   });
 }
 
-async function changed(deps: McpIpcMainDeps): Promise<void> {
-  await deps.refreshIdleBackends();
+function changed(deps: McpIpcMainDeps): void {
   deps.emitChanged(deps.manager.statuses());
+  void Promise.resolve()
+    .then(() => deps.publishCapabilities())
+    .catch(deps.onPublicationError);
 }

@@ -56,7 +56,13 @@ export type SkillCatalogManagedUpdateMutationTypeContract = [
 ];
 
 describe('Runtime Host Skill catalog protocol', () => {
-  test('declares only the three frozen ready operations and their error sets', () => {
+  test('declares the four frozen ready operations and their error sets', () => {
+    assert.deepEqual(Object.keys(SKILL_CATALOG_OPERATION_SPECS).sort(), [
+      'skill.catalog.invocable.query',
+      'skill.catalog.mutate',
+      'skill.catalog.preview-update',
+      'skill.catalog.query',
+    ]);
     const queryErrors = [
       'host_not_ready',
       'host_draining',
@@ -65,6 +71,14 @@ describe('Runtime Host Skill catalog protocol', () => {
       'persistence_failed',
       'internal_failure',
     ];
+    assert.deepEqual(
+      {
+        mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].mode,
+        availability: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].availability,
+        errors: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.invocable.query'].errors,
+      },
+      { mode: 'query', availability: 'ready', errors: queryErrors },
+    );
     assert.deepEqual(
       {
         mode: SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].mode,
@@ -91,6 +105,57 @@ describe('Runtime Host Skill catalog protocol', () => {
         mode: 'command',
         availability: 'ready',
         errors: [...queryErrors, 'commit_outcome_unknown'],
+      },
+    );
+  });
+
+  test('decodes bounded Session and new-Session invocable queries and pages', () => {
+    for (const input of [
+      { kind: 'start', target: { kind: 'session', sessionId: 'session-1' } },
+      {
+        kind: 'start',
+        target: { kind: 'new_session', context: CONTEXT, collaborationMode: 'plan' },
+      },
+      {
+        kind: 'continue',
+        target: { kind: 'session', sessionId: 'session-1' },
+        revision: REVISION,
+        cursor: 'next',
+      },
+    ]) {
+      assert.deepEqual(
+        decodeClientFrame({
+          requestId: 'request-1',
+          operation: 'skill.catalog.invocable.query',
+          input,
+        }),
+        {
+          requestId: 'request-1',
+          operation: 'skill.catalog.invocable.query',
+          input,
+        },
+      );
+    }
+    const result = {
+      kind: 'page',
+      revision: REVISION,
+      items: [
+        { ref: 'project:maka:review', id: 'review', name: 'Review', description: 'Review code' },
+      ],
+      nextCursor: null,
+    };
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-1',
+        operation: 'skill.catalog.invocable.query',
+        ok: true,
+        result,
+      }),
+      {
+        requestId: 'request-1',
+        operation: 'skill.catalog.invocable.query',
+        ok: true,
+        result,
       },
     );
   });

@@ -1,0 +1,113 @@
+.maka-external-session-import-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+}
+
+.maka-external-session-import-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-1);
+}
+
+.maka-external-session-import-source-button {
+  min-height: var(--spacing-8);
+  padding-inline: var(--spacing-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  background: var(--color-background-surface);
+  color: var(--color-text-secondary);
+  font: inherit;
+}
+
+.maka-external-session-import-source-button:hover {
+  background: var(--color-overlay-hover);
+}
+
+.maka-external-session-import-source-button[aria-pressed="true"] {
+  border-color: var(--color-border-emphasized);
+  background: var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+.maka-external-session-import-loading {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-2);
+}
+
+.maka-external-session-import-list {
+  display: grid;
+  max-height: min(420px, 45dvh);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+}
+
+.maka-external-session-import-row {
+  display: grid;
+  gap: var(--spacing-1);
+  padding: var(--spacing-3);
+  border: 0;
+  border-block-end: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: start;
+  font: inherit;
+}
+
+.maka-external-session-import-row:last-child {
+  border-block-end: 0;
+}
+
+.maka-external-session-import-row:hover {
+  background: var(--color-overlay-hover);
+}
+
+.maka-external-session-import-row[aria-pressed="true"] {
+  background: var(--color-accent-muted);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.maka-external-session-import-row-heading,
+.maka-external-session-import-row-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+}
+
+.maka-external-session-import-row-name,
+.maka-external-session-import-row-cwd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-external-session-import-row-name {
+  font-weight: 600;
+}
+
+.maka-external-session-import-row-meta {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.maka-external-session-import-row-meta time {
+  flex: none;
+}
+
+.maka-external-session-import-row-badge {
+  flex: none;
+  padding: 1px var(--spacing-2);
+  border-radius: var(--radius-full);
+  background: var(--color-background-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}

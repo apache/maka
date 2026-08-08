@@ -1,5 +1,35 @@
 import { test, expect } from './fixtures';
 
+test('generated files use list-to-preview navigation with a compact action menu', async ({ artifactPaneWindow: page }) => {
+  const pane = page.getByRole('region', { name: '生成文件预览面板' });
+  const list = pane.getByRole('listbox', { name: '生成文件列表' });
+  const notes = list.getByRole('option', { name: 'notes.md' });
+
+  await expect(list).toBeVisible();
+  await notes.click();
+
+  await expect(list).toHaveCount(0);
+  await expect(pane.getByRole('region', { name: '预览 notes.md' })).toBeVisible();
+  await expect(pane.getByRole('button', { name: '返回生成文件列表' })).toBeVisible();
+
+  await pane.getByRole('button', { name: 'notes.md 的更多操作' }).click();
+  await expect(page.getByRole('menuitem', { name: '在 Finder 中打开' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '另存为' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '复制' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '删除' })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await pane.getByRole('button', { name: '返回生成文件列表' }).click();
+  await expect(list).toBeVisible();
+  await expect(list).toBeFocused();
+
+  await list.press('Enter');
+  await expect(list).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(list).toBeVisible();
+  await expect(list).toBeFocused();
+});
+
 // Workbar product journey. Narrow max-height and "toggle unmounted without a
 // session" are pinned in chat-shell-layout-contract (CSS + chrome actions source).
 test('session tools share one user-controlled workbar that stays mounted across repeated collapse', async ({ sessionWorkbarWindow: page }) => {
@@ -13,8 +43,8 @@ test('session tools share one user-controlled workbar that stays mounted across 
   await expect(tabs.getByRole('tab', { name: /浏览器/ })).toHaveCount(0);
   const launcher = workbar.getByRole('button', { name: '打开工作栏标签' });
   await launcher.click();
-  await expect(page.getByRole('menuitem', { name: '文件' })).toBeEnabled();
-  await page.getByRole('menuitem', { name: '任务' }).click();
+  await expect(page.getByRole('menuitem', { name: '生成文件' })).toBeEnabled();
+  await page.keyboard.press('Escape');
   await expect(
     page
       .getByLabel('活跃会话任务')
@@ -122,7 +152,7 @@ test('session tools share one user-controlled workbar that stays mounted across 
   await expect(rightWorkbar).toHaveCSS('width', '511px');
 
   await rightWorkbar.getByRole('button', { name: '打开工作栏标签' }).click();
-  await page.getByRole('menuitem', { name: '文件' }).click();
+  await page.getByRole('menuitem', { name: '生成文件' }).click();
   await expect(page.getByText('暂无生成文件')).toBeVisible();
 
   // The record-file row is a fact about the workspace, not the session: it

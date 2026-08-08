@@ -40,7 +40,11 @@ interface InspectStores {
   readonly sessionStore: Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
   readonly agentRunStore: Pick<
     ExecutionAgentRunReader,
-    'readRun' | 'findRunsById' | 'listSessionRunsBounded' | 'readEventsBounded'
+    | 'readRun'
+    | 'findRunsById'
+    | 'listSessionRunsBounded'
+    | 'readEventsBounded'
+    | 'readEventsByTypeBounded'
   >;
   readonly runtimeEventStore: Pick<ExecutionRuntimeEventReader, 'readRuntimeEventsBounded'>;
 }
@@ -265,7 +269,12 @@ export class HostExecutionInspectCoordinator {
     for (const run of runPage.runs) {
       const runEvents = await budget
         .read((remaining) =>
-          this.#stores.agentRunStore.readEventsBounded(sessionId, run.runId, remaining),
+          this.#stores.agentRunStore.readEventsByTypeBounded(
+            sessionId,
+            run.runId,
+            MODEL_CALL_ATTEMPT_EVENT_TYPE,
+            remaining,
+          ),
         )
         .catch((error) => {
           if (isInspectQueryTooLargeError(error)) throw error;

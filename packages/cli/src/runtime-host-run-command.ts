@@ -92,9 +92,6 @@ export function createRuntimeHostRunContext(
   input: Parameters<MakaRunDeps['createContext']>[0],
   overrides: Partial<RuntimeHostRunContextDeps> = {},
 ): MakaRunContext {
-  if (input.maxSteps !== undefined) {
-    throw new Error('--max-steps is not available through the Runtime Host yet');
-  }
   const target = resolveRuntimeHostCliTarget(catalog, {
     ...(input.requestedConnectionSlug ? { connectionSlug: input.requestedConnectionSlug } : {}),
     ...(input.requestedModel ? { model: input.requestedModel } : {}),
@@ -116,6 +113,7 @@ export function createRuntimeHostRunContext(
     input.runOutcomeObserver,
     input.enableAgentGraph === true,
     input.sessionCwdOverride,
+    input.maxSteps,
   );
   return {
     runtime,
@@ -138,6 +136,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #observer: ((outcome: MakaRunOutcome) => void | Promise<void>) | undefined;
   readonly #graphEnabled: boolean;
   readonly #sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'];
+  readonly #maxSteps: number | undefined;
   readonly #unsubscribeTranscriptReplacements: () => void;
   #sessionId: string | undefined;
   #activeTurn: { sessionId: string; turnId: string; runId: string } | undefined;
@@ -161,12 +160,14 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     observer: ((outcome: MakaRunOutcome) => void | Promise<void>) | undefined,
     graphEnabled: boolean,
     sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'],
+    maxSteps: number | undefined,
   ) {
     this.#connection = connection;
     this.#driver = driver;
     this.#observer = observer;
     this.#graphEnabled = graphEnabled;
     this.#sessionCwdOverride = sessionCwdOverride;
+    this.#maxSteps = maxSteps;
     this.#interactions = new NonInteractiveInteractionController(driver, (pending) =>
       this.#stopForInteraction(pending),
     );
@@ -192,9 +193,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (input.turnOrchestration?.mode === 'graph') {
       this.#graphAdmissionTurnIds = graphSupervisorTurnIds(await this.#driver.readMessages());
     }
+    const maxSteps = input.maxSteps ?? this.#maxSteps;
     const turn = await this.#driver.preparePrompt(input.text, {
       turnId: input.turnId,
       ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+      ...(maxSteps !== undefined ? { maxSteps } : {}),
     });
     if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
     const activeTurn = { sessionId: turn.sessionId, turnId: turn.turnId, runId: turn.runId };
@@ -216,6 +219,12 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   ): Promise<void> {
     await this.#attach(sessionId);
     await this.#driver.respondToSandboxBoundary(response);
+  }
+
+  async resumeLatest(sessionId: string): Promise<AsyncIterable<SessionEvent> | null> {
+    await this.#attach(sessionId);
+    const plan = await this.#connection.request('turn.resume.query', { sessionId });
+    return plan.disposition === 'ready' ? this.#driver.resumeLatest() : null;
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -297,9 +306,12 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#sessionCwdOverride?.sessionId === sessionId &&
       switched.summary.cwd !== this.#sessionCwdOverride.cwd
     ) {
-      throw new Error(
-        `Runtime Host cannot resume Session ${sessionId}: its stored working directory is not canonical`,
-      );
+      const moved = await this.#driver.moveSession(this.#sessionCwdOverride.cwd);
+      if (moved.cwd !== this.#sessionCwdOverride.cwd) {
+        throw new Error(
+          `Runtime Host cannot resume Session ${sessionId}: its working directory could not be canonicalized`,
+        );
+      }
     }
     this.#sessionId = sessionId;
   }

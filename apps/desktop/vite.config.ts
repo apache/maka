@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
+import { dependencyPatchesCachePlugin } from './vite-dependency-patches.js';
 
 /**
  * PR-ICONS-FULL-REPLACE-0 (WAWQAQ msg `60064e2d` 2026-06-24): point the
@@ -18,7 +19,10 @@ const UI_SRC = resolve(REPO_ROOT, 'packages/ui/src');
 export default defineConfig({
   root: 'src/renderer',
   base: './',
-  plugins: [react()],
+  // Vite hashes plugin names into its dependency-cache key. patch-package does
+  // not change package-lock.json, so carry the patch contents in that key while
+  // keeping every Astryx entry in one optimized module graph.
+  plugins: [react(), dependencyPatchesCachePlugin(REPO_ROOT)],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [

@@ -1,4 +1,6 @@
 import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import type { ToolResultPreviewContent } from '@maka/core/events';
+import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
 import {
   assertExactKeys,
@@ -30,6 +32,7 @@ export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 export const SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES = 3 * TOOL_OUTPUT_DELTA_MAX_CHARS;
 export const SESSION_TOOL_NAME_MAX_BYTES = 256;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
+export const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES = 48 * 1024;
 
 export type SessionLifecycleStatus =
   | 'active'
@@ -142,6 +145,11 @@ export type SessionToolEvent =
       operationId?: string;
       status: 'completed' | 'errored';
       durationMs?: number;
+    })
+  | (SessionToolEventIdentity & {
+      type: 'tool_result_preview';
+      isError: boolean;
+      content: ToolResultPreviewContent;
     });
 
 export interface SessionEventFrame extends SubscriptionEnvelope {
@@ -176,6 +184,14 @@ export type SessionDomainChangedFrame = SubscriptionEnvelope &
     kind: 'subscription.session_domain_changed';
   };
 
+export interface SessionRuntimeResourcePtyDataFrame extends SubscriptionEnvelope {
+  kind: 'subscription.runtime_resource_pty_data';
+  sessionId: string;
+  ref: string;
+  ptySequence: number;
+  data: string;
+}
+
 export type AgentGraphChangedReason = 'observation' | 'runtime_activity' | 'reconciled' | 'stopped';
 
 export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
@@ -195,6 +211,7 @@ export type SubscriptionFrame =
   | SessionDeltaFrame
   | SessionEventFrame
   | SessionDomainChangedFrame
+  | SessionRuntimeResourcePtyDataFrame
   | AgentGraphChangedFrame
   | SubscriptionClosedFrame;
 
@@ -319,6 +336,29 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
             resources: decodeSessionRuntimeResourceChanges(record.resources),
           }
         : { kind: record.kind, ...envelope, sessionId, domain };
+  } else if (record.kind === 'subscription.runtime_resource_pty_data') {
+    assertExactKeys(record, 'Runtime Resource PTY data frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sequence',
+      'sessionId',
+      'ref',
+      'ptySequence',
+      'data',
+    ]);
+    frame = {
+      kind: record.kind,
+      ...envelope,
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      ref: decodeRuntimeResourceRef(record.ref),
+      ptySequence: requirePositiveCount(record.ptySequence, 'PTY sequence'),
+      data: requireUtf8BoundedString(
+        record.data,
+        'Runtime Resource PTY data',
+        SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
+      ),
+    };
   } else if (record.kind === 'subscription.closed') {
     assertExactKeys(record, 'subscription closed frame', [
       'kind',
@@ -370,6 +410,7 @@ export function isSubscriptionFrameKind(value: unknown): value is SubscriptionFr
     value === 'subscription.session_delta' ||
     value === 'subscription.session_event' ||
     value === 'subscription.session_domain_changed' ||
+    value === 'subscription.runtime_resource_pty_data' ||
     value === 'subscription.agent_graph_changed' ||
     value === 'subscription.closed'
   );
@@ -631,6 +672,32 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
         : {
             durationMs: requireCount(record.durationMs, 'Session tool result duration'),
           }),
+    };
+  }
+  if (record.type === 'tool_result_preview') {
+    assertExactKeys(record, 'Session tool result preview event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'toolUseId',
+      'isError',
+      'content',
+    ]);
+    if (typeof record.isError !== 'boolean') {
+      throw invalidProtocolFrame('Invalid Session tool result preview isError');
+    }
+    let content: ToolResultPreviewContent;
+    try {
+      content = decodeToolResultPreviewContent(record.content);
+    } catch {
+      throw invalidProtocolFrame('Invalid Session tool result preview content');
+    }
+    return {
+      type: record.type,
+      ...identity,
+      isError: record.isError,
+      content,
     };
   }
   throw invalidProtocolFrame('Invalid Session tool event type');

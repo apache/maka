@@ -206,12 +206,15 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       },
       botRegistry: {} as BotRegistry,
       resolveBotCreateTarget: async () => ({ cwd: base }),
+      resolveSessionCreateProject: async () => ({ cwd: base }),
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       emitModeChanged() {},
       completeComputerUseTurn() {},
       createSessionCopyCleanup: () => ({
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async () => undefined,
         schedule: async () => undefined,
+        abandonOwner: async () => undefined,
         recover: async () => ({ removed: [], failed: [] }),
       }),
       newId: () => 'session-ipc',
@@ -279,10 +282,14 @@ test('drives the renderer Session execution facade through real UDS framing', as
             return {
               ok: true,
               result: {
-                sessionId: input.sessionId,
-                turnId: input.turnId,
-                runId: 'run-1',
-                status: 'running',
+                kind: 'started',
+                turn: {
+                  sessionId: input.sessionId,
+                  turnId: input.turnId,
+                  runId: 'run-1',
+                  status: 'running',
+                },
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
               },
             };
           },
@@ -314,6 +321,8 @@ test('drives the renderer Session execution facade through real UDS framing', as
         stat: async () => ({ size: 0 }),
         resizeImage: async (bytes) => bytes,
         beforeStop() {},
+        sessionCopyCleanup: unusedSessionCopyCleanup(),
+        onBackgroundError() {},
         newId: () => 'turn-1',
       },
       ipc,
@@ -426,7 +435,10 @@ test('drives bounded Session domain projections through real UDS framing', async
     if (connected.kind !== 'connected') throw new Error('Desktop did not connect to Runtime Host');
     const client = new DesktopRuntimeHostClient(connected.connection);
     const ipc = ipcHarness();
-    registerRuntimeHostSessionDomainsIpc({ client, emitModeChanged() {} }, ipc);
+    registerRuntimeHostSessionDomainsIpc(
+      { client, emitModeChanged() {}, sessionObserver: unusedSessionObserver() },
+      ipc,
+    );
 
     assert.equal(
       ((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id,
@@ -491,6 +503,25 @@ function ipcHarness() {
       assert.ok(handler, `missing handler: ${channel}`);
       return handler({} as never, ...args);
     },
+  };
+}
+
+function unusedSessionCopyCleanup() {
+  return {
+    ownCreation: async <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
+    async cleanup() {},
+    async schedule() {},
+    async abandonOwner() {},
+    async recover() {
+      return { removed: [], failed: [] };
+    },
+  };
+}
+
+function unusedSessionObserver() {
+  return {
+    async observe() {},
+    async unobserve() {},
   };
 }
 

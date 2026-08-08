@@ -8,7 +8,7 @@
 
 **A local-first Agent workspace built for real work.**
 
-Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages, tool calls, and durable-task progress as recoverable execution facts. The same Runtime is available through the desktop app, terminal TUI, non-interactive CLI, and Headless runner.
+Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages, tool calls, and durable-task progress as recoverable execution facts. Desktop, the terminal TUI, and the non-interactive CLI are clients of one per-workspace Runtime Host. Headless owns a separate task runtime for durable evaluation and automation workloads.
 
 > [!IMPORTANT]
 > Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
@@ -135,13 +135,13 @@ The CLI reads the same model connections and workspace configuration written by 
 The backend spine is:
 
 ```text
-Desktop / TUI / Headless
-          ↓
-SessionManager → AgentRun → Model + Tool Runtime
-          ↓
-Runtime Event Log → Context / Session / UI projections
-          ↓
-Task Event Log → TaskRun → Self-check / AHE evidence
+Desktop / TUI / CLI → Runtime Host → SessionManager → AgentRun
+                                             ↓
+                         Model + Tool Runtime → Runtime Event Log
+                                             ↓
+                              Context / Session / UI projections
+
+Headless / Eval → Task Event Log → TaskRun → Self-check / AHE evidence
 ```
 
 Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, code boundaries, problem-oriented reading paths, and six bilingual deep dives.
@@ -272,6 +272,7 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 - [Documentation index and authority map](./docs/README.md)
 - [Backend architecture](./ARCHITECTURE.md)
 - [Product design](./DESIGN.md)
+- [Contributing guide](./CONTRIBUTING.md)
 - [Security policy](./SECURITY.md)
 
 ## License

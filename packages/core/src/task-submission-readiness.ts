@@ -1,4 +1,9 @@
-import { isConnectionReady, type ChatConfigurationReason } from './connection-readiness.js';
+import {
+  isConnectionReady,
+  normalizeOpenAiCodexConnection,
+  normalizeRequestedModelForReadiness,
+  type ChatConfigurationReason,
+} from './connection-readiness.js';
 import type { LlmConnection } from './llm-connections.js';
 
 export const TASK_SUBMISSION_READINESS_STATES = [
@@ -22,6 +27,7 @@ export type TaskSubmissionReadinessRepairTarget =
 export type TaskSubmissionReadinessBlockerCode =
   | `model_${ChatConfigurationReason}`
   | 'model_credentials_unknown'
+  | 'model_target_unknown'
   | 'runtime_unavailable'
   | 'runtime_unknown'
   | 'workspace_missing'
@@ -63,12 +69,17 @@ export interface DeriveTaskSubmissionReadinessInput {
     state: 'ready' | 'starting' | 'unavailable' | 'unknown';
     checkedAt: number;
   };
-  modelTarget: {
-    connection?: LlmConnection;
-    hasSecret?: boolean;
-    requestedModel?: string;
-    checkedAt: number;
-  };
+  modelTarget:
+    | {
+        kind: 'resolved';
+        connection: LlmConnection;
+        hasSecret?: boolean;
+        requestedModel?: string;
+        checkedAt: number;
+      }
+    | { kind: 'missing_default'; checkedAt: number }
+    | { kind: 'connection_missing'; connectionSlug: string; checkedAt: number }
+    | { kind: 'unknown'; checkedAt: number };
   workspace: {
     state: 'ready' | 'missing' | 'unavailable' | 'unknown';
     checkedAt: number;
@@ -124,17 +135,29 @@ function runtimeDimension(
 function modelTargetDimension(
   target: DeriveTaskSubmissionReadinessInput['modelTarget'],
 ): TaskSubmissionReadinessDimension {
-  if (!target.connection) {
+  if (target.kind === 'unknown') {
+    return dimension('model_target', 'unknown', 'connection_readiness', target.checkedAt, {
+      blockerCode: 'model_target_unknown',
+    });
+  }
+  if (target.kind === 'missing_default') {
     return dimension('model_target', 'repair_required', 'connection_readiness', target.checkedAt, {
       blockerCode: 'model_missing_default_connection',
       repairTarget: { kind: 'provider_catalog' },
     });
   }
+  if (target.kind === 'connection_missing') {
+    return dimension('model_target', 'repair_required', 'connection_readiness', target.checkedAt, {
+      blockerCode: 'model_connection_missing',
+      repairTarget: { kind: 'models' },
+    });
+  }
 
+  const normalizedConnection = normalizeOpenAiCodexConnection(target.connection);
   const verdict = isConnectionReady({
-    connection: target.connection,
+    connection: normalizedConnection,
     hasSecret: target.hasSecret === true,
-    requestedModel: target.requestedModel,
+    requestedModel: normalizeRequestedModelForReadiness(target.connection, target.requestedModel),
   });
   if (verdict.ready) {
     return dimension('model_target', 'ready', 'connection_readiness', target.checkedAt);
@@ -146,7 +169,7 @@ function modelTargetDimension(
   }
   return dimension('model_target', 'repair_required', 'connection_readiness', target.checkedAt, {
     blockerCode: `model_${verdict.reason}`,
-    repairTarget: modelRepairTarget(verdict.reason, target.connection.slug),
+    repairTarget: modelRepairTarget(verdict.reason, normalizedConnection.slug),
   });
 }
 

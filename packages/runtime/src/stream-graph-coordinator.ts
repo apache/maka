@@ -1317,6 +1317,7 @@ function isMaterializedGraphClientEvent(
     'thinking_delta',
     'tool_output_delta',
     'tool_progress',
+    'tool_result_preview',
     'queue_update',
     'provider_retry',
   ].includes(type);

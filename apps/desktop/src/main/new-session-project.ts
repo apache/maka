@@ -1,12 +1,12 @@
-import type { CreateSessionInput } from '@maka/core';
 import { isProjectPathMismatchError, type ProjectCatalog } from '@maka/storage';
 
-export type DesktopCreateSessionInput = Omit<CreateSessionInput, 'cwd'> & {
-  cwd?: string;
+export type SessionProjectInput = {
+  readonly cwd?: string;
+  readonly projectId?: string | null;
 };
 
-export async function resolveDesktopSessionSelection(
-  input: DesktopCreateSessionInput,
+export async function resolveDesktopSessionSelection<T extends SessionProjectInput>(
+  input: T,
   selection: {
     current(): Promise<{
       projectId: string | null | undefined;
@@ -22,7 +22,7 @@ export async function resolveDesktopSessionSelection(
      */
     defaultProjectId?(): Promise<string | undefined>;
   },
-): Promise<CreateSessionInput> {
+): Promise<T & { cwd: string; projectId?: string | null }> {
   if (input.cwd) return { ...input, cwd: input.cwd };
 
   // An explicit project id is this conversation's own choice (the composer
@@ -64,22 +64,20 @@ export async function resolveDesktopSessionSelection(
   };
 }
 
-export async function resolveNewSessionProjectInput(
-  input: CreateSessionInput,
+export async function resolveNewSessionProjectInput<T extends SessionProjectInput & { cwd: string }>(
+  input: T,
   catalog: Pick<ProjectCatalog, 'list' | 'register' | 'touch'>,
-): Promise<CreateSessionInput> {
-  if (input.projectId === null) {
-    return input;
-  }
+): Promise<T & { cwd: string; projectId?: string | null }> {
+  if (input.projectId === null) return input;
 
   if (input.projectId) {
+    const requestedId = input.projectId;
     const project = (await catalog.list()).find(
-      (candidate) =>
-        candidate.id === input.projectId || candidate.aliases?.includes(input.projectId!),
+      (candidate) => candidate.id === requestedId || candidate.aliases?.includes(requestedId),
     );
-    if (!project) throw new Error(`Project does not match the selected directory: ${input.projectId}`);
-    if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${input.projectId}`);
-    if (!project.available) throw new Error(`Project is unavailable: ${input.projectId}`);
+    if (!project) throw projectMismatch(requestedId);
+    if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${requestedId}`);
+    if (!project.available) throw new Error(`Project is unavailable: ${requestedId}`);
     try {
       const touched = await catalog.touch(project.id, input.cwd);
       return {
@@ -89,7 +87,7 @@ export async function resolveNewSessionProjectInput(
       };
     } catch (error) {
       if (!isProjectPathMismatchError(error)) throw error;
-      throw new Error(`Project does not match the selected directory: ${input.projectId}`);
+      throw projectMismatch(requestedId);
     }
   }
 
@@ -100,4 +98,8 @@ export async function resolveNewSessionProjectInput(
     cwd: project.preferredPath ?? input.cwd,
     projectId: project.id,
   };
+}
+
+function projectMismatch(projectId: string): Error {
+  return new Error(`Project does not match the selected directory: ${projectId}`);
 }

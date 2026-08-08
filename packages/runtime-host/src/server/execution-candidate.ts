@@ -5,7 +5,12 @@ import {
 import type { RuntimeHostCandidateOptions } from './candidate.js';
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
-import { createExecutionRuntimeHostComposition } from './execution-composition.js';
+import {
+  createExecutionRuntimeHostComposition,
+  type CreateExecutionRuntimeHostCompositionOptions,
+  type ExecutionRuntimeHostComposition,
+} from './execution-composition.js';
+import type { RuntimeHostCompositionContext } from './host-kernel.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 
 export type ExecutionRuntimeHostCandidateResult =
@@ -18,8 +23,16 @@ export interface ExecutionRuntimeHostCandidateOptions extends RuntimeHostCandida
   readonly bundledGitResourcesRoot?: string;
 }
 
+export interface ExecutionRuntimeHostCandidateDependencies {
+  readonly createComposition?: (
+    context: RuntimeHostCompositionContext,
+    options: CreateExecutionRuntimeHostCompositionOptions,
+  ) => Promise<ExecutionRuntimeHostComposition>;
+}
+
 export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
+  dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
   if (options.managedWorkspaceGitRuntime && options.bundledGitResourcesRoot) {
     throw new Error('Managed workspace Git runtime must have exactly one authority');
@@ -39,8 +52,11 @@ export async function startExecutionRuntimeHostCandidate(
     idleGraceMs: options.idleGraceMs,
     handshakeTimeoutMs: options.handshakeTimeoutMs,
     compositionFactory: (context) =>
-      createExecutionRuntimeHostComposition(context, {
+      (dependencies.createComposition ?? createExecutionRuntimeHostComposition)(context, {
         ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
+        ...(options.legacyConfigurationRoot
+          ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
+          : {}),
       }),
   });
   return { kind: 'winner', host };

@@ -37,6 +37,7 @@ import type {
   UsageRange,
   UsageStats,
   E2eFixtureState,
+  ExternalSessionSummary,
   GitReviewReadResult,
   GitReviewMutationAction,
   GitReviewMutationResult,
@@ -80,6 +81,7 @@ import type {
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
+import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
 import type {
@@ -114,6 +116,12 @@ export interface OnboardingSnapshot {
   defaultSlug: string | null;
   chatModelChoices: import('@maka/core').ChatModelChoice[];
   sessionSendOutcomes: Record<string, import('@maka/core').SessionSendProjection>;
+}
+
+export interface DesktopTaskSubmissionReadinessRequest {
+  connectionSlug?: string;
+  model?: string;
+  cwd?: string;
 }
 
 export type RendererIngestInput =
@@ -364,6 +372,19 @@ export interface MakaBridge {
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sessionId: string): Promise<void>;
   };
+  externalSessions: {
+    listSources(): Promise<{ adapterIds: string[] }>;
+    list(input: {
+      adapterId: string;
+      includeArchived?: boolean;
+      cwd?: string;
+      cursor?: string;
+    }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
+    import(input: {
+      adapterId: string;
+      sourceSessionId: string;
+    }): Promise<ExternalSessionImportIpcResult>;
+  };
   projects: {
     list(): Promise<ProjectRecord[]>;
     add(): Promise<
@@ -387,6 +408,7 @@ export interface MakaBridge {
       sessionId: string;
       ref: string;
     }): Promise<ShellRunPtySnapshot | null>;
+    detach(input: { sessionId: string; ref: string }): Promise<void>;
     start(sessionId: string): Promise<ShellRunUpdate>;
     write(input: {
       sessionId: string;
@@ -485,6 +507,11 @@ export interface MakaBridge {
       status: 'completed' | 'skipped',
     ): Promise<OnboardingSnapshot>;
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot>;
+  };
+  taskReadiness: {
+    getSnapshot(
+      input?: DesktopTaskSubmissionReadinessRequest,
+    ): Promise<import('@maka/core').TaskSubmissionReadinessSnapshot>;
   };
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot>;

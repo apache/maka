@@ -398,7 +398,7 @@ export const TurnView = memo(function TurnView(props: {
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
    * Open a linked subagent child session in the main chat column. Threaded into
-   * tool-detail SubagentPreview; omitted when the host has no navigation.
+   * linked subagent tool rows; omitted when the host has no navigation.
    */
   onOpenLinkedSession?(sessionId: string): void;
 }) {

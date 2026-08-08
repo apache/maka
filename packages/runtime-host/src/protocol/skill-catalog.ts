@@ -1,4 +1,4 @@
-import { requireCount, requireExactRecord, requireRecord } from './codec.js';
+import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -89,6 +89,21 @@ export interface SkillCatalogLocalContext {
   readonly projectRoot: string;
 }
 
+export type SkillCatalogInvocableTarget =
+  | { readonly kind: 'session'; readonly sessionId: string }
+  | {
+      readonly kind: 'new_session';
+      readonly context: SkillCatalogLocalContext;
+      readonly collaborationMode: 'agent' | 'plan';
+    };
+
+export interface SkillCatalogInvocableItem {
+  readonly ref: string;
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+}
+
 export interface SkillCatalogGovernanceItem {
   readonly kind: SkillCatalogEntryKind;
   readonly ref: string;
@@ -161,6 +176,31 @@ export type SkillCatalogQueryResult =
       readonly view: SkillCatalogView;
       readonly revision: SkillCatalogRevision;
       readonly items: readonly SkillCatalogPageItem[];
+      readonly nextCursor: string | null;
+    }
+  | {
+      readonly kind: 'revision_changed';
+      readonly expectedRevision: SkillCatalogRevision;
+      readonly actualRevision: SkillCatalogRevision;
+    };
+
+export type SkillCatalogInvocableQueryInput =
+  | {
+      readonly kind: 'start';
+      readonly target: SkillCatalogInvocableTarget;
+    }
+  | {
+      readonly kind: 'continue';
+      readonly target: SkillCatalogInvocableTarget;
+      readonly revision: SkillCatalogRevision;
+      readonly cursor: string;
+    };
+
+export type SkillCatalogInvocableQueryResult =
+  | {
+      readonly kind: 'page';
+      readonly revision: SkillCatalogRevision;
+      readonly items: readonly SkillCatalogInvocableItem[];
       readonly nextCursor: string | null;
     }
   | {
@@ -279,6 +319,17 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     decodeInput: decodeQueryInput,
     decodeOutput: decodeQueryResult,
   }),
+  'skill.catalog.invocable.query': defineOperation<
+    SkillCatalogInvocableQueryInput,
+    SkillCatalogInvocableQueryResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeInvocableQueryInput,
+    decodeOutput: decodeInvocableQueryResult,
+  }),
   'skill.catalog.mutate': defineOperation<
     SkillCatalogMutateInput,
     SkillCatalogMutateResult,
@@ -302,6 +353,60 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     decodeOutput: decodePreviewResult,
   }),
 } as const;
+
+function decodeInvocableQueryInput(value: unknown): SkillCatalogInvocableQueryInput {
+  const record = requireRecord(value, 'invocable skill catalog query input');
+  if (record.kind === 'start') {
+    const start = requireExactRecord(record, 'invocable skill catalog start query', [
+      'kind',
+      'target',
+    ]);
+    return { kind: 'start', target: invocableTarget(start.target) };
+  }
+  if (record.kind === 'continue') {
+    const continuation = requireExactRecord(record, 'invocable skill catalog continuation query', [
+      'kind',
+      'target',
+      'revision',
+      'cursor',
+    ]);
+    return {
+      kind: 'continue',
+      target: invocableTarget(continuation.target),
+      revision: sha256(continuation.revision, 'invocable skill catalog revision'),
+      cursor: utf8String(continuation.cursor, 'invocable skill catalog cursor', CURSOR_MAX_BYTES),
+    };
+  }
+  throw invalidProtocolFrame('Invalid invocable skill catalog query kind');
+}
+
+function decodeInvocableQueryResult(value: unknown): SkillCatalogInvocableQueryResult {
+  const record = requireRecord(value, 'invocable skill catalog query result');
+  if (record.kind === 'revision_changed') return revisionChanged(record);
+  const page = requireExactRecord(record, 'invocable skill catalog page result', [
+    'kind',
+    'revision',
+    'items',
+    'nextCursor',
+  ]);
+  if (page.kind !== 'page' || !Array.isArray(page.items)) {
+    throw invalidProtocolFrame('Invalid invocable skill catalog page result');
+  }
+  if (page.items.length > SKILL_CATALOG_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invocable skill catalog page exceeds item limit');
+  }
+  const decoded: SkillCatalogInvocableQueryResult = {
+    kind: 'page',
+    revision: sha256(page.revision, 'invocable skill catalog revision'),
+    items: page.items.map(invocableItem),
+    nextCursor:
+      page.nextCursor === null
+        ? null
+        : utf8String(page.nextCursor, 'invocable skill catalog next cursor', CURSOR_MAX_BYTES),
+  };
+  assertJsonByteLimit(decoded, SKILL_CATALOG_PAGE_MAX_BYTES, 'Invocable skill catalog page');
+  return decoded;
+}
 
 function decodeQueryInput(value: unknown): SkillCatalogQueryInput {
   const record = requireRecord(value, 'skill catalog query input');
@@ -696,6 +801,52 @@ function localContext(value: unknown): SkillCatalogLocalContext {
   }
   return {
     projectRoot,
+  };
+}
+
+function invocableTarget(value: unknown): SkillCatalogInvocableTarget {
+  const record = requireRecord(value, 'invocable skill catalog target');
+  if (record.kind === 'session') {
+    const session = requireExactRecord(record, 'invocable Session target', ['kind', 'sessionId']);
+    return {
+      kind: 'session',
+      sessionId: requireEntityId(session.sessionId, 'invocable Skill Session id'),
+    };
+  }
+  if (record.kind === 'new_session') {
+    const fresh = requireExactRecord(record, 'invocable new Session target', [
+      'kind',
+      'context',
+      'collaborationMode',
+    ]);
+    if (fresh.collaborationMode !== 'agent' && fresh.collaborationMode !== 'plan') {
+      throw invalidProtocolFrame('Invalid invocable Skill collaboration mode');
+    }
+    return {
+      kind: 'new_session',
+      context: localContext(fresh.context),
+      collaborationMode: fresh.collaborationMode,
+    };
+  }
+  throw invalidProtocolFrame('Invalid invocable skill catalog target');
+}
+
+function invocableItem(value: unknown): SkillCatalogInvocableItem {
+  const record = requireExactRecord(value, 'invocable skill catalog item', [
+    'ref',
+    'id',
+    'name',
+    'description',
+  ]);
+  return {
+    ref: utf8String(record.ref, 'invocable skill ref', SKILL_CATALOG_REF_MAX_BYTES),
+    id: utf8String(record.id, 'invocable skill id', SKILL_CATALOG_DISPLAY_ID_MAX_BYTES),
+    name: utf8String(record.name, 'invocable skill name', SKILL_CATALOG_NAME_MAX_BYTES),
+    description: utf8String(
+      record.description,
+      'invocable skill description',
+      SKILL_CATALOG_DESCRIPTION_MAX_BYTES,
+    ),
   };
 }
 

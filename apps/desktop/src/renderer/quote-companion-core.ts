@@ -11,7 +11,6 @@ import type {
   QuoteRef,
   SessionEvent,
   SessionSummary,
-  StoredMessage,
   TurnRecord,
   UiLocale,
 } from '@maka/core';
@@ -20,6 +19,7 @@ import {
   acquireSessionCopyAttempt,
   abandonSessionCopyAttempt,
   completeSessionCopyAttempt,
+  listSessionCopyAttempts,
   readSessionCopyAttempt,
   startSessionCopyAttempt,
   type SessionCopyAttemptKey,
@@ -36,7 +36,6 @@ type CompanionSendResult = { ok: true } | { ok: false; reason?: string };
  * place of `window.maka.sessions` (the React hook stays a thin shell).
  */
 export interface CompanionSessionApi {
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   branchFromTurn(
     sessionId: string,
@@ -47,7 +46,6 @@ export interface CompanionSessionApi {
       sideConversation?: boolean;
     },
   ): Promise<SessionSummary>;
-  setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary>;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sessionId: string): Promise<void>;
   send(
@@ -93,12 +91,12 @@ export function createCompanionDismissalGuard(): CompanionDismissalGuard {
 export interface EnsureCompanionForkDeps {
   api: CompanionSessionApi;
   sourceSession: SessionSummary;
+  panelId: string;
   name: string;
   /** True once the panel has unmounted — checked after every await so a fork
    *  born after disposal is torn down instead of leaking a hidden run. */
   isDisposed: () => boolean;
-  /** Fired as soon as creation returns, before the permission pin round-trip.
-   *  The host uses the id to hide this ephemeral child immediately. */
+  /** Fired as soon as creation returns so the host can hide this ephemeral child. */
   onForkCreated?: (session: SessionSummary) => void;
   /** Fired only after the main-process cleanup authority confirms deletion. */
   onForkCleanupSucceeded?: (sessionId: string) => void;
@@ -112,15 +110,19 @@ export function latestSettledTurnId(turns: readonly TurnRecord[]): string | unde
   return [...turns].reverse().find((turn) => turn.status === 'completed')?.turnId;
 }
 
-function companionCopyAttemptKey(sourceSessionId: string): SessionCopyAttemptKey {
-  return { scope: 'quote-companion', kind: 'branch', sourceSessionId };
+function companionCopyAttemptKey(
+  sourceSessionId: string,
+  panelId: string,
+): SessionCopyAttemptKey {
+  return { scope: `quote-companion:${panelId}`, kind: 'branch', sourceSessionId };
 }
 
 export async function abandonPendingCompanionCopy(
   api: CompanionSessionApi,
   sourceSessionId: string,
+  panelId: string,
 ): Promise<boolean> {
-  const key = companionCopyAttemptKey(sourceSessionId);
+  const key = companionCopyAttemptKey(sourceSessionId, panelId);
   const attempt = readSessionCopyAttempt(key);
   if (!attempt) return true;
   abandonSessionCopyAttempt(key, attempt.copyId);
@@ -133,12 +135,30 @@ export async function abandonPendingCompanionCopy(
   }
 }
 
+export async function recoverOrphanedCompanionCopies(
+  api: CompanionSessionApi,
+): Promise<void> {
+  const attempts = listSessionCopyAttempts('quote-companion:');
+  await Promise.all(
+    attempts.map(async ({ key, attempt }) => {
+      abandonSessionCopyAttempt(key, attempt.copyId);
+      try {
+        await api.abandonSessionCopy(attempt.copyId);
+        completeSessionCopyAttempt(key, attempt.copyId);
+      } catch {
+        // Keep the abandoning lease so the next renderer reload retries cleanup.
+      }
+    }),
+  );
+}
+
 export async function cleanupCompanionCopy(
   api: CompanionSessionApi,
   sourceSessionId: string,
+  panelId: string,
   companionSessionId: string,
 ): Promise<boolean> {
-  const key = companionCopyAttemptKey(sourceSessionId);
+  const key = companionCopyAttemptKey(sourceSessionId, panelId);
   const attempt = readSessionCopyAttempt(key);
   if (attempt) abandonSessionCopyAttempt(key, attempt.copyId);
   try {
@@ -174,7 +194,12 @@ export function deriveCompanionComposerState(
  * lifecycle paths can remain fire-and-forget without losing recovery.
  */
 function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
-  void cleanupCompanionCopy(deps.api, deps.sourceSession.id, sessionId).then((cleaned) => {
+  void cleanupCompanionCopy(
+    deps.api,
+    deps.sourceSession.id,
+    deps.panelId,
+    sessionId,
+  ).then((cleaned) => {
     if (cleaned) deps.onForkCleanupSucceeded?.(sessionId);
   });
 }
@@ -208,19 +233,24 @@ export async function ensureCompanionFork(
   let created: SessionSummary;
   try {
     let copyAttempt = acquireSessionCopyAttempt(
-      companionCopyAttemptKey(sourceSession.id),
+      companionCopyAttemptKey(sourceSession.id, deps.panelId),
       boundaryTurnId,
     );
     if (copyAttempt.phase === 'abandoning') {
-      if (!(await abandonPendingCompanionCopy(api, sourceSession.id))) {
+      if (!(await abandonPendingCompanionCopy(api, sourceSession.id, deps.panelId))) {
         return { status: 'error', code: 'fork_setup_failed' };
       }
       copyAttempt = acquireSessionCopyAttempt(
-        companionCopyAttemptKey(sourceSession.id),
+        companionCopyAttemptKey(sourceSession.id, deps.panelId),
         boundaryTurnId,
       );
     }
-    if (!startSessionCopyAttempt(companionCopyAttemptKey(sourceSession.id), copyAttempt.copyId)) {
+    if (
+      !startSessionCopyAttempt(
+        companionCopyAttemptKey(sourceSession.id, deps.panelId),
+        copyAttempt.copyId,
+      )
+    ) {
       return { status: 'error', code: 'fork_setup_failed' };
     }
     created = await api.branchFromTurn(sourceSession.id, {
@@ -237,8 +267,7 @@ export async function ensureCompanionFork(
     return { status: 'disposed' };
   }
   // `sessions:branchFromTurn` broadcasts `sessions:changed(created)` before the
-  // promise resolves. Report the id at the first renderer-visible opportunity,
-  // rather than waiting on the potentially slow permission pin below.
+  // promise resolves. Report the id at the first renderer-visible opportunity.
   deps.onForkCreated?.(created);
 
   if (isDisposed()) {
@@ -261,7 +290,7 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   text: string;
   quotes: QuoteRef[] | undefined;
   attachmentItems?: RendererIngestInput[];
-  /** Fired once a fork is created + confirmed read-only, so the caller can commit it. */
+  /** Fired once a fork is ready, so the caller can commit it. */
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
   onBeforeSend: (forkId: string) => void;

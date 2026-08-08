@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { userInfo } from 'node:os';
 import type { ShellRunSnapshotResult, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import {
@@ -7,8 +8,10 @@ import {
   type RuntimeResourceReader,
   type ShellRunBashInput,
   type ShellRunLauncher,
+  type ShellRunPtySnapshot,
   type ShellRunWriteInput,
   ShellRunPtyControlClosedError,
+  defaultShellPlan,
   isShellRunResourceRef,
 } from '@maka/runtime';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
@@ -17,6 +20,8 @@ import {
   decodeRuntimeResourceControllerControlResult,
   decodeRuntimeResourceQueryResult,
   decodeRuntimeResourceStopResult,
+  decodeRuntimeResourceStartResult,
+  RUNTIME_RESOURCE_CONTROLLER_ACQUIRE_RESULT_MAX_BYTES,
   RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
   type OperationOutcome,
   type RuntimeResourceControllerAcquireInput,
@@ -28,6 +33,7 @@ import {
   type RuntimeResourceQueryResult,
   type RuntimeResourceRevision,
   type RuntimeResourceStopInput,
+  type RuntimeResourceStartInput,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type {
@@ -51,7 +57,11 @@ interface RuntimeResourceSessionReader {
 }
 
 interface RuntimeResourceHeaderReader {
-  readHeader(sessionId: string): Promise<{ readonly status: string; readonly isArchived: boolean }>;
+  readHeader(sessionId: string): Promise<{
+    readonly cwd: string;
+    readonly status: string;
+    readonly isArchived: boolean;
+  }>;
 }
 
 interface RuntimeResourceManager
@@ -60,6 +70,7 @@ interface RuntimeResourceManager
     BackgroundTaskStopper,
     PtyControlWriter {
   inspectResource(sessionId: string, ref: string): Promise<ShellRunSnapshotResult>;
+  getLivePtySnapshot(sessionId: string, ref: string): ShellRunPtySnapshot | null;
   terminateAll(): Promise<void>;
 }
 
@@ -94,6 +105,7 @@ export class HostRuntimeResourceCoordinator
 {
   readonly handlers: RuntimeResourceOperationHandlerMap = {
     'runtime.resource.query': (input) => this.#query(input),
+    'runtime.resource.start': (input) => this.#start(input),
     'runtime.resource.controller.acquire': (input, context) => this.#acquire(input, context),
     'runtime.resource.controller.control': (input, context) => this.#control(input, context),
     'runtime.resource.controller.release': (input, context) => this.#release(input, context),
@@ -124,11 +136,22 @@ export class HostRuntimeResourceCoordinator
     this.#onProjectionChanged = input.onProjectionChanged ?? (() => undefined);
   }
 
-  runForegroundBash(input: ShellRunBashInput): ReturnType<ShellRunLauncher['runForegroundBash']> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
-      await this.#assertActiveSession(input.sessionId);
-      return this.#manager.runForegroundBash(input);
-    });
+  async runForegroundBash(
+    input: ShellRunBashInput,
+  ): Promise<Awaited<ReturnType<ShellRunLauncher['runForegroundBash']>>> {
+    if (this.#draining) throw new Error('Runtime resources are draining');
+    const residency = this.#acquireResidency();
+    try {
+      const { execution } = await this.#sessionAdmission.run(input.sessionId, async () => {
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        await this.#assertActiveSession(input.sessionId);
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        return { execution: this.#manager.runForegroundBash(input) };
+      });
+      return await execution;
+    } finally {
+      residency.release();
+    }
   }
 
   async runBackgroundBash(
@@ -298,6 +321,51 @@ export class HostRuntimeResourceCoordinator
     });
   }
 
+  async #start(
+    input: RuntimeResourceStartInput,
+  ): Promise<OperationOutcome<'runtime.resource.start'>> {
+    const unavailable = await this.#mutableSessionFailure(input.sessionId);
+    if (unavailable) return mutationFailure('runtime.resource.start', unavailable);
+    try {
+      const header = await this.#sessionHeaders.readHeader(input.sessionId);
+      const shell = defaultShellPlan();
+      const env = { ...process.env };
+      let command: string;
+      if (shell.kind === 'posix') {
+        env.SHELL ||= userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
+        env.DISABLE_AUTO_UPDATE = 'true';
+        env.DISABLE_UPDATE_PROMPT = 'true';
+        command = 'exec "$SHELL" -l';
+      } else if (shell.kind === 'cmd') {
+        command = '%ComSpec% /d /q';
+      } else {
+        const executable = (shell.exe ?? shell.displayName).replace(/'/g, "''");
+        command = `& '${executable}' -NoLogo`;
+      }
+      const launched = await this.runBackgroundBash({
+        sessionId: input.sessionId,
+        sourceTurnId: input.launchId,
+        sourceToolCallId: input.launchId,
+        cwd: header.cwd,
+        command,
+        env,
+        pty: true,
+        emitOutput: () => undefined,
+        shell,
+      });
+      return {
+        ok: true,
+        result: decodeRuntimeResourceStartResult({
+          resource: boundedRuntimeResourceSnapshot(
+            await this.#manager.inspectResource(input.sessionId, launched.ref),
+          ),
+        }),
+      };
+    } catch (error) {
+      return this.#resourceFailure('runtime.resource.start', error);
+    }
+  }
+
   #acquire(
     input: RuntimeResourceControllerAcquireInput,
     context: ConnectionContext,
@@ -350,13 +418,21 @@ export class HostRuntimeResourceCoordinator
           };
           this.#controllers.set(key, controller);
           this.#controllerResources.set(identity, key);
+          const pty = this.#manager.getLivePtySnapshot(input.sessionId, input.ref);
+          if (!pty) {
+            this.#releaseController(key);
+            return mutationFailure('runtime.resource.controller.acquire', {
+              code: 'operation_conflict',
+              message: 'Runtime Resource PTY is no longer available',
+            });
+          }
           return {
             ok: true,
-            result: decodeRuntimeResourceControllerAcquireResult({
-              controllerId: controller.controllerId,
-              nextSequence: controller.nextSequence,
-              resource: boundedRuntimeResourceSnapshot(snapshot),
-            }),
+            result: boundedControllerAcquireResult(
+              controller.controllerId,
+              controller.nextSequence,
+              pty,
+            ),
           };
         } catch (error) {
           return this.#resourceFailure('runtime.resource.controller.acquire', error);
@@ -596,6 +672,27 @@ function controlWrite(
     case 'input_and_resize':
       return { input: control.input, size: { cols: control.cols, rows: control.rows } };
   }
+}
+
+function boundedControllerAcquireResult(
+  controllerId: string,
+  nextSequence: number,
+  snapshot: ShellRunPtySnapshot,
+): ReturnType<typeof decodeRuntimeResourceControllerAcquireResult> {
+  const pty = structuredClone(snapshot);
+  let result = { controllerId, nextSequence, pty };
+  while (
+    Buffer.byteLength(JSON.stringify(result), 'utf8') >
+    RUNTIME_RESOURCE_CONTROLLER_ACQUIRE_RESULT_MAX_BYTES
+  ) {
+    const codePoints = Array.from(pty.buffer);
+    if (codePoints.length === 0) {
+      throw new Error('Runtime Resource PTY metadata exceeds the wire limit');
+    }
+    pty.buffer = codePoints.slice(Math.ceil(codePoints.length / 2)).join('');
+    result = { controllerId, nextSequence, pty };
+  }
+  return decodeRuntimeResourceControllerAcquireResult(result);
 }
 
 function decodeCursor(cursor: string): number | undefined {

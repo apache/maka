@@ -18,7 +18,7 @@ const entrypoint = join(
   'runtime-host-boot.ts',
 );
 
-test('the opt-in Desktop boot cannot load an embedded Interactive owner', async () => {
+test('the production Desktop boot cannot construct an Interactive owner', async () => {
   const result = await build({
     absWorkingDir: repositoryRoot,
     entryPoints: [entrypoint],
@@ -31,15 +31,6 @@ test('the opt-in Desktop boot cannot load an embedded Interactive owner', async 
   });
   assert.ok(result.metafile);
   const reached = new Set(Object.keys(result.metafile.inputs).map(normalize));
-  const forbidden = [
-    'apps/desktop/src/main/app-lifecycle.ts',
-    'apps/desktop/src/main/boot.ts',
-    'apps/desktop/src/main/embedded-bot-session-adapter.ts',
-    'apps/desktop/src/main/execution-store-wiring.ts',
-    'apps/desktop/src/main/sessions-ipc-main.ts',
-    'apps/desktop/src/main/startup-safe-boundary-resume.ts',
-  ];
-  assert.deepEqual(forbidden.filter((path) => reached.has(normalize(path))), []);
   for (const required of [
     'apps/desktop/src/main/desktop-shell-presentation.ts',
     'apps/desktop/src/main/runtime-host-account-connection.ts',
@@ -49,13 +40,32 @@ test('the opt-in Desktop boot cannot load an embedded Interactive owner', async 
     assert.equal(reached.has(normalize(required)), true, `${required} must be reachable`);
   }
 
-  const source = await readFile(entrypoint, 'utf8');
-  for (const factory of [
+  const forbiddenFactories = [
     'SessionManager',
+    'RuntimeKernel',
     'createSessionStore',
+    'createAgentRunStore',
+    'createRuntimeEventStore',
     'openRuntimeEventPersistence',
     'openDesktopExecutionStoreWiring',
-  ]) {
-    assert.equal(source.includes(factory), false, `${factory} must stay outside Host-backed boot`);
+    'openInteractiveRuntimePolicyStoresForWrite',
+    'tryAcquireInteractiveRootOwner',
+  ];
+  for (const path of reached) {
+    if (!path.startsWith(normalize('apps/desktop/src/main/'))) continue;
+    if (isE2eFixtureModule(path)) continue;
+    const source = await readFile(resolve(repositoryRoot, path), 'utf8');
+    for (const factory of forbiddenFactories) {
+      assert.doesNotMatch(
+        source,
+        new RegExp(`\\b${factory}\\b`, 'u'),
+        `${path} must not reach Interactive owner ${factory}`,
+      );
+    }
   }
 });
+
+function isE2eFixtureModule(path: string): boolean {
+  const relative = normalize(path).slice(normalize('apps/desktop/src/main/').length);
+  return relative === 'e2e-fixture.ts' || relative.startsWith(normalize('e2e-fixture/'));
+}

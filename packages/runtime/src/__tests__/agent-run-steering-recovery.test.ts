@@ -11,6 +11,7 @@ import {
   createWorkspaceRuntimeStore,
 } from '@maka/storage';
 import { AgentRun } from '../agent-run.js';
+import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
 
 test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
@@ -205,6 +206,175 @@ test('acks a steering event whose canonical append preceded proof publication fa
       await recovered.readImmutableSteeringMessageProof(session.id, sessionEvent.messageId),
       { event: runtimeEvent },
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('materializes a durable steering event into the transcript exactly once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-transcript-'));
+  try {
+    const store = createSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const turnId = 'turn-steering-transcript';
+    const sessionEvent: SessionEvent = {
+      type: 'steering_message',
+      id: 'runtime-steering-transcript',
+      turnId,
+      ts: 2,
+      messageId: 'message-steering-transcript',
+      content: { text: 'persist this interjection' },
+    };
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'start' },
+      runId: 'run-steering-transcript',
+      store,
+      runtimeEventStore,
+      newId: () => 'unused-id',
+      now: () => 10,
+      hooks: {
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
+        },
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    const runtimeEvent: RuntimeEvent = {
+      id: sessionEvent.id,
+      invocationId: run.invocationId,
+      runId: 'run-steering-transcript',
+      sessionId: session.id,
+      turnId,
+      ts: sessionEvent.ts,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: {
+        kind: 'text',
+        text: sessionEvent.content.text,
+        displayText: '/skill:writer persist this interjection',
+        inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+        steering: true,
+      },
+      refs: { providerEventId: sessionEvent.messageId },
+    };
+
+    await run.acceptMappedEvent(sessionEvent, runtimeEvent);
+    await run.acceptMappedEvent(sessionEvent, runtimeEvent);
+
+    assert.deepEqual(await store.readMessages(session.id), [
+      {
+        type: 'user',
+        id: sessionEvent.messageId,
+        turnId,
+        ts: sessionEvent.ts,
+        text: sessionEvent.content.text,
+        displayText: '/skill:writer persist this interjection',
+        inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+        steeringEventId: sessionEvent.id,
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('recovers a steering transcript message from the committed RuntimeEvent ledger', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-crash-cut-'));
+  try {
+    const store = createSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runId = 'run-steering-crash-cut';
+    const turnId = 'turn-steering-crash-cut';
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await runStore.createRun(makeRunHeader(session.id, runId, turnId));
+    const steeringContent = {
+      kind: 'text' as const,
+      text: 'canonical steering envelope',
+      displayText: '/skill:writer recover this interjection',
+      attachments: [
+        {
+          kind: 'pdf' as const,
+          name: 'evidence.pdf',
+          mimeType: 'application/pdf',
+          bytes: 2048,
+          ref: {
+            kind: 'session_file' as const,
+            sessionId: session.id,
+            relativePath: 'attachments/evidence.pdf',
+          },
+        },
+      ],
+      quotes: [{ text: 'quoted evidence', label: 'Assistant', sourceTurnId: 'turn-source' }],
+      inlineReferences: [
+        { kind: 'skill' as const, value: '/skill:writer', label: 'Writer', start: 0 },
+      ],
+      steering: true as const,
+    };
+    const runtimeEvent: RuntimeEvent = {
+      id: 'runtime-steering-crash-cut',
+      invocationId: 'invocation-steering-crash-cut',
+      runId,
+      sessionId: session.id,
+      turnId,
+      ts: 2,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: steeringContent,
+      refs: { providerEventId: 'message-steering-crash-cut' },
+    };
+    await runtimeEventStore.appendRuntimeEvent(session.id, runId, runtimeEvent);
+    assert.deepEqual(await store.readMessages(session.id), []);
+
+    const recoveredStore = createSessionStore(root);
+    const recoveredRunStore = createSqliteAgentRunStore(root);
+    const recoveredRuntimeEventStore = createWorkspaceRuntimeStore(root);
+    const repair = new RuntimeLedgerRepair({
+      runStore: recoveredRunStore,
+      runtimeEventStore: recoveredRuntimeEventStore,
+      readMessages: (sessionId) => recoveredStore.readMessages(sessionId),
+      appendMessage: (sessionId, message) => recoveredStore.appendMessage(sessionId, message),
+      appendTurnState: async () => {},
+      newId: () => 'unused-id',
+      now: () => 10,
+    });
+
+    assert.equal(await repair.repairSteeringMessagesOnce(session.id), 1);
+    assert.equal(await repair.repairSteeringMessagesOnce(session.id), 0);
+    assert.deepEqual(await recoveredStore.readMessages(session.id), [
+      {
+        type: 'user',
+        id: 'message-steering-crash-cut',
+        turnId,
+        ts: 2,
+        text: 'canonical steering envelope',
+        displayText: '/skill:writer recover this interjection',
+        attachments: steeringContent.attachments,
+        quotes: steeringContent.quotes,
+        inlineReferences: steeringContent.inlineReferences,
+        steeringEventId: runtimeEvent.id,
+      },
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

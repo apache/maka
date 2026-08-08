@@ -16,6 +16,7 @@ import {
   type HostCapabilities,
   type LoadedSkillInstructions,
 } from '../skills.js';
+import { SKILL_INVOCATION_NAME_MAX_BYTES } from '@maka/core/skill-invocation';
 import { skillInvocationInlineReferences } from '../skill-invocation-receipt.js';
 
 describe('skill invocation', () => {
@@ -386,6 +387,31 @@ Alpha body.`,
       assert.ok(!prepared.sendText.includes('/skill:alpha'));
       assert.ok(!prepared.sendText.includes('/skill:missing'));
       assert.match(prepared.sendText, /<user-message>\n整理一下\n<\/user-message>/);
+    });
+  });
+
+  it('projects long Skill metadata into a transport-bounded receipt', async () => {
+    await withWorkspace(async (workspaceRoot, homeDir) => {
+      const name = '😀'.repeat(100);
+      await writeSkill(
+        workspaceRoot,
+        'long-name',
+        `---\nname: ${name}\ndescription: Long display metadata.\n---\n# Long name`,
+      );
+      const prepared = await prepareSkillInvocationMessage({
+        text: '/skill:long-name run',
+        source: resolveSkillDiscoveryPaths(workspaceRoot, workspaceRoot, homeDir),
+      });
+
+      assert.equal(prepared.disposition, 'ready');
+      assert.equal(
+        new TextEncoder().encode(prepared.skillInvocation.loaded[0]?.name).byteLength,
+        SKILL_INVOCATION_NAME_MAX_BYTES,
+      );
+      const receipt = prepared.skillInvocation.receipts[0];
+      assert.ok(receipt?.success);
+      assert.equal(receipt.name, prepared.skillInvocation.loaded[0]?.name);
+      assert.match(prepared.sendText, new RegExp(name));
     });
   });
 

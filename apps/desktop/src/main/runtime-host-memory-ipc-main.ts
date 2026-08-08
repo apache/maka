@@ -19,8 +19,21 @@ import {
   type MemoryRevision,
   type MemoryStateProjection,
 } from "@maka/runtime-host/protocol";
-import type { LocalMemoryMutationResult } from "./local-memory-service.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+
+type LocalMemoryMutationResult =
+  | {
+      readonly ok: true;
+      readonly state: LocalMemoryState;
+      readonly entry?: LocalMemoryEntryPreview;
+      readonly proposal?: LocalMemoryEntryPreview;
+    }
+  | {
+      readonly ok: false;
+      readonly state: LocalMemoryState;
+      readonly reason: string;
+      readonly message: string;
+    };
 
 const MAX_REVISION_ATTEMPTS = 3;
 const MEMORY_DIRECTORY = "memory";

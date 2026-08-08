@@ -15,6 +15,8 @@
 
 import type { ChatConfigurationReason } from './connection-readiness.js';
 
+export const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
+
 const GENERIC_FIX_COPY = '模型连接暂时无法用于发送，请到 设置 · 模型 检查后重试。';
 
 /**

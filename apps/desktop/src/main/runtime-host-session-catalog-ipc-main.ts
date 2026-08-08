@@ -45,7 +45,9 @@ export interface DesktopHostSessionSummary extends SessionSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
-  workspaceRoot: string;
+  resolveCreateProject: (
+    input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
+  ) => Promise<{ readonly cwd: string; readonly projectId?: string | null }>;
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
@@ -88,11 +90,15 @@ export function registerRuntimeHostSessionCatalogIpc(
       throw new Error('Unsupported Runtime Host Session backend');
     }
     const request = resolveCreateSessionRequest(input);
+    const project = await deps.resolveCreateProject({
+      ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
+    });
     const session = await deps.client.createSession({
       sessionId: newId(),
-      cwd: input?.cwd ?? deps.workspaceRoot,
+      cwd: project.cwd,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
+      ...(project.projectId === undefined ? {} : { projectId: project.projectId }),
       ...(request.mode === undefined ? { name: request.name } : {}),
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),

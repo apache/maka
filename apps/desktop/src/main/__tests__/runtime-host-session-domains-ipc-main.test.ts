@@ -34,7 +34,7 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     queryDeepResearch: async () => hostedResearch(),
   });
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc({ client, emitModeChanged() {} }, ipc);
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
 
   assert.equal(((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id, 'task-1');
   assert.equal(
@@ -75,11 +75,272 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
       { itemId: 'entrypoints', title: 'Map entrypoints', status: 'completed' },
     ],
     reportSections: [{ key: 'conclusion', status: 'completed' }],
-    recentInspectedRefs: [{ kind: 'file', locator: 'apps/desktop/src/main/boot.ts' }],
+    recentInspectedRefs: [
+      { kind: 'file', locator: 'apps/desktop/src/main/runtime-host-boot.ts' },
+    ],
     workerRunIds: ['run-1'],
     blockers: [],
     reportArtifactId: 'artifact-1',
     implementationPrompt: 'Implement the result.',
+  });
+});
+
+test('adapts interactive terminal ownership to one Host controller lease', async () => {
+  const calls: Array<{ operation: string; input: unknown }> = [];
+  const update = shellRunUpdate({
+    result: {
+      kind: 'shell_run',
+      ref: 'maka://runtime/background-tasks/shell-1',
+      mode: 'pty',
+      status: 'running',
+      cwd: '/workspace',
+      cmd: 'exec "$SHELL" -l',
+      startedAt: 1,
+      updatedAt: 2,
+      revision: 2,
+      output: {
+        mode: 'pty',
+        screen: 'ready',
+        scrollback: '',
+        cols: 80,
+        rows: 24,
+        cursor: { x: 5, y: 0, visible: true },
+        alternateScreen: false,
+        truncated: false,
+        redacted: false,
+      },
+    },
+  });
+  const pty = {
+    sessionId: 'session-1',
+    ref: update.result.ref,
+    sequence: 3,
+    buffer: 'ready',
+    size: { cols: 80, rows: 24 },
+  };
+  const ipc = ipcHarness();
+  const handle = registerDomainsIpc(
+    {
+      client: domainClient({
+        startRuntimeResource: async (input) => {
+          calls.push({ operation: 'start', input });
+          return { resource: update.result as never };
+        },
+        getRuntimeResource: async (sessionId, ref) => {
+          calls.push({ operation: 'get', input: { sessionId, ref } });
+          return update;
+        },
+        acquireRuntimeResourceController: async (input) => {
+          calls.push({ operation: 'acquire', input });
+          return { controllerId: input.controllerId, nextSequence: 7, pty };
+        },
+        controlRuntimeResource: async (input) => {
+          calls.push({ operation: 'control', input });
+          return { controllerId: input.controllerId, sequence: input.sequence, resource: update.result as never };
+        },
+        releaseRuntimeResourceController: async (input) => {
+          calls.push({ operation: 'release', input });
+          return { controllerId: input.controllerId, released: true };
+        },
+        stopRuntimeResource: async (input) => {
+          calls.push({ operation: 'stop', input });
+          return { resource: update.result as never };
+        },
+      }),
+      sessionObserver: {
+        observe: async (sessionId, observerId) => {
+          calls.push({ operation: 'observe', input: { sessionId, observerId } });
+        },
+        unobserve: async (observerId) => {
+          calls.push({ operation: 'unobserve', input: { observerId } });
+        },
+      },
+      emitModeChanged() {},
+      newId: () => 'fixed-id',
+    },
+    ipc,
+  );
+
+  assert.equal((await ipc.invoke('shell-runs:start', 'session-1') as ShellRunUpdate).result.ref, pty.ref);
+  assert.deepEqual(
+    await ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref: pty.ref }),
+    pty,
+  );
+  await ipc.invoke('shell-runs:write', {
+    sessionId: 'session-1',
+    ref: pty.ref,
+    input: 'pwd\r',
+    size: { cols: 90, rows: 30 },
+  });
+  await ipc.invoke('shell-runs:detach', { sessionId: 'session-1', ref: pty.ref });
+  await ipc.invoke('shell-runs:stop', { sessionId: 'session-1', ref: pty.ref });
+  await handle.close();
+
+  assert.deepEqual(
+    calls.filter(({ operation }) => operation === 'control').map(({ input }) => input),
+    [{
+      sessionId: 'session-1',
+      ref: pty.ref,
+      controllerId: 'desktop-terminal-controller-fixed-id',
+      sequence: 7,
+      control: { kind: 'input_and_resize', input: 'pwd\r', cols: 90, rows: 30 },
+    }],
+  );
+  assert.equal(calls.filter(({ operation }) => operation === 'acquire').length, 1);
+  assert.equal(calls.filter(({ operation }) => operation === 'release').length, 1);
+  assert.equal(calls.filter(({ operation }) => operation === 'stop').length, 1);
+  assert.deepEqual(
+    calls.filter(({ operation }) => operation === 'observe' || operation === 'unobserve'),
+    [
+      {
+        operation: 'observe',
+        input: {
+          sessionId: 'session-1',
+          observerId: 'desktop-terminal-controller-fixed-id:session-events',
+        },
+      },
+      {
+        operation: 'unobserve',
+        input: { observerId: 'desktop-terminal-controller-fixed-id:session-events' },
+      },
+    ],
+  );
+});
+
+test('reuses terminal controller identity after an ambiguous acquire response', async () => {
+  const controllerIds: string[] = [];
+  let attempt = 0;
+  const ref = 'maka://runtime/background-tasks/shell-1';
+  const ipc = ipcHarness();
+  registerDomainsIpc(
+    {
+      client: domainClient({
+        acquireRuntimeResourceController: async (input) => {
+          controllerIds.push(input.controllerId);
+          attempt += 1;
+          if (attempt === 1) throw new Error('response lost');
+          return {
+            controllerId: input.controllerId,
+            nextSequence: 4,
+            pty: {
+              sessionId: input.sessionId,
+              ref: input.ref,
+              sequence: 3,
+              buffer: 'ready',
+              size: { cols: 80, rows: 24 },
+            },
+          };
+        },
+      }),
+      emitModeChanged() {},
+      newId: () => 'stable-id',
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref }),
+    /response lost/,
+  );
+  assert.equal(
+    (await ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref }) as {
+      sequence: number;
+    }).sequence,
+    3,
+  );
+  assert.deepEqual(controllerIds, [
+    'desktop-terminal-controller-stable-id',
+    'desktop-terminal-controller-stable-id',
+  ]);
+});
+
+test('restores terminal observation after the observer drops its registration', async () => {
+  const ref = 'maka://runtime/background-tasks/shell-1';
+  let observeCalls = 0;
+  let observationActive = false;
+  const ipc = ipcHarness();
+  registerDomainsIpc(
+    {
+      client: domainClient({
+        acquireRuntimeResourceController: async (input) => ({
+          controllerId: input.controllerId,
+          nextSequence: 4,
+          pty: {
+            sessionId: input.sessionId,
+            ref: input.ref,
+            sequence: 3,
+            buffer: 'ready',
+            size: { cols: 80, rows: 24 },
+          },
+        }),
+      }),
+      sessionObserver: {
+        observe: async () => {
+          observeCalls += 1;
+          observationActive = true;
+        },
+        unobserve: async () => {
+          observationActive = false;
+        },
+      },
+      emitModeChanged() {},
+      newId: () => 'stable-id',
+    },
+    ipc,
+  );
+
+  await ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref });
+  observationActive = false;
+  await ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref });
+
+  assert.equal(observeCalls, 2);
+  assert.equal(observationActive, true);
+});
+
+test('reacquires a missing terminal controller with protocol-exact identity fields', async () => {
+  const ref = 'maka://runtime/background-tasks/shell-1';
+  let acquired: unknown;
+  const ipc = ipcHarness();
+  registerDomainsIpc(
+    {
+      client: domainClient({
+        acquireRuntimeResourceController: async (input) => {
+          acquired = input;
+          return {
+            controllerId: input.controllerId,
+            nextSequence: 4,
+            pty: {
+              sessionId: input.sessionId,
+              ref: input.ref,
+              sequence: 3,
+              buffer: 'ready',
+              size: { cols: 80, rows: 24 },
+            },
+          };
+        },
+        controlRuntimeResource: async (input) => ({
+          controllerId: input.controllerId,
+          sequence: input.sequence,
+          resource: shellRunUpdate().result as never,
+        }),
+        getRuntimeResource: async () => shellRunUpdate(),
+      }),
+      emitModeChanged() {},
+      newId: () => 'recovered-id',
+    },
+    ipc,
+  );
+
+  await ipc.invoke('shell-runs:write', {
+    sessionId: 'session-1',
+    ref,
+    input: 'pwd\r',
+  });
+
+  assert.deepEqual(acquired, {
+    sessionId: 'session-1',
+    ref,
+    controllerId: 'desktop-terminal-controller-recovered-id',
   });
 });
 
@@ -93,7 +354,7 @@ test('adapts Plan controls and starts approved execution through one Host comman
     executions: [],
   };
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc(
+  registerDomainsIpc(
     {
       client: domainClient({
         getPlanState: async () => state,
@@ -238,7 +499,7 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     },
   });
   const ipc = ipcHarness();
-  const handle = registerRuntimeHostSessionDomainsIpc(
+  const handle = registerDomainsIpc(
     {
       client: domainClient({
         listRuntimeResources: async () => {
@@ -271,6 +532,12 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     graphId: 'graph-1',
     reason: 'runtime_activity',
   });
+  handle.runtimeResourcePtyData({
+    sessionId: 'session-1',
+    ref: update.result.ref,
+    sequence: 4,
+    data: 'ready',
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(listCalls, 0);
   assert.deepEqual(gets, [{ sessionId: 'session-1', ref: update.result.ref }]);
@@ -294,6 +561,15 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
         rootSessionId: 'session-1',
         graphId: 'graph-1',
         reason: 'runtime_activity',
+      },
+    },
+    {
+      channel: 'shell-runs:pty-data',
+      payload: {
+        sessionId: 'session-1',
+        ref: update.result.ref,
+        sequence: 4,
+        data: 'ready',
       },
     },
     {
@@ -375,7 +651,9 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
   };
   return {
     clearGoal: unavailable,
+    acquireRuntimeResourceController: unavailable,
     controlPlan: unavailable,
+    controlRuntimeResource: unavailable,
     getRuntimeResource: unavailable,
     getPlanState: unavailable,
     listRuntimeResources: unavailable,
@@ -384,7 +662,10 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     queryAgentGraphOperator: unavailable,
     queryDeepResearch: unavailable,
     queryGoal: unavailable,
+    releaseRuntimeResourceController: unavailable,
+    startRuntimeResource: unavailable,
     stopAgentGraph: unavailable,
+    stopRuntimeResource: unavailable,
     ...overrides,
   } as DomainClient;
 }
@@ -435,7 +716,7 @@ function hostedResearch() {
     recentInspectedRefs: [
       {
         kind: 'file' as const,
-        locator: 'apps/desktop/src/main/boot.ts',
+        locator: 'apps/desktop/src/main/runtime-host-boot.ts',
         label: null,
       },
     ],
@@ -490,4 +771,21 @@ function ipcHarness() {
       return handler({} as never, ...args);
     },
   };
+}
+
+function registerDomainsIpc(
+  deps: Omit<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'> &
+    Partial<Pick<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'>>,
+  ipcMain: Pick<IpcMain, 'handle'>,
+) {
+  return registerRuntimeHostSessionDomainsIpc(
+    {
+      ...deps,
+      sessionObserver: deps.sessionObserver ?? {
+        async observe() {},
+        async unobserve() {},
+      },
+    },
+    ipcMain,
+  );
 }

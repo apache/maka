@@ -35,6 +35,8 @@ import {
 } from './operation-dispatcher.js';
 import type { SessionContinuityService } from './session-continuity-service.js';
 import type { ClientCapabilityService } from './client-capability-service.js';
+import type { HostConfigurationChangeService } from './configuration-change-service.js';
+import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -70,6 +72,8 @@ export interface RuntimeHostComposition {
   readonly handlers: DomainOperationHandlerMap;
   readonly continuity?: SessionContinuityService;
   readonly clientCapabilities?: ClientCapabilityService;
+  readonly configurationChanges?: HostConfigurationChangeService;
+  readonly sessionCatalogChanges?: HostSessionCatalogChangeService;
   releaseConnection?(connectionId: string): void;
   beginDrain(): void;
   recover(): Promise<void>;
@@ -96,6 +100,7 @@ export class RuntimeHostKernel {
   readonly #server: Server;
   readonly #handshakingTransports = new Set<FramedTransport>();
   readonly #acceptedTransports = new Set<FramedTransport>();
+  readonly #connectionSessions = new Set<RuntimeHostConnectionSession>();
   readonly #operationDrainWaiters = new Set<() => void>();
   readonly #residencyDrainWaiters = new Set<() => void>();
   readonly #idleGraceMs: number;
@@ -227,6 +232,7 @@ export class RuntimeHostKernel {
             retainUntilProcessExit: () => this.#retainUntilProcessExit(),
             requestDrain: () => this.#requestDrain(),
           });
+          for (const session of this.#connectionSessions) session.attachGlobalChanges();
           if (this.#shutdownRequested) this.#beginCompositionDrain();
           this.#operationHandlers = this.#createOperationHandlers(this.#composition.handlers);
           await this.#composition.recover();
@@ -284,10 +290,17 @@ export class RuntimeHostKernel {
         resolveHandlers: () => this.#operationHandlers,
         resolveContinuity: () => this.#composition?.continuity,
         resolveClientCapabilities: () => this.#composition?.clientCapabilities,
+        resolveConfigurationChanges: () => this.#composition?.configurationChanges,
+        resolveSessionCatalogChanges: () => this.#composition?.sessionCatalogChanges,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });
-      await session.run();
+      this.#connectionSessions.add(session);
+      try {
+        await session.run();
+      } finally {
+        this.#connectionSessions.delete(session);
+      }
     } catch {
       transport.destroy();
     } finally {

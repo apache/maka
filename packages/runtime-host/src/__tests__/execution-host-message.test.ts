@@ -78,6 +78,7 @@ import {
   assertJsonLines,
   attachment,
   connectClient,
+  requireStartedTurn,
   operationError,
   quotedContent,
   quoteRefs,
@@ -227,11 +228,13 @@ test('explicit retract is durable across connections and prevents successor admi
     const first = await connectClient(fixture.root, 'desktop');
     const second = await connectClient(fixture.root, 'tui');
     const turnId = randomUUID();
-    const started = await first.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
+    const started = requireStartedTurn(
+      await first.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
     const messageId = randomUUID();
     const submitted = await first.request('turn.message.submit', {
       originHostEpoch: host.hostEpoch,
@@ -281,11 +284,13 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
     const first = await connectClient(fixture.root, 'desktop');
     const second = await connectClient(fixture.root, 'tui');
     const turnId = randomUUID();
-    const started = await first.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
+    const started = requireStartedTurn(
+      await first.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
     const followupId = randomUUID();
     const followupContent = {
       text: '<followup>must be withdrawn</followup>',

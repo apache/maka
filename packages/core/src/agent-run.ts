@@ -53,6 +53,7 @@ export type RootExecutionDescriptor =
   | {
       kind: 'external_message';
       inputDigest?: `sha256:${string}`;
+      maxSteps?: number;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }

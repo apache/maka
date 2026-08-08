@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import { registerMcpIpcMain } from '../mcp-ipc-main.js';
 
-test('MCP IPC reconciles config before invalidating idle backends and emitting status', async () => {
+test('MCP IPC commits config before publishing capabilities and emitting status', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   let config: McpConfigFile = { version: 1, mcpServers: {} };
   const calls: string[] = [];
@@ -35,7 +35,8 @@ test('MCP IPC reconciles config before invalidating idle backends and emitting s
       test: async () => ({ ok: true, status: connected, latencyMs: 1 }),
     },
     ensureReady: async () => { calls.push('ready'); },
-    refreshIdleBackends: async () => { calls.push('refresh'); },
+    publishCapabilities: async () => { calls.push('publish'); },
+    onPublicationError: () => { calls.push('publication:error'); },
     emitChanged: () => { calls.push('emit'); },
   });
 
@@ -43,7 +44,7 @@ test('MCP IPC reconciles config before invalidating idle backends and emitting s
   assert.ok(upsert);
   const result = await upsert({}, 'fixture', { command: 'node' });
   assert.deepEqual(result.mcpServers.fixture, { command: 'node' });
-  assert.deepEqual(calls, ['store', 'sync', 'refresh', 'emit']);
+  assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
 
   calls.length = 0;
   const setConfig = handlers.get('mcp:setConfig');
@@ -55,7 +56,7 @@ test('MCP IPC reconciles config before invalidating idle backends and emitting s
   assert.deepEqual(imported.mcpServers, {
     remote: { url: 'https://example.com/mcp', enabled: false },
   });
-  assert.deepEqual(calls, ['store', 'sync', 'refresh', 'emit']);
+  assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
 
   calls.length = 0;
   const testHandler = handlers.get('mcp:test');
@@ -69,7 +70,7 @@ test('MCP IPC reconciles config before invalidating idle backends and emitting s
   assert.ok(cancelInstall);
   const cancelled = await cancelInstall({}, 'fixture');
   assert.equal(cancelled.mcpServers.fixture, undefined);
-  assert.deepEqual(calls, ['cancel', 'sync', 'refresh', 'emit']);
+  assert.deepEqual(calls, ['cancel', 'sync', 'emit', 'publish']);
 });
 
 test('MCP market cancellation waits for an in-flight config write before rolling it back', async () => {
@@ -109,7 +110,8 @@ test('MCP market cancellation waits for an in-flight config write before rolling
       test: async () => { throw new Error('not used'); },
     },
     ensureReady: async () => {},
-    refreshIdleBackends: async () => { calls.push('refresh'); },
+    publishCapabilities: async () => { calls.push('publish'); },
+    onPublicationError: () => { calls.push('publication:error'); },
     emitChanged: () => { calls.push('emit'); },
   });
 
@@ -126,5 +128,52 @@ test('MCP market cancellation waits for an in-flight config write before rolling
   const [, cancelled] = await Promise.all([installing, cancelling]);
   assert.equal(cancelled.mcpServers.fixture, undefined);
   assert.equal(config.mcpServers.fixture, undefined);
-  assert.deepEqual(calls, ['write:start', 'cancel', 'write:end', 'remove', 'sync', 'refresh', 'emit']);
+  assert.deepEqual(calls, ['write:start', 'cancel', 'write:end', 'remove', 'sync', 'emit', 'publish']);
+});
+
+test('MCP config commit is not rolled back by a capability publication failure', async () => {
+  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
+  let config: McpConfigFile = { version: 1, mcpServers: {} };
+  const publicationErrors: unknown[] = [];
+  registerMcpIpcMain({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler as (...args: any[]) => Promise<any>);
+      },
+    },
+    store: {
+      get: async () => config,
+      set: async (next) => {
+        config = next;
+        return next;
+      },
+      upsert: async (serverId, server) => {
+        config = { version: 1, mcpServers: { ...config.mcpServers, [serverId]: server } };
+        return config;
+      },
+      remove: async () => config,
+    },
+    manager: {
+      cancelConnect: () => false,
+      sync: async () => {},
+      statuses: () => [],
+      reconnect: async () => { throw new Error('not used'); },
+      test: async () => { throw new Error('not used'); },
+    },
+    ensureReady: async () => {},
+    publishCapabilities: async () => {
+      throw new Error('Host disconnected');
+    },
+    onPublicationError: (error) => publicationErrors.push(error),
+    emitChanged() {},
+  });
+
+  const upsert = handlers.get('mcp:upsert');
+  assert.ok(upsert);
+  const committed = await upsert({}, 'fixture', { command: 'node' });
+  assert.deepEqual(committed.mcpServers.fixture, { command: 'node' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(publicationErrors.map((error) => (error as Error).message), [
+    'Host disconnected',
+  ]);
 });

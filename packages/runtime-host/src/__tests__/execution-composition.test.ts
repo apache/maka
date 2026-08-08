@@ -216,6 +216,47 @@ test('production composition orphans ownerless ShellRuns before serving Resource
   });
 });
 
+test('production Skill catalog resolves a Graph child durable tool surface', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const parent = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const child = await createClaimedGraphChild({
+      root,
+      parentSessionId: parent.id,
+      suffix: 'c',
+      stores,
+      prompt: 'inspect the child Skill catalog',
+    });
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const outcome = await composition.handlers['skill.catalog.invocable.query'](
+        {
+          kind: 'start',
+          target: { kind: 'session', sessionId: child.request.targetSessionId },
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'graph-child-skill-client',
+          surface: 'desktop',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(outcome.ok, true);
+      if (outcome.ok) assert.equal(outcome.result.kind, 'page');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('production execution composition owns claimed graph activation retry and exact abort', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
@@ -454,7 +495,7 @@ async function createClaimedGraphChild(input: {
       agentName: LOCAL_READ_AGENT_DEFINITION.name,
       profile: LOCAL_READ_AGENT_DEFINITION.profile,
       systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
-      toolNames: [],
+      toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
       categoryPolicy: {},
       permissionCeiling: 'ask',
     },

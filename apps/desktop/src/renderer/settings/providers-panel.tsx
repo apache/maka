@@ -334,13 +334,13 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             onCancel={goBack}
             onAccountChanged={async () => { await reload(); }}
             onCreated={async (slug, modelDiscoveryError) => {
-              const reloaded = await reload();
+              await reload();
               if (!providersPanelMountedRef.current) return;
               // The new connection's detail, not the list: creating it is the
               // start of setting it up, and every next move — pick the default
               // model, enable models, fix the endpoint the discovery error just
               // complained about — is on that page.
-              if (reloaded) setRoute({ kind: 'detail', slug });
+              setRoute({ kind: 'detail', slug });
               if (modelDiscoveryError) {
                 const providerName = providerDisplay(route.target.providerType, locale).name;
                 toast.error(

@@ -21,6 +21,7 @@ describe('task submission readiness', () => {
 
   test('reuses connection readiness and routes an invalid model to its connection', () => {
     const input = readyInput();
+    if (input.modelTarget.kind !== 'resolved') throw new Error('expected resolved model target');
     input.modelTarget.requestedModel = 'removed-model';
     const snapshot = deriveTaskSubmissionReadiness(input);
 
@@ -37,12 +38,33 @@ describe('task submission readiness', () => {
 
   test('does not turn unresolved credentials into a confirmed repair failure', () => {
     const input = readyInput();
+    if (input.modelTarget.kind !== 'resolved') throw new Error('expected resolved model target');
     input.modelTarget.hasSecret = undefined;
     const snapshot = deriveTaskSubmissionReadiness(input);
 
     expect(snapshot.state).toBe('unknown');
     expect(snapshot.blockers[0]?.blockerCode).toBe('model_credentials_unknown');
     expect(snapshot.blockers[0]?.repairTarget).toBe(undefined);
+  });
+
+  test('normalizes a legacy Codex session model exactly like the send path', () => {
+    const input = readyInput();
+    input.modelTarget = {
+      kind: 'resolved',
+      connection: {
+        ...connection(),
+        slug: 'codex-sub',
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5.6-sol',
+        enabledModelIds: ['gpt-5.6-sol'],
+        models: [{ id: 'gpt-5.6-sol' }],
+      },
+      hasSecret: true,
+      requestedModel: 'gpt-5-codex',
+      checkedAt: 90,
+    };
+
+    expect(deriveTaskSubmissionReadiness(input).state).toBe('ready');
   });
 
   test('distinguishes unavailable runtime and workspace from repairable setup', () => {
@@ -90,6 +112,7 @@ function readyInput(): DeriveTaskSubmissionReadinessInput {
     checkedAt: 100,
     runtime: { state: 'ready', checkedAt: 95 },
     modelTarget: {
+      kind: 'resolved',
       connection: connection(),
       hasSecret: true,
       requestedModel: 'model-a',

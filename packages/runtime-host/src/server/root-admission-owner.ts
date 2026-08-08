@@ -100,6 +100,7 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
     left.userMessageId === right.userMessageId &&
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
+    isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
     left.previousRootTurnId === right.previousRootTurnId &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput

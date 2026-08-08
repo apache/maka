@@ -786,6 +786,7 @@ describe('subagent tools', () => {
             turnId: 'child-turn',
             agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
             agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
+            permissionMode: 'explore',
           });
           return {
             agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
@@ -875,6 +876,7 @@ describe('subagent tools', () => {
               turnId: `child-${status}`,
               agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
               agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
+              permissionMode: 'explore',
             });
             return {
               agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
@@ -939,6 +941,7 @@ describe('subagent tools', () => {
                 turnId: 'child-turn',
                 agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
                 agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
+                permissionMode: 'explore',
               });
               throw new Error('child startup failed');
             },

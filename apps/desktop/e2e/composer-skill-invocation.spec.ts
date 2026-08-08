@@ -65,6 +65,9 @@ test('slash suggestions: project gating, collaboration modes, and Deep Research 
   await expect.poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length).toBe(1);
   const [session] = await page.evaluate(() => window.maka.sessions.list());
   if (!session) throw new Error('the composer did not create a session');
+  await expect
+    .poll(async () => (await page.evaluate(() => window.maka.sessions.list()))[0]?.status)
+    .not.toBe('running');
 
   const listNames = (sessionId: string) =>
     page.evaluate(
@@ -77,12 +80,18 @@ test('slash suggestions: project gating, collaboration modes, and Deep Research 
   await expect(listbox).toContainText('Agent Write');
 
   await expect
-    .poll(async () => (await page.evaluate(() => window.maka.sessions.list()))[0]?.status)
-    .not.toBe('running');
-  await page.evaluate(
-    ({ sessionId }) => window.maka.sessions.setCollaborationMode(sessionId, 'plan'),
-    { sessionId: session.id },
-  );
+    .poll(() =>
+      page.evaluate(async ({ sessionId }) => {
+        try {
+          await window.maka.sessions.setCollaborationMode(sessionId, 'plan');
+          return true;
+        } catch (error) {
+          if (String(error).includes('linked Turn is active')) return false;
+          throw error;
+        }
+      }, { sessionId: session.id }),
+    )
+    .toBe(true);
   await expect.poll(() => listNames(session.id)).not.toContain('Agent Write');
   await expect(listbox).not.toContainText('Agent Write');
 

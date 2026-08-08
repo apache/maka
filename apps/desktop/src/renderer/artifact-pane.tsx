@@ -23,11 +23,13 @@
  *     binary, and silently base64-stuffing a multi-MB PDF into the clipboard
  *     is a footgun. Both kinds still get「在 Finder 中打开」and「另存为」.
  *
- * Layout: fills the Files tab and reports its authoritative filtered count.
+ * Layout: fills the Generated files tab and switches between a list and one
+ * full-panel preview while reporting its authoritative filtered count.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   FileCode,
   FileImage,
   FileText,
@@ -45,13 +47,13 @@ import {
   Badge,
   Banner,
   Button,
+  MoreMenu,
   formatBytes,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { EmptyState as AstryxEmptyState, Toolbar as AstryxToolbar } from '@astryxdesign/core';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { EmptyState as AstryxEmptyState } from '@astryxdesign/core';
 import { ArtifactPreview } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
@@ -67,21 +69,23 @@ export function ArtifactPane(props: {
   const toast = useToast();
   const locale = useUiLocale();
   const copy = getArtifactCopy(locale);
-  const previewEmptyStateCopy = {
+  const emptyStateCopy = {
     title: copy.pane.empty,
     description: copy.pane.emptyHint,
   };
   const [records, setRecords] = useState<ArtifactDescriptor[]>([]);
   const [recordsSessionId, setRecordsSessionId] = useState<string | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<
+    { kind: 'list' } | { kind: 'preview'; artifactId: string }
+  >({ kind: 'list' });
   const [listError, setListError] = useState<{
     sessionId: string;
     message: string;
   } | null>(null);
   const [pendingArtifactListRetry, setPendingArtifactListRetry] = useState(false);
-  // Only the delete action still needs drawn state: its handler opens a confirm
-  // dialog, so it cannot use clickAction (see the toolbar button below).
-  const [deletingArtifactId, setDeletingArtifactId] = useState<string | null>(null);
+  const [artifactActionBusy, setArtifactActionBusy] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const artifactListRequestSeqRef = useRef(0);
   const artifactPaneMountedRef = useMountedRef();
   const artifactPaneSessionIdRef = useRef<string | undefined>(sessionId);
@@ -102,6 +106,11 @@ export function ArtifactPane(props: {
       pendingCreatedArtifactIdRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    setView({ kind: 'list' });
+    setSelectedId(null);
+  }, [sessionId]);
 
   const refresh = useCallback(async () => {
     const requestSeq = ++artifactListRequestSeqRef.current;
@@ -189,35 +198,38 @@ export function ArtifactPane(props: {
     }
   }, [activeRecords, records, recordsSessionId, selectedId, sessionId]);
 
-  const selected = useMemo(
-    () => activeRecords.find((record) => record.id === selectedId) ?? null,
-    [activeRecords, selectedId],
+  const previewRecord = useMemo(
+    () => view.kind === 'preview'
+      ? activeRecords.find((record) => record.id === view.artifactId) ?? null
+      : null,
+    [activeRecords, view],
   );
   const listRef = useRef<HTMLUListElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const activeListError = listError && listError.sessionId === sessionId ? listError.message : null;
 
+  useEffect(() => {
+    if (view.kind === 'preview' && recordsSessionId === sessionId && !previewRecord) {
+      setView({ kind: 'list' });
+      requestAnimationFrame(() => listRef.current?.focus());
+    }
+  }, [previewRecord, recordsSessionId, sessionId, view]);
+
   // ---- actions -----------------------------------------------------------
 
-  // The open / save / copy buttons hand this to `clickAction`, which owns
-  // everything this function used to render by hand: the disabled button, the
-  // delayed spinner, aria-busy, and the "Loading" announcement. Delete is the
-  // exception — it confirms first, so it stays on onClick and draws its own
-  // isLoading (see the button).
-  //
-  // What stays here is the part no single button can know: one artifact action
-  // at a time across the whole pane, including the 在 Finder 中打开 button the
-  // preview card renders. A ref rather than state, since only delete still
-  // draws from a pending flag.
+  // One action at a time across the More menu and the unsupported-preview CTA.
+  // The ref is the concurrency guard; state only disables the visible menu.
   async function runArtifactAction(actionKey: string, action: () => Promise<void>) {
     if (pendingArtifactActionRef.current !== null) return;
     pendingArtifactActionRef.current = actionKey;
+    setArtifactActionBusy(true);
     try {
       await action();
     } finally {
       if (pendingArtifactActionRef.current === actionKey) {
         pendingArtifactActionRef.current = null;
       }
+      if (artifactPaneMountedRef.current) setArtifactActionBusy(false);
     }
   }
 
@@ -323,12 +335,8 @@ export function ArtifactPane(props: {
 
   // ---- render ------------------------------------------------------------
 
-  // @kenji a11y gate #1: artifact list is a SINGLE tab stop. ArrowUp/Down +
-  // Home/End move the selected artifact (preview follows). Enter focuses
-  // the preview area so a screen-reader user can land there directly. Esc
-  // returns focus to the chat composer — does NOT swallow the global
-  // Command Palette / modal Esc handler (the list only listens to Esc when
-  // its own children have focus).
+  // The list is one tab stop. Arrow keys move the roving selection; Enter or
+  // Space opens the selected file in the panel's second, full-height state.
   function focusComposer() {
     // Defer to the next frame so the Esc handler doesn't unfocus + refocus
     // in the same tick.
@@ -341,6 +349,18 @@ export function ArtifactPane(props: {
   function dismissPaneToComposer() {
     props.onDismiss?.();
     focusComposer();
+  }
+
+  function openPreview(artifactId: string) {
+    setSelectedId(artifactId);
+    setView({ kind: 'preview', artifactId });
+    requestAnimationFrame(() => previewRef.current?.focus());
+  }
+
+  function returnToList() {
+    setMoreMenuOpen(false);
+    setView({ kind: 'list' });
+    requestAnimationFrame(() => listRef.current?.focus());
   }
 
   function handleListKeyDown(event: KeyboardEvent<HTMLUListElement>) {
@@ -357,10 +377,7 @@ export function ArtifactPane(props: {
         setSelectedId(action.targetId);
         break;
       case 'activate':
-        setSelectedId(action.targetId);
-        // Enter on selected row → focus preview surface so the
-        // screen reader announces the artifact contents.
-        requestAnimationFrame(() => previewRef.current?.focus());
+        openPreview(action.targetId);
         break;
       case 'dismiss':
         dismissPaneToComposer();
@@ -370,36 +387,43 @@ export function ArtifactPane(props: {
 
   function handlePaneKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== 'Escape') return;
+    if (moreMenuOpen) return;
     const target = event.target;
     if (!(target instanceof Node) || !event.currentTarget.contains(target)) return;
     event.preventDefault();
     event.stopPropagation();
-    dismissPaneToComposer();
+    if (view.kind === 'preview') {
+      returnToList();
+    } else {
+      dismissPaneToComposer();
+    }
   }
 
   return (
     <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
       {activeListError && (
-            <Banner
-              status="error"
-              className="maka-artifact-list-error"
-              icon={<AlertTriangle size={14} aria-hidden="true" />}
-              title={copy.pane.listLoadFailed}
-              description={activeListError}
-              endContent={(
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void retryArtifactListRefresh()}
-                  isDisabled={pendingArtifactListRetry}
-                  aria-busy={pendingArtifactListRetry ? 'true' : undefined}
-                  data-pending={pendingArtifactListRetry ? 'true' : undefined}
-                  icon={<RefreshCcw size={13} aria-hidden="true" />}
-                  label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
-                />
-              )}
+        <Banner
+          status="error"
+          className="maka-artifact-list-error"
+          icon={<AlertTriangle size={14} aria-hidden="true" />}
+          title={copy.pane.listLoadFailed}
+          description={activeListError}
+          endContent={(
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void retryArtifactListRefresh()}
+              isDisabled={pendingArtifactListRetry}
+              aria-busy={pendingArtifactListRetry ? 'true' : undefined}
+              data-pending={pendingArtifactListRetry ? 'true' : undefined}
+              icon={<RefreshCcw size={13} aria-hidden="true" />}
+              label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
             />
           )}
+        />
+      )}
+      {view.kind === 'list' ? (
+        activeRecords.length > 0 ? (
           <ul
             ref={listRef}
             className="maka-artifact-list"
@@ -424,7 +448,7 @@ export function ArtifactPane(props: {
                   tabIndex={-1}
                   data-selected={record.id === selectedId ? 'true' : 'false'}
                   data-deleted={record.status === 'deleted' ? 'true' : 'false'}
-                  onClick={() => setSelectedId(record.id)}
+                  onClick={() => openPreview(record.id)}
                   label={record.name}
                   icon={(
                     <span className="maka-artifact-row-icon" aria-hidden="true">
@@ -446,107 +470,93 @@ export function ArtifactPane(props: {
               </li>
             ))}
           </ul>
+        ) : (
+          <AstryxEmptyState
+            className="maka-artifact-list-empty"
+            isCompact
+            icon={<FileText aria-hidden="true" />}
+            {...emptyStateCopy}
+          />
+        )
+      ) : previewRecord ? (
+        <div className="maka-artifact-preview-screen">
+          <header className="maka-artifact-preview-header">
+            <Button
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              icon={<ArrowLeft size={16} aria-hidden="true" />}
+              label={copy.pane.back}
+              onClick={returnToList}
+            />
+            <div className="maka-artifact-preview-heading">
+              <strong title={previewRecord.name}>{previewRecord.name}</strong>
+              <span>
+                {formatBytes(previewRecord.sizeBytes)} · {formatRelativeTimestamp(previewRecord.createdAt, Date.now(), locale)}
+              </span>
+            </div>
+            <MoreMenu
+              className="maka-artifact-preview-more"
+              size="sm"
+              label={copy.pane.moreActions(previewRecord.name)}
+              isDisabled={artifactActionBusy}
+              isMenuOpen={moreMenuOpen}
+              onOpenChange={setMoreMenuOpen}
+              items={[
+                {
+                  label: copy.pane.openInFinder,
+                  icon: <FolderOpen size={14} aria-hidden="true" />,
+                  onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
+                },
+                {
+                  label: copy.pane.saveAs,
+                  icon: <Save size={14} aria-hidden="true" />,
+                  onClick: () => void runArtifactAction(`${previewRecord.id}:save`, () => saveAs(previewRecord.id)),
+                },
+                ...(isTextKind(previewRecord.kind)
+                  ? [{
+                      label: copy.pane.copy,
+                      icon: <Copy size={14} aria-hidden="true" />,
+                      onClick: () => void runArtifactAction(`${previewRecord.id}:copy`, () => copyText(previewRecord.id)),
+                    }]
+                  : []),
+                { type: 'divider' as const },
+                {
+                  label:
+                    previewRecord.source === 'deep_research' ||
+                    previewRecord.source === 'tool_result_archive'
+                      ? copy.pane.deleteReadOnly
+                      : copy.pane.delete,
+                  icon: <Trash2 size={14} aria-hidden="true" />,
+                  isDisabled:
+                    previewRecord.source === 'deep_research' ||
+                    previewRecord.source === 'tool_result_archive',
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:delete`,
+                    () => deleteArtifact(previewRecord.id),
+                  ),
+                },
+              ]}
+            />
+          </header>
           <div
             ref={previewRef}
             className="maka-artifact-preview"
-            data-empty={selected ? 'false' : 'true'}
-            // @kenji a11y gate #1: Enter from the list focuses this region
-            // so screen readers can announce the artifact contents. role +
-            // tabIndex=-1 make the div programmatically focusable without
-            // adding a Tab stop (the list is the single Tab stop).
             role="region"
-            aria-label={selected ? copy.pane.previewNamed(selected.name) : copy.pane.previewAria}
+            aria-label={copy.pane.previewNamed(previewRecord.name)}
             tabIndex={-1}
           >
-            {selected ? (
-              // PR-UI-RENDER-3a: pass the existing openInFinder
-              // handler so the Unsupported card (when shown) can
-              // render a real "在 Finder 中打开" button. No new IPC.
-              <ArtifactPreview
-                key={selected.id}
-                record={selected}
-                onShowInFolder={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
-              />
-            ) : (
-              <AstryxEmptyState
-                className="maka-artifact-preview-empty"
-                isCompact
-                icon={<FileText aria-hidden="true" />}
-                {...(activeRecords.length > 0
-                  ? {title: copy.pane.notSelected, description: copy.pane.selectHint}
-                  : previewEmptyStateCopy)}
-              />
-            )}
-          </div>
-          {selected && (
-            <AstryxToolbar
-              className="maka-artifact-toolbar"
-              label={copy.pane.actionsAria}
-              size="sm"
-              gap={1}
-              startContent={<div className="maka-artifact-toolbar-group">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  clickAction={() => runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
-                  icon={<FolderOpen size={14} aria-hidden="true" />}
-                  label={copy.pane.openInFinder}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  clickAction={() => runArtifactAction(`${selected.id}:save`, () => saveAs(selected.id))}
-                  icon={<Save size={14} aria-hidden="true" />}
-                  label={copy.pane.saveAs}
-                />
-                {isTextKind(selected.kind) && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    clickAction={() => runArtifactAction(`${selected.id}:copy`, () => copyText(selected.id))}
-                    icon={<Copy size={14} aria-hidden="true" />}
-                    label={copy.pane.copy}
-                  />
-                )}
-              </div>}
-              endContent={<div className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
-                <Tooltip
-                  content={
-                    selected.source === 'tool_result_archive'
-                      ? copy.pane.runtimeArchiveReadOnly
-                      : copy.pane.delete
-                  }
-                >
-                  {/* onClick, not clickAction: `deleteArtifact` opens a
-                      confirm dialog first, and clickAction runs inside
-                      startTransition — React holds the state commits that
-                      render the dialog until the action settles, while the
-                      action waits on the dialog. isLoading carries the
-                      spinner, aria-busy, and the disable instead. */}
-                  <Button
-                    label={copy.pane.delete}
-                    icon={<Trash2 size={14} aria-hidden="true" />}
-                    isIconOnly
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => void runArtifactAction(`${selected.id}:delete`, async () => {
-                      setDeletingArtifactId(selected.id);
-                      try {
-                        await deleteArtifact(selected.id);
-                      } finally {
-                        if (artifactPaneMountedRef.current) setDeletingArtifactId(null);
-                      }
-                    })}
-                    isLoading={deletingArtifactId === selected.id}
-                    isDisabled={
-                      selected.source === 'deep_research' ||
-                      selected.source === 'tool_result_archive'
-                    }
-                  />
-                </Tooltip>
-              </div>}
+            <ArtifactPreview
+              key={previewRecord.id}
+              record={previewRecord}
+              onShowInFolder={() => void runArtifactAction(
+                `${previewRecord.id}:open`,
+                () => openInFinder(previewRecord.id),
+              )}
             />
-          )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

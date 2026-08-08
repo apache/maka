@@ -118,6 +118,37 @@ test('re-reads the Session revision before retrying a product update', async () 
   ]);
 });
 
+test('settles cleanup when its copy target is already absent', async () => {
+  const { client } = clientWithResponses([{ kind: 'session', session: null }]);
+
+  assert.equal(await client.removeSessionCopy('lost-copy-response'), 'removed');
+});
+
+test('settles branch cleanup when its target disappears between catalog reads', async () => {
+  const { client } = clientWithResponses([
+    { kind: 'session', session: session('branch-copy', 1) },
+    { kind: 'session', session: null },
+  ]);
+
+  assert.equal(await client.removeSessionCopy('branch-copy'), 'removed');
+});
+
+test('settles revision cleanup when abandon observes an already absent target', async () => {
+  const { client } = clientWithResponses([
+    {
+      kind: 'session',
+      session: session('revision-copy', 1, { revisionOfTurnId: 'source-turn' }),
+    },
+    new RuntimeHostOperationError(
+      'session.revision.abandon',
+      'not_found',
+      'Revision copy is already absent',
+    ),
+  ]);
+
+  assert.equal(await client.removeSessionCopy('revision-copy'), 'removed');
+});
+
 test('merges a configuration patch into each fresh CAS projection', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 10) },

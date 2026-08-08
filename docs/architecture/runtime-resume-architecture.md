@@ -911,11 +911,11 @@ The two most important follow-ups are:
 
 ### Product wiring
 
-1. `apps/desktop/src/main/app-lifecycle.ts`
-2. `apps/desktop/src/main/sessions-ipc-main.ts`
+1. `apps/desktop/src/main/runtime-host-boot.ts`
+2. `apps/desktop/src/main/runtime-host-session-execution-ipc-main.ts`
 3. `apps/desktop/src/renderer/use-shell-resume.ts`
-4. `packages/cli/src/runtime-bootstrap.ts`
-5. `packages/cli/src/session-driver.ts`
+4. `packages/cli/src/runtime-host-cli-context.ts`
+5. `packages/cli/src/runtime-host-session-driver.ts`
 
 ### Contract tests
 
@@ -928,7 +928,7 @@ The two most important follow-ups are:
 7. `packages/runtime/src/__tests__/recovery-authority-equivalence.test.ts`
 8. `packages/storage/src/__tests__/recovery-persistence-authority.test.ts`
 9. `packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts`
-10. `apps/desktop/src/main/__tests__/runtime-resume-routing-contract.test.ts`
+10. `apps/desktop/src/main/__tests__/runtime-host-session-execution-ipc-main.test.ts`
 
 ## Further reading
 

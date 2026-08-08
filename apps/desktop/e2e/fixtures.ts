@@ -210,6 +210,7 @@ async function withE2eWindow(
     e2eFixtureScenario,
     locale,
     platform,
+    showWindow,
     invocableSkills,
     gitReviewExtraFiles,
     extraConnectionCount,
@@ -220,6 +221,8 @@ async function withE2eWindow(
     locale?: 'zh' | 'en';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
+    /** Show fixtures whose contract depends on compositor-paced frames. */
+    showWindow?: boolean;
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
@@ -251,9 +254,9 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
-        // xvfb throttles a hidden window's compositor to ~1fps; only that
-        // isolated display gets a visible window.
-        showWindow: isCiLinuxDisplay(),
+        // xvfb throttles a hidden window's compositor to ~1fps. Geometry
+        // fixtures opt in locally; every fixture is visible on isolated CI X.
+        showWindow: showWindow || isCiLinuxDisplay(),
       }),
     });
     app.on('console', (message) => {
@@ -300,11 +303,13 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
+  externalSessionImportWindow: Page;
   firstRunWindow: Page;
   modelPickerLongWindow: Page;
   sandboxBoundaryWindow: Page;
   readOnlyBoundaryWindow: Page;
   sessionWorkbarWindow: Page;
+  artifactPaneWindow: Page;
   botSettingsWindow: Page;
   invocableSkillsWindow: Page;
   settingsProjectsWindow: Page;
@@ -314,6 +319,17 @@ export const test = base.extend<{
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  // External Session import runs through the production Runtime Host owner.
+  externalSessionImportWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: '.maka-session-panel',
+        locale: 'zh',
+      },
+      use,
+    );
   },
   // No connection: the real main process derives `needs_connection`, and the
   // renderer replaces the empty chat with the first-task activation card.
@@ -384,6 +400,17 @@ export const test = base.extend<{
         // would pin an implementation detail the design system owns.
         readinessSelector: '[data-maka-contract="session-workbar-right"]',
         e2eFixtureScenario: 'task-ledger',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  artifactPaneWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.maka-artifact-list',
+        e2eFixtureScenario: 'artifact-pane',
         locale: 'zh',
       },
       use,

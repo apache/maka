@@ -115,13 +115,26 @@ export function createRuntimeHostBotSessionAdapter(
       }
 
       const completion = collectRuntimeHostBotTurn(session.events, turnId);
+      void completion.catch(() => undefined);
       try {
         try {
-          await deps.client.startTurn({
+          const started = await deps.client.startTurn({
             sessionId,
             turnId,
             content: { text },
           });
+          if (started.kind === 'blocked') {
+            return {
+              kind: 'errored' as const,
+              reason: started.skillInvocation.failed
+                .map((failure) =>
+                  failure.reason === 'too_many_requests'
+                    ? `Skill request limit exceeded: ${failure.requestLimit}`
+                    : `${failure.request}: ${failure.reason}`,
+                )
+                .join(', '),
+            };
+          }
         } catch (error) {
           await session.close().catch(() => undefined);
           await completion.catch(() => undefined);

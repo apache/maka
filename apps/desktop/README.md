@@ -83,7 +83,7 @@ npm Electron bundle, which macOS will not accept as a durable grant.
 
 | Layer | Path | Role |
 |---|---|---|
-| main | `src/main/` | Node/Electron main process. Owns window lifecycle, credentials, attachments, permissions, IPC handlers, and the bridge to `@maka/runtime` + `@maka/storage`. |
+| main | `src/main/` | Node/Electron client process. Owns windows, OS capabilities, client-local settings, IPC projection, and the Runtime Host connection. Runtime execution and canonical runtime policy belong to Runtime Host. |
 | preload | `src/preload/preload.ts` (single file) | `contextBridge.exposeInMainWorld('maka', …)` — the only surface the renderer may call to reach Node/Electron. No Node API is directly exposed. |
 | renderer | `src/renderer/` | React UI body. See `src/renderer/README.md`. |
 
@@ -93,20 +93,21 @@ npm Electron bundle, which macOS will not accept as a durable grant.
 
 | Suffix | Role | Examples |
 |---|---|---|
-| `*-ipc-main.ts` | Exports a `register*Ipc(...)` that wires `ipcMain.handle` / `ipcMain.on` for one IPC domain | `connections-ipc-main`, `daily-review-ipc-main`, `memory-ipc-main`, `web-search-ipc-main`, `workspace-resources-ipc-main` |
-| `*-main.ts` / `*-service.ts` | A service owned by main (no `ipcMain` calls of its own) | `daily-review-main`, `system-prompt-main`, `oauth-model-connections-main`, `local-memory-service` |
+| `runtime-host-*-ipc-main.ts` | Projects one Runtime Host protocol domain onto renderer IPC | `runtime-host-connections-ipc-main`, `runtime-host-session-execution-ipc-main`, `runtime-host-settings-ipc-main` |
+| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `notifications-ipc-main`, `workspace-search-ipc-main` |
+| `*-service.ts` / `*-controller.ts` | A client-local service without direct IPC ownership | `app-update-service`, `project-management-service`, `project-root-controller` |
 | `*-guard.ts` | Validation / security boundary | `external-link-guard`, `open-path-guard`, `permission-response-guard` |
 | (other) | Window, state, platform wiring | `main.ts` (entry), `main-window`, `window-state`, `theme-source`, `credential-store`, `skills`, `attachment-*` |
 
-Sub-folders: `browser/` (embedded browser view), `oauth/`, `search/` (thread search), `web-search/`, `types/`. The browser IPC handler itself (`browser-ipc-main.ts`) is flat in `src/main/`, not under `browser/`.
+Sub-folders hold OS-facing implementations such as `browser/`, `computer-use/`, `oauth/`, and `permission-overlay/`. Runtime Host adapters stay flat and carry the `runtime-host-` prefix so ownership is visible at the import boundary.
 
-`main.ts` startup order: stores and the runtime/controller are created synchronously at module load; `registerIpc()` runs at top level, **before** `app.whenReady()`; inside `whenReady`, the main window is created **hidden** early and background startup (connection bootstrapping, telemetry, bots, schedulers) runs concurrently without blocking first paint. The window is created hidden and revealed after the renderer's first AppShell paint (the `window:notifyRendererReady` gate in `app.tsx`); a fallback timer reveals it if the renderer never signals, so a fail-soft loading state can show (e.g. if `main.tsx`'s onboarding prefetch times out). The real invariant for IPC: handlers must be registered before the renderer entry runs, because `main.tsx` prefetches the onboarding snapshot before mounting React. Background startup may mutate state after the renderer's first read, so don't assume it has already settled when wiring the UI.
+`main.ts` performs only pre-ready Electron identity and single-instance work. After `app.whenReady()`, it dynamically imports `runtime-host-boot.ts`. Boot validates the storage root before any Runtime Host state can be written, registers persistent client-local IPC, connects or spawns Runtime Host, registers connection-scoped Host IPC, and only then creates the first renderer window. The window remains hidden until the renderer's first AppShell paint (`window:notifyRendererReady`), with a fallback reveal timer for fail-soft startup.
 
 ## IPC contract
 
 Three patterns, all rooted in preload's `maka` namespace. Channel names are `<domain>:<action>`.
 
-- **Request/response** — `ipcRenderer.invoke('<domain>:<action>', …args)` in preload ↔ `ipcMain.handle('<domain>:<action>', …)`. The handler lives either inline in `main.ts` (e.g. `sessions:list`, `settings:get`) or in a `*-ipc-main.ts` extracted by domain (e.g. `connections-ipc-main`, `daily-review-ipc-main`). Both forms coexist; prefer extracting a new domain to its own `*-ipc-main.ts`.
+- **Request/response** — `ipcRenderer.invoke('<domain>:<action>', …args)` in preload ↔ `ipcMain.handle('<domain>:<action>', …)`. Runtime domains are projected by `runtime-host-*-ipc-main.ts`; OS-facing client domains use a focused `*-ipc-main.ts` module.
 - **Main→renderer push** — main sends through the safe-send guard (`safeSendToRenderer` via `mainWindowController.send`), not raw `webContents.send` (which throws when the window/`webContents` is destroyed); preload subscribes via `ipcRenderer.on` and returns an unsubscribe fn (e.g. `sessions:changed`, `plans:changed`, `artifacts:changed`). The safe-send contract test scans a fixed list of main-source files for direct `mainWindow.webContents.send(...)` forms — new `*-ipc-main.ts` files aren't auto-covered, so route sends through the guard in every new file (an alias for `mainWindow` can bypass the literal scan).
 - **Renderer→main fire-and-forget** — `ipcRenderer.send('<domain>:<action>', …)` in preload ↔ `ipcMain.on('<domain>:<action>', …)`. Used when no response is needed (e.g. `browser:active-session`, `browser:setViewport`).
 
@@ -119,7 +120,7 @@ renderer (React)
   └─ window.maka.<ns>.<method>(…)        // typed surface, see preload.ts
       └─ ipcRenderer.invoke / send / on
           └─ main: safeSendToRenderer / ipcMain.handle / ipcMain.on
-              └─ @maka/runtime (agent runtime) + @maka/storage (JSONL persistence)
+              └─ Runtime Host protocol → @maka/runtime + @maka/storage
 ```
 
 The renderer never imports `@maka/runtime` or `@maka/storage` at runtime — all Node-side access goes through the preload `maka` bridge. The renderer only pulls `import type` from them for a few shared types. Types shared across the IPC boundary mostly come from `@maka/core`, with some from `@maka/runtime`, `@maka/storage`, and `@maka/ui` (see `preload.ts` imports).

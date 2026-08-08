@@ -5,7 +5,7 @@ import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { parseMakaRunArgs } from '../run-command.js';
+import { parseMakaRunArgs } from '../run-command-core.js';
 
 const fixturePath = fileURLToPath(new URL('./run-command-fixture.js', import.meta.url));
 
@@ -124,6 +124,19 @@ describe('maka run process contract', () => {
     const result = await runFixture(['hello'], { input: '' });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=hello\n');
+    assert.equal(processContractStderr(result.stderr), '');
+  });
+
+  test('normalizes a generated Session name after truncating the prompt', async () => {
+    const prompt = 'Use Bash exactly once to run pwd and node -p';
+    assert.equal(prompt.slice(0, 42).endsWith(' '), true);
+
+    const result = await runFixture([prompt], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_SESSION_NAME: 'Use Bash exactly once to run pwd and node' },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
     assert.equal(processContractStderr(result.stderr), '');
   });
 

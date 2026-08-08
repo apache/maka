@@ -5,6 +5,11 @@ import type {
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
 import {
+  PROVIDER_DEFAULTS,
+  deriveConnectionSlug,
+  providerAuthSupportsApiKey,
+} from '@maka/core/llm-connections';
+import {
   createConnectionEffectFetchTransport,
   isOAuthSubscriptionProvider,
   runConnectionModelDiscoveryEffect,
@@ -30,6 +35,9 @@ import type {
   ConnectionEffectRejectionReason,
   ConnectionModelFetchInput,
   ConnectionModelFetchResult,
+  ConnectionOnboardingVerifyInput,
+  ConnectionOnboardingSaveInput,
+  ConnectionOnboardingSaveResult,
   ConnectionTestProjection,
   ConnectionTestRunInput,
   ConnectionTestRunResult,
@@ -69,6 +77,8 @@ export interface HostConnectionEffectCoordinatorOptions {
 /** Runs provider I/O outside Storage lanes and conditionally commits canonical results. */
 export class HostConnectionEffectCoordinator {
   readonly handlers: ConnectionEffectOperationHandlerMap = {
+    'connection.onboarding.save': (input) => this.#saveOnboarding(input),
+    'connection.onboarding.verify': (input) => this.#verifyOnboarding(input),
     'connection.models.fetch': (input) => this.#fetchModels(input),
     'connection.test.run': (input) => this.#testConnection(input),
   };
@@ -150,6 +160,108 @@ export class HostConnectionEffectCoordinator {
     });
   }
 
+  #verifyOnboarding(
+    input: ConnectionOnboardingVerifyInput,
+  ): Promise<OperationOutcome<'connection.onboarding.verify'>> {
+    const slug = deriveConnectionSlug(input.providerType);
+    return this.#admit(slug, 'connection.onboarding.verify', async () => {
+      const prepared = await this.#discoverOnboarding(input);
+      return prepared.kind === 'ready' ? { kind: 'verified', models: prepared.models } : prepared;
+    });
+  }
+
+  #saveOnboarding(
+    input: ConnectionOnboardingSaveInput,
+  ): Promise<OperationOutcome<'connection.onboarding.save'>> {
+    const slug = deriveConnectionSlug(input.providerType);
+    return this.#admit(slug, 'connection.onboarding.save', async () => {
+      const prepared = await this.#discoverOnboarding(input);
+      if (prepared.kind !== 'ready') return prepared;
+      const available = new Set(prepared.models.map(({ id }) => id));
+      if (input.enabledModelIds.some((modelId) => !available.has(modelId))) {
+        return { kind: 'rejected', reason: 'model_unavailable' };
+      }
+      return this.#activation.runMutation(async () => this.#commitOnboarding(input, prepared));
+    });
+  }
+
+  async #discoverOnboarding(input: ConnectionOnboardingVerifyInput): Promise<OnboardingDiscovery> {
+    if (!providerAuthSupportsApiKey(input.providerType)) {
+      return { kind: 'rejected', reason: 'provider_unsupported' };
+    }
+    const slug = deriveConnectionSlug(input.providerType);
+    const catalog = await this.#stores.connectionCatalog.getSnapshot();
+    const candidate = catalog.connections.find((connection) => connection.slug === slug);
+    if (candidate && candidate.providerType !== input.providerType) {
+      return { kind: 'rejected', reason: 'slug_conflict' };
+    }
+    const supplied = input.apiKey?.trim() ?? '';
+    const stored = candidate
+      ? await this.#stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: candidate.connectionId,
+          kind: 'api_key',
+        })
+      : null;
+    const secret = supplied || stored?.secret || '';
+    if (PROVIDER_DEFAULTS[input.providerType].authKind === 'api_key' && secret.length === 0) {
+      return { kind: 'rejected', reason: 'credential_not_configured' };
+    }
+    const proxy = await this.#stores.operations.resolveNetworkProxyExecution();
+    if (proxy.kind !== 'ready') return { kind: 'failed', errorClass: 'network' };
+    const transport = this.#createTransport(
+      toRuntimePolicyProxy(proxy.networkProxy, proxy.secretMaterial.networkProxy?.secret),
+    );
+    try {
+      const effect = await this.#runModelDiscovery(
+        candidate ?? transientConnection(input.providerType),
+        secret,
+        { fetch: transport.fetch },
+      );
+      if (!effect.ok || effect.models.length === 0) {
+        return {
+          kind: 'failed',
+          errorClass: effect.ok ? 'invalid_response' : effect.error.kind,
+        };
+      }
+      return {
+        kind: 'ready',
+        suppliedSecret: supplied,
+        models: effect.models,
+      };
+    } finally {
+      await transport.close();
+    }
+  }
+
+  async #commitOnboarding(
+    input: ConnectionOnboardingSaveInput,
+    prepared: Extract<OnboardingDiscovery, { readonly kind: 'ready' }>,
+  ): Promise<ConnectionOnboardingSaveResult> {
+    try {
+      const committed = await this.#stores.operations.commitConnectionOnboarding({
+        providerType: input.providerType,
+        suppliedSecret: prepared.suppliedSecret || null,
+        enabledModelIds: input.enabledModelIds,
+        discovery: {
+          models: prepared.models,
+          source: 'fetched',
+          fetchedAt: this.#now(),
+        },
+      });
+      if (committed.kind === 'slug_conflict') {
+        return { kind: 'rejected', reason: 'slug_conflict' };
+      }
+      if (committed.changed) this.#onCommittedMutation();
+      return { kind: 'saved' };
+    } catch (error) {
+      if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
+        this.#onCommittedMutation();
+      }
+      throw error;
+    }
+  }
+
   #testConnection(input: ConnectionTestRunInput): Promise<OperationOutcome<'connection.test.run'>> {
     return this.#admit(input.connectionId, 'connection.test.run', async () => {
       const prepared = await this.#stores.operations.beginConnectionTest(
@@ -187,7 +299,13 @@ export class HostConnectionEffectCoordinator {
     });
   }
 
-  #admit<K extends 'connection.models.fetch' | 'connection.test.run'>(
+  #admit<
+    K extends
+      | 'connection.models.fetch'
+      | 'connection.test.run'
+      | 'connection.onboarding.verify'
+      | 'connection.onboarding.save',
+  >(
     connectionId: string,
     operation: K,
     run: () => Promise<Extract<OperationOutcome<K>, { ok: true }>['result']>,
@@ -281,6 +399,18 @@ export class HostConnectionEffectCoordinator {
 type BeginModelFetchReady = Extract<BeginModelFetchResult, { readonly kind: 'ready' }>;
 type BeginConnectionTestReady = Extract<BeginConnectionTestResult, { readonly kind: 'ready' }>;
 
+type OnboardingDiscovery =
+  | {
+      readonly kind: 'ready';
+      readonly suppliedSecret: string;
+      readonly models: ConnectionModelDiscoveryResult['models'];
+    }
+  | {
+      readonly kind: 'rejected';
+      readonly reason: 'provider_unsupported' | 'credential_not_configured' | 'slug_conflict';
+    }
+  | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
+
 function preparationResult(
   prepared: Exclude<BeginModelFetchResult, { readonly kind: 'ready' }>,
 ): Extract<ConnectionModelFetchResult, { readonly kind: 'rejected' }>;
@@ -352,9 +482,13 @@ function committedConnectionBasis(
   return { connectionId, revision: connection.revision };
 }
 
-function storeFailure<K extends 'connection.models.fetch' | 'connection.test.run'>(
-  error: unknown,
-): OperationOutcome<K> {
+function storeFailure<
+  K extends
+    | 'connection.models.fetch'
+    | 'connection.test.run'
+    | 'connection.onboarding.verify'
+    | 'connection.onboarding.save',
+>(error: unknown): OperationOutcome<K> {
   if (!(error instanceof RuntimePolicyStoreError)) throw error;
   switch (error.code) {
     case 'commit_outcome_unknown':
@@ -373,9 +507,35 @@ function storeFailure<K extends 'connection.models.fetch' | 'connection.test.run
   }
 }
 
-function operationFailure<K extends 'connection.models.fetch' | 'connection.test.run'>(
+function operationFailure<
+  K extends
+    | 'connection.models.fetch'
+    | 'connection.test.run'
+    | 'connection.onboarding.verify'
+    | 'connection.onboarding.save',
+>(
   code: 'commit_outcome_unknown' | 'persistence_failed' | 'invalid_request',
   message: string,
 ): OperationOutcome<K> {
   return { ok: false, error: { code, message } } as OperationOutcome<K>;
+}
+
+function transientConnection(
+  providerType: ConnectionOnboardingVerifyInput['providerType'],
+): ConnectionCatalogEntry {
+  const definition = PROVIDER_DEFAULTS[providerType];
+  const models = definition.fallbackModels.map((id) => ({ id }));
+  return {
+    connectionId: '00000000-0000-4000-8000-000000000000',
+    revision: 0,
+    slug: deriveConnectionSlug(providerType),
+    name: definition.label,
+    providerType,
+    ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
+    enabled: true,
+    enabledModelIds: models.map(({ id }) => id),
+    models,
+    modelSource: 'fallback',
+    modelsFetchedAt: 0,
+  };
 }

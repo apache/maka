@@ -24,6 +24,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_CHUNK_CHARS,
@@ -107,11 +108,11 @@ describe('applyToolOutputChunk — per-chunk cap', () => {
     );
   });
 
-  it('does not truncate at-or-under maxChunkChars', () => {
-    const justUnder = filler(TOOL_STREAM_MAX_CHUNK_CHARS - 10);
-    const result = applyToolOutputChunk(undefined, chunk(1, justUnder));
+  it('accepts the largest valid Runtime delta without truncation', () => {
+    const runtimeChunk = filler(TOOL_OUTPUT_DELTA_MAX_CHARS);
+    const result = applyToolOutputChunk(undefined, chunk(1, runtimeChunk));
     assert.equal(result.truncated, false);
-    assert.equal(result.chunks[0]!.text, justUnder);
+    assert.equal(result.chunks[0]!.text, runtimeChunk);
   });
 });
 

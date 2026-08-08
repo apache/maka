@@ -1,0 +1,139 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { LlmConnection } from '@maka/core';
+import {
+  createDesktopTaskSubmissionReadinessService,
+  resolveStoredModelTarget,
+} from '../task-submission-readiness-main.js';
+
+test('resolves defaults and projects authoritative model and workspace readiness', async () => {
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
+    resolveModelTarget: async () => ({ kind: 'resolved', connection: connection(), hasSecret: true }),
+    inspectWorkspace: async () => 'ready',
+    now: () => 100,
+  });
+
+  const snapshot = await service.getSnapshot(undefined);
+  assert.equal(snapshot.state, 'ready');
+  assert.deepEqual(snapshot.dimensions.map(({ id }) => id), [
+    'runtime',
+    'model_target',
+    'workspace',
+  ]);
+});
+
+test('keeps credential lookup failure unknown instead of inventing a repair failure', async () => {
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
+    resolveModelTarget: async () => ({
+      kind: 'resolved',
+      connection: connection(),
+      hasSecret: undefined,
+    }),
+    inspectWorkspace: async () => 'ready',
+    now: () => 100,
+  });
+
+  const snapshot = await service.getSnapshot({ model: 'model-a' });
+  assert.equal(snapshot.state, 'unknown');
+  assert.equal(snapshot.blockers[0]?.blockerCode, 'model_credentials_unknown');
+});
+
+test('reports a closed runtime even when model catalog resolution rejects', async () => {
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'unavailable', checkedAt: 90 }),
+    resolveModelTarget: async () => { throw new Error('catalog closed'); },
+    inspectWorkspace: async (cwd) => cwd === '/missing' ? 'unavailable' : 'ready',
+    now: () => 100,
+  });
+
+  const snapshot = await service.getSnapshot({ cwd: '/missing' });
+  assert.equal(snapshot.state, 'unavailable');
+  assert.deepEqual(snapshot.blockers.map(({ blockerCode }) => blockerCode), [
+    'runtime_unavailable',
+    'model_target_unknown',
+    'workspace_unavailable',
+  ]);
+});
+
+test('passes an explicit slug to one model-target resolution without requiring a default read', async () => {
+  const requestedSlugs: Array<string | undefined> = [];
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
+    resolveModelTarget: async (requestedSlug) => {
+      requestedSlugs.push(requestedSlug);
+      return { kind: 'connection_missing', connectionSlug: requestedSlug ?? 'unexpected' };
+    },
+    inspectWorkspace: async () => 'ready',
+    now: () => 100,
+  });
+
+  const snapshot = await service.getSnapshot({ connectionSlug: 'deleted' });
+  assert.deepEqual(requestedSlugs, ['deleted']);
+  assert.equal(snapshot.blockers[0]?.blockerCode, 'model_connection_missing');
+});
+
+test('resolves connection and default from one immutable catalog snapshot', async () => {
+  let reads = 0;
+  const resolution = await resolveStoredModelTarget(undefined, {
+    getSnapshot: async () => {
+      reads += 1;
+      return { defaultSlug: 'provider', connections: [connection()] };
+    },
+    hasCredential: async (candidate) => candidate.slug === 'provider',
+  });
+
+  assert.equal(reads, 1);
+  assert.equal(resolution.kind, 'resolved');
+  if (resolution.kind === 'resolved') {
+    assert.equal(resolution.connection.slug, 'provider');
+    assert.equal(resolution.hasSecret, true);
+  }
+});
+
+test('rejects malformed renderer input before reading stores', async () => {
+  let reads = 0;
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
+    resolveModelTarget: async () => { reads += 1; return { kind: 'missing_default' }; },
+  });
+
+  await assert.rejects(service.getSnapshot({ cwd: '', extra: true }), /INVALID_TASK_READINESS_REQUEST/);
+  assert.equal(reads, 0);
+});
+
+
+test('maps a missing cwd to repairable workspace_missing', async () => {
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
+    resolveModelTarget: async () => ({ kind: 'resolved', connection: connection(), hasSecret: true }),
+    inspectWorkspace: async () => 'missing',
+    now: () => 100,
+  });
+
+  const snapshot = await service.getSnapshot({ cwd: '/gone' });
+  assert.equal(snapshot.state, 'repair_required');
+  assert.equal(snapshot.blockers[0]?.blockerCode, 'workspace_missing');
+  assert.deepEqual(snapshot.blockers[0]?.repairTarget, { kind: 'workspace_picker' });
+});
+
+function connection(): LlmConnection {
+  return {
+    slug: 'provider',
+    name: 'Provider',
+    providerType: 'openai-compatible',
+    enabled: true,
+    defaultModel: 'model-a',
+    enabledModelIds: ['model-a'],
+    models: [{ id: 'model-a' }],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}

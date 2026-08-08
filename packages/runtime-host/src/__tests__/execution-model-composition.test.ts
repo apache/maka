@@ -574,6 +574,7 @@ test('production backend preserves coordinator Client Capability semantics acros
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-real-model-'));
   const root = join(base, 'interactive');
+  const home = join(base, 'home');
   const provider = await startProvider();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -590,6 +591,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   let drainRequests = 0;
   let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
   try {
+    await mkdir(home, { recursive: true });
     await mkdir(join(root, '.agents', 'skills', 'hosted-skill'), {
       recursive: true,
     });
@@ -677,15 +679,18 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const taskLedger = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
     await taskLedger.create(session.id, [{ subject: 'HOSTED_TASK_LEDGER_SENTINEL' }]);
 
-    composition = await createExecutionRuntimeHostComposition({
-      owner,
-      hostEpoch: connectionContext.hostEpoch,
-      acquireResidency: connectionContext.acquireResidency,
-      retainUntilProcessExit: () => undefined,
-      requestDrain: () => {
-        drainRequests += 1;
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: connectionContext.hostEpoch,
+        acquireResidency: connectionContext.acquireResidency,
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => {
+          drainRequests += 1;
+        },
       },
-    });
+      { skillHomeDirectory: home },
+    );
     await composition.recover();
     const memoryState = await composition.handlers['memory.query'](
       { kind: 'state' },
@@ -760,6 +765,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Automation',
       'Bash',
       'Edit',
+      'ExploreAgent',
       'FormatJson',
       'Glob',
       'GoalClear',
@@ -768,6 +774,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'GoalSet',
       'GoalStatus',
       'Grep',
+      'MakaSettingsGet',
+      'MakaSettingsUpdate',
       'Read',
       'Skill',
       'SkillSearch',
@@ -779,6 +787,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'load_tools',
       'memory_extract',
       'memory_remember',
+      'request_sandbox_boundary',
       'task_create',
       'task_get',
       'task_list',
@@ -981,13 +990,15 @@ test('production Host executes and durably supervises an Agent Graph over a real
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assert.equal(started.result.kind, 'started');
+    if (started.result.kind !== 'started') return;
     let initialTerminal: TurnSnapshot;
     try {
       initialTerminal = await waitForTerminal(
         composition,
         session.id,
         turnId,
-        started.result,
+        started.result.turn,
         context,
       );
     } catch (error) {
@@ -2150,6 +2161,38 @@ test('Client Capability tools join the existing load_tools catalog without a par
   );
 });
 
+test('Side conversations end the Host-owned system prompt with an isolation boundary', async () => {
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    sideConversation: true,
+  });
+
+  const prompt =
+    (await composition.systemPrompt({
+      sessionId: 'side-session',
+      turnId: 'turn-1',
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+    })) ?? '';
+  assert.match(prompt, /Side conversation boundary/);
+  assert.match(prompt, /inherited parent history is reference context only/i);
+  assert.equal(
+    prompt.trimEnd().endsWith('Workspace changes may be visible to both conversations.'),
+    true,
+  );
+});
+
 test('Deep Research composition keeps one read-only research surface and prompt', async () => {
   const tool = (name: string, categoryHint?: MakaTool['categoryHint']): MakaTool => ({
     name,
@@ -2194,6 +2237,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
 
   assert.deepEqual(composition.tools.map((candidate) => candidate.name).sort(), [
     'AskUserQuestion',
+    'ExploreAgent',
     'Read',
     'WebSearch',
     'deep_research_status',
@@ -2203,7 +2247,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
   assert.equal(composition.tools.includes(unsafeDeepResearchTool), false);
   assert.equal(
     composition.tools.some((candidate) => candidate.categoryHint === 'subagent'),
-    false,
+    true,
   );
   assert.equal(
     composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
@@ -2217,7 +2261,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
       workspaceRoot: process.cwd(),
     })) ?? '';
   assert.match(prompt, /Deep research mode is active/);
-  assert.doesNotMatch(prompt, /ExploreAgent/);
+  assert.match(prompt, /ExploreAgent/);
   // The Deep Research contract is a trailing assertion that constrains the
   // fragments before it; it must be the last non-empty fragment. With no skills
   // or workspace instructions in this fixture, the contract follows identity.
@@ -2481,11 +2525,12 @@ async function startTurn(
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const started = await composition.handlers['turn.start'](
-      { sessionId, turnId, content: { text } },
-      context,
-    );
-    if (started.ok) return started.result;
+    const input = { sessionId, turnId, content: { text } };
+    const started = await composition.handlers['turn.start'](input, context);
+    if (started.ok) {
+      if (started.result.kind === 'started') return started.result.turn;
+      throw new Error(`Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`);
+    }
     if (started.error.code !== 'session_busy') {
       throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
     }

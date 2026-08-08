@@ -32,6 +32,9 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
     ((await ipc.invoke('sessions:list')) as SessionCatalogProjection[]).map(({ id }) => id),
     ['session-first'],
   );
+  assert.deepEqual(await ipc.invoke('external-sessions:listSources'), {
+    adapterIds: ['codex'],
+  });
   assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-first'), []);
   assert.deepEqual(await ipc.invoke('sessions:readExecutionBoundary', 'session-first'), {
     kind: 'managed',
@@ -292,8 +295,10 @@ test('does not release or report a Revision the Host retained during cleanup', a
     createSessionCopyCleanup: ({ removeSession }) => {
       removeSessionCopy = removeSession;
       return {
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async () => undefined,
         schedule: async () => undefined,
+        abandonOwner: async () => undefined,
         recover: async () => ({ removed: [], failed: [] }),
       };
     },
@@ -350,12 +355,15 @@ function deps(
     nativeCapabilities,
     botRegistry: {} as BotRegistry,
     resolveBotCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveSessionCreateProject: async () => ({ cwd: '/workspace' }),
     emitSessionsChanged() {},
     emitModeChanged() {},
     completeComputerUseTurn() {},
     createSessionCopyCleanup: () => ({
+      ownCreation: (_creation, operation) => operation(),
       cleanup: async () => undefined,
       schedule: async () => undefined,
+      abandonOwner: async () => undefined,
       recover: async () => ({ removed: [], failed: [] }),
     }),
     newId: () => 'candidate-id',
@@ -412,6 +420,9 @@ function connectionHarness(
       }
       if (operation === 'session.create') {
         return session((input as { sessionId: string }).sessionId);
+      }
+      if (operation === 'external-session.source.query') {
+        return { adapterIds: ['codex'] };
       }
       if (
         operation === 'session.catalog.query' &&

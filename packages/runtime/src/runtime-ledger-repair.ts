@@ -3,6 +3,7 @@ import type { AgentRunHeader, AgentRunStore, RuntimeEvent, RuntimeEventStore } f
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentRunLineage } from './agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
+import { projectRuntimeEventUserMessage } from './runtime-event-read-model.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
   commitTerminalRunWithRuntimeFact,
@@ -12,6 +13,7 @@ export interface RuntimeLedgerRepairDeps {
   runStore: AgentRunStore;
   runtimeEventStore: RuntimeEventStore;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
   appendTurnState(
     sessionId: string,
     turnId: string,
@@ -23,6 +25,27 @@ export interface RuntimeLedgerRepairDeps {
   now: () => number;
 }
 
+interface RuntimeEventTranscriptProjectionDeps {
+  readMessages(sessionId: string): Promise<StoredMessage[]>;
+  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
+}
+
+export async function materializeRuntimeEventTranscriptProjection(
+  deps: RuntimeEventTranscriptProjectionDeps,
+  sessionId: string,
+  event: RuntimeEvent,
+  knownMessageIds?: Set<string>,
+): Promise<boolean> {
+  const message = steeringMessageFromRuntimeEvent(event);
+  if (!message) return false;
+  const messageIds =
+    knownMessageIds ?? new Set((await deps.readMessages(sessionId)).map((item) => item.id));
+  if (messageIds.has(message.id)) return false;
+  await deps.appendMessage(sessionId, message);
+  messageIds.add(message.id);
+  return true;
+}
+
 export class RuntimeLedgerRepair {
   private readonly queues = new Map<string, Promise<void>>();
 
@@ -32,6 +55,28 @@ export class RuntimeLedgerRepair {
     const run = await this.deps.runStore.readRun(sessionId, runId).catch(() => undefined);
     if (!run) return false;
     return this.repairRunTerminalFact(sessionId, run);
+  }
+
+  async repairSteeringMessagesOnce(sessionId: string): Promise<number> {
+    return this.withRepairQueue(sessionId, 'steering-transcript', async () => {
+      const messages = await this.deps.readMessages(sessionId);
+      const messageIds = new Set(messages.map((message) => message.id));
+      const inlineRunIds = new Set(
+        (await this.deps.runStore.listSessionRuns(sessionId))
+          .filter(isSessionInlineRun)
+          .map((run) => run.runId),
+      );
+      let repaired = 0;
+      for (const event of await this.deps.runtimeEventStore.readSessionRuntimeEvents(sessionId)) {
+        if (!inlineRunIds.has(event.runId)) continue;
+        if (
+          await materializeRuntimeEventTranscriptProjection(this.deps, sessionId, event, messageIds)
+        ) {
+          repaired += 1;
+        }
+      }
+      return repaired;
+    });
   }
 
   private async repairRunTerminalFact(
@@ -301,6 +346,20 @@ function diagnosticDetailRunId(detail: unknown): string | undefined {
 
 function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function steeringMessageFromRuntimeEvent(event: RuntimeEvent): StoredMessage | undefined {
+  const messageId = event.refs?.providerEventId;
+  if (
+    event.role !== 'user' ||
+    event.content?.kind !== 'text' ||
+    event.content.steering !== true ||
+    typeof messageId !== 'string' ||
+    messageId.length === 0
+  ) {
+    return undefined;
+  }
+  return projectRuntimeEventUserMessage(event, messageId);
 }
 
 function isTerminalTurnStatus(status: TurnRecord['status']): boolean {

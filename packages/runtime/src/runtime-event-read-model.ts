@@ -14,6 +14,7 @@ import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
+  normalizeMessageContent,
   normalizeToolResultContentForRead,
   validateSandboxBoundaryExpansion,
 } from '@maka/core';
@@ -585,26 +586,9 @@ function projectText(
 ): boolean {
   if (event.content?.kind !== 'text') return false;
   if (event.role === 'user') {
-    messages.push({
-      type: 'user',
-      id: stableMessageId(event, state, 'user'),
-      turnId: event.turnId,
-      ts: event.ts,
-      text: event.content.text,
-      ...(event.content.displayText !== undefined
-        ? { displayText: event.content.displayText }
-        : {}),
-      ...(event.content.origin !== undefined ? { origin: event.content.origin } : {}),
-      ...(event.content.attachments !== undefined && event.content.attachments.length > 0
-        ? { attachments: event.content.attachments }
-        : {}),
-      ...(event.content.quotes !== undefined && event.content.quotes.length > 0
-        ? { quotes: event.content.quotes }
-        : {}),
-      ...(event.content.inlineReferences !== undefined
-        ? { inlineReferences: event.content.inlineReferences }
-        : {}),
-    });
+    const message = projectRuntimeEventUserMessage(event, stableMessageId(event, state, 'user'));
+    if (!message) return false;
+    messages.push(message);
     return true;
   }
 
@@ -644,6 +628,22 @@ function projectText(
     `text content with role ${event.role} is not projected`,
   );
   return false;
+}
+
+export function projectRuntimeEventUserMessage(
+  event: RuntimeEvent,
+  messageId: string,
+): Extract<StoredMessage, { type: 'user' }> | undefined {
+  if (event.role !== 'user' || event.content?.kind !== 'text') return undefined;
+  return {
+    type: 'user',
+    id: messageId,
+    turnId: event.turnId,
+    ts: event.ts,
+    ...normalizeMessageContent(event.content),
+    ...(event.content.origin !== undefined ? { origin: event.content.origin } : {}),
+    ...(event.content.steering === true ? { steeringEventId: event.id } : {}),
+  };
 }
 
 function nonCanonicalContentOrder(

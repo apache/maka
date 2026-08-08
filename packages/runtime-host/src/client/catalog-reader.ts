@@ -7,6 +7,8 @@ import type {
   SessionCatalogFilter,
   SessionCatalogItem,
   SkillCatalogLocalContext,
+  SkillCatalogInvocableItem,
+  SkillCatalogInvocableTarget,
   SkillCatalogPageItem,
   SkillCatalogRevision,
   SkillCatalogView,
@@ -14,7 +16,10 @@ import type {
 } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 
-const MAX_STABLE_READ_ATTEMPTS = 3;
+const MAX_STABLE_READ_ATTEMPTS = 8;
+const STABLE_READ_RETRY_BASE_DELAY_MS = 8;
+const STABLE_READ_RETRY_MAX_DELAY_MS = 64;
+type RuntimeHostCatalogConnection = Pick<RuntimeHostConnection, 'request'>;
 
 export interface RuntimeHostSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
@@ -48,7 +53,7 @@ export class RuntimeHostCatalogReadError extends Error {
 }
 
 export async function readRuntimeHostConnectionCatalog(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
 ): Promise<RuntimeHostConnectionCatalogSnapshot> {
   const { first, pages } = await collectStablePages(
     'connection',
@@ -72,7 +77,7 @@ export async function readRuntimeHostConnectionCatalog(
 }
 
 export async function readRuntimeHostSkillCatalog(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   context: SkillCatalogLocalContext,
   view: SkillCatalogView,
 ): Promise<RuntimeHostSkillCatalogSnapshot> {
@@ -100,8 +105,34 @@ export async function readRuntimeHostSkillCatalog(
   return { revision: first.revision, view, items: pages.flatMap((page) => page.items) };
 }
 
+export async function readRuntimeHostInvocableSkills(
+  connection: RuntimeHostCatalogConnection,
+  target: SkillCatalogInvocableTarget,
+): Promise<readonly SkillCatalogInvocableItem[]> {
+  const { pages } = await collectStablePages(
+    'skill',
+    async () => {
+      const result = await connection.request('skill.catalog.invocable.query', {
+        kind: 'start',
+        target,
+      });
+      return result.kind === 'page' ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('skill.catalog.invocable.query', {
+        kind: 'continue',
+        target,
+        revision,
+        cursor,
+      });
+      return result.kind === 'page' ? result : null;
+    },
+  );
+  return pages.flatMap((page) => page.items);
+}
+
 export async function readRuntimeHostSessions(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   filter?: SessionCatalogFilter,
 ): Promise<SessionCatalogItem[]> {
   const { pages } = await collectStablePages(
@@ -127,7 +158,7 @@ export async function readRuntimeHostSessions(
 }
 
 export async function readRuntimeHostResources(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   sessionId: string,
 ): Promise<
   Extract<OperationOutput<'runtime.resource.query'>, { kind: 'page' }>['resources'][number][]
@@ -185,6 +216,14 @@ async function collectStablePages<Page extends StableCatalogPage>(
       page = next;
     }
     if (!retry) return { first, pages };
+    if (attempt + 1 < MAX_STABLE_READ_ATTEMPTS) {
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.min(STABLE_READ_RETRY_BASE_DELAY_MS * 2 ** attempt, STABLE_READ_RETRY_MAX_DELAY_MS),
+        ),
+      );
+    }
   }
   throw new RuntimeHostCatalogReadError(catalog, 'unstable');
 }

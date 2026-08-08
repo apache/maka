@@ -27,6 +27,7 @@ export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
   }
   const pollCounts = new Map<string, number>();
   let startSequence = 0;
+  let wecomStartCount = 0;
 
   function nextPoll(token: string | undefined): number {
     const key = token ?? 'missing';
@@ -57,7 +58,9 @@ export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
       async start() { return start('dingtalk'); },
       async poll(session) {
         await settlePoll();
-        if (nextPoll(session.opaqueToken) === 1) return { status: 'scanned' };
+        const pollCount = nextPoll(session.opaqueToken);
+        if (pollCount === 1) return { status: 'pending' };
+        if (pollCount === 2) return { status: 'scanned' };
         return {
           status: 'confirmed',
           credential: {
@@ -89,7 +92,10 @@ export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
       },
     },
     wecom: {
-      async start() { return start('wecom', 1); },
+      async start() {
+        wecomStartCount += 1;
+        return start('wecom', wecomStartCount === 1 ? 1 : NORMAL_TTL_SECONDS);
+      },
       async poll() {
         await settlePoll();
         return { status: 'pending' };

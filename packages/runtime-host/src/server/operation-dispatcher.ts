@@ -50,7 +50,10 @@ export type RuntimePolicyOperationKey = Extract<
 >;
 export type ConnectionEffectOperationKey = Extract<
   OperationKey,
-  'connection.models.fetch' | 'connection.test.run'
+  | 'connection.models.fetch'
+  | 'connection.test.run'
+  | 'connection.onboarding.verify'
+  | 'connection.onboarding.save'
 >;
 export type MessageOperationKey = Extract<
   OperationKey,
@@ -59,6 +62,7 @@ export type MessageOperationKey = Extract<
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
 export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
+export type ExternalSessionOperationKey = Extract<OperationKey, `external-session.${string}`>;
 export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
@@ -109,6 +113,10 @@ export type GoalOperationHandlerMap = Pick<OperationHandlerMap, GoalOperationKey
 export type ExecutionInspectOperationHandlerMap = Pick<
   OperationHandlerMap,
   ExecutionInspectOperationKey
+>;
+export type ExternalSessionOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ExternalSessionOperationKey
 >;
 export type AgentGraphOperationHandlerMap = Pick<OperationHandlerMap, AgentGraphOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<

@@ -59,8 +59,6 @@ export function resultOwnsOwnPanel(item: ToolActivityItem): boolean {
   switch (result.kind) {
     case 'terminal':
     case 'shell_run':
-    case 'subagent':
-    case 'agent_swarm':
     case 'explore_agent':
     case 'web_search':
     case 'web_search_error':
