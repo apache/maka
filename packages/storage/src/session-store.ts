@@ -20,6 +20,7 @@ import {
 } from './operational-state-store.js';
 import {
   DEFAULT_SESSION_NAME,
+  decodeStoredMessageForRecovery,
   deriveTurnRecords,
   isCollaborationMode,
   isOrchestrationMode,
@@ -181,6 +182,11 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore {
+  /** Atomically create a Session from already-converted Maka raw messages. */
+  createImportedSession(
+    input: CreateSessionInput,
+    messages: readonly StoredMessage[],
+  ): Promise<SessionHeader>;
   createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -349,6 +355,30 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return (
       await this.metadata.create(buildSessionHeader(this.workspaceRoot, input), initialBoundary)
     ).header;
+  }
+
+  async createImportedSession(
+    input: CreateSessionInput,
+    messages: readonly StoredMessage[],
+  ): Promise<SessionHeader> {
+    await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
+    if (input.subagentSpawn) {
+      throw new Error('Subagent spawn metadata requires createSubagent()');
+    }
+    const canonicalMessages = messages.map((message) =>
+      decodeStoredMessageForRecovery(JSON.parse(JSON.stringify(message)) as unknown),
+    );
+    const header = buildSessionHeader(this.workspaceRoot, input);
+    const outcome = await this.metadata.importSession(
+      header,
+      canonicalMessages,
+      projectSessionCatalogMessages(canonicalMessages),
+    );
+    if (outcome !== 'imported') {
+      throw new Error(`Generated Session id already exists: ${header.id}`);
+    }
+    return (await this.metadata.read(header.id)).header;
   }
 
   async probeStableSessionCreate(

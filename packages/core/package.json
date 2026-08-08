@@ -69,6 +69,7 @@
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
     "./task-ledger": "./dist/task-ledger.js",
     "./foreign-session": "./dist/foreign-session.js",
+    "./external-session": "./dist/external-session.js",
     "./deep-research-run": "./dist/deep-research-run.js",
     "./deep-research-client-progress": "./dist/deep-research-client-progress.js",
     "./daily-review": "./dist/daily-review.js",
