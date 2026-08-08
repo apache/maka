@@ -32,6 +32,9 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint?: string | URL;
+  bundledGitResourcesRoot?: string;
+  bundledNpmResourcesRoot?: string;
+  dependencyNodeExecutablePath?: string;
 }
 
 interface ConnectOrSpawnRuntimeHostDependencies {
@@ -110,6 +113,15 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           ...(input.candidateEntrypoint === undefined
             ? {}
             : { entrypoint: input.candidateEntrypoint }),
+          ...(input.bundledGitResourcesRoot === undefined
+            ? {}
+            : { bundledGitResourcesRoot: input.bundledGitResourcesRoot }),
+          ...(input.bundledNpmResourcesRoot === undefined
+            ? {}
+            : { bundledNpmResourcesRoot: input.bundledNpmResourcesRoot }),
+          ...(input.dependencyNodeExecutablePath === undefined
+            ? {}
+            : { dependencyNodeExecutablePath: input.dependencyNodeExecutablePath }),
         });
         await settleBeforeDeadline(launch.spawned, deadline);
       } catch {

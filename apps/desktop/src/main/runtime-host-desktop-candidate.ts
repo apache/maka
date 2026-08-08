@@ -73,6 +73,9 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly candidateEntrypoint?: string | URL;
+  readonly bundledGitResourcesRoot?: string;
+  readonly bundledNpmResourcesRoot?: string;
+  readonly dependencyNodeExecutablePath?: string;
 }
 
 export type DesktopRuntimeHostCandidateStartResult =
@@ -415,6 +418,15 @@ function connectInput(
     ...(input.candidateEntrypoint === undefined
       ? {}
       : { candidateEntrypoint: input.candidateEntrypoint }),
+    ...(input.bundledGitResourcesRoot === undefined
+      ? {}
+      : { bundledGitResourcesRoot: input.bundledGitResourcesRoot }),
+    ...(input.bundledNpmResourcesRoot === undefined
+      ? {}
+      : { bundledNpmResourcesRoot: input.bundledNpmResourcesRoot }),
+    ...(input.dependencyNodeExecutablePath === undefined
+      ? {}
+      : { dependencyNodeExecutablePath: input.dependencyNodeExecutablePath }),
   };
 }
 

@@ -1,13 +1,22 @@
 import type { RuntimeHostCandidateOptions } from './server/candidate.js';
 
+export interface RuntimeHostExecutionCandidateArguments extends RuntimeHostCandidateOptions {
+  readonly bundledGitResourcesRoot?: string;
+  readonly bundledNpmResourcesRoot?: string;
+  readonly dependencyNodeExecutablePath?: string;
+}
+
 export function parseRuntimeHostCandidateArguments(
   args: readonly string[],
-): RuntimeHostCandidateOptions {
+): RuntimeHostExecutionCandidateArguments {
   const allowedKeys = new Set([
     'root',
     'expected-root-id',
     'idle-grace-ms',
     'handshake-timeout-ms',
+    'bundled-git-resources-root',
+    'bundled-npm-resources-root',
+    'dependency-node-executable-path',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -33,6 +42,9 @@ export function parseRuntimeHostCandidateArguments(
     expectedRootId,
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
+    bundledGitResourcesRoot: values.get('bundled-git-resources-root'),
+    bundledNpmResourcesRoot: values.get('bundled-npm-resources-root'),
+    dependencyNodeExecutablePath: values.get('dependency-node-executable-path'),
   };
 }
 

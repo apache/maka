@@ -9,6 +9,9 @@ export interface DetachedCandidateInput {
   executable?: string;
   entrypoint?: string | URL;
   env?: NodeJS.ProcessEnv;
+  bundledGitResourcesRoot?: string;
+  bundledNpmResourcesRoot?: string;
+  dependencyNodeExecutablePath?: string;
 }
 
 export interface DetachedCandidateAttempt {
@@ -35,6 +38,9 @@ export function launchDetachedRuntimeHostCandidate(
   ];
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
+  appendArgument(args, '--bundled-git-resources-root', input.bundledGitResourcesRoot);
+  appendArgument(args, '--bundled-npm-resources-root', input.bundledNpmResourcesRoot);
+  appendArgument(args, '--dependency-node-executable-path', input.dependencyNodeExecutablePath);
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {

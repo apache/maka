@@ -250,6 +250,13 @@ owner = await startRuntimeHostDesktopOwner(
     candidateEntrypoint: new URL(
       import.meta.resolve("@maka/runtime-host/execution-candidate-main"),
     ),
+    ...(app.isPackaged
+      ? {
+          bundledGitResourcesRoot: process.resourcesPath,
+          bundledNpmResourcesRoot: process.resourcesPath,
+          dependencyNodeExecutablePath: process.execPath,
+        }
+      : {}),
     ipcMain,
     workspaceRoot,
     attachmentApprovals,
