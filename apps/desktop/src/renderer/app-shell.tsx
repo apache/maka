@@ -2816,7 +2816,7 @@ function AppShellContent({
                   onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
                   onOpenModelSettings={() => openSettingsSection('models')}
                   noModelConnection={connections.length === 0}
-                  disabled={
+                  sendBlocked={
                     Boolean(workspaceReadinessRecovery) || sessionHealthNotice?.tone === 'destructive'
                   }
                   permissionMode={activePermissionMode}

@@ -182,6 +182,11 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     disabled?: boolean;
+    /**
+     * Prevent submission while leaving the draft and recovery controls usable.
+     * Hosts use this for configuration failures that the model picker can fix.
+     */
+    sendBlocked?: boolean;
     hidden?: boolean;
     /**
      * When true, a turn is in flight — live output OR the pre-first-token wait.
@@ -982,7 +987,12 @@ export const Composer = forwardRef<
   );
 
   async function sendCurrent() {
-    if (props.disabled || sendPendingRef.current || importActionOwnerRef.current?.pending) return;
+    if (
+      props.disabled
+      || props.sendBlocked
+      || sendPendingRef.current
+      || importActionOwnerRef.current?.pending
+    ) return;
     // There is one authoritative draft: staged Skills and files serialize into
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
@@ -1164,6 +1174,7 @@ export const Composer = forwardRef<
   const noModelConnection = props.noModelConnection === true;
   const sendDisabled =
     props.disabled ||
+    props.sendBlocked ||
     sendPending ||
     importActionBusy ||
     !text.trim() ||
