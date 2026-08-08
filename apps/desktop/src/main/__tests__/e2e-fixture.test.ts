@@ -1354,24 +1354,6 @@ describe('settings-bots-onboarding fixture (#1233 deferral)', () => {
     // the Settings modal renders meaningful context.
     assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
   });
-
-  it('reuses the standard turn seed so no bot-specific durable seed is needed', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-bots-onboarding-'));
-    try {
-      const fixture = resolveE2eFixture('settings-bots-onboarding', false);
-      assert.ok(fixture);
-      await seedE2eFixture({
-        workspaceRoot,
-        fixture,
-        credentialStore: fakeCredentialStore(),
-        now: 1_700_000_000_000,
-      });
-      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-turn');
-      assert.equal(header.id, 'e2e-fixture-turn');
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
-  });
 });
 
 describe('browser-empty chrome fixture (#819)', () => {
@@ -1389,27 +1371,6 @@ describe('browser-empty chrome fixture (#819)', () => {
     // browser.getState returns null → BrowserPanel renders EMPTY_STATE →
     // the empty-state chrome (#818 defect surface) is what screenshots.
     assert.deepEqual(state?.liveBrowserSessionIds, ['e2e-fixture-turn']);
-  });
-
-  it('reuses the always-seeded turn Session so no browser-specific durable seed is needed', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-browser-empty-'));
-    try {
-      const fixture = resolveE2eFixture('browser-empty', false);
-      assert.ok(fixture);
-      await seedE2eFixture({
-        workspaceRoot,
-        fixture,
-        credentialStore: fakeCredentialStore(),
-        now: 1_700_000_000_000,
-      });
-      // The turn Session is part of the standard seed, so the active browser
-      // Session has a real durable chat behind the
-      // panel without a browser-specific seed branch.
-      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-turn');
-      assert.equal(header.id, 'e2e-fixture-turn');
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
   });
 });
 

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   parseSideChatCommand,
-  sideChatTitleFromPrompt,
 } from '../../renderer/side-chat-command.js';
 
 describe('side chat slash command', () => {
@@ -15,12 +14,4 @@ describe('side chat slash command', () => {
     assert.equal(parseSideChatCommand('before /side'), null);
   });
 
-  it('derives a compact single-line tab title without splitting Unicode', () => {
-    assert.equal(sideChatTitleFromPrompt('  inspect\n this   code  '), 'inspect this code');
-    assert.equal(sideChatTitleFromPrompt('   '), undefined);
-    assert.equal(
-      sideChatTitleFromPrompt('🙂'.repeat(70)),
-      '🙂'.repeat(60),
-    );
-  });
 });

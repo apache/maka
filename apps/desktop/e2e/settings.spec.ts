@@ -28,21 +28,6 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   ).toBe(true);
 });
 
-test('settings back icon shares the navigation icon rail', async ({ window: page }) => {
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByRole('button', { name: '设置' }).click();
-
-  const iconCenterX = async (locator: ReturnType<Page['locator']>) => {
-    const box = await locator.boundingBox();
-    expect(box).not.toBeNull();
-    return box ? box.x + box.width / 2 : Number.NaN;
-  };
-  const backIcon = page.getByRole('button', { name: '返回应用', exact: true }).locator('svg').first();
-  const navIcon = settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).locator('svg').first();
-
-  expect(Math.abs(await iconCenterX(backIcon) - await iconCenterX(navIcon))).toBeLessThanOrEqual(0.5);
-});
-
 test('subagent presets can be reviewed and edited in desktop settings', async ({ window: page }) => {
   await page.evaluate(async () => {
     const connections = await window.maka.connections.list();

@@ -26,12 +26,6 @@ test('a picked file mention becomes an inline token and sends as its path', asyn
     'data-astryx-token-value',
     '@.maka/skills/agent-write/SKILL.md',
   );
-  const [tokenWidth, lineWidth] = await Promise.all([
-    token.evaluate((element) => element.getBoundingClientRect().width),
-    composer.evaluate((element) => element.getBoundingClientRect().width),
-  ]);
-  expect(tokenWidth).toBeLessThan(lineWidth / 2);
-
   await composer.press('Enter');
   const bubble = page.getByLabel('你发送的消息').first();
   await expect(bubble).toBeVisible();

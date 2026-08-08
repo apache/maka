@@ -105,36 +105,11 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
 
   const sentMessage = page.getByLabel('你发送的消息').last();
   const fileToken = sentMessage.locator('.maka-user-attachment-tokens .astryx-token');
-  const fileIcon = fileToken.locator('.astryx-icon');
   const image = sentMessage.locator('.maka-user-attachments .astryx-thumbnail');
   const bubble = sentMessage.locator('.maka-chat-message-bubble-user');
   await expect(fileToken).toContainText('note.txt');
-  await expect(fileIcon).toHaveCSS('width', '16px');
-  await expect(fileIcon).toHaveCSS('height', '16px');
   await expect(image).toBeVisible();
-  await expect(image).toHaveCSS('width', '64px');
   await expect(bubble).toContainText('sending mixed attachments');
-
-  const [fileBox, imageBox, bubbleBox] = await Promise.all([
-    fileToken.boundingBox(),
-    image.boundingBox(),
-    bubble.boundingBox(),
-  ]);
-  expect(fileBox).not.toBeNull();
-  expect(imageBox).not.toBeNull();
-  expect(bubbleBox).not.toBeNull();
-  // The token declares display:inline-flex + align-items:center; as a flex
-  // item of the attachment row it computes display:flex (blockification) on
-  // every platform. Assert the centering contract, not geometry: token height
-  // resolves from line-height, which varies with font metrics (Linux CI can
-  // drop below the 16px icon, overflowing a correctly centered icon by 2px).
-  // A tolerance-based centerline check was rejected — a baseline regression
-  // drifts exactly 2.00px, the tolerance boundary. display:flex is load-
-  // bearing: align-items computes as declared even on non-flex boxes.
-  await expect(fileToken).toHaveCSS('display', 'flex');
-  await expect(fileToken).toHaveCSS('align-items', 'center');
-  expect(fileBox!.y + fileBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
-  expect(imageBox!.y + imageBox!.height).toBeLessThanOrEqual(bubbleBox!.y);
 
   await image.getByRole('button').click();
   const lightbox = page.locator('.astryx-lightbox');

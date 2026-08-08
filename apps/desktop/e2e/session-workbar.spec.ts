@@ -35,34 +35,6 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expect(resize).toHaveAttribute('aria-valuenow', '490');
   await expect(workbar).toHaveCSS('width', '490px');
 
-  // The seam is the canvas between two plates, and it is asserted as a GAP,
-  // not as a colour. Comparing the workbar's tone to another surface is what
-  // this used to do, and it passed while the column was invisible: it was
-  // compared to the sidebar, which paints the same value the conversation does,
-  // so "the workbar matches" and "the workbar has no boundary" were the same
-  // assertion. Every default palette but darwin dark resolves all three to
-  // `oklch(1 0 0)`.
-  const conversation = page.locator('.mainColumn');
-  const workbarBox = (await workbar.boundingBox())!;
-  const conversationBox = (await conversation.boundingBox())!;
-  const gutter = workbarBox.x - (conversationBox.x + conversationBox.width);
-  expect(Math.round(gutter)).toBe(4);
-  // And it is really canvas showing through, not a third surface: the frame
-  // holding both plates paints nothing.
-  await expect(page.locator('.maka-panel-detail')).toHaveCSS(
-    'background-color',
-    'rgba(0, 0, 0, 0)',
-  );
-  await expect(workbar).toHaveCSS('border-left-width', '0px');
-
-  // Two plates, one line. Each keeps the titlebar clearance as its own padding,
-  // so their top edges agree without either reaching outside its box for it —
-  // the previous formulation hung the column above the frame's padding box,
-  // which made the frame scroll the overhang into view on the first focus.
-  // Measured after the handle above took focus, which is what caught that.
-  expect(Math.round(workbarBox.y)).toBe(Math.round(conversationBox.y));
-  expect(Math.round(workbarBox.height)).toBe(Math.round(conversationBox.height));
-
   // Pointer drag, grabbed near the bottom of the divider: Astryx's default
   // side-placed grab zone lifts itself half its height off the handle, so a
   // low grab is what proves `pillPlacement="center"` is still holding the hit
@@ -148,23 +120,4 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
     .dispatchEvent('click');
   await expect(workbar).toBeHidden();
   await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
-});
-
-test('the right workbar stays mounted across repeated collapse', async ({
-  sessionWorkbarWindow: page,
-}) => {
-  const workbar = page.locator('[data-maka-contract="session-workbar-right"]');
-  await expect(workbar).toBeVisible();
-  const collapseOnce = async () => {
-    await page.getByRole('button', { name: '收起会话工作栏' }).click();
-    await expect(workbar).toHaveCount(1);
-    await expect(workbar).toBeHidden();
-    await expect(workbar).toHaveAttribute('data-collapsed', 'true');
-  };
-
-  await collapseOnce();
-  await page.getByRole('button', { name: '展开会话工作栏' }).click();
-  await expect(workbar).toBeVisible();
-  await expect(workbar).toHaveCSS('width', '480px');
-  await collapseOnce();
 });

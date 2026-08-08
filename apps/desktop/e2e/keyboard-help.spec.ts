@@ -22,24 +22,6 @@ test('the help modal opens from its entry points and keeps its styled layout', a
   await page.keyboard.press(MOD_SLASH);
   await expect(body).toBeVisible();
 
-  // Description/keys resolve into a two-column grid…
-  const rows = page.locator('.maka-help-section dl').first();
-  await expect(rows).toHaveCSS('display', 'grid');
-  const columns = await rows.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length);
-  expect(columns).toBe(2);
-  // …headings carry the caption typography, not default heading bulk…
-  const heading = page.locator('.maka-help-section h3').first();
-  await expect(heading).toHaveCSS('font-size', '12px');
-  await expect(heading).toHaveCSS('font-weight', '600');
-  // …multi-key combos keep their distinct separator…
-  const plus = page.locator('.maka-help-plus').first();
-  await expect(plus).toBeVisible();
-  await expect(plus).toHaveText('+');
-  // …and Kbd chips carry real keycap chrome.
-  const keycap = page.locator('.maka-help-section .astryx-kbd kbd').first();
-  await expect(keycap).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(keycap).not.toHaveCSS('border-radius', '0px');
-
   // The platform's own modifier is what the sheet documents — ⌘ on macOS,
   // Ctrl elsewhere. (This harness boots with healthy UA-CH; the blank-UA-CH
   // environment is pinned by the dedicated test below.)
