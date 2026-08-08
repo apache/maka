@@ -58,7 +58,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   assert.match(workflow, /^\s+continue-on-error: true$/mu);
   assert.match(workflow, /^\s+timeout-minutes: 45$/mu);
 
-  const stepIds = [...workflow.matchAll(/^\s+- id: ([a-z]+)$/gmu)].map((match) => match[1]);
+  const stepIds = [...workflow.matchAll(/^\s+- id: ([a-z_]+)$/gmu)].map((match) => match[1]);
   assert.deepEqual(stepIds, [
     'install',
     'build',
@@ -66,6 +66,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'scripts',
     'smoke',
     'storage',
+    'managed_workspace_crash',
     'processes',
   ]);
   for (const stepId of stepIds) {
@@ -79,6 +80,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'npm.cmd run test:scripts',
     'npm.cmd run smoke:windows',
     'node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage',
+    'node.exe --test --test-concurrency=1 --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" packages/storage/dist/__tests__/managed-workspace-baseline.test.js packages/storage/dist/__tests__/git-workspace-service.test.js',
   ]) {
     assert.ok(workflow.includes(command), command);
   }
@@ -103,6 +105,8 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     /--workspaces=packages\/storage \*> "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u,
   );
   assert.match(workflow, /Get-Content "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u);
+  assert.match(workflow, /\$env:MAKA_STORAGE_STRESS = '1'/u);
+  assert.match(workflow, /managed-workspace-crash\.log/u);
   // Pin-short-comment contract: the workflow must pin upload-artifact to a
   // full SHA and annotate it with the exact version it resolves to. The major
   // is intentionally not asserted — dependabot may bump it — but the
