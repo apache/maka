@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import {
   type ConnectionEvent,
+  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
   resolveSystemUiLocale,
@@ -39,9 +40,18 @@ import { computerUseServiceHealth } from "./computer-use-host.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
-import { resolveE2eFixture, seedE2eFixture } from "./e2e-fixture.js";
+import {
+  getE2eFixtureState,
+  resolveE2eFixture,
+  retireE2eFixtureSandboxBoundaryRequest,
+  seedE2eFixture,
+} from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
 import { createMainWindowController } from "./main-window.js";
+import {
+  resolveDesktopSessionSelection,
+  resolveNewSessionProjectInput,
+} from "./new-session-project.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
@@ -55,6 +65,7 @@ import {
 } from "./permission-overlay/permission-overlay-main.js";
 import { resolveProjectContextRoot } from "./project-context-root.js";
 import { createProjectManagementService } from "./project-management-service.js";
+import type { ProjectManagementService } from "./project-management-service.js";
 import { createProjectRootController } from "./project-root-controller.js";
 import { createSessionCopyCleanupAuthority } from "./quote-companion-cleanup.js";
 import {
@@ -218,6 +229,7 @@ const oauthPresentation = new RuntimeHostOAuthPresentation(
 );
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
+let projectManagement: ProjectManagementService | undefined;
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshotRevision(),
 );
@@ -387,10 +399,43 @@ owner = await startRuntimeHostDesktopOwner(
     },
     botRegistry,
     resolveBotCreateTarget: async () => ({ cwd: await projectRoot.current() }),
+    resolveSessionCreateProject: async (input) => {
+      if (!projectManagement) throw new Error("Project management is unavailable");
+      const selected = await resolveDesktopSessionSelection(input, projectManagement);
+      return resolveNewSessionProjectInput(selected, projectCatalog);
+    },
     emitSessionsChanged,
     emitModeChanged: (sessionId) =>
       emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
+    ...(e2eFixture
+      ? {
+          e2eInteractions: {
+            list: (sessionId: string) => {
+              const request = getE2eFixtureState(e2eFixture)
+                ?.sandboxBoundaryBySession?.[sessionId];
+              return request ? [request] : [];
+            },
+            respondToSandboxBoundary: async (
+              sessionId: string,
+              response: SandboxBoundaryResponse,
+            ) => {
+              const request = getE2eFixtureState(e2eFixture)
+                ?.sandboxBoundaryBySession?.[sessionId];
+              if (request?.requestId !== response.requestId) {
+                return { handled: false as const };
+              }
+              retireE2eFixtureSandboxBoundaryRequest(response.requestId);
+              return {
+                handled: true as const,
+                ...(response.decision === "allow"
+                  ? { permissionMode: "ask" as const }
+                  : {}),
+              };
+            },
+          },
+        }
+      : {}),
     createSessionCopyCleanup: ({ removeSession }) =>
       createSessionCopyCleanupAuthority({ workspaceRoot, removeSession }),
     sendToRenderer: (channel, payload) =>
@@ -571,7 +616,7 @@ function registerHostClientIpc(
         .incognitoActive,
     }),
   });
-  const projectManagement = createProjectManagementService({
+  const candidateProjectManagement = createProjectManagementService({
     catalog: projectCatalog,
     sessions: createRuntimeHostProjectSessionCatalog(client),
     chooseDirectory: async () => {
@@ -583,6 +628,7 @@ function registerHostClientIpc(
     },
     selection: projectRoot,
   });
+  projectManagement = candidateProjectManagement;
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
       currentProjectRoot: () => projectRoot.current(),
@@ -602,7 +648,7 @@ function registerHostClientIpc(
       workspaceRoot,
       buildInfo,
       e2eFixture,
-      projectManagement,
+      projectManagement: candidateProjectManagement,
       updateService,
     },
     scopedIpc,
@@ -652,6 +698,9 @@ function registerHostClientIpc(
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;
+    }
+    if (projectManagement === candidateProjectManagement) {
+      projectManagement = undefined;
     }
     if (runtimePolicyClient === client) runtimePolicyClient = undefined;
     capabilityBinding.dispose();

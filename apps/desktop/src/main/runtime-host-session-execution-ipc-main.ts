@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import {
   deriveTurnRecords,
+  SKILL_INVOCATION_TOKEN_SOURCE,
+  type ActiveInteractionRequestEvent,
   type AttachmentRef,
+  type PermissionMode,
+  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
   type StoredMessage,
@@ -48,9 +52,11 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "regenerateTurn"
   | "setSessionReadMarker"
   | "startTurn"
+  | "startSkillTurn"
   | "startTurnResume"
   | "submitMessage"
   | "updateSessionMetadata"
+  | "updateSessionConfiguration"
 >;
 
 export interface RuntimeHostSessionExecutionIpcDeps {
@@ -65,6 +71,16 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   stat(path: string): Promise<{ size: number }>;
   resizeImage(bytes: Uint8Array): Promise<Uint8Array>;
   beforeStop(sessionId: string): void | Promise<void>;
+  e2eInteractions?: {
+    list(sessionId: string): readonly ActiveInteractionRequestEvent[];
+    respondToSandboxBoundary(
+      sessionId: string,
+      response: SandboxBoundaryResponse,
+    ): Promise<
+      | { readonly handled: false }
+      | { readonly handled: true; readonly permissionMode?: PermissionMode }
+    >;
+  };
   newId?: () => string;
 }
 
@@ -114,8 +130,10 @@ export function registerRuntimeHostSessionExecutionIpc(
   );
   ipcMain.handle(
     "sessions:listActiveInteractions",
-    (_event, sessionId: string) =>
-      deps.observer.readActiveInteractions(sessionId),
+    async (_event, sessionId: string) => [
+      ...(deps.e2eInteractions?.list(sessionId) ?? []),
+      ...(await deps.observer.readActiveInteractions(sessionId)),
+    ],
   );
 
   ipcMain.handle(
@@ -159,7 +177,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
-      await deps.client.startTurn({
+      const startInput = {
         sessionId,
         turnId,
         content: {
@@ -177,14 +195,32 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(command.turnOrchestration
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
-      });
+      };
+      const skillInvocationRequested =
+        (command.skillIds?.length ?? 0) > 0 ||
+        new RegExp(SKILL_INVOCATION_TOKEN_SOURCE).test(command.text);
+      const startResult = skillInvocationRequested
+        ? await deps.client.startSkillTurn(startInput)
+        : {
+            kind: "started" as const,
+            turn: await deps.client.startTurn(startInput),
+            skillInvocation: EMPTY_SKILL_INVOCATION,
+          };
+      if (startResult.kind === "blocked") {
+        return {
+          ok: false as const,
+          attachments,
+          inlineReferences,
+          skillInvocation: startResult.skillInvocation,
+        };
+      }
       deps.emitSessionsChanged("status-change", sessionId, { turnId });
       return {
         ok: true as const,
         turnId,
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: startResult.skillInvocation,
       };
     },
   );
@@ -210,6 +246,19 @@ export function registerRuntimeHostSessionExecutionIpc(
     "sessions:respondToSandboxBoundary",
     async (_event, sessionId: string, input: unknown) => {
       const response = normalizeSandboxBoundaryResponse(input);
+      const fixtureResult = await deps.e2eInteractions?.respondToSandboxBoundary(
+        sessionId,
+        response,
+      );
+      if (fixtureResult?.handled) {
+        if (fixtureResult.permissionMode) {
+          await deps.client.updateSessionConfiguration(sessionId, {
+            permissionMode: fixtureResult.permissionMode,
+          });
+          deps.emitSessionsChanged("mode-change", sessionId);
+        }
+        return;
+      }
       const pending = await requireInteraction(
         deps.observer,
         sessionId,

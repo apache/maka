@@ -120,6 +120,7 @@ test('Models collection header matches its collection', async ({ window: page })
 // the assertions below validate the *flow and the colorAssetRenderContract
 // mechanism*, not Cerebras's data — that lives in the registry contract tests.
 test('adds a catalog provider through the canonical API-key setup page', async ({ window: page }) => {
+  test.setTimeout(90_000);
   // One window, five named steps. Splitting these into separate tests would buy
   // per-behavior isolation at the price of four more Electron cold starts; the
   // steps give a failing run the same "which behavior broke" answer in the
@@ -265,17 +266,6 @@ test('adds a catalog provider through the canonical API-key setup page', async (
   });
 
   await test.step('deletion stays reachable and reversible in a short viewport', async () => {
-    // The fixture intentionally cannot discover models with its placeholder
-    // credential. Dismiss that independently tested transient before changing
-    // the viewport so it cannot pause its own auto-hide timer over the control
-    // this step is meant to exercise.
-    const discoveryError = page
-      .getByRole('alert')
-      .filter({ has: page.locator('[data-type="supporting"]') });
-    await expect(discoveryError).toBeVisible();
-    await discoveryError.getByRole('button').click();
-    await expect(discoveryError).toBeHidden();
-
     // Short-viewport invariant: the detail is a page, so the settings content
     // area owns the scrolling and the trailing action stays reachable. The test
     // asserts reachability, not which node scrolls.

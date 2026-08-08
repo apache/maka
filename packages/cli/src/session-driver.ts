@@ -8,6 +8,7 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 
 export interface MakaSessionMoveResult {
   previousCwd: string;
@@ -39,6 +40,7 @@ export interface MakaPreparedSessionTurn {
   runId?: string;
   events: AsyncIterable<SessionEvent>;
   summary?: SessionSummary;
+  skillInvocation?: SkillInvocationResult;
 }
 
 export interface MakaAttachedSessionTurn extends MakaPreparedSessionTurn {
@@ -51,6 +53,14 @@ export interface MakaPreparePromptOptions {
   modelText?: string;
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  invokeSkills?: boolean;
+}
+
+export class SkillInvocationBlockedError extends Error {
+  constructor(readonly skillInvocation: SkillInvocationResult) {
+    super('Explicit Skill invocation could not be resolved');
+    this.name = 'SkillInvocationBlockedError';
+  }
 }
 
 export interface MakaSessionDriver {

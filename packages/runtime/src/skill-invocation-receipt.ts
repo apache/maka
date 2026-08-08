@@ -1,52 +1,24 @@
 import {
   INLINE_REFERENCE_LABEL_MAX_LENGTH,
   INLINE_REFERENCE_MAX_COUNT,
+  SKILL_INVOCATION_ID_MAX_BYTES,
+  SKILL_INVOCATION_NAME_MAX_BYTES,
+  SKILL_INVOCATION_REF_MAX_BYTES,
+  SKILL_INVOCATION_REQUEST_MAX_BYTES,
   SKILL_INVOCATION_TOKEN_SOURCE,
   type InlineReference,
+  type PerRequestSkillInvocationFailureReason,
+  type SkillInvocationMode,
+  type SkillInvocationReceipt,
 } from '@maka/core';
-import type { LoadedSkillInstructions, LoadSkillInstructionsResult } from './skills.js';
+import type { LoadedSkillInstructions } from './skills.js';
 
-export type SkillInvocationMode = 'explicit' | 'model_tool';
-export type SkillInvocationFailureReason =
-  | Exclude<LoadSkillInstructionsResult, { ok: true }>['reason']
-  | 'resolution_failed'
-  | 'too_many_requests';
-
-export type PerRequestSkillInvocationFailureReason = Exclude<
+export type {
+  PerRequestSkillInvocationFailureReason,
   SkillInvocationFailureReason,
-  'too_many_requests'
->;
-
-/**
- * Bounded, instruction-free record of one Skill load attempt.
- *
- * The receipt is safe to return to clients and project into run traces: it
- * never contains the user prompt, search query, or SKILL.md body.
- */
-export type SkillInvocationReceipt =
-  | {
-      invocation: SkillInvocationMode;
-      request: string;
-      success: true;
-      ref: string;
-      id: string;
-      name: string;
-      scope: LoadedSkillInstructions['scope'];
-      source: LoadedSkillInstructions['source'];
-      truncated: boolean;
-    }
-  | {
-      invocation: SkillInvocationMode;
-      request: string;
-      success: false;
-      reason: PerRequestSkillInvocationFailureReason;
-    }
-  | {
-      invocation: 'explicit';
-      success: false;
-      reason: 'too_many_requests';
-      requestLimit: number;
-    };
+  SkillInvocationMode,
+  SkillInvocationReceipt,
+} from '@maka/core';
 
 export function loadedSkillInvocationReceipt(
   invocation: SkillInvocationMode,
@@ -57,12 +29,22 @@ export function loadedSkillInvocationReceipt(
     invocation,
     request: boundSkillInvocationRequest(request),
     success: true,
-    ref: skill.ref,
-    id: skill.id,
-    name: skill.name,
+    ref: truncateUtf8(skill.ref, SKILL_INVOCATION_REF_MAX_BYTES),
+    id: truncateUtf8(skill.id, SKILL_INVOCATION_ID_MAX_BYTES),
+    name: truncateUtf8(skill.name, SKILL_INVOCATION_NAME_MAX_BYTES),
     scope: skill.scope,
     source: skill.source,
     truncated: skill.truncated,
+  };
+}
+
+export function skillInvocationLoadedEntry(skill: Pick<LoadedSkillInstructions, 'id' | 'name'>): {
+  readonly id: string;
+  readonly name: string;
+} {
+  return {
+    id: truncateUtf8(skill.id, SKILL_INVOCATION_ID_MAX_BYTES),
+    name: truncateUtf8(skill.name, SKILL_INVOCATION_NAME_MAX_BYTES),
   };
 }
 
@@ -157,5 +139,20 @@ export function boundSkillInvocationRequest(request: string): string {
   // strip controls so diagnostics cannot become an unbounded/log-injection
   // channel when an older client bypasses the normal IPC validator.
   // eslint-disable-next-line no-control-regex
-  return request.replace(/[\u0000-\u001F\u007F]/g, '').slice(0, 512);
+  const cleaned = request.replace(/[\u0000-\u001F\u007F]/g, '');
+  return truncateUtf8(cleaned || '[invalid]', SKILL_INVOCATION_REQUEST_MAX_BYTES);
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maxBytes) return value;
+  let result = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = encoder.encode(character).byteLength;
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
 }

@@ -6,6 +6,7 @@ import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_DEFAULTS,
+  providerSupportsModelDiscovery,
   type LlmConnection,
 } from '@maka/core/llm-connections';
 import type {
@@ -154,6 +155,7 @@ async function importConnectionEffects(
   for (const legacy of legacyConnections) {
     const connection = imported.get(legacy.slug);
     if (!connection) continue;
+    if (!(await canImportConnectionEffects(stores, legacy, connection))) continue;
     const modelResult = legacyModelResult(legacy);
     if (modelResult) {
       const prepared = await stores.operations.beginModelFetch(connection.connectionId);
@@ -179,6 +181,22 @@ async function importConnectionEffects(
       throw new Error('Legacy Connection health was superseded during migration');
     }
   }
+}
+
+async function canImportConnectionEffects(
+  stores: RuntimePolicyStoresWriter,
+  legacy: LlmConnection,
+  connection: ConnectionCatalogEntry,
+): Promise<boolean> {
+  if (!providerSupportsModelDiscovery(legacy.providerType)) return false;
+  const authKind = PROVIDER_DEFAULTS[legacy.providerType].authKind;
+  if (authKind === 'none') return true;
+  const result = await stores.credentialVault.getStatus({
+    scope: 'connection',
+    connectionId: connection.connectionId,
+    kind: authKind === 'oauth_token' ? 'oauth_token' : 'api_key',
+  });
+  return result.kind === 'status' && result.status.configured;
 }
 
 async function importDefaultTarget(
@@ -293,11 +311,23 @@ async function setCredential(
 }
 
 function legacyModelResult(connection: LlmConnection): ConnectionModelDiscoveryResult | null {
-  return connection.models?.length && connection.modelSource && connection.modelsFetchedAt
+  if (
+    connection.models?.length &&
+    connection.modelSource &&
+    connection.modelsFetchedAt !== undefined
+  ) {
+    return {
+      models: connection.models,
+      source: connection.modelSource,
+      fetchedAt: connection.modelsFetchedAt,
+    };
+  }
+  const enabledModelIds = connectionEnabledModelIds(connection);
+  return enabledModelIds.length > 0
     ? {
-        models: connection.models,
-        source: connection.modelSource,
-        fetchedAt: connection.modelsFetchedAt,
+        models: enabledModelIds.map((id) => ({ id })),
+        source: 'fallback',
+        fetchedAt: connection.updatedAt,
       }
     : null;
 }

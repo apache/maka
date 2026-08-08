@@ -17,6 +17,10 @@ import {
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import {
+  decodeSkillInvocationResult,
+  type SkillInvocationResult,
+} from '@maka/core/skill-invocation';
+import {
   agentGraphIdForRootSession,
   classifyTerminalRuntimeLedger,
   RuntimeHostedRootConflictError,
@@ -124,6 +128,13 @@ interface ActiveRootTurn {
 }
 
 export type TurnStartOutcome = OperationOutcome<'turn.start'>;
+type SkillTurnStartOutcome = OperationOutcome<'turn.skill.start'>;
+
+const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
+  loaded: [],
+  failed: [],
+  receipts: [],
+};
 
 type RootMessageExecution = Extract<
   RootExecutionDescriptor,
@@ -160,11 +171,16 @@ export type RootMessageContentPreparation =
   | {
       readonly kind: 'ready';
       readonly content: MessageContent;
+      readonly skillInvocation?: SkillInvocationResult;
       readonly commitCapabilityBinding?: () => Promise<
         { readonly ok: true } | { readonly ok: false; readonly message: string }
       >;
     }
-  | { readonly kind: 'rejected'; readonly outcome: TurnStartOutcome };
+  | {
+      readonly kind: 'rejected';
+      readonly outcome: TurnStartOutcome;
+      readonly skillInvocation?: SkillInvocationResult;
+    };
 
 export interface HostedExternalTurnTransitionInput {
   readonly sessionId: string;
@@ -311,6 +327,7 @@ interface HostTurnAttachmentValidator {
 export class RootTurnCoordinator {
   readonly handlers: TurnOperationHandlerMap & ContextOperationHandlerMap = {
     'turn.start': (input, context) => this.startTurn(input, context),
+    'turn.skill.start': (input, context) => this.startSkillTurn(input, context),
     'turn.query': (input) => this.queryTurn(input),
     'turn.stop': (input) => this.stopTurn(input),
     'turn.regenerate': (input, context) => this.regenerateTurn(input, context),
@@ -1656,34 +1673,6 @@ export class RootTurnCoordinator {
 
   private startTurn(input: TurnStartInput, context: ConnectionContext): Promise<TurnStartOutcome> {
     const content = normalizeMessageContent(input.content);
-    const skillIds = input.skillIds ?? [];
-    const hasSkillInvocation =
-      skillIds.length > 0 || parseSkillInvocationTokens(content.text).length > 0;
-    if (hasSkillInvocation) {
-      const execution = {
-        kind: 'external_message' as const,
-        inputDigest: hostedExternalInputDigest(content, skillIds),
-        ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
-      };
-      return this.startRootMessage(
-        {
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          execution,
-          ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
-          archivedMessage: 'Cannot start a new Turn in an archived Session',
-          prepareFreshContent: async () =>
-            this.prepareHostedSkillInvocationContent(
-              input.sessionId,
-              input.turnId,
-              content,
-              skillIds,
-              context.connectionId,
-            ),
-        },
-        context,
-      );
-    }
     return this.startRootMessage(
       {
         sessionId: input.sessionId,
@@ -1698,6 +1687,116 @@ export class RootTurnCoordinator {
       },
       context,
     );
+  }
+
+  private startSkillTurn(
+    input: TurnStartInput,
+    context: ConnectionContext,
+  ): Promise<SkillTurnStartOutcome> {
+    const content = normalizeMessageContent(input.content);
+    const skillIds = input.skillIds ?? [];
+    if (skillIds.length === 0 && parseSkillInvocationTokens(content.text).length === 0) {
+      return Promise.resolve(
+        operationConflict('Skill Turn start requires an explicit Skill invocation'),
+      );
+    }
+    return this.runSkillInvocationStart(
+      input,
+      content,
+      skillIds,
+      {
+        kind: 'external_message',
+        inputDigest: hostedExternalInputDigest(content, skillIds),
+        ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+      },
+      context,
+    );
+  }
+
+  private async runSkillInvocationStart(
+    input: TurnStartInput,
+    content: MessageContent,
+    skillIds: readonly string[],
+    execution: Extract<RootExecutionDescriptor, { kind: 'external_message' }>,
+    context: ConnectionContext,
+  ): Promise<SkillTurnStartOutcome> {
+    let blocked: SkillInvocationResult | undefined;
+    const outcome = await this.startRootMessage(
+      {
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        execution,
+        ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
+        archivedMessage: 'Cannot start a new Turn in an archived Session',
+        prepareFreshContent: async () => {
+          const existing = await this.stores.agentRunStore.readRootTurnStartRejection(
+            input.sessionId,
+            input.turnId,
+          );
+          if (existing) {
+            if (!isDeepStrictEqual(existing.execution, execution)) {
+              return {
+                kind: 'rejected',
+                outcome: operationConflict(
+                  'Turn identity belongs to a different rejected execution payload',
+                ),
+              };
+            }
+            blocked = existing.skillInvocation;
+            return {
+              kind: 'rejected',
+              outcome: operationConflict('Explicit Skill invocation was durably rejected'),
+              skillInvocation: existing.skillInvocation,
+            };
+          }
+          const prepared = await this.prepareHostedSkillInvocationContent(
+            input.sessionId,
+            input.turnId,
+            content,
+            skillIds,
+            context.connectionId,
+          );
+          if (prepared.kind === 'ready' || !prepared.skillInvocation) return prepared;
+          const committed = await this.stores.agentRunStore.commitRootTurnStartRejection({
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            execution,
+            skillInvocation: prepared.skillInvocation,
+            rejectedAt: Date.now(),
+          });
+          if (committed.kind === 'conflict') {
+            return {
+              kind: 'rejected',
+              outcome: operationConflict(
+                'Turn identity belongs to a different rejected Skill invocation',
+              ),
+            };
+          }
+          blocked = committed.rejection.skillInvocation;
+          return prepared;
+        },
+      },
+      context,
+    );
+    if (blocked) return { ok: true, result: { kind: 'blocked', skillInvocation: blocked } };
+    if (!outcome.ok) return outcome;
+    const admission = await this.stores.agentRunStore.readRootTurnAdmission(
+      input.sessionId,
+      input.turnId,
+    );
+    if (!admission) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Started Skill invocation is missing its durable root Turn admission',
+      );
+    }
+    return {
+      ok: true,
+      result: {
+        kind: 'started',
+        turn: outcome.result,
+        skillInvocation: admission.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+      },
+    };
   }
 
   private async prepareHostedSkillInvocationContent(
@@ -1717,11 +1816,13 @@ export class RootTurnCoordinator {
       return {
         kind: 'rejected',
         outcome: operationConflict(preview.value.error),
+        skillInvocation: preview.value.skillInvocation,
       };
     }
     return {
       kind: 'ready',
       content: preview.value.content,
+      skillInvocation: preview.value.skillInvocation,
       commitCapabilityBinding: preview.commit,
     };
   }
@@ -1732,8 +1833,16 @@ export class RootTurnCoordinator {
     content: MessageContent,
     skillIds: readonly string[],
   ): Promise<
-    | { readonly kind: 'ready'; readonly content: MessageContent }
-    | { readonly kind: 'rejected'; readonly error: string }
+    | {
+        readonly kind: 'ready';
+        readonly content: MessageContent;
+        readonly skillInvocation: SkillInvocationResult;
+      }
+    | {
+        readonly kind: 'rejected';
+        readonly error: string;
+        readonly skillInvocation?: SkillInvocationResult;
+      }
   > {
     if (!this.prepareSkillInvocation) {
       return { kind: 'rejected', error: 'Hosted Skill invocation authority is unavailable' };
@@ -1744,9 +1853,23 @@ export class RootTurnCoordinator {
       text: content.text,
       skillIds,
     });
+    let skillInvocation: SkillInvocationResult;
+    try {
+      skillInvocation = decodeSkillInvocationResult(prepared.skillInvocation);
+    } catch {
+      return { kind: 'rejected', error: 'Hosted Skill invocation feedback is invalid' };
+    }
     return prepared.disposition === 'blocked'
-      ? { kind: 'rejected', error: 'Explicit Skill invocation could not be resolved' }
-      : { kind: 'ready', content: composeHostedSkillInvocationContent(content, prepared) };
+      ? {
+          kind: 'rejected',
+          error: 'Explicit Skill invocation could not be resolved',
+          skillInvocation,
+        }
+      : {
+          kind: 'ready',
+          content: composeHostedSkillInvocationContent(content, { ...prepared, skillInvocation }),
+          skillInvocation,
+        };
   }
 
   private regenerateTurn(
@@ -1900,6 +2023,7 @@ export class RootTurnCoordinator {
           execution: request.execution,
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
+          ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
           sourceMessages: [],
           admittedAt: Date.now(),
         });
@@ -2597,19 +2721,11 @@ export class RootTurnCoordinator {
   ): Promise<TurnStartOutcome> {
     if (disposition.kind === 'complete') return disposition.outcome;
     await disposition.active.startSettled.promise;
-    let result = await this.readCanonicalSnapshot(
+    const result = await this.readCanonicalSnapshot(
       input.sessionId,
       input.turnId,
       disposition.active.runId,
     );
-    if (isTerminalSnapshot(result)) {
-      await disposition.active.done;
-      result = await this.readCanonicalSnapshot(
-        input.sessionId,
-        input.turnId,
-        disposition.active.runId,
-      );
-    }
     return {
       ok: true,
       result,

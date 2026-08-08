@@ -5,6 +5,8 @@ import type {
   SessionCatalogFilter,
   SessionCatalogItem,
   SkillCatalogLocalContext,
+  SkillCatalogInvocableItem,
+  SkillCatalogInvocableTarget,
   SkillCatalogPageItem,
   SkillCatalogRevision,
   SkillCatalogView,
@@ -95,6 +97,32 @@ export async function readRuntimeHostSkillCatalog(
     },
   );
   return { revision: first.revision, view, items: pages.flatMap((page) => page.items) };
+}
+
+export async function readRuntimeHostInvocableSkills(
+  connection: RuntimeHostConnection,
+  target: SkillCatalogInvocableTarget,
+): Promise<readonly SkillCatalogInvocableItem[]> {
+  const { pages } = await collectStablePages(
+    'skill',
+    async () => {
+      const result = await connection.request('skill.catalog.invocable.query', {
+        kind: 'start',
+        target,
+      });
+      return result.kind === 'page' ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('skill.catalog.invocable.query', {
+        kind: 'continue',
+        target,
+        revision,
+        cursor,
+      });
+      return result.kind === 'page' ? result : null;
+    },
+  );
+  return pages.flatMap((page) => page.items);
 }
 
 export async function readRuntimeHostSessions(

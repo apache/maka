@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { mcpProxyToolName } from '@maka/runtime';
 import { type ClientCapabilityProvider, RuntimeHostOperationError } from '../client/index.js';
 import {
@@ -47,7 +48,17 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
       const retry = await second.startTurnResume(input);
       assert.deepEqual(retry, { kind: 'started', turn: terminal });
 
-      assert.deepEqual(await first.queryTurnResume({ sessionId: fixture.sessionId }), {
+      let settledPlan = await first.queryTurnResume({ sessionId: fixture.sessionId });
+      const deadline = Date.now() + 5_000;
+      while (
+        settledPlan.disposition === 'parked' &&
+        settledPlan.reason === 'session_busy' &&
+        Date.now() < deadline
+      ) {
+        await sleep(20);
+        settledPlan = await first.queryTurnResume({ sessionId: fixture.sessionId });
+      }
+      assert.deepEqual(settledPlan, {
         sessionId: fixture.sessionId,
         disposition: 'parked',
         reason: 'continuation_already_exists',

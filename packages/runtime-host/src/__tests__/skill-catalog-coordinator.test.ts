@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -8,6 +8,7 @@ import {
   SkillCatalogRepository,
   SkillCatalogRepositoryError,
 } from '../server/skill-catalog-repository.js';
+import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
 const roots = new Set<string>();
 
@@ -182,4 +183,82 @@ test('canonical model inventory uses the same revision and is deeply immutable',
   assert.equal(Object.isFrozen(model), true);
   assert.equal(Object.isFrozen(model.inventory), true);
   assert.equal(Object.isFrozen(model.diagnostics), true);
+});
+
+test('invocable pages use the authoritative Host tool surface and invalidate on capability change', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-skill-invocable-'));
+  roots.add(base);
+  const root = join(base, 'data');
+  const project = join(base, 'project');
+  const home = join(base, 'home');
+  const plain = join(project, '.agents', 'skills', 'plain');
+  const gated = join(project, '.agents', 'skills', 'gated');
+  await Promise.all([
+    mkdir(root, { recursive: true }),
+    mkdir(home, { recursive: true }),
+    mkdir(plain, { recursive: true }),
+    mkdir(gated, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(plain, 'SKILL.md'),
+      '---\nname: Plain\ndescription: Always available.\n---\n# Plain\n',
+    ),
+    writeFile(
+      join(gated, 'SKILL.md'),
+      '---\nname: Gated\ndescription: Needs a Host tool.\nrequired-tools: [ImaginaryTool]\n---\n# Gated\n',
+    ),
+  ]);
+  let toolNames = new Set(['Read']);
+  const coordinator = new HostSkillCatalogCoordinator(
+    new SkillCatalogRepository({
+      homeDirectory: home,
+      managedSourcesRoot: join(home, '.maka', 'skill-sources'),
+      runWithRoot: async (operation) => operation(root),
+    }),
+    async () => ({ projectRoot: project, host: { toolNames } }),
+  );
+  const context: ConnectionContext = {
+    hostEpoch: 'epoch-1',
+    connectionId: 'desktop-1',
+    surface: 'desktop',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+
+  const first = await coordinator.queryInvocable(
+    {
+      kind: 'start',
+      target: {
+        kind: 'new_session',
+        context: { projectRoot: project },
+        collaborationMode: 'agent',
+      },
+    },
+    context,
+  );
+  assert.equal(first.ok, true);
+  if (!first.ok || first.result.kind !== 'page') throw new Error('Expected invocable page');
+  assert.deepEqual(
+    first.result.items.map((item) => item.id),
+    ['plain'],
+  );
+
+  toolNames = new Set(['Read', 'ImaginaryTool']);
+  const changed = await coordinator.queryInvocable(
+    {
+      kind: 'continue',
+      target: {
+        kind: 'new_session',
+        context: { projectRoot: project },
+        collaborationMode: 'agent',
+      },
+      revision: first.result.revision,
+      cursor: 'stale-cursor',
+    },
+    context,
+  );
+  assert.equal(changed.ok, true);
+  if (!changed.ok) throw new Error('Expected invocable revision change');
+  assert.equal(changed.result.kind, 'revision_changed');
 });

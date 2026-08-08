@@ -32,6 +32,7 @@ import {
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
   readRuntimeHostConnectionCatalog,
+  readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
@@ -75,6 +76,8 @@ import {
   type SessionMetadataPatch,
   type SessionUpdateResult,
   type SkillCatalogLocalContext,
+  type SkillCatalogInvocableItem,
+  type SkillCatalogInvocableTarget,
   type SkillCatalogMutateInput,
   type SkillCatalogMutateResult,
   type SkillCatalogPageItem,
@@ -328,6 +331,21 @@ export class DesktopRuntimeHostClient {
       throw new DesktopRuntimeHostClientError(
         "skill_catalog_unstable",
         "Skill catalog kept changing while Desktop read it",
+      );
+    }
+  }
+
+  async listInvocableSkills(
+    target: SkillCatalogInvocableTarget,
+  ): Promise<readonly SkillCatalogInvocableItem[]> {
+    this.#assertOpen();
+    try {
+      return await readRuntimeHostInvocableSkills(this.connection, target);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "skill_catalog_unstable",
+        "Invocable Skill catalog kept changing while Desktop read it",
       );
     }
   }
@@ -846,6 +864,12 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"turn.start">,
   ): Promise<OperationOutput<"turn.start">> {
     return this.#request("turn.start", input);
+  }
+
+  startSkillTurn(
+    input: OperationInput<"turn.skill.start">,
+  ): Promise<OperationOutput<"turn.skill.start">> {
+    return this.#request("turn.skill.start", input);
   }
 
   queryTurn(

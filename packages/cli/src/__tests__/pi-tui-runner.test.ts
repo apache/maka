@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,6 +19,7 @@ import {
   type ThinkingLevel,
   type UserQuestionResponse,
 } from '@maka/core';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import {
   SessionActivityRegistry,
   type ContextDiagnostics,
@@ -35,6 +36,7 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
+import { SkillInvocationBlockedError } from '../session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import type {
   MakaOnboardingSurface,
@@ -5624,10 +5626,14 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('injects invoked skill instructions at submit while showing the typed prompt', async () => {
-    await withSkillWorkspace(async (workspaceRoot) => {
+  test('delegates explicit Skill invocation to the Host while showing the typed prompt', async () => {
+    {
       const terminal = new FakeTerminal();
-      const driver = new SlashCommandDriver();
+      const driver = new HostSkillDriver({
+        loaded: [{ id: 'alpha', name: 'Alpha' }],
+        failed: [],
+        receipts: [],
+      });
       const run = runMakaPiTui({
         title: 'Maka',
         driver,
@@ -5636,7 +5642,9 @@ describe('Maka Pi TUI runner', () => {
         connectionSlug: 'claude-subscription',
         permissionMode: 'ask',
         terminal,
-        skills: { source: () => workspaceRoot, host: { toolNames: new Set<string>() } },
+        listSkills: async () => [
+          { ref: 'project:alpha', id: 'alpha', name: 'Alpha', description: 'Alpha skill' },
+        ],
       });
 
       terminal.input('/skill:alpha 帮我整理');
@@ -5648,14 +5656,8 @@ describe('Maka Pi TUI runner', () => {
         '/skill:alpha 帮我整理',
         'human-facing prompt keeps the typed tokens',
       );
-      const sent = driver.prompts[0];
-      assert.match(sent, /<invoked-skill id="alpha" name="Alpha">/);
-      assert.match(sent, /# Alpha\nAlpha body\./);
-      assert.match(sent, /do not call the Skill tool again for these skills/);
-      assert.ok(
-        sent.endsWith('<user-message>\n帮我整理\n</user-message>'),
-        `composed message carries the stripped user text: ${sent}`,
-      );
+      assert.equal(driver.prompts[0], '/skill:alpha 帮我整理');
+      assert.deepEqual(driver.invokeSkills, [true]);
 
       // The transcript render trails the send by a tick — wait for it.
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('/skill:alpha 帮我整理'));
@@ -5668,12 +5670,16 @@ describe('Maka Pi TUI runner', () => {
           throw new Error('TUI did not close during test cleanup');
         }),
       ]);
-    });
+    }
   });
 
   test('uses a Host Skill catalog for presentation while leaving invocation preparation to Host', async () => {
     const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
+    const driver = new HostSkillDriver({
+      loaded: [{ id: 'alpha', name: 'Alpha' }],
+      failed: [],
+      receipts: [],
+    });
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -5692,16 +5698,21 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => driver.prompts.length === 1);
 
     assert.equal(driver.prompts[0], '/skill:alpha help');
+    assert.deepEqual(driver.invokeSkills, [true]);
     exitMaka(terminal);
     await run;
   });
 
   // Governance closeout: an all-failed explicit invocation yields a bounded
-  // local diagnostic and must not create a provider turn.
+  // Host diagnostic and must not create a provider turn.
   test('does not create a turn when every skill token fails to resolve', async () => {
-    await withSkillWorkspace(async (workspaceRoot) => {
+    {
       const terminal = new FakeTerminal();
-      const driver = new SlashCommandDriver();
+      const driver = new HostSkillDriver({
+        loaded: [],
+        failed: [{ request: 'nope', reason: 'not_found' }],
+        receipts: [],
+      });
       const run = runMakaPiTui({
         title: 'Maka',
         driver,
@@ -5710,7 +5721,7 @@ describe('Maka Pi TUI runner', () => {
         connectionSlug: 'claude-subscription',
         permissionMode: 'ask',
         terminal,
-        skills: { source: () => workspaceRoot, host: { toolNames: new Set<string>() } },
+        listSkills: async () => [],
       });
 
       terminal.input('/skill:nope hi');
@@ -5729,13 +5740,17 @@ describe('Maka Pi TUI runner', () => {
           throw new Error('TUI did not close during test cleanup');
         }),
       ]);
-    });
+    }
   });
 
   test('does not create a turn when distinct skill requests exceed the preparation limit', async () => {
-    await withSkillWorkspace(async (workspaceRoot) => {
+    {
       const terminal = new FakeTerminal();
-      const driver = new SlashCommandDriver();
+      const driver = new HostSkillDriver({
+        loaded: [],
+        failed: [{ reason: 'too_many_requests', requestLimit: 50 }],
+        receipts: [],
+      });
       const run = runMakaPiTui({
         title: 'Maka',
         driver,
@@ -5744,7 +5759,7 @@ describe('Maka Pi TUI runner', () => {
         connectionSlug: 'claude-subscription',
         permissionMode: 'ask',
         terminal,
-        skills: { source: () => workspaceRoot, host: { toolNames: new Set<string>() } },
+        listSkills: async () => [],
       });
       const prompt = [
         '/skill:alpha',
@@ -5768,7 +5783,7 @@ describe('Maka Pi TUI runner', () => {
           throw new Error('TUI did not close during test cleanup');
         }),
       ]);
-    });
+    }
   });
 
   describe('/recap command', () => {
@@ -7660,6 +7675,30 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
 }
 
+class HostSkillDriver extends SlashCommandDriver {
+  readonly invokeSkills: boolean[] = [];
+
+  constructor(private readonly skillInvocation: SkillInvocationResult) {
+    super();
+  }
+
+  override async preparePrompt(
+    prompt: string,
+    options: MakaPreparePromptOptions = {},
+  ): Promise<MakaPreparedSessionTurn> {
+    this.invokeSkills.push(options.invokeSkills === true);
+    if (
+      options.invokeSkills &&
+      this.skillInvocation.loaded.length === 0 &&
+      this.skillInvocation.failed.length > 0
+    ) {
+      throw new SkillInvocationBlockedError(this.skillInvocation);
+    }
+    const turn = await super.preparePrompt(prompt, options);
+    return options.invokeSkills ? { ...turn, skillInvocation: this.skillInvocation } : turn;
+  }
+}
+
 class FailingSwitchSessionDriver extends SlashCommandDriver {
   async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
     throw new Error('session not found');
@@ -8313,25 +8352,6 @@ class RewindDriver extends SlashCommandDriver {
       ...switchResult(this.branchSummary, [...this.branchMessages]),
       prompt: `refilled: ${turnId}`,
     };
-  }
-}
-
-// #1148: a throwaway workspace seeded with one invocable skill (`alpha`).
-// The runner's skill surface points at it in single-root mode, so no real
-// user- or project-level skills leak into the tests.
-async function withSkillWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-cli-skill-invocation-'));
-  try {
-    const skillDir = join(workspaceRoot, 'skills', 'alpha');
-    await mkdir(skillDir, { recursive: true });
-    await writeFile(
-      join(skillDir, 'SKILL.md'),
-      '---\nname: Alpha\ndescription: First.\n---\n# Alpha\nAlpha body.',
-      'utf8',
-    );
-    await fn(workspaceRoot);
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 

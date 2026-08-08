@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { SessionActivityRegistry, type InvocableSkillEntry } from '@maka/runtime';
-import { readRuntimeHostSkillCatalog, type RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  readRuntimeHostInvocableSkills,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
@@ -108,15 +111,13 @@ async function listStablePresentedSkills(
   connection: RuntimeHostConnection,
   projectRoot: string,
 ): Promise<InvocableSkillEntry[]> {
-  const catalog = await readRuntimeHostSkillCatalog(connection, { projectRoot }, 'governance');
-  return catalog.items.flatMap((item) =>
-    item.kind === 'skill' &&
-    item.enabled &&
-    item.runtimeStatus === 'enabled' &&
-    (item.contextStatus === 'advertised' || item.contextStatus === 'unknown')
-      ? [{ ref: item.ref, id: item.id, name: item.name, description: item.description }]
-      : [],
-  );
+  return [
+    ...(await readRuntimeHostInvocableSkills(connection, {
+      kind: 'new_session',
+      context: { projectRoot },
+      collaborationMode: 'agent',
+    })),
+  ];
 }
 
 function resolveTarget(catalog: ConnectionCatalogSnapshot): {

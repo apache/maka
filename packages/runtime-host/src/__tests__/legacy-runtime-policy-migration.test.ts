@@ -219,12 +219,41 @@ test('resumes a journaled migration without duplicating committed Connections', 
     const catalog = await stores.connectionCatalog.getSnapshot();
     assert.equal(catalog.connections.length, 1);
     assert.equal(catalog.connections[0]?.slug, 'legacy-openai');
+    assert.deepEqual(catalog.connections[0]?.models, [{ id: 'gpt-4.1' }]);
+    assert.equal(catalog.connections[0]?.modelSource, 'fallback');
     assert.equal(catalog.defaultTarget?.modelId, 'gpt-4.1');
     const execution = await stores.operations.resolveExecutionConnection('legacy-openai');
     assert.equal(execution.kind, 'ready');
     if (execution.kind === 'ready') {
       assert.equal(execution.secretMaterial.connection?.secret, 'legacy-api-key');
     }
+    await assertJournalRemoved(root);
+  });
+});
+
+test('drops credential-dependent legacy effects when their credential is unavailable', async () => {
+  await withMigrationRoot(async ({ root, legacyConfigurationRoot, stores }) => {
+    const legacy = createConnectionStore(legacyConfigurationRoot);
+    await legacy.create({
+      slug: 'codex-subscription',
+      name: 'OpenAI Codex',
+      providerType: 'openai-codex',
+      defaultModel: 'gpt-5.5',
+    });
+    await legacy.update('codex-subscription', {
+      models: [{ id: 'gpt-5.5' }],
+      modelSource: 'fetched',
+      modelsFetchedAt: 1_800_000_000_000,
+      lastTestStatus: 'needs_reauth',
+      lastTestAt: '2027-01-15T08:00:01.000Z',
+    });
+
+    await migrateLegacyRuntimePolicy({ workspaceRoot: root, legacyConfigurationRoot, stores });
+
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.equal(catalog.connections[0]?.slug, 'codex-subscription');
+    assert.deepEqual(catalog.connections[0]?.models, []);
+    assert.equal(catalog.connections[0]?.lastTest, undefined);
     await assertJournalRemoved(root);
   });
 });

@@ -97,6 +97,7 @@ test('the quote layer waits for the selection to settle, stays closed after Esca
 
   const reply = page.getByText(/Fake backend received: selection timing source/);
   await expect(reply).toBeVisible();
+  await expect(composer).toBeEditable();
 
   const quoteLayer = page.locator('.maka-quote-actions');
   const selectContents = (locator: typeof reply) =>
@@ -111,7 +112,14 @@ test('the quote layer waits for the selection to settle, stays closed after Esca
   // Real drag-select with real mouse events. A drag emits a burst of
   // `selectionchange`, and the gesture below lasts well past the settle delay,
   // so a layer that appeared mid-drag — the original complaint — shows up here.
-  const replyBox = (await reply.boundingBox())!;
+  let replyBox: { x: number; y: number; width: number; height: number } | null = null;
+  await expect
+    .poll(async () => {
+      replyBox = await reply.boundingBox();
+      return replyBox;
+    })
+    .not.toBeNull();
+  if (!replyBox) throw new Error('settled selection reply has no visible bounds');
   const dragY = replyBox.y + replyBox.height / 2;
   await page.mouse.move(replyBox.x + 20, dragY);
   await page.mouse.down();
@@ -269,9 +277,9 @@ test('the quote layer follows the selection while the transcript scrolls', async
 
 /**
  * A new selection must not leave the layer standing on the previous one's
- * anchor while the new one settles. Asserted within a frame: the settle timer
- * would clear it ~350ms later anyway, so any auto-waiting assertion passes
- * whether or not the code hides it up front.
+ * anchor while the new one settles. Asserted synchronously at the event
+ * boundary: hidden Electron windows can throttle animation frames beyond the
+ * settle delay, so a frame-based assertion can observe the new layer instead.
  */
 test('a new selection hides the layer immediately, not when the next one settles', async ({
   window: page,
@@ -299,7 +307,7 @@ test('a new selection hides the layer immediately, not when the next one settles
   await select(/Fake backend received: hide first alpha/);
   await expect(page.locator('.maka-quote-actions')).toBeVisible();
 
-  const stillVisibleNextFrame = await page
+  const stillVisibleAfterEvent = await page
     .getByText(/Fake backend received: hide first beta/)
     .last()
     .evaluate(async (element) => {
@@ -308,8 +316,11 @@ test('a new selection hides the layer immediately, not when the next one settles
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      // Programmatic Selection mutations schedule `selectionchange` as a later
+      // task. Dispatch the user-visible event now and inspect its synchronous
+      // result, before the 350 ms settle path is allowed to re-show the layer.
+      document.dispatchEvent(new Event('selectionchange'));
       return !!document.querySelector('.maka-quote-actions');
     });
-  expect(stillVisibleNextFrame).toBe(false);
+  expect(stillVisibleAfterEvent).toBe(false);
 });

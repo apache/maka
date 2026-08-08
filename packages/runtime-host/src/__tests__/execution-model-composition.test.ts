@@ -565,6 +565,7 @@ test('production backend preserves coordinator Client Capability semantics acros
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-real-model-'));
   const root = join(base, 'interactive');
+  const home = join(base, 'home');
   const provider = await startProvider();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -581,6 +582,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   let drainRequests = 0;
   let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
   try {
+    await mkdir(home, { recursive: true });
     await mkdir(join(root, '.agents', 'skills', 'hosted-skill'), {
       recursive: true,
     });
@@ -668,15 +670,18 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const taskLedger = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
     await taskLedger.create(session.id, [{ subject: 'HOSTED_TASK_LEDGER_SENTINEL' }]);
 
-    composition = await createExecutionRuntimeHostComposition({
-      owner,
-      hostEpoch: connectionContext.hostEpoch,
-      acquireResidency: connectionContext.acquireResidency,
-      retainUntilProcessExit: () => undefined,
-      requestDrain: () => {
-        drainRequests += 1;
+    composition = await createExecutionRuntimeHostComposition(
+      {
+        owner,
+        hostEpoch: connectionContext.hostEpoch,
+        acquireResidency: connectionContext.acquireResidency,
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => {
+          drainRequests += 1;
+        },
       },
-    });
+      { skillHomeDirectory: home },
+    );
     await composition.recover();
     const memoryState = await composition.handlers['memory.query'](
       { kind: 'state' },
@@ -714,6 +719,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
             ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`
             : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`,
         connectionContext,
+        index === 1,
       );
       const terminal = await waitForTerminal(
         composition,
@@ -2468,15 +2474,27 @@ async function startTurn(
   turnId: string,
   text: string,
   context: ConnectionContext,
+  invokeSkill = false,
 ): Promise<TurnSnapshot> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const started = await composition.handlers['turn.start'](
-      { sessionId, turnId, content: { text } },
-      context,
-    );
-    if (started.ok) return started.result;
-    if (started.error.code !== 'session_busy') {
-      throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
+    const input = { sessionId, turnId, content: { text } };
+    if (invokeSkill) {
+      const started = await composition.handlers['turn.skill.start'](input, context);
+      if (started.ok) {
+        if (started.result.kind === 'started') return started.result.turn;
+        throw new Error(
+          `Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`,
+        );
+      }
+      if (started.error.code !== 'session_busy') {
+        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
+      }
+    } else {
+      const started = await composition.handlers['turn.start'](input, context);
+      if (started.ok) return started.result;
+      if (started.error.code !== 'session_busy') {
+        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
+      }
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }

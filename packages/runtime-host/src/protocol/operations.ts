@@ -101,6 +101,8 @@ export type {
 } from './message.js';
 export type {
   TurnQueryInput,
+  SkillTurnStartInput,
+  SkillTurnStartResult,
   TurnRegenerateInput,
   TurnResumeParkReason,
   TurnResumePlan,

@@ -70,6 +70,71 @@ test("advances the Host read marker through the last visible message", async () 
   await observer.close();
 });
 
+test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
+  const observer = observerWithSnapshot();
+  const ipc = ipcHarness();
+  const request = {
+    type: "sandbox_boundary_request" as const,
+    id: "event-1",
+    turnId: "turn-1",
+    ts: 1,
+    requestId: "request-1",
+    toolUseId: "tool-1",
+    justification: "Write outside the workspace.",
+    expansion: {
+      filesystem: {
+        entries: [
+          { path: "/outside", access: "write" as const, scope: "subtree" as const },
+        ],
+      },
+    },
+  };
+  let active = true;
+  const configurationUpdates: unknown[] = [];
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        updateSessionConfiguration: async (sessionId, patch) => {
+          configurationUpdates.push({ sessionId, patch });
+          return session();
+        },
+      }),
+      observer,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      e2eInteractions: {
+        list: () => (active ? [request] : []),
+        respondToSandboxBoundary: async (_sessionId, response) => {
+          if (response.requestId !== request.requestId) return { handled: false };
+          active = false;
+          return { handled: true, permissionMode: 'ask' };
+        },
+      },
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:listActiveInteractions", "session-1"),
+    [request],
+  );
+  await ipc.invoke("sessions:respondToSandboxBoundary", "session-1", {
+    requestId: request.requestId,
+    decision: "allow",
+  });
+  assert.deepEqual(
+    await ipc.invoke("sessions:listActiveInteractions", "session-1"),
+    [],
+  );
+  assert.deepEqual(configurationUpdates, [
+    { sessionId: 'session-1', patch: { permissionMode: 'ask' } },
+  ]);
+  await observer.close();
+});
+
 test("retries committed Branch and Revision copies with the renderer-owned identity", async () => {
   const committed = new Map<string, SessionCatalogProjection>();
   const lostResponses = new Set(["branch-copy-1", "revision-copy-1"]);
@@ -337,13 +402,21 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
     {
       client: executionClient({
         getSession: async () => session(),
-        startTurn: async (input) => {
+        startSkillTurn: async (input) => {
           starts.push(input);
           return {
-            sessionId: input.sessionId,
-            turnId: input.turnId,
-            runId: "run-1",
-            status: "running",
+            kind: "started",
+            turn: {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              runId: "run-1",
+              status: "running",
+            },
+            skillInvocation: {
+              loaded: [{ id: "review", name: "Review" }],
+              failed: [],
+              receipts: [],
+            },
           };
         },
       }),
@@ -378,7 +451,11 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
     turnId: "turn-skill",
     attachments: [],
     inlineReferences: [],
-    skillInvocation: { loaded: [], failed: [], receipts: [] },
+    skillInvocation: {
+      loaded: [{ id: "review", name: "Review" }],
+      failed: [],
+      receipts: [],
+    },
   });
 });
 
@@ -472,9 +549,11 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
     setSessionReadMarker: unavailable,
+    startSkillTurn: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,
     submitMessage: unavailable,
+    updateSessionConfiguration: unavailable,
     updateSessionMetadata: unavailable,
     ...overrides,
   };

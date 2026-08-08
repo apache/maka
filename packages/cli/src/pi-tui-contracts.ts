@@ -1,6 +1,5 @@
 import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
-import type { HostCapabilities, SkillSource } from '@maka/runtime';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
@@ -56,11 +55,6 @@ export interface SessionRecapGenerator {
     sessionId: string,
     reason: 'manual' | 'idle',
   ): Promise<{ ok: true; text: string; raw: string } | { ok: false; error: string }>;
-}
-
-export interface MakaCliSkillSurface {
-  source(cwd: string): SkillSource;
-  host: HostCapabilities;
 }
 
 export interface MakaForeignSessionReader {

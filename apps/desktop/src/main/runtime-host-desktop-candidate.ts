@@ -1,5 +1,9 @@
 import type { IpcMain } from "electron";
-import type { SessionChangedEvent, SessionChangedReason } from "@maka/core";
+import type {
+  CreateSessionRequestInput,
+  SessionChangedEvent,
+  SessionChangedReason,
+} from "@maka/core";
 import type { BotRegistry } from "@maka/runtime";
 import {
   connectOrSpawnRuntimeHost,
@@ -29,7 +33,10 @@ import {
   registerRuntimeHostSessionDomainsIpc,
   type RuntimeHostSessionDomainsIpcDeps,
 } from "./runtime-host-session-domains-ipc-main.js";
-import { registerRuntimeHostSessionExecutionIpc } from "./runtime-host-session-execution-ipc-main.js";
+import {
+  registerRuntimeHostSessionExecutionIpc,
+  type RuntimeHostSessionExecutionIpcDeps,
+} from "./runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
 
 type CandidateIpcMain = Pick<IpcMain, "handle" | "removeHandler">;
@@ -46,6 +53,9 @@ export interface DesktopRuntimeHostCandidateDeps {
     readonly cwd: string;
     readonly projectId?: string | null;
   }>;
+  readonly resolveSessionCreateProject: (
+    input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
+  ) => Promise<{ readonly cwd: string; readonly projectId?: string | null }>;
   readonly emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
@@ -55,6 +65,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeComputerUseTurn: (
     sessionId: string,
   ) => void | Promise<void>;
+  readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly sendToRenderer?: RuntimeHostSessionDomainsIpcDeps["sendToRenderer"];
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly newId?: () => string;
@@ -346,10 +357,17 @@ export async function createDesktopRuntimeHostCandidate(
         return disposition;
       },
     });
+    const registeredClientIpc = deps.registerClientIpc?.(client, ipc, {
+      refreshClientCapabilities,
+    });
+    disposeClientIpc =
+      typeof registeredClientIpc === "function"
+        ? registeredClientIpc
+        : undefined;
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
-        workspaceRoot: deps.workspaceRoot,
+        resolveCreateProject: deps.resolveSessionCreateProject,
         emitSessionsChanged: deps.emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,
         sessionCopyCleanup,
@@ -366,17 +384,13 @@ export async function createDesktopRuntimeHostCandidate(
         stat: deps.stat,
         resizeImage: deps.resizeImage,
         beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
+        ...(deps.e2eInteractions
+          ? { e2eInteractions: deps.e2eInteractions }
+          : {}),
         ...(deps.newId ? { newId: deps.newId } : {}),
       },
       ipc,
     );
-    const registeredClientIpc = deps.registerClientIpc?.(client, ipc, {
-      refreshClientCapabilities,
-    });
-    disposeClientIpc =
-      typeof registeredClientIpc === "function"
-        ? registeredClientIpc
-        : undefined;
     const botIncoming = createBotIncomingMainService({
       botRegistry: deps.botRegistry,
       sessions: createRuntimeHostBotSessionAdapter({

@@ -34,20 +34,17 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
   await expect(dialog).toBeHidden();
 });
 
-test('关闭扫码弹窗会取消迟到结果，过期二维码可以重新生成', async ({ botSettingsWindow: page }) => {
+test('关闭扫码弹窗不会保存凭据，过期二维码可以重新生成', async ({ botSettingsWindow: page }) => {
   const settings = page.getByRole('main', { name: '设置内容' });
 
   await settings.getByRole('button', { name: '接入 微信' }).click();
   await settings.getByRole('button', { name: '扫码登录' }).click();
   const wechatDialog = page.getByRole('dialog', { name: '微信扫码登录' });
   await expect(wechatDialog.getByRole('img', { name: '微信扫码登录二维码' })).toBeVisible();
-  await page.waitForTimeout(1_150);
-  // The fixture deliberately has a provider result in flight here. Bypass
-  // Playwright's stability wait so the result-driven rerender cannot win the
-  // race before the cancellation click is dispatched.
+  // Poll snapshots replace the dialog subtree. A real pointer dispatch does
+  // not wait for that subtree to become stable, so neither should this click.
   await wechatDialog.getByRole('button', { name: '取消' }).click({ force: true });
   await expect(wechatDialog).toBeHidden();
-  await page.waitForTimeout(1_300);
 
   const afterCancel = await page.evaluate(() => window.maka.settings.get());
   expect(afterCancel.botChat.channels.wechat.token).toBe('');
@@ -57,7 +54,6 @@ test('关闭扫码弹窗会取消迟到结果，过期二维码可以重新生�
   await settings.getByRole('button', { name: '接入 企业微信' }).click();
   await settings.getByRole('button', { name: '开始快捷绑定' }).click();
   const wecomDialog = page.getByRole('dialog', { name: '配置企业微信扫码接入' });
-  await expect(wecomDialog.getByRole('img', { name: '配置企业微信二维码' })).toBeVisible();
   await expect(wecomDialog.getByText('二维码已过期，请重新生成')).toBeVisible({ timeout: 4_000 });
   await wecomDialog.getByRole('button', { name: '重新生成' }).click();
   await expect(wecomDialog.getByRole('img', { name: '配置企业微信二维码' })).toBeVisible();

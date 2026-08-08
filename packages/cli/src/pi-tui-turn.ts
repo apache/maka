@@ -1,4 +1,5 @@
 import type { SessionEvent } from '@maka/core';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import {
   drainGoalTurn,
@@ -6,7 +7,11 @@ import {
   type SessionActivityLease,
   type SessionActivityRegistry,
 } from '@maka/runtime';
-import type { MakaPreparedSessionTurn, MakaSessionDriver } from './session-driver.js';
+import {
+  SkillInvocationBlockedError,
+  type MakaPreparedSessionTurn,
+  type MakaSessionDriver,
+} from './session-driver.js';
 
 export interface MakaPiTuiTurnActivity {
   activities: SessionActivityRegistry;
@@ -18,6 +23,8 @@ export type MakaPiTuiTurnRequest =
       prompt: string;
       /** Model-facing text after explicit skill expansion, when different. */
       sendText?: string;
+      /** Ask the Runtime Host to resolve explicit Skill tokens atomically with Turn admission. */
+      invokeSkills?: boolean;
       /** Session observed before preparation; null is valid for the first turn. */
       sessionId: string | null;
       /** Trusted one-turn orchestration override supplied by a host command. */
@@ -36,6 +43,7 @@ export interface RunMakaPiTuiTurnInput {
   shouldAbort: () => boolean;
   onStart?: () => void;
   onPrepared?: (turn: MakaPreparedSessionTurn) => void | Promise<void>;
+  onSkillInvocation?: (result: SkillInvocationResult) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void | Promise<void>;
   onFailure?: (error: unknown) => void | Promise<void>;
 }
@@ -75,9 +83,11 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
         ? request.turn
         : await input.driver.preparePrompt(request.prompt, {
             ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
+            ...(request.invokeSkills ? { invokeSkills: true } : {}),
             ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           });
     preparedTurnId = turn.turnId;
+    if (turn.skillInvocation) await input.onSkillInvocation?.(turn.skillInvocation);
     await input.onPrepared?.(turn);
 
     if (!activity) activity = await input.turnActivity.activities.acquire(turn.sessionId);
@@ -111,6 +121,10 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
     return outcome;
   } catch (error) {
     if (input.shouldAbort()) {
+      return finishBeforeDrain(abortedOutcome(preparedTurnId));
+    }
+    if (error instanceof SkillInvocationBlockedError) {
+      await input.onSkillInvocation?.(error.skillInvocation);
       return finishBeforeDrain(abortedOutcome(preparedTurnId));
     }
     let reportedError = error;

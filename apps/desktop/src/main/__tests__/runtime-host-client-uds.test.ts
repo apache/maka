@@ -206,6 +206,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       },
       botRegistry: {} as BotRegistry,
       resolveBotCreateTarget: async () => ({ cwd: base }),
+      resolveSessionCreateProject: async () => ({ cwd: base }),
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       emitModeChanged() {},
       completeComputerUseTurn() {},

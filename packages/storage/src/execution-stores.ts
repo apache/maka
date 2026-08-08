@@ -16,6 +16,7 @@ import {
   type AgentRunIdentitySearchResult,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
+  type CommitRootTurnStartRejectionInput,
   type BoundedEvidenceReadResult,
   type DurableAgentRunStore,
   type DurableRuntimeEventStore,
@@ -79,13 +80,17 @@ export type {
   AgentRunIdentitySearchResult,
   AdmitRootTurnInput,
   AdmitRootTurnResult,
+  CommitRootTurnStartRejectionInput,
+  CommitRootTurnStartRejectionResult,
   BoundedEvidenceReadResult,
   EvidenceReadBudget,
   ImmutableSteeringMessageProof,
   RootTurnAdmission,
   RootTurnAdmissionStore,
+  RootTurnStartRejectionStore,
   RootTurnSourceMessage,
   RootTurnSourceMessageReceipt,
+  RootTurnStartRejection,
 } from './agent-run-store.js';
 export type {
   MessageOperationReceipt,
@@ -430,6 +435,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => agentRunStore.admitRootTurn(input)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnStartRejection: (sessionId, turnId) =>
+        run(() => agentRunStore.readRootTurnStartRejection(sessionId, turnId)),
+      commitRootTurnStartRejection: (input: CommitRootTurnStartRejectionInput) =>
+        run(() => agentRunStore.commitRootTurnStartRejection(input)),
       readRootTurnSourceMessageReceipt: (sessionId, sourceMessageId) =>
         run(() => agentRunStore.readRootTurnSourceMessageReceipt(sessionId, sourceMessageId)),
       listRootTurnAdmissionsForRecovery: (sessionId) =>

@@ -32,6 +32,23 @@ function wedgedApp(child) {
 }
 
 describe('closeElectronApplication', () => {
+  it('treats an already-disconnected Electron application as closed', async () => {
+    let closeCalled = false;
+    await closeElectronApplication(
+      {
+        close: async () => {
+          closeCalled = true;
+        },
+        process: () => {
+          throw new TypeError('application process channel is closed');
+        },
+      },
+      10,
+    );
+
+    assert.equal(closeCalled, true);
+  });
+
   it('force-kills Electron when graceful teardown does not settle', async () => {
     const child = new FakeElectronProcess();
     let terminatedTree = false;

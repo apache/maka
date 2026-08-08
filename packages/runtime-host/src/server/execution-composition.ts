@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { generalizedErrorMessage } from '@maka/core/redaction';
+import { emptyPlanSessionState } from '@maka/core/plan';
 import { isDeepResearchSession } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
@@ -137,6 +138,8 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly legacyConfigurationRoot?: string;
+  readonly bootstrapRuntimePolicy?: boolean;
+  readonly skillHomeDirectory?: string;
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
@@ -194,14 +197,16 @@ export async function createExecutionRuntimeHostComposition(
         : {}),
       stores: runtimePolicyStores,
     });
-    await ensureBootstrapRuntimePolicy({
-      workspaceRoot: context.owner.capability.canonicalPath,
-      stores: runtimePolicyStores,
-      onDeferredError: (error) =>
-        console.error(
-          `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
-        ),
-    });
+    if (options.bootstrapRuntimePolicy !== false) {
+      await ensureBootstrapRuntimePolicy({
+        workspaceRoot: context.owner.capability.canonicalPath,
+        stores: runtimePolicyStores,
+        onDeferredError: (error) =>
+          console.error(
+            `[runtime-host] optional bootstrap target could not be configured: ${generalizedErrorMessage(error)}`,
+          ),
+      });
+    }
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedAutomationStore = await openInteractiveAutomationAuthorityForWrite(
       context.owner.lease,
@@ -346,11 +351,47 @@ export async function createExecutionRuntimeHostComposition(
       context.owner.capability.canonicalPath,
     );
     graphControlStore = openedGraphControlStore;
+    let resolveAvailableToolNames: ((sessionId: string) => Promise<string[]>) | undefined;
+    let resolveNewSessionToolNames:
+      | ((
+          previewSessionId: string,
+          collaborationMode: 'agent' | 'plan',
+          initiatingConnectionId: string,
+        ) => Promise<string[]>)
+      | undefined;
     const skills = new HostSkillCatalogCoordinator(
       new SkillCatalogRepository({
         runWithRoot: (operation) =>
           runWithStorageRootLease(context.owner.lease, 'interactive', 'write', operation),
+        ...(options.skillHomeDirectory ? { homeDirectory: options.skillHomeDirectory } : {}),
       }),
+      async (input, connection) => {
+        if (input.target.kind === 'session') {
+          const sessionId = input.target.sessionId;
+          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          const preview = await requireClientCapabilities(
+            clientCapabilities,
+          ).runWithSessionBindingPreview(sessionId, connection.connectionId, () =>
+            requireToolNameResolver(resolveAvailableToolNames)(sessionId),
+          );
+          if (!preview.ok) throw new Error(preview.message);
+          return {
+            projectRoot: header.cwd,
+            host: buildHostCapabilitiesFromBinding(preview.value),
+          };
+        }
+        const previewSessionId = `skill-catalog-preview:${connection.connectionId}`;
+        return {
+          projectRoot: input.target.context.projectRoot,
+          host: buildHostCapabilitiesFromBinding(
+            await requireNewSessionToolNameResolver(resolveNewSessionToolNames)(
+              previewSessionId,
+              input.target.collaborationMode,
+              connection.connectionId,
+            ),
+          ),
+        };
+      },
     );
     const configurationChanges = new HostConfigurationChangeService();
     let rootCoordinator: RootTurnCoordinator | undefined;
@@ -564,7 +605,7 @@ export async function createExecutionRuntimeHostComposition(
       stopSession: (sessionId, input) =>
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
-    const resolveAvailableToolNames = async (sessionId: string): Promise<string[]> => {
+    resolveAvailableToolNames = async (sessionId: string): Promise<string[]> => {
       const capabilitySnapshot =
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
@@ -601,6 +642,41 @@ export async function createExecutionRuntimeHostComposition(
       } finally {
         capabilitySnapshot?.release();
       }
+    };
+    resolveNewSessionToolNames = async (
+      previewSessionId,
+      collaborationMode,
+      initiatingConnectionId,
+    ) => {
+      const preview = await requireClientCapabilities(
+        clientCapabilities,
+      ).runWithSessionBindingPreview(previewSessionId, initiatingConnectionId, async () => {
+        const capabilitySnapshot =
+          requireClientCapabilities(clientCapabilities).snapshotForSession(previewSessionId);
+        try {
+          return createHostExecutionModelComposition({
+            policy: runtimePolicyStores.runtimePolicy,
+            skills,
+            memory: requireMemory(memory),
+            taskLedger,
+            ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
+            builtinTools,
+            hostTools,
+            automationTool: requireAutomationCoordinator(automations).modelTool,
+            goalTools: requireGoal(goal).tools,
+            parentAgentTools: childAgentTools.parentTools,
+            plan: {
+              store: openedPlanStore,
+              state: emptyPlanSessionState(previewSessionId),
+              mode: collaborationMode,
+            },
+          }).tools.map((tool) => tool.name);
+        } finally {
+          capabilitySnapshot?.release();
+        }
+      });
+      if (!preview.ok) throw new Error(preview.message);
+      return preview.value;
     };
     const sessionEffectCoordinator = new HostSessionEffectCoordinator({
       model: createHostSessionEffectModel({
@@ -1412,6 +1488,30 @@ function requireClientCapabilities(
 ): HostClientCapabilityCoordinator {
   if (!coordinator) throw new Error('Runtime Host Client Capability coordinator is not composed');
   return coordinator;
+}
+
+function requireToolNameResolver(
+  resolver: ((sessionId: string) => Promise<string[]>) | undefined,
+): (sessionId: string) => Promise<string[]> {
+  if (!resolver) throw new Error('Runtime Host Session tool resolver is not composed');
+  return resolver;
+}
+
+function requireNewSessionToolNameResolver(
+  resolver:
+    | ((
+        previewSessionId: string,
+        collaborationMode: 'agent' | 'plan',
+        initiatingConnectionId: string,
+      ) => Promise<string[]>)
+    | undefined,
+): (
+  previewSessionId: string,
+  collaborationMode: 'agent' | 'plan',
+  initiatingConnectionId: string,
+) => Promise<string[]> {
+  if (!resolver) throw new Error('Runtime Host new Session tool resolver is not composed');
+  return resolver;
 }
 
 function requireAutomationCoordinator(

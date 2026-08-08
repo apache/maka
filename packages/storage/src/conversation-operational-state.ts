@@ -59,6 +59,9 @@ class SqliteConversationOperationalStateStore implements ConversationOperational
         .prepare('DELETE FROM core_agent_run_projections WHERE session_id = ?')
         .run(sessionId);
       database.prepare('DELETE FROM core_root_turn_admissions WHERE session_id = ?').run(sessionId);
+      database
+        .prepare('DELETE FROM core_root_turn_start_rejections WHERE session_id = ?')
+        .run(sessionId);
       database.prepare('DELETE FROM core_agent_runs WHERE session_id = ?').run(sessionId);
     });
   }

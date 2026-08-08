@@ -350,6 +350,7 @@ function deps(
     nativeCapabilities,
     botRegistry: {} as BotRegistry,
     resolveBotCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveSessionCreateProject: async () => ({ cwd: '/workspace' }),
     emitSessionsChanged() {},
     emitModeChanged() {},
     completeComputerUseTurn() {},

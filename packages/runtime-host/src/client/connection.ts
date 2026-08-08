@@ -59,6 +59,8 @@ import {
   type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
+  type SkillTurnStartInput,
+  type SkillTurnStartResult,
   type TurnStopInput,
   requireClientInstanceId,
   validateProtocolRange,
@@ -147,6 +149,7 @@ export interface RuntimeHostConnection {
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  startSkillTurn(input: SkillTurnStartInput, timeoutMs?: number): Promise<SkillTurnStartResult>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
   regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
@@ -361,6 +364,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot> {
     return this.request('turn.start', input, timeoutMs);
+  }
+
+  startSkillTurn(input: SkillTurnStartInput, timeoutMs?: number): Promise<SkillTurnStartResult> {
+    return this.request('turn.skill.start', input, timeoutMs);
   }
 
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {

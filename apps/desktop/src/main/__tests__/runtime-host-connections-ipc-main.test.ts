@@ -35,7 +35,7 @@ test('reports an existing but unconfigured credential as missing', async () => {
   );
 });
 
-test('preserves the provider default inventory when create omits a model', async () => {
+test('preserves the provider default inventory beside the recommended model', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let createdModels: readonly string[] = [];
   const emptyCatalog: ConnectionCatalogSnapshot = {
@@ -87,6 +87,7 @@ test('preserves the provider default inventory when create omits a model', async
     slug: 'opencode-free',
     name: 'OpenCode Free',
     providerType: 'opencode-free',
+    defaultModel: 'nemotron-3-ultra-free',
   });
 
   assert.deepEqual(createdModels, [
@@ -113,6 +114,14 @@ test('projects the Host default target without inventing a second Connection aut
       updatedAt: 4,
     },
   ]);
+});
+
+test('does not invent a per-Connection default when the Host target is unset', () => {
+  const snapshot = catalog();
+  const connections = projectHostConnections({ ...snapshot, defaultTarget: null });
+
+  assert.equal(connections[0]?.defaultModel, '');
+  assert.deepEqual(connections[0]?.enabledModelIds, ['model-1', 'model-2']);
 });
 
 test('preserves the Host-tested model and diagnostics for the existing Desktop UI', () => {

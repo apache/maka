@@ -47,7 +47,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 5);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 6);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'agent.graph.operator.query',
       'agent.graph.query',
@@ -118,6 +118,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.revision.abandon',
       'session.revision.create',
       'session.transcript.query',
+      'skill.catalog.invocable.query',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',
       'skill.catalog.query',
@@ -130,6 +131,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.regenerate',
       'turn.resume.query',
       'turn.resume.start',
+      'turn.skill.start',
       'turn.start',
       'turn.stop',
       'usage.query',
@@ -1041,11 +1043,11 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('accepts bounded explicit Skill identities only on turn.start', () => {
+  test('accepts bounded explicit Skill identities only on turn.skill.start', () => {
     const start = (skillIds: unknown, text = '') =>
       decodeClientFrame({
         requestId: 'skill-start',
-        operation: 'turn.start',
+        operation: 'turn.skill.start',
         input: {
           sessionId: 'session-1',
           turnId: 'turn-skill-1',
@@ -1055,7 +1057,7 @@ describe('Runtime Host bootstrap protocol', () => {
       });
     assert.deepEqual(start(['writer', 'project:maka:reviewer']), {
       requestId: 'skill-start',
-      operation: 'turn.start',
+      operation: 'turn.skill.start',
       input: {
         sessionId: 'session-1',
         turnId: 'turn-skill-1',
@@ -1078,13 +1080,70 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => start(undefined), isInvalidFrame);
     assert.deepEqual(start([], 'plain'), {
       requestId: 'skill-start',
-      operation: 'turn.start',
+      operation: 'turn.skill.start',
       input: {
         sessionId: 'session-1',
         turnId: 'turn-skill-1',
         content: { text: 'plain' },
       },
     });
+  });
+
+  test('bounds turn.skill.start feedback as one transport-safe result', () => {
+    const receipt = {
+      invocation: 'explicit' as const,
+      request: 'writer',
+      success: true as const,
+      ref: 'workspace:legacy:writer',
+      id: 'writer',
+      name: 'Writer',
+      scope: 'workspace' as const,
+      source: 'legacy' as const,
+      truncated: false,
+    };
+    const response = {
+      requestId: 'skill-start-response',
+      operation: 'turn.skill.start' as const,
+      ok: true as const,
+      result: {
+        kind: 'started' as const,
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'turn-skill-1',
+          runId: 'run-skill-1',
+          status: 'running' as const,
+        },
+        skillInvocation: {
+          loaded: [{ id: receipt.id, name: receipt.name }],
+          failed: [],
+          receipts: [receipt],
+        },
+      },
+    };
+    assert.deepEqual(decodeHostFrame(response), response);
+    assert.ok(encodeProtocolFrame(response).byteLength < RUNTIME_HOST_MAX_FRAME_BYTES);
+
+    const request = 'r'.repeat(TURN_SKILL_ID_MAX_LENGTH);
+    const id = 'i'.repeat(81);
+    const name = '"'.repeat(256);
+    const oversized = {
+      ...response,
+      result: {
+        ...response.result,
+        skillInvocation: {
+          loaded: Array.from({ length: TURN_SKILL_ID_MAX_COUNT }, () => ({ id, name })),
+          failed: [],
+          receipts: Array.from({ length: TURN_SKILL_ID_MAX_COUNT }, () => ({
+            ...receipt,
+            request,
+            ref: `workspace:legacy:${id}`,
+            id,
+            name,
+          })),
+        },
+      },
+    };
+    assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
   });
 
   test('decodes a closed regenerate identity without accepting replacement content', () => {

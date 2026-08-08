@@ -27,6 +27,7 @@ export * from './interaction.js';
 export * from './project.js';
 export * from './subagent-workspace.js';
 export * from './pet.js';
+export * from './skill-invocation.js';
 
 // events.ts
 export type {

@@ -16,6 +16,7 @@ import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime';
 import {
@@ -48,7 +49,7 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
-import { inspectSessionResumeAvailability } from './session-driver.js';
+import { inspectSessionResumeAvailability, SkillInvocationBlockedError } from './session-driver.js';
 import {
   cwdRank,
   firstLine,
@@ -181,7 +182,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const events = channel.eventsForTurn(turnId);
     const modelText = options.modelText ?? prompt;
     try {
-      const started = await this.#request('turn.start', {
+      const startInput = {
         sessionId,
         turnId,
         content: {
@@ -190,13 +191,25 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
-      });
+      };
+      let started: OperationOutput<'turn.start'>;
+      let skillInvocation: SkillInvocationResult | undefined;
+      if (options.invokeSkills) {
+        const result = await this.#request('turn.skill.start', startInput);
+        if (result.kind === 'blocked')
+          throw new SkillInvocationBlockedError(result.skillInvocation);
+        started = result.turn;
+        skillInvocation = result.skillInvocation;
+      } else {
+        started = await this.#request('turn.start', startInput);
+      }
       return {
         sessionId,
         turnId,
         runId: started.runId,
         events,
         summary: runtimeHostSessionSummary(configuration.session),
+        ...(skillInvocation ? { skillInvocation } : {}),
       };
     } catch (error) {
       channel.failTurn(turnId, error);

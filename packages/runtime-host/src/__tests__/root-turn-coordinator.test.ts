@@ -368,7 +368,7 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
   }
 });
 
-test('turn.start resolves explicit Skills once before durable admission and replays the result', async () => {
+test('turn.skill.start resolves explicit Skills once before durable admission and replays the result', async () => {
   let preparationCount = 0;
   let blocked = false;
   let observedCapabilityPreview = false;
@@ -436,8 +436,12 @@ test('turn.start resolves explicit Skills once before durable admission and repl
       'inspect',
     ]);
     const context = operationContext(fixture.hostEpoch, fixture.acquireResidency, 'skill-provider');
-    const started = await fixture.coordinator.handlers['turn.start'](input, context);
+    const started = await fixture.coordinator.handlers['turn.skill.start'](input, context);
     assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.equal(started.result.kind, 'started');
+    if (started.result.kind !== 'started') return;
+    assert.deepEqual(started.result.skillInvocation.loaded, [{ id: 'writer', name: 'Writer' }]);
     assert.equal(preparationCount, 1);
     assert.equal(observedCapabilityPreview, true);
     const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
@@ -458,11 +462,12 @@ test('turn.start resolves explicit Skills once before durable admission and repl
     });
 
     blocked = true;
-    const exactRetry = await fixture.coordinator.handlers['turn.start'](input, context);
+    const exactRetry = await fixture.coordinator.handlers['turn.skill.start'](input, context);
     assert.equal(exactRetry.ok, true);
+    if (exactRetry.ok) assert.deepEqual(exactRetry.result, started.result);
     assert.equal(preparationCount, 1, 'durable replay must not resolve a mutable Skill catalog');
 
-    const conflictingRetry = await fixture.coordinator.handlers['turn.start'](
+    const conflictingRetry = await fixture.coordinator.handlers['turn.skill.start'](
       { ...input, skillIds: ['writer', 'another'] },
       context,
     );
@@ -471,6 +476,52 @@ test('turn.start resolves explicit Skills once before durable admission and repl
   } finally {
     await connection.close();
     await capabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn.skill.start durably replays an all-failed invocation without creating a Turn', async () => {
+  let preparationCount = 0;
+  const skillInvocation = {
+    loaded: [],
+    failed: [{ request: 'missing', reason: 'not_found' as const }],
+    receipts: [
+      {
+        invocation: 'explicit' as const,
+        request: 'missing',
+        success: false as const,
+        reason: 'not_found' as const,
+      },
+    ],
+  };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async (): Promise<PreparedSkillInvocationMessage> => {
+      preparationCount += 1;
+      return { disposition: 'blocked', skillInvocation };
+    },
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    turnId: 'turn-blocked-skill',
+    content: { text: '/skill:missing' },
+  } as const;
+  try {
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    const first = await fixture.coordinator.handlers['turn.skill.start'](input, context);
+    assert.deepEqual(first, {
+      ok: true,
+      result: { kind: 'blocked', skillInvocation },
+    });
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, input.turnId),
+      undefined,
+    );
+
+    const retry = await fixture.coordinator.handlers['turn.skill.start'](input, context);
+    assert.deepEqual(retry, first);
+    assert.equal(preparationCount, 1);
+  } finally {
     await fixture.dispose();
   }
 });
@@ -539,9 +590,9 @@ test('idle turn.message.submit applies hosted Skill preparation before durable a
   }
 });
 
-test('turn.start rejects oversized Skill preparation before admission and preserves not-found semantics', async () => {
+test('turn.skill.start rejects oversized preparation before admission and preserves not-found semantics', async () => {
   let preparationCount = 0;
-  let preparation: 'blocked' | 'oversized' = 'blocked';
+  let preparation: 'blocked' | 'oversized_content' | 'oversized_feedback' = 'blocked';
   const fixture = await createFailureFixture({
     registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
     prepareSkillInvocation: async () => {
@@ -556,20 +607,43 @@ test('turn.start rejects oversized Skill preparation before admission and preser
           },
         };
       }
+      if (preparation === 'oversized_content')
+        return {
+          disposition: 'ready',
+          sendText: 'x'.repeat(70 * 1024),
+          skillInvocation: {
+            loaded: [{ id: 'writer', name: 'Writer' }],
+            failed: [],
+            receipts: [],
+          },
+        };
+      const request = 'r'.repeat(512);
+      const id = 'i'.repeat(81);
+      const name = '"'.repeat(256);
       return {
         disposition: 'ready',
-        sendText: 'x'.repeat(70 * 1024),
+        sendText: 'Run the selected Skills.',
         skillInvocation: {
-          loaded: [{ id: 'writer', name: 'Writer' }],
+          loaded: Array.from({ length: 50 }, () => ({ id, name })),
           failed: [],
-          receipts: [],
+          receipts: Array.from({ length: 50 }, () => ({
+            invocation: 'explicit' as const,
+            request,
+            success: true as const,
+            ref: `workspace:legacy:${id}`,
+            id,
+            name,
+            scope: 'workspace' as const,
+            source: 'legacy' as const,
+            truncated: false,
+          })),
         },
       };
     },
   });
   const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
   try {
-    const blocked = await fixture.coordinator.handlers['turn.start'](
+    const blocked = await fixture.coordinator.handlers['turn.skill.start'](
       {
         sessionId: fixture.sessionId,
         turnId: 'turn-hosted-skill-blocked',
@@ -577,8 +651,8 @@ test('turn.start rejects oversized Skill preparation before admission and preser
       },
       context,
     );
-    assert.equal(blocked.ok, false);
-    if (!blocked.ok) assert.equal(blocked.error.code, 'operation_conflict');
+    assert.equal(blocked.ok, true);
+    if (blocked.ok) assert.equal(blocked.result.kind, 'blocked');
     assert.equal(
       await fixture.stores.agentRunStore.readRootTurnAdmission(
         fixture.sessionId,
@@ -587,8 +661,8 @@ test('turn.start rejects oversized Skill preparation before admission and preser
       undefined,
     );
 
-    preparation = 'oversized';
-    const oversized = await fixture.coordinator.handlers['turn.start'](
+    preparation = 'oversized_content';
+    const oversized = await fixture.coordinator.handlers['turn.skill.start'](
       {
         sessionId: fixture.sessionId,
         turnId: 'turn-hosted-skill-oversized',
@@ -607,7 +681,27 @@ test('turn.start rejects oversized Skill preparation before admission and preser
       undefined,
     );
 
-    const missingSession = await fixture.coordinator.handlers['turn.start'](
+    preparation = 'oversized_feedback';
+    const oversizedFeedback = await fixture.coordinator.handlers['turn.skill.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-hosted-skill-oversized-feedback',
+        content: { text: '/skill:writer Draft this.' },
+      },
+      context,
+    );
+    assert.equal(oversizedFeedback.ok, false);
+    if (!oversizedFeedback.ok) assert.equal(oversizedFeedback.error.code, 'operation_conflict');
+    assert.equal(fixture.drainRequested(), false);
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        'turn-hosted-skill-oversized-feedback',
+      ),
+      undefined,
+    );
+
+    const missingSession = await fixture.coordinator.handlers['turn.skill.start'](
       {
         sessionId: 'missing-session',
         turnId: 'turn-hosted-skill-missing-session',
@@ -617,7 +711,7 @@ test('turn.start rejects oversized Skill preparation before admission and preser
     );
     assert.equal(missingSession.ok, false);
     if (!missingSession.ok) assert.equal(missingSession.error.code, 'not_found');
-    assert.equal(preparationCount, 2, 'missing Sessions must not resolve Skills');
+    assert.equal(preparationCount, 3, 'missing Sessions must not resolve Skills');
   } finally {
     await fixture.dispose();
   }
@@ -2179,11 +2273,11 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       operationContext(hostEpoch, acquireResidency),
     );
     assert.equal(queuedFollowup.ok && queuedFollowup.result.disposition, 'followup');
-    linkedBackends.get(child.childSessionId)?.release();
-    await waitUntil(() => {
-      const state = requireCoordinator(coordinator).readRootState(child.childSessionId);
-      return state.kind === 'active' && state.turnId !== externalTurnId;
-    });
+    const queuedBackend = linkedBackends.get(child.childSessionId);
+    assert.ok(queuedBackend);
+    if (!queuedBackend) return;
+    queuedBackend.release();
+    await queuedBackend.questionStarted.promise;
     const followupState = coordinator.readRootState(child.childSessionId);
     assert.equal(followupState.kind, 'active');
     if (followupState.kind !== 'active') return;
@@ -3197,6 +3291,62 @@ test('an exact terminal retry does not require a live Client Capability binding'
   } finally {
     provider.close();
     await clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn.start returns a published fast terminal before backend iterator cleanup', {
+  timeout: 20_000,
+}, async () => {
+  let backend: TerminalThenCleanupBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new TerminalThenCleanupBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const started = await completesWithin(
+      fixture.coordinator.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: 'turn-fast-terminal',
+          content: { text: 'finish immediately' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+      2_000,
+      'fast terminal start acknowledgement',
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.equal(started.result.status, 'completed');
+    assert.ok(backend);
+    assert.equal(backend.cleanupReleased, false);
+
+    const followup = fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-after-fast-terminal',
+        content: { text: 'wait for prior cleanup' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    let followupSettled = false;
+    void followup.finally(() => {
+      followupSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(followupSettled, false);
+
+    backend.releaseCleanup();
+    const followupResult = await completesWithin(followup, 2_000, 'follow-up after cleanup');
+    assert.equal(followupResult.ok, true);
+  } finally {
+    backend?.releaseCleanup();
     await fixture.dispose();
   }
 });
@@ -4458,6 +4608,7 @@ async function waitUntil(
 class LinkedChildAuthorityBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   readonly externalHoldStarted = deferred<void>();
+  readonly questionStarted = deferred<void>();
   sendCount = 0;
   stopCount = 0;
   private stopped = false;
@@ -4475,6 +4626,7 @@ class LinkedChildAuthorityBackend implements AgentBackend {
       });
     }
     if (input.text === FAKE_ASK_USER_QUESTION_PROMPT) {
+      this.questionStarted.resolve();
       await new Promise<void>((resolve) => {
         this.releaseWait = resolve;
         if (this.stopped) resolve();
@@ -4969,6 +5121,38 @@ class AdmissionThenFailureBackend implements AgentBackend {
 
   async dispose(): Promise<void> {
     this.fail.resolve();
+  }
+}
+
+class TerminalThenCleanupBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  cleanupReleased = false;
+  private readonly cleanup = deferred<void>();
+
+  constructor(readonly sessionId: string) {}
+
+  releaseCleanup(): void {
+    this.cleanupReleased = true;
+    this.cleanup.resolve();
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'end_turn',
+    };
+    await this.cleanup.promise;
+  }
+
+  async stop(): Promise<void> {}
+
+  async respondToSandboxBoundary(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.releaseCleanup();
   }
 }
 
