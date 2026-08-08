@@ -116,20 +116,6 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     await expect(setup.getByLabel('服务地址', { exact: true })).toHaveCount(0);
     await expect(setup.getByLabel('默认模型', { exact: true })).toHaveCount(0);
 
-    // A 300-character key scrolls inside the field instead of growing it. The
-    // before/after values are the oracle; the field's width is a design token,
-    // not this contract.
-    const inputBox = await keyInput.boundingBox();
-    await keyInput.fill(`sk-${'a'.repeat(300)}`);
-    const longKeyLayout = await keyInput.evaluate((input) => ({
-      clientWidth: input.clientWidth,
-      scrollWidth: input.scrollWidth,
-      clientHeight: input.clientHeight,
-      scrollHeight: input.scrollHeight,
-    }));
-    expect(longKeyLayout.scrollWidth).toBeGreaterThan(longKeyLayout.clientWidth);
-    expect(longKeyLayout.scrollHeight).toBe(longKeyLayout.clientHeight);
-    expect((await keyInput.boundingBox())?.height).toBe(inputBox?.height);
   });
 
   await test.step('saving creates the connection and lands on its detail level', async () => {

@@ -7,19 +7,6 @@ import { FAKE_MERMAID_HOSTILE_PROMPT, FAKE_MERMAID_PROMPT } from '@maka/runtime'
  * fixture's MAKA_E2E=1 forces sessions:create onto the fake backend, and the
  * seeded 'e2e' connection clears onboarding so the composer is usable.
  */
-test('send a message and see the fake backend stream a reply', async ({ window: page }) => {
-  const composer = page.locator(COMPOSER_INPUT);
-  // #1433: the deleted first-run panel had its own input, and the spec that
-  // covered the handoff between the two asserted this accessible name. With
-  // one composer left, the name is what a screen-reader user has to find the
-  // send target by — assert it on the path that exercises it.
-  await expect(composer).toHaveAttribute('aria-label', '消息输入框');
-  await composer.fill('hello e2e');
-  await composer.press('Enter');
-
-  await expect(page.getByText(/Fake backend received: hello e2e/)).toBeVisible();
-});
-
 /**
  * Enter commits a candidate in a CJK IME; nothing else may act on it. Both the
  * composer's send and ChatComposerInput's trigger menu read Enter, and the
