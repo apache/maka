@@ -193,6 +193,11 @@ const RESERVED_SCALE_TOKENS = new Set([
   '--z-dropdown',
   '--z-tooltip',
   '--z-modal',
+  // Surface ladder sunken/base/raised/overlay (visual system 2.0 T1). The
+  // sunken rung's consumer is the sidebar, which recedes to it in T2; the
+  // ladder only reads as a ladder with its bottom rung present, and defining
+  // the scale is precisely what T1 is for.
+  '--surface-sunken',
   // Control-height scale, 20/24/28/32/36/40 on the 4px ruler.
   '--h-control-xl',
   '--h-control-2xl',

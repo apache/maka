@@ -69,7 +69,31 @@
      A wash wide enough to be the whole boundary reads as a gray slab pasted
      next to the content rather than a second panel, which is the note
      PR-UI-FRAME-4 left here and the reason this lands at 0.025 and not higher. */
-  --surface-canvas: oklch(from var(--background) calc(l - 0.025) c h);
+  --surface-canvas: var(--surface-base);
+
+  /* -- Surface ladder (visual system 2.0, T1) --------------------------
+     Four rungs; height maps monotonically to lightness, and the READING
+     surface always occupies this mode's brightest rung: pure white in light,
+     the lightest gray in dark.
+
+     The middle of this ladder is not new. The owner's 2026-06-20 decision
+     above already put a gray plate behind pure-white content, and that IS
+     this model -- `--background` was always the CARD, never the page. What
+     was missing were the two ends: nothing below the canvas for a sidebar to
+     recede to, and no surface of its own for overlays, which had been pinned
+     to the card white.
+
+     The semantic names are canonical; the older names around them are
+     aliases that keep resolving to exactly what they resolved to before.
+     Nothing is forced to migrate here -- see DESIGN.md, Surface ladder. */
+  --surface-sunken: oklch(from var(--background) calc(l - 0.055) c h);
+  --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
+  --surface-raised: var(--background);
+  /* Light has no room above white, so overlay carries the same FILL as raised
+     and is told apart by the overlay recipe (border-soft + elevation).
+     Unpinning it from `--background` is what gives dark a rung to climb and
+     the recipe something to hang on: a semantic split, not a colour change. */
+  --surface-overlay: var(--surface-raised);
   /* PR-GRAY-CARD-LIFT-3 (WAWQAQ msg `053ca971`): in the new
      gray-plate / white-card hierarchy, "elevated" cards live on the
      same pure white as base content cards — the lift comes from the
@@ -77,7 +101,7 @@
      `--background-elevated` mixed 1.5% foreground into background,
      which read as a faint gray on the new shell. Pinning it to the
      same `--background` keeps card surfaces consistently white. */
-  --background-elevated: var(--background);
+  --background-elevated: var(--surface-overlay);
   /* PR-UI-ALIGN-0: warm near-black (#141414-like) at a faint warm hue, so
      ALL derived grays (#636261/#838280-like) pick up the reference's warm cast
      instead of reading as cold neutral. */
@@ -755,8 +779,15 @@
      the shell (Astryx painted its own surface over the frame plate until this
      branch handed the columns their materials); against the product's #171719
      content it rendered a near-black #09090b rail. */
-  --surface-canvas: oklch(from var(--background) calc(l - 0.025) c h);
-  --background-elevated: color-mix(in srgb, var(--foreground) 2%, var(--background));
+  --surface-canvas: var(--surface-base);
+  /* Dark inverts the direction, not the rule: higher is still lighter and the
+     reading surface still takes the brightest rung. Unlike light there IS
+     room above raised, so overlay climbs a real step. */
+  --surface-sunken: oklch(from var(--background) calc(l - 0.065) c h);
+  --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
+  --surface-raised: var(--background);
+  --surface-overlay: color-mix(in srgb, var(--foreground) 2%, var(--background));
+  --background-elevated: var(--surface-overlay);
   --foreground: oklch(0.92 0.004 286);
 
   --accent: oklch(0.74 0.15 250);
