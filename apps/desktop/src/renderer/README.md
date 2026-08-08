@@ -40,7 +40,7 @@ Note the `--foreground-N` split: the wash stops (`-2/-3/-5/-8/-10`) are surface 
 
 Acknowledged transitional states — not TODOs; track work in issues/PRs.
 
-- Existing hand-written `styles/*.css` recipes and internal-DOM overrides on `@maka/ui` primitives are acknowledged transitional states, not precedent for new work. New styling uses published props, tokens, or stable `themeProps` hooks; track concrete retirement work in GitHub issues and PRs.
+- Existing hand-written `styles/*.css` recipes and internal-DOM overrides on Astryx-backed `@maka/ui` primitives are acknowledged transitional states, not precedent for new work. New styling uses published props, tokens, or stable `themeProps` extension points; track concrete retirement work in GitHub issues and PRs.
 - `reference-shell.css`: end state is folded into the token/style system and the file removed.
 - `maka-tokens.css` mixing tokens + recipes: end state is tokens-only here, recipes living on primitives / `styles/`.
 

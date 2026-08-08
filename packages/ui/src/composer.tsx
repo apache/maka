@@ -847,8 +847,9 @@ export const Composer = forwardRef<
         // user types are the same thing, and both survive every path the text
         // survives.
         //
-        // No colour: Maka blue is the single product accent, and a staged
-        // Skill is identified by its sparkle and its label.
+        // No extra colour: the active palette's interaction accent is the
+        // single product accent, and a staged Skill is identified by its
+        // sparkle and its label.
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
           if (suggestion.kind === 'command') {
@@ -1229,10 +1230,10 @@ export const Composer = forwardRef<
    * the tail of the footer's left controls, after the model and thinking
    * pickers, so switching a mode never shifts those two.
    *
-   * Which mode a mark is comes from its icon, never from a hue. Maka blue is
-   * the single product accent (DESIGN.md), so a per-mode colour would be a
-   * second and third accent carrying no semantic — and a coloured pill per
-   * status is on the same file's Don't list.
+   * Which mode a mark is comes from its icon, never from a hue. The active
+   * palette's interaction accent is the single product accent (DESIGN.md), so
+   * a per-mode colour would be a second and third accent carrying no semantic
+   * — and a coloured pill per status is on the same file's Don't list.
    */
   const modes: ReadonlyArray<{
     id: 'plan' | 'swarm' | 'graph';

@@ -18,6 +18,7 @@
  */
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useSyncExternalStore } from 'react';
+import { expect } from 'storybook/test';
 import { THEME_PALETTES } from '../../../packages/core/src/settings.js';
 
 const meta = {
@@ -56,6 +57,34 @@ const paletteTokens = [
   ['success', '--success'],
   ['destructive', '--destructive'],
 ] as const;
+
+function cssColorToRgb(color: string): readonly [number, number, number] {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Palette contrast check requires a 2D canvas context');
+  context.fillStyle = color;
+  context.fillRect(0, 0, 1, 1);
+  const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+  return [red ?? 0, green ?? 0, blue ?? 0];
+}
+
+function relativeLuminance([red, green, blue]: readonly [number, number, number]): number {
+  const linear = [red, green, blue].map((channel) => {
+    const srgb = channel / 255;
+    return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * (linear[0] ?? 0) + 0.7152 * (linear[1] ?? 0) + 0.0722 * (linear[2] ?? 0);
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const foregroundLuminance = relativeLuminance(cssColorToRgb(foreground));
+  const backgroundLuminance = relativeLuminance(cssColorToRgb(background));
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
 
 export const AllPalettes: Story = {
   render: () => {
@@ -107,10 +136,29 @@ export const AllPalettes: Story = {
                   </div>
                 ))}
               </div>
+              <a
+                data-palette-link={palette}
+                href="#palette-link"
+                style={{ color: 'var(--link)', fontSize: 12 }}
+              >
+                Readable link
+              </a>
             </div>
           ))}
         </div>
       </section>
     );
+  },
+  play: async ({ canvasElement }) => {
+    const links = canvasElement.querySelectorAll<HTMLAnchorElement>('[data-palette-link]');
+    for (const link of links) {
+      const surface = link.closest<HTMLElement>('[data-maka-theme]');
+      if (!surface) throw new Error('Palette link is missing its theme surface');
+      const ratio = contrastRatio(
+        getComputedStyle(link).color,
+        getComputedStyle(surface).backgroundColor,
+      );
+      await expect(ratio, `${link.dataset.paletteLink} link contrast`).toBeGreaterThanOrEqual(4.5);
+    }
   },
 };

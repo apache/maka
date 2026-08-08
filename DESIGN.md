@@ -5,7 +5,7 @@ colors:
   brand-mark: "#71a8fd"
   accent-light: "oklch(0.70 0.135 250)"
   accent-dark: "oklch(0.74 0.15 250)"
-  accent-solid-light: "oklch(0.52 0.135 250)"
+  primary: "oklch(0.52 0.135 250)"
   accent-solid-dark: "oklch(0.76 0.15 250)"
   on-accent-light: "#ffffff"
   on-accent-dark: "#171717"
@@ -35,13 +35,12 @@ typography:
   label: { fontSize: "14px", fontWeight: 500, lineHeight: 1.4286 }
   supporting: { fontSize: "12px", fontWeight: 400, lineHeight: 1.6667 }
   code: { fontSize: "14px", fontWeight: 400, lineHeight: 1.4286 }
-  badge: { fontSize: "12px", fontWeight: 500, lineHeight: 1.6667 }
+  badge-label: { fontSize: "12px", fontWeight: 500, lineHeight: 1.6667 }
 rounded:
   control: "6px"
   surface: "8px"
   modal: "12px"
   pill: "999px"
-  plate: "27%"
   astryx-element: "0.625rem"
   astryx-container: "0.75rem"
   astryx-page: "1.75rem"
@@ -49,10 +48,10 @@ rounded:
 spacing: { space-0-5: "2px", space-1: "4px", space-1-5: "6px", space-2: "8px", space-2-5: "10px", space-3: "12px", space-4: "16px", space-5: "20px", space-6: "24px", space-8: "32px", space-10: "40px", space-12: "48px", space-16: "64px" }
 components:
   button-default: { typography: "{typography.label}", rounded: "{rounded.astryx-element}", padding: "8px 12px", height: "32px" }
-  button-primary-light: { backgroundColor: "{colors.accent-solid-light}", textColor: "{colors.on-accent-light}", typography: "{typography.label}", rounded: "{rounded.astryx-element}", height: "32px" }
+  button-primary-light: { backgroundColor: "{colors.primary}", textColor: "{colors.on-accent-light}", typography: "{typography.label}", rounded: "{rounded.astryx-element}", height: "32px" }
   button-primary-dark: { backgroundColor: "{colors.accent-solid-dark}", textColor: "{colors.on-accent-dark}", typography: "{typography.label}", rounded: "{rounded.astryx-element}", height: "32px" }
   input-default: { typography: "{typography.body}", rounded: "{rounded.astryx-element}", height: "32px" }
-  badge: { typography: "{typography.badge}", rounded: "{rounded.astryx-full}", padding: "0 8px", height: "20px" }
+  badge: { typography: "{typography.badge-label}", rounded: "{rounded.astryx-full}", padding: "0 8px", height: "20px" }
   card-default: { rounded: "{rounded.astryx-container}", padding: "12px" }
 ---
 
@@ -68,7 +67,7 @@ The system is calm, native, and compact: spacious around reading and decisions, 
 
 This document governs the default light and dark themes. Optional palettes may change canvas, ink, accent, and semantic colors, but must preserve their roles, contrast, and hierarchy.
 
-**Authority:** `apps/desktop/src/renderer/astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `apps/desktop/src/renderer/maka-tokens.css` owns product palettes, spacing, radii, motion, and the Astryx bridge; Astryx owns primitive geometry and states; product source owns Maka-specific compositions. Generated `apps/desktop/src/renderer/astryx-theme/maka.css` is not an editing authority.
+**Authority:** `apps/desktop/src/renderer/astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `apps/desktop/src/renderer/maka-tokens.css` owns product palettes, spacing, radii, product motion, and the Astryx bridge; Astryx owns primitive geometry, states, and internal motion; product source owns Maka-specific compositions. Generated `apps/desktop/src/renderer/astryx-theme/maka.css` is not an editing authority.
 
 Frontmatter is a snapshot of the current default theme. When it diverges from source or contract tests, source and tests win and this document must be refreshed.
 
@@ -77,8 +76,8 @@ Frontmatter is a snapshot of the current default theme. When it diverges from so
 The palette is cool-neutral and quiet. Light mode places white work surfaces on a near-white canvas; dark mode uses close zinc tones separated by hairlines.
 
 - **Brand mark** is fixed `#71a8fd`; it identifies Maka and is never the general CTA color.
-- **Interaction accent** follows the active palette for focus, links, selection, and live state.
-- **Solid accent** is the contrast-safe variant for filled controls and accent-colored text or icons.
+- **Interaction accent** follows the active palette for focus rings, selection, live-state indicators, borders, and washes—not text.
+- **Primary solid accent** is the contrast-safe variant for filled controls, links, and all accent-colored text or icons.
 - **Surface, canvas, and ink** create hierarchy through tone; derive secondary text, borders, and washes from ink.
 - **Info, success, warning, and destructive** are meanings, not decoration. Enabled is not automatically success.
 
@@ -114,12 +113,12 @@ Default surfaces are flat. Depth comes first from canvas-to-surface tone, then a
 
 ## 5. Components
 
-Use Astryx primitives as the default seam. New work composes product meaning through published props, tokens, and stable `themeProps` hooks; internal-DOM overrides are acknowledged transitional states, not precedent.
+Use Astryx primitives as the default seam. New work composes product meaning through published props, tokens, and stable `themeProps` extension points; internal-DOM overrides are acknowledged transitional states, not precedent.
 
 - **Controls:** Maka uses a 20/24/28/32/36/40px height ruler with 32px as the default; Astryx owns the 28/32/36px variants. Hover is restrained; press may use `scale(0.98)`; keyboard focus is always visible.
-- **Fields:** labels, descriptions, validation, and focus belong to the field primitive. Keep disabled reasons discoverable through the owning control’s tooltip; do not rebuild field chrome around a bare input.
+- **Fields:** labels, descriptions, and validation belong to the field primitive; input focus belongs to its control. Keep disabled reasons discoverable through the owning control’s tooltip; do not rebuild field chrome around a bare input.
 - **Badges and status:** Badge is 20px high and pill-shaped. Choose semantic variants by meaning, not hue; use status dots for success, active, attention, error, or neutral.
-- **Cards:** In the Maka theme, Astryx Card uses 12px radius, 12px default padding, and no resting elevation. Astryx components own their geometry; use Maka radii only for product-drawn containers.
+- **Cards:** In the Maka theme, Astryx Card uses 12px radius, 12px default padding, and no resting elevation. Astryx components own their geometry; product-drawn square icon plates use the ratio-owned 27% radius, recorded in prose because Stitch accepts only absolute radius units.
 - **Workspace:** conversation, tool activity, artifacts, browser state, and generated files stay connected to the task that produced them. Assistant messages remain quiet and avatar-free.
 - **Custom companion:** a desktop pet is the sole mascot exception: user-supplied, disabled by default, decorative, pointer-transparent, hidden from assistive technology, and reduced-motion aware. It never conveys required status or speaks for the agent.
 
