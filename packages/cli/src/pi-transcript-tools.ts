@@ -693,7 +693,7 @@ function formatPtyControlOperation(
   const parts: string[] = [];
   if (operation.input) {
     const preview = readWriteStdinInputPreview(args);
-    const action = operation.input.queued ? 'Queued' : 'Did not queue';
+    const action = operation.input.queued ? 'Entered' : 'Not entered';
     if (preview) {
       parts.push(
         preview.truncated

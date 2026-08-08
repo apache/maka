@@ -1,5 +1,14 @@
 import { z } from 'zod';
-import { isActiveShellRunStatus } from '@maka/core';
+import { jsonSchema, zodSchema } from 'ai';
+import {
+  encodeTerminalInputActions,
+  isActiveShellRunStatus,
+  isTerminalCharacterKey,
+  isTerminalInputNamedKey,
+  TERMINAL_INPUT_MODIFIERS,
+  TERMINAL_INPUT_NAMED_KEYS,
+  type TerminalInputAction,
+} from '@maka/core';
 import { redactSecrets } from '@maka/core/redaction';
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolExecutionFacts } from '@maka/core/permission';
@@ -17,6 +26,7 @@ import {
   MAX_FOREGROUND_BASH_TIMEOUT_MS,
   MAX_SHELL_RUN_RESOURCE_REF_CHARS,
   MAX_SHELL_RUN_TIMEOUT_MS,
+  MAX_WRITE_STDIN_ACTIONS,
   MAX_WRITE_STDIN_INPUT_BYTES,
   MIN_PTY_COLS,
   MIN_PTY_ROWS,
@@ -339,54 +349,204 @@ export function buildStopBackgroundTaskTool(backgroundTasks: BackgroundTaskStopp
 }
 
 export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
-  const parameters = z
+  const textAction = z
+    .object({
+      type: z.literal('text'),
+      text: z
+        .string()
+        .refine((value) => value.length > 0, 'text must not be empty')
+        .refine(isWellFormedTerminalInput, 'text must be well-formed Unicode')
+        .refine(hasNoTerminalControlCharacters, 'text cannot contain terminal control characters'),
+    })
+    .strict();
+  const keyAction = z
+    .object({
+      type: z.literal('key'),
+      key: z
+        .string()
+        .refine(
+          (value) => isTerminalInputNamedKey(value) || isTerminalCharacterKey(value),
+          'key must be a supported named key or one printable ASCII character',
+        ),
+      modifiers: z
+        .array(z.enum(TERMINAL_INPUT_MODIFIERS))
+        .max(TERMINAL_INPUT_MODIFIERS.length)
+        .refine((value) => new Set(value).size === value.length, 'modifiers must be unique')
+        .optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      try {
+        encodeTerminalInputActions([value], { applicationCursorKeysMode: false });
+      } catch (error) {
+        context.addIssue({
+          code: 'custom',
+          message: error instanceof Error ? error.message : 'Unsupported terminal key',
+        });
+      }
+    });
+  const strictParameters = z.preprocess(
+    normalizeProviderWriteStdinInput,
+    z
+      .object({
+        ref: z
+          .string()
+          .max(MAX_SHELL_RUN_RESOURCE_REF_CHARS)
+          .refine(isShellRunResourceRef, 'ref must be a canonical PTY Bash runtime ref'),
+        actions: z
+          .array(z.discriminatedUnion('type', [textAction, keyAction]))
+          .min(1)
+          .max(MAX_WRITE_STDIN_ACTIONS)
+          .optional(),
+        size: z
+          .object({
+            cols: z.number().int().min(MIN_PTY_COLS).max(MAX_PTY_COLS),
+            rows: z.number().int().min(MIN_PTY_ROWS).max(MAX_PTY_ROWS),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .refine((value) => value.actions !== undefined || value.size !== undefined, {
+        message: 'actions and/or size is required',
+      })
+      .superRefine((value, context) => {
+        if (!value.actions) return;
+        try {
+          const encoded = encodeTerminalInputActions(value.actions, {
+            applicationCursorKeysMode: false,
+          });
+          if (Buffer.byteLength(encoded, 'utf8') > MAX_WRITE_STDIN_INPUT_BYTES) {
+            context.addIssue({
+              code: 'custom',
+              path: ['actions'],
+              message: `actions must not exceed ${MAX_WRITE_STDIN_INPUT_BYTES} encoded bytes`,
+            });
+          }
+        } catch {
+          // The key action reports its own precise validation issue.
+        }
+      }),
+  );
+  const providerAction = z
+    .object({
+      type: z.enum(['text', 'key']).describe('Action kind'),
+      text: z
+        .string()
+        .describe('Visible text for a text action; omit it for a key action')
+        .optional(),
+      key: z
+        .string()
+        .describe(
+          `Named key (${TERMINAL_INPUT_NAMED_KEYS.join(', ')}) or one printable ASCII character for a key action; omit it for a text action`,
+        )
+        .optional(),
+      modifiers: z
+        .array(z.enum(TERMINAL_INPUT_MODIFIERS))
+        .describe('Optional unique modifiers for a key action')
+        .optional(),
+    })
+    .strict();
+  const providerParameters = z
     .object({
       ref: z
         .string()
         .max(MAX_SHELL_RUN_RESOURCE_REF_CHARS)
-        .refine(isShellRunResourceRef, 'ref must be a canonical PTY Bash runtime ref')
         .describe('The runtime ref returned by a PTY Bash task'),
-      input: z
-        .string()
-        .refine(
-          (value) => value.length > 0,
-          'input must not be empty; omit it for a resize-only call',
-        )
-        .refine(isWellFormedTerminalInput, 'input must be well-formed Unicode')
-        .refine(
-          (value) => Buffer.byteLength(value, 'utf8') <= MAX_WRITE_STDIN_INPUT_BYTES,
-          `input must not exceed ${MAX_WRITE_STDIN_INPUT_BYTES} UTF-8 bytes`,
+      actions: z
+        .array(providerAction)
+        .max(MAX_WRITE_STDIN_ACTIONS)
+        .describe(
+          'Ordered terminal input actions. A text action uses type and text. A key action uses type, key, and optional modifiers. Omit it for a resize-only call.',
         )
         .optional(),
       size: z
         .object({
-          cols: z.number().int().min(MIN_PTY_COLS).max(MAX_PTY_COLS),
-          rows: z.number().int().min(MIN_PTY_ROWS).max(MAX_PTY_ROWS),
+          cols: z.number().describe('Terminal columns').optional(),
+          rows: z.number().describe('Terminal rows').optional(),
         })
         .strict()
         .optional(),
     })
     .strict()
-    .refine((value) => value.input !== undefined || value.size !== undefined, {
-      message: 'input and/or size is required',
-    });
+    .describe('Send ordered terminal actions and/or resize a background PTY');
+  const providerSchema = zodSchema(providerParameters);
+  const parameters = jsonSchema(async () => await providerSchema.jsonSchema, {
+    validate: async (value) => {
+      const result = await strictParameters.safeParseAsync(value);
+      return result.success
+        ? { success: true, value: result.data }
+        : { success: false, error: result.error };
+    },
+  });
+  const parseInput = (value: unknown) => strictParameters.parse(value);
   return {
     name: 'WriteStdin',
     activityKind: 'command',
     description:
-      'Send exact characters to a background PTY and/or resize it, then return the terminal state at the next parser cut. ' +
-      'No newline is added: use \\r for Enter and \\u0003 for Ctrl-C. Input is ordinary audited tool-call data, not a secure secret channel. ' +
+      'Send an ordered sequence of text and key actions to a background PTY and/or resize it, then return the terminal state at the next parser cut. ' +
+      `Named keys are ${TERMINAL_INPUT_NAMED_KEYS.join(', ')}. Use a printable ASCII key with ctrl or alt for chords such as Ctrl-B; use text for ordinary typing. ` +
+      'Actions are written atomically in their listed order. Text is ordinary audited tool-call data, not a secure secret channel. ' +
       'The returned output is the terminal state at that cut, not output attributed to this input; use Read on the ref to observe later output.',
     parameters,
-    impl: ({ ref, input, size }, ctx) =>
-      ptyControls.writeStdin({
+    permissionArgs: (input) => parseInput(input),
+    impl: (input, ctx) => {
+      const { ref, actions, size } = parseInput(input);
+      return ptyControls.writeStdin({
         sessionId: ctx.sessionId,
         ref,
-        ...(input !== undefined ? { input } : {}),
+        ...(actions !== undefined ? { actions } : {}),
         ...(size !== undefined ? { size } : {}),
         abortSignal: ctx.abortSignal,
-      }),
+      });
+    },
   };
+}
+
+function normalizeProviderWriteStdinInput(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const normalized = { ...(value as Record<string, unknown>) };
+  if (normalized.actions === null || isEmptyArray(normalized.actions)) {
+    delete normalized.actions;
+  } else if (Array.isArray(normalized.actions)) {
+    normalized.actions = normalized.actions.map(normalizeProviderTerminalAction);
+  }
+  if (normalized.size === null || isEmptyProviderSize(normalized.size)) delete normalized.size;
+  return normalized;
+}
+
+function normalizeProviderTerminalAction(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const normalized = { ...(value as Record<string, unknown>) };
+  if (normalized.type === 'text') {
+    if (normalized.key === '') delete normalized.key;
+    if (isEmptyArray(normalized.modifiers)) delete normalized.modifiers;
+  } else if (normalized.type === 'key') {
+    if (normalized.text === '') delete normalized.text;
+    if (isEmptyArray(normalized.modifiers)) delete normalized.modifiers;
+  }
+  return normalized;
+}
+
+function isEmptyArray(value: unknown): value is [] {
+  return Array.isArray(value) && value.length === 0;
+}
+
+function isEmptyProviderSize(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return (
+    entries.every(([key]) => key === 'cols' || key === 'rows') &&
+    entries.every(([, field]) => field === undefined || field === null || field === 0)
+  );
+}
+
+function hasNoTerminalControlCharacters(value: string): boolean {
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return false;
+  }
+  return true;
 }
 
 export function shapeTerminalResult(input: {

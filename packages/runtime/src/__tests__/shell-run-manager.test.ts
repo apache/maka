@@ -1146,7 +1146,7 @@ describe('ShellRunProcessManager', () => {
     assert.equal(manager.livePtyCount(), 0);
   });
 
-  test('writes Unicode exactly, adds no newline, and treats carriage return as Enter', async () => {
+  test('writes semantic text and Enter actions through a real PTY', async () => {
     const manager = await createTestManager();
     const initial = await manager.runBackgroundBash(
       shellInput({
@@ -1163,7 +1163,7 @@ describe('ShellRunProcessManager', () => {
     const partial = await manager.writeStdin({
       sessionId: 'session-1',
       ref: initial.ref,
-      input: '\u96ea\u{1F642}',
+      actions: [{ type: 'text', text: '\u96ea\u{1F642}' }],
       abortSignal: NO_ABORT,
     });
     assert.equal(partial.status, 'running');
@@ -1179,7 +1179,7 @@ describe('ShellRunProcessManager', () => {
     const control = await manager.writeStdin({
       sessionId: 'session-1',
       ref: initial.ref,
-      input: '\r',
+      actions: [{ type: 'key', key: 'enter' }],
       abortSignal: NO_ABORT,
     });
     assert.deepEqual(control.operation, {
@@ -1212,7 +1212,7 @@ describe('ShellRunProcessManager', () => {
       abortSignal: NO_ABORT,
     };
 
-    await assert.rejects(() => manager.writeStdin(base), /requires input and\/or size/);
+    await assert.rejects(() => manager.writeStdin(base), /requires input, actions, and\/or size/);
     await assert.rejects(() => manager.writeStdin({ ...base, input: '' }), /must not be empty/);
     await assert.rejects(
       () => manager.writeStdin({ ...base, input: '\uD800' }),
@@ -1241,6 +1241,40 @@ describe('ShellRunProcessManager', () => {
     assert.equal(completed.output.mode, 'pty');
     if (completed.output.mode !== 'pty') throw new Error('expected pty output');
     assert.match(terminalText(completed.output), /VALUE:ok/);
+  });
+
+  test('encodes keys from the terminal mode parsed before the control cut', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: nodeCommand(`
+        process.stdin.setRawMode?.(true);
+        process.stdin.once('data', (chunk) => {
+          const expected = Buffer.from([0x1b, 0x4f, 0x41]);
+          const marker = chunk.equals(expected) ? 'APP-CURSOR-OK' : 'APP-CURSOR-WRONG';
+          process.stdout.write(marker + '\\n', () => process.exit(0));
+        });
+        process.stdout.write('\\u001b[?1hREADY\\n');
+      `),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      actions: [{ type: 'key', key: 'arrow_up' }],
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref);
+    assertShellRunSnapshot(completed);
+    assert.equal(completed.output.mode, 'pty');
+    if (completed.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(completed.output), /APP-CURSOR-OK/);
   });
 
   test('delivers Ctrl-C and Ctrl-D as terminal control characters', async () => {

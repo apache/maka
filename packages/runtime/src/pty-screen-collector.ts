@@ -1,5 +1,5 @@
 import type { IBuffer, IDisposable } from '@xterm/headless';
-import type { PtyShellOutput } from '@maka/core';
+import type { PtyShellOutput, TerminalInputModes } from '@maka/core';
 import { redactSecrets } from '@maka/core/redaction';
 
 import type { PtyStack } from './pty-stack.js';
@@ -193,6 +193,13 @@ export class PtyScreenCollector {
   currentSize(): { cols: number; rows: number } {
     this.throwIfUnavailable();
     return { cols: this.terminal.cols, rows: this.terminal.rows };
+  }
+
+  currentInputModes(): TerminalInputModes {
+    this.throwIfUnavailable();
+    return {
+      applicationCursorKeysMode: this.terminal.modes.applicationCursorKeysMode,
+    };
   }
 
   closeDataAdmission(): void {

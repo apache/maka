@@ -290,7 +290,7 @@ describe('tool activity presentation', () => {
       } satisfies ToolActivityItem,
     }));
 
-    assert.match(markup, /未排队：echo x\\n/);
+    assert.match(markup, /未输入：echo x\\n/);
     assert.match(markup, /已调整为 100x30/);
     assert.match(markup, /后台终端交互失败/);
     assert.doesNotMatch(markup, /PRIVATE-CWD|PRIVATE-COMMAND|PRIVATE-FAILURE|PRIVATE-TERMINAL-FRAME/);

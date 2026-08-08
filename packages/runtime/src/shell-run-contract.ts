@@ -1,6 +1,11 @@
 import {
+  encodeTerminalInputActions,
   isShellRunId,
+  isTerminalCharacterKey,
+  isTerminalInputModifier,
+  isTerminalInputNamedKey,
   SHELL_RUN_ID_MAX_CHARS,
+  type TerminalInputAction,
   type ShellRunStore,
   type ShellRunUpdate,
   type ToolResultContent,
@@ -13,6 +18,7 @@ import type { SandboxType } from './sandbox/types.js';
 export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 export const MAX_FOREGROUND_BASH_TIMEOUT_MS = 10 * 60 * 1_000;
 export const MAX_WRITE_STDIN_INPUT_BYTES = 64 * 1024;
+export const MAX_WRITE_STDIN_ACTIONS = 64;
 export const MIN_PTY_COLS = 2;
 export const MAX_PTY_COLS = 240;
 export const MIN_PTY_ROWS = 1;
@@ -85,6 +91,7 @@ export interface ShellRunWriteInput {
   sessionId: string;
   ref: string;
   input?: string;
+  actions?: readonly TerminalInputAction[];
   size?: { cols: number; rows: number };
   abortSignal?: AbortSignal;
 }
@@ -125,8 +132,11 @@ export interface PtyControlWriter {
 }
 
 export function validateWriteStdinInput(input: ShellRunWriteInput): void {
-  if (input.input === undefined && input.size === undefined) {
-    throw new Error('WriteStdin requires input and/or size');
+  if (input.input !== undefined && input.actions !== undefined) {
+    throw new Error('WriteStdin raw input and terminal actions are mutually exclusive');
+  }
+  if (input.input === undefined && input.actions === undefined && input.size === undefined) {
+    throw new Error('WriteStdin requires input, actions, and/or size');
   }
   if (input.input !== undefined) {
     if (input.input.length === 0) throw new Error('WriteStdin input must not be empty');
@@ -137,6 +147,7 @@ export function validateWriteStdinInput(input: ShellRunWriteInput): void {
       throw new Error(`WriteStdin input exceeds the ${MAX_WRITE_STDIN_INPUT_BYTES}-byte limit`);
     }
   }
+  if (input.actions !== undefined) validateTerminalInputActions(input.actions);
   if (input.size) {
     if (
       !Number.isInteger(input.size.cols) ||
@@ -153,6 +164,51 @@ export function validateWriteStdinInput(input: ShellRunWriteInput): void {
       throw new Error(`WriteStdin rows must be between ${MIN_PTY_ROWS} and ${MAX_PTY_ROWS}`);
     }
   }
+}
+
+function validateTerminalInputActions(actions: readonly TerminalInputAction[]): void {
+  if (actions.length === 0) throw new Error('WriteStdin actions must not be empty');
+  if (actions.length > MAX_WRITE_STDIN_ACTIONS) {
+    throw new Error(`WriteStdin actions must not exceed ${MAX_WRITE_STDIN_ACTIONS} entries`);
+  }
+  for (const action of actions) {
+    if (!action || typeof action !== 'object') throw new Error('Invalid WriteStdin action');
+    if (action.type === 'text') {
+      if (typeof action.text !== 'string' || action.text.length === 0) {
+        throw new Error('WriteStdin text actions must contain text');
+      }
+      if (!isWellFormedTerminalInput(action.text)) {
+        throw new Error('WriteStdin text actions must be well-formed Unicode');
+      }
+      if (hasTerminalControlCharacter(action.text)) {
+        throw new Error('WriteStdin text actions cannot contain terminal control characters');
+      }
+      continue;
+    }
+    if (action.type !== 'key') throw new Error('Invalid WriteStdin action type');
+    if (typeof action.key !== 'string') throw new Error('WriteStdin key must be a string');
+    if (!isTerminalInputNamedKey(action.key) && !isTerminalCharacterKey(action.key)) {
+      throw new Error('WriteStdin key must be a supported named key or printable ASCII character');
+    }
+    if (action.modifiers?.some((modifier) => !isTerminalInputModifier(modifier))) {
+      throw new Error('WriteStdin key modifier is not supported');
+    }
+    if (action.modifiers && new Set(action.modifiers).size !== action.modifiers.length) {
+      throw new Error('WriteStdin key modifiers must be unique');
+    }
+  }
+  const encoded = encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
+  if (Buffer.byteLength(encoded, 'utf8') > MAX_WRITE_STDIN_INPUT_BYTES) {
+    throw new Error(`WriteStdin actions exceed the ${MAX_WRITE_STDIN_INPUT_BYTES}-byte limit`);
+  }
+}
+
+function hasTerminalControlCharacter(value: string): boolean {
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return true;
+  }
+  return false;
 }
 
 export function isWellFormedTerminalInput(value: string): boolean {

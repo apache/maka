@@ -1,4 +1,13 @@
 import { redactSecrets } from './redaction.js';
+import {
+  encodeTerminalInputActions,
+  formatTerminalInputActions,
+  isTerminalCharacterKey,
+  isTerminalInputModifier,
+  isTerminalInputNamedKey,
+  type TerminalInputAction,
+  type TerminalInputModifier,
+} from './terminal-input.js';
 
 export const WRITE_STDIN_INPUT_PREVIEW_MAX_CHARS = 160;
 export const WRITE_STDIN_REF_PREVIEW_MAX_CHARS = 256;
@@ -68,7 +77,11 @@ export function projectWriteStdinPermissionSummary(args: unknown): WriteStdinPer
     const preview = projectWriteStdinInput(parsed.ref);
     summary.ref = { text: preview.text, truncated: preview.truncated };
   }
-  if (parsed.input !== undefined) summary.input = projectWriteStdinInput(parsed.input);
+  if (parsed.actions !== undefined) {
+    summary.input = projectTerminalInputActions(parsed.actions);
+  } else if (parsed.input !== undefined) {
+    summary.input = projectWriteStdinInput(parsed.input);
+  }
   if (parsed.size !== undefined) summary.size = parsed.size;
   return summary;
 }
@@ -80,7 +93,9 @@ export function formatWriteStdinPermissionInspection(args: unknown): string | un
   if (parsed.ref !== undefined) {
     lines.push(`ref: ${escapeTerminalTextForInspection(parsed.ref)}`);
   }
-  if (parsed.input !== undefined) {
+  if (parsed.actions !== undefined) {
+    lines.push(`actions: ${formatTerminalActionsForInspection(parsed.actions)}`);
+  } else if (parsed.input !== undefined) {
     lines.push(`input: ${escapeTerminalTextForInspection(parsed.input)}`);
   }
   if (parsed.size !== undefined) {
@@ -108,6 +123,14 @@ export function projectWriteStdinInput(input: string): WriteStdinInputPreview {
     consumed += 1;
   }
   return { text, bytes, truncated: consumed < chars.length };
+}
+
+function projectTerminalInputActions(
+  actions: readonly TerminalInputAction[],
+): WriteStdinInputPreview {
+  const encoded = encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
+  const preview = projectWriteStdinInput(formatTerminalInputActions(actions));
+  return { ...preview, bytes: new TextEncoder().encode(encoded).byteLength };
 }
 
 export function readWriteStdinInputPreview(args: unknown): WriteStdinInputPreview | undefined {
@@ -147,7 +170,9 @@ export function projectToolActivityArgs(toolName: string, args: unknown): unknow
   const input = args as Record<string, unknown>;
   const summary: Record<string, unknown> = {};
   if (parsed.ref !== undefined) summary.ref = boundedWriteStdinRef(parsed.ref);
-  if (parsed.input !== undefined) {
+  if (parsed.actions !== undefined) {
+    summary.inputPreview = projectTerminalInputActions(parsed.actions);
+  } else if (parsed.input !== undefined) {
     summary.inputPreview = projectWriteStdinInput(parsed.input);
   } else {
     const preview = readWriteStdinInputPreview(input);
@@ -161,6 +186,7 @@ function readWriteStdinArgs(args: unknown):
   | {
       ref?: string;
       input?: string;
+      actions?: readonly TerminalInputAction[];
       size?: { cols: number; rows: number };
     }
   | undefined {
@@ -169,17 +195,82 @@ function readWriteStdinArgs(args: unknown):
   const parsed: {
     ref?: string;
     input?: string;
+    actions?: readonly TerminalInputAction[];
     size?: { cols: number; rows: number };
   } = {};
   if (typeof value.ref === 'string') parsed.ref = value.ref;
   if (typeof value.input === 'string') parsed.input = value.input;
+  const actions = readTerminalInputActions(value.actions);
+  if (actions) parsed.actions = actions;
   if (value.size && typeof value.size === 'object' && !Array.isArray(value.size)) {
     const size = value.size as Record<string, unknown>;
     if (Number.isSafeInteger(size.cols) && Number.isSafeInteger(size.rows)) {
-      parsed.size = { cols: size.cols as number, rows: size.rows as number };
+      const cols = size.cols as number;
+      const rows = size.rows as number;
+      if (actions === undefined || cols !== 0 || rows !== 0) parsed.size = { cols, rows };
     }
   }
   return parsed;
+}
+
+function readTerminalInputActions(value: unknown): readonly TerminalInputAction[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const actions: TerminalInputAction[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
+    const action = item as Record<string, unknown>;
+    if (action.type === 'text') {
+      if (typeof action.text !== 'string' || action.text.length === 0) return undefined;
+      if ((action.key !== undefined && action.key !== '') || !isEmptyModifiers(action.modifiers)) {
+        return undefined;
+      }
+      actions.push({ type: 'text', text: action.text });
+      continue;
+    }
+    if (action.type !== 'key' || typeof action.key !== 'string') return undefined;
+    if (action.text !== undefined && action.text !== '') return undefined;
+    if (!isTerminalInputNamedKey(action.key) && !isTerminalCharacterKey(action.key)) {
+      return undefined;
+    }
+    const modifiers = readTerminalInputModifiers(action.modifiers);
+    if (action.modifiers !== undefined && !modifiers) return undefined;
+    actions.push({
+      type: 'key',
+      key: action.key,
+      ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
+    });
+  }
+  try {
+    encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
+  } catch {
+    return undefined;
+  }
+  return actions;
+}
+
+function isEmptyModifiers(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.length === 0);
+}
+
+function readTerminalInputModifiers(value: unknown): readonly TerminalInputModifier[] | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return undefined;
+  const modifiers: TerminalInputModifier[] = [];
+  for (const modifier of value) {
+    if (typeof modifier !== 'string' || !isTerminalInputModifier(modifier)) return undefined;
+    modifiers.push(modifier);
+  }
+  return new Set(modifiers).size === modifiers.length ? modifiers : undefined;
+}
+
+function formatTerminalActionsForInspection(actions: readonly TerminalInputAction[]): string {
+  return actions
+    .map((action) =>
+      action.type === 'text'
+        ? `{ text: ${escapeTerminalTextForInspection(action.text)} }`
+        : `{ key: ${formatTerminalInputActions([action])} }`,
+    )
+    .join(' -> ');
 }
 
 function boundedWriteStdinRef(ref: string): string {

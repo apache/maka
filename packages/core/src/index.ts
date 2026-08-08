@@ -493,6 +493,21 @@ export {
 } from './pty-output-view.js';
 export type { PtyTuiTerminalView } from './pty-output-view.js';
 export {
+  encodeTerminalInputActions,
+  formatTerminalInputActions,
+  isTerminalCharacterKey,
+  isTerminalInputModifier,
+  isTerminalInputNamedKey,
+  TERMINAL_INPUT_MODIFIERS,
+  TERMINAL_INPUT_NAMED_KEYS,
+  type TerminalInputAction,
+  type TerminalInputModes,
+  type TerminalInputModifier,
+  type TerminalInputNamedKey,
+  type TerminalKeyInputAction,
+  type TerminalTextInputAction,
+} from './terminal-input.js';
+export {
   formatWriteStdinPermissionInspection,
   projectToolActivityArgs,
   projectWriteStdinPermissionSummary,

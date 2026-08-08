@@ -1,6 +1,7 @@
 import { constants as osConstants } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  encodeTerminalInputActions,
   isActiveShellRunStatus,
   isShellRunSourceToolCallId,
   isTerminalShellRunStatus,
@@ -380,9 +381,14 @@ export class ShellRunProcessManager
           }
         }
       }
-      if (input.input !== undefined) {
+      const terminalInput =
+        input.input ??
+        (input.actions
+          ? encodeTerminalInputActions(input.actions, live.collector.currentInputModes())
+          : undefined);
+      if (terminalInput !== undefined) {
         try {
-          live.driver.write(input.input);
+          live.driver.write(terminalInput);
           inputQueued = true;
         } catch (error) {
           operationFailed = true;
