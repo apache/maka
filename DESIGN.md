@@ -90,6 +90,8 @@ Depth is a ladder, not a decoration. Every background in the app resolves to one
 
 **The Canvas Recedes Rule** (owner decision 2026-06-20). The canvas is gray; content surfaces are white. The sidebar sits on `sunken`, the shell on `base`, and content plates on `raised`. Contrast between canvas and plate — not hairlines — is the primary separator of the shell.
 
+**Paper.** `--surface-paper` sits outside the ladder on purpose and has no dark override. It backs content whose contrast we neither author nor may invert: the sandboxed HTML-artifact iframe and the PDF embed, and QR codes, where dark-on-light is a scanning requirement rather than a preference. It is not a fifth tier and app chrome never uses it.
+
 **Legacy names.** The semantic tiers are canonical. Old names are aliases and their resolved values never change out from under consumers: `--surface-canvas` → base, `--background` → raised (it is the card fill, not the page color), `--background-elevated`, `--color-background-card`, `--color-background-popover` → overlay, `--card-bg`, `--color-background-surface` → raised.
 
 ## 3. Ink
@@ -166,7 +168,7 @@ The palette is cool-neutral and quiet; color is generated to spec, not picked by
 - **Brand mark** is fixed `#71a8fd`; it identifies Maka and is never the general CTA color.
 - **Interaction accent** follows the active palette for focus, selection, and live state; **links and accent-colored text use the solid tier** (§3).
 - **Status families** (success / active / attention / error / neutral — there is no "info" status semantic) are generated, not picked: one lightness per mode with each hue keeping its own chroma. Light mode is generated at L=0.50 (contrast vs white spans 5.5–6.3:1; the residual spread is hue physics — at equal L, yellow carries more luminance than blue — and flattening it would abandon the shared-L premise that makes them a family). This regeneration fixed two AA failures the old hand-picked values shipped (info 2.82:1, warning 3.29:1). Dark mode keeps its pre-2.0 values (all ≥4.5:1); regenerating dark at its own single L is a scheduled separate round. A louder band at ~90% gamut chroma exists only for 8px status dots — dots must read at a glance; washes must not shout.
-- **Tinted surfaces** (status washes behind rows and banners) derive from the same status hues; hand-rolled `oklch()` status washes at call sites are forbidden — consume the family.
+- **Tinted surfaces** (status washes behind rows and banners) derive from the same status hues; hand-rolled `oklch()` status washes at call sites are forbidden — consume the family. The family is `--{status}-wash` (0.08 fill) and `--{status}-wash-border` (0.24, ~3x the fill), every member derived with `oklch(from var(--{status}) ...)` so a status regeneration flows through it. A **strong** tier (0.12 / 0.40) exists for warnings about data destruction or an action the user cannot undo, and for nothing else — it is not the loud option for a notice that wants attention. Palette swatches are not washes: a swatch's job is to show a palette's real colour, so its literals stay.
 - **Identity colors** (avatars, channel marks) live in one 4.2–4.8:1 contrast band; desaturation for muted states happens at constant OKLab lightness.
 
 **The Signal, Not Texture Rule.** Accent communicates action or state. Never use it as a background flood, gradient, glow, or substitute for hierarchy.
@@ -196,7 +198,7 @@ Use Astryx primitives as the default seam. New work composes product meaning thr
 
 - **Don't** write a bare `oklch()` status color or wash at a call site — consume the generated families (§8).
 - **Don't** use `border-radius: 0` off a full-bleed row (§6).
-- **Don't** hardcode `background: white` or any literal surface color — resolve a ladder tier (§2).
+- **Don't** hardcode `background: white` or any literal surface color — resolve a ladder tier (§2), or `--surface-paper` when the content's own contrast is not ours to control (foreign documents, QR codes) and inverting it would break the content rather than restyle it.
 - **Don't** put more than one inverted element in a single control.
 - **Don't** mix `srgb` and `oklch` derivations inside one token family (§3).
 - **Don't** make light mode's "higher" darker (§2), stack two separators on one edge (§4), or invent a portal recipe (§5).

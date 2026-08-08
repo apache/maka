@@ -213,6 +213,22 @@ const RESERVED_SCALE_TOKENS = new Set([
   '--elevation-raised',
   '--elevation-overlay',
   '--elevation-drag',
+  // Tinted status surfaces (visual system 2.0 T4). Four statuses x fill/border,
+  // plus a reserved strong tier. These rungs are unconsumed TODAY only because
+  // no current banner happens to be that status at that weight -- and a family
+  // with holes in it is the failure this family exists to end: fourteen call
+  // sites each hand-rolled an alpha precisely because there was no complete set
+  // to consume. A half-defined family sends the next author back to writing
+  // `oklch(from var(--info) l c h / 0.07)`, and it breaks the regeneration
+  // guarantee, since a status recolour can only flow through members that
+  // exist. The strong tier is deliberately reserved rather than convenient:
+  // DESIGN.md restricts it to data-destruction and irreversible warnings.
+  '--success-wash-border',
+  '--info-wash',
+  '--info-wash-border',
+  '--destructive-wash-border',
+  '--destructive-wash-strong',
+  '--destructive-wash-strong-border',
   // Control-height scale, 20/24/28/32/36/40 on the 4px ruler.
   '--h-control-xl',
   '--h-control-2xl',

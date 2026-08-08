@@ -45,9 +45,9 @@
     display: grid;
     gap: var(--space-1);
     padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.34);
+    border: var(--border-width-hairline) solid var(--warning-wash-border);
     border-radius: var(--radius-surface);
-    background: oklch(from var(--warning) l c h / 0.08);
+    background: var(--warning-wash);
   }
 .settingsMemoryEntryPreviewNotice strong {
     color: var(--foreground);
@@ -278,9 +278,9 @@
   display: grid;
   gap: var(--space-1);
   padding: var(--space-2-5) var(--space-3);
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.38);
+  border: var(--border-width-hairline) solid var(--warning-wash-strong-border);
   border-radius: var(--radius-surface);
-  background: oklch(from var(--warning) l c h / 0.09);
+  background: var(--warning-wash-strong);
 }
 
 .settingsMemoryDraftWarning strong {

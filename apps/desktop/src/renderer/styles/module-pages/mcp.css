@@ -89,7 +89,7 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: oklch(from var(--destructive) l c h / 0.06);
+  background: var(--destructive-wash);
   color: var(--destructive-text);
   white-space: pre-wrap;
 }

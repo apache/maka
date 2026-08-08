@@ -46,7 +46,7 @@
 }
 
 .settingsRemoteAccessChannelRow[data-attention="true"] {
-  background: oklch(from var(--warning) l c h / 0.06);
+  background: var(--warning-wash);
 }
 
 .settingsRemoteAccessItemActions {
@@ -215,12 +215,12 @@
 
 .settingsBotOnboardingSuccess {
   color: var(--success-text);
-  background: oklch(from var(--success) l c h / 0.12);
+  background: var(--success-wash);
 }
 
 .settingsBotOnboardingEmpty {
   color: var(--destructive);
-  background: oklch(from var(--destructive) l c h / 0.10);
+  background: var(--destructive-wash);
 }
 
 .settingsBotOnboardingStatus,

@@ -220,6 +220,43 @@
   --warning: oklch(0.50 0.18 55);
   --warning-text: color-mix(in oklab, var(--warning) 50%, var(--foreground));
 
+  /* === tinted status surfaces (visual system 2.0, T4) =================
+     The wash family behind status rows and banners. DESIGN.md §8 forbids a
+     hand-rolled `oklch()` status wash at a call site — before this there was
+     nothing to consume instead, only the `-text` variants above, so fourteen
+     call sites each picked their own alpha: backgrounds ranged 0.06–0.12 and
+     borders 0.22–0.38, none of them wrong on its own and no two agreeing.
+
+     EVERY member derives from the status hue with `oklch(from var(--x) ...)`
+     and no literal ever appears here. That is the whole point of a family:
+     when §8's status colours are regenerated — including the scheduled
+     separate dark-mode round — the washes follow automatically instead of
+     being fourteen more places to remember.
+
+     Two tiers, decided in #my-ai:944f2c9d:
+     - regular 0.08 fill / 0.24 border. 0.08 was the existing mode; the border
+       lands at ~3x the fill, matching the system's established "the edge reads
+       about three times the face" rhythm.
+     - strong 0.12 fill / 0.40 border, at 1.5x / 1.67x the regular tier, in the
+       same ~1.6x family as the border ladder.
+
+     STRONG IS RESERVED, and the reservation is the point: it is only for
+     warnings about data destruction or something the user cannot undo. It is
+     not "the loud one to reach for when a notice should stand out" — that
+     habit is exactly how the fourteen alphas above accumulated. */
+  --success-wash:            oklch(from var(--success)     l c h / 0.08);
+  --success-wash-border:     oklch(from var(--success)     l c h / 0.24);
+  --warning-wash:            oklch(from var(--warning)     l c h / 0.08);
+  --warning-wash-border:     oklch(from var(--warning)     l c h / 0.24);
+  --destructive-wash:        oklch(from var(--destructive) l c h / 0.08);
+  --destructive-wash-border: oklch(from var(--destructive) l c h / 0.24);
+  --info-wash:               oklch(from var(--info)        l c h / 0.08);
+  --info-wash-border:        oklch(from var(--info)        l c h / 0.24);
+  --warning-wash-strong:            oklch(from var(--warning)     l c h / 0.12);
+  --warning-wash-strong-border:     oklch(from var(--warning)     l c h / 0.40);
+  --destructive-wash-strong:        oklch(from var(--destructive) l c h / 0.12);
+  --destructive-wash-strong-border: oklch(from var(--destructive) l c h / 0.40);
+
   /* === foreground solid mix scale ===
      foreground-N = N% of foreground interpolated INTO background.
      These are surface wash stops for backgrounds, borders, and other
