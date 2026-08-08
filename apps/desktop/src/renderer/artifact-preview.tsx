@@ -2,8 +2,8 @@
  * Per-kind preview switcher for the ArtifactPane. Routes by `record.kind`
  * and renders:
  *
- *   - `file`  → plain text via `readText`, monospace `<pre>`
- *   - `diff`  → unified diff via `readText`, line-tagged for add/del/hunk
+ *   - `file`  → bounded Astryx code or Maka Markdown preview
+ *   - `diff`  → shared structural diff renderer with gutters and syntax
  *   - `html`  → sandboxed `<iframe srcdoc>` with `sandbox="allow-scripts"`
  *               (NO `allow-same-origin`, `allow-top-navigation`,
  *               `allow-popups`, `allow-forms`, `allow-modals`). External
@@ -36,7 +36,15 @@ import type {
   ArtifactDescriptor,
   ArtifactTextReadResult,
 } from '@maka/core';
-import { cn, diffLineKind, previewVariants, useUiLocale } from '@maka/ui';
+import {
+  Button,
+  DiffCodePreview,
+  MarkdownBody,
+  formatBytes,
+  syntaxLanguageForPath,
+  useUiLocale,
+} from '@maka/ui';
+import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
 import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
@@ -66,15 +74,65 @@ export function ArtifactPreview(props: { record: ArtifactDescriptor; onShowInFol
 
 // ---- text-backed previews --------------------------------------------------
 
+const TEXT_DISPLAY_LIMIT_BYTES = 256 * 1024;
+const TEXT_HIGHLIGHT_LIMIT_BYTES = 64 * 1024;
+const TEXT_HIGHLIGHT_LINE_LIMIT = 1_000;
+const DIFF_LINE_LIMIT = 500;
+
 function FilePreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) {
   const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingFile} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
   const text =
-    props.record.source === 'tool_result_archive'
+    props.record.source === 'tool_result_archive' && result.value.text.length <= TEXT_DISPLAY_LIMIT_BYTES
       ? prettyArchiveJson(result.value.text)
       : result.value.text;
-  return <pre className="maka-artifact-preview-file maka-code">{text}</pre>;
+  return <TextFilePreview name={props.record.name} text={text} copy={props.copy} />;
+}
+
+function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy }) {
+  const markdown = /\.(?:md|markdown)$/i.test(props.name);
+  const [mode, setMode] = useState<'rendered' | 'source'>(markdown ? 'rendered' : 'source');
+  const bounded = boundPreviewText(props.text);
+
+  return (
+    <div className="maka-artifact-preview-text" data-mode={mode}>
+      {markdown && (
+        <div className="maka-artifact-preview-mode-switch" role="group" aria-label={props.copy.pane.previewNamed(props.name)}>
+          <Button
+            variant={mode === 'rendered' ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={mode === 'rendered'}
+            onClick={() => setMode('rendered')}
+            label={props.copy.preview.rendered}
+          />
+          <Button
+            variant={mode === 'source' ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={mode === 'source'}
+            onClick={() => setMode('source')}
+            label={props.copy.preview.source}
+          />
+        </div>
+      )}
+      {mode === 'rendered' ? (
+        <div className="maka-artifact-preview-markdown">
+          <MarkdownBody text={bounded.highlightedText} density="compact" />
+        </div>
+      ) : (
+        <BoundedCodePreview name={props.name} bounded={bounded} />
+      )}
+      {mode === 'rendered' && bounded.hasPlainRemainder && (
+        <PreviewLimitNote>{props.copy.preview.renderLimited(formatBytes(TEXT_HIGHLIGHT_LIMIT_BYTES), TEXT_HIGHLIGHT_LINE_LIMIT)}</PreviewLimitNote>
+      )}
+      {mode === 'source' && bounded.hasPlainRemainder && (
+        <PreviewLimitNote>{props.copy.preview.highlightLimited(formatBytes(TEXT_HIGHLIGHT_LIMIT_BYTES), TEXT_HIGHLIGHT_LINE_LIMIT)}</PreviewLimitNote>
+      )}
+      {mode === 'source' && bounded.isDisplayTruncated && (
+        <PreviewLimitNote>{props.copy.preview.previewLimited(formatBytes(TEXT_DISPLAY_LIMIT_BYTES))}</PreviewLimitNote>
+      )}
+    </div>
+  );
 }
 
 function prettyArchiveJson(text: string): string {
@@ -89,21 +147,22 @@ function DiffPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
   const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingDiff} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
-  const lines = result.value.text.split('\n');
+  const bounded = boundPreviewText(result.value.text);
+  const capped = capPreviewLines(bounded.displayText, DIFF_LINE_LIMIT);
+  const rendered = boundPreviewText(capped.text);
   return (
-    <div className={cn('maka-artifact-preview-diff', previewVariants({ part: 'diff' }))} data-kind="file_diff">
-      <pre className={previewVariants({ part: 'diff-body' })}>
-        {lines.map((line, index) => (
-          <span
-            key={`${index}:${line.slice(0, 16)}`}
-            className={previewVariants({ part: 'diff-line' })}
-            data-line={diffLineKind(line)}
-          >
-            {line || ' '}
-            {'\n'}
-          </span>
-        ))}
-      </pre>
+    <div className="maka-artifact-preview-diff" data-kind="file_diff">
+      <DiffCodePreview diff={rendered.highlightedText} paths={[props.record.name]} />
+      {rendered.plainRemainder && <pre className="maka-artifact-preview-plain-remainder maka-code">{rendered.plainRemainder}</pre>}
+      {rendered.hasPlainRemainder && (
+        <PreviewLimitNote>{props.copy.preview.highlightLimited(formatBytes(TEXT_HIGHLIGHT_LIMIT_BYTES), TEXT_HIGHLIGHT_LINE_LIMIT)}</PreviewLimitNote>
+      )}
+      {capped.hiddenLines > 0 && (
+        <PreviewLimitNote>{props.copy.preview.diffLinesLimited(capped.hiddenLines)}</PreviewLimitNote>
+      )}
+      {bounded.isDisplayTruncated && (
+        <PreviewLimitNote>{props.copy.preview.previewLimited(formatBytes(TEXT_DISPLAY_LIMIT_BYTES))}</PreviewLimitNote>
+      )}
     </div>
   );
 }
@@ -112,7 +171,19 @@ function HtmlPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
   const result = useTextRead(props.record.sessionId, props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingHtml} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
-  const srcdoc = result.value.text;
+  const bounded = boundPreviewText(result.value.text);
+  if (bounded.isDisplayTruncated) {
+    return (
+      <div className="maka-artifact-preview-text">
+        <BoundedCodePreview name={props.record.name} bounded={bounded} />
+        {bounded.hasPlainRemainder && (
+          <PreviewLimitNote>{props.copy.preview.highlightLimited(formatBytes(TEXT_HIGHLIGHT_LIMIT_BYTES), TEXT_HIGHLIGHT_LINE_LIMIT)}</PreviewLimitNote>
+        )}
+        <PreviewLimitNote>{props.copy.preview.previewLimited(formatBytes(TEXT_DISPLAY_LIMIT_BYTES))}</PreviewLimitNote>
+      </div>
+    );
+  }
+  const srcdoc = bounded.displayText;
   // External links inside the sandboxed iframe (no
   // `allow-popups`) silently fail. We surface the count up-front so the user
   // isn't surprised when clicks do nothing. Regex deliberately permissive —
@@ -140,6 +211,75 @@ function HtmlPreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
       />
     </div>
   );
+}
+
+function BoundedCodePreview(props: { name: string; bounded: BoundedPreviewText }) {
+  const language = syntaxLanguageForPath(props.name);
+  return (
+    <>
+      <CodeBlock
+        className="maka-artifact-preview-code"
+        code={props.bounded.highlightedText}
+        {...(language ? { language } : {})}
+        hasLanguageLabel={Boolean(language)}
+        hasLineNumbers
+        hasCopyButton={false}
+        width="100%"
+        container="section"
+      />
+      {props.bounded.plainRemainder && (
+        <pre className="maka-artifact-preview-plain-remainder maka-code">{props.bounded.plainRemainder}</pre>
+      )}
+    </>
+  );
+}
+
+function PreviewLimitNote(props: { children: string }) {
+  return <p className="maka-artifact-preview-limit" role="note">{props.children}</p>;
+}
+
+type BoundedPreviewText = {
+  displayText: string;
+  highlightedText: string;
+  plainRemainder: string;
+  hasPlainRemainder: boolean;
+  isDisplayTruncated: boolean;
+};
+
+function boundPreviewText(text: string): BoundedPreviewText {
+  const bytes = new TextEncoder().encode(text);
+  const decoder = new TextDecoder();
+  const displayText = decoder.decode(utf8Prefix(bytes, TEXT_DISPLAY_LIMIT_BYTES));
+  const highlightCandidate = decoder.decode(utf8Prefix(bytes, TEXT_HIGHLIGHT_LIMIT_BYTES));
+  const lineBreak = highlightCandidate.lastIndexOf('\n');
+  let highlightedText = bytes.length > TEXT_HIGHLIGHT_LIMIT_BYTES && lineBreak > 0
+    ? highlightCandidate.slice(0, lineBreak + 1)
+    : highlightCandidate;
+  const highlightLines = highlightedText.split('\n');
+  if (highlightLines.length > TEXT_HIGHLIGHT_LINE_LIMIT) {
+    highlightedText = `${highlightLines.slice(0, TEXT_HIGHLIGHT_LINE_LIMIT).join('\n')}\n`;
+  }
+  const plainRemainder = displayText.slice(highlightedText.length);
+  return {
+    displayText,
+    highlightedText,
+    plainRemainder,
+    hasPlainRemainder: plainRemainder.length > 0,
+    isDisplayTruncated: bytes.length > TEXT_DISPLAY_LIMIT_BYTES,
+  };
+}
+
+function utf8Prefix(bytes: Uint8Array, limit: number): Uint8Array {
+  let end = Math.min(bytes.length, limit);
+  if (end === bytes.length) return bytes;
+  while (end > 0 && (bytes[end] ?? 0) >>> 6 === 0b10) end -= 1;
+  return bytes.subarray(0, end);
+}
+
+function capPreviewLines(text: string, limit: number): { text: string; hiddenLines: number } {
+  const lines = text.split('\n');
+  if (lines.length <= limit) return { text, hiddenLines: 0 };
+  return { text: lines.slice(0, limit).join('\n'), hiddenLines: lines.length - limit };
 }
 
 // ---- binary-backed previews ------------------------------------------------

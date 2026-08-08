@@ -2,6 +2,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StorybookConfig } from '@storybook/react-vite';
 import { mergeConfig, type UserConfig } from 'vite';
+import { dependencyPatchesCachePlugin } from '../vite-dependency-patches.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const UI_SRC = resolve(REPO_ROOT, 'packages/ui/src');
@@ -24,6 +25,7 @@ const config: StorybookConfig = {
   },
   async viteFinal(baseConfig) {
     return mergeConfig(baseConfig, {
+      plugins: [dependencyPatchesCachePlugin(REPO_ROOT)],
       resolve: {
         alias: [
           // @maka/core's public barrel also exports the Node-only runtime

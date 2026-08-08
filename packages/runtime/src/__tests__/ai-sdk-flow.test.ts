@@ -1191,6 +1191,24 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
       chunk: 'x',
     },
   },
+  tool_result_preview: {
+    subject: {
+      type: 'tool_result_preview',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-1',
+        agentName: 'Local Read',
+        turnId: 'child-turn',
+        status: 'running',
+        permissionMode: 'explore',
+      },
+    },
+  },
   tool_result: {
     subject: {
       type: 'tool_result',

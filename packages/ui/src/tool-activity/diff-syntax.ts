@@ -88,11 +88,15 @@ export function diffSyntaxTokens(paths: readonly string[], code: readonly string
   if (code.length === 0) return [];
   let language: string | undefined;
   for (const path of paths) {
-    const extension = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase();
-    const candidate = extension ? LANGUAGE_BY_EXTENSION[extension] : undefined;
+    const candidate = syntaxLanguageForPath(path);
     if (candidate === undefined) return [];
     if (language !== undefined && language !== candidate) return [];
     language = candidate;
   }
   return language === undefined ? [] : tokenize(code.join('\n'), language);
+}
+
+export function syntaxLanguageForPath(path: string): string | undefined {
+  const extension = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase();
+  return extension ? LANGUAGE_BY_EXTENSION[extension] : undefined;
 }

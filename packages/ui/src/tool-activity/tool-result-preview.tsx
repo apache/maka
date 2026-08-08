@@ -1,24 +1,22 @@
-import { useEffect, useInsertionEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import {
   isShellOutput,
   normalizeSearchUrl,
-  parseUnifiedDiffRows,
   ptyHumanTerminalText,
   readWriteStdinInputPreview,
   type ShellOutput,
   type ToolResultContent,
 } from '@maka/core';
-import { Button as UiButton, ensureHighlightStyles, type TokenLine } from '@astryxdesign/core';
+import { Button as UiButton } from '@astryxdesign/core';
 import { AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
-import { previewVariants } from '../primitives/chat.js';
-import { AgentSwarmPreview, ExploreAgentPreview, SubagentPreview } from './agent-preview.js';
+import { ExploreAgentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
-import { diffSyntaxTokens } from './diff-syntax.js';
+import { DiffCodePreview } from './diff-code-preview.js';
 import { TOOL_LINE_CAP, capLines, formatUserVisibleToolText } from './preview-utils.js';
 import { getToolActivityCopy } from './copy.js';
 import { isSandboxDeniedToolResult } from './sandbox-denial.js';
@@ -133,8 +131,6 @@ export function ToolResultPreview(props: {
   toolName?: string;
   args?: unknown;
   shellRunSource?: 'owned' | 'unavailable';
-  /** Open a linked subagent child session in the main chat column. */
-  onOpenLinkedSession?(sessionId: string): void;
   fileDiffActions?: ReactNode;
 }) {
   const { content } = props;
@@ -189,24 +185,6 @@ export function ToolResultPreview(props: {
 
   if (content.kind === 'explore_agent') {
     return <ExploreAgentPreview result={content} />;
-  }
-
-  if (content.kind === 'subagent') {
-    return (
-      <SubagentPreview
-        result={content}
-        onOpenSession={props.onOpenLinkedSession}
-      />
-    );
-  }
-
-  if (content.kind === 'agent_swarm') {
-    return (
-      <AgentSwarmPreview
-        result={content}
-        onOpenSession={props.onOpenLinkedSession}
-      />
-    );
   }
 
   if (content.kind === 'rive_workflow') {
@@ -333,116 +311,17 @@ export function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'c
  * `diff-syntax.ts`); the tint and the marker carry add/del between them, so
  * the code no longer has to be uniformly green or red to say which it is.
  */
-type DiffPreviewRow = {
-  kind: 'add' | 'del' | 'ctx' | 'meta';
-  /** `+`, `-`, or empty — the marker column, split out of the line's text. */
-  marker: string;
-  /** The line without its marker: the source the syntax colouring applies to. */
-  code: string;
-  lineNumber?: number;
-};
-
-/**
- * Display rows for the gutter, from the shared structural parse in
- * `@maka/core`: hunk headers are consumed into the line numbers (a deletion
- * shows its old-side number, additions and context the new-side one) and file
- * headers never survive the parse — so a deleted SQL `-- a` comment can no
- * longer be mistaken for one. A foreign diff with no hunk headers degrades
- * to unnumbered meta rows.
- *
- * The marker is split off here rather than left in the text. Inline, it cost
- * the reader twice: it ate the first column, so an addition's indentation no
- * longer lined up with the context around it, and it sat flush against the
- * code with no separation — `+# Tool result diffs` reads as one token. Split
- * out, it is a column of its own and the code beside it starts where the file
- * says it does.
- */
-function diffPreviewRows(lines: string[]): DiffPreviewRow[] {
-  return parseUnifiedDiffRows(lines.join('\n')).flatMap((row): DiffPreviewRow[] => {
-    if (row.kind === 'hunk') return [];
-    // Meta is not source — `diff --git a/x b/x`, `\ No newline at end of
-    // file`. It carries no marker and takes no colouring.
-    if (row.kind === 'meta') return [{ kind: 'meta' as const, marker: '', code: row.text }];
-    const lineNumber = row.kind === 'del' ? row.oldLine : row.newLine;
-    // Context carries a leading space, which some generators drop on a blank
-    // line; add/del always carry their sign.
-    const marker = row.kind === 'ctx' ? '' : row.text.slice(0, 1);
-    const code = row.kind === 'ctx' ? row.text.replace(/^ /, '') : row.text.slice(1);
-    return [
-      { kind: row.kind, marker, code, ...(lineNumber !== undefined ? { lineNumber } : {}) },
-    ];
-  });
-}
-
-/**
- * One row's code, split into `astryx-token-*` spans at the tokenizer's
- * boundaries. Text between tokens (and all of it when the language is unknown)
- * stays a plain string, so an uncoloured diff renders exactly the nodes it
- * used to.
- */
-function highlightedCode(code: string, tokens: TokenLine | undefined): ReactNode {
-  if (!tokens || tokens.length === 0) return code;
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  for (const token of tokens) {
-    // A token can end past its own line: the JS block-comment pattern is
-    // `/\*[\s\S]*?\*\//`, which happily matches across newlines in the joined
-    // buffer, so a diff row that opens `/*` returns a token reaching into the
-    // rows below. Clamping keeps the row's text exact — dropping or repeating
-    // source to preserve a colour would be the wrong trade.
-    const end = Math.min(token.end, code.length);
-    if (token.start < cursor || end <= token.start) continue;
-    if (token.start > cursor) parts.push(code.slice(cursor, token.start));
-    parts.push(
-      <span key={token.start} className={`astryx-token-${token.type}`}>
-        {code.slice(token.start, end)}
-      </span>,
-    );
-    cursor = end;
-  }
-  if (cursor < code.length) parts.push(code.slice(cursor));
-  return parts;
-}
-
 function FileDiffPreview(props: {
   diff: string;
   paths: string[];
   actions?: ReactNode;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
-  // Astryx injects the `astryx-token-*` rules on first use of a code surface;
-  // a diff can be the first one on screen, so it has to ask for them itself.
-  // Insertion effect, like Astryx's own span-mode code element, so the sheet
-  // is in place before the spans paint.
-  useInsertionEffect(() => {
-    ensureHighlightStyles();
-  }, []);
   // Apply UI-level redaction then cap the displayed lines. Both are
   // @kenji's PR76 review items: never echo a token a tool happened to dump
   // into a diff (commit body, .env file diff, etc.), and never let a
   // 10k-line diff create 10k React elements.
   const { body, capped } = capLines(redactSecrets(props.diff));
-  // The copyable body keeps the full standard diff; the rendered rows come
-  // from the structural parse, which drops the redundant file headers.
-  const rows = useMemo(() => {
-    // A diff arrives newline-terminated, and splitting one leaves a trailing
-    // empty field. As flat text that was invisible; as one element per line it
-    // is a blank tinted row at the end of every diff.
-    const lines = body.split('\n');
-    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
-    return diffPreviewRows(lines);
-  }, [body]);
-  // Tokenizing is a regex sweep over up to TOOL_LINE_CAP lines; it depends on
-  // nothing but the rows and the paths, so it runs once per distinct diff
-  // rather than once per expand/collapse render.
-  const tokenLines = useMemo(
-    () => diffSyntaxTokens(props.paths, rows.map((row) => row.code)),
-    [rows, props.paths],
-  );
-  const numbered = rows.some((row) => row.lineNumber !== undefined);
-  const digits = numbered
-    ? String(rows.reduce((max, row) => Math.max(max, row.lineNumber ?? 0), 0)).length
-    : 0;
   return (
     <ToolOutputSurface
       kind="file_diff"
@@ -450,28 +329,7 @@ function FileDiffPreview(props: {
       body={body}
       actions={props.actions}
     >
-      <pre className={previewVariants({ part: 'diff-body' })}>
-        {rows.map((row, index) => (
-          <span
-            // Index keys: the list is a re-split of one immutable string, so a
-            // line's position is its identity.
-            key={index}
-            className={previewVariants({ part: 'diff-line' })}
-            data-line={row.kind}
-          >
-            {numbered && (
-              <span className="maka-tool-diff-gutter" style={{ minWidth: `${digits}ch` }}>
-                {row.lineNumber ?? ''}
-              </span>
-            )}
-            <span className="maka-tool-diff-marker">{row.marker}</span>
-            <span className="maka-tool-diff-code">
-              {row.kind === 'meta' ? row.code : highlightedCode(row.code, tokenLines[index])}
-            </span>
-            {'\n'}
-          </span>
-        ))}
-      </pre>
+      <DiffCodePreview diff={body} paths={props.paths} />
       {capped > 0 && (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.hiddenLines(capped)}</p>
       )}

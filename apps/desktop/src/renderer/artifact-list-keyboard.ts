@@ -6,7 +6,8 @@
  * a11y review on PR108b: the artifact list MUST be a single tab stop with
  * ArrowUp/Down navigation + Enter to focus the preview area. Without this
  * helper the list would either (a) tab through every artifact row, or (b)
- * miss arrow-key navigation entirely.
+ * miss arrow-key navigation entirely. Activation opens the selected file in
+ * the pane's preview state; the helper stays independent of that view model.
  *
  * Each helper takes only the data needed to compute the transition. The
  * caller is responsible for `event.preventDefault()` so the keys don't
@@ -28,7 +29,7 @@ export type ArtifactListAction =
  *
  *  - ArrowDown / ArrowUp / Home / End → `select` (wraps at ends; if no
  *    selection yet, ArrowDown starts at 0 and ArrowUp at the last item)
- *  - Enter / Space on a selected row → `activate` (caller focuses preview)
+ *  - Enter / Space on a selected row → `activate` (caller opens preview)
  *  - Escape → `dismiss` (caller closes pane or returns focus to chat)
  *  - Any other key → `noop` (do not preventDefault)
  *

@@ -49,9 +49,8 @@ export function artifactMessages(now: number): StoredMessage[] {
 export async function writeArtifacts(workspaceRoot: string, now: number, scenario: E2eFixtureScenario): Promise<void> {
   const root = join(workspaceRoot, 'artifacts');
   // PR-UI-RENDER-3a-smoke: dedicated preview scenarios get their
-  // own short artifact list (single artifact each) so the
-  // ArtifactPane default selection deterministically picks the one
-  // the fixture is meant to render. The `sizeBytesOverride`
+  // own short artifact list (single artifact each) so the normal list row
+  // deterministically opens the preview the fixture is meant to render. The `sizeBytesOverride`
   // field bypasses the post-write `stat().size` overwrite so we
   // can claim 3MB in metadata without writing 3MB to disk.
   type ArtifactSpec = {

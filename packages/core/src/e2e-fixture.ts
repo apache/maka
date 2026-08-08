@@ -76,9 +76,8 @@ export type E2eFixtureScenario =
   | 'turn-control-branch-orphan'
   // PR-UI-RENDER-3a-smoke: three artifact preview fixtures lock the
   // visual contract for the new registry-driven image path. Each
-  // scenario writes a SINGLE artifact to ARTIFACT_SESSION_ID so the
-  // ArtifactPane's default selection (records[0]) deterministically
-  // shows the one we want to verify. @kenji review @msg
+  // scenario writes a SINGLE artifact to ARTIFACT_SESSION_ID so opening the
+  // only list row deterministically shows the one we want to verify. @kenji review @msg
   // fc9753b9 holds review sign-off pending these three.
   //   - artifact-preview-image: real tiny PNG → registry resolves
   //     `image(mime_match)`, <img object-fit:contain> inside bounded

@@ -950,14 +950,8 @@
 .maka-artifact-pane {
   width: 100%;
   height: 100%;
-  display: grid;
-  /* File list: content-sized but never past 40% of the pane.
-     fit-content(40%) resolves against the pane's definite height —
-     unlike max-height:40% on the list itself, which Chromium resolved
-     against the auto track's content height and collapsed the list to
-     40% of its own rows (#443). minmax(auto,40%) is wrong too: the
-     maximize-tracks step inflates it to the full 40% even for one row. */
-  grid-template-rows: fit-content(40%) minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   background: var(--background);
   overflow: hidden;
 }
@@ -967,16 +961,18 @@
 }
 
 .maka-artifact-list {
+  flex: 1 1 auto;
+  min-height: 0;
   list-style: none;
   margin: 0;
-  padding: var(--space-1) var(--space-1) 0;
+  padding: var(--space-1-5);
   overflow-y: auto;
-  border-bottom: var(--border-width-hairline) solid var(--border);
-  /* No max-height here: a percentage on the item resolves against the
-     auto grid track's own content height (Chromium), which crushed the
-     list to 40% of ITSELF — a single-file list showed only ~12px of
-     its one row (#443). The 40%-of-pane cap lives on the grid track
-     (minmax) in .maka-artifact-pane instead. */
+}
+
+.maka-artifact-list-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-4);
 }
 
 .maka-artifact-list-item {
@@ -987,7 +983,8 @@
   font: var(--maka-text-supporting);
   width: 100%;
   justify-content: flex-start;
-  padding: var(--space-1) var(--space-1-5);
+  min-height: 42px;
+  padding: var(--space-1-5) var(--space-2);
   margin: 0;
   border: var(--border-width-hairline) solid transparent;
   border-radius: var(--radius-control);
@@ -1009,7 +1006,10 @@
 
 .maka-artifact-row[data-selected="true"] {
   background: var(--state-selected-bg);
-  border-color: var(--border-strong);
+  /* Selection chrome follows the interaction accent (DESIGN.md §2), not the
+     link text role — --link is a text token and moves with link-contrast
+     fixes independently of selection styling. */
+  border-color: oklch(from var(--accent) l c h / 0.24);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1048,35 +1048,115 @@
   margin-top: var(--space-0-5);
 }
 
+.maka-artifact-preview-screen {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-artifact-preview-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-height: 48px;
+  padding: var(--space-1) var(--space-1-5);
+  border-bottom: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
+}
+
+.maka-artifact-preview-heading {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.maka-artifact-preview-heading strong {
+  font: var(--maka-text-heading-5);
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-artifact-preview-heading span {
+  font: var(--maka-text-supporting);
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-artifact-preview-more {
+  justify-self: end;
+}
+
 .maka-artifact-preview {
   position: relative;
   overflow: auto;
-  padding: var(--space-1-5) var(--space-2-5);
+  padding: var(--space-2);
   background: var(--background);
   min-height: 0;
 }
 
-.maka-artifact-preview[data-empty="true"] {
-  font: var(--maka-text-supporting);
+.maka-artifact-preview-text {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.maka-artifact-preview-mode-switch {
+  position: sticky;
+  z-index: 1;
+  top: calc(-1 * var(--space-2));
   display: flex;
-  align-items: center;
-  justify-content: center;
-  color: oklch(from var(--foreground) l c h / 0.5);
+  justify-content: flex-end;
+  gap: var(--space-0-5);
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) 0;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
 }
 
-.maka-artifact-preview-empty {
-  font: var(--maka-text-supporting);
+.maka-artifact-preview-markdown {
+  min-width: 0;
+  padding-inline: var(--space-1);
 }
 
-.maka-artifact-preview-file {
+.maka-artifact-preview-code {
+  min-width: 100%;
+}
+
+.maka-artifact-preview-plain-remainder {
+  font: var(--maka-text-code);
+  min-width: max-content;
+  margin: 0;
+  padding: var(--space-1-5) var(--space-2);
+  color: var(--foreground-secondary);
+  white-space: pre;
+}
+
+.maka-artifact-preview-limit {
   font: var(--maka-text-supporting);
   margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  padding: var(--space-1-5) var(--space-2);
+  border-left: 2px solid oklch(from var(--info) l c h / 0.46);
+  color: var(--muted-foreground);
+  background: oklch(from var(--info) l c h / 0.06);
 }
 
 .maka-artifact-preview-diff {
-  font: var(--maka-text-supporting);
+  display: grid;
+  min-width: max-content;
+  gap: var(--space-2);
+  margin: calc(-1 * var(--space-2));
+}
+
+.maka-artifact-preview-diff > .maka-tool-diff-body {
   margin: 0;
 }
 
@@ -1243,30 +1323,6 @@
   margin: 0;
 }
 
-.maka-artifact-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-2) var(--space-2-5);
-  border: 0;
-  border-top: var(--border-width-hairline) solid var(--border);
-  border-radius: 0;
-  background: var(--background);
-  box-shadow: none;
-}
-
-.maka-artifact-toolbar-group {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-
-.maka-artifact-toolbar-danger-group {
-  margin-left: auto;
-}
-
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
   .maka-detail-with-artifacts {
@@ -1308,18 +1364,8 @@
     box-shadow: none;
   }
 
-  .maka-artifact-list {
-    max-height: none;
-    padding: var(--space-1-5);
-  }
-
   .maka-artifact-preview {
     min-height: 120px;
-  }
-
-  .maka-artifact-toolbar {
-    max-height: 76px;
-    overflow-y: auto;
   }
 }
 
