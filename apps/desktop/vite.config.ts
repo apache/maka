@@ -1,4 +1,6 @@
 import { defineConfig } from 'vite';
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
@@ -14,17 +16,19 @@ import react from '@vitejs/plugin-react';
  */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const UI_SRC = resolve(REPO_ROOT, 'packages/ui/src');
+const PATCHES_DIR = resolve(REPO_ROOT, 'patches');
+const patchesHash = createHash('sha256');
+for (const file of readdirSync(PATCHES_DIR).filter(file => file.endsWith('.patch')).sort()) {
+  patchesHash.update(file).update('\0').update(readFileSync(resolve(PATCHES_DIR, file)));
+}
 
 export default defineConfig({
   root: 'src/renderer',
   base: './',
-  plugins: [react()],
-  // patch-package changes Astryx without changing package-lock.json, so Vite's
-  // dependency cache cannot know ChatToolCalls changed. Transform Chat in place
-  // to keep development on the same patched row implementation as production.
-  optimizeDeps: {
-    exclude: ['@astryxdesign/core/Chat'],
-  },
+  // Vite hashes plugin names into its dependency-cache key. patch-package does
+  // not change package-lock.json, so carry the patch contents in that key while
+  // keeping every Astryx entry in one optimized module graph.
+  plugins: [react(), { name: `maka-dependency-patches-${patchesHash.digest('hex')}` }],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [

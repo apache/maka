@@ -10,10 +10,10 @@
  *
  * Titlebar and sidebar use the same product components as app-shell
  * (TitlebarSessionIdentity, SessionListPanel, deriveSessionRail). The
- * The multi-spawn group renders through the production ToolTrow; each child
+ * multi-spawn group renders through the production ToolTrow; each child
  * session is one native Astryx row and the row itself opens the session.
  */
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import {
   ChatComposer,
@@ -370,6 +370,12 @@ function ProductRail(props: { activeSessionId: string }) {
 }
 
 function ParentShell() {
+  const [activeChildId, setActiveChildId] = useState<string>();
+  const activeChild = MULTI_SUBAGENT_ITEMS.find(
+    item => item.result?.kind === 'subagent' && item.result.childSessionId === activeChildId,
+  );
+  if (activeChild) return <ChildShell item={activeChild} />;
+
   return (
     <div style={shell.root} data-maka-contract="subagent-session-layout">
       <header style={shell.titlebar}>
@@ -397,7 +403,7 @@ function ParentShell() {
                 <div style={{ marginTop: 10, width: '100%' }}>
                   <SubagentToolGroup
                     items={MULTI_SUBAGENT_ITEMS}
-                    onOpenLinkedSession={() => undefined}
+                    onOpenLinkedSession={setActiveChildId}
                   />
                 </div>
               </ChatMessage>
@@ -408,6 +414,42 @@ function ParentShell() {
               onSubmit={() => undefined}
               placeholder="继续编排父会话…"
               input={<ChatComposerInput aria-label="消息输入" />}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChildShell({ item }: { item: ToolActivityItem }) {
+  return (
+    <div style={shell.root}>
+      <header style={shell.titlebar}>
+        <ProductTitlebar sessionName={childLabel(item)} parentName={PARENT_NAME} />
+      </header>
+      <Caption>
+        从工具组打开后的主区。侧栏仍是 deriveSessionRail 的 root 列表并高亮父会话。
+      </Caption>
+      <div style={shell.body}>
+        <ProductRail activeSessionId={LINKED_CHILD_SESSION_ID} />
+        <div style={shell.plate}>
+          <div style={shell.stream}>
+            <ChatMessageList>
+              <ChatMessage sender="user">
+                <ChatMessageBubble>{childObjective(item)}</ChatMessageBubble>
+              </ChatMessage>
+              <ChatMessage sender="assistant" name={childLabel(item)}>
+                <ChatMessageBubble>子代理完整会话流。</ChatMessageBubble>
+                <ChatMessageMetadata timestamp="运行中" />
+              </ChatMessage>
+            </ChatMessageList>
+          </div>
+          <div style={shell.composerStack}>
+            <ChatComposer
+              onSubmit={() => undefined}
+              placeholder="向该子代理追问…"
+              input={<ChatComposerInput aria-label="子会话消息输入" />}
             />
           </div>
         </div>
@@ -466,40 +508,5 @@ export const ToolGroupFold: Story = {
 // Real path: child open — product titlebar parent crumb; rail still roots only (parent highlighted).
 export const ChildSession: Story = {
   name: '子会话 · 面包屑回父',
-  render: () => {
-    const item = MULTI_SUBAGENT_ITEMS[0]!;
-    return (
-      <div style={shell.root}>
-        <header style={shell.titlebar}>
-          <ProductTitlebar sessionName={childLabel(item)} parentName={PARENT_NAME} />
-        </header>
-        <Caption>
-          从工具组打开后的主区。侧栏仍是 deriveSessionRail 的 root 列表并高亮父会话。
-        </Caption>
-        <div style={shell.body}>
-          <ProductRail activeSessionId={LINKED_CHILD_SESSION_ID} />
-          <div style={shell.plate}>
-            <div style={shell.stream}>
-              <ChatMessageList>
-                <ChatMessage sender="user">
-                  <ChatMessageBubble>{childObjective(item)}</ChatMessageBubble>
-                </ChatMessage>
-                <ChatMessage sender="assistant" name={childLabel(item)}>
-                  <ChatMessageBubble>子代理完整会话流。</ChatMessageBubble>
-                  <ChatMessageMetadata timestamp="运行中" />
-                </ChatMessage>
-              </ChatMessageList>
-            </div>
-            <div style={shell.composerStack}>
-              <ChatComposer
-                onSubmit={() => undefined}
-                placeholder="向该子代理追问…"
-                input={<ChatComposerInput aria-label="子会话消息输入" />}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  },
+  render: () => <ChildShell item={MULTI_SUBAGENT_ITEMS[0]!} />,
 };

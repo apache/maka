@@ -351,7 +351,7 @@ function linkedAgentCalls(
     return [{
       key: item.toolUseId,
       name,
-      status: astryxToolStatus(item),
+      status: subagentToolStatus(result.status),
       target: item.intent
         ? formatToolIntent(item.intent)
         : boundedAgentSummary(result.summary),
@@ -364,6 +364,7 @@ function linkedAgentCalls(
     }];
   }
   if (result?.kind !== 'agent_swarm') return undefined;
+  if (result.items.length === 0) return undefined;
   return result.items.map((child) => {
     const name = redactSecrets((child.agentName || child.itemId).trim()) || child.profile;
     return {
@@ -382,6 +383,15 @@ function linkedAgentCalls(
       ...linkedSessionActivation(child.childSessionId, name, locale, onOpenLinkedSession),
     } satisfies ChatToolCallItem;
   });
+}
+
+function subagentToolStatus(
+  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
+): NonNullable<ChatToolCallItem['status']> {
+  if (status === 'completed') return 'complete';
+  if (status === 'running') return 'running';
+  if (status === 'waiting_for_user') return 'pending';
+  return 'error';
 }
 
 function linkedSessionActivation(

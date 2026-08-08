@@ -562,8 +562,6 @@ export const denseMixedResultItems = [
   terminalAndLiveOutputItems[0],
   fileDiffAndWebSearchItems[0],
   fileDiffAndWebSearchItems[1],
-  subagentAndExploreItems[0],
-  subagentAndExploreItems[2],
   fileDiffAndWebSearchItems[2],
   errorsAndPermissionDeniedItems[0],
 ] satisfies ToolActivityItem[];

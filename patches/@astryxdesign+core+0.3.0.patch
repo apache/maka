@@ -102,7 +102,7 @@ index 7bece68..94b8001 100644
      isExpanded?: boolean;
      /** Default expanded state. @default true for ≤3 calls, false for >3. */
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-index 791909e..7bafdd8 100644
+index 791909e..a243bd5 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 @@ -107,20 +107,24 @@ function CallRow({
@@ -125,7 +125,7 @@ index 791909e..7bafdd8 100644
 -    onKeyDown: hasDetail ? e => {
 +    role: interactive ? 'button' : undefined,
 +    tabIndex: interactive ? 0 : undefined,
-+    "aria-label": hasActivation ? call.activateLabel : undefined,
++    "data-slot": "chat-tool-call-row",
 +    "aria-expanded": !hasActivation && hasDetail ? isDetailOpen : undefined,
 +    "aria-controls": !hasActivation && hasDetail && isDetailOpen ? detailId : undefined,
 +    onClick: activate,
@@ -151,22 +151,26 @@ index 791909e..7bafdd8 100644
        },
        children: call.duration
 -    }), hasDetail && /*#__PURE__*/_jsx("span", {
-+    }), (hasActivation || hasDetail) && /*#__PURE__*/_jsx("span", {
++    }), (hasActivation || hasDetail) && /*#__PURE__*/_jsxs("span", {
        ...{
          0: {
            className: "x3nfvp2 x6s0dn4 xl56j7k x2lah0s x6jxa94 x1v9usgg xnbbluu x1ob6yzd x9kvfbb xvc5jky"
-@@ -208,15 +212,15 @@ function CallRow({
+@@ -208,15 +212,17 @@ function CallRow({
          1: {
            className: "x3nfvp2 x6s0dn4 xl56j7k x2lah0s x6jxa94 x1v9usgg xnbbluu x1ob6yzd x9kvfbb xvc5jky x19jd1h0"
          }
 -      }[!!isDetailOpen << 0],
-+      }[!!(!hasActivation && isDetailOpen) << 0],
-       children: /*#__PURE__*/_jsx(Icon, {
+-      children: /*#__PURE__*/_jsx(Icon, {
 -        icon: "chevronDown",
++      }[!!(!hasActivation && isDetailOpen) << 0],
++      children: [/*#__PURE__*/_jsx(Icon, {
 +        icon: hasActivation ? "externalLink" : "chevronDown",
          size: "xsm",
          color: "inherit"
-       })
+-      })
++      }), hasActivation && call.activateLabel != null && /*#__PURE__*/_jsx(VisuallyHidden, {
++        children: call.activateLabel
++      })]
      })]
    });
 -  if (!hasDetail) {
@@ -174,7 +178,7 @@ index 791909e..7bafdd8 100644
      return row;
    }
    return /*#__PURE__*/_jsxs("div", {
-@@ -260,6 +264,8 @@ export function ChatToolCalls(props) {
+@@ -260,6 +266,8 @@ export function ChatToolCalls(props) {
    const {
      calls,
      label: _customLabel,
@@ -183,7 +187,7 @@ index 791909e..7bafdd8 100644
      isExpanded: controlledExpanded,
      defaultIsExpanded,
      onExpandedChange,
-@@ -378,7 +384,17 @@ export function ChatToolCalls(props) {
+@@ -378,7 +386,17 @@ export function ChatToolCalls(props) {
            className: "x3nfvp2 x6s0dn4 x1lsbc85 x141an7d x1ltkj2j x9ynric xnbbluu x2lah0s"
          },
          children: !isExpanded && /*#__PURE__*/_jsxs(_Fragment, {
@@ -300,20 +304,37 @@ index 65f9278..c2e72d1 100644
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
  }
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
+index 234a2e4..1448e4c 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
-@@ -76,0 +77,4 @@
+@@ -74,6 +74,10 @@ export interface ChatToolCallItem {
+   data?: unknown;
+   /** Inline detail content shown when the row is expanded (e.g. code diff, command output). */
+   resultDetail?: ReactNode;
 +  /** Activate the row itself instead of expanding resultDetail. */
 +  onActivate?: () => void;
 +  /** Accessible name for an activatable row. */
 +  activateLabel?: string;
-@@ -368,0 +373 @@
+ }
+
+ export interface ChatToolCallsProps extends BaseProps<HTMLDivElement> {
+@@ -366,32 +370,36 @@ function getToolCallKey(call: ChatToolCallItem): string {
+ function CallRow({call}: {call: ChatToolCallItem}) {
+   const t = useTranslator();
+   const status = call.status ?? 'complete';
 +  const hasActivation = call.onActivate != null;
-@@ -369,0 +375 @@
+   const hasDetail = call.resultDetail != null;
 +  const interactive = hasActivation || hasDetail;
-@@ -375,0 +382 @@
+   const [isDetailOpen, setIsDetailOpen] = useState(false);
+   const detailId = useId();
+
+   const toggleDetail = hasDetail
+     ? () => setIsDetailOpen(prev => !prev)
+     : undefined;
 +  const activate = hasActivation ? call.onActivate : toggleDetail;
-@@ -379,5 +386,6 @@
+
+   const row = (
+     <div
 -      role={hasDetail ? 'button' : undefined}
 -      tabIndex={hasDetail ? 0 : undefined}
 -      aria-expanded={hasDetail ? isDetailOpen : undefined}
@@ -321,32 +342,54 @@ diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_m
 -      onClick={toggleDetail}
 +      role={interactive ? 'button' : undefined}
 +      tabIndex={interactive ? 0 : undefined}
-+      aria-label={hasActivation ? call.activateLabel : undefined}
++      data-slot="chat-tool-call-row"
 +      aria-expanded={!hasActivation && hasDetail ? isDetailOpen : undefined}
 +      aria-controls={!hasActivation && hasDetail && isDetailOpen ? detailId : undefined}
 +      onClick={activate}
-@@ -385 +393 @@
+       onKeyDown={
 -        hasDetail
 +        interactive
-@@ -389 +397 @@
+           ? (e: React.KeyboardEvent) => {
+               if (e.key === 'Enter' || e.key === ' ') {
+                 e.preventDefault();
 -                toggleDetail?.();
 +                activate?.();
-@@ -394 +402 @@
+               }
+             }
+           : undefined
+       }
 -      {...stylex.props(styles.callRow, hasDetail && styles.callRowClickable)}>
 +      {...stylex.props(styles.callRow, interactive && styles.callRowClickable)}>
-@@ -453 +461 @@
+       <span
+         title={status === 'error' ? call.errorMessage : undefined}
+         {...stylex.props(styles.statusIcon, STATUS_STYLES[status])}>
+@@ -450,19 +458,26 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+       {call.duration != null && status === 'complete' && (
+         <span {...stylex.props(styles.callDuration)}>{call.duration}</span>
+       )}
 -      {hasDetail && (
 +      {(hasActivation || hasDetail) && (
-@@ -457 +465 @@
+         <span
+           {...stylex.props(
+             styles.callDetailChevron,
 -            isDetailOpen && styles.chevronExpanded,
 +            !hasActivation && isDetailOpen && styles.chevronExpanded,
-@@ -459 +467,5 @@
+           )}>
 -          <Icon icon="chevronDown" size="xsm" color="inherit" />
 +          <Icon
 +            icon={hasActivation ? 'externalLink' : 'chevronDown'}
 +            size="xsm"
 +            color="inherit"
 +          />
-@@ -465 +477 @@
++          {hasActivation && call.activateLabel != null && (
++            <VisuallyHidden>{call.activateLabel}</VisuallyHidden>
++          )}
+         </span>
+       )}
+     </div>
+   );
+
 -  if (!hasDetail) {
 +  if (hasActivation || !hasDetail) {
+     return row;
+   }
