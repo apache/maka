@@ -13,8 +13,8 @@ const DEFAULT_KILL_GRACE_MS = 2_000;
 const MAX_OUTPUT_TAIL_BYTES = 1024 * 1024;
 const QUOTA_MONITOR_INTERVAL_MS = 100;
 export const MANAGED_NPM_PACKAGE_MANAGER_VERSION = '12.0.2';
-const MANAGED_NPM_MAX_PROVISION_BYTES = 2 * 1024 * 1024 * 1024;
-const MANAGED_NPM_MAX_PROVISION_ENTRIES = 250_000;
+const MANAGED_NPM_MAX_OBSERVED_BYTES = 2 * 1024 * 1024 * 1024;
+const MANAGED_NPM_MAX_OBSERVED_ENTRIES = 250_000;
 
 export function isManagedNpmNodeVersionSupported(version: string): boolean {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u.exec(version);
@@ -22,7 +22,7 @@ export function isManagedNpmNodeVersionSupported(version: string): boolean {
   const major = Number(match[1]);
   const minor = Number(match[2]);
   const patch = Number(match[3]);
-  if (major >= 26) return true;
+  if (major === 26) return true;
   if (major === 24) return minor > 15 || (minor === 15 && patch >= 0);
   if (major === 22) return minor > 22 || (minor === 22 && patch >= 2);
   return false;
@@ -35,6 +35,7 @@ export interface RunManagedNpmDependencyProvisionInput {
   readonly npmCliPath: string;
 }
 
+/** @internal PR3 must bind this candidate owner to an attested bundled runtime before export. */
 export async function runManagedNpmDependencyProvision(
   input: RunManagedNpmDependencyProvisionInput,
 ): Promise<void> {
@@ -77,7 +78,7 @@ export async function runManagedNpmDependencyProvision(
       flag: 'wx',
     }),
   ]);
-  await runManagedDependencyProducerProcess({
+  await runManagedDependencyProducerProcessInternal({
     argv: [
       nodeExecutablePath,
       '--permission',
@@ -105,8 +106,8 @@ export async function runManagedNpmDependencyProvision(
     monitorRoot: projectRoot,
     ...(input.producerInput.abortSignal ? { abortSignal: input.producerInput.abortSignal } : {}),
     timeoutMs: DEFAULT_PRODUCER_TIMEOUT_MS,
-    maxBytes: MANAGED_NPM_MAX_PROVISION_BYTES,
-    maxEntries: MANAGED_NPM_MAX_PROVISION_ENTRIES,
+    maxObservedBytes: MANAGED_NPM_MAX_OBSERVED_BYTES,
+    maxObservedEntries: MANAGED_NPM_MAX_OBSERVED_ENTRIES,
   });
 }
 
@@ -253,8 +254,10 @@ export interface ManagedDependencyProducerProcessInput {
   readonly monitorRoot: string;
   readonly abortSignal?: AbortSignal;
   readonly timeoutMs?: number;
-  readonly maxBytes: number;
-  readonly maxEntries: number;
+  /** Soft observation limit, not an OS-enforced peak disk quota. */
+  readonly maxObservedBytes: number;
+  /** Soft observation limit, not an OS-enforced peak inode quota. */
+  readonly maxObservedEntries: number;
 }
 
 export interface ManagedDependencyProducerProcessResult {
@@ -265,8 +268,9 @@ export interface ManagedDependencyProducerProcessResult {
 export type ManagedDependencyProducerProcessFailureReason =
   | 'aborted'
   | 'timeout'
-  | 'filesystem_quota'
+  | 'filesystem_limit_exceeded'
   | 'filesystem_invalid'
+  | 'output_drain_incomplete'
   | 'process_failed';
 
 export class ManagedDependencyProducerProcessError extends Error {
@@ -281,13 +285,14 @@ export class ManagedDependencyProducerProcessError extends Error {
   }
 }
 
-export async function runManagedDependencyProducerProcess(
+/** @internal Not a package export; PR3 must bind it to an attested runtime. */
+export async function runManagedDependencyProducerProcessInternal(
   input: ManagedDependencyProducerProcessInput,
 ): Promise<ManagedDependencyProducerProcessResult> {
   const executable = input.argv[0];
   if (!executable) throw new TypeError('Managed dependency producer argv must include a program');
-  assertPositiveLimit(input.maxBytes, 'byte quota');
-  assertPositiveLimit(input.maxEntries, 'entry quota');
+  assertPositiveLimit(input.maxObservedBytes, 'observed byte limit');
+  assertPositiveLimit(input.maxObservedEntries, 'observed entry limit');
   if (input.abortSignal?.aborted) throw new ManagedDependencyProducerProcessError('aborted');
   const cwd = normalize(await realpath(input.cwd));
   const monitorRoot = normalize(await realpath(input.monitorRoot));
@@ -338,13 +343,17 @@ async function observeProducerProcess(
   let quotaCheck: Promise<void> | undefined;
   const monitor = setInterval(() => {
     if (quotaCheck || termination) return;
-    const current = enforceFilesystemQuota(input.monitorRoot, input.maxBytes, input.maxEntries)
+    const current = enforceFilesystemLimit(
+      input.monitorRoot,
+      input.maxObservedBytes,
+      input.maxObservedEntries,
+    )
       .catch((error: unknown) => {
         monitorFailure = asError(error);
         terminate(
           error instanceof ManagedDependencyProducerProcessError &&
-            error.reason === 'filesystem_quota'
-            ? 'filesystem_quota'
+            error.reason === 'filesystem_limit_exceeded'
+            ? 'filesystem_limit_exceeded'
             : 'filesystem_invalid',
         );
       })
@@ -360,13 +369,16 @@ async function observeProducerProcess(
     clearInterval(monitor);
     await quotaCheck;
     if (!result.ioDrained) {
-      throw new Error('Managed dependency producer output tree did not drain');
+      throw new ManagedDependencyProducerProcessError(
+        'output_drain_incomplete',
+        'Managed dependency producer output did not drain before its deadline',
+      );
     }
     if (termination) {
-      if (termination === 'filesystem_quota') {
+      if (termination === 'filesystem_limit_exceeded') {
         throw new ManagedDependencyProducerProcessError(
           termination,
-          'Managed dependency producer exceeded its filesystem quota',
+          'Managed dependency producer exceeded its observed filesystem limit',
           monitorFailure ? { cause: monitorFailure } : undefined,
         );
       }
@@ -380,7 +392,11 @@ async function observeProducerProcess(
       throw new ManagedDependencyProducerProcessError(termination);
     }
     try {
-      await enforceFilesystemQuota(input.monitorRoot, input.maxBytes, input.maxEntries);
+      await enforceFilesystemLimit(
+        input.monitorRoot,
+        input.maxObservedBytes,
+        input.maxObservedEntries,
+      );
     } catch (error) {
       if (error instanceof ManagedDependencyProducerProcessError) throw error;
       throw new ManagedDependencyProducerProcessError(
@@ -404,7 +420,7 @@ async function observeProducerProcess(
   }
 }
 
-async function enforceFilesystemQuota(
+async function enforceFilesystemLimit(
   root: string,
   maxBytes: number,
   maxEntries: number,
@@ -412,8 +428,8 @@ async function enforceFilesystemQuota(
   const inventory = await measureProducerTree(root);
   if (inventory.bytes > maxBytes || inventory.entries > maxEntries) {
     throw new ManagedDependencyProducerProcessError(
-      'filesystem_quota',
-      'Managed dependency producer exceeded its filesystem quota',
+      'filesystem_limit_exceeded',
+      'Managed dependency producer exceeded its observed filesystem limit',
     );
   }
 }
@@ -492,10 +508,12 @@ function defaultFailureMessage(reason: ManagedDependencyProducerProcessFailureRe
       return 'Managed dependency producer process was aborted';
     case 'timeout':
       return 'Managed dependency producer process timed out';
-    case 'filesystem_quota':
-      return 'Managed dependency producer exceeded its filesystem quota';
+    case 'filesystem_limit_exceeded':
+      return 'Managed dependency producer exceeded its observed filesystem limit';
     case 'filesystem_invalid':
       return 'Managed dependency producer output is invalid';
+    case 'output_drain_incomplete':
+      return 'Managed dependency producer output did not drain before its deadline';
     case 'process_failed':
       return 'Managed dependency producer process failed';
   }
