@@ -25,7 +25,14 @@
 .maka-section-header-action { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 
 .maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
-.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); box-shadow: var(--card-shadow, none); }
+/* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
+   depth comes from the ladder, then a line, then shadow only for something that
+   genuinely floats — a stat tile sits on the plate. It already states its edge
+   with a border, so the resting shadow was also a second separator on the same
+   edge (§4's One Means Rule). Dropping it retires --card-shadow's last consumer
+   rather than promoting it to --elevation-raised, which would have made a
+   stationary tile float harder than it did before. */
+.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
 .maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
 .maka-stat-tile-border-info { border-color: oklch(from var(--info) l c h / 0.24); }
 .maka-stat-tile-border-success { border-color: oklch(from var(--success) l c h / 0.24); }
@@ -353,6 +360,9 @@
   height: 100%;
   overflow: visible;
 }
+/* Legal square (DESIGN.md §6): the expanded diagram fills its viewport with
+   margin 0 on every side, so it is full-bleed rather than a card that lost its
+   corners. The collapsed state above keeps its radius. */
 .maka-mermaid-diagram-expanded {
   width: 100%;
   height: 100%;

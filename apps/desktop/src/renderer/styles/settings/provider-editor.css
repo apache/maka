@@ -16,6 +16,9 @@
     gap: 0;
   }
 
+  /* Legal square (DESIGN.md §6): at this width `.app` above drops both its
+     padding and its gap to 0, so the plate is flush to the window on every
+     side. Radius and gap move together — no gap, no corners. */
   .mainColumn {
     border: 0;
     border-radius: 0;

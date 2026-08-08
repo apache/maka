@@ -16,14 +16,26 @@
   height: min(76vh, 680px);
   min-width: min(760px, calc(100vw - 64px));
   min-height: 520px;
+  /* Visual System 2.0 (T4): a dialog is a portal surface, so it wears
+     DESIGN.md §5's Floating Recipe — overlay fill, soft ring, overlay
+     elevation, clipped, container radius — rather than a mix of its own. It
+     had all five ingredients already and got three of them from somewhere
+     else: `--card-bg` (a RAISED alias — the tier for plates, not for things
+     floating over them), `--card-border-color`, and a bespoke three-layer
+     shadow ending in `0 28px 64px`. §5's whole claim is that no portal invents
+     its own mix; a 1100x680 dialog inventing one is the case that matters most,
+     because it is the one everything else gets compared against.
+
+     The shadow does get tighter here (the recipe's second layer blurs 12px
+     where this stacked out to 64px). That is the recipe's decision, not an
+     oversight: depth in this system comes from the surface ladder first and
+     the shadow last, and the overlay tier is what tells a dialog apart from
+     the plate under it. Flagged in review. */
   overflow: hidden;
-  border: var(--border-width-hairline) solid var(--card-border-color);
+  border: var(--border-width-hairline) solid var(--border-soft);
   border-radius: var(--radius-modal);
-  background: var(--card-bg);
-  box-shadow:
-    var(--card-shadow),
-    var(--card-highlight),
-    0 28px 64px oklch(from var(--foreground) l c h / 0.10);
+  background: var(--surface-overlay);
+  box-shadow: var(--elevation-overlay);
   opacity: 1;
 }
 
@@ -36,6 +48,10 @@
   min-width: 0;
   min-height: 0;
   border: 0;
+  /* Full-bleed and therefore square, legally (DESIGN.md §6): `inset: 0` makes
+     this the whole window, so there is no container to have breathing room
+     from. This is the page-shell half of the modal/page pair — the modal half
+     above keeps container radius because it floats. */
   border-radius: 0;
   box-shadow: none;
   background: var(--agents-layout-bg);

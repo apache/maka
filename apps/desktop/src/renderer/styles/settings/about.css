@@ -10,6 +10,9 @@
   gap: var(--space-4);
   padding: 0;
   border: 0;
+  /* Not a shape decision: this is a bare layout grid — transparent, borderless,
+     unpadded — so it paints no box for a corner to appear on. The declarations
+     strip inherited chrome; DESIGN.md §6 governs boxes that render. */
   border-radius: 0;
   background: transparent;
 }

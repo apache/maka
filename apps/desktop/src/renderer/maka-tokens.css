@@ -789,13 +789,16 @@
       market cards) now hovers by border tone only. */
 
    /* === page-card recipe ===
-     Single source of truth for lifted page-card chrome: a subtle border,
-     compact radius, and low-opacity lift shared by top-level module pages. */
+     Border and fill for top-level page-card chrome. The "lift" half of this
+     recipe is gone as of Visual System 2.0 (T4): `--card-shadow` and
+     `--card-highlight` had three consumers between them — the settings dialog,
+     which is a portal and now wears §5's Floating Recipe, and the stat tile,
+     which rests on the plate and is therefore flat. §5 makes flat the default
+     and reserves shadow for things that genuinely float, so a resting lift had
+     no one left to serve; §4 also had both of them stacking a shadow onto an
+     edge a border already stated. `--card-bg` remains a raised alias (§2). */
   --card-border-color: oklch(from var(--foreground) l c h / 0.08);
   --card-bg: var(--background);
-  --card-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.04);
-  /* A 1px inner top sheen gives lifted cards a physical edge. */
-  --card-highlight: inset 0 1px 0 oklch(1 0 0 / 0.04);
 
   --h-titlebar: 36px;
 

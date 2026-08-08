@@ -305,6 +305,9 @@
   margin-left: auto;
   padding: 0;
   border: 0;
+  /* Same as .settingsAboutHero: un-chroming a <kbd>, not squaring a box. With
+     no padding, border, fill or shadow there is nothing for a radius to act
+     on. */
   border-radius: 0;
   background: transparent;
   box-shadow: none;
