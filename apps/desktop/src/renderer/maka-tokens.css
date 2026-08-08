@@ -222,7 +222,21 @@
   /* PR-UI-ALIGN-0: visible hairline borders (≈#e6e6e6) like the reference's
      card/container outlines — maka's 5% was nearly invisible, which flattened
      the floating-card hierarchy. */
---border:        oklch(from var(--foreground) l c h / 0.10);
+  /* Border tiers (visual system 2.0, T1). `--border` is the STRUCTURAL line:
+     the edge of a panel, a card, a table. `--border-soft` is the quiet one for
+     seams inside a surface — rails, row separators, the outline that only has
+     to hint at a boundary the fill has already made.
+
+     Four strengths were in play before this: 5% on the sidebar rail (declared
+     locally in sidebar.css), 8% on --card-border-color, 10% here, and 16% on
+     --border-strong. Two of those are tiers and two are drift. The soft tier
+     is what the 5% rail and the 8% card edge converge on; their call sites
+     move in T2-T4, since T1 does not touch product CSS.
+
+     Pairs with the DESIGN.md rule that one boundary picks ONE mechanism —
+     fill step, line, or shadow, never all three stacked. */
+  --border:        oklch(from var(--foreground) l c h / 0.10);
+  --border-soft:   oklch(from var(--foreground) l c h / 0.06);
   --border-strong: oklch(from var(--foreground) l c h / 0.16);
   /* === border stroke width (#520 PR4 item 14) ============================
      Border color was already tokenized; the width was bare px in every

@@ -198,6 +198,10 @@ const RESERVED_SCALE_TOKENS = new Set([
   // ladder only reads as a ladder with its bottom rung present, and defining
   // the scale is precisely what T1 is for.
   '--surface-sunken',
+  // Border strength tiers soft/structural/strong (visual system 2.0 T1). The
+  // soft tier's consumers are the sidebar rail and the card edge, which
+  // converge on it in T2-T4; T1 defines the scale without touching product CSS.
+  '--border-soft',
   // Control-height scale, 20/24/28/32/36/40 on the 4px ruler.
   '--h-control-xl',
   '--h-control-2xl',
