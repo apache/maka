@@ -195,6 +195,18 @@ test('rejects source that escapes the cell wrapper', async () => {
   assert.equal(result.ok ? undefined : result.error.kind, 'parse_error');
 });
 
+test('rejects wrapper escapes erased by TypeScript', async () => {
+  const result = await executeCodeCell({
+    code: `}
+      interface Escaped {`,
+    tools: [],
+    callTool: async () => null,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'parse_error');
+});
+
 test('rejects unsupported operators before starting nested tool calls', async () => {
   let calls = 0;
   const result = await executeCodeCell({

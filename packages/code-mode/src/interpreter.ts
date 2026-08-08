@@ -1,6 +1,8 @@
 import { parse } from 'acorn';
 import {
+  createSourceFile,
   DiagnosticCategory,
+  isFunctionDeclaration,
   ModuleKind,
   ScriptTarget,
   flattenDiagnosticMessageText,
@@ -2030,7 +2032,19 @@ function isAstNode(value: unknown): value is AstNode {
 }
 
 function parseCell(code: string): AstNode {
-  const transpiled = transpileModule(`async function __maka_cell__() {\n${code}\n}`, {
+  const wrappedSource = `async function __maka_cell__() {\n${code}\n}`;
+  const sourceFile = createSourceFile('cell.ts', wrappedSource, ScriptTarget.ESNext, true);
+  const sourceWrapper = sourceFile.statements[0];
+  if (
+    sourceFile.statements.length !== 1 ||
+    !sourceWrapper ||
+    !isFunctionDeclaration(sourceWrapper) ||
+    sourceWrapper.name?.text !== '__maka_cell__' ||
+    !sourceWrapper.body
+  ) {
+    throw new InterpreterError('parse_error', 'Cell source escaped its wrapper');
+  }
+  const transpiled = transpileModule(wrappedSource, {
     reportDiagnostics: true,
     compilerOptions: { target: ScriptTarget.ESNext, module: ModuleKind.ESNext },
   });
