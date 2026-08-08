@@ -20,13 +20,27 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   assert.equal(planTests(['apps/desktop/src/main/main.ts'], { graph }).storybook, false);
   assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).storybook, false);
 
-  // Catalog + harness only.
-  assert.equal(
-    planTests(['apps/desktop/stories/app-shell.stories.tsx'], { graph }).storybook,
-    true,
+  // Catalog + harness only — must not force Electron e2e or product unit lanes.
+  for (const path of [
+    'apps/desktop/stories/app-shell.stories.tsx',
+    'apps/desktop/.storybook/preview.tsx',
+    'packages/ui/stories/composer.stories.tsx',
+  ]) {
+    const catalog = planTests([path], { graph });
+    assert.equal(catalog.storybook, true, path);
+    assert.equal(catalog.e2e, false, path);
+    assert.deepEqual(catalog.workspaces, [], path);
+    assert.equal(catalog.code, true, path);
+  }
+
+  // Product desktop/ui files still force e2e even when a story also changed.
+  const storyPlusProduct = planTests(
+    ['apps/desktop/stories/app-shell.stories.tsx', 'apps/desktop/src/main/main.ts'],
+    { graph },
   );
-  assert.equal(planTests(['apps/desktop/.storybook/preview.tsx'], { graph }).storybook, true);
-  assert.equal(planTests(['packages/ui/stories/composer.stories.tsx'], { graph }).storybook, true);
+  assert.equal(storyPlusProduct.storybook, true);
+  assert.equal(storyPlusProduct.e2e, true);
+  assert.ok(storyPlusProduct.workspaces.includes('apps/desktop'));
 
   // .storybook/preview.tsx reads THEME_PALETTES from this one core module.
   // Other core paths must not force Storybook.

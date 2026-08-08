@@ -44,6 +44,15 @@ const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
 
 function isStorybookPath(path) {
   if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
+  return isStorybookCatalogPath(path);
+}
+
+/**
+ * Storybook catalog trees under product workspaces. These must select the
+ * Storybook job without counting as product desktop/ui work that drags Electron
+ * e2e (or the full reverse-dependency unit closure).
+ */
+export function isStorybookCatalogPath(path) {
   if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
     return true;
   if (path === 'apps/desktop/stories' || path.startsWith('apps/desktop/stories/')) return true;
@@ -185,7 +194,10 @@ export function planTests(changedFiles, options = {}) {
     const workspace = graph.dirs.find((dir) => path === dir || path.startsWith(`${dir}/`));
     if (workspace) {
       code = true;
-      directWorkspaces.add(workspace);
+      // Catalog-only paths live under apps/desktop and packages/ui but are not
+      // product ship surfaces. Selecting those workspaces here would force e2e
+      // and reverse-dep unit lanes for a stories-only PR.
+      if (!isStorybookCatalogPath(path)) directWorkspaces.add(workspace);
       continue;
     }
     if (path.startsWith('scripts/')) {
