@@ -55,6 +55,11 @@ import { MessageCircleQuestion } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
+import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
+import {
+  deriveTaskReadinessNotice,
+  isTaskSubmissionHardBlocked,
+} from './task-readiness-notice';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -1753,6 +1758,17 @@ function AppShellContent({
     },
     onSelectNoProject: selectNoProject,
   };
+  const taskReadinessRequest = {
+    connectionSlug: activeSession?.llmConnectionSlug ?? newChatModel?.llmConnectionSlug,
+    model: activeSession?.model ?? newChatModel?.model,
+    cwd: activeSession?.cwd ?? projectInfo?.projectPath,
+  };
+  const taskReadiness = useTaskSubmissionReadiness(
+    taskReadinessRequest,
+    onboarding.snapshot,
+  );
+  const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
+  const taskSubmissionHardBlocked = isTaskSubmissionHardBlocked(taskReadiness.snapshot);
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
@@ -2777,7 +2793,9 @@ function AppShellContent({
                   onOpenModelSettings={() => openSettingsSection('models')}
                   noModelConnection={connections.length === 0}
                   sendBlocked={
-                    Boolean(workspaceReadinessRecovery) || sessionHealthNotice?.tone === 'destructive'
+                    Boolean(workspaceReadinessRecovery) ||
+                    sessionHealthNotice?.tone === 'destructive' ||
+                    taskSubmissionHardBlocked
                   }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
@@ -2958,6 +2976,12 @@ function AppShellContent({
                 }}
                 sessionHealthNotice={sessionHealthNotice}
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
+                taskReadinessNotice={taskReadinessNotice}
+                onTaskReadinessAction={
+                  taskReadinessNotice?.action === 'new_task'
+                    ? openNewTaskSurface
+                    : taskReadiness.refresh
+                }
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 isOnboardingLoading={isOnboardingLoading}
