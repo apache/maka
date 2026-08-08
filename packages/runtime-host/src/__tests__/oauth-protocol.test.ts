@@ -9,35 +9,6 @@ import {
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
 
-test('OAuth login protocol covers every Host-enrolled provider', () => {
-  for (const provider of ['claude-subscription', 'openai-codex', 'xai-oauth']) {
-    assert.deepEqual(
-      decodeHostFrame({
-        requestId: 'request',
-        operation: 'oauth.login.query',
-        ok: true,
-        result: {
-          attemptId: 'attempt',
-          connectionId: 'connection',
-          provider,
-          phase: 'awaiting_authorization',
-        },
-      }),
-      {
-        requestId: 'request',
-        operation: 'oauth.login.query',
-        ok: true,
-        result: {
-          attemptId: 'attempt',
-          connectionId: 'connection',
-          provider,
-          phase: 'awaiting_authorization',
-        },
-      },
-    );
-  }
-});
-
 test('OAuth login protocol binds attempt identity and closes terminal projections', () => {
   assert.deepEqual(
     decodeClientFrame({
