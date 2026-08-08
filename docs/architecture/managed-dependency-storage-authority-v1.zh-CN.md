@@ -3,7 +3,7 @@ document_status: implementation-contract
 status: draft-stacked-foundation
 date: 2026-08-08
 milestone: M1.3-storage-authority
-base: upstream/main@86143f40e
+base: upstream/main@08bcf324b
 ---
 
 # Managed Dependency Storage Authority v1
@@ -13,6 +13,8 @@ base: upstream/main@86143f40e
 > 同一个 canonical dependency environment identity 最多对应一棵由 Maka 发布、由 artifact 权限域之外的 durable receipt 证明、可在崩溃后收敛重开的依赖树；任何身份、路径、内容或平台证据不可证明时 fail closed。
 
 本 PR 的 owner 是 `ManagedDependencyEnvironmentAuthority`。它拥有 environment identity、artifact publication、SQLite receipt、lease、pending reservation 与 GC。注入的 producer 只获得一次性 staging 中的 `outputRoot` 与 `scratchRoot`，不获得 storage root、canonical artifact path 或 receipt database。
+
+同一个 canonical storage root 在同一时刻只能存在一个该 authority：同进程由 module-private owner claim 拒绝重复实例，跨进程由稳定 lock artifact 上的 OS exclusive lock 拒绝第二个 owner。lock 在 receipt database 或 artifact 被读取、修复、发布、租用、GC 之前取得，只在 authority 完整关闭或初始化失败时释放；active lease 导致的 close 拒绝不会释放 owner。
 
 本 PR 不包含：
 
@@ -36,6 +38,7 @@ artifact 目录只允许包含 `node_modules/`，不能携带同目录 receipt�
 
 ```text
 canonical identity validation
+  -> process owner claim + cross-process OS lock
   -> pending reservation
   -> producer-owned random staging
   -> extract only node_modules into artifact staging
@@ -66,6 +69,7 @@ Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断
 
 ## 4. Lease、配额与失败状态
 
+- authority 生命周期为 `open -> draining -> closed`。`close()` 先拒绝新的 acquisition，再等待所有已接纳 acquisition 完成 lease 安装或失败；完成后若存在 active lease，则 close 明确拒绝并恢复 `open`，不能先关闭 receipt owner 再返回活 lease。
 - acquire 开始即安装 pending reservation，直到正式 lease 建立或失败清理；GC 不得删除 pending/inflight/leased digest。
 - cache cost 为内容字节数加每个 entry 的固定治理成本，避免大量空文件绕过软配额。
 - GC 串行执行；一次 GC rejection 可报告给当前调用者，但不能永久毒化后续 GC task chain。
@@ -83,6 +87,9 @@ Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断
 | Windows ADS/reparse                  | publish/reopen 拒绝                    |
 | acquisition pending 时 GC            | pending digest 保留                    |
 | cache 中任意已发布内容漂移           | 新 acquisition fail closed             |
+| 同进程第二个 authority               | 接触 receipt/artifact/GC 前拒绝         |
+| 另一进程持有同 root authority         | OS lock 处拒绝；不得观察或删除其 lease  |
+| close 与 lease 安装并发               | drain 后因 active lease 拒绝 close      |
 
 ## 6. Extraction ledger
 
@@ -94,6 +101,7 @@ Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断
 | `packages/storage/src/__tests__/managed-dependency-environment.test.ts`                 | identity/tamper/GC | 测试先迁移并在 main 上 RED                             |
 | `packages/storage/src/__tests__/managed-dependency-environment-crash.test.ts`           | crash convergence  | production-shaped child-process crash                  |
 | `packages/storage/src/__tests__/fixtures/managed-dependency-environment-crash-child.ts` | crash fixture      | 仅服务上述 crash contract                              |
+| `packages/storage/src/__tests__/fixtures/managed-dependency-environment-owner-child.ts` | owner fixture      | 持有真实跨进程 owner lock，验证第二 owner 被拒绝        |
 | producer/runtime-host/Desktop/release files                                             | 不属于 PR 1        | 留给后续平铺 PR，不迁移                                |
 
 旧集成分支 `codex/managed-workspace-environment-provisioning-m1-3` 只作为实现来源。提交按不变量拆解如下，任何混合提交都不得整体 cherry-pick：

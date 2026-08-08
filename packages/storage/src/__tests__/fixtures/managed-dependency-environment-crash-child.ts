@@ -8,7 +8,9 @@ import {
 
 const storageRoot = process.env.MAKA_DEPENDENCY_CRASH_ROOT;
 const failpoint = process.env.MAKA_DEPENDENCY_CRASH_POINT as
-  ManagedDependencyEnvironmentFailpoint | 'during_environment_provision' | undefined;
+  | ManagedDependencyEnvironmentFailpoint
+  | 'during_environment_provision'
+  | undefined;
 if (!storageRoot || !failpoint) throw new Error('Missing dependency crash fixture input');
 
 const producerCapability = createManagedDependencyEnvironmentProducerCapability(

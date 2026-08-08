@@ -87,6 +87,30 @@ test('rejects a producer that does not declare the exact hermetic capability', a
   );
 });
 
+test('rejects a second authority for the same storage root in one process', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-single-owner-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision() {},
+  };
+  const first = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+
+  const second = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer }).then(
+    (authority) => ({ authority }),
+    (error: unknown) => ({ error }),
+  );
+  if ('authority' in second) {
+    await second.authority.close();
+    assert.fail('a second authority acquired the same storage root');
+  }
+  assert.match(String(second.error), /already has an active owner/u);
+  await first.close();
+});
+
 test('rejects a published environment whose dependency content was modified', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-tamper-'));
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
@@ -286,70 +310,66 @@ test('rejects an environment id that is not the digest of the requested identity
   await authority.close();
 });
 
-test(
-  'rejects an NTFS alternate stream created inside a dependency artifact',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-ads-'));
-    t.after(() => rm(storageRoot, { recursive: true, force: true }));
-    const producer = {
-      capability: FIXTURE_PRODUCER_CAPABILITY,
-      packageManagerName: 'npm' as const,
-      packageManagerVersion: '11.12.1',
-      nodeRuntime: fixtureNodeRuntime(),
-      async provision(input: { outputRoot: string }) {
-        const target = join(input.outputRoot, 'index.js');
-        await writeFile(target, 'trusted\n', 'utf8');
-        await writeFile(`${target}:unhashed`, 'malicious\n', 'utf8');
-      },
-    };
-    const source = dependencySourceForName('ads');
-    const identity = computeManagedDependencyEnvironmentIdentity(source);
-    const authority = await createManagedDependencyEnvironmentAuthority({
-      storageRoot,
-      producer,
-    });
-    await assert.rejects(authority.acquire(identity, source), /alternate data stream/u);
-    await authority.close();
-  },
-);
+test('rejects an NTFS alternate stream created inside a dependency artifact', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-ads-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      const target = join(input.outputRoot, 'index.js');
+      await writeFile(target, 'trusted\n', 'utf8');
+      await writeFile(`${target}:unhashed`, 'malicious\n', 'utf8');
+    },
+  };
+  const source = dependencySourceForName('ads');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer,
+  });
+  await assert.rejects(authority.acquire(identity, source), /alternate data stream/u);
+  await authority.close();
+});
 
-test(
-  'accepts a POSIX package bin symlink whose target remains inside the dependency root',
-  { skip: process.platform === 'win32' },
-  async (t) => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-bin-link-'));
-    t.after(() => rm(storageRoot, { recursive: true, force: true }));
-    const producer = {
-      capability: FIXTURE_PRODUCER_CAPABILITY,
-      packageManagerName: 'npm' as const,
-      packageManagerVersion: '11.12.1',
-      nodeRuntime: fixtureNodeRuntime(),
-      async provision(input: { outputRoot: string }) {
-        await mkdir(join(input.outputRoot, 'fixture-package'), {
-          recursive: true,
-        });
-        await mkdir(join(input.outputRoot, '.bin'), { recursive: true });
-        await writeFile(join(input.outputRoot, 'fixture-package', 'cli.js'), 'trusted\n', 'utf8');
-        await symlink('../fixture-package/cli.js', join(input.outputRoot, '.bin', 'fixture-cli'));
-      },
-    };
-    const source = dependencySourceForName('posix-bin-link');
-    const identity = computeManagedDependencyEnvironmentIdentity(source);
-    const authority = await createManagedDependencyEnvironmentAuthority({
-      storageRoot,
-      producer,
-    });
+test('accepts a POSIX package bin symlink whose target remains inside the dependency root', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-bin-link-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      await mkdir(join(input.outputRoot, 'fixture-package'), {
+        recursive: true,
+      });
+      await mkdir(join(input.outputRoot, '.bin'), { recursive: true });
+      await writeFile(join(input.outputRoot, 'fixture-package', 'cli.js'), 'trusted\n', 'utf8');
+      await symlink('../fixture-package/cli.js', join(input.outputRoot, '.bin', 'fixture-cli'));
+    },
+  };
+  const source = dependencySourceForName('posix-bin-link');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer,
+  });
 
-    const lease = await authority.acquire(identity, source);
-    assert.equal(
-      await readFile(join(lease.dependencyRoot, '.bin', 'fixture-cli'), 'utf8'),
-      'trusted\n',
-    );
-    await lease.release();
-    await authority.close();
-  },
-);
+  const lease = await authority.acquire(identity, source);
+  assert.equal(
+    await readFile(join(lease.dependencyRoot, '.bin', 'fixture-cli'), 'utf8'),
+    'trusted\n',
+  );
+  await lease.release();
+  await authority.close();
+});
 
 test('publishes one Maka-owned artifact for concurrent equivalent acquisitions', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-environment-'));
@@ -408,6 +428,56 @@ test('publishes one Maka-owned artifact for concurrent equivalent acquisitions',
   assert.equal(first.dependencyRoot, second.dependencyRoot);
   await first.release();
   await second.release();
+  await authority.close();
+});
+
+test('close drains an acquisition through lease installation before deciding its outcome', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-close-drain-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let acknowledgeLeaseBoundary!: () => void;
+  const leaseBoundary = new Promise<void>((resolve) => {
+    acknowledgeLeaseBoundary = resolve;
+  });
+  let continueLeaseInstallation!: () => void;
+  const leaseInstallationAllowed = new Promise<void>((resolve) => {
+    continueLeaseInstallation = resolve;
+  });
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      await writeFile(join(input.outputRoot, 'payload'), 'trusted\n', 'utf8');
+    },
+  };
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer,
+    async failpoint(point) {
+      if (point !== 'before_environment_lease') return;
+      acknowledgeLeaseBoundary();
+      await leaseInstallationAllowed;
+    },
+  });
+  const source = dependencySourceForName('close-drain');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const acquireTask = authority.acquire(identity, source);
+  await leaseBoundary;
+
+  const closeTask = authority.close().then(
+    () => ({ closed: true as const }),
+    (error: unknown) => ({ error }),
+  );
+  await Promise.resolve();
+  continueLeaseInstallation();
+  const [lease, closeResult] = await Promise.all([acquireTask, closeTask]);
+  if ('closed' in closeResult) {
+    await assert.rejects(lease.release(), /receipt authority is closed/u);
+    assert.fail('close succeeded while an acquisition was still installing its lease');
+  }
+  assert.match(String(closeResult.error), /still has active leases/u);
+  await lease.release();
   await authority.close();
 });
 

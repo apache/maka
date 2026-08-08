@@ -17,6 +17,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, posix, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { tryLock, unlock } from 'fs-native-extensions';
 
 const MANAGED_DEPENDENCY_IDENTITY_DOMAIN = 'maka.managed_dependency_environment.v1\0';
 const MANAGED_DEPENDENCY_TREE_DOMAIN = 'maka.managed_dependency_environment.tree.v1\0';
@@ -34,6 +35,7 @@ const MANAGED_DEPENDENCY_PRODUCER_POLICY_V1 = Object.freeze({
   childProcess: 'verified_runtime_only' as const,
   lifecycleScripts: 'disabled' as const,
 });
+const activeAuthorityOwners = new Map<string, object>();
 const RECEIPT_KEYS = [
   'protocolVersion',
   'environmentId',
@@ -148,7 +150,9 @@ export interface CreateManagedDependencyEnvironmentAuthorityInput {
 }
 
 export type ManagedDependencyEnvironmentFailpoint =
-  'after_environment_receipt_durable' | 'after_environment_publish';
+  | 'before_environment_lease'
+  | 'after_environment_receipt_durable'
+  | 'after_environment_publish';
 
 export interface AcquireManagedDependencyEnvironmentInput {
   readonly manifestBytes: Uint8Array;
@@ -188,6 +192,10 @@ interface DependencyReceiptAuthority {
   write(receipt: ManagedDependencyEnvironmentReceiptV1): void;
   delete(digest: string): void;
   close(): void;
+}
+
+interface DependencyAuthorityOwnerLock {
+  release(): Promise<void>;
 }
 
 function openDependencyReceiptAuthority(path: string): DependencyReceiptAuthority {
@@ -362,6 +370,45 @@ export async function createManagedDependencyEnvironmentAuthority(
     await mkdir(input.storageRoot, { recursive: true });
     return await realpath(input.storageRoot);
   });
+  const ownerKey = canonicalAuthorityOwnerKey(canonicalStorageRoot);
+  if (activeAuthorityOwners.has(ownerKey)) {
+    throw new Error('Managed dependency storage root already has an active owner');
+  }
+  const ownerClaim = {};
+  activeAuthorityOwners.set(ownerKey, ownerClaim);
+  let ownerLock: DependencyAuthorityOwnerLock | undefined;
+  try {
+    const managedWorkspacesRoot = await ensureOwnedDirectory(
+      join(canonicalStorageRoot, 'managed-workspaces'),
+      canonicalStorageRoot,
+    );
+    ownerLock = await acquireDependencyAuthorityOwnerLock(managedWorkspacesRoot);
+    return await createManagedDependencyEnvironmentAuthorityForOwner(
+      input,
+      canonicalStorageRoot,
+      ownerKey,
+      ownerClaim,
+      ownerLock,
+    );
+  } catch (error) {
+    try {
+      await ownerLock?.release();
+    } finally {
+      if (activeAuthorityOwners.get(ownerKey) === ownerClaim) {
+        activeAuthorityOwners.delete(ownerKey);
+      }
+    }
+    throw error;
+  }
+}
+
+async function createManagedDependencyEnvironmentAuthorityForOwner(
+  input: CreateManagedDependencyEnvironmentAuthorityInput,
+  canonicalStorageRoot: string,
+  ownerKey: string,
+  ownerClaim: object,
+  ownerLock: DependencyAuthorityOwnerLock,
+): Promise<ManagedDependencyEnvironmentAuthority> {
   const environmentsRoot = join(
     canonicalStorageRoot,
     'managed-workspaces',
@@ -390,96 +437,189 @@ export async function createManagedDependencyEnvironmentAuthority(
   const inflight = new Map<string, Promise<PublishedManagedDependencyEnvironment>>();
   const leaseCounts = new Map<string, number>();
   const pendingCounts = new Map<string, number>();
-  let closed = false;
+  let state: 'open' | 'draining' | 'closed' = 'open';
+  let activeAcquisitions = 0;
+  const acquisitionDrainWaiters = new Set<() => void>();
+  let closeTask: Promise<void> | undefined;
   let gcTask = Promise.resolve();
+
+  const beginAcquisition = () => {
+    if (state !== 'open') {
+      throw new Error(`Managed dependency environment authority is ${state}`);
+    }
+    activeAcquisitions += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      activeAcquisitions -= 1;
+      if (activeAcquisitions !== 0) return;
+      for (const resolveWaiter of acquisitionDrainWaiters) resolveWaiter();
+      acquisitionDrainWaiters.clear();
+    };
+  };
+  const waitForAcquisitions = () =>
+    activeAcquisitions === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolveWaiter) => acquisitionDrainWaiters.add(resolveWaiter));
 
   const authority: ManagedDependencyEnvironmentAuthority = {
     async acquire(identity, source) {
-      if (closed) throw new Error('Managed dependency environment authority is closed');
-      assertCanonicalIdentity(identity, source);
-      if (
-        identity.packageManagerName !== input.producer.packageManagerName ||
-        identity.packageManagerVersion !== input.producer.packageManagerVersion ||
-        identity.nodeVersion !== input.producer.nodeRuntime.version ||
-        identity.nodeAbi !== input.producer.nodeRuntime.abi ||
-        identity.platform !== input.producer.nodeRuntime.platform ||
-        identity.arch !== input.producer.nodeRuntime.arch ||
-        identity.producerRuntimeIdentitySha256 !==
-          input.producer.capability.runtimeIdentitySha256 ||
-        identity.producerPolicyIdentitySha256 !== input.producer.capability.policyIdentitySha256
-      ) {
-        throw new Error('Managed dependency producer does not match the requested identity');
-      }
-      assertSourceMatchesIdentity(identity, source);
-      const digest = identity.environmentId.slice('sha256:'.length);
-      pendingCounts.set(digest, (pendingCounts.get(digest) ?? 0) + 1);
-      let artifact: PublishedManagedDependencyEnvironment;
+      const finishAcquisition = beginAcquisition();
       try {
-        let task = inflight.get(digest);
-        if (!task) {
-          task = openOrPublishEnvironment({
-            environmentsRoot,
-            receiptAuthority,
-            stagingRoot,
-            identity,
-            source,
-            producer: input.producer,
-            failpoint: input.failpoint,
-          }).finally(() => inflight.delete(digest));
-          inflight.set(digest, task);
+        assertCanonicalIdentity(identity, source);
+        if (
+          identity.packageManagerName !== input.producer.packageManagerName ||
+          identity.packageManagerVersion !== input.producer.packageManagerVersion ||
+          identity.nodeVersion !== input.producer.nodeRuntime.version ||
+          identity.nodeAbi !== input.producer.nodeRuntime.abi ||
+          identity.platform !== input.producer.nodeRuntime.platform ||
+          identity.arch !== input.producer.nodeRuntime.arch ||
+          identity.producerRuntimeIdentitySha256 !==
+            input.producer.capability.runtimeIdentitySha256 ||
+          identity.producerPolicyIdentitySha256 !== input.producer.capability.policyIdentitySha256
+        ) {
+          throw new Error('Managed dependency producer does not match the requested identity');
         }
-        artifact = await task;
-        const now = new Date();
-        await utimes(dirname(artifact.dependencyRoot), now, now);
-        leaseCounts.set(digest, (leaseCounts.get(digest) ?? 0) + 1);
+        assertSourceMatchesIdentity(identity, source);
+        const digest = identity.environmentId.slice('sha256:'.length);
+        pendingCounts.set(digest, (pendingCounts.get(digest) ?? 0) + 1);
+        let artifact: PublishedManagedDependencyEnvironment;
+        try {
+          let task = inflight.get(digest);
+          if (!task) {
+            task = openOrPublishEnvironment({
+              environmentsRoot,
+              receiptAuthority,
+              stagingRoot,
+              identity,
+              source,
+              producer: input.producer,
+              failpoint: input.failpoint,
+            }).finally(() => inflight.delete(digest));
+            inflight.set(digest, task);
+          }
+          artifact = await task;
+          const now = new Date();
+          await utimes(dirname(artifact.dependencyRoot), now, now);
+          await input.failpoint?.('before_environment_lease');
+          leaseCounts.set(digest, (leaseCounts.get(digest) ?? 0) + 1);
+        } finally {
+          decrementCount(pendingCounts, digest);
+        }
+        let released = false;
+        return Object.freeze({
+          environmentId: identity.environmentId,
+          dependencyRoot: artifact.dependencyRoot,
+          async release() {
+            if (released) return;
+            released = true;
+            const remaining = (leaseCounts.get(digest) ?? 1) - 1;
+            if (remaining > 0) leaseCounts.set(digest, remaining);
+            else leaseCounts.delete(digest);
+            gcTask = gcTask
+              .catch(() => undefined)
+              .then(() =>
+                collectEnvironmentGarbage({
+                  environmentsRoot,
+                  receiptAuthority,
+                  maxCacheBytes,
+                  leaseCounts,
+                  pendingCounts,
+                  protectedDigest: digest,
+                }),
+              );
+            await gcTask;
+          },
+        });
       } finally {
-        decrementCount(pendingCounts, digest);
+        finishAcquisition();
       }
-      let released = false;
-      return Object.freeze({
-        environmentId: identity.environmentId,
-        dependencyRoot: artifact.dependencyRoot,
-        async release() {
-          if (released) return;
-          released = true;
-          const remaining = (leaseCounts.get(digest) ?? 1) - 1;
-          if (remaining > 0) leaseCounts.set(digest, remaining);
-          else leaseCounts.delete(digest);
-          gcTask = gcTask
-            .catch(() => undefined)
-            .then(() =>
-              collectEnvironmentGarbage({
-                environmentsRoot,
-                receiptAuthority,
-                maxCacheBytes,
-                leaseCounts,
-                pendingCounts,
-                protectedDigest: digest,
-              }),
-            );
-          await gcTask;
-        },
-      });
     },
-    async close() {
-      if (closed) return;
-      closed = true;
-      await Promise.allSettled(inflight.values());
-      let gcError: unknown;
-      try {
-        await gcTask;
-      } catch (error) {
-        gcError = error;
-      }
-      if (leaseCounts.size > 0) {
-        closed = false;
-        throw new Error('Managed dependency environment authority still has active leases');
-      }
-      receiptAuthority.close();
-      if (gcError) throw gcError;
+    close() {
+      if (state === 'closed') return Promise.resolve();
+      if (closeTask) return closeTask;
+      state = 'draining';
+      closeTask = (async () => {
+        await waitForAcquisitions();
+        let gcError: unknown;
+        try {
+          await gcTask;
+        } catch (error) {
+          gcError = error;
+        }
+        if (leaseCounts.size > 0) {
+          throw new Error('Managed dependency environment authority still has active leases');
+        }
+        receiptAuthority.close();
+        state = 'closed';
+        try {
+          await ownerLock.release();
+        } finally {
+          if (activeAuthorityOwners.get(ownerKey) === ownerClaim) {
+            activeAuthorityOwners.delete(ownerKey);
+          }
+        }
+        if (gcError) throw gcError;
+      })().catch((error: unknown) => {
+        if (state === 'draining') state = 'open';
+        closeTask = undefined;
+        throw error;
+      });
+      return closeTask;
     },
   };
   return Object.freeze(authority);
+}
+
+function canonicalAuthorityOwnerKey(canonicalStorageRoot: string): string {
+  const normalized = normalize(canonicalStorageRoot);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+async function acquireDependencyAuthorityOwnerLock(
+  managedWorkspacesRoot: string,
+): Promise<DependencyAuthorityOwnerLock> {
+  const lockPath = join(managedWorkspacesRoot, 'dependency-environment-authority-v1.lock');
+  const handle = await open(lockPath, 'a+', 0o600);
+  let locked = false;
+  try {
+    const [opened, current] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(lockPath, { bigint: true }),
+    ]);
+    if (
+      !opened.isFile() ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      opened.dev !== current.dev ||
+      opened.ino !== current.ino
+    ) {
+      throw new Error('Managed dependency authority owner lock is not a stable file');
+    }
+    await handle.chmod(0o600);
+    locked = tryLock(handle.fd);
+    if (!locked) {
+      throw new Error('Managed dependency storage root already has an active owner');
+    }
+  } catch (error) {
+    if (locked) unlock(handle.fd);
+    await handle.close();
+    throw error;
+  }
+
+  let released = false;
+  return Object.freeze({
+    async release() {
+      if (released) return;
+      released = true;
+      try {
+        unlock(handle.fd);
+      } finally {
+        await handle.close();
+      }
+    },
+  });
 }
 
 async function openOrPublishEnvironment(input: {
