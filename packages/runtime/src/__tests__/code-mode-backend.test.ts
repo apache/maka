@@ -341,6 +341,43 @@ test('keeps direct-only tools out of the cell snapshot', async () => {
   assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
 });
 
+test('keeps provider-native tools out of the cell snapshot', async () => {
+  let implementationCalls = 0;
+  const tools: MakaTool[] = [
+    {
+      name: 'native_search',
+      description: 'Search through the model provider',
+      parameters: z.object({}),
+      providerTool: { kind: 'openai-web-search' },
+      impl: () => {
+        implementationCalls += 1;
+        return { exposed: true };
+      },
+    },
+  ];
+  const events = await collect(
+    backend(execThenStopModel('return await tools.native_search({})'), [], undefined, {
+      tools,
+    }).send({
+      turnId: 'turn-code',
+      text: 'try native search',
+      context: [],
+      toolMode: 'code_mode',
+    }),
+  );
+
+  assert.equal(implementationCalls, 0);
+  assert.equal(
+    events.some((event) => event.type === 'tool_start' && event.toolName === 'native_search'),
+    false,
+  );
+  const execResult = events.find(
+    (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
+      event.type === 'tool_result' && event.toolUseId === 'exec-1',
+  );
+  assert.match(JSON.stringify(execResult?.content), /unknown_tool/);
+});
+
 test('validates nested arguments before ToolRuntime implementation dispatch', async () => {
   let implementationCalls = 0;
   const tools: MakaTool[] = [
