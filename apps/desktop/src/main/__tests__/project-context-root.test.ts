@@ -73,7 +73,10 @@ describe('resolveProjectContextRoot', () => {
   });
 
   it('rejects a session cwd without read and traversal access', {
-    skip: process.platform === 'win32' || process.getuid?.() === 0,
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to make the session cwd inaccessible'
+        : process.getuid?.() === 0,
   }, async () => {
     const sessionRoot = await mkdtemp(join(tmpdir(), 'maka-inaccessible-session-project-'));
     await chmod(sessionRoot, 0o000);

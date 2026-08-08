@@ -1,5 +1,6 @@
 import {
   activePlanExecution,
+  relayModelProfile,
   DEFAULT_SESSION_NAME,
   defaultWebSearchSettings,
   isDeepResearchSession,
@@ -348,7 +349,12 @@ function replaceParentAgentTools(
 }
 
 function modelSupportsVision(connection: LlmConnection, model: string): boolean {
-  return resolveModelVisionSupport(connection.providerType, connection.models, model);
+  return resolveModelVisionSupport(
+    connection.providerType,
+    connection.models,
+    model,
+    relayModelProfile(connection, model)?.vision,
+  );
 }
 
 function resolveDurableChildTools(

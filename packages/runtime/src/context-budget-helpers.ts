@@ -46,7 +46,11 @@ export function estimateRuntimeEventsTokens(
   events: readonly RuntimeEvent[],
   charsPerToken = 4,
 ): number {
-  const chars = events.reduce((total, event) => total + estimateRuntimeEventChars(event), 0);
+  const chars = events.reduce(
+    (total, event) =>
+      event.modelVisibility === 'hidden' ? total : total + estimateRuntimeEventChars(event),
+    0,
+  );
   return estimateTokens(chars, charsPerToken);
 }
 

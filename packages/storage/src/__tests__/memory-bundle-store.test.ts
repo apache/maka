@@ -711,15 +711,17 @@ describe('interactive Memory bundle storage authority', () => {
     });
   });
 
-  test('rejects a symbolic-link Memory parent without reading or writing outside the root', {
-    skip: process.platform === 'win32',
-  }, async () => {
+  test('rejects a symbolic-link Memory parent without reading or writing outside the root', async () => {
     await withInteractiveOwner(async ({ root, owner }) => {
       const outside = await mkdtemp(join(tmpdir(), 'maka-memory-outside-'));
       try {
         const outsideMemory = join(outside, 'MEMORY.md');
         await writeFile(outsideMemory, '# Outside\n');
-        await symlink(outside, memoryDirectory(root));
+        await symlink(
+          outside,
+          memoryDirectory(root),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
 
         await assert.rejects(
           openInteractiveMemoryBundleStoreForWrite(owner.lease),

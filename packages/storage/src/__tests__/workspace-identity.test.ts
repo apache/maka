@@ -197,9 +197,7 @@ test('a malformed enclosing Git repository prevents publishing a new marker', as
   }
 });
 
-test('a non-Git workspace resolves when the Git executable is unavailable', {
-  skip: process.platform === 'win32',
-}, async () => {
+test('a non-Git workspace resolves when the Git executable is unavailable', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-no-git-required-'));
   try {
     await resolveWorkspaceIdentityWithoutGit(workspace);
@@ -210,9 +208,7 @@ test('a non-Git workspace resolves when the Git executable is unavailable', {
   }
 });
 
-test('a Git workspace does not publish a marker when the Git executable is unavailable', {
-  skip: process.platform === 'win32',
-}, async () => {
+test('a Git workspace does not publish a marker when the Git executable is unavailable', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-git-unavailable-'));
   try {
     await execFileAsync('git', ['init', '--quiet'], { cwd: workspace });
@@ -225,7 +221,10 @@ test('a Git workspace does not publish a marker when the Git executable is unava
 });
 
 test('an unmarked read-only workspace fails without leaving marker state', {
-  skip: process.platform === 'win32',
+  skip:
+    process.platform === 'win32'
+      ? 'POSIX permissions are required to create a read-only workspace fixture'
+      : false,
 }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'maka-workspace-read-only-'));
   try {

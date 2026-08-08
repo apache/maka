@@ -142,6 +142,16 @@ export interface MakaPiTuiInput {
    * without waiting real seconds; defaults to the attention layer's own value.
    */
   attentionLongTurnThresholdMs?: number;
+  /**
+   * Clock + interval scheduling for the running shell-run elapsed ticker
+   * (1s cadence). Injectable so tests drive ticks deterministically instead
+   * of waiting wall-clock seconds; defaults to Date.now + a real unref'd
+   * setInterval.
+   */
+  shellRunTicker?: {
+    now?: () => number;
+    schedule?: (callback: () => void, intervalMs: number) => () => void;
+  };
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
@@ -200,9 +210,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
-  let thinkingLevels: readonly ThinkingLevel[] = providerType
-    ? thinkingVariantsForModel(providerType, input.model)
-    : [];
+  // The boot connection's declared capabilities win (an openai-compatible
+  // relay can declare relayModelProfiles[model].thinkingLevels). The
+  // providerType+model metadata variant is the fallback for modelChoices-free
+  // embeddings of the runner.
+  let thinkingLevels: readonly ThinkingLevel[] =
+    input.modelChoices?.find(
+      (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
+    )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
   let sessionListScope: 'current' | 'all' = 'current';
   let busy = false;
   let closed = false;
@@ -373,6 +388,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const shellRunElapsedTicker = createShellRunElapsedTicker({
     state,
     onTick: requestRender,
+    now: input.shellRunTicker?.now,
+    schedule: input.shellRunTicker?.schedule,
   });
 
   // ── Explicit skill invocation (#1148) ────────────────────────────────────
@@ -1252,7 +1269,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
-    thinkingLevels = providerType ? thinkingVariantsForModel(providerType, summary.model) : [];
+    // Choice-first: a relay model's user-declared levels live on the ModelChoice;
+    // the metadata fallback serves providers whose variants derive from the
+    // model id alone.
+    thinkingLevels =
+      contextWindowMatch?.thinkingLevels ??
+      (providerType ? thinkingVariantsForModel(providerType, summary.model) : []);
     refreshEditorCwd?.(cwd);
   };
 
@@ -1302,10 +1324,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const setModel = async (nextModel: string) => {
     await input.driver.setModel(nextModel);
     model = nextModel;
-    const match = modelChoices?.find((choice) => choice.model === nextModel);
+    // Same-connection switch: scope the choice lookup to the live connection
+    // (another connection may expose the same model id with different
+    // declared thinking levels).
+    const match = modelChoices?.find(
+      (choice) => choice.connectionSlug === connectionSlug && choice.model === nextModel,
+    );
     if (match) modelContextWindow = match.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels = providerType ? thinkingVariantsForModel(providerType, nextModel) : [];
+    thinkingLevels =
+      match?.thinkingLevels ??
+      (providerType ? thinkingVariantsForModel(providerType, nextModel) : []);
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1323,7 +1352,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     providerType = choice.providerType;
     modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels = thinkingVariantsForModel(choice.providerType, choice.model);
+    thinkingLevels =
+      choice.thinkingLevels ?? thinkingVariantsForModel(choice.providerType, choice.model);
     state.entries.push({
       kind: 'notice',
       level: 'info',

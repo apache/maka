@@ -261,6 +261,16 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   app.whenReady().then(async () => {
     updateService.start();
 
+    // Check when the user comes back to the app, not only on the four-hour
+    // timer. A version published while the window sat open was otherwise
+    // invisible until the next tick, which is what "the update never showed
+    // up" actually was. The service throttles this to one check per 15
+    // minutes, so alt-tabbing does not turn into a request storm, and any
+    // extra Maka window firing the same app-level event is a no-op.
+    app.on('browser-window-focus', () => {
+      void updateService.checkForUpdatesOnFocus();
+    });
+
     // The renderer's first IPC calls (session enumeration, settings read,
     // connection listing)
     // all read from stores that are initialized synchronously at module load,

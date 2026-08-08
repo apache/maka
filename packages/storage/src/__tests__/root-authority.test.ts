@@ -494,8 +494,9 @@ describe('storage root authority', () => {
 
   test('preserves unexpected marker I/O failures at the public authority boundary', {
     skip:
-      process.platform === 'win32' ||
-      (typeof process.getuid === 'function' && process.getuid() === 0),
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to make the marker unreadable'
+        : typeof process.getuid === 'function' && process.getuid() === 0,
   }, async () => {
     await withRoots(async ({ root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
@@ -701,7 +702,10 @@ describe('storage root authority', () => {
   });
 
   test('rejects a lock path that aliases another filesystem object', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'Windows file-symlink permissions are not guaranteed in CI'
+        : false,
   }, async () => {
     await withRoots(async ({ base, root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });

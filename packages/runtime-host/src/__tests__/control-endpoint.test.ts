@@ -21,6 +21,24 @@ function legacyPrefix(): string {
   return `m-${process.getuid?.()}-${rootTag()}-`;
 }
 
+describe('runtime host Windows named-pipe endpoint', { skip: process.platform !== 'win32' }, () => {
+  test('derives a stable pipe name and has idempotent lifecycle hooks', async () => {
+    const endpoint = await prepareRuntimeHostEndpoint({ rootId: ROOT_ID, hostEpoch: 'epoch-1' });
+    assert.equal(endpoint.path, `\\\\.\\pipe\\maka-runtime-host-${ROOT_ID.slice(0, 16)}-epoch-1`);
+    await endpoint.prepareAfterListen();
+    await endpoint.cleanup();
+    await endpoint.cleanup();
+  });
+
+  test('rejects an invalid storage root identity', async () => {
+    await assert.rejects(
+      prepareRuntimeHostEndpoint({ rootId: 'not-a-root-id', hostEpoch: '1' }),
+      (error: unknown) =>
+        error instanceof RuntimeHostEndpointError && error.code === 'insecure_endpoint_directory',
+    );
+  });
+});
+
 describe('runtime host control endpoint', { skip: process.platform === 'win32' }, () => {
   const originalTmpdir = process.env.TMPDIR;
 

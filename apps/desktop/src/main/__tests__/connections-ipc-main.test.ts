@@ -350,6 +350,76 @@ describe('connection IPC credential boundary', () => {
     assert.equal(persistedPatch?.baseUrl, 'https://chatgpt.com/backend-api/codex');
   });
 
+  test('create passes relay model profiles through to the store unchanged', async () => {
+    let persistedInput: CreateConnectionInput | undefined;
+    const handlers = registerHandlers({
+      connectionStore: {
+        create: async (input: CreateConnectionInput) => {
+          persistedInput = input;
+          return {
+            ...input,
+            defaultModel: 'my-reasoning-model',
+            enabled: true,
+            createdAt: 1,
+            updatedAt: 1,
+          };
+        },
+        remove: async () => {},
+      },
+    });
+
+    const create = handlers.get('connections:create');
+    assert.ok(create);
+    const relayModelProfiles = {
+      'my-reasoning-model': {
+        thinkingLevels: ['low', 'medium', 'high', 'max'],
+        vision: true,
+      },
+    } as const;
+    await create({}, {
+      slug: 'my-relay',
+      name: 'My Relay',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example/v1',
+      defaultModel: 'my-reasoning-model',
+      relayModelProfiles,
+    });
+    assert.deepEqual(persistedInput?.relayModelProfiles, relayModelProfiles);
+    assert.equal(persistedInput?.extras, undefined);
+  });
+
+  test('update passes relay model profiles through to the store unchanged', async () => {
+    let persistedPatch: UpdateConnectionInput | undefined;
+    const existing: LlmConnection = {
+      slug: 'my-relay',
+      name: 'My Relay',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example/v1',
+      defaultModel: 'my-reasoning-model',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const handlers = registerHandlers({
+      connectionStore: {
+        get: async () => existing,
+        update: async (_slug: string, patch: UpdateConnectionInput) => {
+          persistedPatch = patch;
+          return { ...existing, ...patch };
+        },
+      },
+    });
+
+    const update = handlers.get('connections:update');
+    assert.ok(update);
+    const relayModelProfiles = {
+      'my-reasoning-model': { thinkingLevels: ['low', 'high', 'max'] },
+    } as const;
+    await update({}, existing.slug, { relayModelProfiles });
+    assert.deepEqual(persistedPatch?.relayModelProfiles, relayModelProfiles);
+    assert.equal(persistedPatch?.extras, undefined);
+  });
+
   test('hasSecret uses the read-only credential probe', async () => {
     const connection = {
       slug: 'openai-codex',

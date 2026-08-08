@@ -495,6 +495,7 @@ function nestableToolSnapshot(
           active.has(tool.name) &&
           tool.name !== INVALID_TOOL_NAME &&
           tool.name !== 'exec' &&
+          tool.providerTool === undefined &&
           tool.nesting !== 'direct_only',
       )
       .map((tool) => [tool.name, tool] as const),

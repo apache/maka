@@ -320,6 +320,27 @@ function received(records: Array<Record<string, any>>, method: string): Record<s
   return records.filter((r) => r.kind === 'recv' && r.method === method).map((r) => r.params ?? {});
 }
 
+// Same rationale as maka-cu-service.test.ts: the mock appends to its log from
+// another process, so a single read races its scheduler. Poll with a bounded
+// deadline — a real regression (the record never written) still fails, just
+// without depending on which process the scheduler ran first.
+async function waitForRecord(
+  logPath: string,
+  predicate: (record: Record<string, any>) => boolean,
+  what: string,
+  deadlineMs = 2000,
+): Promise<void> {
+  const startedAt = Date.now();
+  for (;;) {
+    const records = await readRecords(logPath);
+    if (records.some(predicate)) return;
+    if (Date.now() - startedAt >= deadlineMs) {
+      assert.fail(`${what} (log after ${deadlineMs}ms: ${JSON.stringify(records)})`);
+    }
+    await delay(10);
+  }
+}
+
 function makeBackend(
   opts: {
     protocol?: string;
@@ -483,8 +504,10 @@ describe('maka-cu backend', () => {
     const { backend, logPath } = makeBackend({ protocol: 'maka.cu/99' });
     await assert.rejects(backend.preflight(signal()), /service_mismatch/);
     // §2: a mismatch is fatal. One spawn, no restart budget spent on an
-    // executor that already declared it cannot talk this protocol.
-    await delay(80);
+    // executor that already declared it cannot talk this protocol. The read
+    // below is causally ordered, not timed: a wrongly-retried spawn writes its
+    // `start` before replying to the handshake the awaited preflight consumed
+    // (and would surface as restart_exhausted, failing the rejects matcher).
     const records = await readRecords(logPath);
     assert.equal(records.filter((r) => r.kind === 'start').length, 1);
     assert.equal(received(records, 'session.begin').length, 0);
@@ -1162,8 +1185,14 @@ describe('maka-cu backend', () => {
   it('ends the executor session when the host clears it', async () => {
     const { backend, logPath } = makeBackend();
     await observeFixture(backend);
+    // clearSession fires session.end without exposing the round-trip, so wait
+    // on the delivered record itself instead of guessing scheduler timing.
     backend.clearSession(RUN_CONTEXT.sessionId);
-    await delay(120);
+    await waitForRecord(
+      logPath,
+      (r) => r.kind === 'recv' && r.method === 'session.end',
+      'the executor never received session.end after clearSession',
+    );
     const records = await readRecords(logPath);
     assert.deepEqual(received(records, 'session.end')[0], { session: RUN_CONTEXT.sessionId });
   });

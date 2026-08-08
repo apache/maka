@@ -258,6 +258,64 @@ test('ready model choices apply curation and isolate unavailable credentials', a
   );
 });
 
+test('ready model choices carry the thinking levels declared per relay model', async () => {
+  const relay = makeConnection({
+    slug: 'relay',
+    name: 'Relay',
+    providerType: 'openai-compatible',
+    baseUrl: 'https://relay.example/v1',
+    defaultModel: 'reasoning-model',
+    enabledModelIds: ['reasoning-model', 'plain-model'],
+    models: [{ id: 'reasoning-model' }, { id: 'plain-model' }],
+    relayModelProfiles: {
+      'reasoning-model': { thinkingLevels: ['minimal', 'low', 'high', 'max'] },
+    },
+  });
+
+  const choices = await listReadyModelChoices({
+    connectionStore: {
+      list: async () => [relay],
+      getDefault: async () => 'relay',
+    },
+    credentialStore: { getSecret: async () => 'sk-relay' },
+  });
+
+  // The declaration is keyed by model id: the sibling model on the same
+  // relay stays without a thinking menu.
+  assert.deepEqual(
+    choices.map(({ model, thinkingLevels }) => ({ model, thinkingLevels })),
+    [
+      { model: 'reasoning-model', thinkingLevels: ['minimal', 'low', 'high', 'max'] },
+      { model: 'plain-model', thinkingLevels: [] },
+    ],
+  );
+});
+
+test('ready model choices leave thinkingLevels empty for connections without a declaration', async () => {
+  const plain = makeConnection({
+    slug: 'relay',
+    name: 'Relay',
+    providerType: 'openai-compatible',
+    baseUrl: 'https://relay.example/v1',
+    defaultModel: 'plain-model',
+    enabledModelIds: ['plain-model'],
+    models: [{ id: 'plain-model' }],
+  });
+
+  const choices = await listReadyModelChoices({
+    connectionStore: {
+      list: async () => [plain],
+      getDefault: async () => 'relay',
+    },
+    credentialStore: { getSecret: async () => 'sk-relay' },
+  });
+
+  assert.deepEqual(
+    choices.map(({ thinkingLevels }) => thinkingLevels),
+    [[]],
+  );
+});
+
 function storeFor(connection: LlmConnection) {
   return {
     getDefault: async () => connection.slug,

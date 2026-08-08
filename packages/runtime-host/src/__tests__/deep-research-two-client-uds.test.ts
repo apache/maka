@@ -20,9 +20,7 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
-test('two UDS Clients and a restarted production Host share one Deep Research projection', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
-}, async () => {
+test('two Clients and a restarted production Host share one Deep Research projection', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-deep-research-uds-'));
   const root = join(base, 'interactive');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });

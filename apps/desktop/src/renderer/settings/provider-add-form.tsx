@@ -15,7 +15,14 @@ import {
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { Banner, HStack, VStack } from '@astryxdesign/core';
-import { Button, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
+import {
+  Button,
+  FormLayout,
+  TextInput,
+  useMountedRef,
+  useUiLocale,
+} from '@maka/ui';
+
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
@@ -137,12 +144,13 @@ export function AddProviderForm(props: {
             encodeURIComponent(normalizedCloudflareAccountId),
           )
         : baseUrl || undefined;
+      const createdDefaultModel = normalizedDefaultModel || recommendedDefaultModel;
       const connection = await props.bridge.create({
         slug,
         name: name || display.name,
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
-        defaultModel: normalizedDefaultModel || recommendedDefaultModel,
+        defaultModel: createdDefaultModel,
         ...(props.providerType === 'opencode-free'
           ? { enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS] }
           : {}),

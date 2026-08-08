@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
-import { thinkingVariantsForModel } from '@maka/core/model-thinking';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
   executionBoundaryDisplayMode,
   type ExecutionBoundary,
@@ -585,9 +585,21 @@ export class HostSessionCatalogCoordinator {
         'Session model identifier exceeds the wire limit',
       );
     }
+    // Fail-closed for undeclared levels only: the catalog entry carries the
+    // typed `relayModelProfiles` table, so a relay's user-declared levels DO
+    // reach this gate. A level outside the resolved variants is still
+    // rejected — execution-model-authority rebuilds the runtime connection
+    // from the same table, so whatever passes here is exactly what the wire
+    // can send.
     if (
       thinkingLevel !== undefined &&
-      !thinkingVariantsForModel(connection.providerType, selected.modelId).includes(thinkingLevel)
+      !thinkingVariantsForConnection(
+        {
+          providerType: connection.providerType,
+          relayModelProfiles: connection.relayModelProfiles,
+        },
+        selected.modelId,
+      ).includes(thinkingLevel)
     ) {
       throw new SessionOperationFailure(
         'invalid_request',

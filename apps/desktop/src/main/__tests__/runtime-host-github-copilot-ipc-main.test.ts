@@ -58,9 +58,11 @@ test('imports a local GitHub credential through the shared Host account path', a
         connectionId: current.connectionId,
         revision: current.revision,
       });
+      const { relayModelProfiles, ...restChanges } = changes;
       const updated: ConnectionCatalogEntry = {
         ...current,
-        ...changes,
+        ...restChanges,
+        ...(relayModelProfiles === null ? {} : { relayModelProfiles }),
         revision: current.revision + 1,
       };
       catalog = {

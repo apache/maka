@@ -54,6 +54,8 @@ export interface AppUpdateService {
   getStatus(): AppUpdateStatus;
   retryUpdateDownload(): Promise<AppUpdateStatus>;
   installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
+  /** Check because the window regained focus, subject to a shared throttle. */
+  checkForUpdatesOnFocus(): Promise<void>;
 }
 
 interface AppUpdateServiceDeps {
@@ -67,11 +69,19 @@ interface AppUpdateServiceDeps {
   clock?: {
     setTimeout(callback: () => void, delayMs: number): unknown;
     clearTimeout(handle: unknown): void;
+    /** Time source for the focus-check throttle. */
+    now?(): number;
   };
 }
 
 const FIRST_UPDATE_CHECK_DELAY_MS = 10_000;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+/**
+ * Focus is a cheap, frequent signal, so it is throttled rather than trusted:
+ * alt-tabbing ten times in a minute must not mean ten update requests. The
+ * four-hour timer stays as the floor for a window that is never refocused.
+ */
+const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
@@ -158,6 +168,10 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
     clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   };
+  const now = (): number => clock.now?.() ?? Date.now();
+  // One record shared by both triggers. Keeping a separate timestamp per
+  // trigger would let a focus check fire seconds after a scheduled one.
+  let lastCheckStartedAt: number | undefined;
 
   const publish = (next: AppUpdateStatus): AppUpdateStatus => {
     status = next;
@@ -273,6 +287,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (status.state === 'downloading' && !allowDuringDownload) return status;
     if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
+    lastCheckStartedAt = now();
     checkInFlight = updater
       .checkForUpdates()
       .then((result) => {
@@ -365,11 +380,37 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     }
   }
 
+  /**
+   * Check because the user came back to the window.
+   *
+   * The four-hour timer alone means a version published while the app sat
+   * open is not noticed until the next tick — which is what "the update did
+   * not show up" actually was. Focus is when the user is present and a restart
+   * prompt is least disruptive, so it is the right moment to look.
+   *
+   * Deliberately does NOT reset the scheduled timer: the two triggers stay
+   * independent and the shared throttle is what keeps them from doubling up.
+   */
+  async function checkForUpdatesOnFocus(): Promise<void> {
+    if (disposed || !started) return;
+    if (
+      lastCheckStartedAt !== undefined &&
+      now() - lastCheckStartedAt < UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    // No `allowDuringDownload`: a download already in flight is the update
+    // arriving, and re-checking mid-download is exactly what that guard exists
+    // to prevent.
+    await checkForUpdates();
+  }
+
   return {
     start,
     dispose,
     getStatus: currentStatus,
     retryUpdateDownload,
     installUpdate,
+    checkForUpdatesOnFocus,
   };
 }

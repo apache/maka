@@ -10,7 +10,12 @@ import type {
   ProviderType,
   RuntimeEvent,
 } from '@maka/core';
-import { isTerminalRuntimeEvent, isThinkingLevel, resolveModelVisionSupport } from '@maka/core';
+import {
+  relayModelProfile,
+  isTerminalRuntimeEvent,
+  isThinkingLevel,
+  resolveModelVisionSupport,
+} from '@maka/core';
 import {
   AgentGraphCoordinator,
   AGENT_TOOL_GROUP_ID,
@@ -1232,6 +1237,7 @@ export function buildAiSdkCellBackendRegistration(input: {
           connection.providerType,
           connection.models,
           input.model,
+          relayModelProfile(connection, input.model)?.vision,
         ),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore,

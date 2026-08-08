@@ -4,6 +4,7 @@ import {
   isDeepResearchSession,
 } from '@maka/core/explore-agent';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
+import { relayModelProfile } from '@maka/core/model-thinking';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
@@ -575,6 +576,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           target.connection.providerType,
           target.connection.models,
           target.model,
+          relayModelProfile(target.connection, target.model)?.vision,
         ),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,

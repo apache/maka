@@ -61,6 +61,230 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('carries, replaces, clears, and endpoint-retires the typed capability table', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const declared = {
+        'relay-model': {
+          thinkingLevels: ['minimal', 'low'] as const,
+          vision: true,
+          contextWindow: 128_000,
+        },
+      };
+      // Create persists the typed projection — and only the projection
+      // (the extras bag never entered the picture).
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('my-relay', 'openai-compatible', 'My Relay'),
+        baseUrl: 'https://relay.example/v1',
+        enabledModelIds: ['relay-model'],
+        relayModelProfiles: declared,
+      });
+      assert.deepEqual(connection.relayModelProfiles, declared);
+
+      // Replacement is total: a new table swaps in, null clears.
+      const replaced = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+          relayModelProfiles: { 'relay-model': { vision: false } },
+        },
+      });
+      assert.equal(replaced.kind, 'committed');
+      if (replaced.kind !== 'committed') return;
+      const afterReplace = replaced.snapshot.connections[0];
+      assert.deepEqual(afterReplace?.relayModelProfiles, { 'relay-model': { vision: false } });
+
+      const cleared = await stores.connectionCatalog.update({
+        expected: connectionBasis(afterReplace!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(cleared.kind, 'committed');
+      if (cleared.kind !== 'committed') return;
+      const afterClear = cleared.snapshot.connections[0];
+      assert.equal(afterClear?.relayModelProfiles, undefined);
+
+      // An absent key leaves the table untouched (name-only saves stay
+      // capability-blind), and an UNANNOUNCED endpoint change retires the
+      // table along with the fetched inventory: the new baseUrl fronts
+      // different models, and the old declarations must not outlive them.
+      const retained = await stores.connectionCatalog.update({
+        expected: connectionBasis(afterClear!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+          relayModelProfiles: declared,
+        },
+      });
+      assert.equal(retained.kind, 'committed');
+      if (retained.kind !== 'committed') return;
+      const nameOnly = await stores.connectionCatalog.update({
+        expected: connectionBasis(retained.snapshot.connections[0]!),
+        changes: {
+          name: 'Renamed Relay',
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+        },
+      });
+      assert.equal(nameOnly.kind, 'committed');
+      if (nameOnly.kind !== 'committed') return;
+      assert.deepEqual(nameOnly.snapshot.connections[0]?.relayModelProfiles, declared);
+
+      const endpointMoved = await stores.connectionCatalog.update({
+        expected: connectionBasis(nameOnly.snapshot.connections[0]!),
+        changes: {
+          name: 'Renamed Relay',
+          baseUrl: 'https://other-relay.example/v1',
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+        },
+      });
+      assert.equal(endpointMoved.kind, 'committed');
+      if (endpointMoved.kind !== 'committed') return;
+      assert.equal(endpointMoved.snapshot.connections[0]?.relayModelProfiles, undefined);
+      assert.deepEqual(endpointMoved.snapshot.connections[0]?.models, []);
+
+      // …unless the same update submits a table of its own — then the table
+      // belongs to the NEW endpoint and is stored. Config import relies on
+      // this exact single-call shape.
+      const movedWithTable = await stores.connectionCatalog.update({
+        expected: connectionBasis(endpointMoved.snapshot.connections[0]!),
+        changes: {
+          name: 'Renamed Relay',
+          baseUrl: 'https://third-relay.example/v1',
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+          relayModelProfiles: declared,
+        },
+      });
+      assert.equal(movedWithTable.kind, 'committed');
+      if (movedWithTable.kind !== 'committed') return;
+      assert.deepEqual(movedWithTable.snapshot.connections[0]?.relayModelProfiles, declared);
+      assert.deepEqual(movedWithTable.snapshot.connections[0]?.models, []);
+    });
+  });
+
+  test('an untouched profile table is pruned to the new enabled-model selection', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const declared = {
+        'relay-model': { vision: true as const },
+        'relay-model-2': { contextWindow: 64_000 as const },
+      };
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('prune-relay', 'openai-compatible', 'Prune Relay'),
+        baseUrl: 'https://relay.example/v1',
+        enabledModelIds: ['relay-model', 'relay-model-2'],
+        relayModelProfiles: declared,
+      });
+      assert.deepEqual(connection.relayModelProfiles, declared);
+
+      const disabled = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['relay-model'],
+        },
+      });
+      assert.equal(disabled.kind, 'committed');
+      if (disabled.kind !== 'committed') return;
+      // No profile instruction rode along, so the ⊆ enabledModelIds rule is
+      // the store's job: the disabled model's declaration is gone, never
+      // stranded as a stale key the settings page cannot see.
+      assert.deepEqual(disabled.snapshot.connections[0]?.relayModelProfiles, {
+        'relay-model': { vision: true },
+      });
+
+      // Pruning everything degrades to "no table" — never a stored `{}`.
+      const allDisabled = await stores.connectionCatalog.update({
+        expected: connectionBasis(disabled.snapshot.connections[0]!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: [],
+        },
+      });
+      assert.equal(allDisabled.kind, 'committed');
+      if (allDisabled.kind !== 'committed') return;
+      assert.equal(allDisabled.snapshot.connections[0]?.relayModelProfiles, undefined);
+    });
+  });
+
+  test('a model refresh prunes profiles for models the inventory retired', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('refresh-relay', 'openai-compatible', 'Refresh Relay'),
+        baseUrl: 'https://relay.example/v1',
+        enabledModelIds: ['model-a', 'model-b'],
+        relayModelProfiles: {
+          'model-a': { vision: true },
+          'model-b': { contextWindow: 64_000 },
+        },
+      });
+      assert.deepEqual(connection.relayModelProfiles, {
+        'model-a': { vision: true },
+        'model-b': { contextWindow: 64_000 },
+      });
+
+      // A /models fetch needs a credential first — discovery is refused for
+      // credential-less connections before any of this runs.
+      const credential = await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: 'sk-refresh',
+      });
+      assert.equal(credential.kind, 'committed');
+
+      // The /models refresh drops model-a from the live inventory. The
+      // refresh write bypasses the canonical decoder — without pruning the
+      // table, model-a's profile would persist and every later canonical
+      // read would reject the document.
+      const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(fetch.kind, 'ready');
+      if (fetch.kind !== 'ready') return;
+      const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
+        models: [{ id: 'model-b' }],
+        source: 'fetched',
+        fetchedAt: 43,
+      });
+      assert.equal(discovered.kind, 'committed');
+      if (discovered.kind !== 'committed') return;
+      const after = discovered.snapshot.connections[0];
+      assert.deepEqual(after?.enabledModelIds, ['model-b']);
+      assert.deepEqual(after?.relayModelProfiles, { 'model-b': { contextWindow: 64_000 } });
+
+      // The document must survive a canonical reload: the next mutation
+      // re-decodes persisted state, and a stranding here would have raised
+      // invalid_document instead of committing.
+      const roundtrip = await stores.connectionCatalog.update({
+        expected: connectionBasis(after!),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['model-b'],
+        },
+      });
+      assert.equal(roundtrip.kind, 'committed');
+      if (roundtrip.kind !== 'committed') return;
+      assert.deepEqual(roundtrip.snapshot.connections[0]?.relayModelProfiles, {
+        'model-b': { contextWindow: 64_000 },
+      });
+    });
+  });
+
   test('commits closed policy mutations, canonicalizes proxy hosts, and preserves connection identity', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const policy = await stores.runtimePolicy.mutate(personalizationMutation(0));
@@ -135,6 +359,7 @@ describe('runtime policy stores', () => {
         baseUrl: ' https://Gateway.EXAMPLE:443/v1 ',
         enabled: true,
         enabledModelIds: ['gpt-5'],
+        relayModelProfiles: null,
       };
       await assert.rejects(
         () =>
@@ -681,6 +906,7 @@ describe('runtime policy stores', () => {
           baseUrl: current.baseUrl,
           enabled: true,
           enabledModelIds: [],
+          relayModelProfiles: null,
         },
       });
       assert.equal(emptied.kind, 'committed');
@@ -871,6 +1097,7 @@ describe('runtime policy stores', () => {
           baseUrl: current.baseUrl,
           enabled: true,
           enabledModelIds: ['gpt-5-mini'],
+          relayModelProfiles: null,
         },
       });
       assert.equal(updated.kind, 'committed');
@@ -970,7 +1197,10 @@ describe('runtime policy stores', () => {
   });
 
   test('reports unknown outcome when credential persistence fails after clearing verified state', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1110,7 +1340,10 @@ describe('runtime policy stores', () => {
   });
 
   test('validates proxy policy mutations before clearing and reports failed follow-up commits as unknown', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1313,7 +1546,10 @@ describe('runtime policy stores', () => {
   });
 
   test('reports unknown outcome when active proxy password persistence fails after clearing', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1486,6 +1722,7 @@ describe('runtime policy stores', () => {
           baseUrl: 'https://gateway.example/v1',
           enabled: true,
           enabledModelIds: connection.enabledModelIds,
+          relayModelProfiles: null,
         },
       });
       assert.equal(endpointUpdate.kind, 'committed');
@@ -1513,6 +1750,7 @@ describe('runtime policy stores', () => {
           baseUrl: connection.baseUrl,
           enabled: true,
           enabledModelIds: ['gpt-5-mini'],
+          relayModelProfiles: null,
         },
       });
       assert.equal(modelSelectionUpdate.kind, 'committed');
@@ -1635,7 +1873,10 @@ describe('runtime policy stores', () => {
   });
 
   test('preserves unknown commit semantics and consumes the completion ticket', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1932,6 +2173,7 @@ describe('runtime policy stores', () => {
           name: 'Current revision',
           enabled: true,
           enabledModelIds: ['gpt-5'],
+          relayModelProfiles: null,
         },
       });
       assert.equal(updatedResult.kind, 'committed');
@@ -1996,7 +2238,10 @@ describe('runtime policy stores', () => {
   });
 
   test('successor recovery removes credentials orphaned by an interrupted connection removal', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveRoot(async ({ root, capability }) => {
       const firstOwner = await tryAcquireInteractiveRootOwner(capability);
@@ -2299,6 +2544,7 @@ describe('runtime policy stores', () => {
           name: 'Claude renamed',
           enabled: current.enabled,
           enabledModelIds: current.enabledModelIds,
+          relayModelProfiles: null,
         },
       });
       assert.equal(updated.kind, 'committed');

@@ -22,8 +22,7 @@ import {
 } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
-test('OAuth enrollment presents only on the initiating Client over real UDS', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+test('OAuth enrollment presents only on the initiating Client over the real endpoint', {
   timeout: 30_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-oauth-two-client-'));
@@ -153,8 +152,7 @@ test('OAuth enrollment presents only on the initiating Client over real UDS', {
   }
 });
 
-test('OAuth enrollment honors Claude and Codex opt-out flags over real UDS', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+test('OAuth enrollment honors Claude and Codex opt-out flags over the real endpoint', {
   timeout: 30_000,
 }, async () => {
   const cases = [

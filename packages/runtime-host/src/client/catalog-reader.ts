@@ -2,6 +2,8 @@ import type {
   ConnectionCatalogCursor,
   ConnectionCatalogPageItem,
   ConnectionCatalogQueryResult,
+  RelayModelProfile,
+  RelayModelProfiles,
   SessionCatalogFilter,
   SessionCatalogItem,
   SkillCatalogLocalContext,
@@ -26,6 +28,7 @@ export type RuntimeHostConnectionCatalogEntry = Omit<
 > & {
   readonly enabledModelIds: readonly string[];
   readonly models: readonly Extract<ConnectionCatalogPageItem, { kind: 'model' }>['model'][];
+  readonly relayModelProfiles?: RelayModelProfiles;
 };
 
 export interface RuntimeHostConnectionCatalogSnapshot {
@@ -207,6 +210,7 @@ function assembleConnectionCatalog(
       header: Extract<ConnectionCatalogPageItem, { kind: 'connection' }>;
       enabledModelIds: Map<number, string>;
       models: Map<number, RuntimeHostConnectionCatalogEntry['models'][number]>;
+      relayProfiles: Map<string, RelayModelProfile>;
     }
   >();
   for (const item of items) {
@@ -218,6 +222,7 @@ function assembleConnectionCatalog(
       header: item,
       enabledModelIds: new Map(),
       models: new Map(),
+      relayProfiles: new Map(),
     });
   }
   for (const item of items) {
@@ -230,8 +235,14 @@ function assembleConnectionCatalog(
     if (item.itemIndex >= expectedCount || values.has(item.itemIndex)) {
       throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
     }
-    if (item.kind === 'enabled_model_id') entry.enabledModelIds.set(item.itemIndex, item.modelId);
-    else entry.models.set(item.itemIndex, item.model);
+    if (item.kind === 'enabled_model_id') {
+      entry.enabledModelIds.set(item.itemIndex, item.modelId);
+      // Reassemble the profile table the projector spread across items; the
+      // downstream type is the per-model map, not the wire's per-item shape.
+      if (item.relayProfile !== undefined) entry.relayProfiles.set(item.modelId, item.relayProfile);
+    } else {
+      entry.models.set(item.itemIndex, item.model);
+    }
   }
   if (entries.size !== first.connectionCount) {
     throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
@@ -256,6 +267,9 @@ function assembleConnectionCatalog(
         ...header,
         enabledModelIds: orderedValues(entry.enabledModelIds),
         models: orderedValues(entry.models),
+        ...(entry.relayProfiles.size === 0
+          ? {}
+          : { relayModelProfiles: Object.fromEntries(entry.relayProfiles) }),
       };
     });
   return { revision: first.revision, defaultTarget: first.defaultTarget, connections };

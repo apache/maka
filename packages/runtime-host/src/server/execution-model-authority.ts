@@ -775,12 +775,19 @@ export async function resolveExecutionTarget(
     );
   }
 
+  // Relay profiles ride the connection as a first-class field, so every
+  // downstream seam (buildProviderOptions variant gate, declared vision,
+  // declared context window) reads the host path identically to the
+  // embedded one.
   const connection: RuntimeExecutionConnection = {
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
     defaultModel: model,
     models: [...resolved.connection.models],
+    ...(resolved.connection.relayModelProfiles === undefined
+      ? {}
+      : { relayModelProfiles: resolved.connection.relayModelProfiles }),
   };
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;

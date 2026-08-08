@@ -86,13 +86,26 @@ describe('ProviderAuth contract', () => {
     expect(contract.sendMayUseWithoutSecret).toBe(false);
     expect(contract.actionAvailability.save_secret).toBe('hidden');
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('available');
+    // Session-scoped subscription tokens cannot call GET /v1/models, so the
+    // registry declares fallback-only discovery and the action stays hidden.
+    expect(contract.actionAvailability.fetch_models).toBe('hidden');
     expect(contract.actionAvailability.start_oauth).toBe('hidden');
     expect(contract.actionAvailability.refresh_oauth).toBe('available');
     expect(contract.actionAvailability.revoke_auth).toBe('available');
     expect(contract.copy.label).toContain('OAuth 已验证');
     expect(contract.copy.detail).toContain('账号令牌和端点验证通过');
     expect(contract.copy.detail.includes('API key 连接仍是聊天模型的可用路径')).toBe(false);
+  });
+
+  test('a discovery-capable wired OAuth provider keeps fetch_models available after login', () => {
+    const contract = deriveProviderAuthContract({
+      providerType: 'openai-codex',
+      hasSecret: true,
+      lastTestStatus: 'verified',
+    });
+
+    expect(contract.setupMode).toBe('oauth');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
   test('wired OAuth subscription providers route missing login to the OAuth setup path', () => {

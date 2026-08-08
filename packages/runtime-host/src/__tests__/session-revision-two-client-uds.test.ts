@@ -45,8 +45,8 @@ const LINEAGE_REVISION_TARGET_ID = 'lineage-revision-target';
 const LINEAGE_BRANCH_TARGET_ID = 'lineage-branch-target';
 const GRAPH_REVISION_TARGET_ID = 'graph-revision-target';
 
-test('two UDS Clients share exact retryable Session branch and revision authority', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+test('two Clients share exact retryable Session branch and revision authority', {
+  skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
   timeout: 120_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-revision-'));

@@ -198,7 +198,11 @@ function classifySkip(path, title, expression) {
     /process\.platform\s*!==\s*['"]darwin['"]/u.test(expression) ||
     value.includes('posix process discovery') ||
     value.includes('posix detached process-group') ||
+    value.includes('posix snapshot') ||
+    value.includes('posix process snapshot') ||
+    value.includes('graceful sigterm') ||
     value.includes('publishes private posix endpoint') ||
+    value.includes('open sqlite') ||
     value.includes('fifo') ||
     value.includes('non-utf-8 git path') ||
     value.includes('permissions') ||

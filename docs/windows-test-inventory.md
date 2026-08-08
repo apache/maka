@@ -16,17 +16,17 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 30 |
-| portable-candidate | 24 |
-| platform-contract | 16 |
+| portable-candidate | 0 |
+| platform-contract | 35 |
 
-Total Windows-excluded declarations: **70**
+Total Windows-excluded declarations: **65**
 
 ## Inventory
 
 | Classification | Test | Skip expression |
 |---|---|---|
 | platform-contract | `apps/desktop/scripts/dev-app-runtime.test.mjs` the real probe survives a hostile bundle path | `process.platform !== 'darwin'` |
-| portable-candidate | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
+| platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
@@ -65,33 +65,28 @@ Total Windows-excluded declarations: **70**
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a pipe task alive when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a PTY task controllable when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a pipe task alive when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps a PTY task controllable when Stop aborts during process-tree preparation | `process.platform === 'win32' ? 'Windows termination does not take a POSIX process snapshot' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
-| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
-| portable-candidate | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` preserves the durable database root binding across formal whole-root import | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects an authority database whose file identity changes after registration | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` does not return an accepted baseline when runtime.sqlite is replaced after the initial root check | `process.platform === 'win32'` |
+| platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects an authority database whose file identity changes after registration | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database to replace its file identity' : false` |
+| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` does not return an accepted baseline when runtime.sqlite is replaced after the initial root check | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database during the verification race' : false` |
 | platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects a source tree containing a non-UTF-8 Git path | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/managed-workspace-owner.test.ts` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
-| portable-candidate | `packages/storage/src/__tests__/memory-bundle-store.test.ts` rejects a symbolic-link Memory parent without reading or writing outside the root | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/pet-pack-store.test.ts` rejects a store root redirected outside the state root | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' \|\| (typeof process.getuid === 'function' && process.getuid() === 0)` |
+| platform-contract | `packages/storage/src/__tests__/managed-workspace-owner.test.ts` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
+| platform-contract | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
+| platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32'` |
+| platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` validates an existing control directory without repairing its permissions | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when credential persistence fails after clearing verified state | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` validates proxy policy mutations before clearing and reports failed follow-up commits as unknown | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when active proxy password persistence fails after clearing | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` preserves unknown commit semantics and consumes the completion ticket | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32'` |
+| platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when credential persistence fails after clearing verified state | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
+| platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` validates proxy policy mutations before clearing and reports failed follow-up commits as unknown | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
+| platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when active proxy password persistence fails after clearing | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
+| platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` preserves unknown commit semantics and consumes the completion ticket | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
+| platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/storage/src/__tests__/sqlite-long-term-memory-crash.test.ts` retains one committed Item and its receipt when killed between COMMIT and return | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/storage/src/__tests__/sqlite-runtime-crash.test.ts` SqliteRuntimeStore real-process crash boundaries | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
-| portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a non-Git workspace resolves when the Git executable is unavailable | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a Git workspace does not publish a marker when the Git executable is unavailable | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32'` |
+| platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
+| platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |

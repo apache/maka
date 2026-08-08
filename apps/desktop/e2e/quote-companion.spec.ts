@@ -233,11 +233,16 @@ test('the quote layer waits for the selection to settle, stays closed after Esca
   await page.keyboard.press('Escape');
   await expect(quoteLayer).toBeHidden();
   await page.keyboard.press('Shift');
+  // Real-timer negative window, derived from the hook's SELECTION_SETTLE_MS
+  // (350ms): a wrongly re-captured selection would surface the layer once that
+  // settle window elapses, so outliving it (with margin) proves the dismissal
+  // held.
   await page.waitForTimeout(500);
   await expect(quoteLayer).toBeHidden();
 
   // Selecting inside the composer must not surface a transcript affordance —
-  // and must not leave the previous selection's layer standing either.
+  // and must not leave the previous selection's layer standing either. Same
+  // SELECTION_SETTLE_MS-derived negative window as above.
   await composer.fill('drafted text to select');
   await selectContents(composer);
   await page.waitForTimeout(500);

@@ -1,6 +1,7 @@
 import { isConnectionReady, type ChatConfigurationReason } from '@maka/core/connection-readiness';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import { connectionEnabledModelIds, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
   isOAuthSubscriptionProvider,
   resolveOAuthSubscriptionTokens,
@@ -144,6 +145,7 @@ export async function listReadyModelChoices(input: {
           model,
           isDefaultConnection: connection.slug === defaultSlug,
           contextWindow: resolveSelectedModelContextWindow(connection, model),
+          thinkingLevels: thinkingVariantsForConnection(connection, model),
         });
       }
     } catch {

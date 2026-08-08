@@ -86,7 +86,7 @@ import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { fetchProviderModels } from '@maka/runtime';
 import { createApiKeyOnboardingSurface } from './onboarding.js';
-import { isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
+import { relayModelProfile, isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
 import type { ReadySessionTarget } from './connection-target.js';
 import {
   listReadyModelChoices,
@@ -748,6 +748,7 @@ export async function createMakaCliRuntimeContext(
         ready.connection.providerType,
         ready.connection.models,
         ready.model,
+        relayModelProfile(ready.connection, ready.model)?.vision,
       ),
       readAttachmentBytes: createAttachmentByteReader({ artifactStore, sessionId: ctx.sessionId }),
       loadHistoryCompact: (event) => loadHistoryCompactBlocksFromArtifacts(artifactStore, event),

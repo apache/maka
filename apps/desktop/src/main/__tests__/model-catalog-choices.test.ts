@@ -313,16 +313,16 @@ describe('model catalog picker helpers', () => {
     const options = buildCatalogDailyReviewModelOptions(
       [
         connection({
-          slug: 'claude-work',
+          slug: 'codex-work',
           name: 'person@example.com',
-          providerType: 'claude-subscription',
+          providerType: 'openai-codex',
           models: [{ id: 'shared-model', displayName: 'Shared Model' }],
           modelSource: 'fetched',
         }),
         connection({
-          slug: 'claude-home',
+          slug: 'codex-home',
           name: 'private@example.com',
-          providerType: 'claude-subscription',
+          providerType: 'openai-codex',
           models: [{ id: 'shared-model', displayName: 'Shared Model' }],
           modelSource: 'fetched',
         }),
@@ -343,12 +343,12 @@ describe('model catalog picker helpers', () => {
     );
     assert.deepEqual(options, [
       [
-        'claude-work::shared-model',
-        'Shared Model · Claude Subscription (Pro / Max OAuth) · claude-work',
+        'codex-work::shared-model',
+        'Shared Model · OpenAI OAuth (ChatGPT / Codex) · codex-work',
       ],
       [
-        'claude-home::shared-model',
-        'Shared Model · Claude Subscription (Pro / Max OAuth) · claude-home',
+        'codex-home::shared-model',
+        'Shared Model · OpenAI OAuth (ChatGPT / Codex) · codex-home',
       ],
       ['deepseek-api::deepseek-v4-flash', 'DeepSeek V4 Flash'],
     ]);

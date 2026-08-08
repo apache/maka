@@ -6,6 +6,40 @@ type WidenCopy<T> = T extends string
     ? (...args: Args) => string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
+// Capability-section strings for the connection detail page — the add-provider
+// form deliberately carries no declaration controls (capabilities are edited
+// after the connection exists).
+const zhCapabilitiesCopy = {
+  capabilities: '能力',
+  thinkingEffort: '思考档位（reasoning_effort）',
+  thinkingEffortHelp: '勾选需要的思考强度档位，不勾选即为不声明。',
+  thinkingUndeclared: '未声明',
+  thinkingSelectedCount: (count: number) => `已选择 ${count} 个`,
+  visionInput: '视觉输入（vision）',
+  visionInputHelp: '「自动」跟随内置元数据；「启用/禁用」是显式声明，覆盖自动判断。',
+  visionAuto: '自动',
+  visionEnabledOption: '启用',
+  visionDisabledOption: '禁用',
+  contextWindow: '上下文窗口（tokens）',
+  contextWindowHelp: '声明后压缩与预算按此值计算；留空跟随内置元数据。',
+  saveCapabilities: '保存能力声明',
+};
+const enCapabilitiesCopy = {
+  capabilities: 'Capabilities',
+  thinkingEffort: 'Thinking levels (reasoning_effort)',
+  thinkingEffortHelp: 'Tick the thinking levels this model supports; none ticked means undeclared.',
+  thinkingUndeclared: 'Undeclared',
+  thinkingSelectedCount: (count: number) => `${count} selected`,
+  visionInput: 'Vision input',
+  visionInputHelp: 'Auto follows built-in metadata; Enabled/Disabled overrides it explicitly.',
+  visionAuto: 'Auto',
+  visionEnabledOption: 'Enabled',
+  visionDisabledOption: 'Disabled',
+  contextWindow: 'Context window (tokens)',
+  contextWindowHelp: 'When set, compaction and budgets use this value; when empty, built-in metadata decides.',
+  saveCapabilities: 'Save capability declarations',
+};
+
 const zhCopy = {
   detail: {
     delete: '删除', cancel: '取消', deleteUnused: '不再需要，删除连接',
@@ -25,6 +59,8 @@ const zhCopy = {
     credentialsHelp: '密钥只保存在本机。',
     credentialsHelpAccount: '登录令牌只保存在本机。',
     modelManagementHelp: '这些模型会出现在对话的模型选择器里。',
+    ...zhCapabilitiesCopy,
+    capabilitiesHelp: '声明每个已启用模型的思考档位、视觉与上下文窗口；保存后生效。',
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 语言)：一行
     // 只报状态，改的时候才展开成输入框。
     change: '更换', set: '设置', edit: '编辑', save: '保存',
@@ -102,6 +138,7 @@ const zhCopy = {
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
     apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服务地址',
     defaultModel: '默认模型', defaultModelPlaceholder: '填写你的中转站模型 ID，例如 gpt-4o、claude-sonnet-4-5 或自定义模型名', defaultModelHelp: '用于首次连接测试和模型选择器兜底；保存后仍会自动拉取模型目录。', defaultModelRequired: '请填写默认模型 ID。保存后仍会自动拉取模型目录。',
+    ...zhCapabilitiesCopy,
   },
   oauthFlow: {
     refreshFailed: '刷新登录状态失败', accountActionFailed: (name: string) => `${name} 账号操作失败`, loginFailedRetry: '登录失败，请稍后重试。',
@@ -168,6 +205,8 @@ const enCopy: ProviderSettingsCopy = {
     credentialsHelp: 'The key stays on this machine.',
     credentialsHelpAccount: 'The sign-in token stays on this machine.',
     modelManagementHelp: 'These models appear in the chat model picker.',
+    ...enCapabilitiesCopy,
+    capabilitiesHelp: 'Declares thinking levels, vision, and context window per enabled model; applies on save.',
     change: 'Change', set: 'Set', edit: 'Edit', save: 'Save',
     endpointDefault: 'The provider default',
     modelManagement: 'Models',
@@ -243,6 +282,7 @@ const enCopy: ProviderSettingsCopy = {
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,
     apiKeyLabel: 'API key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: 'Service URL',
     defaultModel: 'Default model', defaultModelPlaceholder: 'Enter your relay model id, e.g. gpt-4o, claude-sonnet-4-5, or a custom model name', defaultModelHelp: 'Used as the first connection-test and picker fallback; Maka still fetches the model catalog after saving.', defaultModelRequired: 'Enter a default model id. Maka still fetches the model catalog after saving.',
+    ...enCapabilitiesCopy,
   },
   oauthFlow: {
     refreshFailed: 'Failed to refresh sign-in status', accountActionFailed: (name: string) => `${name} account action failed`, loginFailedRetry: 'Sign-in failed. Try again later.',
