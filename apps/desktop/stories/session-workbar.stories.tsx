@@ -35,13 +35,14 @@ import { withScopedMakaBridge } from './maka-bridge';
 const SESSION_ID = 'session-workbar';
 const NOW = Date.UTC(2026, 6, 31, 10, 30, 0);
 
-// The record-file row derives from `app:info`'s workspacePath. The short one
-// is what a default workspace looks like; the long one proves the row
-// truncates (the path is hover/focus-copy reachable, the copy button is not
-// pushed out) even at the panel's 320px minimum width.
-const DEFAULT_WORKSPACE_PATH = 'C:\\Users\\reviewer\\Maka\\workspaces\\default';
-const LONG_WORKSPACE_PATH =
-  'C:\\Users\\reviewer\\Maka\\workspaces\\default\\projects\\trace-record-file-truncation-\\with-a-very-long-owner';
+// The record-file row reads `app:info`'s operationalStateDatabasePath (the
+// exact path main resolves). The short one is what a default workspace looks
+// like; the long one proves the row truncates the directory while the
+// filename stays (the path is hover/focus-copy reachable, the copy button is
+// not pushed out) even at the panel's 320px minimum width.
+const DEFAULT_RECORD_FILE_PATH = 'C:\\Users\\reviewer\\Maka\\workspaces\\default\\runtime.sqlite';
+const LONG_RECORD_FILE_PATH =
+  'C:\\Users\\reviewer\\Maka\\workspaces\\default\\projects\\trace-record-file-truncation-\\with-a-very-long-owner\\runtime.sqlite';
 
 // ---- ledgers -------------------------------------------------------------
 
@@ -396,7 +397,7 @@ function bridge(options: {
   tasksFail?: boolean;
   trace?: SessionTrace;
   traceFail?: boolean;
-  workspacePath?: string;
+  recordFilePath?: string;
 } = {}) {
   return withScopedMakaBridge({
     tasks: {
@@ -415,9 +416,12 @@ function bridge(options: {
       subscribeChanges: unsubscribe,
     },
     app: {
-      // The record-file row reads only workspacePath; the rest of AppInfo is
-      // real-IPC data no story needs, so the mock carries just the seam.
-      info: async () => ({ workspacePath: options.workspacePath ?? DEFAULT_WORKSPACE_PATH }),
+      // The record-file row reads only operationalStateDatabasePath; the rest
+      // of AppInfo is real-IPC data no story needs, so the mock carries just
+      // the seam.
+      info: async () => ({
+        operationalStateDatabasePath: options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
+      }),
       openArtifactPath: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveArtifactAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
@@ -538,6 +542,6 @@ export const TraceReadFailed: Story = {
 // truncates. (The default stories above already show the row with a short
 // path; this variant pins the truncation contract.)
 export const TraceRecordFile: Story = {
-  decorators: [bridge({ trace: populatedTrace, workspacePath: LONG_WORKSPACE_PATH })],
+  decorators: [bridge({ trace: populatedTrace, recordFilePath: LONG_RECORD_FILE_PATH })],
   render: () => <Workbar tab="inspector" />,
 };

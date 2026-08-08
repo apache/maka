@@ -672,6 +672,45 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The record-file row is the one non-list line the panel carries: label,
+   path, copy button. The path must truncate, so the row flexes and the
+   directory part alone gets the ellipsis — the label, the filename and the
+   button keep their size. The row is also the tooltip trigger: one Tab stop,
+   with a visible focus ring (the Astryx focus-visible ring, same token the
+   panel's other interactive controls use). */
+.maka-inspector-record-file-row {
+  min-width: 0;
+}
+
+.maka-inspector-record-file-label {
+  flex-shrink: 0;
+}
+
+.maka-inspector-record-file {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  user-select: text;
+  border-radius: 4px;
+}
+
+.maka-inspector-record-file:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-inspector-record-file-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-inspector-record-file-name {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* The readout carries the tier too, so a full window is legible from the line
    that states it rather than only from the colour of the bands below. */
 .maka-inspector-section-head[data-level='warning'] .maka-inspector-section-readout {

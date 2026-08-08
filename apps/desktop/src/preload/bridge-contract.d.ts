@@ -726,6 +726,8 @@ export interface MakaBridge {
       workspacePath: string;
       /** The OS home directory, for collapsing displayed paths to `~`. */
       homePath: string;
+      /** Exact operational-state database path resolved by main. */
+      operationalStateDatabasePath: string;
       projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };

@@ -1080,6 +1080,7 @@ const makaBridge = {
       osRelease: string;
       workspacePath: string;
       homePath: string;
+      operationalStateDatabasePath: string;
       projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
