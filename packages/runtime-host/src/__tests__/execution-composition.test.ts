@@ -495,7 +495,7 @@ async function createClaimedGraphChild(input: {
       agentName: LOCAL_READ_AGENT_DEFINITION.name,
       profile: LOCAL_READ_AGENT_DEFINITION.profile,
       systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
-      toolNames: [],
+      toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
       categoryPolicy: {},
       permissionCeiling: 'ask',
     },

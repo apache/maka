@@ -100,6 +100,7 @@ export class RuntimeHostKernel {
   readonly #server: Server;
   readonly #handshakingTransports = new Set<FramedTransport>();
   readonly #acceptedTransports = new Set<FramedTransport>();
+  readonly #connectionSessions = new Set<RuntimeHostConnectionSession>();
   readonly #operationDrainWaiters = new Set<() => void>();
   readonly #residencyDrainWaiters = new Set<() => void>();
   readonly #idleGraceMs: number;
@@ -231,6 +232,7 @@ export class RuntimeHostKernel {
             retainUntilProcessExit: () => this.#retainUntilProcessExit(),
             requestDrain: () => this.#requestDrain(),
           });
+          for (const session of this.#connectionSessions) session.attachGlobalChanges();
           if (this.#shutdownRequested) this.#beginCompositionDrain();
           this.#operationHandlers = this.#createOperationHandlers(this.#composition.handlers);
           await this.#composition.recover();
@@ -293,7 +295,12 @@ export class RuntimeHostKernel {
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });
-      await session.run();
+      this.#connectionSessions.add(session);
+      try {
+        await session.run();
+      } finally {
+        this.#connectionSessions.delete(session);
+      }
     } catch {
       transport.destroy();
     } finally {

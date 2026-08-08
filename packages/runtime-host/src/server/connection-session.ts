@@ -74,8 +74,7 @@ export class RuntimeHostConnectionSession {
   }
 
   async run(): Promise<void> {
-    this.#attachConfigurationChanges();
-    this.#attachSessionCatalogChanges();
+    this.attachGlobalChanges();
     try {
       try {
         await this.#pumpInbound();
@@ -168,7 +167,6 @@ export class RuntimeHostConnectionSession {
 
     try {
       if (this.#closed) return;
-      this.#attachGlobalChanges();
       const continuity =
         frame.operation === 'subscription.open' ||
         frame.operation === 'subscription.close' ||
@@ -273,7 +271,8 @@ export class RuntimeHostConnectionSession {
     });
   }
 
-  #attachGlobalChanges(): void {
+  attachGlobalChanges(): void {
+    if (this.#closed || this.#inputClosed) return;
     this.#attachConfigurationChanges();
     this.#attachSessionCatalogChanges();
   }

@@ -1247,7 +1247,6 @@ describe('non-serving Runtime Host kernel', () => {
         });
         releaseFactory();
         host = await hostTask;
-        assert.equal((await activeConnection.status()).state, 'ready');
         configurationChanges.publish();
         sessionCatalogChanges.publish('session-1');
         assert.equal(
