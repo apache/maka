@@ -10,11 +10,11 @@ stack_base: managed-dependency-storage-authority-v1
 
 ## 1. 本 PR 只证明一个主要不变量
 
-> 在 storage authority 复制 producer 输出以前，固定 npm producer 必须只在一次性 Maka-owned staging 中运行；它不能继承 host secrets、不能创建 child process、不能执行 lifecycle script，并且只有在根进程退出、输出 drain、最终 inventory 与配额验证全部完成后才允许 `provision()` resolve。
+> 在 storage authority 复制 producer 输出以前，固定 npm producer 必须只在一次性 Maka-owned staging 中运行；它不能继承 host secrets、不能创建 child process、不能执行 lifecycle script，并且只有在根进程退出、输出 drain、最终 inventory 与 observed-limit 验证全部完成后才允许 `provision()` resolve。
 
-本 PR 的 owner 是 Runtime Host 内部的 `runManagedNpmDependencyProvision()`。它拥有固定 npm argv、hermetic environment、Node permission profile、staging project layout、manifest/lockfile admission、timeout/abort、process lifecycle、bounded diagnostics，以及运行中和终态 filesystem inventory。
+本 PR 的候选 owner 是 Runtime Host 模块内部的 `runManagedNpmDependencyProvision()`。它拥有固定 npm argv、hermetic environment、Node permission profile、staging project layout、manifest/lockfile admission、timeout/abort、process lifecycle、bounded diagnostics，以及运行中和终态 filesystem inventory。
 
-低层 `runManagedDependencyProducerProcess()` 只是 owner 的内部执行 primitive，不通过 Runtime Host server barrel 暴露任意 argv 能力。后续 PR 只能消费固定 npm 入口，不能绕过它自行 spawn package manager。
+`runManagedNpmDependencyProvision()` 与低层 `runManagedDependencyProducerProcessInternal()` 均不通过 Runtime Host server barrel 暴露。PR 2 没有 runtime attestation owner，因此任何 raw executable path 都不能成为 production 输入。PR 3 必须先把经过 manifest/digest 验证的、有限 Node major allowlist 内的 bundled runtime capability 与该模块共同落地，之后才能公开固定 npm 入口。后续 PR 不能绕过该入口自行 spawn package manager。
 
 本 PR 不包含：
 
@@ -25,7 +25,7 @@ stack_base: managed-dependency-storage-authority-v1
 - 用户 PATH 上的 npm fallback；
 - production network broker。
 
-因此本 PR 必须保持 Draft。它与 PR 1、PR 3 一样没有独立用户能力；只有 PR 4 的 production consumer 和端到端测试成立后，整个 stack 才能按顺序转 Ready。
+因此本 PR 必须保持 Draft。它与 PR 1、PR 3 一样没有独立用户能力；PR 3 完成 runtime attestation 前，当前固定 npm 入口也不能成为生产 API。只有 PR 4 的 production consumer 和端到端测试成立后，整个 stack 才能按顺序转 Ready。
 
 ## 2. 固定 producer 协议
 
@@ -65,7 +65,7 @@ verified-node
 
 没有 `--allow-child-process`，因此 production npm root process 不能创建 descendant。`PATH`、`NODE_OPTIONS`、proxy、credential、registry token 和任意 host environment 都不继承；HOME、npm config、temp 与 Node compile cache 全部指向同一次 staging 的 scratch。
 
-PR 3 必须提供经过完整 manifest/digest 验证的 Node executable、npm runtime root 与 npm CLI，并使用本 PR 导出的 Node/npm compatibility contract。它不能覆盖 argv、env、timeout 或 quota。
+PR 3 必须提供经过完整 manifest/digest 验证的 Node executable、npm runtime root 与 npm CLI，并使用有限 Node major allowlist。它必须在同一 Runtime Host package 内完成不可伪造 capability 的发行与消费，再由 server barrel 公开组合后的入口；不能仅把 raw path 验证留给调用者。它也不能覆盖 argv、env、timeout 或 observed limit。
 
 ## 3. Owner、时序和失败状态
 
@@ -76,7 +76,7 @@ validate identity + manifest + lockfile
   -> write exact npm configs + manifest + lockfile
   -> spawn one detached root process with no child-process capability
   -> monitor whole staging project every 100 ms
-  -> abort / timeout / invalid tree / quota: terminate process tree and await exit + I/O drain
+  -> abort / timeout / invalid tree / observed limit: terminate process tree and await exit + I/O drain
   -> normal root exit
   -> await stdout/stderr drain
   -> final complete inventory
@@ -90,8 +90,9 @@ validate identity + manifest + lockfile
 ```text
 aborted
 timeout
-filesystem_quota
+filesystem_limit_exceeded
 filesystem_invalid
+output_drain_incomplete
 process_failed
 ```
 
@@ -99,7 +100,9 @@ process_failed
 
 ## 4. Filesystem inventory 与 `.bin`
 
-默认 production quota 固定为 2 GiB 和 250,000 entries，不能由 PR 3/4 调高。空文件、目录、普通文件和合法 symlink 都计入 entry quota；普通文件 size 与 symlink target bytes 计入 byte governance。进程退出后必须再做一次完整终检，避免短命 producer 在 monitor tick 前超限后退出。
+默认 soft observed limit 固定为 2 GiB 和 250,000 entries，不能由 PR 3/4 调高。它通过 100 ms polling 与最终 inventory 保证“超限结果绝不进入 artifact publication”，但不是 OS/filesystem 强制的峰值磁盘 quota；producer 可在相邻 observation 之间短暂超写。若产品要求防止磁盘被瞬时写满，必须另建 OS quota、受控写入 broker 或等价平台 owner，不能把 polling 描述为 disk-safety boundary。
+
+空文件、目录、普通文件和合法 symlink 都计入 observed entry limit；普通文件 size 与 symlink target bytes 计入 observed byte limit。进程退出后必须再做一次完整终检，避免短命 producer 在 monitor tick 前超限后退出。
 
 Linux/macOS 允许 npm 的典型相对 `.bin` symlink，例如：
 
@@ -113,11 +116,11 @@ target 必须按 link 所在目录解析后仍位于 staging project 内。absol
 
 | 平台 | child process | timeout/abort | `.bin` | 保证 |
 |---|---|---|---|---|
-| Linux | Node permission 禁止；异常终止用 process group + descendant scan | 先收割树，再 reject | contained relative symlink | production-shaped POSIX 测试必须执行 |
-| macOS | Node permission 禁止；异常终止用 process group + descendant scan | 先收割树，再 reject | contained relative symlink | `/var` alias 由 canonical path 处理 |
-| Windows | Node permission 禁止；异常终止用 `taskkill /T /F` | 先收割树，再 reject | 普通 npm shim；reparse 拒绝 | 有限支持，不宣称 POSIX sandbox 等价 |
+| Linux | PR 3 attested Node permission 禁止；异常终止用 process group + descendant scan | root 存活时先收割树，再 reject | contained relative symlink | production-shaped POSIX 测试必须执行 |
+| macOS | PR 3 attested Node permission 禁止；异常终止用 process group + descendant scan | root 存活时先收割树，再 reject | contained relative symlink | `/var` alias 由 canonical path 处理 |
+| Windows | PR 3 attested Node permission 禁止；异常终止用 `taskkill /T /F` | root 存活时先收割树，再 reject | 普通 npm shim；reparse 拒绝 | 无 Job Object；禁止任意可生 descendant 的 producer |
 
-Node permission model 是 production root-only 证明的一部分，而不是可选 hardening。若未来 package manager 必须启动 child process，必须定义新的 capability/policy identity 和新的平台 owner；不能在 `hermetic_dependency_builder_v1` 下静默加入 `--allow-child-process`。
+Node permission model 与 PR 3 runtime attestation 必须共同存在，才构成 production root-only 证明；二者都不是可选 hardening。内部任意 argv primitive 不承诺在 root 已退出后回收 detached descendant，且不得成为 production consumer。若未来 package manager 必须启动 child process，必须定义新的 capability/policy identity，并为 POSIX 引入 cgroup/subreaper 或为 Windows 引入 Job Object 等真实平台 owner；不能在 `hermetic_dependency_builder_v1` 下静默加入 `--allow-child-process`。
 
 ## 6. Network 边界与尚未闭环的证明
 
@@ -134,10 +137,10 @@ Node permission model 是 production root-only 证明的一部分，而不是可
 | npm 尝试创建 child process | Node permission 拒绝；不产生 descendant side effect |
 | caller abort | tree 完全退出且 I/O drain 后返回 `aborted` |
 | timeout | tree 完全退出且 I/O drain 后返回 `timeout` |
-| byte/entry quota 超限 | tree 完全退出后返回 `filesystem_quota` |
+| observed byte/entry limit 超限 | tree 完全退出后返回 `filesystem_limit_exceeded`；超限内容不发布，但不承诺峰值磁盘占用 |
 | escaping/unsupported entry | tree 完全退出后返回 `filesystem_invalid` |
 | root exit 非零 | bounded stderr/stdout tail 随 `process_failed` 返回 |
-| root exit、继承输出的正常 child 尚未结束（仅内部 primitive 测试） | 等待 output tree drain，不提前 resolve |
+| output 在 deadline 前未 drain | 返回 `output_drain_incomplete`；该状态禁止发布。PR 3 通过 attested no-child runtime 使 descendant 形状不可达 |
 | producer 成功后 storage deep-copy 前 host 崩溃 | PR 1 启动清理 staging，无 artifact/receipt |
 
 child-process crash test 只能证明进程生命周期，不是断电测试。PR 2 不写 durable fact，所以没有 schema migration 或数据库 recovery 语义。

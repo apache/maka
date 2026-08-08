@@ -4,11 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import * as runtimeHostServer from '../server/index.js';
 import {
   isManagedNpmNodeVersionSupported,
-  runManagedDependencyProducerProcess,
+  runManagedDependencyProducerProcessInternal,
   runManagedNpmDependencyProvision,
 } from '../server/managed-dependency-producer-process.js';
+
+test('does not expose an npm entry before runtime attestation is installed', () => {
+  assert.equal('runManagedNpmDependencyProvision' in runtimeHostServer, false);
+});
 
 test('admits only Node versions compatible with the fixed npm execution profile', () => {
   assert.equal(isManagedNpmNodeVersionSupported('22.22.1'), false);
@@ -18,6 +23,8 @@ test('admits only Node versions compatible with the fixed npm execution profile'
   assert.equal(isManagedNpmNodeVersionSupported('24.15.0'), true);
   assert.equal(isManagedNpmNodeVersionSupported('25.0.0'), false);
   assert.equal(isManagedNpmNodeVersionSupported('26.0.0'), true);
+  assert.equal(isManagedNpmNodeVersionSupported('27.0.0'), false);
+  assert.equal(isManagedNpmNodeVersionSupported('999.0.0'), false);
   assert.equal(isManagedNpmNodeVersionSupported('invalid'), false);
 });
 
@@ -195,14 +202,14 @@ test('waits for the producer process output tree to close before returning', asy
     "process.stdout.write('producer done\\n');",
   ].join('');
 
-  const result = await runManagedDependencyProducerProcess({
+  const result = await runManagedDependencyProducerProcessInternal({
     argv: [process.execPath, '-e', producer],
     cwd: root,
     env: process.env,
     monitorRoot: root,
     timeoutMs: 5_000,
-    maxBytes: 1024 * 1024,
-    maxEntries: 100,
+    maxObservedBytes: 1024 * 1024,
+    maxObservedEntries: 100,
   });
 
   assert.equal(result.exitCode, 0);
@@ -225,15 +232,15 @@ test('aborts and reaps the complete producer process tree before rejecting', asy
     'setInterval(() => {}, 1000);',
   ].join('');
   const abort = new AbortController();
-  const task = runManagedDependencyProducerProcess({
+  const task = runManagedDependencyProducerProcessInternal({
     argv: [process.execPath, '-e', producer],
     cwd: root,
     env: process.env,
     monitorRoot: root,
     abortSignal: abort.signal,
     timeoutMs: 5_000,
-    maxBytes: 1024 * 1024,
-    maxEntries: 100,
+    maxObservedBytes: 1024 * 1024,
+    maxObservedEntries: 100,
   });
   const childPid = Number.parseInt(await waitForFile(childPidPath), 10);
 
@@ -256,14 +263,14 @@ test('times out and reaps the complete producer process tree before rejecting', 
     "process.on('SIGTERM', () => {});",
     'setInterval(() => {}, 1000);',
   ].join('');
-  const task = runManagedDependencyProducerProcess({
+  const task = runManagedDependencyProducerProcessInternal({
     argv: [process.execPath, '-e', producer],
     cwd: root,
     env: process.env,
     monitorRoot: root,
     timeoutMs: 100,
-    maxBytes: 1024 * 1024,
-    maxEntries: 100,
+    maxObservedBytes: 1024 * 1024,
+    maxObservedEntries: 100,
   });
   const childPid = Number.parseInt(await waitForFile(childPidPath), 10);
 
@@ -271,7 +278,7 @@ test('times out and reaps the complete producer process tree before rejecting', 
   await waitForProcessExit(childPid);
 });
 
-test('enforces filesystem quotas and reaps the producer tree before rejecting', async (t) => {
+test('enforces observed filesystem limits and reaps the producer tree before rejecting', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-dependency-producer-quota-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const childPidPath = join(root, 'child.pid');
@@ -286,18 +293,23 @@ test('enforces filesystem quotas and reaps the producer tree before rejecting', 
     "process.on('SIGTERM', () => {});",
     'setInterval(() => {}, 1000);',
   ].join('');
-  const task = runManagedDependencyProducerProcess({
+  const task = runManagedDependencyProducerProcessInternal({
     argv: [process.execPath, '-e', producer],
     cwd: root,
     env: process.env,
     monitorRoot: root,
     timeoutMs: 500,
-    maxBytes: 1024,
-    maxEntries: 100,
+    maxObservedBytes: 1024,
+    maxObservedEntries: 100,
   });
   const childPid = Number.parseInt(await waitForFile(childPidPath), 10);
 
-  await assert.rejects(task, /filesystem quota/u);
+  await assert.rejects(
+    task,
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as { readonly reason?: unknown }).reason === 'filesystem_limit_exceeded',
+  );
   await waitForProcessExit(childPid);
 });
 
@@ -317,14 +329,14 @@ test('accepts and accounts for a contained npm bin symlink on POSIX', {
     "fs.symlinkSync('../package/bin/cli.js', path.join(links, 'fixture-cli'));",
   ].join('');
 
-  const result = await runManagedDependencyProducerProcess({
+  const result = await runManagedDependencyProducerProcessInternal({
     argv: [process.execPath, '-e', producer],
     cwd: root,
     env: process.env,
     monitorRoot: root,
     timeoutMs: 5_000,
-    maxBytes: 1024,
-    maxEntries: 10,
+    maxObservedBytes: 1024,
+    maxObservedEntries: 10,
   });
 
   assert.equal(result.exitCode, 0);
@@ -343,14 +355,14 @@ test('rejects an escaping producer symlink as invalid output instead of a quota 
   ].join('');
 
   await assert.rejects(
-    runManagedDependencyProducerProcess({
+    runManagedDependencyProducerProcessInternal({
       argv: [process.execPath, '-e', producer],
       cwd: root,
       env: process.env,
       monitorRoot: root,
       timeoutMs: 1_000,
-      maxBytes: 1024,
-      maxEntries: 10,
+      maxObservedBytes: 1024,
+      maxObservedEntries: 10,
     }),
     /escaping symbolic link/u,
   );
@@ -368,16 +380,16 @@ test('counts empty files toward the producer entry quota', async (t) => {
   ].join('');
 
   await assert.rejects(
-    runManagedDependencyProducerProcess({
+    runManagedDependencyProducerProcessInternal({
       argv: [process.execPath, '-e', producer],
       cwd: root,
       env: process.env,
       monitorRoot: root,
       timeoutMs: 5_000,
-      maxBytes: 1024,
-      maxEntries: 10,
+      maxObservedBytes: 1024,
+      maxObservedEntries: 10,
     }),
-    /filesystem quota/u,
+    /observed filesystem limit/u,
   );
 });
 
@@ -386,14 +398,14 @@ test('rejects a non-zero producer exit with its bounded diagnostic tail', async 
   t.after(() => rm(root, { recursive: true, force: true }));
 
   await assert.rejects(
-    runManagedDependencyProducerProcess({
+    runManagedDependencyProducerProcessInternal({
       argv: [process.execPath, '-e', "process.stderr.write('fixture failed\\n'); process.exit(7)"],
       cwd: root,
       env: process.env,
       monitorRoot: root,
       timeoutMs: 5_000,
-      maxBytes: 1024,
-      maxEntries: 10,
+      maxObservedBytes: 1024,
+      maxObservedEntries: 10,
     }),
     /exit code 7: fixture failed/u,
   );
