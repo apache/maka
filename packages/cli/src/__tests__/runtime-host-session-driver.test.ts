@@ -4,7 +4,6 @@ import { describe, test } from 'node:test';
 import type { StoredMessage } from '@maka/core';
 import type {
   DirectRequestOperationKey,
-  RuntimeHostConnection,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
 import type {
@@ -15,7 +14,10 @@ import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
-import { createRuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
+import {
+  createRuntimeHostMakaSessionDriver,
+  type RuntimeHostMakaSessionDriverInput,
+} from '../runtime-host-session-driver.js';
 import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
@@ -766,24 +768,21 @@ class FakeConnection {
   openedSubscriptions = 0;
   interactionQuery: unknown;
   skillStartBlocked = false;
-  readonly value: RuntimeHostConnection;
+  readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(private readonly subscriptions: FakeSubscription[]) {
     this.value = {
       hostEpoch: 'host-1',
-      connectionId: 'connection-1',
-      selectedProtocol: 0,
-      closed: new Promise(() => {}),
       request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
         this.request(operation, input),
+      startTurn: (input) => this.request('turn.start', input),
       openSessionSubscription: async () => {
         const subscription = this.subscriptions[this.openedSubscriptions];
         this.openedSubscriptions += 1;
         if (!subscription) throw new Error('No fake subscription available');
         return subscription;
       },
-      close: async () => {},
-    } as unknown as RuntimeHostConnection;
+    } satisfies RuntimeHostMakaSessionDriverInput['connection'];
   }
 
   async request<K extends DirectRequestOperationKey>(

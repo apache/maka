@@ -24,6 +24,16 @@ import {
 } from "./settings-ipc-helpers.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
+type RuntimeHostSettingsClient = Pick<
+  DesktopRuntimeHostClient,
+  | "deleteCredential"
+  | "queryCredential"
+  | "queryRuntimePolicy"
+  | "setCredential"
+  | "testNetworkProxy"
+  | "updateRuntimePolicy"
+>;
+
 const PROXY_CREDENTIAL: CredentialLocator = {
   scope: "network_proxy",
   kind: "password",
@@ -36,7 +46,7 @@ const WEB_SEARCH_CREDENTIAL: CredentialLocator = {
 
 export interface RuntimeHostSettingsIpcDeps {
   readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
-  readonly client: DesktopRuntimeHostClient;
+  readonly client: RuntimeHostSettingsClient;
   readonly settingsStore: SettingsStore;
   readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
 }
@@ -201,7 +211,7 @@ function projectWebSearchCredential(
 }
 
 async function applyHostPatch(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   patch: UpdateAppSettingsInput,
 ): Promise<void> {
   if (patch.network?.proxy) {
@@ -292,7 +302,7 @@ async function applyHostPatch(
 async function mergePolicy<
   K extends "memory" | "workspaceInstructions" | "privacy" | "chatDefaults",
 >(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   key: K,
   patch: Partial<RuntimePolicy[K]>,
   kind:
@@ -310,7 +320,7 @@ async function mergePolicy<
 }
 
 async function setCredential(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   locator: CredentialLocator,
   secret: string,
 ): Promise<void> {
@@ -332,7 +342,7 @@ async function setCredential(
 }
 
 async function deleteCredential(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   locator: CredentialLocator,
 ): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -381,6 +391,7 @@ function toClientOwnedPatch(
     ...(patch.appearance ? { appearance: patch.appearance } : {}),
     ...(personalization ? { personalization } : {}),
     ...(patch.notifications ? { notifications: patch.notifications } : {}),
+    ...(patch.projects ? { projects: patch.projects } : {}),
     ...(patch.system ? { system: patch.system } : {}),
   };
 }

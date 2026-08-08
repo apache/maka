@@ -523,7 +523,9 @@ function registerHostClientIpc(
     store: mcpConfigStore,
     manager: mcpManager,
     ensureReady: ensureMcpReady,
-    refreshIdleBackends: mcpCapabilityPublisher.refreshIfChanged,
+    publishCapabilities: mcpCapabilityPublisher.refreshIfChanged,
+    onPublicationError: (error) =>
+      console.error("[runtime-host] MCP capability publication failed:", error),
     emitChanged: (statuses) =>
       mainWindowController.send("mcp:changed", statuses),
   });

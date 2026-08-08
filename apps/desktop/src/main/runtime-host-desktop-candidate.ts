@@ -408,6 +408,7 @@ export async function createDesktopRuntimeHostCandidate(
         resizeImage: deps.resizeImage,
         beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
         sessionCopyCleanup,
+        onBackgroundError: (error) => deps.onError?.(error),
         ...(deps.e2eInteractions
           ? { e2eInteractions: deps.e2eInteractions }
           : {}),

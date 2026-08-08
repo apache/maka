@@ -59,7 +59,7 @@ import {
 const MAX_CATALOG_ATTEMPTS = 3;
 
 export interface RuntimeHostMakaSessionDriverInput {
-  connection: RuntimeHostConnection;
+  connection: RuntimeHostSessionDriverConnection;
   cwd: string;
   llmConnectionSlug: string;
   model: string;
@@ -69,6 +69,11 @@ export interface RuntimeHostMakaSessionDriverInput {
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
 }
+
+type RuntimeHostSessionDriverConnection = Pick<
+  RuntimeHostConnection,
+  'hostEpoch' | 'openSessionSubscription' | 'request' | 'startTurn'
+>;
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
@@ -93,7 +98,7 @@ export function createRuntimeHostMakaSessionDriver(
 }
 
 class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
-  readonly #connection: RuntimeHostConnection;
+  readonly #connection: RuntimeHostSessionDriverConnection;
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
@@ -865,7 +870,7 @@ interface LoadedSessionConfiguration {
 }
 
 async function getRuntimeHostSession(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
 ): Promise<SessionCatalogProjection | null> {
   const result = await connection.request('session.catalog.query', { kind: 'get', sessionId });
@@ -883,7 +888,7 @@ function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
 }
 
 async function updateRuntimeHostSession(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
   update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
 ): Promise<SessionCatalogProjection> {
@@ -897,7 +902,7 @@ async function updateRuntimeHostSession(
 }
 
 async function loadCurrentMessages(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostSessionDriverConnection,
   sessionId: string,
 ): Promise<StoredMessage[]> {
   const subscription = await connection.openSessionSubscription({ sessionId });

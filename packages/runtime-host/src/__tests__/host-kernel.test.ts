@@ -642,26 +642,35 @@ describe('non-serving Runtime Host kernel', () => {
 
   test('a detached Host survives the launcher process that created it', async () => {
     await withHostPaths(async (paths) => {
-      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const launcher = paths.resources.trackChild(
-        fork(
-          new URL('./fixtures/detached-launcher.js', import.meta.url),
-          [paths.root, capability.rootId],
-          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
-        ),
-      );
-      const launchedPid = await waitForLaunch(launcher);
-      paths.resources.trackPid(launchedPid);
-      await waitForExit(launcher);
+      const callerCwd = await mkdtemp(join(tmpdir(), 'maka-runtime-host-launcher-cwd-'));
+      try {
+        const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+        const launcher = paths.resources.trackChild(
+          fork(
+            new URL('./fixtures/detached-launcher.js', import.meta.url),
+            [paths.root, capability.rootId],
+            { cwd: callerCwd, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+          ),
+        );
+        const launchedPid = await waitForLaunch(launcher);
+        paths.resources.trackPid(launchedPid);
+        await waitForExit(launcher);
 
-      const connected = await retryConnect(paths, CURRENT_PROTOCOL);
-      assert.equal(connected.kind, 'connected');
-      if (connected.kind !== 'connected') return;
-      assert.equal(connected.registration.pid, launchedPid);
-      process.kill(launchedPid, 'SIGKILL');
-      await connected.connection.closed;
-      await waitForProcessExit(launchedPid);
-      paths.resources.forgetPid(launchedPid);
+        // The detached Host must not retain a caller directory that may be a
+        // package verifier, updater, or project-owned temporary workspace.
+        await rm(callerCwd, { recursive: true, force: true });
+
+        const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+        assert.equal(connected.kind, 'connected');
+        if (connected.kind !== 'connected') return;
+        assert.equal(connected.registration.pid, launchedPid);
+        process.kill(launchedPid, 'SIGKILL');
+        await connected.connection.closed;
+        await waitForProcessExit(launchedPid);
+        paths.resources.forgetPid(launchedPid);
+      } finally {
+        await rm(callerCwd, { recursive: true, force: true });
+      }
     });
   });
 

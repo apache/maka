@@ -322,6 +322,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
         resizeImage: async (bytes) => bytes,
         beforeStop() {},
         sessionCopyCleanup: unusedSessionCopyCleanup(),
+        onBackgroundError() {},
         newId: () => 'turn-1',
       },
       ipc,

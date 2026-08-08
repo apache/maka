@@ -17,6 +17,7 @@ import type {
 import type { RuntimeHostConnection } from './connection.js';
 
 const MAX_STABLE_READ_ATTEMPTS = 3;
+type RuntimeHostCatalogConnection = Pick<RuntimeHostConnection, 'request'>;
 
 export interface RuntimeHostSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
@@ -50,7 +51,7 @@ export class RuntimeHostCatalogReadError extends Error {
 }
 
 export async function readRuntimeHostConnectionCatalog(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
 ): Promise<RuntimeHostConnectionCatalogSnapshot> {
   const { first, pages } = await collectStablePages(
     'connection',
@@ -74,7 +75,7 @@ export async function readRuntimeHostConnectionCatalog(
 }
 
 export async function readRuntimeHostSkillCatalog(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   context: SkillCatalogLocalContext,
   view: SkillCatalogView,
 ): Promise<RuntimeHostSkillCatalogSnapshot> {
@@ -103,7 +104,7 @@ export async function readRuntimeHostSkillCatalog(
 }
 
 export async function readRuntimeHostInvocableSkills(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   target: SkillCatalogInvocableTarget,
 ): Promise<readonly SkillCatalogInvocableItem[]> {
   const { pages } = await collectStablePages(
@@ -129,7 +130,7 @@ export async function readRuntimeHostInvocableSkills(
 }
 
 export async function readRuntimeHostSessions(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   filter?: SessionCatalogFilter,
 ): Promise<SessionCatalogItem[]> {
   const { pages } = await collectStablePages(
@@ -155,7 +156,7 @@ export async function readRuntimeHostSessions(
 }
 
 export async function readRuntimeHostResources(
-  connection: RuntimeHostConnection,
+  connection: RuntimeHostCatalogConnection,
   sessionId: string,
 ): Promise<
   Extract<OperationOutput<'runtime.resource.query'>, { kind: 'page' }>['resources'][number][]

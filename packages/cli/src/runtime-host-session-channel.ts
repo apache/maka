@@ -27,7 +27,7 @@ export interface RuntimeHostSessionChannelOpenResult {
 }
 
 export interface RuntimeHostSessionChannelOptions {
-  connection: RuntimeHostConnection;
+  connection: Pick<RuntimeHostConnection, 'openSessionSubscription'>;
   sessionId: string;
   now: () => number;
   onTurnStarted: (turn: MakaPreparedSessionTurn) => void;

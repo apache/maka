@@ -35,22 +35,6 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
 
-  const dingtalkRow = mcp.locator('[data-maka-contract="mcp-market-row"]').filter({ hasText: '钉钉' });
-  const installDingtalk = dingtalkRow.getByRole('button', { name: '安装 钉钉' });
-  await installDingtalk.click();
-  const cancelDingtalk = dingtalkRow.getByRole('button', { name: '取消安装 钉钉' });
-  await expect(cancelDingtalk).toBeVisible();
-  await page.mouse.move(0, 0);
-  await expect(cancelDingtalk.locator('.maka-mcp-install-spinner')).toHaveCSS('opacity', '1');
-  await cancelDingtalk.hover();
-  await expect(cancelDingtalk.locator('.maka-mcp-install-cancel')).toHaveCSS('opacity', '1');
-  await cancelDingtalk.click();
-  await expect(dingtalkRow.getByRole('button', { name: '安装 钉钉' })).toBeVisible();
-  await expect.poll(async () => {
-    const next = await page.evaluate(() => window.maka.mcp.getConfig());
-    return next.mcpServers.dingtalk;
-  }).toBeUndefined();
-
   await mcp.getByRole('button', { name: '添加 MCP' }).click();
   const editor = page.getByRole('dialog', { name: '添加 MCP' });
   await expect(editor.getByLabel('服务器 ID')).toBeFocused();

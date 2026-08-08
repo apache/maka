@@ -234,6 +234,7 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
 test("marks Runtime Host Branch copies as side conversations", async () => {
   const metadataUpdates: unknown[] = [];
   const abandonedOwners: string[] = [];
+  const backgroundErrors: unknown[] = [];
   const ipc = ipcHarness();
   const sessionCopyCleanup = {
     ownCreation: <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
@@ -241,6 +242,7 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
     async schedule() {},
     async abandonOwner(ownerId: string) {
       abandonedOwners.push(ownerId);
+      throw new Error('cleanup unavailable');
     },
     async recover() {
       return { removed: [], failed: [] };
@@ -270,6 +272,7 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
       resizeImage: async (bytes) => bytes,
       beforeStop() {},
       sessionCopyCleanup,
+      onBackgroundError: (error) => backgroundErrors.push(error),
     },
     ipc,
   );
@@ -295,7 +298,12 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
     SIDE_CONVERSATION_SESSION_LABEL,
   ]);
   ipc.rendererGone();
+  ipc.rendererDestroyed();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(abandonedOwners, ['web-contents:9']);
+  assert.deepEqual(backgroundErrors.map((error) => (error as Error).message), [
+    'cleanup unavailable',
+  ]);
 });
 
 test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
@@ -727,18 +735,24 @@ function ipcHarness() {
     rendererGone() {
       sender.emit('render-process-gone');
     },
+    rendererDestroyed() {
+      sender.emit('destroyed');
+    },
   };
 }
 
 function registerExecutionIpc(
-  deps: Omit<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup'> &
-    Partial<Pick<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup'>>,
+  deps: Omit<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'> &
+    Partial<
+      Pick<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'>
+    >,
   ipcMain: Pick<IpcMain, 'handle'>,
 ): (sessionId: string) => Promise<void> {
   return registerRuntimeHostSessionExecutionIpc(
     {
       ...deps,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
+      onBackgroundError: deps.onBackgroundError ?? (() => undefined),
     },
     ipcMain,
   );

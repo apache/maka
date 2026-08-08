@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export interface DetachedCandidateInput {
@@ -40,6 +41,7 @@ export function launchDetachedRuntimeHostCandidate(
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {
+    cwd: dirname(isAbsolute(executable) ? executable : process.execPath),
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

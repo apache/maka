@@ -65,6 +65,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   resizeImage(bytes: Uint8Array): Promise<Uint8Array>;
   beforeStop(sessionId: string): void | Promise<void>;
   sessionCopyCleanup: SessionCopyCleanupAuthority;
+  onBackgroundError(error: unknown): void;
   e2eInteractions?: {
     list(sessionId: string): readonly ActiveInteractionRequestEvent[];
     respondToSandboxBoundary(
@@ -93,8 +94,10 @@ export function registerRuntimeHostSessionExecutionIpc(
     if (!observedCopyOwners.has(ownerId)) {
       observedCopyOwners.add(ownerId);
       const abandon = () => {
-        observedCopyOwners.delete(ownerId);
-        void deps.sessionCopyCleanup.abandonOwner(ownerId);
+        if (!observedCopyOwners.delete(ownerId)) return;
+        event.sender.removeListener('render-process-gone', abandon);
+        event.sender.removeListener('destroyed', abandon);
+        void deps.sessionCopyCleanup.abandonOwner(ownerId).catch(deps.onBackgroundError);
       };
       event.sender.once('render-process-gone', abandon);
       event.sender.once('destroyed', abandon);
