@@ -19,6 +19,8 @@ let cleanupDirs: string[] = [];
 function makeTempConnections(content: object): string {
   const dir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
   cleanupDirs.push(dir);
+  // Returns the connections FILE path — MAKA_CONNECTIONS_PATH is a file path
+  // (the existing contract); createConnectionStoreForFile honors it verbatim.
   const filePath = join(dir, 'llm-connections.json');
   writeFileSync(filePath, JSON.stringify(content), 'utf8');
   return filePath;
@@ -50,11 +52,11 @@ describe('applyConnectionDefaults', () => {
     ],
   });
 
-  test('injects the complete default connection and colocated credentials path', () => {
+  test('injects the complete default connection and colocated credentials path', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
     const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
@@ -62,7 +64,7 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_CREDENTIALS_PATH, join(dirname(connectionsPath), 'credentials.json'));
   });
 
-  test('does not override explicit model, provider, or connection authority', () => {
+  test('does not override explicit model, provider, or connection authority', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
 
     for (const [name, value] of [
@@ -77,13 +79,14 @@ describe('applyConnectionDefaults', () => {
       };
       const before = { ...env };
 
-      applyConnectionDefaults(env);
+      await applyConnectionDefaults(env);
 
       assert.deepEqual(env, before, name);
     }
   });
 
-  test('ignores missing, malformed, disabled, incomplete, or unsupported connection sources', () => {
+  test('ignores missing, malformed, disabled, incomplete, or unsupported connection sources', async () => {
+    // Malformed: a connections file that is not valid JSON.
     const malformedDir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
     cleanupDirs.push(malformedDir);
     const malformedPath = join(malformedDir, 'llm-connections.json');
@@ -120,13 +123,13 @@ describe('applyConnectionDefaults', () => {
     for (const connectionsPath of sources) {
       const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-      applyConnectionDefaults(env);
+      await applyConnectionDefaults(env);
 
       assert.deepEqual(env, { MAKA_CONNECTIONS_PATH: connectionsPath }, connectionsPath);
     }
   });
 
-  test('leaves MAKA_BASE_URL unset when the connection has no base URL', () => {
+  test('leaves MAKA_BASE_URL unset when the connection has no base URL', async () => {
     const connectionsPath = makeTempConnections({
       defaultSlug: 'deepseek-default',
       connections: [
@@ -140,28 +143,28 @@ describe('applyConnectionDefaults', () => {
     });
     const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'deepseek/deepseek-v4-flash');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'deepseek-default');
     assert.equal(env.MAKA_BASE_URL, undefined);
   });
 
-  test('preserves an explicit base URL while filling the remaining defaults', () => {
+  test('preserves an explicit base URL while filling the remaining defaults', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
     const env: Record<string, string | undefined> = {
       MAKA_CONNECTIONS_PATH: connectionsPath,
       MAKA_BASE_URL: 'http://custom-url:9999',
     };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
     assert.equal(env.MAKA_BASE_URL, 'http://custom-url:9999');
   });
 
-  test('skips defaults for fake and pi-agent backends', () => {
+  test('skips defaults for fake and pi-agent backends', async () => {
     const connectionsPath = makeTempConnections(defaultDocument());
 
     for (const backend of ['fake', 'pi-agent']) {
@@ -171,13 +174,13 @@ describe('applyConnectionDefaults', () => {
       };
       const before = { ...env };
 
-      applyConnectionDefaults(env);
+      await applyConnectionDefaults(env);
 
       assert.deepEqual(env, before, backend);
     }
   });
 
-  test('normalizes the legacy codex-subscription provider type', () => {
+  test('normalizes the legacy codex-subscription provider type', async () => {
     const connectionsPath = makeTempConnections({
       defaultSlug: 'codex-subscription',
       connections: [
@@ -192,11 +195,84 @@ describe('applyConnectionDefaults', () => {
     });
     const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
 
-    applyConnectionDefaults(env);
+    await applyConnectionDefaults(env);
 
     assert.equal(env.MAKA_MODEL, 'openai-codex/gpt-5.6-sol');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'codex-subscription');
     assert.equal(env.MAKA_BASE_URL, 'https://chatgpt.com/backend-api/codex');
+  });
+
+  test('an unrelated invalid entry does not strand a valid default', async () => {
+    // A valid default plus an unrelated stale entry (no slug, unknown backend)
+    // that cannot migrate must not lose the whole default. The store's
+    // default-resolution path drops the bad entry instead of failing the read.
+    const connectionsPath = makeTempConnections({
+      defaultSlug: 'harbor-anthropic',
+      connections: [
+        {
+          slug: 'harbor-anthropic',
+          providerType: 'anthropic',
+          defaultModel: 'claude-sonnet-4-20250514',
+          baseUrl: 'http://127.0.0.1:8537',
+          enabled: true,
+        },
+        // Un-migratable stale entry: no providerType, no slug, unknown backend.
+        { backend: 'totally-unknown-legacy-backend' },
+      ],
+    });
+    const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: connectionsPath };
+
+    await applyConnectionDefaults(env);
+
+    assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
+    assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
+    assert.equal(env.MAKA_BASE_URL, 'http://127.0.0.1:8537');
+  });
+
+  test('MAKA_CONNECTIONS_PATH honors a non-standard filename (file-path contract)', async () => {
+    // MAKA_CONNECTIONS_PATH is the connections FILE path, and any filename is
+    // honored — pinning the existing file-path contract so it does not silently
+    // revert to "directory" semantics. A decoy llm-connections.json sits next to
+    // the custom-named file and must NOT be read when the env var points at the
+    // custom file.
+    const dir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
+    cleanupDirs.push(dir);
+    const customPath = join(dir, 'custom.json');
+    writeFileSync(
+      customPath,
+      JSON.stringify({
+        defaultSlug: 'harbor-anthropic',
+        connections: [
+          {
+            slug: 'harbor-anthropic',
+            providerType: 'anthropic',
+            defaultModel: 'claude-sonnet-4-20250514',
+            baseUrl: 'http://127.0.0.1:8537',
+            enabled: true,
+          },
+        ],
+      }),
+      'utf8',
+    );
+    // Decoy with the standard name — must be ignored when env points at custom.json.
+    writeFileSync(
+      join(dir, 'llm-connections.json'),
+      JSON.stringify({
+        defaultSlug: 'decoy',
+        connections: [
+          { slug: 'decoy', providerType: 'deepseek', defaultModel: 'decoy-model', enabled: true },
+        ],
+      }),
+      'utf8',
+    );
+    const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: customPath };
+
+    await applyConnectionDefaults(env);
+
+    // The custom.json (named in the env var) wins; the decoy is ignored.
+    assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
+    assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
+    assert.equal(env.MAKA_CREDENTIALS_PATH, join(dir, 'credentials.json'));
   });
 });
 describe('resolveHarborRunOptions backend guard', () => {

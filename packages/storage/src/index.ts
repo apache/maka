@@ -47,6 +47,7 @@ export type {
 } from './agent-run-store.js';
 export { createSqliteShellRunStore } from './shell-run-store.js';
 export type { ClosableShellRunStore } from './shell-run-store.js';
+export * from './workspace-root.js';
 export * from './connection-store.js';
 export { CREDENTIAL_SCHEMA_VERSION, createFileCredentialStore } from './credential-store.js';
 export type { CredentialCasResult, CredentialKind, CredentialStore } from './credential-store.js';

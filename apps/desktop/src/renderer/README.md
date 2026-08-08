@@ -20,7 +20,9 @@ For the main/preload/renderer split and the IPC contract, see `apps/desktop/READ
 
 | File | Role |
 |---|---|
-| `maka-tokens.css` | The main source of CSS tokens (color / shadow / typography / radius / spacing / motion / z / layout), plus a large recipe section at the tail (base styles, utilities, component recipes, animations). Transitional: tokens and recipes coexist in one file. |
+| `astryx-theme/makaTheme.ts` | Source for the Astryx type scale, neutral remaps, and theme-level component overrides. |
+| `astryx-theme/maka.css` | Generated Astryx theme imported by `styles.css`; regenerate it from `makaTheme.ts`, never edit it directly. |
+| `maka-tokens.css` | The main source of product CSS tokens (color / shadow / typography aliases / radius / spacing / motion / z / layout), plus a large recipe section at the tail. Transitional: tokens and recipes coexist in one file. |
 | `reference-shell.css` | A target-layout shell rebuild, hand-authored from a reference-implementation extract (its header comment documents the provenance). **Transitional** — meant to be folded back into the token/style system and removed. |
 | `styles/*.css` | Per-surface hand-written recipes (e.g. `chat-*`, `sidebar`, `composer`, `palette`, `settings/*`, `module-pages/*`). |
 
@@ -38,7 +40,7 @@ Note the `--foreground-N` split: the wash stops (`-2/-3/-5/-8/-10`) are surface 
 
 Acknowledged transitional states — not TODOs; track work in issues/PRs.
 
-- Hand-written `styles/*.css` recipes + overrides on `@maka/ui` primitives: end state is structure carried by primitives, renderer CSS left only with layout primitives can't cover. Track concrete retirement work in GitHub issues and PRs.
+- Existing hand-written `styles/*.css` recipes and internal-DOM overrides on Astryx-backed `@maka/ui` primitives are acknowledged transitional states, not precedent for new work. New styling uses published props, tokens, or stable `themeProps` extension points; track concrete retirement work in GitHub issues and PRs.
 - `reference-shell.css`: end state is folded into the token/style system and the file removed.
 - `maka-tokens.css` mixing tokens + recipes: end state is tokens-only here, recipes living on primitives / `styles/`.
 
@@ -47,4 +49,4 @@ Acknowledged transitional states — not TODOs; track work in issues/PRs.
 - Product design intent: `DESIGN.md`.
 - CSS cascade / layer / `!important` / dead-CSS / token rules: `docs/frontend-css-governance.md`. The dead-CSS check runs from the repo root via `check:release` (`scripts/check-dead-css.mjs --check`); its baseline is `scripts/check-dead-css-baseline.json`.
 - Component state, ARIA, token, and copy behavior is owned by source and focused contract tests.
-- Where prose disagrees with the code or contract tests, the code and tests are the source of truth. Key guardrail tests live in `apps/desktop/src/main/__tests__/` (style-layer-cascade, important-audit, typography / spacing / radius / state-token / foreground-tier governance). Build/test entry points are the npm scripts in the root `package.json` (see the top-level `README.md`).
+- Where prose disagrees with code or behavioral tests, code and tests are the source of truth. CSS conventions are checked by review, focused `scripts/check-*.mjs` commands, and rendered-surface verification; the former source-scanning CSS contract suite has been removed. Build/test entry points are the npm scripts in the root `package.json` (see the top-level `README.md`).

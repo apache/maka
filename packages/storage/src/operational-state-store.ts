@@ -35,6 +35,11 @@ import {
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const OPERATIONAL_STATE_SCHEMA_VERSION = 1;
 
+/** Resolve the authoritative on-disk path of the operational-state database. */
+export function resolveOperationalStateDatabasePath(workspaceRoot: string): string {
+  return resolve(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
+}
+
 const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
   ['runtime', SQLITE_RUNTIME_SCHEMA_VERSION],
   ['session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION],
@@ -72,7 +77,7 @@ export function acquireOperationalStateDatabase(
   workspaceRoot: string,
   options: OperationalStateDatabaseOptions = {},
 ): OperationalStateDatabaseLease {
-  const databasePath = resolve(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
+  const databasePath = resolveOperationalStateDatabasePath(workspaceRoot);
   let owner = owners.get(databasePath);
   if (!owner) {
     owner = new OperationalStateDatabaseOwner(databasePath, options);

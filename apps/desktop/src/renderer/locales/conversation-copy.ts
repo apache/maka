@@ -145,6 +145,15 @@ export interface DesktopConversationCopy {
   };
   inspector: {
     ariaLabel: string;
+    /** Label of the record-file row at the top of the panel. */
+    recordFile: string;
+    /** Copy-button accessible label; copies the record file path. */
+    copyPath: string;
+    /** Toast after a successful path copy. */
+    pathCopied: string;
+    /** Toast title when the clipboard write is denied or unavailable. */
+    copyFailed: string;
+    copyFailedDetail: string;
     loadFailed: string;
     retry: string;
     empty: string;
@@ -440,6 +449,11 @@ const COPY = {
     },
     inspector: {
       ariaLabel: '会话追踪',
+      recordFile: '记录文件',
+      copyPath: '复制文件路径',
+      pathCopied: '已复制文件路径',
+      copyFailed: '复制失败',
+      copyFailedDetail: '剪贴板不可用或被系统拒绝。',
       loadFailed: '追踪读取失败',
       retry: '重试',
       empty: '这个会话还没有可追踪的活动',
@@ -629,6 +643,11 @@ const COPY = {
     },
     inspector: {
       ariaLabel: 'Session trace',
+      recordFile: 'Record file',
+      copyPath: 'Copy file path',
+      pathCopied: 'File path copied',
+      copyFailed: 'Copy failed',
+      copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.',
       loadFailed: 'Could not read the trace',
       retry: 'Retry',
       empty: 'Nothing to trace in this session yet',

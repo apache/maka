@@ -31,6 +31,14 @@ export interface ConnectionStore {
   remove(slug: string): Promise<void>;
   getDefault(): Promise<string | null>;
   setDefault(slug: string | null): Promise<void>;
+  /**
+   * Resolve the default connection in a SINGLE read snapshot (slug + connection
+   * come from the same file read, so a concurrent write cannot tear them apart)
+   * and tolerate an unrelated invalid entry (a stale record that fails
+   * migration is skipped, not allowed to strand a valid default). Returns null
+   * when there is no default, or when the default entry itself is unusable.
+   */
+  getDefaultConnection(): Promise<LlmConnection | null>;
 }
 
 interface ConnectionsFile {
@@ -44,12 +52,23 @@ export function createConnectionStore(workspaceRoot: string): ConnectionStore {
   return new FileConnectionStore(workspaceRoot);
 }
 
+/**
+ * Construct a store rooted at an explicit `llm-connections.json` file path
+ * rather than a workspace directory. Use this when the caller already holds
+ * the full file path (e.g. headless honoring the MAKA_CONNECTIONS_PATH file-path
+ * contract); prefer {@link createConnectionStore} when you have the workspace
+ * root, since desktop/CLI share that root across stores.
+ */
+export function createConnectionStoreForFile(connectionsFilePath: string): ConnectionStore {
+  return new FileConnectionStore(dirname(connectionsFilePath), connectionsFilePath);
+}
+
 class FileConnectionStore implements ConnectionStore {
   private readonly path: string;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(workspaceRoot: string) {
-    this.path = join(workspaceRoot, 'llm-connections.json');
+  constructor(workspaceRoot: string, explicitPath?: string) {
+    this.path = explicitPath ?? join(workspaceRoot, 'llm-connections.json');
   }
 
   async list(): Promise<LlmConnection[]> {
@@ -357,6 +376,12 @@ class FileConnectionStore implements ConnectionStore {
     });
   }
 
+  async getDefaultConnection(): Promise<LlmConnection | null> {
+    const snapshot = await this.readDefaultSnapshot();
+    if (!snapshot.defaultSlug) return null;
+    return snapshot.connections.find((c) => c.slug === snapshot.defaultSlug) ?? null;
+  }
+
   private async read(): Promise<ConnectionsFile> {
     return this.readUnlocked();
   }
@@ -368,6 +393,40 @@ class FileConnectionStore implements ConnectionStore {
       const connections = parsed.connections.map((connection) =>
         migrateConnectionV1ToV2(connection),
       );
+      return {
+        defaultSlug: normalizeDefaultSlug(parsed.defaultSlug, connections),
+        connections,
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return emptyConnectionsFile();
+      throw error;
+    }
+  }
+
+  /**
+   * Read-only snapshot for default resolution. Mirrors {@link readUnlocked}
+   * but with a deliberately different fault contract: an entry that fails
+   * {@link migrateConnectionV1ToV2} is DROPPED, not thrown. {@link readUnlocked}
+   * (used by every write path) stays fail-closed so a corrupt file never
+   * silently feeds a write; this path only answers "is there a usable
+   * default?", where an unrelated stale entry must not strand a valid default
+   * and silently switch the consumer to hardcoded fallback.
+   *
+   * The default entry itself still has to migrate cleanly: if the configured
+   * default is the broken one, there genuinely is no usable default.
+   */
+  private async readDefaultSnapshot(): Promise<ConnectionsFile> {
+    try {
+      const raw = JSON.parse(await readFile(this.path, 'utf8')) as unknown;
+      const parsed = normalizeConnectionsFile(raw);
+      const connections: LlmConnection[] = [];
+      for (const entry of parsed.connections) {
+        try {
+          connections.push(migrateConnectionV1ToV2(entry));
+        } catch {
+          // Skip an un-migratable entry rather than failing the whole read.
+        }
+      }
       return {
         defaultSlug: normalizeDefaultSlug(parsed.defaultSlug, connections),
         connections,

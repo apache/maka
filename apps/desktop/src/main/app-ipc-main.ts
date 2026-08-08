@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import { app, ipcMain, shell, type IpcMain } from 'electron';
+import { resolveOperationalStateDatabasePath } from '@maka/storage';
 import { resolveProjectGitInfo } from '@maka/runtime';
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
@@ -74,6 +75,12 @@ export function registerAppIpc(
       // Lets the renderer collapse a home prefix to `~` in displayed paths;
       // it has no other way to learn this.
       homePath: homedir(),
+      // The exact on-disk path of the workspace's operational-state database,
+      // resolved in main (node:path) — the one authority the renderer's
+      // inspector row and the data-settings row both read. The renderer must
+      // not reconstruct this (it cannot import @maka/storage, and guessing a
+      // separator is wrong for POSIX paths containing a backslash).
+      operationalStateDatabasePath: resolveOperationalStateDatabasePath(workspaceRoot),
       projectId: selection.projectId,
       projectPath,
       projectGit: await resolveProjectGitInfo(projectPath),

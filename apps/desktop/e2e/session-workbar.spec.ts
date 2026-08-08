@@ -14,7 +14,7 @@ test('session tools share one user-controlled workbar that stays mounted across 
   const launcher = workbar.getByRole('button', { name: '打开工作栏标签' });
   await launcher.click();
   await expect(page.getByRole('menuitem', { name: '文件' })).toBeEnabled();
-  await page.keyboard.press('Escape');
+  await page.getByRole('menuitem', { name: '任务' }).click();
   await expect(
     page
       .getByLabel('活跃会话任务')
@@ -124,6 +124,83 @@ test('session tools share one user-controlled workbar that stays mounted across 
   await rightWorkbar.getByRole('button', { name: '打开工作栏标签' }).click();
   await page.getByRole('menuitem', { name: '文件' }).click();
   await expect(page.getByText('暂无生成文件')).toBeVisible();
+
+  // The record-file row is a fact about the workspace, not the session: it
+  // exists even when the trace is empty, and it reads the exact database path
+  // from `app:info`'s operationalStateDatabasePath (resolved in main, the
+  // same single source of truth the data-settings row shows) — no second
+  // channel, so nothing to register per boot mode.
+  // Then pin the 320px minimum: the directory truncates while the filename
+  // keeps its glyphs (the row's whole point at that width), the tooltip
+  // trigger is keyboard-reachable, and the copy actually lands the FULL path
+  // on the clipboard.
+  await rightWorkbar.getByRole('button', { name: '打开工作栏标签' }).click();
+  await page.getByRole('menuitem', { name: '追踪' }).click();
+  const inspectorTab = tabs.getByRole('tab', { name: /追踪/ });
+  await expect(inspectorTab).toHaveAttribute('aria-selected', 'true');
+  const recordFileRow = page.locator(
+    '[data-maka-contract="session-inspector-record-file"]',
+  );
+  await expect(recordFileRow).toBeVisible();
+  // The filename is its own box, never truncated by the row's ellipsis — the
+  // only part of the row whose glyphs matter. `toBeVisible` cannot tell a
+  // visible box from a clipped one (overflow-hidden content stays "visible"),
+  // so prove there is no overflow: the box must be as wide as its content.
+  const recordFileName = recordFileRow.locator('.maka-inspector-record-file-name');
+  await expect(recordFileName).toHaveText(/runtime\.sqlite$/);
+  await expect
+    .poll(() =>
+      recordFileName.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    )
+    .toBe(true);
+  // The path also renders once inside the Astryx Tooltip's popover (hidden
+  // until hover/focus). The tooltip trigger is the row's path box, a real Tab
+  // stop: keyboard focus opens the tooltip (focus-visible) and Escape closes
+  // it — mouse users are not the only ones who can read the full path.
+  const recordFilePath = recordFileRow.locator('.maka-inspector-record-file');
+  await expect(page.getByRole('tooltip')).toHaveCount(0);
+  await inspectorTab.focus();
+  for (
+    let step = 0;
+    step < 5 && !(await recordFilePath.evaluate((el) => el === document.activeElement));
+    step += 1
+  ) {
+    await page.keyboard.press('Tab');
+  }
+  await expect(recordFilePath).toBeFocused();
+  await expect(page.getByRole('tooltip')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tooltip')).toHaveCount(0);
+  const copyButton = recordFileRow.getByRole('button', { name: '复制文件路径' });
+  await expect(copyButton).toBeEnabled();
+  // Drag the divider all the way right: the workbar is an end-of-row panel
+  // (the shell hands Astryx `isReversed`), so dragging right shrinks it, and
+  // the width model clamps at the same 320px minimum the keyboard arrow uses,
+  // landing the panel on the smallest surface the row is allowed to live in —
+  // the filename still fits, the copy button stays inside the panel, and the
+  // clipboard receives the full path, not the truncated display.
+  const resizeBox = (await resize.boundingBox())!;
+  const handleY = resizeBox.y + resizeBox.height / 2;
+  await page.mouse.move(resizeBox.x, handleY);
+  await page.mouse.down();
+  await page.mouse.move(resizeBox.x + 400, handleY, { steps: 5 });
+  await page.mouse.up();
+  await expect(resize).toHaveAttribute('aria-valuenow', '320');
+  await expect(rightWorkbar).toHaveCSS('width', '320px');
+  await expect(recordFileRow).toBeVisible();
+  await expect(copyButton).toBeVisible();
+  await expect
+    .poll(() =>
+      recordFileName.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    )
+    .toBe(true);
+  await copyButton.click();
+  await expect(page.getByText('已复制文件路径')).toBeVisible();
+  // The row carries the FULL authoritative path from `app:info`, while the
+  // visible directory is allowed to truncate. Clipboard read is intentionally
+  // denied by the app's permission policy; the success toast proves the write.
+  const fullPath = await recordFileRow.getAttribute('data-full-path');
+  expect(fullPath).toMatch(/runtime\.sqlite$/);
 
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
   await page
