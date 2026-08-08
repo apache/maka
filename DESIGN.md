@@ -22,7 +22,8 @@ colors:
   info-dark: "oklch(0.74 0.13 240)"
   success-light: "oklch(0.50 0.17 145)"
   success-dark: "oklch(0.60 0.17 145)"
-  warning: "oklch(0.50 0.18 55)"
+  warning-light: "oklch(0.50 0.18 55)"
+  warning-dark: "oklch(0.66 0.18 55)"
   destructive-light: "oklch(0.50 0.24 28)"
   destructive-dark: "oklch(0.70 0.19 22)"
 typography:
