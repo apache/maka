@@ -66,3 +66,11 @@ export {
   type RuntimeHostConnectionAuthority,
 } from './connection-authority.js';
 export type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
+export {
+  MANAGED_NPM_PACKAGE_MANAGER_VERSION,
+  ManagedDependencyProducerProcessError,
+  isManagedNpmNodeVersionSupported,
+  runManagedNpmDependencyProvision,
+  type ManagedDependencyProducerProcessFailureReason,
+  type RunManagedNpmDependencyProvisionInput,
+} from './managed-dependency-producer-process.js';
