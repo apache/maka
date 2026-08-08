@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { AttachmentRef, StoredMessage } from "@maka/core";
 import {
+  finalAssistantReplyText,
   materializeChat,
   materializeTools,
   materializeTurns,
@@ -767,5 +768,59 @@ describe("live tool status over persisted", () => {
       tools?.kind === "tools" ? tools.items[0]?.status : undefined,
       "interrupted",
     );
+  });
+});
+
+describe("final reply extraction for copy (#2407)", () => {
+  const multiStepTurn = (): StoredMessage[] => [
+    { type: "user", id: "ask", turnId: "t1", ts: 1, text: "do the thing" },
+    {
+      type: "assistant",
+      id: "step-1",
+      turnId: "t1",
+      ts: 2,
+      text: "Let me inspect the files first.",
+      modelId: "fixture",
+    },
+    {
+      type: "assistant",
+      id: "step-2",
+      turnId: "t1",
+      ts: 3,
+      text: "Found it — the flag was inverted.",
+      modelId: "fixture",
+    },
+    {
+      type: "assistant",
+      id: "step-3",
+      turnId: "t1",
+      ts: 4,
+      text: "Done: the fix is committed and the tests pass.",
+      modelId: "fixture",
+    },
+  ];
+
+  test("returns only the last answer step, not the intermediate narration", () => {
+    const [turn] = materializeTurns(multiStepTurn());
+    assert.ok(turn);
+    assert.equal(finalAssistantReplyText(turn), "Done: the fix is committed and the tests pass.");
+  });
+
+  test("leaves the legacy aggregate concatenation untouched for its other consumers", () => {
+    const [turn] = materializeTurns(multiStepTurn());
+    assert.equal(
+      turn?.assistant?.text,
+      "Let me inspect the files first.\n\nFound it — the flag was inverted.\n\nDone: the fix is committed and the tests pass.",
+    );
+  });
+
+  test("falls back to the aggregate when the timeline has no text entry", () => {
+    const [turn] = materializeTurns(multiStepTurn());
+    assert.ok(turn);
+    const withoutText = {
+      ...turn,
+      timeline: turn.timeline.filter((item) => item.kind !== "text"),
+    };
+    assert.equal(finalAssistantReplyText(withoutText), turn.assistant?.text);
   });
 });
