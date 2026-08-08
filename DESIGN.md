@@ -104,7 +104,7 @@ Use the system UI stack with explicit platform CJK fallbacks; Geist Variable is 
 
 Default surfaces are flat. Depth comes first from canvas-to-surface tone, then a hairline, then shadow only when an element genuinely floats.
 
-- Use `--shadow-minimal-flat` for compact previews and menus that need an edge without visible lift.
+- Use `--shadow-minimal-flat` for compact tool previews that need an edge without visible lift.
 - Use Astryx `low`, `med`, or `high` elevation through component APIs for floating controls, popovers, dialogs, and overlays.
 - Dark mode relies on tone and rings before shadow. Neon edges and lifted-everything styling are forbidden.
 - Native shell vibrancy is allowed only in designated material; generic glassmorphism is not.
