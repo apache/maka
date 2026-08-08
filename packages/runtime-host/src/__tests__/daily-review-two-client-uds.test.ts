@@ -16,9 +16,7 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
-test('two UDS Clients share Daily Review config, generation, and restart recovery', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
-}, async () => {
+test('two Clients share Daily Review config, generation, and restart recovery', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-daily-review-uds-'));
   const root = join(base, 'interactive');
   const capability = await resolveStorageRoot({

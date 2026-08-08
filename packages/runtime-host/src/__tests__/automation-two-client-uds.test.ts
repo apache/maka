@@ -24,9 +24,7 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
-test('two UDS Clients share one revision-pinned Automation authority', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
-}, async () => {
+test('two Clients share one revision-pinned Automation authority', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-automation-uds-'));
   const root = join(base, 'interactive');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });

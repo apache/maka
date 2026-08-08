@@ -31,8 +31,7 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
-test('two UDS Clients query and control one Agent graph through Session invalidation', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+test('two Clients query and control one Agent graph through Session invalidation', {
   timeout: 10_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-agent-graph-two-client-'));

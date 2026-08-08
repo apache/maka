@@ -19,9 +19,7 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
-test('two UDS Clients share one durable Session recap effect', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
-}, async () => {
+test('two Clients share one durable Session recap effect', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-session-effect-uds-'));
   const root = join(base, 'interactive');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
