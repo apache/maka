@@ -17,6 +17,14 @@ export default {
       to: 'bundled-git.json',
     },
     {
+      from: '.generated/bundled-npm/npm',
+      to: 'npm',
+    },
+    {
+      from: '.generated/bundled-npm/bundled-npm.json',
+      to: 'bundled-npm.json',
+    },
+    {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
     },
@@ -37,6 +45,10 @@ export default {
     {
       from: '../../node_modules/dugite/LICENSE',
       to: 'licenses/dugite/LICENSE',
+    },
+    {
+      from: '../../node_modules/npm/LICENSE',
+      to: 'licenses/npm-cli/LICENSE',
     },
     {
       from: 'resources/licenses/git/NOTICE.txt',
