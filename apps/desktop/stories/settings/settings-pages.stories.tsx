@@ -754,7 +754,13 @@ const pricingCustomOnly: readonly EffectivePricingEntry[] = [
 function createPricingStoryPort(input: {
   entries?: readonly EffectivePricingEntry[];
   load?: 'ready' | 'loading' | 'error';
-  mutation?: 'save' | 'review_required' | 'reconciliation_unavailable';
+  mutation?:
+    | 'save'
+    | 'saved_refresh_failed'
+    | 'synchronized'
+    | 'review_required'
+    | 'reconciliation_unavailable'
+    | 'stale';
 }): DesktopPricingSettingsPort {
   let snapshot: DesktopPricingSnapshot = {
     hostEpoch: 'storybook-host',
@@ -772,53 +778,76 @@ function createPricingStoryPort(input: {
       return snapshot;
     },
     async applyPricingMutation({ mutation }): Promise<DesktopPricingMutationOutcome> {
+      if (input.mutation === 'stale') {
+        throw Object.assign(new Error('Storybook Pricing snapshot is stale'), {
+          code: 'pricing_snapshot_stale',
+        });
+      }
       if (input.mutation === 'reconciliation_unavailable') {
         return { kind: 'reconciliation_unavailable', reason: 'outcome_unknown' };
       }
       if (input.mutation === 'review_required') {
         const modelKey = mutation.kind === 'upsert' ? mutation.pricing.modelKey : mutation.modelKey;
-        const latest = mutation.kind === 'upsert'
-          ? mutation.pricing
-          : storyPricing(modelKey, 99, 199, 9, 19);
+        const current = snapshot.entries.find((entry) => entry.pricing.modelKey === modelKey);
+        const latest: EffectivePricingEntry = mutation.kind === 'upsert'
+          ? { pricing: mutation.pricing, source: 'builtin' }
+          : {
+              pricing: storyPricing(modelKey, 99, 199, 9, 19),
+              source: 'custom',
+              resetEffect: current?.source === 'custom'
+                ? current.resetEffect
+                : 'become_unpriced',
+            };
         snapshot = storySnapshot(snapshot, [
           ...snapshot.entries.filter((entry) => entry.pricing.modelKey !== modelKey),
-          { pricing: latest, source: 'builtin' },
+          latest,
         ]);
         return { kind: 'review_required', reason: 'revision_conflict', snapshot };
       }
-
-      if (mutation.kind === 'upsert') {
-        const existing = snapshot.entries.find(
-          (entry) => entry.pricing.modelKey === mutation.pricing.modelKey,
-        );
-        const resetEffect = existing?.source === 'builtin'
-          || (existing?.source === 'custom' && existing.resetEffect === 'restore_builtin')
-          ? 'restore_builtin'
-          : 'become_unpriced';
-        snapshot = storySnapshot(snapshot, [
-          ...snapshot.entries.filter(
-            (entry) => entry.pricing.modelKey !== mutation.pricing.modelKey,
-          ),
-          { pricing: mutation.pricing, source: 'custom', resetEffect },
-        ]);
-      } else {
-        const existing = snapshot.entries.find(
-          (entry) => entry.pricing.modelKey === mutation.modelKey,
-        );
-        const remaining = snapshot.entries.filter(
-          (entry) => entry.pricing.modelKey !== mutation.modelKey,
-        );
-        const bundled = pricingBuiltinOnly.find(
-          (entry) => entry.pricing.modelKey === mutation.modelKey,
-        );
-        snapshot = storySnapshot(snapshot, existing?.source === 'custom'
-          && existing.resetEffect === 'restore_builtin' && bundled
-          ? [...remaining, bundled]
-          : remaining);
+      snapshot = applyPricingStoryMutation(snapshot, mutation);
+      if (input.mutation === 'saved_refresh_failed') {
+        return { kind: 'saved_refresh_failed', disposition: 'committed' };
+      }
+      if (input.mutation === 'synchronized') {
+        return { kind: 'synchronized', reason: 'outcome_unknown', snapshot };
       }
       return { kind: 'saved', disposition: 'committed', snapshot };
     },
   };
+}
+
+function applyPricingStoryMutation(
+  snapshot: DesktopPricingSnapshot,
+  mutation: Parameters<DesktopPricingSettingsPort['applyPricingMutation']>[0]['mutation'],
+): DesktopPricingSnapshot {
+  if (mutation.kind === 'upsert') {
+    const existing = snapshot.entries.find(
+      (entry) => entry.pricing.modelKey === mutation.pricing.modelKey,
+    );
+    const resetEffect = existing?.source === 'builtin'
+      || (existing?.source === 'custom' && existing.resetEffect === 'restore_builtin')
+      ? 'restore_builtin'
+      : 'become_unpriced';
+    return storySnapshot(snapshot, [
+      ...snapshot.entries.filter(
+        (entry) => entry.pricing.modelKey !== mutation.pricing.modelKey,
+      ),
+      { pricing: mutation.pricing, source: 'custom', resetEffect },
+    ]);
+  }
+  const existing = snapshot.entries.find(
+    (entry) => entry.pricing.modelKey === mutation.modelKey,
+  );
+  const remaining = snapshot.entries.filter(
+    (entry) => entry.pricing.modelKey !== mutation.modelKey,
+  );
+  const bundled = pricingBuiltinOnly.find(
+    (entry) => entry.pricing.modelKey === mutation.modelKey,
+  );
+  return storySnapshot(snapshot, existing?.source === 'custom'
+    && existing.resetEffect === 'restore_builtin' && bundled
+    ? [...remaining, bundled]
+    : remaining);
 }
 
 function storySnapshot(
@@ -1077,6 +1106,32 @@ async function openPricingStoryEditor(
   return waitForPricingDialog(canvasElement);
 }
 
+async function waitForPricingAlertDialog(): Promise<HTMLElement> {
+  let dialog: HTMLElement | null = null;
+  await waitForStoryCondition(() => {
+    dialog = document.querySelector<HTMLElement>('[role="alertdialog"]');
+    return dialog !== null;
+  }, 'Pricing confirmation dialog did not open');
+  return dialog!;
+}
+
+async function clickPricingDialogButton(dialog: HTMLElement, label: string): Promise<void> {
+  const button = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  if (!button) throw new Error(`Pricing dialog action did not render: ${label}`);
+  await userEvent.click(button);
+}
+
+async function submitPricingStoryEditor(
+  canvasElement: HTMLElement,
+  buttonLabel = '自定义',
+): Promise<HTMLDialogElement> {
+  const dialog = await openPricingStoryEditor(canvasElement, buttonLabel);
+  await clickPricingDialogButton(dialog, '保存');
+  return dialog;
+}
+
 async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise<HTMLButtonElement> {
   const selector = await waitForStoryButton(
     canvasElement,
@@ -1197,7 +1252,8 @@ export const UsageNarrow: Story = {
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
-// Real path: 设置 → 使用统计 → 定价配置, while the semantic Host adapter is loading.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置,
+// while the semantic Host adapter is loading; production does not pass pricingPort yet.
 export const PricingLoading: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1208,7 +1264,8 @@ export const PricingLoading: Story = {
   ),
 };
 
-// Real path: 设置 → 使用统计 → 定价配置, when the authoritative read fails.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置,
+// when the authoritative read fails; production does not pass pricingPort yet.
 export const PricingReadError: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1219,7 +1276,20 @@ export const PricingReadError: Story = {
   ),
 };
 
-// Real path: 设置 → 使用统计 → 定价配置, with bundled prices only.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置,
+// after a ready Host returns no effective prices; production does not pass pricingPort yet.
+export const PricingEmpty: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: [] })}
+    />
+  ),
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置,
+// with bundled prices only; production does not pass pricingPort yet.
 export const PricingBuiltinOnly: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1230,7 +1300,8 @@ export const PricingBuiltinOnly: Story = {
   ),
 };
 
-// Real path: 设置 → 使用统计 → 定价配置, with all three provenance states.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置,
+// with all three provenance states; production does not pass pricingPort yet.
 export const PricingMixed: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1241,7 +1312,8 @@ export const PricingMixed: Story = {
   ),
 };
 
-// Real path: 设置 → 使用统计 → 定价配置, with exact custom-only keys and explicit zero cache rates.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置,
+// with exact custom-only keys and explicit zero cache rates; production does not pass pricingPort yet.
 export const PricingCustomOnly: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1252,7 +1324,84 @@ export const PricingCustomOnly: Story = {
   ),
 };
 
-// Real path: 设置 → 使用统计 → 定价配置 → 添加价格, with immediate field validation.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 删除,
+// before a custom-only override is removed; production does not pass pricingPort yet.
+export const PricingDeleteConfirmation: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: pricingCustomOnly })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const deleteButton = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '删除',
+    );
+    await userEvent.click(deleteButton);
+    const dialog = await waitForPricingAlertDialog();
+    if (!dialog.textContent?.includes('之后新激活的模型工作会变为未定价，而不是 $0')) {
+      throw new Error('Pricing delete consequence did not render');
+    }
+    if (!dialog.textContent.includes('删除')) {
+      throw new Error('Pricing delete confirmation action did not render');
+    }
+  },
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 恢复,
+// after authority changes and requires a second confirmation; production does not pass pricingPort yet.
+export const PricingDeleteReviewConfirmation: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({
+        entries: pricingMixed,
+        mutation: 'review_required',
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const reachReview = async () => {
+      const resetButton = await waitForStoryButton(
+        canvasElement,
+        (candidate) => candidate.textContent?.trim() === '恢复',
+      );
+      await userEvent.click(resetButton);
+      const initial = await waitForPricingAlertDialog();
+      if (!initial.textContent?.includes('恢复内置价格')) {
+        throw new Error('Pricing reset consequence did not render');
+      }
+      await clickPricingDialogButton(initial, '恢复');
+      const reviewButton = await waitForStoryButton(
+        canvasElement,
+        (candidate) => candidate.textContent?.trim() === '复核待处理操作',
+      );
+      await userEvent.click(reviewButton);
+      const review = await waitForPricingAlertDialog();
+      if (!review.textContent?.includes('当前权威状态已经变化')) {
+        throw new Error('Pricing delete authority review did not render');
+      }
+      if (!review.textContent.includes('再次确认')) {
+        throw new Error('Pricing delete second confirmation did not render');
+      }
+      return review;
+    };
+
+    const firstReview = await reachReview();
+    await clickPricingDialogButton(firstReview, '取消');
+    await waitForStoryCondition(
+      () => !canvasElement.textContent?.includes('定价已被其他更改更新'),
+      'Cancelling Pricing delete review left an actionless warning',
+    );
+    await reachReview();
+  },
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 添加价格,
+// with immediate field validation; production does not pass pricingPort yet.
 export const PricingValidation: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1274,7 +1423,95 @@ export const PricingValidation: Story = {
   },
 };
 
-// Real path: 设置 → 使用统计 → 定价配置 → 自定义, after a CAS conflict returns fresh authority.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 自定义,
+// after the Host saves and reloads the override; production does not pass pricingPort yet.
+export const PricingSaved: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({ entries: pricingBuiltinOnly })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await submitPricingStoryEditor(canvasElement);
+    await waitForStoryCondition(
+      () => canvasElement.textContent?.includes('定价已保存并重新加载') === true,
+      'Pricing saved outcome did not render',
+    );
+  },
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 自定义,
+// after a committed save cannot reload authority; production does not pass pricingPort yet.
+export const PricingSavedRefreshFailed: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({
+        entries: pricingBuiltinOnly,
+        mutation: 'saved_refresh_failed',
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await submitPricingStoryEditor(canvasElement);
+    await waitForStoryCondition(
+      () => dialog.textContent?.includes('保存已完成，但最新定价未能加载') === true
+        && dialog.textContent.includes('刷新定价'),
+      'Pricing saved-refresh-failed recovery did not render',
+    );
+  },
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 自定义,
+// when reconciliation finds the intended override already authoritative; production does not pass pricingPort yet.
+export const PricingSynchronized: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({
+        entries: pricingBuiltinOnly,
+        mutation: 'synchronized',
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await submitPricingStoryEditor(canvasElement);
+    await waitForStoryCondition(
+      () => canvasElement.textContent?.includes('当前权威状态与草稿一致') === true,
+      'Pricing synchronized outcome did not render',
+    );
+  },
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 自定义,
+// after a stale connection invalidates the save base; production does not pass pricingPort yet.
+export const PricingStaleSnapshot: Story = {
+  decorators: [withPricingBridge],
+  render: () => (
+    <SettingsStory
+      section="usage"
+      createPricingPort={() => createPricingStoryPort({
+        entries: pricingBuiltinOnly,
+        mutation: 'stale',
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await submitPricingStoryEditor(canvasElement);
+    await waitForStoryCondition(
+      () => dialog.textContent?.includes('Runtime Host 连接已经变化') === true
+        && dialog.textContent.includes('刷新定价'),
+      'Pricing stale-snapshot recovery did not render',
+    );
+  },
+};
+
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 自定义,
+// after a CAS conflict returns fresh authority; production does not pass pricingPort yet.
 export const PricingConflictReview: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1302,7 +1539,8 @@ export const PricingConflictReview: Story = {
   },
 };
 
-// Real path: 设置 → 使用统计 → 定价配置 → 自定义, after a response-losing uncertain write.
+// Real path: M5-preview, story-only today — intended path is 设置 → 使用统计 → 定价配置 → 自定义,
+// after a response-losing uncertain write; production does not pass pricingPort yet.
 export const PricingUncertainBlocked: Story = {
   decorators: [withPricingBridge],
   render: () => (
@@ -1326,12 +1564,6 @@ export const PricingUncertainBlocked: Story = {
       'Pricing uncertain blocked state did not render',
     );
   },
-};
-
-// Real path: 设置 → 使用统计 → 定价配置 at the minimum supported window width.
-export const PricingNarrow: Story = {
-  ...PricingMixed,
-  parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 /**
  * #1364: entry list (long title / content / tag set), archived group, and

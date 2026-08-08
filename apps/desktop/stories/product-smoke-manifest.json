@@ -51,6 +51,16 @@
         "floor": "No width-dependent check is declared; the mount, console, and scheme assertions are viewport-independent."
       }
     },
+    "pricingSettings": {
+      "storyId": "product-settings-pages--pricing-mixed",
+      "productionHost": "SettingsSurface > UsageSettingsPage > PricingSettingsPanel (M5 preview)",
+      "state": "Effective built-in and custom pricing at wide and minimum desktop widths",
+      "viewports": ["wide", "floor"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "compact": "The floor viewport is the stricter horizontal-containment case for the same Pricing table."
+      }
+    },
     "providers": {
       "storyId": "product-settings-providers--configured-providers",
       "productionHost": "ProvidersPanel",
