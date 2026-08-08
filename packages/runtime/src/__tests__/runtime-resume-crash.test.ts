@@ -160,17 +160,22 @@ async function crashWriterAfterCommit(input: {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   if (!stdout.includes('READY\n')) {
-    await terminateChildProcessTree(child, 'SIGKILL');
+    await killCrashChild(child);
     await closed;
     throw new Error(`crash child did not reach committed boundary: ${stderr || stdout}`);
   }
 
-  assert.equal(await terminateChildProcessTree(child, 'SIGKILL'), true);
+  assert.equal(await killCrashChild(child), true);
   const [exitCode, signal] = await closed;
   assert.ok(
     exitCode !== 0 || signal !== null,
     'crash child exited successfully instead of being killed',
   );
+}
+
+function killCrashChild(child: ReturnType<typeof spawn>): Promise<boolean> {
+  if (process.platform === 'win32') return terminateChildProcessTree(child, 'SIGKILL');
+  return Promise.resolve(child.kill('SIGKILL'));
 }
 
 function ledgerEvents(sessionId: string, runId: string): RuntimeEvent[] {

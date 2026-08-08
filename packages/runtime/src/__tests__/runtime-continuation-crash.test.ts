@@ -294,13 +294,18 @@ async function crashContinuationAt(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   if (!stdout.includes(`READY:${failpoint}\n`)) {
-    await terminateChildProcessTree(child, 'SIGKILL');
+    await killCrashChild(child);
     await closed;
     throw new Error(`${failpoint} child did not reach boundary: ${stderr || stdout}`);
   }
-  assert.equal(await terminateChildProcessTree(child, 'SIGKILL'), true);
+  assert.equal(await killCrashChild(child), true);
   const [exitCode, signal] = await closed;
   assert.ok(exitCode !== 0 || signal !== null);
+}
+
+function killCrashChild(child: ReturnType<typeof spawn>): Promise<boolean> {
+  if (process.platform === 'win32') return terminateChildProcessTree(child, 'SIGKILL');
+  return Promise.resolve(child.kill('SIGKILL'));
 }
 
 function assertPrefix(
