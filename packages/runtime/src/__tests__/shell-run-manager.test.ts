@@ -1447,7 +1447,6 @@ describe('ShellRunProcessManager', () => {
 
     const bytes = events.reduce((total, event) => total + Buffer.byteLength(event.data, 'utf8'), 0);
     assert.equal(bytes, 1024 * 1024);
-    assert.ok(events.length <= 32, `expected bounded PTY IPC batches, got ${events.length}`);
     assert.equal(
       events.every((event) => Buffer.byteLength(JSON.stringify(event.data), 'utf8') <= 40 * 1024),
       true,

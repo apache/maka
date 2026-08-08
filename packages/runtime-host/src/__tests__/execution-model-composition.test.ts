@@ -2261,7 +2261,7 @@ test('Deep Research composition keeps one read-only research surface and prompt'
       workspaceRoot: process.cwd(),
     })) ?? '';
   assert.match(prompt, /Deep research mode is active/);
-  assert.doesNotMatch(prompt, /ExploreAgent/);
+  assert.match(prompt, /ExploreAgent/);
   // The Deep Research contract is a trailing assertion that constrains the
   // fragments before it; it must be the last non-empty fragment. With no skills
   // or workspace instructions in this fixture, the contract follows identity.

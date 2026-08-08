@@ -95,6 +95,7 @@ test('startup recovery replays one admitted safe-boundary continuation without a
     registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
     continuationSafety: { workspaceIdentity, availableToolNames: [] },
   });
+  let observer: ReturnType<SessionContinuityCoordinator['attachConnection']> | undefined;
   try {
     await fixture.coordinator.close();
     const pending = await seedPendingSafeBoundaryContinuation(
@@ -105,20 +106,37 @@ test('startup recovery replays one admitted safe-boundary continuation without a
 
     const recovery = fixture.createRecoveryCoordinator();
     await recovery.prepareRecovery();
-    await recovery.recover();
-    let recovered = await recovery.handlers['turn.query'](
-      { sessionId: fixture.sessionId, turnId: pending.targetTurnId },
-      operationContext(fixture.hostEpoch, fixture.acquireResidency),
-    );
-    await waitUntil(async () => {
-      recovered = await recovery.handlers['turn.query'](
-        { sessionId: fixture.sessionId, turnId: pending.targetTurnId },
-        operationContext(fixture.hostEpoch, fixture.acquireResidency),
-      );
-      return recovered.ok && recovered.result.status !== 'running';
+    const terminal = deferred<TurnSnapshot>();
+    const observeTerminal = (snapshot: { rootTurn: TurnSnapshot | null }): void => {
+      const turn = snapshot.rootTurn;
+      if (
+        turn?.turnId === pending.targetTurnId &&
+        turn.runId === pending.targetRunId &&
+        ['completed', 'failed', 'cancelled'].includes(turn.status)
+      ) {
+        terminal.resolve(turn);
+      }
+    };
+    const connectionId = 'safe-boundary-recovery-observer';
+    const continuity = fixture.currentContinuity();
+    observer = continuity.attachConnection(connectionId, {
+      send: async (frame) => {
+        if (frame.kind === 'subscription.session_projection') {
+          observeTerminal(frame.snapshot);
+        }
+      },
     });
-    assert.equal(recovered.ok, true);
-    if (recovered.ok) assert.equal(recovered.result.status, 'completed');
+    const opened = await continuity.handlers['subscription.open'](
+      { sessionId: fixture.sessionId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+    );
+    assert.equal(opened.ok, true, JSON.stringify(opened));
+    if (!opened.ok) assert.fail('Unable to observe the recovered Session');
+    observeTerminal(opened.result.snapshot);
+    observer.activate(opened.result.subscriptionId);
+
+    await recovery.recover();
+    assert.equal((await terminal.promise).status, 'completed');
     assert.equal(
       (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
         (message) => message.type === 'user' && message.turnId === pending.targetTurnId,
@@ -127,6 +145,7 @@ test('startup recovery replays one admitted safe-boundary continuation without a
     );
     await recovery.close();
   } finally {
+    observer?.close();
     await fixture.dispose();
   }
 });
@@ -4546,7 +4565,7 @@ async function createFailureFixture(options: {
     hostEpoch,
     messages,
     coordinator,
-    continuity,
+    currentContinuity: () => requireContinuity(continuity),
     manager,
     interactions,
     artifacts,
