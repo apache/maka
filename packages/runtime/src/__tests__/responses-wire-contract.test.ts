@@ -1,0 +1,124 @@
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import type { LlmConnection } from '@maka/core';
+import {
+  modelMetadataIdsForProvider,
+  PROVIDER_REGISTRY,
+  thinkingVariantsForModel,
+} from '@maka/core';
+import { buildProviderOptions, getAIModel } from '@maka/runtime';
+import { resolveModelRuntime } from '../model-runtime.js';
+
+function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
+  return {
+    slug,
+    name: slug,
+    providerType,
+    defaultModel: 'm',
+    enabled: true,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/**
+ * Every Responses wire is dialled through `createOpenAI(...).responses(...)` in
+ * `getAIModel`, whatever the adapter kind is — the native OpenAI provider is the
+ * only one that speaks it. Its provider-options namespace is `openai`, and the
+ * SDK reads no other one: the Responses model picks its namespace by asking
+ * whether its own provider name contains `azure`, and only that Azure case ever
+ * retries under `openai`. `parseProviderOptions` itself reads the one namespace
+ * it is handed and nothing else, so options filed under a compatible provider's
+ * own namespace are not dropped by a fallback that missed — they are never
+ * looked at.
+ */
+function openAiNamespace(options: Record<string, unknown>): Record<string, unknown> | undefined {
+  const inner = options.openai;
+  return typeof inner === 'object' && inner !== null
+    ? (inner as Record<string, unknown>)
+    : undefined;
+}
+
+describe('responses wire contract', () => {
+  test('every Responses model asks for encrypted reasoning', () => {
+    // `store: false` is not a privacy preference here, it is the switch that
+    // makes the SDK add `include: ['reasoning.encrypted_content']` and drop
+    // reasoning items that came back without one. Asking is the only way a
+    // provider that speaks that contract can hand back a replayable chain;
+    // for one that does not, the drop stops us shipping empty husks. This
+    // asserts we ask — not that any given provider answers, and not that
+    // encrypted content is the only dialect a provider may carry reasoning in.
+    const gaps: string[] = [];
+    for (const providerType of Object.keys(PROVIDER_REGISTRY) as LlmConnection['providerType'][]) {
+      if (PROVIDER_REGISTRY[providerType].runtimeAdapter?.kind === 'unavailable') continue;
+      const modelIds = new Set([
+        ...PROVIDER_REGISTRY[providerType].fallbackModels,
+        ...modelMetadataIdsForProvider(providerType),
+      ]);
+      for (const modelId of modelIds) {
+        let wire: string;
+        try {
+          wire = resolveModelRuntime({ providerType }, modelId).wire;
+        } catch {
+          continue;
+        }
+        if (wire !== 'openai-responses') continue;
+        // Sweep the declared levels and the unset case: `store` is a property
+        // of the wire, not of a thinking choice, so a model reaches this branch
+        // whether or not a level was picked.
+        for (const level of [undefined, ...thinkingVariantsForModel(providerType, modelId)]) {
+          const options = buildProviderOptions(conn(providerType), modelId, level);
+          const openai = openAiNamespace(options);
+          const label = `${providerType}/${modelId} @ ${level ?? 'unset'}`;
+          if (!openai) {
+            gaps.push(`${label} wires no openai namespace: ${JSON.stringify(options)}`);
+          } else if (openai.store !== false) {
+            gaps.push(`${label} omits store:false: ${JSON.stringify(options)}`);
+          }
+        }
+      }
+    }
+    assert.deepEqual(gaps, []);
+  });
+});
+
+describe('responses wire request body', () => {
+  test('a non-OpenAI-named Responses model still asks for encrypted reasoning', async () => {
+    // The options shape alone does not prove the wire: the SDK only adds the
+    // include when it also believes the model reasons, and it decides that by
+    // parsing the model id. `deepseek-v4-flash` fails that parse, so this
+    // asserts the body the provider actually receives rather than the options
+    // we hand the SDK. Without `forceReasoning` the include silently vanishes
+    // while the options still look right.
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          id: 'r',
+          object: 'response',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const connection = conn('deepseek');
+    const model = getAIModel({
+      connection,
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(connection, 'deepseek-v4-flash', 'max'),
+    });
+
+    assert.equal(body?.store, false);
+    assert.deepEqual(body?.include, ['reasoning.encrypted_content']);
+    assert.equal((body?.reasoning as { effort?: string } | undefined)?.effort, 'max');
+  });
+});
