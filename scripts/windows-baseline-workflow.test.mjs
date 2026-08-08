@@ -81,7 +81,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'npm.cmd run test:scripts',
     'npm.cmd run smoke:windows',
     'node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage',
-    'node.exe --test --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js',
+    'node.exe --test --test-force-exit --test-timeout=15000 --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js',
     'node.exe --test --test-concurrency=1 --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" packages/storage/dist/__tests__/managed-workspace-baseline.test.js packages/storage/dist/__tests__/git-workspace-service.test.js',
   ]) {
     assert.ok(workflow.includes(command), command);
