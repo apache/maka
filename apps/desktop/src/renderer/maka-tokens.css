@@ -893,6 +893,12 @@
   --info: oklch(0.74 0.13 240);         /* blue — see light-mode note */
   --success: oklch(0.60 0.17 145);
   --destructive: oklch(0.70 0.19 22);
+  /* Dark warning is stated here because --warning is the ONE status hue that
+     had no dark override: info, success and destructive each carry their own,
+     so lowering the light value to L=0.50 dragged dark down with it and put
+     dark warning at 2.83:1, well under AA. This restores its measured 5.44:1
+     and makes the family's dark half uniform in shape. */
+  --warning: oklch(0.66 0.18 55);
 
   --opacity-overlay: 0.06;
 
