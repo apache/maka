@@ -362,7 +362,7 @@ index 234a2e4..bee69b4 100644
          <span
            {...stylex.props(
              styles.callDetailChevron,
-@@ -459,10 +467,13 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+@@ -459,9 +467,12 @@ function CallRow({call}: {call: ChatToolCallItem}) {
            <Icon icon="chevronDown" size="xsm" color="inherit" />
          </span>
        )}
