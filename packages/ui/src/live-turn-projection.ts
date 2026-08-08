@@ -350,11 +350,19 @@ export function applyLiveTurnEvent(
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
       : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'pending', args: undefined };
+    // RH live tool_result deliberately omits content (empty text). Do not wipe
+    // mid-flight open-facts until a meaningful result or persisted merge arrives.
+    const retainOpenFacts =
+      event.content.kind === 'text' &&
+      event.content.text.length === 0 &&
+      base.result?.kind === 'subagent' &&
+      typeof base.result.childSessionId === 'string' &&
+      base.result.childSessionId.length > 0;
     const tool: ToolActivityItem = {
       ...base,
       ...projectToolActivityIdentity(event),
       status: toolResultActivityStatus(event.isError, event.content),
-      result: event.content,
+      result: retainOpenFacts ? base.result : event.content,
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     };
     nextStep = {

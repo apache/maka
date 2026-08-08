@@ -1961,6 +1961,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       runId: child.runId,
       agentId: child.agentId,
       agentName: child.agentName,
+      permissionMode: child.permissionMode,
     });
     assert.equal(initialEventCount, child.eventCount);
     assert.ok(

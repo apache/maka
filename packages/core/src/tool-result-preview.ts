@@ -10,11 +10,9 @@ import { defineObjectShape, hasExactShape, isOptionalString, isRecord } from './
 const SUBAGENT_PREVIEW_SHAPE = defineObjectShape<
   Extract<ToolResultPreviewContent, { kind: 'subagent' }>
 >()(
-  ['kind', 'agentName', 'turnId', 'status', 'permissionMode'],
-  ['childSessionId', 'agentId', 'runId'],
+  ['kind', 'childSessionId', 'agentName', 'turnId', 'status', 'permissionMode'],
+  ['agentId', 'runId'],
 );
-
-const PREVIEW_SUBAGENT_STATUSES = new Set(['running', 'waiting_for_user']);
 
 /**
  * Decode live tool_result_preview content. Never use for transcript recovery.
@@ -36,7 +34,7 @@ export function materializeToolResultPreviewForActivity(
 ): ToolResultContent {
   return {
     kind: 'subagent',
-    ...(content.childSessionId ? { childSessionId: content.childSessionId } : {}),
+    childSessionId: content.childSessionId,
     ...(content.agentId ? { agentId: content.agentId } : {}),
     agentName: content.agentName,
     turnId: content.turnId,
@@ -53,12 +51,13 @@ function isSubagentPreview(
 ): value is Extract<ToolResultPreviewContent, { kind: 'subagent' }> {
   return (
     hasExactShape(value, SUBAGENT_PREVIEW_SHAPE) &&
-    isOptionalString(value.childSessionId) &&
+    typeof value.childSessionId === 'string' &&
+    value.childSessionId.length > 0 &&
     isOptionalString(value.agentId) &&
     typeof value.agentName === 'string' &&
     typeof value.turnId === 'string' &&
     isOptionalString(value.runId) &&
-    PREVIEW_SUBAGENT_STATUSES.has(value.status as string) &&
+    value.status === 'running' &&
     isPermissionMode(value.permissionMode)
   );
 }

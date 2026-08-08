@@ -568,12 +568,13 @@ export interface ToolProgressEvent extends BaseEvent, ToolActivityIdentity {
  */
 export type ToolResultPreviewContent = {
   kind: 'subagent';
-  childSessionId?: string;
+  /** Required: the sole purpose of this preview is mid-flight Open. */
+  childSessionId: string;
   agentId?: string;
   agentName: string;
   turnId: string;
   runId?: string;
-  status: 'running' | 'waiting_for_user';
+  status: 'running';
   permissionMode: PermissionMode;
 };
 

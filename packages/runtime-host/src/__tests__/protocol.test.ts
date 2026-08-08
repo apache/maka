@@ -328,6 +328,18 @@ describe('Runtime Host bootstrap protocol', () => {
           summary: 'bulk is not open-facts',
         },
       },
+      {
+        ...identity,
+        type: 'tool_result_preview',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          agentName: 'Local Read',
+          turnId: 'turn-child',
+          status: 'running',
+          permissionMode: 'explore',
+        },
+      },
     ]) {
       assert.throws(() => decodeHostFrame({ ...envelope, event }), isInvalidFrame);
     }

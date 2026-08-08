@@ -628,6 +628,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         committed.state.subscribers.set(subscriptionId, subscriber);
         this.#subscriptions.set(subscriptionId, subscriber);
         connection.subscriptionIds.add(subscriptionId);
+        // Client expects the first delivered frame at nextSequence from the open
+        // result. Capture that before enqueueing retained previews — each
+        // #enqueue advances nextSequence.
+        const firstSequence = subscriber.nextSequence;
         // Seed retained live previews so a mid-turn rejoin still has Open facts.
         const rootTurn = committed.state.canonical.rootTurn;
         if (rootTurn && !isTerminalTurn(rootTurn)) {
@@ -650,7 +654,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           value: {
             hostEpoch: this.#hostEpoch,
             subscriptionId,
-            nextSequence: subscriber.nextSequence,
+            nextSequence: firstSequence,
             snapshot: committed.value,
           },
         };

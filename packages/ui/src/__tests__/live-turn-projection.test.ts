@@ -1011,4 +1011,54 @@ describe('reconcileTerminalLiveTurn', () => {
     );
   });
 
+  it('keeps open-facts when RH-style empty tool_result settles the row', () => {
+    const started = applyLiveTurnEvent(undefined, {
+      type: 'tool_start',
+      id: 'event-1',
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolUseId: 'tool-1',
+      toolName: 'agent_spawn',
+      args: { profile: 'local_read', task: 'Inspect' },
+      ts: 100,
+    });
+    const previewed = applyLiveTurnEvent(started, {
+      type: 'tool_result_preview',
+      id: 'event-2',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-session',
+        agentName: 'Local Read',
+        turnId: 'child-turn',
+        status: 'running',
+        permissionMode: 'explore',
+      },
+      ts: 101,
+    });
+    const settled = applyLiveTurnEvent(previewed, {
+      type: 'tool_result',
+      id: 'event-3',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      isError: false,
+      content: { kind: 'text', text: '' },
+      ts: 102,
+    });
+
+    assert.equal(settled.steps[0]?.tools[0]?.status, 'completed');
+    assert.deepEqual(settled.steps[0]?.tools[0]?.result, {
+      kind: 'subagent',
+      childSessionId: 'child-session',
+      agentName: 'Local Read',
+      turnId: 'child-turn',
+      status: 'running',
+      permissionMode: 'explore',
+      summary: '',
+      artifactIds: [],
+    });
+  });
+
 });

@@ -2000,30 +2000,27 @@ export class ToolRuntime {
                     ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
                     abortSignal,
                     onReady: async (ready) => {
-                      // Live-only Open for linked agent_spawn. Swarm-tagged
-                      // spawns skip kind:subagent previews (graph/swarm owns
-                      // their own surfaces).
-                      if (!spawnInput.swarm) {
-                        input.queue.push({
-                          type: 'tool_result_preview',
-                          id: this.input.newId(),
-                          turnId: input.turnId,
-                          ts: this.input.now(),
-                          toolUseId: input.toolUseId,
-                          isError: false,
-                          content: {
-                            kind: 'subagent',
-                            childSessionId: ready.childSessionId,
-                            agentId: ready.agentId,
-                            agentName: ready.agentName,
-                            turnId: ready.turnId,
-                            runId: ready.runId,
-                            status: 'running',
-                            permissionMode: ready.permissionMode,
-                          } satisfies ToolResultPreviewContent,
-                          ...input.activityIdentity,
-                        });
-                      }
+                      // Live-only Open for linked agent_spawn while the tool
+                      // is still in flight. Terminal outcome remains tool_result.
+                      input.queue.push({
+                        type: 'tool_result_preview',
+                        id: this.input.newId(),
+                        turnId: input.turnId,
+                        ts: this.input.now(),
+                        toolUseId: input.toolUseId,
+                        isError: false,
+                        content: {
+                          kind: 'subagent',
+                          childSessionId: ready.childSessionId,
+                          agentId: ready.agentId,
+                          agentName: ready.agentName,
+                          turnId: ready.turnId,
+                          runId: ready.runId,
+                          status: 'running',
+                          permissionMode: ready.permissionMode,
+                        } satisfies ToolResultPreviewContent,
+                        ...input.activityIdentity,
+                      });
                       await spawnInput.onReady?.(ready);
                     },
                     ...(spawnInput.onEvent ? { onEvent: spawnInput.onEvent } : {}),
