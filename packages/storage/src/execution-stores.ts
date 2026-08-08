@@ -316,6 +316,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       run(() => conversationOperationalStateStore.purge(sessionId)),
     sessionStore: {
       create: (input, initialBoundary) => run(() => sessionStore.create(input, initialBoundary)),
+      createImportedSession: (input, messages) =>
+        run(() => sessionStore.createImportedSession(input, messages)),
       probeStableSessionCreate: (sessionId, requestFingerprint) =>
         run(() => sessionStore.probeStableSessionCreate(sessionId, requestFingerprint)),
       createStableSession: (request, initialBoundary) =>

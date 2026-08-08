@@ -55,6 +55,7 @@ import { MessageCircleQuestion } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
+import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
@@ -1253,6 +1254,12 @@ function AppShellContent({
     onboardingState !== undefined &&
     onboardingState.kind !== 'ready_with_history' &&
     onboardingState.kind !== 'ready_empty';
+  const workspaceReadinessRecovery = deriveWorkspaceReadinessRecovery({
+    state: onboardingState,
+    locale: uiLocale,
+    activeSessionId: activeId,
+    showOnboardingHero,
+  });
   const onboardingComposerHidden = isOnboardingLoading || (showOnboardingHero && onboardingState !== undefined);
   // #1629: hiding the composer because the boundary is unknown is right, but
   // hiding it silently and forever is not. Once the read has spent its retries
@@ -2809,6 +2816,9 @@ function AppShellContent({
                   onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
                   onOpenModelSettings={() => openSettingsSection('models')}
                   noModelConnection={connections.length === 0}
+                  sendBlocked={
+                    Boolean(workspaceReadinessRecovery) || sessionHealthNotice?.tone === 'destructive'
+                  }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
                   // Every "cannot change this mid-turn" gate reads `turnActive`,
@@ -2987,6 +2997,7 @@ function AppShellContent({
                   });
                 }}
                 sessionHealthNotice={sessionHealthNotice}
+                workspaceReadinessRecovery={workspaceReadinessRecovery}
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 isOnboardingLoading={isOnboardingLoading}

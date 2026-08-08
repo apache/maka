@@ -37,6 +37,16 @@ if (recoverySessionId && recoveryRunId) {
   }
 }
 
+process.on('message', (message: unknown) => {
+  if (
+    message &&
+    typeof message === 'object' &&
+    (message as { type?: unknown }).type === 'shutdown'
+  ) {
+    void result.host.close();
+  }
+});
+
 try {
   await runRuntimeHostProcessLifecycle(result.host, {
     closeOnDisconnect: true,
