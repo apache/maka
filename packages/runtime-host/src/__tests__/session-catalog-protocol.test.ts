@@ -45,6 +45,17 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('decodes exact Session catalog invalidations', () => {
+    const frame = {
+      kind: 'session.catalog.changed' as const,
+      revision: 1,
+      sessionId: 'session-1',
+    };
+    assert.deepEqual(decodeHostFrame(frame), frame);
+    assert.throws(() => decodeHostFrame({ ...frame, revision: -1 }), isProtocolError);
+    assert.throws(() => decodeHostFrame({ ...frame, extra: true }), isProtocolError);
+  });
+
   test('decodes only bounded execution boundary summaries', () => {
     assert.deepEqual(
       decodeClientFrame({

@@ -224,6 +224,61 @@ test("does not let an older terminal projection finish a newer watched Turn", as
   await observer.close();
 });
 
+test("invalidates the transcript when another client starts a Turn", async () => {
+  const events = new AsyncFrameQueue();
+  const sessionChanges: Array<{
+    reason: string;
+    sessionId: string;
+    turnId?: string;
+  }> = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => ({
+        snapshot: continuitySnapshot({
+          rootTurn: {
+            sessionId: "session-1",
+            turnId: "turn-1",
+            runId: "run-1",
+            status: "completed",
+            terminalEventId: "terminal-1",
+          },
+        }),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          events.end();
+        },
+      }),
+    },
+    emitSessionsChanged: (reason, sessionId, extra) =>
+      sessionChanges.push({ reason, sessionId, turnId: extra?.turnId }),
+  });
+  await observer.observe("session-1", "observer-1", eventTarget(2));
+
+  events.push({
+    kind: "subscription.session_projection",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    snapshot: continuitySnapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: "session-1",
+        turnId: "turn-2",
+        runId: "run-2",
+        status: "running",
+      },
+    }),
+  });
+
+  await waitFor(() => sessionChanges.length === 2);
+  assert.deepEqual(sessionChanges, [
+    { reason: "status-change", sessionId: "session-1", turnId: "turn-2" },
+    { reason: "message-appended", sessionId: "session-1", turnId: "turn-2" },
+  ]);
+  await observer.close();
+});
+
 test("abandons a watched Turn when the initial Host subscription fails", async () => {
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
   const observer = new RuntimeHostSessionObserver({

@@ -172,6 +172,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly onPublicationFailure: (error: unknown) => void = () => undefined,
     readTranscript?: ReadSessionTranscript,
+    private readonly onCatalogChanged: (sessionId: string) => void = () => undefined,
   ) {
     this.#hostEpoch = hostEpoch;
     this.#readCanonical = readCanonical;
@@ -208,6 +209,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   }
 
   async refreshCanonical(sessionId: string, admission?: SessionAdmissionLease): Promise<void> {
+    this.onCatalogChanged(sessionId);
     await this.#runInSessionLane(
       sessionId,
       async () => {

@@ -64,6 +64,7 @@ import {
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
+  type SessionCatalogChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionConfiguration,
@@ -184,6 +185,13 @@ export class DesktopRuntimeHostClient {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeSessionCatalogChanges(
+    listener: (frame: SessionCatalogChangedFrame) => void,
+  ): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeSessionCatalogChanges(listener);
   }
 
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {

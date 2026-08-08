@@ -511,6 +511,9 @@ function registerHostClientIpc(
     emitConnectionListChanged();
     mainWindowController.send("settings:externalChanged", { ts: Date.now() });
   });
+  const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
+    ({ sessionId }) => emitSessionsChanged("updated", sessionId),
+  );
   const capabilityBinding = mcpCapabilityPublisher.bind(
     controls.refreshClientCapabilities,
   );
@@ -714,6 +717,7 @@ function registerHostClientIpc(
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   return async () => {
     unsubscribeConfigurationChanges();
+    unsubscribeSessionCatalogChanges();
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;

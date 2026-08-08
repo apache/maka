@@ -127,6 +127,19 @@ describe('maka run process contract', () => {
     assert.equal(processContractStderr(result.stderr), '');
   });
 
+  test('normalizes a generated Session name after truncating the prompt', async () => {
+    const prompt = 'Use Bash exactly once to run pwd and node -p';
+    assert.equal(prompt.slice(0, 42).endsWith(' '), true);
+
+    const result = await runFixture([prompt], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_SESSION_NAME: 'Use Bash exactly once to run pwd and node' },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(processContractStderr(result.stderr), '');
+  });
+
   test('waits for the complete Graph before printing the final supervisor output', async () => {
     const result = await runFixture(['implement it', '--graph'], {
       input: '',

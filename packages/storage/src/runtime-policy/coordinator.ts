@@ -284,9 +284,26 @@ export class RuntimePolicyCoordinator {
   }
 
   setCredential(rawInput: SetCredentialInput) {
+    return this.setCredentialWithAuthority(rawInput, 'client');
+  }
+
+  importConnectionCredential(rawInput: SetCredentialInput) {
+    return this.setCredentialWithAuthority(rawInput, 'migration');
+  }
+
+  private setCredentialWithAuthority(
+    rawInput: SetCredentialInput,
+    authority: 'client' | 'migration',
+  ) {
     return this.inLane(async (root) => {
       const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
       const { locator } = input;
+      if (authority === 'migration' && locator.scope !== 'connection') {
+        throw codecError(
+          'invalid_credential_input',
+          'Connection credential import requires a Connection credential locator',
+        );
+      }
       let catalog: ConnectionCatalogDocument | null = null;
       if (locator.scope === 'connection') {
         catalog = await this.catalog.read(root);
@@ -304,7 +321,11 @@ export class RuntimePolicyCoordinator {
             'Connection credential kind does not match the provider auth contract',
           );
         }
-        if (locator.kind === 'oauth_token' && connection.providerType !== 'github-copilot') {
+        if (
+          authority === 'client' &&
+          locator.kind === 'oauth_token' &&
+          connection.providerType !== 'github-copilot'
+        ) {
           throw codecError(
             'invalid_credential_input',
             'Client-supplied OAuth credentials are only accepted for GitHub Copilot',

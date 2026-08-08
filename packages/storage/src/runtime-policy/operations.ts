@@ -3,7 +3,9 @@ import type {
   ConnectionCatalogSnapshot,
   ConnectionModelDiscoveryResult,
   ConnectionTestSummary,
+  CredentialMutationResult,
   CredentialLocator,
+  SetCredentialInput,
   CredentialStatus,
   CredentialVersionBasis,
   RuntimePolicy,
@@ -230,6 +232,7 @@ export interface RuntimePolicyOperationCoordinator {
   compareAndSetOAuthCredential(
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;
+  importConnectionCredential(input: SetCredentialInput): Promise<CredentialMutationResult>;
   beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
     ticket: InteractiveOAuthLoginTicket,

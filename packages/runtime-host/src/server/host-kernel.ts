@@ -36,6 +36,7 @@ import {
 import type { SessionContinuityService } from './session-continuity-service.js';
 import type { ClientCapabilityService } from './client-capability-service.js';
 import type { HostConfigurationChangeService } from './configuration-change-service.js';
+import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -72,6 +73,7 @@ export interface RuntimeHostComposition {
   readonly continuity?: SessionContinuityService;
   readonly clientCapabilities?: ClientCapabilityService;
   readonly configurationChanges?: HostConfigurationChangeService;
+  readonly sessionCatalogChanges?: HostSessionCatalogChangeService;
   releaseConnection?(connectionId: string): void;
   beginDrain(): void;
   recover(): Promise<void>;
@@ -287,6 +289,7 @@ export class RuntimeHostKernel {
         resolveContinuity: () => this.#composition?.continuity,
         resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         resolveConfigurationChanges: () => this.#composition?.configurationChanges,
+        resolveSessionCatalogChanges: () => this.#composition?.sessionCatalogChanges,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });

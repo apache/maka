@@ -74,6 +74,7 @@ import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostConfigurationChangeService } from './configuration-change-service.js';
+import { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
@@ -400,6 +401,7 @@ export async function createExecutionRuntimeHostComposition(
       },
     );
     const configurationChanges = new HostConfigurationChangeService();
+    const sessionCatalogChanges = new HostSessionCatalogChangeService();
     let rootCoordinator: RootTurnCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
@@ -457,6 +459,7 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       context.requestDrain,
       createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
+      (sessionId) => sessionCatalogChanges.publish(sessionId),
     );
     const continuityCoordinator = continuity;
     unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
@@ -1335,6 +1338,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       clientCapabilities,
       configurationChanges,
+      sessionCatalogChanges,
       releaseConnection: (connectionId: string) => {
         artifacts.releaseConnection(connectionId);
         requireMemory(memory).releaseConnection(connectionId);

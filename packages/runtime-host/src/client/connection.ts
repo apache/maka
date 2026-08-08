@@ -45,6 +45,7 @@ import {
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
+  type SessionCatalogChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SessionCwdRelocateInput,
@@ -206,6 +207,7 @@ export interface RuntimeHostConnection {
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
+  subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
 }
 
 export type DirectRequestOperationKey = Exclude<
@@ -249,6 +251,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
   readonly #configurationChangeListeners = new Set<(revision: number) => void>();
+  readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #terminalError: Error | undefined;
@@ -527,6 +530,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return () => this.#configurationChangeListeners.delete(listener);
   }
 
+  subscribeSessionCatalogChanges(
+    listener: (frame: SessionCatalogChangedFrame) => void,
+  ): () => void {
+    this.#sessionCatalogChangeListeners.add(listener);
+    return () => this.#sessionCatalogChangeListeners.delete(listener);
+  }
+
   async #readResponses(): Promise<void> {
     try {
       while (true) {
@@ -540,6 +550,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           switch (frame.kind) {
             case 'configuration.changed':
               this.#acceptConfigurationChanged(frame);
+              continue;
+            case 'session.catalog.changed':
+              this.#acceptSessionCatalogChanged(frame);
               continue;
             case 'subscription.session_projection':
             case 'subscription.session_delta':
@@ -599,6 +612,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     for (const listener of this.#configurationChangeListeners) {
       try {
         listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptSessionCatalogChanged(frame: SessionCatalogChangedFrame): void {
+    for (const listener of this.#sessionCatalogChangeListeners) {
+      try {
+        listener(frame);
       } catch {
         // A presentation listener cannot invalidate the Host connection.
       }
@@ -757,6 +780,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#retiredSubscriptionIds.clear();
     this.#clientCapabilities.close(error);
     this.#configurationChangeListeners.clear();
+    this.#sessionCatalogChangeListeners.clear();
     this.#transport.destroy();
   }
 }

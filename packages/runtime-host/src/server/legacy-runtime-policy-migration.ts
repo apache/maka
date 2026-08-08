@@ -143,6 +143,7 @@ async function importConnectionCredentials(
         kind: credentialKind,
       },
       secret,
+      'migration',
     );
   }
 }
@@ -294,17 +295,18 @@ async function setCredential(
   stores: RuntimePolicyStoresWriter,
   locator: CredentialLocator,
   secret: string,
+  authority: 'client' | 'migration' = 'client',
 ): Promise<void> {
   const current = await stores.credentialVault.getStatus(locator);
   if (current.kind === 'connection_not_found') {
     throw new Error('Legacy credential refers to a missing Connection');
   }
   if (current.status.configured) return;
-  const result = await stores.credentialVault.set({
-    locator,
-    expected: null,
-    secret,
-  });
+  const input = { locator, expected: null, secret };
+  const result =
+    authority === 'migration'
+      ? await stores.operations.importConnectionCredential(input)
+      : await stores.credentialVault.set(input);
   if (result.kind !== 'committed') {
     throw new Error(`Legacy credential migration failed: ${result.kind}`);
   }

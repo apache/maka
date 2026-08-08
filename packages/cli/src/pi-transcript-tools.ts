@@ -159,16 +159,23 @@ function renderExpandedToolBlock(entry: MakaPiToolEntry, width: number): string[
   if (entry.progress.length > 0) {
     lines.push(...renderCappedResultText(entry.progress.values().join(''), width, ansi.dim));
   }
-  if (entry.outputDeltas.droppedChars > 0) {
-    lines.push(
-      ...renderIndented(
-        ansi.dim(`⋯ ${entry.outputDeltas.droppedChars} earlier live-output chars truncated ⋯`),
-        width,
-        2,
-      ),
-    );
+  // A terminal snapshot is the authoritative accumulated stream. Rendering
+  // the deltas that preceded it as well would repeat every line once the Bash
+  // card settles. Compact results intentionally keep the live deltas because
+  // they may be the only output available.
+  const renderLiveOutput = !shellResultSupersedesLiveOutput(entry.result);
+  if (renderLiveOutput) {
+    if (entry.outputDeltas.droppedChars > 0) {
+      lines.push(
+        ...renderIndented(
+          ansi.dim(`⋯ ${entry.outputDeltas.droppedChars} earlier live-output chars truncated ⋯`),
+          width,
+          2,
+        ),
+      );
+    }
+    lines.push(...renderToolStreams(entry.outputDeltas.values(), width));
   }
-  lines.push(...renderToolStreams(entry.outputDeltas.values(), width));
   if (entry.result || entry.output) {
     lines.push(...renderToolResult(entry, width));
   }
@@ -180,6 +187,12 @@ function renderExpandedToolBlock(entry: MakaPiToolEntry, width: number): string[
     lines.push(...renderIndented(ansi.dim('Ask Maka to stop this task'), width, 2));
   }
   return lines.map((line) => fitLine(line, width));
+}
+
+function shellResultSupersedesLiveOutput(result: ToolResultContent | undefined): boolean {
+  return (
+    (result?.kind === 'terminal' || result?.kind === 'shell_run') && result.output !== undefined
+  );
 }
 
 interface CompactToolSummary {

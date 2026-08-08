@@ -258,6 +258,32 @@ test('drops credential-dependent legacy effects when their credential is unavail
   });
 });
 
+test('imports legacy interactive OAuth credentials through migration authority', async () => {
+  await withMigrationRoot(async ({ root, legacyConfigurationRoot, stores }) => {
+    const legacy = createConnectionStore(legacyConfigurationRoot);
+    await legacy.create({
+      slug: 'codex-subscription',
+      name: 'OpenAI Codex',
+      providerType: 'openai-codex',
+      defaultModel: 'gpt-5.6-luna',
+    });
+    await createFileCredentialStore(legacyConfigurationRoot).setSecret(
+      'codex-subscription',
+      'oauth_token',
+      'legacy-oauth-token',
+    );
+
+    await migrateLegacyRuntimePolicy({ workspaceRoot: root, legacyConfigurationRoot, stores });
+
+    const execution = await stores.operations.resolveExecutionConnection('codex-subscription');
+    assert.equal(execution.kind, 'ready');
+    if (execution.kind === 'ready') {
+      assert.equal(execution.secretMaterial.connection?.secret, 'legacy-oauth-token');
+    }
+    await assertJournalRemoved(root);
+  });
+});
+
 test('upgrades only the untouched historical free bootstrap during import', async () => {
   for (const seed of [
     {

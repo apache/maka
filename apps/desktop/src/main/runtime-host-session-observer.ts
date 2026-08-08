@@ -449,15 +449,18 @@ export class RuntimeHostSessionObserver {
       this.#emitSessionsChanged("turn-status-change", state.sessionId, {
         turnId: update.terminalTurn.turnId,
       });
-      this.#emitSessionsChanged("message-appended", state.sessionId, {
-        turnId: update.terminalTurn.turnId,
-      });
     } else {
       this.#emitSessionsChanged(
         "status-change",
         state.sessionId,
         root ? { turnId: root.turnId } : undefined,
       );
+    }
+    const transcriptTurn = update.terminalTurn ?? update.startedTurn;
+    if (transcriptTurn) {
+      this.#emitSessionsChanged("message-appended", state.sessionId, {
+        turnId: transcriptTurn.turnId,
+      });
     }
   }
 

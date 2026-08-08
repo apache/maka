@@ -55,6 +55,12 @@ const runtime: MakaRunRuntime = {
     ) {
       throw new Error(`unexpected permissionMode ${input.permissionMode}`);
     }
+    if (
+      process.env.MAKA_RUN_EXPECT_SESSION_NAME &&
+      input.name !== process.env.MAKA_RUN_EXPECT_SESSION_NAME
+    ) {
+      throw new Error(`unexpected Session name ${JSON.stringify(input.name)}`);
+    }
     return summary;
   },
   async readExecutionBoundary() {

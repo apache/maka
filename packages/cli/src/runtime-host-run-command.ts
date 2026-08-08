@@ -306,9 +306,12 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#sessionCwdOverride?.sessionId === sessionId &&
       switched.summary.cwd !== this.#sessionCwdOverride.cwd
     ) {
-      throw new Error(
-        `Runtime Host cannot resume Session ${sessionId}: its stored working directory is not canonical`,
-      );
+      const moved = await this.#driver.moveSession(this.#sessionCwdOverride.cwd);
+      if (moved.cwd !== this.#sessionCwdOverride.cwd) {
+        throw new Error(
+          `Runtime Host cannot resume Session ${sessionId}: its working directory could not be canonicalized`,
+        );
+      }
     }
     this.#sessionId = sessionId;
   }

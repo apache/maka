@@ -48,6 +48,7 @@ import {
 } from '../server/index.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostConfigurationChangeService } from '../server/configuration-change-service.js';
+import { HostSessionCatalogChangeService } from '../server/session-catalog-change-service.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import {
   prepareStorageRootControlDirectory,
@@ -1189,19 +1190,21 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('delivers canonical configuration changes to every connected Client', async () => {
+  test('delivers canonical authority changes to every connected Client', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
       const configurationChanges = new HostConfigurationChangeService();
+      const sessionCatalogChanges = new HostSessionCatalogChangeService();
       const host = await RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
         compositionFactory: async () => ({
           handlers: createUnavailableDomainOperationHandlers(),
           configurationChanges,
+          sessionCatalogChanges,
           beginDrain() {},
           async recover() {},
           async close() {},
@@ -1218,10 +1221,24 @@ describe('non-serving Runtime Host kernel', () => {
         const observed = new Promise<number>((resolve) => {
           connected.connection.subscribeConfigurationChanges(resolve);
         });
+        const observedCatalog = new Promise<string>((resolve) => {
+          connected.connection.subscribeSessionCatalogChanges(({ sessionId }) =>
+            resolve(sessionId),
+          );
+        });
         configurationChanges.publish();
+        sessionCatalogChanges.publish('session-1');
         assert.equal(
           await withTimeout(observed, 1_000, 'Client did not receive configuration change'),
           1,
+        );
+        assert.equal(
+          await withTimeout(
+            observedCatalog,
+            1_000,
+            'Client did not receive Session catalog change',
+          ),
+          'session-1',
         );
       } finally {
         await connected.connection.close();
