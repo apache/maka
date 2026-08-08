@@ -492,6 +492,7 @@ export {
   ptyTuiTerminalRows,
 } from './pty-output-view.js';
 export type { PtyTuiTerminalView } from './pty-output-view.js';
+export { TerminalMouseInputRejectedError } from './terminal-mouse-input.js';
 export {
   encodeTerminalInputActions,
   encodedTerminalInputActionsByteLength,

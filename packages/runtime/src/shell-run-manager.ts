@@ -6,6 +6,7 @@ import {
   isShellRunSourceToolCallId,
   isTerminalShellRunStatus,
   SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  TerminalMouseInputRejectedError,
   type ShellMode,
   type ShellOutput,
   type ShellRunPatch,
@@ -364,6 +365,14 @@ export class ShellRunProcessManager
         return;
       }
       if (live.termination) throw new ShellRunPtyControlClosedError();
+      const terminalInput =
+        input.input ??
+        (input.actions
+          ? encodeTerminalInputActions(input.actions, {
+              ...live.collector.currentInputState(),
+              ...(input.size ? { cols: input.size.cols, rows: input.size.rows } : {}),
+            })
+          : undefined);
       if (input.size) {
         const currentSize = live.collector.currentSize();
         if (currentSize.cols === input.size.cols && currentSize.rows === input.size.rows) {
@@ -381,11 +390,6 @@ export class ShellRunProcessManager
           }
         }
       }
-      const terminalInput =
-        input.input ??
-        (input.actions
-          ? encodeTerminalInputActions(input.actions, live.collector.currentInputState())
-          : undefined);
       if (terminalInput !== undefined) {
         try {
           live.driver.write(terminalInput);
@@ -406,7 +410,13 @@ export class ShellRunProcessManager
     try {
       await controlCut;
     } catch (error) {
-      if (error instanceof ShellRunPtyControlClosedError || isAbortError(error)) throw error;
+      if (
+        error instanceof ShellRunPtyControlClosedError ||
+        error instanceof TerminalMouseInputRejectedError ||
+        isAbortError(error)
+      ) {
+        throw error;
+      }
       operationFailed = true;
       this.handleIntegrityFailure(live, asError(error, 'PTY control failed'));
     }

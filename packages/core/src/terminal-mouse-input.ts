@@ -7,17 +7,26 @@ import type {
   TerminalMouseTrackingMode,
 } from './terminal-input.js';
 
+export class TerminalMouseInputRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TerminalMouseInputRejectedError';
+  }
+}
+
 export function encodeTerminalMouseInputAction(
   action: TerminalMouseInputAction,
   state: TerminalInputState,
 ): string {
   if (action.x >= state.cols || action.y >= state.rows) {
-    throw new Error(
+    throw new TerminalMouseInputRejectedError(
       `Terminal mouse coordinates (${action.x}, ${action.y}) are outside ${state.cols}x${state.rows}`,
     );
   }
   if (state.mouseEncoding !== 'sgr') {
-    throw new Error('The PTY has not enabled SGR cell mouse reporting; use keyboard input');
+    throw new TerminalMouseInputRejectedError(
+      'The PTY has not enabled SGR cell mouse reporting; use keyboard input',
+    );
   }
   assertMouseEventSupported(action, state.mouseTrackingMode);
   return encodeSgrTerminalMouseInputAction(action);
@@ -49,22 +58,28 @@ function assertMouseEventSupported(
   mode: TerminalMouseTrackingMode,
 ): void {
   if (mode === 'none') {
-    throw new Error('The PTY has not enabled mouse tracking; use keyboard input');
+    throw new TerminalMouseInputRejectedError(
+      'The PTY has not enabled mouse tracking; use keyboard input',
+    );
   }
   if (mode === 'x10') {
     if (action.event !== 'press') {
-      throw new Error('The PTY mouse mode only accepts button presses');
+      throw new TerminalMouseInputRejectedError('The PTY mouse mode only accepts button presses');
     }
     if ((action.modifiers?.length ?? 0) > 0) {
-      throw new Error('The PTY mouse mode does not accept modifiers');
+      throw new TerminalMouseInputRejectedError('The PTY mouse mode does not accept modifiers');
     }
   }
   if (action.event === 'move') {
     if (mode === 'x10' || mode === 'vt200') {
-      throw new Error('The PTY mouse mode does not accept pointer movement');
+      throw new TerminalMouseInputRejectedError(
+        'The PTY mouse mode does not accept pointer movement',
+      );
     }
     if (mode === 'drag' && !action.button) {
-      throw new Error('The PTY mouse mode only accepts movement with a pressed button');
+      throw new TerminalMouseInputRejectedError(
+        'The PTY mouse mode only accepts movement with a pressed button',
+      );
     }
   }
 }

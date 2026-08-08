@@ -51,15 +51,29 @@ export interface TerminalKeyInputAction {
   readonly modifiers?: readonly TerminalInputModifier[];
 }
 
-export interface TerminalMouseInputAction {
+interface TerminalMouseInputActionBase {
   readonly type: 'mouse';
-  readonly event: TerminalMouseEvent;
   readonly x: number;
   readonly y: number;
-  readonly button?: TerminalMouseButton;
-  readonly direction?: TerminalMouseScrollDirection;
   readonly modifiers?: readonly TerminalInputModifier[];
 }
+
+export type TerminalMouseInputAction =
+  | (TerminalMouseInputActionBase & {
+      readonly event: 'click' | 'press' | 'release';
+      readonly button: TerminalMouseButton;
+      readonly direction?: never;
+    })
+  | (TerminalMouseInputActionBase & {
+      readonly event: 'move';
+      readonly button?: TerminalMouseButton;
+      readonly direction?: never;
+    })
+  | (TerminalMouseInputActionBase & {
+      readonly event: 'scroll';
+      readonly button?: never;
+      readonly direction: TerminalMouseScrollDirection;
+    });
 
 export type TerminalInputAction =
   | TerminalTextInputAction
@@ -385,25 +399,22 @@ function parseMouseAction(action: Record<string, unknown>): TerminalMouseInputAc
   const event = action.event as TerminalMouseEvent;
   const button = parseMouseButton(action.button);
   const direction = parseMouseDirection(action.direction);
+  const modifiers = parseModifiers(action.modifiers, 'mouse');
+  const base = {
+    type: 'mouse',
+    x: action.x as number,
+    y: action.y as number,
+    ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
+  } as const;
   if (event === 'scroll') {
     if (!direction) throw new Error('Terminal mouse scroll requires a direction');
     if (button) throw new Error('Terminal mouse scroll does not accept a button');
-  } else {
-    if (direction) throw new Error(`Terminal mouse ${event} does not accept a direction`);
-    if (event !== 'move' && !button) {
-      throw new Error(`Terminal mouse ${event} requires a button`);
-    }
+    return { ...base, event, direction };
   }
-  const modifiers = parseModifiers(action.modifiers, 'mouse');
-  return {
-    type: 'mouse',
-    event,
-    x: action.x as number,
-    y: action.y as number,
-    ...(button ? { button } : {}),
-    ...(direction ? { direction } : {}),
-    ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
-  };
+  if (direction) throw new Error(`Terminal mouse ${event} does not accept a direction`);
+  if (event === 'move') return { ...base, event, ...(button ? { button } : {}) };
+  if (!button) throw new Error(`Terminal mouse ${event} requires a button`);
+  return { ...base, event, button };
 }
 
 function parseModifiers(

@@ -1321,6 +1321,59 @@ describe('ShellRunProcessManager', () => {
     assert.match(terminalText(completed.output), /SGR-MOUSE-OK/);
   });
 
+  test('rejects unavailable mouse input without changing or terminating the PTY', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: nodeCommand(`
+        process.stdin.setRawMode?.(true);
+        process.stdin.once('data', (chunk) => {
+          const marker = chunk.equals(Buffer.from([0x0d])) ? 'KEYBOARD-OK' : 'KEYBOARD-WRONG';
+          process.stdout.write(marker + '\\n', () => process.exit(0));
+        });
+        process.stdout.write('READY\\n');
+      `),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    await assert.rejects(
+      () =>
+        manager.writeStdin({
+          sessionId: 'session-1',
+          ref: initial.ref,
+          actions: [{ type: 'mouse', event: 'click', button: 'left', x: 90, y: 1 }],
+          size: { cols: 100, rows: 30 },
+          abortSignal: NO_ABORT,
+        }),
+      /has not enabled SGR cell mouse reporting/,
+    );
+    const afterRejection = await manager.inspectResource('session-1', initial.ref);
+    assert.equal(afterRejection.status, 'running');
+    assert.equal(afterRejection.output?.mode, 'pty');
+    if (afterRejection.output?.mode !== 'pty') throw new Error('expected pty output');
+    assert.deepEqual(
+      { cols: afterRejection.output.cols, rows: afterRejection.output.rows },
+      { cols: 80, rows: 24 },
+    );
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      actions: [{ type: 'key', key: 'enter' }],
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref);
+    assertShellRunSnapshot(completed);
+    assert.equal(completed.output.mode, 'pty');
+    if (completed.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(completed.output), /KEYBOARD-OK/);
+  });
+
   test('delivers Ctrl-C and Ctrl-D as terminal control characters', async () => {
     const manager = await createTestManager();
     const interrupted = await manager.runBackgroundBash(
