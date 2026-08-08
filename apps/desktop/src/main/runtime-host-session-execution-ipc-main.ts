@@ -155,7 +155,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       const session = await deps.client.getSession(sessionId);
       if (!session)
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
-      const turnId = command.turnId ?? newId();
       let attachments: AttachmentRef[] = [];
       if (command.attachmentItems !== undefined) {
         const files = await resolveIngestItems({
@@ -188,6 +187,54 @@ export function registerRuntimeHostSessionExecutionIpc(
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
+      // #1954: a send whose payload fits canonical `MessageContent` routes
+      // through the Host's `turn.message.submit`, so the Host atomically
+      // decides the disposition - `turn_started` on an idle session, or
+      // `steering` into the running turn. The submit message id reuses the
+      // renderer's pre-generated id (a no-op for the turn_started branch,
+      // whose turn id is Host-generated). Only payloads the submit protocol
+      // cannot carry (Skill ids, orchestration) keep opening a new turn
+      // through `turn.start`.
+      const messageContentCapable =
+        command.text.trim().length > 0 &&
+        (command.skillIds?.length ?? 0) === 0 &&
+        command.turnOrchestration === undefined;
+      if (messageContentCapable) {
+        const submitted = await deps.client.submitMessage({
+          sessionId,
+          messageId: command.turnId ?? newId(),
+          content: {
+            text: command.text,
+            ...(command.displayText !== undefined
+              ? { displayText: command.displayText }
+              : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+            ...(command.quotes ? { quotes: command.quotes } : {}),
+            inlineReferences,
+          },
+          placement: "current_turn",
+        });
+        if (submitted.disposition === "turn_started") {
+          deps.emitSessionsChanged("status-change", sessionId, {
+            turnId: submitted.turnId,
+          });
+          return {
+            ok: true as const,
+            disposition: "turn_started" as const,
+            turnId: submitted.turnId,
+            attachments,
+            inlineReferences,
+            skillInvocation: EMPTY_SKILL_INVOCATION,
+          };
+        }
+        // steering | followup: the Host owns the queues and drains them into
+        // the running/next turn; no turn opened here, so the caller must skip
+        // new-turn bookkeeping. The injected/queued text reaches the
+        // transcript through the observer's steering_message / queue_update
+        // events and the persisted transcript.
+        return { ok: true as const, disposition: submitted.disposition };
+      }
+      const turnId = command.turnId ?? newId();
       const startInput = {
         sessionId,
         turnId,
@@ -219,6 +266,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       deps.emitSessionsChanged("status-change", sessionId, { turnId });
       return {
         ok: true as const,
+        disposition: "turn_started" as const,
         turnId,
         attachments,
         inlineReferences,

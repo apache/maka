@@ -292,6 +292,21 @@ test('drives the renderer Session execution facade through real UDS framing', as
               },
             };
           },
+          // #1954: plain-text sends route through turn.message.submit; the
+          // fixture must answer it (the default is operation_unavailable) so
+          // the facade drives the submit round-trip over real UDS framing.
+          'turn.message.submit': async (input) => {
+            assert.equal(input.sessionId, projected.id);
+            assert.equal(input.placement, 'current_turn');
+            assert.equal(input.content.text, 'Run through the Host');
+            return {
+              ok: true,
+              result: {
+                disposition: 'turn_started',
+                turnId: 'host-named-turn-1',
+              },
+            };
+          },
         }),
         beginDrain() {},
         async recover() {},
@@ -332,20 +347,31 @@ test('drives the renderer Session execution facade through real UDS framing', as
       access: 'read_only',
       revision: 2,
     });
-    assert.deepEqual(
-      await ipc.invoke('sessions:send', projected.id, {
-        type: 'send',
-        turnId: 'turn-1',
-        text: 'Run through the Host',
-      }),
-      {
-        ok: true,
-        turnId: 'turn-1',
-        attachments: [],
-        inlineReferences: [],
-        skillInvocation: { loaded: [], failed: [], receipts: [] },
-      },
-    );
+    const sendResult = (await ipc.invoke('sessions:send', projected.id, {
+      type: 'send',
+      turnId: 'turn-1',
+      text: 'Run through the Host',
+    })) as {
+      ok: boolean;
+      disposition?: string;
+      turnId: string;
+      attachments?: unknown[];
+      inlineReferences?: unknown[];
+      skillInvocation?: unknown;
+    };
+    // The send routes through turn.message.submit: the Host names the started
+    // turn (the client-supplied id labels the submitted message only).
+    assert.equal(sendResult.ok, true);
+    assert.equal(sendResult.disposition, 'turn_started');
+    assert.equal(typeof sendResult.turnId, 'string');
+    assert.ok(sendResult.turnId.length > 0);
+    assert.deepEqual(sendResult.attachments, []);
+    assert.deepEqual(sendResult.inlineReferences, []);
+    assert.deepEqual(sendResult.skillInvocation, {
+      loaded: [],
+      failed: [],
+      receipts: [],
+    });
 
     await observer.close();
     await client.close();

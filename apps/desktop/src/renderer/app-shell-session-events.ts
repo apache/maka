@@ -151,6 +151,13 @@ export function createAppShellSessionEventHandlers(options: {
         setInteractionBySession((current) => dequeueInteractionByToolUseId(current, sessionId, event.toolUseId));
         void refreshMessages(sessionId);
         break;
+      case 'steering_message':
+        // #1954: the runtime persisted a mid-turn steering message as a user
+        // RuntimeEvent; re-read so the injected text appears in the transcript
+        // (previously fell into the default branch and stayed invisible until
+        // the next unrelated refresh).
+        void refreshMessages(sessionId);
+        break;
       case 'error':
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));

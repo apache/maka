@@ -306,8 +306,8 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
   ]);
 });
 
-test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
-  const starts: unknown[] = [];
+test("submits canonical MessageContent and uploads owned Attachment bytes through the Host", async () => {
+  const submits: unknown[] = [];
   const uploads: unknown[] = [];
   const changes: unknown[] = [];
   const attachment: AttachmentRef = {
@@ -327,18 +327,11 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
       uploads.push(input);
       return attachment;
     },
-    startTurn: async (input) => {
-      starts.push(input);
-      return {
-        kind: "started",
-        turn: {
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          runId: "run-1",
-          status: "running",
-        },
-        skillInvocation: { loaded: [], failed: [], receipts: [] },
-      };
+    submitMessage: async (input) => {
+      submits.push(input);
+      // The Host names the started turn; the client-supplied id only labels
+      // the submitted message.
+      return { disposition: "turn_started", turnId: "turn-1" };
     },
   });
   const ipc = ipcHarness();
@@ -352,7 +345,7 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
       beforeStop() {},
-      newId: () => "turn-1",
+      newId: () => "msg-1",
     },
     ipc,
   );
@@ -371,10 +364,10 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
   });
 
   assert.equal((uploads[0] as { content: Uint8Array }).content.byteLength, 5);
-  assert.deepEqual(starts, [
+  assert.deepEqual(submits, [
     {
       sessionId: "session-1",
-      turnId: "turn-1",
+      messageId: "msg-1",
       content: {
         text: "Read @notes.txt",
         attachments: [attachment],
@@ -387,10 +380,12 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
           },
         ],
       },
+      placement: "current_turn",
     },
   ]);
   assert.deepEqual(result, {
     ok: true,
+    disposition: "turn_started",
     turnId: "turn-1",
     attachments: [attachment],
     inlineReferences: [
@@ -419,7 +414,7 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
   ]);
   assert.ok(approved);
   const uploads: Array<{ content: Uint8Array }> = [];
-  const starts: unknown[] = [];
+  const submits: unknown[] = [];
   const attachment: AttachmentRef = {
     kind: "other",
     name: "notes.txt",
@@ -440,18 +435,9 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
           uploads.push(input);
           return attachment;
         },
-        startTurn: async (input) => {
-          starts.push(input);
-          return {
-            kind: "started",
-            turn: {
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-              runId: "run-1",
-              status: "running",
-            },
-            skillInvocation: { loaded: [], failed: [], receipts: [] },
-          };
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "turn_started", turnId: "turn-1" };
         },
       }),
       observer: unusedObserver(),
@@ -476,7 +462,7 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
     "hello",
   );
   assert.deepEqual(
-    (starts[0] as { content: { attachments: AttachmentRef[] } }).content
+    (submits[0] as { content: { attachments: AttachmentRef[] } }).content
       .attachments,
     [attachment],
   );
@@ -535,6 +521,7 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
   ]);
   assert.deepEqual(result, {
     ok: true,
+    disposition: "turn_started",
     turnId: "turn-skill",
     attachments: [],
     inlineReferences: [],
@@ -543,6 +530,141 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
       failed: [],
       receipts: [],
     },
+  });
+});
+
+test("routes a plain-text send through turn.message.submit and surfaces the Host's steering disposition", async () => {
+  const submits: unknown[] = [];
+  const changes: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "steering", queueRevision: 2 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        changes.push({ reason, sessionId, ...extra }),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "msg-1",
+    },
+    ipc,
+  );
+
+  // #1954: while the Host's admission owns the session, a plain-text send must
+  // go through `turn.message.submit` so the Host atomically decides steering
+  // instead of Desktop opening (or failing to open) a parallel turn.
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "改成英文输出",
+  });
+
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "msg-1",
+      content: { text: "改成英文输出", inlineReferences: [] },
+      placement: "current_turn",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    disposition: "steering",
+  });
+  // No turn started, so no status-change broadcast for a new turn id.
+  assert.deepEqual(changes, []);
+});
+
+test("surfaces a followup disposition without opening a turn", async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => ({ disposition: "followup", queueRevision: 3 }),
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "msg-1",
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      text: "do this after the turn",
+    }),
+    { ok: true, disposition: "followup" },
+  );
+});
+
+test("keeps orchestration sends on turn.start (submit cannot carry them)", async () => {
+  const starts: unknown[] = [];
+  let submitCalls = 0;
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async (input) => {
+          starts.push(input);
+          return {
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            runId: "run-1",
+            status: "running",
+          };
+        },
+        submitMessage: async () => {
+          submitCalls += 1;
+          return { disposition: "steering", queueRevision: 1 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "turn-orchestrated",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "plan this",
+    turnOrchestration: { mode: "swarm", source: "slash_command" },
+  });
+
+  assert.equal(submitCalls, 0);
+  assert.deepEqual(starts, [
+    {
+      sessionId: "session-1",
+      turnId: "turn-orchestrated",
+      content: { text: "plan this", inlineReferences: [] },
+      turnOrchestration: { mode: "swarm", source: "slash_command" },
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    disposition: "turn_started",
+    turnId: "turn-orchestrated",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
   });
 });
 

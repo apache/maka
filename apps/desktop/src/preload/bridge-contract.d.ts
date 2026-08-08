@@ -310,6 +310,18 @@ export interface MakaBridge {
     ): Promise<
       | {
           ok: true;
+          /**
+           * The Host's canonical submit disposition (`turn.message.submit`,
+           * #1954): `steering`/`followup` mean the send was queued into the
+           * running/next turn instead of opening one — no `turnId`/
+           * attachments/etc. exist then. `turn_started` opened a turn whose
+           * id is the Host-authoritative `turnId`.
+           */
+          disposition: 'steering' | 'followup';
+        }
+      | {
+          ok: true;
+          disposition: 'turn_started';
           turnId: string;
           attachments: import('@maka/core').AttachmentRef[];
           inlineReferences: import('@maka/core').InlineReference[];

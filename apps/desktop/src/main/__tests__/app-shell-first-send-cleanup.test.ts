@@ -105,6 +105,8 @@ describe('composer first-send cleanup', () => {
         },
         send: async () => ({
           ok: true,
+          disposition: 'turn_started',
+          turnId: 'turn-1',
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
@@ -142,6 +144,8 @@ describe('composer first-send cleanup', () => {
         },
         send: async () => ({
           ok: true,
+          disposition: 'turn_started',
+          turnId: 'turn-1',
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
@@ -188,6 +192,8 @@ describe('composer first-send cleanup', () => {
         create: async () => ({ id: 'session-1' }),
         send: async () => ({
           ok: true,
+          disposition: 'turn_started',
+          turnId: 'turn-1',
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
         }),
@@ -355,7 +361,13 @@ describe('a send in flight versus a stale session list', () => {
         create: async () => ({ id: sessionId }),
         send: async (_sessionId: string, command: { turnId: string }) => {
           sentTurnId = command.turnId;
-          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+          return {
+            ok: true,
+            disposition: 'turn_started',
+            turnId: command.turnId,
+            attachments: [],
+            skillInvocation: { loaded: [], failed: [] },
+          };
         },
         readMessages: async () => (
           sentTurnId
@@ -422,5 +434,52 @@ describe('a send in flight versus a stale session list', () => {
     controller.confirmLiveTurn(sessionId, 'turn-from-another-client');
 
     assert.deepEqual(settle(controller), [], 'only this send\'s own turn may release its claim');
+  });
+});
+
+describe('queued mid-turn send rollback (#1954 review 4.2)', () => {
+  it('undoes new-turn bookkeeping, resolves the session, and refreshes on a steering disposition', async () => {
+    // A busy-session send that the Host's turn.message.submit routes into the
+    // steering queue returns `{ ok: true, disposition: 'steering' }`: no new
+    // turn started, so the optimistic arm must be disarmed,
+    // `onSessionResolved` must still fire (start_task binds taskSessionId
+    // through it — review 1.3), and the transcript must be refreshed so the
+    // steering_message row appears.
+    const sessionId = 'session-1';
+    const controller = createAppShellSessionUiStateController();
+    const resolved: string[] = [];
+    const refreshReads: string[] = [];
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async () => ({ ok: true, disposition: 'steering' }),
+        readMessages: async (readSessionId: string) => {
+          refreshReads.push(readSessionId);
+          return [];
+        },
+        remove: async () => undefined,
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: sessionId },
+        setLiveTurnBySession: controller.setLiveTurnBySession,
+      });
+      const result = await actions.send('steer the running turn', undefined, {
+        onSessionResolved: (resolvedId) => {
+          resolved.push(resolvedId);
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+    // The queued branch resolves the session even though no new turn opened.
+    assert.deepEqual(resolved, [sessionId]);
+    // And it refreshes the transcript (readMessages round-trips once).
+    assert.deepEqual(refreshReads, [sessionId]);
+    // The optimistic arm was disarmed: no unconfirmed live turn survives.
+    const armed = controller.getState().liveTurnBySession[sessionId];
+    assert.equal(armed, undefined, 'a queued send must not leave an armed turn behind');
   });
 });

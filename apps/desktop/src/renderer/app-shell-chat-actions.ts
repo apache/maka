@@ -375,6 +375,18 @@ export function createAppShellChatActions(deps: {
           await discardUnsentSession();
           return false;
         }
+        // A brand-new session cannot own a steering turn, so main only returns
+        // a queued disposition when the session already existed and was
+        // mid-turn (a create/send race). Treat it like the existing-session
+        // queued branch: no optimistic user message, keep the session, refresh
+        // the transcript.
+        if (sendResult.disposition !== 'turn_started') {
+          unsentSessionId = undefined;
+          options.onSessionResolved?.(session.id);
+          await refreshMessages(session.id);
+          await refreshSessions();
+          return true;
+        }
         unsentSessionId = undefined;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
@@ -385,7 +397,7 @@ export function createAppShellChatActions(deps: {
           setActiveId(session.id);
           showOptimisticUserMessage(
             session.id,
-            turnId,
+            sendResult.turnId,
             options.displayText ??
               skillInvocationDisplayText(text, sendResult.skillInvocation),
             sendResult.attachments,
@@ -397,7 +409,7 @@ export function createAppShellChatActions(deps: {
           );
         }
         if (activeIdRef.current === session.id) {
-          await refreshMessagesUntilTurn(session.id, turnId);
+          await refreshMessagesUntilTurn(session.id, sendResult.turnId);
         }
         await refreshSessions();
         return true;
@@ -429,13 +441,34 @@ export function createAppShellChatActions(deps: {
         disarmTurnActive(sessionId, turnId);
         return false;
       }
+      // #1954: main submitted this send through the Host's turn.message.submit
+      // and it was queued into the running/next turn instead of opening one
+      // (disposition steering|followup). Undo the new-turn bookkeeping we
+      // armed above (no second turn is starting) and refresh so the injected
+      // message (persisted as a user row / surfaced by the observer's
+      // steering_message event) appears in the transcript.
+      if (sendResult.disposition !== 'turn_started') {
+        disarmTurnActive(sessionId, turnId);
+        optimisticSessionId = undefined;
+        optimisticTurnId = undefined;
+        // start_task binds taskSessionId via onSessionResolved; a queued send
+        // still belongs to this (already resolved) session, so the binding must
+        // not be skipped or steer_task fails with no_active_task (#1954 review
+        // 1.3).
+        options.onSessionResolved?.(sessionId);
+        await refreshMessages(sessionId);
+        await refreshSessions();
+        return true;
+      }
       options.onSessionResolved?.(sessionId);
       if (activeIdRef.current === sessionId) {
         showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
       }
       showOptimisticUserMessage(
         sessionId,
-        turnId,
+        // The Host-authoritative turn id: on the Runtime Host path the
+        // running turn is named by the Host, not the pre-generated id above.
+        sendResult.turnId,
         options.displayText ??
           skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
@@ -444,7 +477,7 @@ export function createAppShellChatActions(deps: {
           inlineReferences: sendResult.inlineReferences ?? [],
         },
       );
-      await refreshMessagesUntilTurn(sessionId, turnId);
+      await refreshMessagesUntilTurn(sessionId, sendResult.turnId);
       return true;
     } catch (error) {
       await discardUnsentSession();

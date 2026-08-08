@@ -435,4 +435,48 @@ describe('single live-turn handoff', () => {
     ]);
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
+
+  it('refreshes the transcript when a steering_message lands mid-turn (#1954 review 4.2)', async () => {
+    // The runtime persists a steering injection as a user RuntimeEvent and
+    // echoes it as `steering_message`; the handler must re-read so the text
+    // appears in the transcript without waiting for the next unrelated event.
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const refreshes: string[] = [];
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async (sessionId) => {
+        refreshes.push(sessionId);
+        return true;
+      },
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        ref.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+
+    handlers.handleEvent('session-1', {
+      type: 'steering_message',
+      id: 'steer-1',
+      turnId: 'turn-1',
+      ts: 2,
+      messageId: 'user-steer-1',
+      content: { text: '改成英文输出', displayText: '改成英文输出' },
+    });
+
+    // The steer also lands in the live projection (surfaced as an interjection
+    // by the overlay's steering projection)…
+    assert.equal(liveTurns.get()['session-1']?.steering?.[0]?.id, 'user-steer-1');
+    // …and the transcript refresh fires for the owning session.
+    assert.deepEqual(refreshes, ['session-1']);
+  });
 });

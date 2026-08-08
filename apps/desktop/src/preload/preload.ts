@@ -241,6 +241,18 @@ const makaBridge = {
     ): Promise<
       | {
           ok: true;
+          /**
+           * The Host's canonical submit disposition (`turn.message.submit`,
+           * #1954): `steering`/`followup` mean the send was queued into the
+           * running/next turn instead of opening one, so no `turnId`/
+           * attachments/etc. exist in that branch. `turn_started` opened a
+           * turn whose id is the Host-authoritative `turnId`.
+           */
+          disposition: 'steering' | 'followup';
+        }
+      | {
+          ok: true;
+          disposition: 'turn_started';
           turnId: string;
           attachments: AttachmentRef[];
           inlineReferences: InlineReference[];
