@@ -25,6 +25,7 @@ import {
   normalizeUserQuestionResponse,
 } from "./permission-response-guard.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
@@ -63,6 +64,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   stat(path: string): Promise<{ size: number }>;
   resizeImage(bytes: Uint8Array): Promise<Uint8Array>;
   beforeStop(sessionId: string): void | Promise<void>;
+  sessionCopyCleanup?: SessionCopyCleanupAuthority;
   e2eInteractions?: {
     list(sessionId: string): readonly ActiveInteractionRequestEvent[];
     respondToSandboxBoundary(
@@ -85,6 +87,27 @@ export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
   ipcMain: Pick<IpcMain, "handle">,
 ): (sessionId: string) => Promise<void> {
+  const observedCopyOwners = new Set<string>();
+  const bindCopyOwner = (event: unknown): string => {
+    const sender = (event as {
+      sender?: {
+        id?: unknown;
+        once?: (event: string, listener: () => void) => void;
+      };
+    }).sender;
+    const ownerId =
+      typeof sender?.id === 'number' ? `web-contents:${sender.id}` : 'web-contents:unknown';
+    if (!observedCopyOwners.has(ownerId) && sender?.once) {
+      observedCopyOwners.add(ownerId);
+      const abandon = () => {
+        observedCopyOwners.delete(ownerId);
+        void deps.sessionCopyCleanup?.abandonOwner(ownerId);
+      };
+      sender.once('render-process-gone', abandon);
+      sender.once('destroyed', abandon);
+    }
+    return ownerId;
+  };
   const newId = deps.newId ?? randomUUID;
   const stopSession = createRuntimeHostSessionStop(deps, newId);
 
@@ -330,13 +353,30 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle(
     "sessions:branchFromTurn",
-    async (_event, sessionId: string, input: unknown) => {
+    async (event, sessionId: string, input: unknown) => {
       const normalized = normalizeRuntimeHostBranchFromTurnInput(input);
-      let branch = await deps.client.copySession("branch", {
-        sourceSessionId: sessionId,
-        targetSessionId: normalized.copyId,
-        sourceTurnId: normalized.sourceTurnId,
-      });
+      const createBranch = () =>
+        deps.client.copySession("branch", {
+          sourceSessionId: sessionId,
+          targetSessionId: normalized.copyId,
+          sourceTurnId: normalized.sourceTurnId,
+        });
+      const sessionCopyCleanup = deps.sessionCopyCleanup;
+      if (normalized.sideConversation && !sessionCopyCleanup) {
+        throw new Error('Side conversation copy authority is unavailable');
+      }
+      let branch = normalized.sideConversation
+        ? await sessionCopyCleanup!.ownCreation(
+            {
+              sessionId: normalized.copyId,
+              kind: 'branch',
+              sourceSessionId: sessionId,
+              sourceTurnId: normalized.sourceTurnId,
+              ownerId: bindCopyOwner(event),
+            },
+            createBranch,
+          )
+        : await createBranch();
       if (normalized.name || normalized.sideConversation) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
           ...(normalized.name ? { name: normalized.name } : {}),

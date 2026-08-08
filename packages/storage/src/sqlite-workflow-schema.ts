@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 3;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 4;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -56,7 +56,8 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS workflow_quote_companion_cleanup (
       session_id TEXT PRIMARY KEY,
-      tracked_at INTEGER NOT NULL
+      tracked_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS workflow_daily_review_state (
@@ -79,4 +80,26 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS workflow_daily_review_archives_order
       ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
   `);
+
+  const cleanupColumns = new Set(
+    (
+      db.prepare('PRAGMA table_info(workflow_quote_companion_cleanup)').all() as Array<{
+        name: string;
+      }>
+    ).map(({ name }) => name),
+  );
+  if (!cleanupColumns.has('record_json')) {
+    db.exec('ALTER TABLE workflow_quote_companion_cleanup ADD COLUMN record_json TEXT');
+    db.prepare(`
+      UPDATE workflow_quote_companion_cleanup
+      SET record_json = json_object(
+        'version', 1,
+        'sessionId', session_id,
+        'trackedAt', tracked_at,
+        'phase', 'cleanup',
+        'cancelRequested', json('true')
+      )
+      WHERE record_json IS NULL
+    `).run();
+  }
 }

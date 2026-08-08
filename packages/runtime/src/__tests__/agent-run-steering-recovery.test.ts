@@ -261,7 +261,13 @@ test('materializes a durable steering event into the transcript exactly once', a
       partial: false,
       role: 'user',
       author: 'user',
-      content: { kind: 'text', text: sessionEvent.content.text, steering: true },
+      content: {
+        kind: 'text',
+        text: sessionEvent.content.text,
+        displayText: '/skill:writer persist this interjection',
+        inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+        steering: true,
+      },
       refs: { providerEventId: sessionEvent.messageId },
     };
 
@@ -275,6 +281,8 @@ test('materializes a durable steering event into the transcript exactly once', a
         turnId,
         ts: sessionEvent.ts,
         text: sessionEvent.content.text,
+        displayText: '/skill:writer persist this interjection',
+        inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
         steeringEventId: sessionEvent.id,
       },
     ]);
@@ -299,6 +307,29 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
     await runStore.createRun(makeRunHeader(session.id, runId, turnId));
+    const steeringContent = {
+      kind: 'text' as const,
+      text: 'canonical steering envelope',
+      displayText: '/skill:writer recover this interjection',
+      attachments: [
+        {
+          kind: 'pdf' as const,
+          name: 'evidence.pdf',
+          mimeType: 'application/pdf',
+          bytes: 2048,
+          ref: {
+            kind: 'session_file' as const,
+            sessionId: session.id,
+            relativePath: 'attachments/evidence.pdf',
+          },
+        },
+      ],
+      quotes: [{ text: 'quoted evidence', label: 'Assistant', sourceTurnId: 'turn-source' }],
+      inlineReferences: [
+        { kind: 'skill' as const, value: '/skill:writer', label: 'Writer', start: 0 },
+      ],
+      steering: true as const,
+    };
     const runtimeEvent: RuntimeEvent = {
       id: 'runtime-steering-crash-cut',
       invocationId: 'invocation-steering-crash-cut',
@@ -309,7 +340,7 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
       partial: false,
       role: 'user',
       author: 'user',
-      content: { kind: 'text', text: 'recover this interjection', steering: true },
+      content: steeringContent,
       refs: { providerEventId: 'message-steering-crash-cut' },
     };
     await runtimeEventStore.appendRuntimeEvent(session.id, runId, runtimeEvent);
@@ -336,7 +367,11 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
         id: 'message-steering-crash-cut',
         turnId,
         ts: 2,
-        text: 'recover this interjection',
+        text: 'canonical steering envelope',
+        displayText: '/skill:writer recover this interjection',
+        attachments: steeringContent.attachments,
+        quotes: steeringContent.quotes,
+        inlineReferences: steeringContent.inlineReferences,
         steeringEventId: runtimeEvent.id,
       },
     ]);

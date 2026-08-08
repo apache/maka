@@ -233,6 +233,15 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
 test("marks Runtime Host Branch copies as side conversations", async () => {
   const metadataUpdates: unknown[] = [];
   const ipc = ipcHarness();
+  const sessionCopyCleanup = {
+    ownCreation: <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
+    async cleanup() {},
+    async schedule() {},
+    async abandonOwner() {},
+    async recover() {
+      return { removed: [], failed: [] };
+    },
+  };
   registerRuntimeHostSessionExecutionIpc(
     {
       client: executionClient({
@@ -256,6 +265,7 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
       stat: async () => ({ size: 0 }),
       resizeImage: async (bytes) => bytes,
       beforeStop() {},
+      sessionCopyCleanup,
     },
     ipc,
   );

@@ -19,6 +19,155 @@ afterEach(async () => {
 });
 
 describe('quote companion cleanup authority', () => {
+  it('orders cancellation after an in-flight copy reaches a known outcome', async () => {
+    const workspaceRoot = await createWorkspace();
+    let releaseCreation!: () => void;
+    const creationGate = new Promise<void>((resolve) => {
+      releaseCreation = resolve;
+    });
+    const events: string[] = [];
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'process-current',
+      resumeSessionCopy: async () => {
+        events.push('resume');
+      },
+      removeSession: async () => {
+        events.push('remove');
+      },
+    });
+    const creation = authority.ownCreation(
+      {
+        sessionId: 'fork-racing-create',
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        ownerId: 'web-contents:1',
+      },
+      async () => {
+        events.push('create');
+        await creationGate;
+        return 'created';
+      },
+    );
+
+    await authority.schedule('fork-racing-create');
+    assert.deepEqual(events, ['create']);
+    releaseCreation();
+    assert.equal(await creation, 'created');
+    await authority.cleanup('fork-racing-create');
+
+    assert.deepEqual(events, ['create', 'remove']);
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
+
+  it('resolves an unknown creating lease before removing it after restart', async () => {
+    const workspaceRoot = await createWorkspace();
+    const first = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'process-before-crash',
+      removeSession: async () => {
+        throw new Error('remove should belong to the successor');
+      },
+    });
+    await assert.rejects(
+      first.ownCreation(
+        {
+          sessionId: 'fork-unknown-create',
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          ownerId: 'web-contents:2',
+        },
+        async () => {
+          throw new Error('response lost');
+        },
+      ),
+      /response lost/,
+    );
+
+    const events: string[] = [];
+    const successor = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'process-after-crash',
+      resumeSessionCopy: async (creation) => {
+        events.push(`resume:${creation.sessionId}:${creation.sourceTurnId}`);
+      },
+      removeSession: async (sessionId) => {
+        events.push(`remove:${sessionId}`);
+      },
+    });
+
+    assert.deepEqual(await successor.recover(), {
+      removed: ['fork-unknown-create'],
+      failed: [],
+    });
+    assert.deepEqual(events, [
+      'resume:fork-unknown-create:source-turn',
+      'remove:fork-unknown-create',
+    ]);
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
+
+  it('abandons every live copy owned by a renderer that exits', async () => {
+    const workspaceRoot = await createWorkspace();
+    const removed: string[] = [];
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'process-current',
+      removeSession: async (sessionId) => {
+        removed.push(sessionId);
+      },
+    });
+    await authority.ownCreation(
+      {
+        sessionId: 'fork-owned-renderer',
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        ownerId: 'web-contents:7',
+      },
+      async () => 'created',
+    );
+
+    await authority.abandonOwner('web-contents:7');
+    await authority.cleanup('fork-owned-renderer');
+
+    assert.deepEqual(removed, ['fork-owned-renderer']);
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
+
+  it('upgrades pending cleanup rows written by the previous schema', async () => {
+    const workspaceRoot = await createWorkspace();
+    const database = new DatabaseSync(join(workspaceRoot, 'runtime.sqlite'));
+    try {
+      database.exec(`
+        CREATE TABLE workflow_quote_companion_cleanup (
+          session_id TEXT PRIMARY KEY,
+          tracked_at INTEGER NOT NULL
+        );
+        INSERT INTO workflow_quote_companion_cleanup(session_id, tracked_at)
+        VALUES ('fork-before-lease-schema', 1);
+      `);
+    } finally {
+      database.close();
+    }
+    const removed: string[] = [];
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'process-current',
+      removeSession: async (sessionId) => {
+        removed.push(sessionId);
+      },
+    });
+
+    assert.deepEqual(await authority.recover(), {
+      removed: ['fork-before-lease-schema'],
+      failed: [],
+    });
+    assert.deepEqual(removed, ['fork-before-lease-schema']);
+  });
+
   it('acknowledges abandon after the intent is durable without waiting for removal', async () => {
     const workspaceRoot = await createWorkspace();
     let releaseRemoval: (() => void) | undefined;

@@ -3,6 +3,7 @@ import type { AgentRunHeader, AgentRunStore, RuntimeEvent, RuntimeEventStore } f
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentRunLineage } from './agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
+import { projectRuntimeEventUserMessage } from './runtime-event-read-model.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
   commitTerminalRunWithRuntimeFact,
@@ -358,14 +359,7 @@ function steeringMessageFromRuntimeEvent(event: RuntimeEvent): StoredMessage | u
   ) {
     return undefined;
   }
-  return {
-    type: 'user',
-    id: messageId,
-    turnId: event.turnId,
-    ts: event.ts,
-    text: event.content.text,
-    steeringEventId: event.id,
-  };
+  return projectRuntimeEventUserMessage(event, messageId);
 }
 
 function isTerminalTurnStatus(status: TurnRecord['status']): boolean {

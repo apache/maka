@@ -365,6 +365,7 @@ registerNotificationsIpc({
   e2e: isE2e,
 });
 
+const sessionCopyOwnerProcessId = randomUUID();
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
@@ -459,8 +460,13 @@ owner = await startRuntimeHostDesktopOwner(
           },
         }
       : {}),
-    createSessionCopyCleanup: ({ removeSession }) =>
-      createSessionCopyCleanupAuthority({ workspaceRoot, removeSession }),
+    createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
+      createSessionCopyCleanupAuthority({
+        workspaceRoot,
+        removeSession,
+        resumeSessionCopy,
+        processId: sessionCopyOwnerProcessId,
+      }),
     sendToRenderer: (channel, payload) =>
       mainWindowController.send(channel, payload),
     onError: (error) =>

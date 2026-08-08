@@ -211,8 +211,10 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       emitModeChanged() {},
       completeComputerUseTurn() {},
       createSessionCopyCleanup: () => ({
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async () => undefined,
         schedule: async () => undefined,
+        abandonOwner: async () => undefined,
         recover: async () => ({ removed: [], failed: [] }),
       }),
       newId: () => 'session-ipc',

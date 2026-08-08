@@ -116,8 +116,10 @@ test('recovers and records Session copy cleanup through the Runtime Host catalog
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: {
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async (sessionId) => { cleanupCalls.push(`cleanup:${sessionId}`); },
         schedule: async (sessionId) => { cleanupCalls.push(`abandon:${sessionId}`); },
+        abandonOwner: async () => undefined,
         recover: async () => {
           recoveries += 1;
           return { removed: [], failed: [] };
@@ -146,8 +148,10 @@ test('keeps abandoned copies hidden while durable cleanup is still pending', asy
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: {
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async () => undefined,
         schedule: async () => undefined,
+        abandonOwner: async () => undefined,
         recover: async () => ({
           removed: [],
           failed: [{ sessionId: 'abandoned-copy', error: new Error('remove failed') }],
@@ -259,8 +263,10 @@ type CatalogClient = RuntimeHostSessionCatalogIpcDeps['client'];
 
 function cleanupAuthority(): RuntimeHostSessionCatalogIpcDeps['sessionCopyCleanup'] {
   return {
+    ownCreation: (_creation, operation) => operation(),
     cleanup: async () => undefined,
     schedule: async () => undefined,
+    abandonOwner: async () => undefined,
     recover: async () => ({ removed: [], failed: [] }),
   };
 }

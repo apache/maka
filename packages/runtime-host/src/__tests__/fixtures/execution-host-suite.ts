@@ -1225,7 +1225,7 @@ export async function waitForTerminalTurn(
   sessionId: string,
   turnId: string,
 ): Promise<TurnSnapshot> {
-  const subscription = await connection.openSessionSubscription({ sessionId });
+  const subscription = await connection.openSessionSubscription({ sessionId }, PROCESS_TIMEOUT_MS);
   try {
     return await withTimeout(
       (async () => {

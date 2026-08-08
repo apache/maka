@@ -704,23 +704,20 @@ export class DesktopRuntimeHostClient {
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
-    let current: SessionCatalogItem;
     try {
-      current = await this.#requireSession(sessionId);
-    } catch (error) {
-      if (error instanceof RuntimeHostOperationError && error.code === 'not_found') {
-        return 'removed';
+      const current = await this.#requireSession(sessionId);
+      if (current.revisionOfTurnId !== undefined) {
+        const result = await this.#request('session.revision.abandon', {
+          targetSessionId: sessionId,
+        });
+        return result.kind === 'abandoned' ? 'removed' : 'retained';
       }
+      await this.removeSession(sessionId);
+      return 'removed';
+    } catch (error) {
+      if (isMissingSessionError(error)) return 'removed';
       throw error;
     }
-    if (current.revisionOfTurnId !== undefined) {
-      const result = await this.#request('session.revision.abandon', {
-        targetSessionId: sessionId,
-      });
-      return result.kind === 'abandoned' ? 'removed' : 'retained';
-    }
-    await this.removeSession(sessionId);
-    return 'removed';
   }
 
   async copySession(
@@ -1407,6 +1404,13 @@ function clientClosed(): DesktopRuntimeHostClientError {
   return new DesktopRuntimeHostClientError(
     "client_closed",
     "Desktop Runtime Host Client is closed",
+  );
+}
+
+function isMissingSessionError(error: unknown): boolean {
+  return (
+    (error instanceof DesktopRuntimeHostClientError && error.code === 'session_not_found') ||
+    (error instanceof RuntimeHostOperationError && error.code === 'not_found')
   );
 }
 

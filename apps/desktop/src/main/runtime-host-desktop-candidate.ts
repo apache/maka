@@ -73,6 +73,12 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly now?: () => number;
   readonly createSessionCopyCleanup: (input: {
     removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition>;
+    resumeSessionCopy: (input: {
+      sessionId: string;
+      kind: 'branch' | 'revision';
+      sourceSessionId: string;
+      sourceTurnId: string;
+    }) => Promise<void>;
   }) => SessionCopyCleanupAuthority;
   readonly registerClientIpc?: (
     client: DesktopRuntimeHostClient,
@@ -366,6 +372,13 @@ export async function createDesktopRuntimeHostCandidate(
         deps.emitSessionsChanged("deleted", sessionId);
         return disposition;
       },
+      resumeSessionCopy: async ({ sessionId, kind, sourceSessionId, sourceTurnId }) => {
+        await client.copySession(kind, {
+          sourceSessionId,
+          targetSessionId: sessionId,
+          sourceTurnId,
+        });
+      },
     });
     const registeredClientIpc = deps.registerClientIpc?.(client, ipc, {
       refreshClientCapabilities,
@@ -394,6 +407,7 @@ export async function createDesktopRuntimeHostCandidate(
         stat: deps.stat,
         resizeImage: deps.resizeImage,
         beforeStop: deps.nativeCapabilities.releaseComputerUseSession,
+        sessionCopyCleanup,
         ...(deps.e2eInteractions
           ? { e2eInteractions: deps.e2eInteractions }
           : {}),
