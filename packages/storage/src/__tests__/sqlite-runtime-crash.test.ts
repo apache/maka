@@ -28,9 +28,7 @@ const childMode = process.env.MAKA_SQLITE_CRASH_CHILD;
 if (childMode) {
   await runCrashChild(childMode);
 } else {
-  describe('SqliteRuntimeStore real-process crash boundaries', {
-    skip: process.platform === 'win32',
-  }, () => {
+  describe('SqliteRuntimeStore real-process crash boundaries', () => {
     it('rolls back a process killed inside T1', { timeout: 30_000 }, async () => {
       await withKilledChild('inside_t1', async (store) => {
         assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), []);

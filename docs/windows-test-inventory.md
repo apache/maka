@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 30 |
+| windows-backend-gap | 20 |
 | portable-candidate | 0 |
 | platform-contract | 35 |
 
-Total Windows-excluded declarations: **65**
+Total Windows-excluded declarations: **55**
 
 ## Inventory
 
@@ -32,30 +32,22 @@ Total Windows-excluded declarations: **65**
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/headless/src/__tests__/sandbox.test.ts` copies portable workspace evidence while skipping process-local special files | `process.platform === 'win32'` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/agent-graph-two-client-uds.test.ts` two UDS Clients query and control one Agent graph through Session invalidation | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/artifact-two-client-uds.test.ts` production Host recovers Artifact publication and preserves deletes across owner death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/automation-two-client-uds.test.ts` two UDS Clients share one revision-pinned Automation authority | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/daily-review-two-client-uds.test.ts` two UDS Clients share Daily Review config, generation, and restart recovery | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/deep-research-two-client-uds.test.ts` two UDS Clients and a restarted production Host share one Deep Research projection | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-host-queue.test.ts` a killed Host is recovered exactly once before its successor becomes ready | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/execution-inspect-uds.test.ts` a live Host serves Interactive inspection over its real UDS while retaining exclusive ownership | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/execution-inspect-uds.test.ts` a live Host serves Interactive inspection over its real endpoint while retaining exclusive ownership | `process.platform === 'win32' ? 'Windows execution Host startup lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` an automatic failed liveness check is connection-fatal and Client close stays local | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` bounded election does not launch a Candidate after handshake exhausts the deadline | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` a non-reading Client overload is isolated to its connection | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` reports one shutdown failure through close and closed while releasing ownership | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime-host/src/__tests__/host-kernel.test.ts` publishes private POSIX endpoint and registration permissions | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/memory-two-client-uds.test.ts` two UDS clients share one recoverable Memory authority across Host death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/oauth-two-client-uds.test.ts` OAuth enrollment presents only on the initiating Client over real UDS | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/oauth-two-client-uds.test.ts` OAuth enrollment honors Claude and Codex opt-out flags over real UDS | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/plan-two-client-uds.test.ts` two UDS Clients and a restarted production Host share one retry-safe Plan authority | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-process.test.ts` real Host Runtime Resource process lifecycle | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-two-client-uds.test.ts` a Host-owned PTY survives Desktop disconnect and transfers control to TUI | `process.platform === 'win32' ? 'POSIX UDS and shell integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` two UDS Clients share stable Session creation, CAS configuration, and catalog continuity | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` stable Session creation survives response loss and Host restart | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/session-effect-two-client-uds.test.ts` two UDS Clients share one durable Session recap effect | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/session-revision-two-client-uds.test.ts` two UDS Clients share exact retryable Session branch and revision authority | `process.platform === 'win32' ? 'POSIX UDS integration' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` two Clients share stable Session creation, CAS configuration, and catalog continuity | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` stable Session creation survives response loss and Host restart | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/session-revision-two-client-uds.test.ts` two Clients share exact retryable Session branch and revision authority | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts` two UDS clients converge on one lease-bound Skill catalog authority | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
@@ -86,7 +78,5 @@ Total Windows-excluded declarations: **65**
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` preserves unknown commit semantics and consumes the completion ticket | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
-| windows-backend-gap | `packages/storage/src/__tests__/sqlite-long-term-memory-crash.test.ts` retains one committed Item and its receipt when killed between COMMIT and return | `process.platform === 'win32'` |
-| windows-backend-gap | `packages/storage/src/__tests__/sqlite-runtime-crash.test.ts` SqliteRuntimeStore real-process crash boundaries | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
