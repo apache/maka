@@ -1,0 +1,16 @@
+{"timestamp":"2026-08-08T00:00:00.000Z","type":"session_meta","payload":{"session_id":"codex-session-1","id":"codex-session-1","timestamp":"2026-08-08T00:00:00.000Z","cwd":"/workspace/project","originator":"codex_cli_rs","cli_version":"0.144.1","source":"cli","model_provider":"openai"}}
+{"timestamp":"2026-08-08T00:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"codex-turn-1","started_at":1786147201}}
+{"timestamp":"2026-08-08T00:00:01.100Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"synthetic developer context"}]}}
+{"timestamp":"2026-08-08T00:00:01.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic model input"}]}}
+{"timestamp":"2026-08-08T00:00:01.300Z","type":"turn_context","payload":{"turn_id":"codex-turn-1","cwd":"/workspace/project","model":"gpt-codex-test","approval_policy":"on-request","sandbox_policy":{"type":"workspace-write"}}}
+{"timestamp":"2026-08-08T00:00:02.000Z","type":"event_msg","payload":{"type":"user_message","client_id":"codex-user-1","message":"Fix the parser","images":[],"local_images":[],"text_elements":[]}}
+{"timestamp":"2026-08-08T00:00:03.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"Inspect the failing path."}}
+{"timestamp":"2026-08-08T00:00:03.100Z","type":"response_item","payload":{"type":"reasoning","id":"reasoning-provider-1","summary":[{"type":"summary_text","text":"Inspect the failing path."}],"encrypted_content":"opaque"}}
+{"timestamp":"2026-08-08T00:00:04.000Z","type":"event_msg","payload":{"type":"agent_message","message":"I found the issue.","phase":"commentary"}}
+{"timestamp":"2026-08-08T00:00:04.100Z","type":"response_item","payload":{"type":"message","id":"assistant-provider-1","role":"assistant","content":[{"type":"output_text","text":"I found the issue."}],"phase":"commentary"}}
+{"timestamp":"2026-08-08T00:00:05.000Z","type":"response_item","payload":{"type":"function_call","id":"function-provider-1","name":"wait","arguments":"{\"milliseconds\":25}","call_id":"call-wait-1"}}
+{"timestamp":"2026-08-08T00:00:06.000Z","type":"response_item","payload":{"type":"function_call_output","id":"function-output-1","call_id":"call-wait-1","output":"waited"}}
+{"timestamp":"2026-08-08T00:00:07.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"custom-provider-1","name":"apply_patch","input":"*** Begin Patch","call_id":"call-patch-1"}}
+{"timestamp":"2026-08-08T00:00:08.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"custom-output-1","call_id":"call-patch-1","output":[{"type":"input_text","text":"Done"},{"type":"input_text","text":"1 file changed"}]}}
+{"timestamp":"2026-08-08T00:00:09.000Z","type":"event_msg","payload":{"type":"context_compacted"}}
+{"timestamp":"2026-08-08T00:00:10.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"codex-turn-1","last_agent_message":"I found the issue.","completed_at":1786147210}}
