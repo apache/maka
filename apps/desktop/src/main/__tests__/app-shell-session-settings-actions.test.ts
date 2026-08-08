@@ -30,13 +30,14 @@ function session(id: string): SessionSummary {
   };
 }
 
-function createHarness() {
+function createHarness(options: { confirm?: () => Promise<boolean> } = {}) {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
   const sessionsRef = { current: sessions };
   const pending = new Set<string>();
   const pendingBySession: Record<string, boolean> = {};
   const modelCalls: string[] = [];
+  const permissionCalls: string[] = [];
   const thinkingCalls: string[] = [];
   const errors: string[] = [];
   const modelResult = deferred<SessionSummary>();
@@ -47,6 +48,10 @@ function createHarness() {
     value: {
       maka: {
         sessions: {
+          setPermissionMode: async (sessionId: string, mode: 'ask' | 'bypass') => {
+            permissionCalls.push(`${sessionId}:${mode}`);
+            return { ...session(sessionId), permissionMode: mode };
+          },
           setModel: async (sessionId: string) => {
             modelCalls.push(sessionId);
             return modelResult.promise;
@@ -82,7 +87,7 @@ function createHarness() {
     toastApi: {
       success: () => undefined,
       error: (title) => errors.push(title),
-      confirm: async () => true,
+      confirm: options.confirm ?? (async () => true),
     },
   });
 
@@ -94,12 +99,28 @@ function createHarness() {
     modelResult,
     pending,
     pendingBySession,
+    permissionCalls,
     thinkingCalls,
     thinkingResult,
   };
 }
 
-describe('AppShell session model configuration actions', () => {
+describe('AppShell session settings actions', () => {
+  it('does not grant full access when its confirmation is cancelled', async () => {
+    let confirmations = 0;
+    const harness = createHarness({
+      confirm: async () => {
+        confirmations += 1;
+        return false;
+      },
+    });
+
+    await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(confirmations, 1);
+    assert.deepEqual(harness.permissionCalls, []);
+  });
+
   it('blocks a thinking-level mutation while the same session model mutation is pending', async () => {
     const harness = createHarness();
 
