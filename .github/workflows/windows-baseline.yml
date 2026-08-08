@@ -125,11 +125,13 @@ jobs:
         name: Run Runtime PTY input gates
         if: always() && steps.build.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 5
         shell: pwsh
         run: |
-          $output = node.exe --test --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js 2>&1
+          node.exe --test --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js 2>&1 |
+            Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
           $exitCode = $LASTEXITCODE
-          $output | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
+          $output = Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/runtime-pty-input.log"
           if ($exitCode -eq 0 -and ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2')) {
             Write-Error 'Runtime PTY input gate did not run exactly two passing tests'
             exit 1
