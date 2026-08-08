@@ -7,18 +7,49 @@ import { fileURLToPath } from 'node:url';
 const workflowUrl = new URL('../.github/workflows/windows-baseline.yml', import.meta.url);
 const processIdentityScriptUrl = new URL('./windows-process-identity.ps1', import.meta.url);
 
-function resolvePowerShellExecutable() {
+function powerShellArgs(command) {
+  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command];
+}
+
+function resolvePowerShellExecutable(spawn = spawnSync) {
+  const failures = [];
   for (const executable of ['pwsh.exe', 'powershell.exe']) {
-    const probe = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
+    const probe = spawn(executable, powerShellArgs('exit 0'), {
       encoding: 'utf8',
     });
     if (probe.status === 0) return executable;
-    if (probe.error?.code !== 'ENOENT') {
-      assert.fail(probe.error?.message || probe.stderr || probe.stdout);
-    }
+    failures.push(
+      `${executable}: ${probe.error?.message || probe.stderr || probe.stdout || `exit ${probe.status}`}`,
+    );
   }
-  assert.fail('Neither pwsh.exe nor powershell.exe is available');
+  assert.fail(`No usable PowerShell executable (${failures.join('; ')})`);
 }
+
+test('PowerShell resolution covers the documented Windows PowerShell fallback', () => {
+  for (const pwshFailure of [
+    {
+      status: null,
+      error: Object.assign(new Error('spawnSync pwsh.exe ENOENT'), { code: 'ENOENT' }),
+    },
+    { status: 1, error: undefined },
+  ]) {
+    const calls = [];
+    const executable = resolvePowerShellExecutable((command, args, options) => {
+      calls.push({ command, args, options });
+      return command === 'pwsh.exe'
+        ? { ...pwshFailure, stdout: '', stderr: '' }
+        : { status: 0, error: undefined, stdout: '', stderr: '' };
+    });
+
+    assert.equal(executable, 'powershell.exe');
+    assert.deepEqual(
+      calls.map(({ command }) => command),
+      ['pwsh.exe', 'powershell.exe'],
+    );
+    assert.deepEqual(calls[0].args, powerShellArgs('exit 0'));
+    assert.equal(calls[0].options.encoding, 'utf8');
+  }
+});
 
 test('Windows baseline workflow keeps its non-blocking evidence contract', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
@@ -100,12 +131,8 @@ test('Windows process identity matches a non-empty JSON baseline to a live proce
         exit 1
       }
     `;
-  const result = spawnSync(
-    resolvePowerShellExecutable(),
-    ['-NoProfile', '-NonInteractive', '-Command', fixture],
-    {
-      encoding: 'utf8',
-    },
-  );
+  const result = spawnSync(resolvePowerShellExecutable(), powerShellArgs(fixture), {
+    encoding: 'utf8',
+  });
   assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });
