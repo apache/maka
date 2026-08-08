@@ -298,16 +298,13 @@
 
   /* === color-system compatibility aliases ===
      Legacy `--color-*` names that predate the --background family, relocated
-     here from reference-shell.css (Round C). Kept as thin aliases for the few
-     consumers still on them: `--color-bg-container` backs the agents content
-     surface (reference-shell.css) + darwin glass card. The border/text alias
-     tiers went out once their last consumers moved to the --background
-     family. Authoritative source is the token each aliases — see the token
-     README at the top of this file. Do NOT add new --color-* names.
-     `--color-bg-container` is the one shipped exception where the alias name is
-     the canonical handle for the content-card surface (resolves to
-     --background); it carries its darwin overrides in "DARWIN GLASS" below. */
-  --color-bg-container: var(--background);
+     here from reference-shell.css (Round C). The border/text alias tiers went
+     out once their last consumers moved to the --background family, and
+     Visual System 2.0 (T2) retired the last one: `--color-bg-container` backed
+     the agents content surface, which now names the ladder tier it wanted
+     (`--surface-raised`, see reference-shell.css) instead of aliasing toward
+     it. Nothing in the app reads a `--color-*` compatibility name any more.
+     Do NOT add new --color-* names. */
 
   /* === elevation (visual system 2.0, T1) =============================
      Product names for the theme's shadow scale, so the right answer is
@@ -928,23 +925,29 @@
 }
 
 /* =============================================================================
-   DARWIN GLASS — color-alias overrides for the macOS vibrancy shell
-   (relocated from styles/theme-glass.css, Round C). Unlayered + the
-   html[data-os="darwin"] selector on purpose: the override must outrank the
-   :root aliases above (0,1,1 > 0,1,0) and beat any @layer declaration. The
-   glass MATERIAL rules (backdrop-filter, transparency) stay in theme-glass.css.
+   DARWIN GLASS — retired by Visual System 2.0 (T2).
 
-   Re-anchored on --background (not a warm/zinc literal) so hue/chroma follow
-   the active palette; card↔canvas separation is the canvas/vibrancy's job, so
-   the content card == the palette background.
+   This block carried the last `--color-*` compatibility alias
+   (`--color-bg-container`) plus a darwin-dark override that lifted the content
+   card `calc(l + 0.035)` off `--background`. Both are gone, and the lift is
+   NOT retuned to a smaller number — it is deleted, because the job it was
+   hired for is now the surface ladder's:
+
+   - What it wanted was "the card reads above the shell in dark mode". The
+     ladder states that directly (base 17 → raised 23) and states it for every
+     mode and palette, not just darwin-dark.
+   - What it actually did was overshoot. Measured on this branch's parent, the
+     plate landed at L 0.240 while `--surface-overlay` — the tier that floats
+     ABOVE plates — sat at 0.223. Menus and dialogs opened DARKER than the
+     surface they opened over, which inverts DESIGN.md §2's Height Rule at the
+     top of the ladder. A private offset cannot see the tiers above it; that is
+     the whole argument for a ladder over per-site lifts.
+
+   The glass MATERIAL rules (backdrop-filter, transparency) were always
+   separate and stay in styles/theme-glass.css — this block was color only, so
+   removing it does not touch vibrancy. Plate fill now resolves through
+   `--agents-content-area-bg` → `--surface-raised` (reference-shell.css).
 ============================================================================= */
-html[data-os="darwin"] {
-  --color-bg-container: var(--background);
-}
-html[data-os="darwin"].dark {
-  /* Dark glass lifts the card one lightness step off the darker shell. */
-  --color-bg-container: oklch(from var(--background) calc(l + 0.035) c h);
-}
 
 /* =============================================================================
    PR-UI-2 (@yuejing 2026-05-22): base46-inspired palette catalog

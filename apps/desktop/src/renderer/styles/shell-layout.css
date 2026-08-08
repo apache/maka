@@ -70,8 +70,24 @@
    its 1px of layout, so the content column started 1px right of where the
    sidebar column ended — invisible on its own, but it put a seam between the
    two that nothing could align to. The titlebar's breadcrumb opens at that
-   edge, which is what made the phantom pixel measurable. */
+   edge, which is what made the phantom pixel measurable.
+
+   Visual System 2.0 (T2): the fill is now the ladder's `sunken` tier rather
+   than the column material Astryx paints (`--color-background-body`, which is
+   the shell CANVAS == `--surface-base`). DESIGN.md §2 names this element: the
+   sidebar sits on sunken, the shell on base, content plates on raised. Before
+   this the sidebar and the canvas resolved to the SAME value (measured 247 in
+   light, 17 in dark), so the rail had no edge of its own — with the theme
+   hairline dropped above, the column boundary was not expressed by anything at
+   all. The step is what the dropped line was traded for, and until now only
+   half that trade had been paid.
+
+   Scoped to this element instead of remapping `--color-background-body`,
+   because that token is AppShell's body wash — the same atom paints the shell
+   root and the content area's wash variant, so moving it would drag the canvas
+   down with the rail and destroy the very step being created. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
+  background: var(--surface-sunken);
   border-inline-end-color: transparent;
   border-inline-end-width: 0;
 }

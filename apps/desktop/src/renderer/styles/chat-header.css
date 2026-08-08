@@ -55,7 +55,12 @@
 .maka-session-context {
   flex: 0 0 auto;
   min-width: 0;
-  background: var(--background);
+  /* Visual System 2.0 (T2): same pixels, findable name. This band is flush
+     inside the conversation plate, so it paints the plate's own tier — the
+     point is that it stays INVISIBLE against it. `--background` resolves here
+     too (DESIGN.md §2 lists it as a raised alias), but it reads like "the page
+     color" at a call site, which is the one thing it is not. */
+  background: var(--surface-raised);
   container-type: inline-size;
   -webkit-app-region: no-drag;
 }

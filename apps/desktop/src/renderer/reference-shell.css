@@ -13,7 +13,16 @@
   /* Flat neutral shell/backplate. This must never be a gradient; the
      white content surface reads through radius + shadow on top. */
   --agents-layout-bg: var(--surface-canvas);
-  --agents-content-area-bg: var(--color-bg-container);
+  /* Visual System 2.0 (T2): the three floating plates (.mainColumn,
+     .maka-session-workbar, .settingsMainPane) all read this one handle, so
+     pointing it at the ladder's `raised` tier is what "the plates are raised"
+     means in one edit rather than three. It used to route through
+     `--color-bg-container`, whose darwin-dark override lifted the card a
+     hand-rolled +0.035L: measured L 0.240 against a `--surface-overlay` of
+     0.223, i.e. the content plate outranked the tier that floats ABOVE it and
+     the ladder was non-monotonic at the top. See maka-tokens.css for why that
+     lift is gone rather than retuned. */
+  --agents-content-area-bg: var(--surface-raised);
   /* reference layout-derived values (2026-06-20 WAWQAQ ef6b2852).
      The original 8px/12px we shipped at 7013f0f read too loose vs the
      real bundle's 4px gap + 6px radius.
