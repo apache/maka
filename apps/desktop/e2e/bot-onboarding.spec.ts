@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 
-test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘', async ({ botSettingsWindow: page }) => {
+test('IM 快捷接入完成真实 QR session、凭据落盘，取消与过期二维码可恢复', async ({ botSettingsWindow: page }) => {
   const settings = page.getByRole('main', { name: '设置内容' });
   await expect(settings.getByRole('heading', { name: '远程接入' })).toBeVisible();
 
@@ -32,11 +32,10 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
 
   await dialog.getByRole('button', { name: '完成' }).click();
   await expect(dialog).toBeHidden();
-});
 
-test('关闭扫码弹窗会取消迟到结果，过期二维码可以重新生成', async ({ botSettingsWindow: page }) => {
-  const settings = page.getByRole('main', { name: '设置内容' });
-
+  // Same window, next channels: cancellation races, expiry regeneration, and
+  // the Lark variant are independent flows over the same seeded settings.
+  await settings.getByRole('button', { name: '返回远程接入' }).click();
   await settings.getByRole('button', { name: '接入 微信' }).click();
   await settings.getByRole('button', { name: '扫码登录' }).click();
   const wechatDialog = page.getByRole('dialog', { name: '微信扫码登录' });

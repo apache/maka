@@ -16,7 +16,7 @@ import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { e2eHomeDir, test, expect } from './fixtures.js';
 
-test('deletes a user-scope skill from disk and drops it from the list', async ({
+test('offers delete only for deletable scopes and removes a user-scope skill from disk', async ({
   invocableSkillsWindow: page,
 }) => {
   const skillDir = path.join(e2eHomeDir(), '.agents', 'skills', 'user-only');
@@ -35,11 +35,20 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   // then hunt for the row on the wrong tab.
   await page.getByRole('radio', { name: '已安装' }).click();
 
+  // Non-destructive scope check first, in the same installed list: project
+  // skills live in the user's repo and are left to git — the backend refuses
+  // them with `blocked_scope`, and the panel must not offer a button that
+  // cannot work.
+  const projectRow = page.getByRole('button', { name: /Project Only/ });
+  await expect(projectRow).toBeVisible();
+  await projectRow.click();
+  const inspector = page.getByRole('complementary', { name: '技能详情' });
+  await expect(inspector.getByRole('button', { name: '删除', exact: true })).toHaveCount(0);
+
   const row = page.getByRole('button', { name: /User Only/ });
   await expect(row).toBeVisible();
   await row.click();
 
-  const inspector = page.getByRole('complementary', { name: '技能详情' });
   await inspector.getByRole('button', { name: '删除', exact: true }).click();
 
   // Opening the confirmation alone must not touch disk.
@@ -56,20 +65,3 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   await expect(page.locator('.maka-module-page-rows > li button:focus')).toHaveCount(1);
 });
 
-test('offers no delete for a project-scope skill', async ({ invocableSkillsWindow: page }) => {
-  // Project skills live in the user's repo and are left to git — the backend
-  // refuses them with `blocked_scope`, and the panel must not offer a button
-  // that cannot work.
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('navigation', { name: '对话列表' });
-  await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
-  await page.getByRole('main', { name: '扩展' }).waitFor();
-
-  await page.getByRole('radio', { name: '已安装' }).click();
-
-  const projectRow = page.getByRole('button', { name: /Project Only/ });
-  await expect(projectRow).toBeVisible();
-  await projectRow.click();
-  const inspector = page.getByRole('complementary', { name: '技能详情' });
-  await expect(inspector.getByRole('button', { name: '删除', exact: true })).toHaveCount(0);
-});

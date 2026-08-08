@@ -8,7 +8,7 @@ import { expect, test } from './fixtures.js';
  * most easily: a "设为默认" that looked live on a folder the app cannot open
  * would set a default that breaks every new conversation.
  */
-test('the projects page lists the catalog and moves the default between rows', async ({
+test('the projects page lists the catalog, moves the default, gates reveal, and renames in place', async ({
   settingsProjectsWindow: page,
 }) => {
   await page
@@ -74,17 +74,25 @@ test('the projects page lists the catalog and moves the default between rows', a
     await remaining.nth(stillEnabled[0]).click();
     await expect(main.getByText('默认', { exact: true })).toHaveCount(1);
   }
-});
 
-test('a project can be renamed in place from the row menu', async ({
-  settingsProjectsWindow: page,
-}) => {
-  await page
-    .getByRole('navigation', { name: /设置分组|Settings sections/ })
-    .getByRole('button', { name: /项目|Projects/, exact: true })
-    .click();
+  // Reveal gating, same catalog: the row whose folder is gone must not offer
+  // a Finder entry that can only fail.
+  await expect(main.getByText('retired-prototype', { exact: true })).toBeVisible();
 
-  const main = page.getByRole('main', { name: /设置内容|Settings content/ });
+  // The seeded `retired-prototype` folder was never created, so opening it
+  // could only fail; the entry is disabled rather than offered-and-broken.
+  await main.getByRole('button', { name: '更多操作：retired-prototype' }).click();
+  await expect(page.getByRole('menuitem', { name: '在访达中打开' })).toBeDisabled();
+  await page.keyboard.press('Escape');
+
+  // Main resolves the path from the catalog by id, so an available project
+  // reports a real directory rather than a renderer-supplied one.
+  const result = await page.evaluate(() =>
+    window.maka.projects.reveal('proj-fixture-gone'),
+  );
+  expect(result.ok).toBe(false);
+
+  // Rename last — it rewrites a seeded name the phases above address.
   await expect(main.getByText('astryx-design-system', { exact: true })).toBeVisible();
 
   // Address the row by name, not by index: the app self-registers its own
@@ -109,29 +117,4 @@ test('a project can be renamed in place from the row menu', async ({
       ),
     )
     .toContain('astryx-renamed');
-});
-
-test('reveal is offered only for a project whose folder is still there', async ({
-  settingsProjectsWindow: page,
-}) => {
-  await page
-    .getByRole('navigation', { name: /设置分组|Settings sections/ })
-    .getByRole('button', { name: /项目|Projects/, exact: true })
-    .click();
-
-  const main = page.getByRole('main', { name: /设置内容|Settings content/ });
-  await expect(main.getByText('retired-prototype', { exact: true })).toBeVisible();
-
-  // The seeded `retired-prototype` folder was never created, so opening it
-  // could only fail; the entry is disabled rather than offered-and-broken.
-  await main.getByRole('button', { name: '更多操作：retired-prototype' }).click();
-  await expect(page.getByRole('menuitem', { name: '在访达中打开' })).toBeDisabled();
-  await page.keyboard.press('Escape');
-
-  // Main resolves the path from the catalog by id, so an available project
-  // reports a real directory rather than a renderer-supplied one.
-  const result = await page.evaluate(() =>
-    window.maka.projects.reveal('proj-fixture-gone'),
-  );
-  expect(result.ok).toBe(false);
 });

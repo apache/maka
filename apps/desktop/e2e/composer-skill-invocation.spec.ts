@@ -35,7 +35,13 @@ async function selectStarterSkill(
   await expect(page.locator(STARTER_CHIP)).toContainText('示例技能');
 }
 
-test('slash suggestions follow Runtime project discovery and host gating', async ({
+// One seeded window, three phases in load-bearing order: the gating phase
+// reads the pre-session state, the collaboration phase must create the very
+// first session, and the Deep Research phase runs last because it moves the
+// active session. (Draft-chip restoration keeps its own window below: its
+// contract is editor rebuilds on external value changes, and concurrent
+// session activity in a shared window perturbs exactly that.)
+test('slash suggestions: project gating, collaboration modes, and Deep Research filtering', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -53,34 +59,7 @@ test('slash suggestions follow Runtime project discovery and host gating', async
     })).map((skill) => skill.name),
   );
   expect(planNames).not.toContain('Agent Write');
-});
 
-test('slash suggestions in a Deep Research session drop non-research Skills', async ({
-  invocableSkillsWindow: page,
-}) => {
-  const composer = page.locator(COMPOSER_INPUT);
-  const listbox = page.getByRole('listbox', { name: /技能/ });
-
-  await composer.fill('/');
-  await expect(listbox).toBeVisible();
-  await expect(listbox).not.toContainText('Deep Research Only');
-  await composer.fill('');
-
-  // ⌘K is the palette's only entry now — the 更多操作 menu that used to hold
-  // a 打开命令面板 item is gone. ControlOrMeta covers CI's Linux and macOS.
-  await page.keyboard.press('ControlOrMeta+KeyK');
-  await page.getByRole('dialog', { name: '命令面板' }).getByRole('option', { name: /新建深度研究/ }).click();
-  await expect(page.getByLabel('深度研究，只读探索').filter({ visible: true })).toBeVisible();
-
-  await composer.fill('/');
-  await expect(listbox).toContainText('Deep Research Only');
-});
-
-test('open Skill suggestions follow current collaboration capabilities', async ({
-  invocableSkillsWindow: page,
-}) => {
-  const composer = page.locator(COMPOSER_INPUT);
-  await expect(composer).toBeVisible();
   await composer.fill('Open a session');
   await composer.press('Enter');
   await expect.poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length).toBe(1);
@@ -95,7 +74,6 @@ test('open Skill suggestions follow current collaboration capabilities', async (
 
   await expect.poll(() => listNames(session.id)).toContain('Agent Write');
   await composer.fill('/');
-  const listbox = page.getByRole('listbox', { name: /技能/ });
   await expect(listbox).toContainText('Agent Write');
 
   await expect
@@ -107,56 +85,21 @@ test('open Skill suggestions follow current collaboration capabilities', async (
   );
   await expect.poll(() => listNames(session.id)).not.toContain('Agent Write');
   await expect(listbox).not.toContainText('Agent Write');
-});
 
-/**
- * #1912: ＋ → 选择技能 opens the SAME `/` menu the keyboard opens, by typing the
- * trigger. There is no second Skill surface — the multi-select panel that used
- * to live here is gone, and with it the transparent, product-owned popover that
- * was the reported defect.
- *
- * The half that only a real window can show is the trigger boundary.
- * `useTriggerMenu` recognizes `/` at a line start or after a space or newline,
- * so ＋ on a draft that ends in anything else has to insert the space itself.
- * Get that wrong and ＋ does nothing at all, silently, and only when a draft is
- * present. The draft here ends in a chip, whose U+00A0 anchor is the character
- * that looks like a space and is not one.
- */
-test('the ＋ Skills entry opens the `/` menu, before and after a chip', async ({
-  window: page,
-}) => {
-  await createStarterSkillAndReload(page);
 
-  const composer = page.locator(COMPOSER_INPUT);
-  const listbox = page.getByRole('listbox', { name: /技能/ });
-  const plus = page.locator('.maka-composer-plus-menu').getByRole('button');
-  const skillsEntry = page.getByRole('menuitem', { name: '选择技能' });
-  const openFromPlus = async () => {
-    // Astryx ignores clicks on a float for ~100ms after one light-dismisses,
-    // and picking from the `/` menu dismisses one. Nothing observable marks the
-    // end of that window, so retry the click until ＋ answers rather than sleep
-    // past it — under the threshold the click reaches nothing at all.
-    await expect(async () => {
-      await plus.click();
-      await expect(skillsEntry).toBeVisible({ timeout: 500 });
-    }).toPass();
-    await skillsEntry.click();
-  };
-
-  // Empty draft: the trigger is at a line start, so no space is needed.
-  await openFromPlus();
-  await expect(listbox.getByRole('option', { name: /示例技能/ })).toBeVisible();
-  await composer.press('Enter');
-  await expect(page.locator(STARTER_CHIP)).toContainText('示例技能');
-
-  await openFromPlus();
+  await composer.fill('/');
   await expect(listbox).toBeVisible();
+  await expect(listbox).not.toContainText('Deep Research Only');
+  await composer.fill('');
 
-  // Escape leaves the typed trigger behind, exactly as it does when the user
-  // types `/` themselves — it is ordinary draft text, not a surface to dismiss.
-  await page.keyboard.press('Escape');
-  await expect(listbox).toBeHidden();
-  await expect(composer).toContainText('/');
+  // ⌘K is the palette's only entry now — the 更多操作 menu that used to hold
+  // a 打开命令面板 item is gone. ControlOrMeta covers CI's Linux and macOS.
+  await page.keyboard.press('ControlOrMeta+KeyK');
+  await page.getByRole('dialog', { name: '命令面板' }).getByRole('option', { name: /新建深度研究/ }).click();
+  await expect(page.getByLabel('深度研究，只读探索').filter({ visible: true })).toBeVisible();
+
+  await composer.fill('/');
+  await expect(listbox).toContainText('Deep Research Only');
 });
 
 /**
@@ -228,23 +171,14 @@ test('staged Skills come back as chips after leaving and returning', async ({
   ).toHaveText(['Project Only', 'Workspace Only']);
 });
 
-test('chip-only send renders a readable user message', async ({ window: page }) => {
-  await createStarterSkillAndReload(page);
-  await selectStarterSkill(page);
-
-  const composer = page.locator(COMPOSER_INPUT);
-  await composer.press('Enter');
-
-  const sentMessage = page.getByLabel('你发送的消息').first();
-  await expect(sentMessage).toContainText('示例技能');
-  await expect(
-    sentMessage.locator('.maka-chat-message-bubble-user .astryx-badge'),
-  ).toHaveText('示例技能');
-});
-
-test('a blocked Skill invocation keeps the complete composer draft', async ({
+// The starter-skill window, three phases in dependency order: the blocked
+// invocation pins zero turns and zero sessions so it must run before any
+// send; the chip-only send then re-enables the Skill and owns the first
+// message; the ＋ entry phases send nothing and run last.
+test('starter skill: blocked invocation, chip-only send, and the ＋ Skills entry', async ({
   window: page,
 }) => {
+  await createStarterSkillAndReload(page);
   await createStarterSkillAndReload(page);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('run it');
@@ -266,4 +200,56 @@ test('a blocked Skill invocation keeps the complete composer draft', async ({
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(0);
+
+  // Re-arm for the next phases: the blocked phase disabled the Skill and left
+  // a draft behind. Wait for the invocable list to reflect the re-enable
+  // before the menus below depend on it.
+  const reEnabled = await page.evaluate(() => window.maka.skills.setEnabled('starter-skill', true));
+  expect(reEnabled.ok).toBe(true);
+  await waitForInvocableSkills(page, ['starter-skill']);
+  await composer.fill('');
+
+  await selectStarterSkill(page);
+
+  await composer.press('Enter');
+
+  const sentMessage = page.getByLabel('你发送的消息').first();
+  await expect(sentMessage).toContainText('示例技能');
+  await expect(
+    sentMessage.locator('.maka-chat-message-bubble-user .astryx-badge'),
+  ).toHaveText('示例技能');
+
+  // Settle the chip-only turn before the ＋ phases interact with the menu.
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
+
+  const listbox = page.getByRole('listbox', { name: /技能/ });
+  const plus = page.locator('.maka-composer-plus-menu').getByRole('button');
+  const skillsEntry = page.getByRole('menuitem', { name: '选择技能' });
+  const openFromPlus = async () => {
+    // Astryx ignores clicks on a float for ~100ms after one light-dismisses,
+    // and picking from the `/` menu dismisses one. Nothing observable marks the
+    // end of that window, so retry the click until ＋ answers rather than sleep
+    // past it — under the threshold the click reaches nothing at all.
+    await expect(async () => {
+      await plus.click();
+      await expect(skillsEntry).toBeVisible({ timeout: 500 });
+    }).toPass();
+    await skillsEntry.click();
+  };
+
+  // Empty draft: the trigger is at a line start, so no space is needed.
+  await openFromPlus();
+  // Keyboard selection is pinned elsewhere; click the option so this phase
+  // does not race the menu's highlight settling after the Skill re-enable.
+  await listbox.getByRole('option', { name: /示例技能/ }).click();
+  await expect(page.locator(STARTER_CHIP)).toContainText('示例技能');
+
+  await openFromPlus();
+  await expect(listbox).toBeVisible();
+
+  // Escape leaves the typed trigger behind, exactly as it does when the user
+  // types `/` themselves — it is ordinary draft text, not a surface to dismiss.
+  await page.keyboard.press('Escape');
+  await expect(listbox).toBeHidden();
+  await expect(composer).toContainText('/');
 });

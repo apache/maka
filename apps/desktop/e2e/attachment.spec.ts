@@ -1,42 +1,12 @@
 import { test, expect, COMPOSER_INPUT } from './fixtures';
 
-test('chat input preserves an IME composition when a file paste arrives', async ({ window: page }) => {
-  const firstSend = page.locator(COMPOSER_INPUT);
-  await firstSend.fill('ime-paste-test');
-  await firstSend.press('Enter');
-  await expect(page.getByText(/Fake backend received: ime-paste-test/)).toBeVisible();
-
-  const composer = page.locator('.maka-composer[data-maka-file-drop-target="true"]');
-  const editable = composer.locator('[contenteditable="true"]');
-
-  const pasteResults = await editable.evaluate((input) => {
-    const dispatchFilePaste = () => {
-      const clipboardData = new DataTransfer();
-      clipboardData.items.add(new File(['content'], 'note.txt', { type: 'text/plain' }));
-      const event = new Event('paste', { bubbles: true, cancelable: true });
-      Object.defineProperty(event, 'clipboardData', { value: clipboardData });
-      input.dispatchEvent(event);
-      return event.defaultPrevented;
-    };
-
-    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-    const duringComposition = dispatchFilePaste();
-    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
-    const afterComposition = dispatchFilePaste();
-
-    return { duringComposition, afterComposition };
-  });
-
-  expect(pasteResults).toEqual({ duringComposition: false, afterComposition: true });
-});
-
 /**
  * Attachment upload + ingest: enter the chat view, drop a file onto the main
  * composer, confirm it shows as a pending token, then send the message and
  * verify the fake backend received the attachments by name. Uses Playwright's
  * DataTransfer + dispatchEvent because the composer has no <input type=file>.
  */
-test('a mixed attachment send has the Astryx message hierarchy', async ({ window: page }) => {
+test('a mixed attachment send has the Astryx message hierarchy, and IME composition survives a file paste', async ({ window: page }) => {
   // Enter chat view by sending a first message from the composer, which
   // creates the session on send.
   const firstSend = page.locator(COMPOSER_INPUT);
@@ -127,4 +97,30 @@ test('a mixed attachment send has the Astryx message hierarchy', async ({ window
 
   await page.keyboard.press('Escape');
   await expect(page.locator('.astryx-lightbox')).not.toBeVisible();
+
+  // IME composition vs file paste, in the same window: pastes must not be
+  // intercepted mid-composition, and must be intercepted after it. Runs after
+  // the attachment journey because the post-composition paste stages a chip.
+  const editable = page
+    .locator('.maka-composer[data-maka-file-drop-target="true"]')
+    .locator('[contenteditable="true"]');
+  const pasteResults = await editable.evaluate((input) => {
+    const dispatchFilePaste = () => {
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File(['content'], 'note.txt', { type: 'text/plain' }));
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: clipboardData });
+      input.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    const duringComposition = dispatchFilePaste();
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    const afterComposition = dispatchFilePaste();
+
+    return { duringComposition, afterComposition };
+  });
+
+  expect(pasteResults).toEqual({ duringComposition: false, afterComposition: true });
 });

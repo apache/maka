@@ -2,7 +2,7 @@ import { test, expect } from './fixtures';
 
 // Workbar product journey. Narrow max-height and "toggle unmounted without a
 // session" are pinned in chat-shell-layout-contract (CSS + chrome actions source).
-test('session tools share one user-controlled workbar', async ({ sessionWorkbarWindow: page }) => {
+test('session tools share one user-controlled workbar that stays mounted across repeated collapse', async ({ sessionWorkbarWindow: page }) => {
   const workbar = page.getByRole('complementary', { name: '会话工作栏' });
   const rightWorkbar = page.locator(
     '[data-maka-contract="session-workbar-right"]',
@@ -109,6 +109,18 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   await expect(rightWorkbar).toBeVisible();
   // The width the drag above landed on, restored rather than reset.
   await expect(rightWorkbar).toHaveCSS('width', '511px');
+
+  // A second collapse/expand cycle: the right plate must stay mounted (count
+  // 1, hidden, data-collapsed) rather than remount, and the user-set width
+  // must survive repetition, not just the first restore.
+  await collapse.click();
+  await expect(rightWorkbar).toHaveCount(1);
+  await expect(rightWorkbar).toBeHidden();
+  await expect(rightWorkbar).toHaveAttribute('data-collapsed', 'true');
+  await expand.click();
+  await expect(rightWorkbar).toBeVisible();
+  await expect(rightWorkbar).toHaveCSS('width', '511px');
+
   await rightWorkbar.getByRole('button', { name: '打开工作栏标签' }).click();
   await page.getByRole('menuitem', { name: '文件' }).click();
   await expect(page.getByText('暂无生成文件')).toBeVisible();

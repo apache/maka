@@ -11,24 +11,10 @@ function settingsNavigation(page: Page) {
  * classList.toggle). This exercises the settings open → navigate → mutate →
  * apply path without depending on pixel colors.
  */
-test('changing the theme in settings applies to the UI', async ({ window: page }) => {
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByRole('button', { name: '设置' }).click();
-  await expect(page.getByLabel('设置内容')).toBeVisible();
-
-  await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
-  const lightTheme = page.getByRole('checkbox', { name: '浅色' });
-  const darkTheme = page.getByRole('checkbox', { name: '深色' });
-  await darkTheme.locator('..').click();
-  await expect(darkTheme).toBeChecked();
-  await expect(lightTheme).not.toBeChecked();
-
-  await expect.poll(
-    async () => page.evaluate(() => document.documentElement.classList.contains('dark')),
-  ).toBe(true);
-});
-
-test('subagent presets can be reviewed and edited in desktop settings', async ({ window: page }) => {
+// Subagent preset lifecycle in one window: edit, delete, and create phases
+// each seed their preset set with settings closed, then re-enter settings —
+// the shell reads the store on open, not live.
+test('subagent presets: edit round trip, reversible delete, and create-then-enable', async ({ window: page }) => {
   await page.evaluate(async () => {
     const connections = await window.maka.connections.list();
     const connection = connections[0];
@@ -100,9 +86,11 @@ test('subagent presets can be reviewed and edited in desktop settings', async ({
     description: '快速阅读代码，并总结关键调用链。',
     enabled: false,
   });
-});
 
-test('deleting a subagent preset is reversible until the confirm is accepted', async ({ window: page }) => {
+  // The settings shell snapshots the store when it opens, so seeding a new
+  // preset set only shows after leaving and re-entering settings — the same
+  // order the standalone tests used (seed first, open second).
+  await page.getByRole('button', { name: '返回应用', exact: true }).click();
   await page.evaluate(async () => {
     const connections = await window.maka.connections.list();
     const connection = connections[0];
@@ -122,11 +110,9 @@ test('deleting a subagent preset is reversible until the confirm is accepted', a
     });
   });
 
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await settingsNavigation(page).getByRole('button', { name: '子 Agent', exact: true }).click();
 
-  const settings = page.getByRole('main', { name: '设置内容' });
   await settings.getByRole('button', { name: '配置“E2E 待删除”' }).click();
   const deleteButton = settings.getByRole('button', { name: '删除', exact: true });
 
@@ -152,18 +138,18 @@ test('deleting a subagent preset is reversible until the confirm is accepted', a
     const current = await window.maka.settings.get();
     return current.subagents.presets.length;
   })).toBe(0);
-});
 
-test('a subagent preset can be created disabled and then enabled from its row', async ({ window: page }) => {
+  // The settings shell snapshots the store when it opens, so seeding a new
+  // preset set only shows after leaving and re-entering settings — the same
+  // order the standalone tests used (seed first, open second).
+  await page.getByRole('button', { name: '返回应用', exact: true }).click();
   await page.evaluate(async () => {
     await window.maka.settings.update({ subagents: { presets: [] } });
   });
 
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await settingsNavigation(page).getByRole('button', { name: '子 Agent', exact: true }).click();
 
-  const settings = page.getByRole('main', { name: '设置内容' });
   // The create branch is a structurally different tree from the edit branch —
   // a typed id instead of a settled one, and no delete section — so it needs
   // its own journey rather than riding on the edit one.
@@ -194,7 +180,10 @@ test('a subagent preset can be created disabled and then enabled from its row', 
   })).toBe(true);
 });
 
-test('remote access prioritizes a configured channel that needs attention', async ({ window: page }) => {
+// Appearance and channel surface in one window. The channel seed runs before
+// settings opens (the shell snapshots the store on open). Back-icon rail
+// geometry was removed with #2478 as presentation.
+test('settings shell: theme application and remote-access attention order', async ({ window: page }) => {
   const runtimeError = 'runtime-diagnostic-'.repeat(10);
   await page.evaluate(async (lastError) => {
     await window.maka.settings.update({
@@ -217,6 +206,19 @@ test('remote access prioritizes a configured channel that needs attention', asyn
   }, runtimeError);
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
+  await expect(page.getByLabel('设置内容')).toBeVisible();
+
+  await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
+  const lightTheme = page.getByRole('checkbox', { name: '浅色' });
+  const darkTheme = page.getByRole('checkbox', { name: '深色' });
+  await darkTheme.locator('..').click();
+  await expect(darkTheme).toBeChecked();
+  await expect(lightTheme).not.toBeChecked();
+
+  await expect.poll(
+    async () => page.evaluate(() => document.documentElement.classList.contains('dark')),
+  ).toBe(true);
+
   const settings = page.getByRole('main', { name: '设置内容' });
   await settingsNavigation(page).getByRole('button', { name: '远程接入' }).click();
 

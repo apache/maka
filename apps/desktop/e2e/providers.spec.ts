@@ -71,12 +71,11 @@ async function expectNoDialog(page: Page) {
   await expect(page.getByRole('dialog')).toHaveCount(0);
 }
 
-// Canonical API-key add journey. Cerebras is the concrete stand-in only because
-// it is the strongest exercise of the color-asset render contract (a real
-// upstream <img> mark that must stay untouched in BOTH light and dark themes);
-// the assertions below validate the *flow and the colorAssetRenderContract
-// mechanism*, not Cerebras's data — that lives in the registry contract tests.
-test('adds a catalog provider through the canonical API-key setup page', async ({ window: page }) => {
+// Canonical API-key journey then the two-field relay detail rules share one
+// window: the add-journey deletes what it created, which is the clean state
+// the relay phase needs. Header geometry was removed with #2478 as presentation.
+test('provider connections: the canonical API-key journey and two-field rows', async ({ window: page }) => {
+  const panel = page.locator('[data-maka-contract="providers-panel"]');
   // One window, five named steps. Splitting these into separate tests would buy
   // per-behavior isolation at the price of four more Electron cold starts; the
   // steps give a failing run the same "which behavior broke" answer in the
@@ -116,6 +115,20 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     await expect(setup.getByLabel('服务地址', { exact: true })).toHaveCount(0);
     await expect(setup.getByLabel('默认模型', { exact: true })).toHaveCount(0);
 
+    // A 300-character key scrolls inside the field instead of growing it. The
+    // before/after values are the oracle; the field's width is a design token,
+    // not this contract.
+    const inputBox = await keyInput.boundingBox();
+    await keyInput.fill(`sk-${'a'.repeat(300)}`);
+    const longKeyLayout = await keyInput.evaluate((input) => ({
+      clientWidth: input.clientWidth,
+      scrollWidth: input.scrollWidth,
+      clientHeight: input.clientHeight,
+      scrollHeight: input.scrollHeight,
+    }));
+    expect(longKeyLayout.scrollWidth).toBeGreaterThan(longKeyLayout.clientWidth);
+    expect(longKeyLayout.scrollHeight).toBe(longKeyLayout.clientHeight);
+    expect((await keyInput.boundingBox())?.height).toBe(inputBox?.height);
   });
 
   await test.step('saving creates the connection and lands on its detail level', async () => {
@@ -252,26 +265,23 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     await expectNoDialog(page);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
   });
-});
 
-// Distinct detail behavior: the only providers with BOTH settled rows are the
-// ones whose address is genuinely the user's. One row is a form at a time, so
-// these two are also the only place the cross-row rules can be observed — a
-// single-row provider (Cerebras, Cloudflare) cannot show them at all.
-test('keeps each settled row to its own field on a provider that has two', async ({ window: page }) => {
-  await openModelsPage(page);
+  // Distinct detail behavior: the only providers with BOTH settled rows are the
+  // ones whose address is genuinely the user's. One row is a form at a time, so
+  // these two are also the only place the cross-row rules can be observed — a
+  // single-row provider (Cerebras, Cloudflare) cannot show them at all.
   await openCatalog(page, { category: '聚合服务', search: '自定义中转站' });
   await page.getByRole('button', { name: /添加模型供应商：自定义中转站（OpenAI Chat）/ }).click();
 
-  const setup = providerSetup(page);
-  await setup.getByRole('textbox', { name: /服务地址/ }).fill('https://relay.example.com/v1');
-  await setup.getByRole('textbox', { name: /API Key/ }).fill('e2e-relay-key');
-  await setup.getByRole('textbox', { name: /默认模型/ }).fill('relay-model');
+  const relaySetup = providerSetup(page);
+  await relaySetup.getByRole('textbox', { name: /服务地址/ }).fill('https://relay.example.com/v1');
+  await relaySetup.getByRole('textbox', { name: /API Key/ }).fill('e2e-relay-key');
+  await relaySetup.getByRole('textbox', { name: /默认模型/ }).fill('relay-model');
   await page.getByRole('button', { name: '保存供应商', exact: true }).click();
 
-  const detail = connectionDetail(page);
-  await expect(detail).toBeVisible();
-  const connectionSection = detail.getByRole('region', { name: '连接' });
+  const relayDetail = connectionDetail(page);
+  await expect(relayDetail).toBeVisible();
+  const connectionSection = relayDetail.getByRole('region', { name: '连接' });
   // A relay publishes no endpoint, so the address is the user's to type and the
   // row exists. `gemini-cli` used to reach this branch too — it is OAuth with an
   // empty baseUrl, and keying the row off "OAuth with a fixed URL" let it past.
@@ -315,6 +325,18 @@ test('keeps each settled row to its own field on a provider that has two', async
       return list.find((entry) => entry.providerType === 'openai-compatible')?.baseUrl ?? null;
     }))
     .toBe('https://relay.example.com/v2');
+
+  // Final phase: the count mirrors the collection. Empty the whole collection
+  // (the seeded connection and the relay added above) and the count is gone.
+  await page.evaluate(async () => {
+    for (const entry of await window.maka.connections.list()) {
+      await window.maka.connections.delete(entry.slug);
+    }
+  });
+  await page.reload();
+  await page.getByRole('button', { name: '设置' }).click();
+  await page.locator('[aria-label="设置分组"]').getByText('模型', { exact: true }).click();
+  await expect(panel.getByText(/^· \d+$/)).toHaveCount(0);
 });
 
 const COLOR_ASSET_RENDER_CONTRACT = {
