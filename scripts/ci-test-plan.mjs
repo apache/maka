@@ -83,6 +83,8 @@ const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/git-workspace-service.ts',
   'packages/storage/src/runtime-event-invariants.ts',
   'packages/storage/src/root-authority.ts',
+  'packages/storage/src/operational-state-store.ts',
+  'packages/storage/src/sqlite-runtime-schema.ts',
   'packages/storage/src/sqlite-runtime-store.ts',
   'packages/storage/src/__tests__/agent-run-store.test.ts',
   'packages/storage/src/__tests__/git-workspace-service.test.ts',

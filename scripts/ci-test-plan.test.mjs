@@ -64,6 +64,13 @@ test('stress and specialized script checks run only for their owning surfaces', 
     'packages/storage/src/root-authority.ts',
     'packages/storage/src/__tests__/root-authority.test.ts',
     'packages/storage/src/__tests__/fixtures/root-lock-holder.ts',
+    // The amplified fresh-WAL race: the test, its worker, and the production
+    // owners of WAL initialization, locking, and migration.
+    'packages/storage/src/operational-state-store.ts',
+    'packages/storage/src/sqlite-runtime-schema.ts',
+    'packages/storage/src/sqlite-runtime-store.ts',
+    'packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts',
+    'packages/storage/src/__tests__/fixtures/sqlite-recovery-concurrency-child.ts',
   ]) {
     assert.equal(planTests([path], { graph }).storageStress, true, path);
   }
