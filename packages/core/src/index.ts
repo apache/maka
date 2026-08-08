@@ -494,6 +494,7 @@ export {
 export type { PtyTuiTerminalView } from './pty-output-view.js';
 export {
   encodeTerminalInputActions,
+  encodedTerminalInputActionsByteLength,
   formatTerminalInputActions,
   isTerminalCharacterKey,
   isTerminalInputModifier,
@@ -503,11 +504,21 @@ export {
   parseTerminalInputAction,
   TERMINAL_INPUT_MODIFIERS,
   TERMINAL_INPUT_NAMED_KEYS,
+  TERMINAL_MOUSE_BUTTONS,
+  TERMINAL_MOUSE_EVENTS,
+  TERMINAL_MOUSE_SCROLL_DIRECTIONS,
   type TerminalInputAction,
   type TerminalInputModes,
   type TerminalInputModifier,
   type TerminalInputNamedKey,
+  type TerminalInputState,
   type TerminalKeyInputAction,
+  type TerminalMouseButton,
+  type TerminalMouseEncoding,
+  type TerminalMouseEvent,
+  type TerminalMouseInputAction,
+  type TerminalMouseScrollDirection,
+  type TerminalMouseTrackingMode,
   type TerminalTextInputAction,
 } from './terminal-input.js';
 export {

@@ -1,5 +1,5 @@
 import {
-  encodeTerminalInputActions,
+  encodedTerminalInputActionsByteLength,
   isShellRunId,
   isWellFormedTerminalInput,
   parseTerminalInputAction,
@@ -175,8 +175,7 @@ function validateTerminalInputActions(actions: readonly TerminalInputAction[]): 
   for (const action of actions) {
     parseTerminalInputAction(action);
   }
-  const encoded = encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
-  if (Buffer.byteLength(encoded, 'utf8') > MAX_WRITE_STDIN_INPUT_BYTES) {
+  if (encodedTerminalInputActionsByteLength(actions) > MAX_WRITE_STDIN_INPUT_BYTES) {
     throw new Error(`WriteStdin actions exceed the ${MAX_WRITE_STDIN_INPUT_BYTES}-byte limit`);
   }
 }

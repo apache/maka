@@ -1277,6 +1277,50 @@ describe('ShellRunProcessManager', () => {
     assert.match(terminalText(completed.output), /APP-CURSOR-OK/);
   });
 
+  test('encodes mouse actions from SGR cell mode parsed before the control cut', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: nodeCommand(`
+        process.stdin.setRawMode?.(true);
+        const expected = Buffer.from('\\u001b[<0;3;4M\\u001b[<0;3;4m');
+        let received = Buffer.alloc(0);
+        process.stdin.on('data', (chunk) => {
+          received = Buffer.concat([received, chunk]);
+          if (received.length < expected.length) return;
+          const marker = received.subarray(0, expected.length).equals(expected)
+            ? 'SGR-MOUSE-OK'
+            : 'SGR-MOUSE-WRONG:' + received.toString('hex');
+          process.stdout.write(marker + '\\n', () => process.exit(0));
+        });
+        process.stdout.write('\\u001b[?1000;1016;1006hREADY\\n');
+      `),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    const control = await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      actions: [{ type: 'mouse', event: 'click', button: 'left', x: 2, y: 3 }],
+      abortSignal: NO_ABORT,
+    });
+    assert.deepEqual(control.operation, {
+      kind: 'pty_control',
+      failed: false,
+      input: { bytes: 18, queued: true },
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref);
+    assertShellRunSnapshot(completed);
+    assert.equal(completed.output.mode, 'pty');
+    if (completed.output.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(completed.output), /SGR-MOUSE-OK/);
+  });
+
   test('delivers Ctrl-C and Ctrl-D as terminal control characters', async () => {
     const manager = await createTestManager();
     const interrupted = await manager.runBackgroundBash(

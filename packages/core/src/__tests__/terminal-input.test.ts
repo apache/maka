@@ -3,6 +3,7 @@ import { it } from 'node:test';
 
 import {
   encodeTerminalInputActions,
+  encodedTerminalInputActionsByteLength,
   formatTerminalInputActions,
   type TerminalInputNamedKey,
 } from '../index.js';
@@ -105,4 +106,57 @@ it('rejects character chords without a portable terminal encoding', () => {
       }),
     /no portable terminal encoding/,
   );
+});
+
+it('encodes SGR cell mouse actions from live terminal state', () => {
+  const state = {
+    applicationCursorKeysMode: false,
+    mouseTrackingMode: 'any' as const,
+    mouseEncoding: 'sgr' as const,
+    cols: 80,
+    rows: 24,
+  };
+  const actions = [
+    { type: 'mouse' as const, event: 'click' as const, button: 'left' as const, x: 2, y: 3 },
+    {
+      type: 'mouse' as const,
+      event: 'move' as const,
+      button: 'right' as const,
+      x: 4,
+      y: 5,
+      modifiers: ['ctrl' as const],
+    },
+    { type: 'mouse' as const, event: 'scroll' as const, direction: 'down' as const, x: 6, y: 7 },
+  ];
+
+  const encoded = encodeTerminalInputActions(actions, state);
+  assert.equal(encoded, '\u001b[<0;3;4M\u001b[<0;3;4m\u001b[<50;5;6M\u001b[<65;7;8M');
+  assert.equal(encodedTerminalInputActionsByteLength(actions), Buffer.byteLength(encoded));
+  assert.equal(
+    formatTerminalInputActions(actions),
+    'Click Left @ (2, 3) → Ctrl-Move Right @ (4, 5) → ScrollDown @ (6, 7)',
+  );
+});
+
+it('rejects mouse input outside the application protocol and viewport', () => {
+  const click = [
+    { type: 'mouse' as const, event: 'click' as const, button: 'left' as const, x: 2, y: 3 },
+  ];
+  const state = {
+    applicationCursorKeysMode: false,
+    mouseTrackingMode: 'any' as const,
+    mouseEncoding: 'sgr' as const,
+    cols: 80,
+    rows: 24,
+  };
+
+  assert.throws(
+    () => encodeTerminalInputActions(click, { ...state, mouseTrackingMode: 'none' }),
+    /has not enabled mouse tracking/,
+  );
+  assert.throws(
+    () => encodeTerminalInputActions(click, { ...state, mouseEncoding: 'sgr_pixels' }),
+    /has not enabled SGR cell mouse reporting/,
+  );
+  assert.throws(() => encodeTerminalInputActions(click, { ...state, cols: 2 }), /outside 2x24/);
 });

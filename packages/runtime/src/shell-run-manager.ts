@@ -384,7 +384,7 @@ export class ShellRunProcessManager
       const terminalInput =
         input.input ??
         (input.actions
-          ? encodeTerminalInputActions(input.actions, live.collector.currentInputModes())
+          ? encodeTerminalInputActions(input.actions, live.collector.currentInputState())
           : undefined);
       if (terminalInput !== undefined) {
         try {

@@ -1,6 +1,6 @@
 import { redactSecrets } from './redaction.js';
 import {
-  encodeTerminalInputActions,
+  encodedTerminalInputActionsByteLength,
   formatTerminalInputActions,
   normalizeTerminalInputActionDefaults,
   parseTerminalInputAction,
@@ -126,9 +126,8 @@ export function projectWriteStdinInput(input: string): WriteStdinInputPreview {
 function projectTerminalInputActions(
   actions: readonly TerminalInputAction[],
 ): WriteStdinInputPreview {
-  const encoded = encodeTerminalInputActions(actions, { applicationCursorKeysMode: false });
   const preview = projectWriteStdinInput(formatTerminalInputActions(actions));
-  return { ...preview, bytes: new TextEncoder().encode(encoded).byteLength };
+  return { ...preview, bytes: encodedTerminalInputActionsByteLength(actions) };
 }
 
 export function readWriteStdinInputPreview(args: unknown): WriteStdinInputPreview | undefined {
@@ -229,7 +228,9 @@ function formatTerminalActionsForInspection(actions: readonly TerminalInputActio
     .map((action) =>
       action.type === 'text'
         ? `{ text: ${escapeTerminalTextForInspection(action.text)} }`
-        : `{ key: ${formatTerminalInputActions([action])} }`,
+        : action.type === 'key'
+          ? `{ key: ${formatTerminalInputActions([action])} }`
+          : `{ mouse: ${formatTerminalInputActions([action])} }`,
     )
     .join(' -> ');
 }

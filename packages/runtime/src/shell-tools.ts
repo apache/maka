@@ -1,12 +1,15 @@
 import { z } from 'zod';
 import { jsonSchema, zodSchema } from 'ai';
 import {
-  encodeTerminalInputActions,
+  encodedTerminalInputActionsByteLength,
   isActiveShellRunStatus,
   normalizeTerminalInputActionDefaults,
   parseTerminalInputAction,
   TERMINAL_INPUT_MODIFIERS,
   TERMINAL_INPUT_NAMED_KEYS,
+  TERMINAL_MOUSE_BUTTONS,
+  TERMINAL_MOUSE_EVENTS,
+  TERMINAL_MOUSE_SCROLL_DIRECTIONS,
   type TerminalInputAction,
 } from '@maka/core';
 import { redactSecrets } from '@maka/core/redaction';
@@ -400,10 +403,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
       .superRefine((value, context) => {
         if (!value.actions) return;
         try {
-          const encoded = encodeTerminalInputActions(value.actions, {
-            applicationCursorKeysMode: false,
-          });
-          if (Buffer.byteLength(encoded, 'utf8') > MAX_WRITE_STDIN_INPUT_BYTES) {
+          if (encodedTerminalInputActionsByteLength(value.actions) > MAX_WRITE_STDIN_INPUT_BYTES) {
             context.addIssue({
               code: 'custom',
               path: ['actions'],
@@ -417,7 +417,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
   );
   const providerAction = z
     .object({
-      type: z.enum(['text', 'key']).describe('Action kind'),
+      type: z.enum(['text', 'key', 'mouse']).describe('Action kind'),
       text: z
         .string()
         .describe('Visible text for a text action; omit it for a key action')
@@ -428,9 +428,33 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
           `Named key (${TERMINAL_INPUT_NAMED_KEYS.join(', ')}) or one printable ASCII character for a key action; omit it for a text action`,
         )
         .optional(),
+      event: z
+        .enum(TERMINAL_MOUSE_EVENTS)
+        .describe('Mouse event; omit it for text and key actions')
+        .optional(),
+      x: z
+        .number()
+        .int()
+        .min(0)
+        .describe('Zero-based terminal cell column for a mouse action')
+        .optional(),
+      y: z
+        .number()
+        .int()
+        .min(0)
+        .describe('Zero-based terminal cell row for a mouse action')
+        .optional(),
+      button: z
+        .enum(TERMINAL_MOUSE_BUTTONS)
+        .describe('Mouse button; required for click, press, and release')
+        .optional(),
+      direction: z
+        .enum(TERMINAL_MOUSE_SCROLL_DIRECTIONS)
+        .describe('Scroll direction; required only for scroll')
+        .optional(),
       modifiers: z
         .array(z.enum(TERMINAL_INPUT_MODIFIERS))
-        .describe('Optional unique modifiers for a key action')
+        .describe('Optional unique modifiers for a key or mouse action')
         .optional(),
     })
     .strict();
@@ -444,7 +468,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
         .array(providerAction)
         .max(MAX_WRITE_STDIN_ACTIONS)
         .describe(
-          'Ordered terminal input actions. A text action uses type and text. A key action uses type, key, and optional modifiers. Omit it for a resize-only call.',
+          'Ordered terminal input actions. Text uses type and text. Key uses type, key, and optional modifiers. Mouse uses type, event, zero-based x/y, event-specific button or direction, and optional modifiers. Omit it for a resize-only call.',
         )
         .optional(),
       size: z
@@ -471,8 +495,9 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
     name: 'WriteStdin',
     activityKind: 'command',
     description:
-      'Send an ordered sequence of text and key actions to a background PTY and/or resize it, then return the terminal state at the next parser cut. ' +
+      'Send an ordered sequence of text, key, and mouse actions to a background PTY and/or resize it, then return the terminal state at the next parser cut. ' +
       `Named keys are ${TERMINAL_INPUT_NAMED_KEYS.join(', ')}. Use a printable ASCII key with ctrl or alt for chords such as Ctrl-B; use text for ordinary typing. ` +
+      'Mouse coordinates are zero-based terminal cells and work only while the application has enabled SGR cell mouse reporting. ' +
       'Actions are written atomically in their listed order. Text is ordinary audited tool-call data, not a secure secret channel. ' +
       'The returned output is the terminal state at that cut, not output attributed to this input; use Read on the ref to observe later output.',
     parameters,

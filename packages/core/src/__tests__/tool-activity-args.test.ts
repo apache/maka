@@ -82,17 +82,33 @@ it('projects ordered terminal actions without exposing encoded control bytes', (
     actions: [
       { type: 'key', key: 'b', modifiers: ['ctrl'], text: null },
       { type: 'text', text: 'c', key: null, modifiers: null },
+      {
+        type: 'mouse',
+        event: 'click',
+        button: 'left',
+        x: 2,
+        y: 3,
+        text: null,
+        key: null,
+        direction: null,
+        modifiers: null,
+      },
     ],
     size: { cols: 0, rows: 0 },
   };
 
   assert.deepEqual(projectToolActivityArgs('WriteStdin', args), {
     ref: args.ref,
-    inputPreview: { text: 'Ctrl-B → "c"', bytes: 2, truncated: false },
+    inputPreview: {
+      text: 'Ctrl-B → "c" → Click Left @ (2, 3)',
+      bytes: 20,
+      truncated: false,
+    },
   });
   assert.equal(
     formatWriteStdinPermissionInspection(args),
-    'ref: "maka://runtime/background-tasks/one"\n' + 'actions: { key: Ctrl-B } -> { text: "c" }',
+    'ref: "maka://runtime/background-tasks/one"\n' +
+      'actions: { key: Ctrl-B } -> { text: "c" } -> { mouse: Click Left @ (2, 3) }',
   );
 });
 

@@ -28,9 +28,17 @@ export const TERMINAL_INPUT_NAMED_KEYS = [
 ] as const;
 
 export const TERMINAL_INPUT_MODIFIERS = ['ctrl', 'alt', 'shift'] as const;
+export const TERMINAL_MOUSE_BUTTONS = ['left', 'middle', 'right'] as const;
+export const TERMINAL_MOUSE_EVENTS = ['click', 'press', 'release', 'move', 'scroll'] as const;
+export const TERMINAL_MOUSE_SCROLL_DIRECTIONS = ['up', 'down'] as const;
 
 export type TerminalInputNamedKey = (typeof TERMINAL_INPUT_NAMED_KEYS)[number];
 export type TerminalInputModifier = (typeof TERMINAL_INPUT_MODIFIERS)[number];
+export type TerminalMouseButton = (typeof TERMINAL_MOUSE_BUTTONS)[number];
+export type TerminalMouseEvent = (typeof TERMINAL_MOUSE_EVENTS)[number];
+export type TerminalMouseScrollDirection = (typeof TERMINAL_MOUSE_SCROLL_DIRECTIONS)[number];
+export type TerminalMouseTrackingMode = 'none' | 'x10' | 'vt200' | 'drag' | 'any';
+export type TerminalMouseEncoding = 'default' | 'sgr' | 'sgr_pixels';
 
 export interface TerminalTextInputAction {
   readonly type: 'text';
@@ -43,14 +51,37 @@ export interface TerminalKeyInputAction {
   readonly modifiers?: readonly TerminalInputModifier[];
 }
 
-export type TerminalInputAction = TerminalTextInputAction | TerminalKeyInputAction;
+export interface TerminalMouseInputAction {
+  readonly type: 'mouse';
+  readonly event: TerminalMouseEvent;
+  readonly x: number;
+  readonly y: number;
+  readonly button?: TerminalMouseButton;
+  readonly direction?: TerminalMouseScrollDirection;
+  readonly modifiers?: readonly TerminalInputModifier[];
+}
+
+export type TerminalInputAction =
+  | TerminalTextInputAction
+  | TerminalKeyInputAction
+  | TerminalMouseInputAction;
 
 export interface TerminalInputModes {
   readonly applicationCursorKeysMode: boolean;
 }
 
+export interface TerminalInputState extends TerminalInputModes {
+  readonly mouseTrackingMode: TerminalMouseTrackingMode;
+  readonly mouseEncoding: TerminalMouseEncoding;
+  readonly cols: number;
+  readonly rows: number;
+}
+
 const NAMED_KEY_SET = new Set<string>(TERMINAL_INPUT_NAMED_KEYS);
 const MODIFIER_SET = new Set<string>(TERMINAL_INPUT_MODIFIERS);
+const MOUSE_BUTTON_SET = new Set<string>(TERMINAL_MOUSE_BUTTONS);
+const MOUSE_EVENT_SET = new Set<string>(TERMINAL_MOUSE_EVENTS);
+const MOUSE_SCROLL_DIRECTION_SET = new Set<string>(TERMINAL_MOUSE_SCROLL_DIRECTIONS);
 
 export function isTerminalInputNamedKey(value: string): value is TerminalInputNamedKey {
   return NAMED_KEY_SET.has(value);
@@ -97,26 +128,16 @@ export function parseTerminalInputAction(value: unknown): TerminalInputAction {
     }
     return { type: 'text', text: action.text };
   }
-  if (action.type !== 'key') throw new Error('Terminal input action type must be text or key');
+  if (action.type === 'mouse') return parseMouseAction(action);
+  if (action.type !== 'key') {
+    throw new Error('Terminal input action type must be text, key, or mouse');
+  }
   assertOnlyActionFields(action, ['type', 'key', 'modifiers']);
   if (typeof action.key !== 'string') throw new Error('Terminal key must be a string');
   if (!isTerminalInputNamedKey(action.key) && !isTerminalCharacterKey(action.key)) {
     throw new Error('Terminal key must be a supported named key or printable ASCII character');
   }
-  if (action.modifiers !== undefined && !Array.isArray(action.modifiers)) {
-    throw new Error('Terminal key modifiers must be an array');
-  }
-  const modifiers = action.modifiers as unknown[] | undefined;
-  if (
-    modifiers?.some(
-      (modifier) => typeof modifier !== 'string' || !isTerminalInputModifier(modifier),
-    )
-  ) {
-    throw new Error('Terminal key modifier is not supported');
-  }
-  if (modifiers && new Set(modifiers).size !== modifiers.length) {
-    throw new Error('Terminal key modifiers must be unique');
-  }
+  const modifiers = parseModifiers(action.modifiers, 'key');
   const parsed: TerminalKeyInputAction = {
     type: 'key',
     key: action.key,
@@ -133,8 +154,14 @@ export function normalizeTerminalInputActionDefaults(value: unknown): unknown {
   const normalized = { ...(value as Record<string, unknown>) };
   if (normalized.type === 'text') {
     if (normalized.key === '' || normalized.key === null) delete normalized.key;
+    deleteProviderDefaults(normalized, ['event', 'x', 'y', 'button', 'direction']);
   } else if (normalized.type === 'key') {
     if (normalized.text === '' || normalized.text === null) delete normalized.text;
+    deleteProviderDefaults(normalized, ['event', 'x', 'y', 'button', 'direction']);
+  } else if (normalized.type === 'mouse') {
+    deleteProviderDefaults(normalized, ['text', 'key']);
+    if (normalized.event === 'scroll') deleteProviderDefaults(normalized, ['button']);
+    else deleteProviderDefaults(normalized, ['direction']);
   }
   if (normalized.modifiers === null || isEmptyArray(normalized.modifiers)) {
     delete normalized.modifiers;
@@ -144,20 +171,38 @@ export function normalizeTerminalInputActionDefaults(value: unknown): unknown {
 
 export function encodeTerminalInputActions(
   actions: readonly TerminalInputAction[],
-  modes: TerminalInputModes,
+  state: TerminalInputModes | TerminalInputState,
 ): string {
-  return actions.map((action) => encodeTerminalInputAction(action, modes)).join('');
+  return actions.map((action) => encodeTerminalInputAction(action, state)).join('');
+}
+
+export function encodedTerminalInputActionsByteLength(
+  actions: readonly TerminalInputAction[],
+): number {
+  const encoded = actions
+    .map((action) => {
+      if (action.type === 'mouse') return encodeSgrTerminalMouseInputAction(action);
+      return encodeTerminalInputAction(action, { applicationCursorKeysMode: false });
+    })
+    .join('');
+  return new TextEncoder().encode(encoded).byteLength;
 }
 
 export function formatTerminalInputActions(actions: readonly TerminalInputAction[]): string {
   return actions.map(formatTerminalInputAction).join(' → ');
 }
 
-function encodeTerminalInputAction(action: TerminalInputAction, modes: TerminalInputModes): string {
+function encodeTerminalInputAction(
+  action: TerminalInputAction,
+  state: TerminalInputModes | TerminalInputState,
+): string {
   if (action.type === 'text') return action.text;
+  if (action.type === 'mouse') {
+    return encodeTerminalMouseInputAction(action, requireTerminalInputState(state));
+  }
   const modifiers = new Set(action.modifiers ?? []);
   if (isTerminalInputNamedKey(action.key)) {
-    return encodeNamedKey(action.key, modifiers, modes);
+    return encodeNamedKey(action.key, modifiers, state);
   }
   return encodeCharacterKey(action.key, modifiers);
 }
@@ -313,6 +358,7 @@ function xtermModifierParameter(modifiers: ReadonlySet<TerminalInputModifier>): 
 
 function formatTerminalInputAction(action: TerminalInputAction): string {
   if (action.type === 'text') return JSON.stringify(action.text);
+  if (action.type === 'mouse') return formatTerminalMouseInputAction(action);
   const key = isTerminalInputNamedKey(action.key)
     ? formatNamedKey(action.key)
     : action.key.toUpperCase();
@@ -323,6 +369,92 @@ function formatTerminalInputAction(action: TerminalInputAction): string {
     ...(modifiers.has('shift') ? ['Shift'] : []),
   ];
   return [...prefix, key].join('-');
+}
+
+function parseMouseAction(action: Record<string, unknown>): TerminalMouseInputAction {
+  assertOnlyActionFields(action, ['type', 'event', 'x', 'y', 'button', 'direction', 'modifiers']);
+  if (typeof action.event !== 'string' || !MOUSE_EVENT_SET.has(action.event)) {
+    throw new Error('Terminal mouse event is not supported');
+  }
+  if (!Number.isSafeInteger(action.x) || (action.x as number) < 0) {
+    throw new Error('Terminal mouse x must be a non-negative integer');
+  }
+  if (!Number.isSafeInteger(action.y) || (action.y as number) < 0) {
+    throw new Error('Terminal mouse y must be a non-negative integer');
+  }
+  const event = action.event as TerminalMouseEvent;
+  const button = parseMouseButton(action.button);
+  const direction = parseMouseDirection(action.direction);
+  if (event === 'scroll') {
+    if (!direction) throw new Error('Terminal mouse scroll requires a direction');
+    if (button) throw new Error('Terminal mouse scroll does not accept a button');
+  } else {
+    if (direction) throw new Error(`Terminal mouse ${event} does not accept a direction`);
+    if (event !== 'move' && !button) {
+      throw new Error(`Terminal mouse ${event} requires a button`);
+    }
+  }
+  const modifiers = parseModifiers(action.modifiers, 'mouse');
+  return {
+    type: 'mouse',
+    event,
+    x: action.x as number,
+    y: action.y as number,
+    ...(button ? { button } : {}),
+    ...(direction ? { direction } : {}),
+    ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
+  };
+}
+
+function parseModifiers(
+  value: unknown,
+  actionKind: 'key' | 'mouse',
+): TerminalInputModifier[] | undefined {
+  if (value !== undefined && !Array.isArray(value)) {
+    throw new Error(`Terminal ${actionKind} modifiers must be an array`);
+  }
+  const modifiers = value as unknown[] | undefined;
+  if (
+    modifiers?.some(
+      (modifier) => typeof modifier !== 'string' || !isTerminalInputModifier(modifier),
+    )
+  ) {
+    throw new Error(`Terminal ${actionKind} modifier is not supported`);
+  }
+  if (modifiers && new Set(modifiers).size !== modifiers.length) {
+    throw new Error(`Terminal ${actionKind} modifiers must be unique`);
+  }
+  return modifiers as TerminalInputModifier[] | undefined;
+}
+
+function parseMouseButton(value: unknown): TerminalMouseButton | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !MOUSE_BUTTON_SET.has(value)) {
+    throw new Error('Terminal mouse button is not supported');
+  }
+  return value as TerminalMouseButton;
+}
+
+function parseMouseDirection(value: unknown): TerminalMouseScrollDirection | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !MOUSE_SCROLL_DIRECTION_SET.has(value)) {
+    throw new Error('Terminal mouse scroll direction is not supported');
+  }
+  return value as TerminalMouseScrollDirection;
+}
+
+function requireTerminalInputState(
+  state: TerminalInputModes | TerminalInputState,
+): TerminalInputState {
+  if (
+    !('mouseTrackingMode' in state) ||
+    !('mouseEncoding' in state) ||
+    !('cols' in state) ||
+    !('rows' in state)
+  ) {
+    throw new Error('Terminal mouse input requires live terminal state');
+  }
+  return state;
 }
 
 function formatNamedKey(key: TerminalInputNamedKey): string {
@@ -354,6 +486,12 @@ function assertOnlyActionFields(
   if (unsupported) throw new Error(`Terminal input action has unsupported field: ${unsupported}`);
 }
 
+function deleteProviderDefaults(value: Record<string, unknown>, fields: readonly string[]): void {
+  for (const field of fields) {
+    if (value[field] === '' || value[field] === null || value[field] === 0) delete value[field];
+  }
+}
+
 function hasTerminalControlCharacter(value: string): boolean {
   for (const char of value) {
     const codePoint = char.codePointAt(0) ?? 0;
@@ -365,3 +503,8 @@ function hasTerminalControlCharacter(value: string): boolean {
 function isEmptyArray(value: unknown): value is [] {
   return Array.isArray(value) && value.length === 0;
 }
+import {
+  encodeSgrTerminalMouseInputAction,
+  encodeTerminalMouseInputAction,
+  formatTerminalMouseInputAction,
+} from './terminal-mouse-input.js';
