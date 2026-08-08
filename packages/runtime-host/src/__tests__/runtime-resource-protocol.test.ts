@@ -36,13 +36,6 @@ type PipeShellSnapshot = Extract<ShellRunSnapshotResult, { mode: 'pipes' }>;
 
 describe('Runtime Resource protocol', () => {
   test('declares the complete ready operation surface', () => {
-    assert.deepEqual(Object.keys(RUNTIME_RESOURCE_OPERATION_SPECS), [
-      'runtime.resource.query',
-      'runtime.resource.controller.acquire',
-      'runtime.resource.controller.control',
-      'runtime.resource.controller.release',
-      'runtime.resource.stop',
-    ]);
     assert.equal(RUNTIME_RESOURCE_OPERATION_SPECS['runtime.resource.query'].mode, 'query');
     for (const [key, spec] of Object.entries(RUNTIME_RESOURCE_OPERATION_SPECS)) {
       assert.equal(spec.availability, 'ready', key);

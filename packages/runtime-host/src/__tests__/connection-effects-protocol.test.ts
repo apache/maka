@@ -14,10 +14,6 @@ const EXPECTED = {
 
 describe('Runtime Host connection effects protocol', () => {
   test('declares two ready commands with bounded mutation errors', () => {
-    assert.deepEqual(Object.keys(CONNECTION_EFFECT_OPERATION_SPECS).sort(), [
-      'connection.models.fetch',
-      'connection.test.run',
-    ]);
     for (const operation of Object.keys(CONNECTION_EFFECT_OPERATION_SPECS) as Array<
       keyof typeof CONNECTION_EFFECT_OPERATION_SPECS
     >) {

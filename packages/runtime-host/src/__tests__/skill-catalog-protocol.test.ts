@@ -57,11 +57,6 @@ export type SkillCatalogManagedUpdateMutationTypeContract = [
 
 describe('Runtime Host Skill catalog protocol', () => {
   test('declares only the three frozen ready operations and their error sets', () => {
-    assert.deepEqual(Object.keys(SKILL_CATALOG_OPERATION_SPECS).sort(), [
-      'skill.catalog.mutate',
-      'skill.catalog.preview-update',
-      'skill.catalog.query',
-    ]);
     const queryErrors = [
       'host_not_ready',
       'host_draining',

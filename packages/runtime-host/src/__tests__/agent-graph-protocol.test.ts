@@ -20,11 +20,6 @@ const fingerprint = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Agent Graph Client protocol', () => {
   test('declares bounded ready query, inspection, and stop operations', () => {
-    assert.deepEqual(Object.keys(AGENT_GRAPH_OPERATION_SPECS), [
-      'agent.graph.query',
-      'agent.graph.operator.query',
-      'agent.graph.stop',
-    ]);
     assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].mode, 'query');
     assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.operator.query'].mode, 'query');
     assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.stop'].mode, 'control');

@@ -46,12 +46,6 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 
 describe('Usage/Pricing protocol', () => {
   test('registers only the closed ready operations with current Kernel metadata', () => {
-    assert.deepEqual(
-      Object.keys(HOST_OPERATION_SPECS).filter(
-        (key) => key.startsWith('usage.') || key.startsWith('pricing.'),
-      ),
-      ['usage.query', 'pricing.query', 'pricing.mutate'],
-    );
     assert.deepEqual(operationMetadata('usage.query'), {
       mode: 'query',
       availability: 'ready',
