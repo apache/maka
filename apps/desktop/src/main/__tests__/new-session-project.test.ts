@@ -41,7 +41,7 @@ test('default sessions inherit and register the current Desktop project', async 
     );
     const resolved = await resolveNewSessionProjectInput(selected, catalog);
 
-    assert.equal(resolved.cwd, cwd);
+    assert.equal(resolved.cwd, await realpath(cwd));
     assert.equal(resolved.projectId, 'project-1');
     assert.equal((await catalog.list()).length, 1);
   } finally {

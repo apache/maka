@@ -715,8 +715,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
         record.header.lastReadMessageId === undefined
           ? -1
           : visibleMessages.findIndex((message) => message.id === record.header.lastReadMessageId);
-      if (targetIndex <= currentIndex) return record;
       const hasUnread = targetIndex < visibleMessages.length - 1;
+      if (
+        targetIndex < currentIndex ||
+        (targetIndex === currentIndex && record.header.hasUnread === hasUnread)
+      ) {
+        return record;
+      }
       try {
         return await this.updateHeaderVersioned(
           sessionId,

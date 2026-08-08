@@ -4,6 +4,7 @@ import type { ShellRunUpdate } from '@maka/core';
 import type { ShellRunPtySnapshot } from '@maka/runtime';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import type { RuntimeHostSessionObserverTarget } from './runtime-host-session-observer.js';
 
 export type RuntimeHostShellRunsClient = Pick<
   DesktopRuntimeHostClient,
@@ -20,11 +21,23 @@ export function registerRuntimeHostShellRunsIpc(
   deps: {
     client: RuntimeHostShellRunsClient;
     newId?: () => string;
+    sessionObserver?: {
+      observe(
+        sessionId: string,
+        observerId: string,
+        target: RuntimeHostSessionObserverTarget,
+      ): Promise<void>;
+      unobserve(observerId: string): Promise<void>;
+    };
   },
   ipcMain: Pick<IpcMain, 'handle'>,
 ): { close(): Promise<void> } {
   const newId = deps.newId ?? randomUUID;
-  const controllers = new RuntimeResourceControllers(deps.client, newId);
+  const controllers = new RuntimeResourceControllers(
+    deps.client,
+    newId,
+    deps.sessionObserver,
+  );
 
   ipcMain.handle('shell-runs:list', (_event, sessionId: unknown) =>
     deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
@@ -39,8 +52,11 @@ export function registerRuntimeHostShellRunsIpc(
       await deps.client.getRuntimeResource(normalizedSessionId, started.resource.ref),
     );
   });
-  ipcMain.handle('shell-runs:attach', (_event, value: unknown) =>
-    controllers.attach(runtimeResourceIdentity(value, 'attach')),
+  ipcMain.handle('shell-runs:attach', (event, value: unknown) =>
+    controllers.attach(
+      runtimeResourceIdentity(value, 'attach'),
+      event.sender as RuntimeHostSessionObserverTarget,
+    ),
   );
   ipcMain.handle('shell-runs:detach', (_event, value: unknown) =>
     controllers.detach(runtimeResourceIdentity(value, 'detach')),
@@ -69,30 +85,62 @@ interface RuntimeResourceControl extends RuntimeResourceIdentity {
 
 interface RuntimeResourceControllerState {
   readonly controllerId: string;
+  readonly observerId: string;
   nextSequence: number;
 }
 
 class RuntimeResourceControllers {
   readonly #client: RuntimeHostShellRunsClient;
   readonly #newId: () => string;
+  readonly #sessionObserver:
+    | {
+        observe(
+          sessionId: string,
+          observerId: string,
+          target: RuntimeHostSessionObserverTarget,
+        ): Promise<void>;
+        unobserve(observerId: string): Promise<void>;
+      }
+    | undefined;
   readonly #states = new Map<string, RuntimeResourceControllerState>();
   readonly #tails = new Map<string, Promise<void>>();
 
-  constructor(client: RuntimeHostShellRunsClient, newId: () => string) {
+  constructor(
+    client: RuntimeHostShellRunsClient,
+    newId: () => string,
+    sessionObserver?: {
+      observe(
+        sessionId: string,
+        observerId: string,
+        target: RuntimeHostSessionObserverTarget,
+      ): Promise<void>;
+      unobserve(observerId: string): Promise<void>;
+    },
+  ) {
     this.#client = client;
     this.#newId = newId;
+    this.#sessionObserver = sessionObserver;
   }
 
-  attach(input: RuntimeResourceIdentity): Promise<ShellRunPtySnapshot> {
-    return this.#run(input, () => this.#acquire(input));
+  attach(
+    input: RuntimeResourceIdentity,
+    target: RuntimeHostSessionObserverTarget,
+  ): Promise<ShellRunPtySnapshot> {
+    return this.#run(input, async () => {
+      const state = this.#state(input);
+      if (this.#sessionObserver) {
+        await this.#sessionObserver.observe(input.sessionId, state.observerId, target);
+      }
+      return this.#acquire(input, state);
+    });
   }
 
   control(input: RuntimeResourceControl) {
     return this.#run(input, async () => {
       let state = this.#states.get(resourceIdentity(input));
       if (!state) {
-        await this.#acquire(input);
-        state = this.#states.get(resourceIdentity(input));
+        state = this.#state(input);
+        await this.#acquire(input, state);
       }
       if (!state) throw new Error('Runtime Resource controller was not acquired');
       const sequence = state.nextSequence;
@@ -117,13 +165,16 @@ class RuntimeResourceControllers {
         controllerId: state.controllerId,
       });
       this.#states.delete(resourceIdentity(input));
+      await this.#releaseObservation(state);
     });
   }
 
   stop(input: RuntimeResourceIdentity): Promise<void> {
     return this.#run(input, async () => {
       await this.#client.stopRuntimeResource(input);
+      const state = this.#states.get(resourceIdentity(input));
       this.#states.delete(resourceIdentity(input));
+      if (state) await this.#releaseObservation(state);
     });
   }
 
@@ -131,13 +182,16 @@ class RuntimeResourceControllers {
     const states = [...this.#states.entries()];
     this.#states.clear();
     const results = await Promise.allSettled(
-      states.map(([key, state]) => {
+      states.flatMap(([key, state]) => {
         const [sessionId, ref] = parseResourceIdentity(key);
-        return this.#client.releaseRuntimeResourceController({
-          sessionId,
-          ref,
-          controllerId: state.controllerId,
-        });
+        return [
+          this.#client.releaseRuntimeResourceController({
+            sessionId,
+            ref,
+            controllerId: state.controllerId,
+          }),
+          this.#releaseObservation(state),
+        ];
       }),
     );
     const failed = results.find(
@@ -164,30 +218,48 @@ class RuntimeResourceControllers {
     }
   }
 
-  async #acquire(input: RuntimeResourceIdentity): Promise<ShellRunPtySnapshot> {
+  #state(input: RuntimeResourceIdentity): RuntimeResourceControllerState {
     const key = resourceIdentity(input);
     const existing = this.#states.get(key);
-    const state = existing ?? {
-      controllerId: `desktop-terminal-controller-${this.#newId()}`,
+    if (existing) return existing;
+    const controllerId = `desktop-terminal-controller-${this.#newId()}`;
+    const state = {
+      controllerId,
+      observerId: `${controllerId}:session-events`,
       nextSequence: 1,
     };
-    if (!existing) this.#states.set(key, state);
+    this.#states.set(key, state);
+    return state;
+  }
+
+  async #acquire(
+    input: RuntimeResourceIdentity,
+    state: RuntimeResourceControllerState,
+  ): Promise<ShellRunPtySnapshot> {
+    const key = resourceIdentity(input);
     let acquired: Awaited<
       ReturnType<RuntimeHostShellRunsClient['acquireRuntimeResourceController']>
     >;
     try {
       acquired = await this.#client.acquireRuntimeResourceController({
-        ...input,
+        sessionId: input.sessionId,
+        ref: input.ref,
         controllerId: state.controllerId,
       });
     } catch (error) {
       if (error instanceof RuntimeHostOperationError && this.#states.get(key) === state) {
         this.#states.delete(key);
+        await this.#releaseObservation(state).catch(() => undefined);
       }
       throw error;
     }
     state.nextSequence = acquired.nextSequence;
     return acquired.pty;
+  }
+
+  async #releaseObservation(state: RuntimeResourceControllerState): Promise<void> {
+    if (!this.#sessionObserver) return;
+    await this.#sessionObserver.unobserve(state.observerId);
   }
 }
 

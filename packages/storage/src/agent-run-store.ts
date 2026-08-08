@@ -164,6 +164,12 @@ export interface DurableAgentRunStore
     runId: string,
     budget: EvidenceReadBudget,
   ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
+  readEventsByTypeBounded(
+    sessionId: string,
+    runId: string,
+    type: AgentRunEventType,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
   listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
@@ -430,26 +436,19 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
     assertEvidenceReadBudget(budget);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
-        FROM core_agent_run_events
-        WHERE session_id = ? AND run_id = ?
-        ORDER BY sequence
-        LIMIT ?
-      `)
-      .all(sessionId, runId, budget.maxRecords + 1) as Array<{ stored_bytes?: unknown }>;
-    const measurement = measureEvidenceRows(
-      rows,
-      budget,
-      'Invalid SQLite AgentRun evidence measurement row',
-    );
-    if (!measurement) return { status: 'limit_exceeded' };
-    return {
-      status: 'complete',
-      records: readSqliteAgentRunEventsForEvidence(this.#lease.database, sessionId, runId),
-      ...measurement,
-    };
+    return readBoundedSqliteAgentRunEvents(this.#lease.database, sessionId, runId, budget);
+  }
+
+  async readEventsByTypeBounded(
+    sessionId: string,
+    runId: string,
+    type: AgentRunEventType,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    assertEvidenceReadBudget(budget);
+    return readBoundedSqliteAgentRunEvents(this.#lease.database, sessionId, runId, budget, type);
   }
 
   async readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
@@ -724,15 +723,27 @@ function readSqliteAgentRunEventsForEvidence(
   db: DatabaseSync,
   sessionId: string,
   runId: string,
+  type?: AgentRunEventType,
 ): AgentRunEvent[] {
-  const rows = db
-    .prepare(`
-      SELECT sequence, record_json
-      FROM core_agent_run_events
-      WHERE session_id = ? AND run_id = ?
-      ORDER BY sequence
-    `)
-    .all(sessionId, runId) as Array<{ sequence?: unknown; record_json?: unknown }>;
+  const rows = (
+    type === undefined
+      ? db
+          .prepare(`
+            SELECT sequence, record_json
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ?
+            ORDER BY sequence
+          `)
+          .all(sessionId, runId)
+      : db
+          .prepare(`
+            SELECT sequence, record_json
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ? AND event_type = ?
+            ORDER BY sequence
+          `)
+          .all(sessionId, runId, type)
+  ) as Array<{ sequence?: unknown; record_json?: unknown }>;
   if (rows.length === 0) return [];
   const header = readSqliteAgentRun(db, sessionId, runId);
   return rows.map((row) => {
@@ -760,6 +771,47 @@ function readSqliteAgentRunEventsForEvidence(
       };
     }
   });
+}
+
+function readBoundedSqliteAgentRunEvents(
+  db: DatabaseSync,
+  sessionId: string,
+  runId: string,
+  budget: EvidenceReadBudget,
+  type?: AgentRunEventType,
+): BoundedEvidenceReadResult<AgentRunEvent> {
+  const rows = (
+    type === undefined
+      ? db
+          .prepare(`
+            SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ?
+            ORDER BY sequence
+            LIMIT ?
+          `)
+          .all(sessionId, runId, budget.maxRecords + 1)
+      : db
+          .prepare(`
+            SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ? AND event_type = ?
+            ORDER BY sequence
+            LIMIT ?
+          `)
+          .all(sessionId, runId, type, budget.maxRecords + 1)
+  ) as Array<{ stored_bytes?: unknown }>;
+  const measurement = measureEvidenceRows(
+    rows,
+    budget,
+    'Invalid SQLite AgentRun evidence measurement row',
+  );
+  if (!measurement) return { status: 'limit_exceeded' };
+  return {
+    status: 'complete',
+    records: readSqliteAgentRunEventsForEvidence(db, sessionId, runId, type),
+    ...measurement,
+  };
 }
 
 function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {

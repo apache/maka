@@ -65,6 +65,54 @@ test('registers a subscription before receiving a coalesced first frame', async 
   );
 });
 
+test('delivers Runtime Resource PTY frames without closing the connection', async () => {
+  await withProtocolPeer(
+    async (transport, hostEpoch) => {
+      const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
+      const opened = openResult(hostEpoch, 'subscription-pty');
+      const frame = {
+        kind: 'subscription.runtime_resource_pty_data' as const,
+        hostEpoch,
+        subscriptionId: opened.subscriptionId,
+        sequence: 1,
+        sessionId: 'session-1',
+        ref: 'maka://runtime/background-tasks/shell-1',
+        ptySequence: 7,
+        data: 'ready',
+      };
+      await transport.writeEncoded(
+        Buffer.concat([
+          encodeProtocolFrame({
+            requestId: request.requestId,
+            operation: 'subscription.open',
+            ok: true,
+            result: opened,
+          }),
+          encodeProtocolFrame(frame),
+        ]),
+      );
+      await answerClose(transport, opened.subscriptionId);
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({ sessionId: 'session-1' });
+      assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
+        done: false,
+        value: {
+          kind: 'subscription.runtime_resource_pty_data',
+          hostEpoch: connection.hostEpoch,
+          subscriptionId: subscription.subscriptionId,
+          sequence: 1,
+          sessionId: 'session-1',
+          ref: 'maka://runtime/background-tasks/shell-1',
+          ptySequence: 7,
+          data: 'ready',
+        },
+      });
+      await subscription.close();
+    },
+  );
+});
+
 test('isolates a sequence gap and continues requests on the same connection', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch) => {

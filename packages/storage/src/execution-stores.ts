@@ -164,6 +164,12 @@ export interface ExecutionAgentRunReader {
     runId: string,
     budget: EvidenceReadBudget,
   ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
+  readEventsByTypeBounded(
+    sessionId: string,
+    runId: string,
+    type: AgentRunEventType,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
   readEventProjection(
     sessionId: string,
     type: AgentRunEventType,
@@ -423,6 +429,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
       readEventsBounded: (sessionId, runId, budget) =>
         run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),
+      readEventsByTypeBounded: (sessionId, runId, type, budget) =>
+        run(() => agentRunStore.readEventsByTypeBounded(sessionId, runId, type, budget)),
       readEventsForRecovery: (sessionId, runId) =>
         run(() => agentRunStore.readEventsForRecovery(sessionId, runId)),
       readEventsForEvidence: (sessionId, runId) =>
@@ -573,6 +581,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
       readEventsBounded: (sessionId, runId, budget) =>
         run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),
+      readEventsByTypeBounded: (sessionId, runId, type, budget) =>
+        run(() => agentRunStore.readEventsByTypeBounded(sessionId, runId, type, budget)),
       readEventProjection: (sessionId, type) =>
         run(() => agentRunStore.readEventProjection(sessionId, type)),
       readRootTurnAdmission: (sessionId, turnId) =>

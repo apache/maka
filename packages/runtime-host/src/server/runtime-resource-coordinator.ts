@@ -136,11 +136,22 @@ export class HostRuntimeResourceCoordinator
     this.#onProjectionChanged = input.onProjectionChanged ?? (() => undefined);
   }
 
-  runForegroundBash(input: ShellRunBashInput): ReturnType<ShellRunLauncher['runForegroundBash']> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
-      await this.#assertActiveSession(input.sessionId);
-      return this.#manager.runForegroundBash(input);
-    });
+  async runForegroundBash(
+    input: ShellRunBashInput,
+  ): Promise<Awaited<ReturnType<ShellRunLauncher['runForegroundBash']>>> {
+    if (this.#draining) throw new Error('Runtime resources are draining');
+    const residency = this.#acquireResidency();
+    try {
+      const { execution } = await this.#sessionAdmission.run(input.sessionId, async () => {
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        await this.#assertActiveSession(input.sessionId);
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        return { execution: this.#manager.runForegroundBash(input) };
+      });
+      return await execution;
+    } finally {
+      residency.release();
+    }
   }
 
   async runBackgroundBash(

@@ -359,6 +359,39 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.terminateCount, 1);
   });
 
+  test('releases Session admission while a foreground process holds Host residency', async () => {
+    const harness = createHarness();
+    let announceStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      announceStart = resolve;
+    });
+    let finishForeground!: (result: ReturnType<typeof foregroundResult>) => void;
+    const completion = new Promise<ReturnType<typeof foregroundResult>>((resolve) => {
+      finishForeground = resolve;
+    });
+    harness.foregroundRun = () => {
+      announceStart();
+      return completion;
+    };
+
+    const foreground = harness.coordinator.runForegroundBash(backgroundInput());
+    await started;
+    assert.equal(harness.activeResidencies, 1);
+
+    let eventAdmitted = false;
+    const event = harness.sessionAdmission.run(SESSION_ID, () => {
+      eventAdmitted = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      assert.equal(eventAdmitted, true);
+    } finally {
+      finishForeground(foregroundResult());
+      await Promise.all([foreground, event]);
+    }
+    assert.equal(harness.activeResidencies, 0);
+  });
+
   test('reports archived and missing Sessions without touching a Runtime Resource', async () => {
     const harness = createHarness();
     harness.sessionState = 'archived';
@@ -395,16 +428,13 @@ function createHarness() {
     stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
+    foregroundRun: undefined as
+      | HostRuntimeResourceCoordinatorInput['manager']['runForegroundBash']
+      | undefined,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
-    runForegroundBash: async () => ({
-      kind: 'terminal',
-      cwd: '/workspace',
-      cmd: 'true',
-      status: 'completed',
-      exitCode: 0,
-      output: pipeOutput(''),
-    }),
+    runForegroundBash: (input) =>
+      state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult()),
     runBackgroundBash: async (input) => {
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
@@ -472,6 +502,7 @@ function createHarness() {
       state.terminateCount += 1;
     },
   };
+  const sessionAdmission = new SessionAdmissionGate();
   const coordinator = new HostRuntimeResourceCoordinator({
     manager,
     sessions: {
@@ -496,7 +527,7 @@ function createHarness() {
         };
       },
     },
-    sessionAdmission: new SessionAdmissionGate(),
+    sessionAdmission,
     acquireResidency: () => {
       state.activeResidencies += 1;
       let active = true;
@@ -514,8 +545,20 @@ function createHarness() {
   });
   return Object.assign(state, {
     coordinator,
+    sessionAdmission,
     finishBackground: (outcome: { successful: boolean }) => backgroundCompletion?.(outcome),
   });
+}
+
+function foregroundResult() {
+  return {
+    kind: 'terminal' as const,
+    cwd: '/workspace',
+    cmd: 'true',
+    status: 'completed' as const,
+    exitCode: 0,
+    output: pipeOutput(''),
+  };
 }
 
 function connection(connectionId: string): ConnectionContext {

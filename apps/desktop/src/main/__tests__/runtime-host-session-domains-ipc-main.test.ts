@@ -147,6 +147,14 @@ test('adapts interactive terminal ownership to one Host controller lease', async
           return { resource: update.result as never };
         },
       }),
+      sessionObserver: {
+        observe: async (sessionId, observerId) => {
+          calls.push({ operation: 'observe', input: { sessionId, observerId } });
+        },
+        unobserve: async (observerId) => {
+          calls.push({ operation: 'unobserve', input: { observerId } });
+        },
+      },
       emitModeChanged() {},
       newId: () => 'fixed-id',
     },
@@ -181,6 +189,22 @@ test('adapts interactive terminal ownership to one Host controller lease', async
   assert.equal(calls.filter(({ operation }) => operation === 'acquire').length, 1);
   assert.equal(calls.filter(({ operation }) => operation === 'release').length, 1);
   assert.equal(calls.filter(({ operation }) => operation === 'stop').length, 1);
+  assert.deepEqual(
+    calls.filter(({ operation }) => operation === 'observe' || operation === 'unobserve'),
+    [
+      {
+        operation: 'observe',
+        input: {
+          sessionId: 'session-1',
+          observerId: 'desktop-terminal-controller-fixed-id:session-events',
+        },
+      },
+      {
+        operation: 'unobserve',
+        input: { observerId: 'desktop-terminal-controller-fixed-id:session-events' },
+      },
+    ],
+  );
 });
 
 test('reuses terminal controller identity after an ambiguous acquire response', async () => {
@@ -228,6 +252,96 @@ test('reuses terminal controller identity after an ambiguous acquire response', 
     'desktop-terminal-controller-stable-id',
     'desktop-terminal-controller-stable-id',
   ]);
+});
+
+test('restores terminal observation after the observer drops its registration', async () => {
+  const ref = 'maka://runtime/background-tasks/shell-1';
+  let observeCalls = 0;
+  let observationActive = false;
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionDomainsIpc(
+    {
+      client: domainClient({
+        acquireRuntimeResourceController: async (input) => ({
+          controllerId: input.controllerId,
+          nextSequence: 4,
+          pty: {
+            sessionId: input.sessionId,
+            ref: input.ref,
+            sequence: 3,
+            buffer: 'ready',
+            size: { cols: 80, rows: 24 },
+          },
+        }),
+      }),
+      sessionObserver: {
+        observe: async () => {
+          observeCalls += 1;
+          observationActive = true;
+        },
+        unobserve: async () => {
+          observationActive = false;
+        },
+      },
+      emitModeChanged() {},
+      newId: () => 'stable-id',
+    },
+    ipc,
+  );
+
+  await ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref });
+  observationActive = false;
+  await ipc.invoke('shell-runs:attach', { sessionId: 'session-1', ref });
+
+  assert.equal(observeCalls, 2);
+  assert.equal(observationActive, true);
+});
+
+test('reacquires a missing terminal controller with protocol-exact identity fields', async () => {
+  const ref = 'maka://runtime/background-tasks/shell-1';
+  let acquired: unknown;
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionDomainsIpc(
+    {
+      client: domainClient({
+        acquireRuntimeResourceController: async (input) => {
+          acquired = input;
+          return {
+            controllerId: input.controllerId,
+            nextSequence: 4,
+            pty: {
+              sessionId: input.sessionId,
+              ref: input.ref,
+              sequence: 3,
+              buffer: 'ready',
+              size: { cols: 80, rows: 24 },
+            },
+          };
+        },
+        controlRuntimeResource: async (input) => ({
+          controllerId: input.controllerId,
+          sequence: input.sequence,
+          resource: shellRunUpdate().result as never,
+        }),
+        getRuntimeResource: async () => shellRunUpdate(),
+      }),
+      emitModeChanged() {},
+      newId: () => 'recovered-id',
+    },
+    ipc,
+  );
+
+  await ipc.invoke('shell-runs:write', {
+    sessionId: 'session-1',
+    ref,
+    input: 'pwd\r',
+  });
+
+  assert.deepEqual(acquired, {
+    sessionId: 'session-1',
+    ref,
+    controllerId: 'desktop-terminal-controller-recovered-id',
+  });
 });
 
 test('adapts Plan controls and starts approved execution through one Host command', async () => {

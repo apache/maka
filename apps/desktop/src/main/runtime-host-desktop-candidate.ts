@@ -32,6 +32,7 @@ import { registerRuntimeHostSessionCatalogIpc } from "./runtime-host-session-cat
 import {
   registerRuntimeHostSessionDomainsIpc,
   type RuntimeHostSessionDomainsIpcDeps,
+  type RuntimeHostSessionDomainsIpcHandle,
 } from "./runtime-host-session-domains-ipc-main.js";
 import {
   registerRuntimeHostSessionExecutionIpc,
@@ -286,9 +287,25 @@ export async function createDesktopRuntimeHostCandidate(
   let disposeClientIpc: (() => void | Promise<void>) | undefined;
   let capabilitiesRegistered = false;
   try {
-    const domains = registerRuntimeHostSessionDomainsIpc(
+    let domains: RuntimeHostSessionDomainsIpcHandle | undefined;
+    const sessionObserver = new RuntimeHostSessionObserver({
+      client,
+      emitSessionsChanged: (reason, sessionId, extra) =>
+        deps.emitSessionsChanged(reason, sessionId, extra),
+      emitSessionDomainChanged: (change) => domains?.sessionDomainChanged(change),
+      emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
+      emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
+      onWatchedTurnFinished: (sessionId, outcome) =>
+        outcome === "completed"
+          ? deps.completeComputerUseTurn(sessionId)
+          : deps.nativeCapabilities.releaseComputerUseSession(sessionId),
+      ...(deps.now ? { now: deps.now } : {}),
+    });
+    observer = sessionObserver;
+    domains = registerRuntimeHostSessionDomainsIpc(
       {
         client,
+        sessionObserver,
         emitModeChanged: deps.emitModeChanged,
         ...(deps.sendToRenderer ? { sendToRenderer: deps.sendToRenderer } : {}),
         ...(deps.onError ? { onError: deps.onError } : {}),
@@ -298,20 +315,6 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
     );
     closeSessionDomains = domains.close;
-    const sessionObserver = new RuntimeHostSessionObserver({
-      client,
-      emitSessionsChanged: (reason, sessionId, extra) =>
-        deps.emitSessionsChanged(reason, sessionId, extra),
-      emitSessionDomainChanged: domains.sessionDomainChanged,
-      emitRuntimeResourcePtyData: domains.runtimeResourcePtyData,
-      emitAgentGraphChanged: domains.agentGraphChanged,
-      onWatchedTurnFinished: (sessionId, outcome) =>
-        outcome === "completed"
-          ? deps.completeComputerUseTurn(sessionId)
-          : deps.nativeCapabilities.releaseComputerUseSession(sessionId),
-      ...(deps.now ? { now: deps.now } : {}),
-    });
-    observer = sessionObserver;
     const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
       void sessionObserver
         .watchTurn(sessionId, turnId)

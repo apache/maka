@@ -92,6 +92,34 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('clears unread when the current read marker is already the latest visible message', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-read-marker-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await store.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 20,
+        text: 'already read',
+        modelId: 'fake-model',
+      });
+      await store.updateHeader(session.id, {
+        lastReadMessageId: 'message-1',
+        hasUnread: true,
+      });
+
+      const updated = await store.markSessionReadThroughMessage(session.id, 'message-1');
+
+      assert.equal(updated.header.lastReadMessageId, 'message-1');
+      assert.equal(updated.header.hasUnread, false);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('deletes metadata and messages through the same transaction boundary', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-delete-'));
     const store = createSessionStore(root);

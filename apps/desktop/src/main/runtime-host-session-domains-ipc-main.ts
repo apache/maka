@@ -10,6 +10,7 @@ import type {
 } from '@maka/runtime';
 import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
   registerRuntimeHostShellRunsIpc,
@@ -36,6 +37,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
 export interface RuntimeHostSessionDomainsIpcDeps {
   client: RuntimeHostSessionDomainClient;
   emitModeChanged(sessionId: string): void;
+  sessionObserver?: Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'>;
   sendToRenderer?(channel: string, payload: unknown): void;
   now?: () => number;
   newId?: () => string;
@@ -61,7 +63,7 @@ export function registerRuntimeHostSessionDomainsIpc(
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? Date.now;
   const shellRuns = registerRuntimeHostShellRunsIpc(
-    { client: deps.client, newId },
+    { client: deps.client, newId, sessionObserver: deps.sessionObserver },
     ipcMain,
   );
 
