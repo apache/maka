@@ -44,9 +44,13 @@ canonical identity validation
   -> producer provision resolves (PR 2 must prove its process tree has exited)
   -> deep-copy node_modules into new authority-owned inodes
   -> delete the producer-owned tree
-  -> complete tree hash / ADS-reparse validation
-  -> fsync artifact where supported
+  -> one authoritative tree seal:
+       hash every entry + fsync every regular file
+       + fsync directories bottom-up
+       + ADS/reparse validation
+  -> fsync artifact staging root
   -> atomic rename artifact
+  -> fsync publication parent
   -> SQLite receipt transaction (synchronous=FULL)
   -> reopen and revalidate artifact + receipt
   -> lease
@@ -68,7 +72,9 @@ filesystem rename 与 SQLite 不是共同事务，恢复依靠可收敛状态而
 - Windows 拒绝 symlink/reparse point，并通过系统绝对路径 PowerShell 枚举、拒绝 NTFS named stream。
 - 每次 acquisition 都重新验证完整内容树。不能用目录 mtime 作为终裁，因为内容变化不保证可靠改变父目录 mtime；性能优化不能削弱内容证明。
 
-Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断电丢失，重启按 orphan artifact/receipt 规则重新物化；本合同承诺 crash convergence，不宣称跨平台共同事务。
+Linux/macOS 的 publication 合同要求：每个 authority-owned 普通文件先完成 `fsync`，内部目录按子目录到父目录的顺序完成 `fsync`，随后同步 staging root；rename 后再同步 publication parent，最后才允许提交 SQLite receipt。tree hash 与 durable seal 必须由同一个遍历 primitive 完成，不能维护两套可能漂移的目录语义。在文件系统和硬件遵守 `fsync` 合同的前提下，这一顺序同时覆盖进程崩溃与断电恢复。
+
+Windows 不承诺目录 `fsync` 与 POSIX 等价。普通文件仍在 receipt 前显式同步，但 Node/Windows 无法为目录项提供与 POSIX 相同、可证明的断电持久性。因此 Windows v1 只承诺**进程崩溃收敛**，不承诺断电后的 artifact publication 自动收敛；断电后若 artifact/receipt 不一致，必须 fail closed，并通过删除缓存后重新物化或人工清理恢复。这里不能用绿色的 child-process crash test 代替 power-loss 证明。
 
 ## 4. Lease、配额与失败状态
 
@@ -83,8 +89,12 @@ Windows 不承诺目录 fsync 与 POSIX 等价。rename 后如果目录项因断
 | 场景                                 | 唯一合法结果                           |
 | ------------------------------------ | -------------------------------------- |
 | producer 中断                        | staging 清理，无 artifact/receipt      |
+| 完整 tree durable seal 前中断         | 无 receipt；重启清理 staging/orphan    |
+| tree seal 完成、artifact rename 前中断 | 无 receipt；重启清理 staging/orphan    |
 | artifact rename 后进程退出           | 重启删除无 receipt artifact，再物化    |
 | receipt commit 后进程退出            | 重启重验并复用                         |
+| Linux/macOS receipt 前断电            | receipt 不得领先已同步的完整 artifact tree |
+| Windows publication 期间断电          | v1 不承诺自动收敛；不一致时 fail closed |
 | artifact 与同目录伪 receipt 一起修改 | 外部 SQLite receipt 不变，acquire 拒绝 |
 | 伪造 environmentId/path traversal    | T1/任何文件写入前拒绝                  |
 | Windows ADS/reparse                  | publish/reopen 拒绝                    |

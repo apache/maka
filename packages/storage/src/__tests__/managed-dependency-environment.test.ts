@@ -413,6 +413,42 @@ test('publishes authority-owned file inodes instead of producer-owned inodes', a
   await authority.close();
 });
 
+test('seals the complete authority-owned tree before publishing its receipt', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-durable-tree-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const observedBoundaries: string[] = [];
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      await mkdir(join(input.outputRoot, 'nested', 'package'), { recursive: true });
+      await writeFile(join(input.outputRoot, 'root.js'), 'root\n', 'utf8');
+      await writeFile(join(input.outputRoot, 'nested', 'package', 'index.js'), 'nested\n', 'utf8');
+    },
+  };
+  const source = dependencySourceForName('durable-tree');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer,
+    failpoint(point) {
+      observedBoundaries.push(point);
+    },
+  });
+
+  const lease = await authority.acquire(identity, source);
+  assert.deepEqual(observedBoundaries, [
+    'after_environment_tree_durable',
+    'after_environment_publish',
+    'after_environment_receipt_durable',
+    'before_environment_lease',
+  ]);
+  await lease.release();
+  await authority.close();
+});
+
 test('isolates published POSIX content from a producer-retained writable handle', {
   skip: process.platform === 'win32',
 }, async (t) => {

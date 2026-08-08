@@ -65,6 +65,7 @@ test('rejects a second authority for the same storage root in another process', 
 
 for (const failpoint of [
   'during_environment_provision',
+  'after_environment_tree_durable',
   'after_environment_receipt_durable',
   'after_environment_publish',
 ] as const satisfies readonly (

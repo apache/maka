@@ -152,6 +152,7 @@ export interface CreateManagedDependencyEnvironmentAuthorityInput {
 
 export type ManagedDependencyEnvironmentFailpoint =
   | 'before_environment_lease'
+  | 'after_environment_tree_durable'
   | 'after_environment_receipt_durable'
   | 'after_environment_publish';
 
@@ -675,7 +676,7 @@ async function openOrPublishEnvironment(input: {
       verbatimSymlinks: true,
     });
     await rm(producerRoot, { recursive: true, force: true });
-    const content = await hashDependencyTree(dependencyRoot);
+    const content = await hashDependencyTree(dependencyRoot, { durable: true });
     const receipt: ManagedDependencyEnvironmentReceiptV1 = Object.freeze({
       ...input.identity,
       dependencyRootName: DEPENDENCY_ROOT_NAME,
@@ -684,6 +685,7 @@ async function openOrPublishEnvironment(input: {
       contentEntries: content.entries,
     });
     await syncDirectory(artifactStagingRoot);
+    await input.failpoint?.('after_environment_tree_durable');
     await rename(artifactStagingRoot, artifactRoot);
     await syncDirectory(input.environmentsRoot);
     await input.failpoint?.('after_environment_publish');
@@ -889,7 +891,10 @@ function assertCanonicalIdentity(
   }
 }
 
-async function hashDependencyTree(root: string): Promise<{
+async function hashDependencyTree(
+  root: string,
+  options: { readonly durable?: boolean } = {},
+): Promise<{
   readonly sha256: `sha256:${string}`;
   readonly bytes: number;
   readonly entries: number;
@@ -897,7 +902,7 @@ async function hashDependencyTree(root: string): Promise<{
   const hash = createHash('sha256');
   const counter = { bytes: 0, entries: 0 };
   hash.update(MANAGED_DEPENDENCY_TREE_DOMAIN);
-  await hashDirectory(root, '', hash, counter);
+  await hashDirectory(root, '', hash, counter, options.durable === true);
   if (process.platform === 'win32') await assertNoWindowsAlternateStreams(root);
   return Object.freeze({
     sha256: `sha256:${hash.digest('hex')}`,
@@ -911,6 +916,7 @@ async function hashDirectory(
   relativeRoot: string,
   hash: ReturnType<typeof createHash>,
   counter: { bytes: number; entries: number },
+  durable: boolean,
 ) {
   const directory = relativeRoot ? join(root, relativeRoot) : root;
   const entries = await readdir(directory, { withFileTypes: true });
@@ -927,7 +933,7 @@ async function hashDirectory(
     const mode = process.platform === 'win32' ? 0 : info.mode & 0o777;
     if (entry.isDirectory()) {
       hash.update(`d\0${portablePath}\0${mode}\0`);
-      await hashDirectory(root, relativePath, hash, counter);
+      await hashDirectory(root, relativePath, hash, counter, durable);
       continue;
     }
     if (entry.isFile()) {
@@ -935,6 +941,7 @@ async function hashDirectory(
       counter.bytes += info.size;
       for await (const chunk of createReadStream(absolutePath)) hash.update(chunk as Buffer);
       hash.update('\0');
+      if (durable) await syncRegularFile(absolutePath);
       continue;
     }
     if (entry.isSymbolicLink()) {
@@ -950,6 +957,7 @@ async function hashDirectory(
     }
     throw new Error('Managed dependency environment contains an unsupported filesystem entry');
   }
+  if (durable) await syncDirectory(directory);
 }
 
 async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
@@ -1159,6 +1167,15 @@ async function syncDirectory(path: string): Promise<void> {
     await handle.sync();
   } catch (error) {
     if (process.platform !== 'win32') throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncRegularFile(path: string): Promise<void> {
+  const handle = await open(path, process.platform === 'win32' ? 'r+' : 'r');
+  try {
+    await handle.sync();
   } finally {
     await handle.close();
   }
