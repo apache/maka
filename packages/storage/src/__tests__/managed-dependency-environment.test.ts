@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   access,
+  chmod,
   type FileHandle,
   mkdtemp,
   mkdir,
@@ -445,6 +446,38 @@ test('seals the complete authority-owned tree before publishing its receipt', as
     'after_environment_receipt_durable',
     'before_environment_lease',
   ]);
+  await lease.release();
+  await authority.close();
+});
+
+test('publishes Windows read-only dependency files without changing their final mode', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-readonly-file-'));
+  let publishedFile: string | undefined;
+  t.after(async () => {
+    if (publishedFile) await chmod(publishedFile, 0o644).catch(() => undefined);
+    await rm(storageRoot, { recursive: true, force: true });
+  });
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      const path = join(input.outputRoot, 'readonly.js');
+      await writeFile(path, 'readonly dependency\n', 'utf8');
+      await chmod(path, 0o444);
+    },
+  };
+  const source = dependencySourceForName('readonly-file');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+
+  const lease = await authority.acquire(identity, source);
+  publishedFile = join(lease.dependencyRoot, 'readonly.js');
+  assert.equal(await readFile(publishedFile, 'utf8'), 'readonly dependency\n');
+  assert.equal((await stat(publishedFile)).mode & 0o222, 0);
   await lease.release();
   await authority.close();
 });

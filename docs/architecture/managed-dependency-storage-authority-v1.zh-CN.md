@@ -72,9 +72,11 @@ filesystem rename 与 SQLite 不是共同事务，恢复依靠可收敛状态而
 - Windows 拒绝 symlink/reparse point，并通过系统绝对路径 PowerShell 枚举、拒绝 NTFS named stream。
 - 每次 acquisition 都重新验证完整内容树。不能用目录 mtime 作为终裁，因为内容变化不保证可靠改变父目录 mtime；性能优化不能削弱内容证明。
 
-Linux/macOS 的 publication 合同要求：每个 authority-owned 普通文件先完成 `fsync`，内部目录按子目录到父目录的顺序完成 `fsync`，随后同步 staging root；rename 后再同步 publication parent，最后才允许提交 SQLite receipt。tree hash 与 durable seal 必须由同一个遍历 primitive 完成，不能维护两套可能漂移的目录语义。在文件系统和硬件遵守 `fsync` 合同的前提下，这一顺序同时覆盖进程崩溃与断电恢复。
+所有平台的 publication 顺序都要求：每个 authority-owned 普通文件先完成平台可用的同步，内部目录按子目录到父目录的顺序尝试同步，随后同步 staging root；rename 后再同步 publication parent，最后才允许提交 SQLite receipt。tree hash 与 durable seal 必须由同一个遍历 primitive 完成，不能维护两套可能漂移的目录语义。
 
-Windows 不承诺目录 `fsync` 与 POSIX 等价。普通文件仍在 receipt 前显式同步，但 Node/Windows 无法为目录项提供与 POSIX 相同、可证明的断电持久性。因此 Windows v1 只承诺**进程崩溃收敛**，不承诺断电后的 artifact publication 自动收敛；断电后若 artifact/receipt 不一致，必须 fail closed，并通过删除缓存后重新物化或人工清理恢复。这里不能用绿色的 child-process crash test 代替 power-loss 证明。
+Linux 只有在文件系统和硬件兑现 file/directory `fsync` 合同时，才承诺上述顺序覆盖断电恢复。macOS 的普通 `fsync` 不等价于 `F_FULLFSYNC`，而本协议也没有同时为 artifact 与 SQLite receipt 启用并证明 full-sync ordering；Windows 的 Node 文件系统接口同样不能提供与 POSIX 等价的目录项持久性证明。因此 macOS 与 Windows v1 都只承诺**进程崩溃收敛**，不承诺断电后的 artifact publication 自动收敛。断电后若 artifact/receipt 不一致，必须 fail closed，并通过删除缓存后重新物化或人工清理恢复。绿色的 child-process crash test 不能充当 power-loss 证明。
+
+Windows 上只读 dependency file 是合法输入。authority 只在自己的 unpublished staging inode 上临时增加 owner-write 权限以完成文件同步，并在继续 publication 前恢复原始 mode；producer inode 与最终 published mode 都不得被永久改写。任何同步或权限恢复失败都必须在 receipt 前 fail closed。
 
 ## 4. Lease、配额与失败状态
 
@@ -93,8 +95,9 @@ Windows 不承诺目录 `fsync` 与 POSIX 等价。普通文件仍在 receipt �
 | tree seal 完成、artifact rename 前中断 | 无 receipt；重启清理 staging/orphan    |
 | artifact rename 后进程退出           | 重启删除无 receipt artifact，再物化    |
 | receipt commit 后进程退出            | 重启重验并复用                         |
-| Linux/macOS receipt 前断电            | receipt 不得领先已同步的完整 artifact tree |
-| Windows publication 期间断电          | v1 不承诺自动收敛；不一致时 fail closed |
+| Linux receipt 前断电                  | receipt 不得领先已同步的完整 artifact tree |
+| macOS/Windows publication 期间断电    | v1 不承诺自动收敛；不一致时 fail closed |
+| Windows dependency file 为只读        | staging 临时提权同步后恢复 mode，再继续发布 |
 | artifact 与同目录伪 receipt 一起修改 | 外部 SQLite receipt 不变，acquire 拒绝 |
 | 伪造 environmentId/path traversal    | T1/任何文件写入前拒绝                  |
 | Windows ADS/reparse                  | publish/reopen 拒绝                    |

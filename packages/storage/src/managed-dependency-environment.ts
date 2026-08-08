@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import {
+  chmod,
   cp,
   lstat,
   mkdir,
@@ -941,7 +942,7 @@ async function hashDirectory(
       counter.bytes += info.size;
       for await (const chunk of createReadStream(absolutePath)) hash.update(chunk as Buffer);
       hash.update('\0');
-      if (durable) await syncRegularFile(absolutePath);
+      if (durable) await syncRegularFile(absolutePath, info.mode);
       continue;
     }
     if (entry.isSymbolicLink()) {
@@ -1172,8 +1173,24 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-async function syncRegularFile(path: string): Promise<void> {
-  const handle = await open(path, process.platform === 'win32' ? 'r+' : 'r');
+async function syncRegularFile(path: string, mode: number): Promise<void> {
+  if (process.platform !== 'win32') {
+    await syncOpenedFile(path, 'r');
+    return;
+  }
+
+  const originalMode = mode & 0o777;
+  const writableMode = originalMode | 0o200;
+  if (writableMode !== originalMode) await chmod(path, writableMode);
+  try {
+    await syncOpenedFile(path, 'r+');
+  } finally {
+    if (writableMode !== originalMode) await chmod(path, originalMode);
+  }
+}
+
+async function syncOpenedFile(path: string, flags: 'r' | 'r+'): Promise<void> {
+  const handle = await open(path, flags);
   try {
     await handle.sync();
   } finally {
