@@ -299,8 +299,30 @@
      --background); it carries its darwin overrides in "DARWIN GLASS" below. */
   --color-bg-container: var(--background);
 
+  /* === elevation (visual system 2.0, T1) =============================
+     Product names for the theme's shadow scale, so the right answer is
+     findable. The generated theme ships --shadow-low/med/high and product CSS
+     had used them exactly once, reaching instead for hand-rolled shadows —
+     a scale nobody can name is a scale nobody uses.
+
+     Three names, three jobs: `raised` for a card lifting off its plate,
+     `overlay` for anything in a portal, `drag` for something under the
+     cursor. In-flow elements do not cast shadows; that rule is unchanged,
+     this only gives the legitimate path a name.
+
+     Consumers move in T2-T4 — T1 does not touch product CSS. */
+  --elevation-raised:  var(--shadow-low);
+  --elevation-overlay: var(--shadow-med);
+  --elevation-drag:    var(--shadow-high);
+
   /* === shadow recipes ===
-     Flat elevation uses a foreground-derived 1px ring in both themes. */
+     Flat elevation uses a foreground-derived 1px ring in both themes.
+
+     NOT an elevation tier and NOT dead: this is a 1px ring wearing a
+     box-shadow, and it has five live consumers (two of them in
+     packages/ui/src/styles.css). The T1 audit read its three DEFINITION
+     sites as its only mentions and called it dead; deleting it would have
+     taken two production styles with it. It stays, named for what it is. */
   --shadow-minimal-flat:
     rgba(0,0,0,0) 0 0 0 0,
     rgba(0,0,0,0) 0 0 0 0,

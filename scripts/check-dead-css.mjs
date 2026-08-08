@@ -202,6 +202,11 @@ const RESERVED_SCALE_TOKENS = new Set([
   // soft tier's consumers are the sidebar rail and the card edge, which
   // converge on it in T2-T4; T1 defines the scale without touching product CSS.
   '--border-soft',
+  // Elevation tiers raised/overlay/drag (visual system 2.0 T1) -- product
+  // names for the theme's shadow scale; consumers adopt them in T2-T4.
+  '--elevation-raised',
+  '--elevation-overlay',
+  '--elevation-drag',
   // Control-height scale, 20/24/28/32/36/40 on the 4px ruler.
   '--h-control-xl',
   '--h-control-2xl',
