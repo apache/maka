@@ -252,6 +252,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const promise = ensureCompanionFork({
         api: window.maka.sessions,
         sourceSession,
+        panelId,
         name,
         isDisposed: () => !mountedRef.current,
         onForkCreated: (session) => {
@@ -286,7 +287,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       forkSetupPromiseRef.current = promise;
       return promise;
     },
-    [commitFork, mountedRef, sourceSession],
+    [commitFork, mountedRef, panelId, sourceSession],
   );
 
   useEffect(() => {
@@ -307,7 +308,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const sourceSessionId = sourceSessionIdRef.current;
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
-          void cleanupCompanionCopy(window.maka.sessions, sourceSessionId, id).then((cleaned) => {
+          void cleanupCompanionCopy(
+            window.maka.sessions,
+            sourceSessionId,
+            panelId,
+            id,
+          ).then((cleaned) => {
             if (cleaned) {
               onForkVisibilityChangeRef.current?.({
                 type: 'cleanup-succeeded',
@@ -316,7 +322,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             }
           });
         } else if (sourceSessionId) {
-          void abandonPendingCompanionCopy(window.maka.sessions, sourceSessionId);
+          void abandonPendingCompanionCopy(
+            window.maka.sessions,
+            sourceSessionId,
+            panelId,
+          );
         }
       });
     };
@@ -344,6 +354,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const result = await performCompanionTurn({
         api: window.maka.sessions,
         sourceSession,
+        panelId,
         name: `${copyRef.current.namePrefix}${label}`,
         isDisposed: () => !mountedRef.current,
         existingForkId: fork.session.id,

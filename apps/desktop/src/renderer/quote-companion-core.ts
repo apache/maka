@@ -93,6 +93,7 @@ export function createCompanionDismissalGuard(): CompanionDismissalGuard {
 export interface EnsureCompanionForkDeps {
   api: CompanionSessionApi;
   sourceSession: SessionSummary;
+  panelId: string;
   name: string;
   /** True once the panel has unmounted — checked after every await so a fork
    *  born after disposal is torn down instead of leaking a hidden run. */
@@ -112,15 +113,19 @@ export function latestSettledTurnId(turns: readonly TurnRecord[]): string | unde
   return [...turns].reverse().find((turn) => turn.status === 'completed')?.turnId;
 }
 
-function companionCopyAttemptKey(sourceSessionId: string): SessionCopyAttemptKey {
-  return { scope: 'quote-companion', kind: 'branch', sourceSessionId };
+function companionCopyAttemptKey(
+  sourceSessionId: string,
+  panelId: string,
+): SessionCopyAttemptKey {
+  return { scope: `quote-companion:${panelId}`, kind: 'branch', sourceSessionId };
 }
 
 export async function abandonPendingCompanionCopy(
   api: CompanionSessionApi,
   sourceSessionId: string,
+  panelId: string,
 ): Promise<boolean> {
-  const key = companionCopyAttemptKey(sourceSessionId);
+  const key = companionCopyAttemptKey(sourceSessionId, panelId);
   const attempt = readSessionCopyAttempt(key);
   if (!attempt) return true;
   abandonSessionCopyAttempt(key, attempt.copyId);
@@ -136,9 +141,10 @@ export async function abandonPendingCompanionCopy(
 export async function cleanupCompanionCopy(
   api: CompanionSessionApi,
   sourceSessionId: string,
+  panelId: string,
   companionSessionId: string,
 ): Promise<boolean> {
-  const key = companionCopyAttemptKey(sourceSessionId);
+  const key = companionCopyAttemptKey(sourceSessionId, panelId);
   const attempt = readSessionCopyAttempt(key);
   if (attempt) abandonSessionCopyAttempt(key, attempt.copyId);
   try {
@@ -174,7 +180,12 @@ export function deriveCompanionComposerState(
  * lifecycle paths can remain fire-and-forget without losing recovery.
  */
 function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
-  void cleanupCompanionCopy(deps.api, deps.sourceSession.id, sessionId).then((cleaned) => {
+  void cleanupCompanionCopy(
+    deps.api,
+    deps.sourceSession.id,
+    deps.panelId,
+    sessionId,
+  ).then((cleaned) => {
     if (cleaned) deps.onForkCleanupSucceeded?.(sessionId);
   });
 }
@@ -208,19 +219,24 @@ export async function ensureCompanionFork(
   let created: SessionSummary;
   try {
     let copyAttempt = acquireSessionCopyAttempt(
-      companionCopyAttemptKey(sourceSession.id),
+      companionCopyAttemptKey(sourceSession.id, deps.panelId),
       boundaryTurnId,
     );
     if (copyAttempt.phase === 'abandoning') {
-      if (!(await abandonPendingCompanionCopy(api, sourceSession.id))) {
+      if (!(await abandonPendingCompanionCopy(api, sourceSession.id, deps.panelId))) {
         return { status: 'error', code: 'fork_setup_failed' };
       }
       copyAttempt = acquireSessionCopyAttempt(
-        companionCopyAttemptKey(sourceSession.id),
+        companionCopyAttemptKey(sourceSession.id, deps.panelId),
         boundaryTurnId,
       );
     }
-    if (!startSessionCopyAttempt(companionCopyAttemptKey(sourceSession.id), copyAttempt.copyId)) {
+    if (
+      !startSessionCopyAttempt(
+        companionCopyAttemptKey(sourceSession.id, deps.panelId),
+        copyAttempt.copyId,
+      )
+    ) {
       return { status: 'error', code: 'fork_setup_failed' };
     }
     created = await api.branchFromTurn(sourceSession.id, {

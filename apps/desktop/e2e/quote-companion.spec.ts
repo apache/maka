@@ -203,7 +203,7 @@ test('the quote layer: settle timing, Escape, immediate hide, and scroll followi
  * phase runs last because it checks 以后不再询问, which suppresses the close
  * confirmation for the rest of its window.
  */
-test('side conversations: every entry point, then the numbered-tab lifecycle', async ({
+test('side conversation entry points keep work outside the main transcript', async ({
   window: page,
 }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
@@ -314,10 +314,23 @@ test('side conversations: every entry point, then the numbered-tab lifecycle', a
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(1);
+});
+
+test('numbered side chat tabs keep independent drafts and close policy', async ({
+  window: page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
+  await mainComposer.fill('numbered side chat source');
+  await mainComposer.press('Enter');
+  await expect(
+    page.getByText(/Fake backend received: numbered side chat source/),
+  ).toBeVisible();
+  await waitForSourceSessionToSettle(page);
+  const [sourceSession] = await page.evaluate(() => window.maka.sessions.list());
+  expect(sourceSession).toBeDefined();
 
   // Numbered tabs, independent drafts, and the don't-ask-again close.
-  await waitForSourceSessionToSettle(page);
-
   await openSideConversationFromLauncher(page);
   const visiblePanel = page.locator('.maka-quote-workbar-panel:not([hidden])');
   await expect(visiblePanel).toBeVisible();
@@ -372,11 +385,11 @@ test('side conversations: every entry point, then the numbered-tab lifecycle', a
             .map(({ permissionMode }) => permissionMode)
             .sort(),
         }));
-      }, sourceSession.id),
+      }, sourceSession!.id),
     )
     .toEqual({
       count: 3,
-      companions: [sourceSession.permissionMode, sourceSession.permissionMode].sort(),
+      companions: [sourceSession!.permissionMode, sourceSession!.permissionMode].sort(),
     });
 
   await page.getByRole('button', { name: '关闭first side draft', exact: true }).click();
@@ -412,12 +425,7 @@ test('side conversations: every entry point, then the numbered-tab lifecycle', a
     .toBe(1);
 });
 
-/**
- * Side-chat behavior over one source conversation: the staged-quote
- * lifecycle, permission inheritance + steering, failure classification and
- * retry, and draft survival across collapse and navigation.
- */
-test('side chat: staged quotes, steering and permissions, failures, and draft survival', async ({
+test('side chat stages quotes and attachments in one isolated fork', async ({
   window: page,
 }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
@@ -439,7 +447,7 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
   // Create the same real DOM Range a drag selection would produce. Mutating
   // the selection fires `selectionchange` on its own, which is the hook's only
   // trigger; the click below absorbs the settle delay before the layer shows.
-  const stageReply = async (reply: typeof firstSourceReply) => {
+  const stageReply = async (reply: typeof firstSourceReply, expectedQuoteCount: number) => {
     await reply.evaluate((element) => {
       const range = document.createRange();
       range.selectNodeContents(element);
@@ -454,9 +462,27 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
     });
     await expect(page.getByRole('button', { name: '在侧栏追问' })).toBeVisible();
     await page.getByRole('button', { name: '在侧栏追问' }).click();
+    await expect(
+      page.locator('.maka-quote-companion .maka-composer-context-drawer .astryx-token'),
+    ).toHaveCount(expectedQuoteCount);
+    await expect(
+      page
+        .locator(
+          '.maka-workbar-tab[data-active][data-workbar-tab-id^="side-chat:"]',
+        )
+        .getByRole('tab'),
+    ).not.toHaveAttribute('aria-busy', 'true');
+    await expect
+      .poll(() =>
+        page
+          .locator('.maka-quote-workbar-panel:not([hidden])')
+          .locator(COMPOSER_INPUT)
+          .evaluate((element) => element === document.activeElement),
+      )
+      .toBe(true);
   };
-  await stageReply(firstSourceReply);
-  await stageReply(secondSourceReply);
+  await stageReply(firstSourceReply, 1);
+  await stageReply(secondSourceReply, 2);
 
   const panel = page.locator('.maka-quote-companion');
   await expect(panel).toBeVisible();
@@ -542,10 +568,23 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(1);
+});
+
+test('side chat persists steering and permission changes', async ({
+  window: page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
+  await mainComposer.fill('side chat control source');
+  await mainComposer.press('Enter');
+  await expect(
+    page.getByText(/Fake backend received: side chat control source/),
+  ).toBeVisible();
+  await waitForSourceSessionToSettle(page);
+  const [sourceSession] = await page.evaluate(() => window.maka.sessions.list());
+  expect(sourceSession).toBeDefined();
 
   // Steering and permission inheritance on a fresh fork.
-  await waitForSourceSessionToSettle(page);
-
   await openSideConversationFromLauncher(page);
   const steerPanel = page.locator('.maka-quote-workbar-panel:not([hidden])');
   const sideComposer = steerPanel.locator(COMPOSER_INPUT);
@@ -587,8 +626,7 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
     })
     .toBe('bypass');
 
-  // Close the steering fork before the failure phases: it holds content, so
-  // answer the confirmation.
+  // The fork holds content, so closing it requires confirmation.
   await page
     .locator('.maka-workbar-tab[data-active][data-workbar-tab-id^="side-chat:"] .maka-workbar-tab-close')
     .click();
@@ -596,11 +634,22 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(1);
+});
+
+test('side chat recovers from failures and preserves its draft', async ({
+  window: page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
+  await mainComposer.fill('side chat recovery source');
+  await mainComposer.press('Enter');
+  await expect(
+    page.getByText(/Fake backend received: side chat recovery source/),
+  ).toBeVisible();
+  await waitForSourceSessionToSettle(page);
 
   // Failure classification, collapse survival, and retry.
   const rightPanel = page.locator('[data-maka-contract="session-workbar-right"]');
-  await waitForSourceSessionToSettle(page);
-
   await openSideConversationFromLauncher(page);
   const failPanel = page.locator('.maka-quote-companion');
   const failComposer = failPanel.locator(COMPOSER_INPUT);
@@ -636,7 +685,6 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(1);
-  await page.waitForTimeout(350);
   await expect(page.getByText('鉴权失败')).toHaveCount(0);
 
   // Draft survival across collapse and launcher navigation.
@@ -645,7 +693,7 @@ test('side chat: staged quotes, steering and permissions, failures, and draft su
   await openSideConversationFromLauncher(page);
   const draftPanel = page.locator('.maka-quote-companion');
   const draftComposer = draftPanel.locator(COMPOSER_INPUT);
-    await draftComposer.fill('draft survives panel navigation');
+  await draftComposer.fill('draft survives panel navigation');
 
   await page.getByRole('button', { name: '收起会话工作栏' }).click();
   await expect(rightPanel).toBeHidden();

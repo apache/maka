@@ -210,6 +210,77 @@ test('acks a steering event whose canonical append preceded proof publication fa
   }
 });
 
+test('materializes a durable steering event into the transcript exactly once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-transcript-'));
+  try {
+    const store = createSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const turnId = 'turn-steering-transcript';
+    const sessionEvent: SessionEvent = {
+      type: 'steering_message',
+      id: 'runtime-steering-transcript',
+      turnId,
+      ts: 2,
+      messageId: 'message-steering-transcript',
+      content: { text: 'persist this interjection' },
+    };
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'start' },
+      runId: 'run-steering-transcript',
+      store,
+      runtimeEventStore,
+      newId: () => 'unused-id',
+      now: () => 10,
+      hooks: {
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
+        },
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    const runtimeEvent: RuntimeEvent = {
+      id: sessionEvent.id,
+      invocationId: run.invocationId,
+      runId: 'run-steering-transcript',
+      sessionId: session.id,
+      turnId,
+      ts: sessionEvent.ts,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: sessionEvent.content.text, steering: true },
+      refs: { providerEventId: sessionEvent.messageId },
+    };
+
+    await run.acceptMappedEvent(sessionEvent, runtimeEvent);
+    await run.acceptMappedEvent(sessionEvent, runtimeEvent);
+
+    assert.deepEqual(await store.readMessages(session.id), [
+      {
+        type: 'user',
+        id: sessionEvent.messageId,
+        turnId,
+        ts: sessionEvent.ts,
+        text: sessionEvent.content.text,
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('awaits canonical Run status persistence before accepting an interaction resume', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-barrier-'));
   try {

@@ -129,6 +129,7 @@ function recorder() {
 
 const base = {
   sourceSession: summary('main', 'execute'),
+  panelId: 'panel-main',
   name: '追问：excerpt',
   turnId: 'T1',
   text: 'hello',
@@ -139,7 +140,7 @@ const base = {
 afterEach(async () => {
   const { api } = makeApi();
   for (const sourceSessionId of ['main', 'quote-retry-source', 'quote-abandon-source']) {
-    await abandonPendingCompanionCopy(api, sourceSessionId);
+    await abandonPendingCompanionCopy(api, sourceSessionId, base.panelId);
   }
 });
 
@@ -344,7 +345,10 @@ describe('performCompanionTurn', () => {
 
     await performCompanionTurn({ api, isDisposed: () => false, ...input, ...recorder() });
     const abandonedCopyId = calls.branchedFrom[0]!.copyId;
-    assert.equal(await abandonPendingCompanionCopy(api, sourceSession.id), true);
+    assert.equal(
+      await abandonPendingCompanionCopy(api, sourceSession.id, base.panelId),
+      true,
+    );
     assert.deepEqual(calls.abandoned, [abandonedCopyId]);
 
     const next = await performCompanionTurn({
@@ -369,7 +373,10 @@ describe('performCompanionTurn', () => {
 
     await performCompanionTurn({ api, isDisposed: () => false, ...input, ...recorder() });
     const firstCopyId = calls.branchedFrom[0]?.copyId;
-    assert.equal(await abandonPendingCompanionCopy(api, sourceSession.id), false);
+    assert.equal(
+      await abandonPendingCompanionCopy(api, sourceSession.id, base.panelId),
+      false,
+    );
 
     control.abandonThrows = false;
     const retried = await performCompanionTurn({
@@ -380,7 +387,12 @@ describe('performCompanionTurn', () => {
     });
     assert.equal(retried.status, 'sent');
     assert.notEqual(calls.branchedFrom[1]?.copyId, firstCopyId);
-    await cleanupCompanionCopy(api, sourceSession.id, calls.branchedFrom[1]!.copyId);
+    await cleanupCompanionCopy(
+      api,
+      sourceSession.id,
+      base.panelId,
+      calls.branchedFrom[1]!.copyId,
+    );
   });
 
   it('completes the copy lease by copy id when an embedded fork has another id', async () => {
@@ -399,13 +411,26 @@ describe('performCompanionTurn', () => {
     assert.equal(sent.status, 'sent');
     const firstCopyId = calls.branchedFrom[0]?.copyId;
 
-    assert.equal(await cleanupCompanionCopy(api, sourceSession.id, 'embedded-fork'), true);
+    assert.equal(
+      await cleanupCompanionCopy(
+        api,
+        sourceSession.id,
+        base.panelId,
+        'embedded-fork',
+      ),
+      true,
+    );
     assert.deepEqual(calls.removed, ['embedded-fork']);
 
     control.createdId = 'embedded-fork-2';
     await performCompanionTurn({ api, isDisposed: () => false, ...input, ...recorder() });
     assert.notEqual(calls.branchedFrom[1]?.copyId, firstCopyId);
-    await cleanupCompanionCopy(api, sourceSession.id, 'embedded-fork-2');
+    await cleanupCompanionCopy(
+      api,
+      sourceSession.id,
+      base.panelId,
+      'embedded-fork-2',
+    );
   });
 
   it('does not create or send before the source has a completed turn', async () => {
