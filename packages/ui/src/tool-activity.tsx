@@ -359,7 +359,7 @@ function linkedAgentCalls(
       errorMessage: result.failureClass
         ? redactSecrets(result.failureClass)
         : toolCallErrorMessage(item, locale),
-      stats: subagentStats(result, locale),
+      stats: getToolActivityCopy(locale).agent.subagentStatus[result.status],
       ...open,
     }];
   }
@@ -375,7 +375,7 @@ function linkedAgentCalls(
       target: boundedAgentSummary(child.summary),
       duration: formatDuration(child.durationMs) ?? undefined,
       errorMessage: child.failureClass ? redactSecrets(child.failureClass) : undefined,
-      stats: swarmChildStats(child, locale),
+      stats: getToolActivityCopy(locale).agent.subagentStatus[child.status],
       ...linkedSessionActivation(child.childSessionId, name, locale, onOpenLinkedSession),
     } satisfies ChatToolCallItem;
   });
@@ -401,29 +401,6 @@ function linkedSessionActivation(
     onActivate: () => onOpenLinkedSession(childSessionId),
     activateLabel: getToolActivityCopy(locale).agent.openSessionAriaLabel(name),
   };
-}
-
-function subagentStats(
-  result: Extract<ToolResultContent, { kind: 'subagent' }>,
-  locale: UiLocale,
-): string {
-  const copy = getToolActivityCopy(locale).agent;
-  return [
-    copy.subagentStatus[result.status],
-    result.permissionMode === 'explore' ? copy.readOnly : result.permissionMode,
-    result.artifactIds.length > 0 ? copy.artifactCount(result.artifactIds.length) : '',
-  ].filter(Boolean).join(' · ');
-}
-
-function swarmChildStats(
-  child: Extract<ToolResultContent, { kind: 'agent_swarm' }>['items'][number],
-  locale: UiLocale,
-): string {
-  const copy = getToolActivityCopy(locale).agent;
-  return [
-    copy.subagentStatus[child.status],
-    child.artifactIds.length > 0 ? copy.artifactCount(child.artifactIds.length) : '',
-  ].filter(Boolean).join(' · ');
 }
 
 function boundedAgentSummary(summary: string): string | undefined {
