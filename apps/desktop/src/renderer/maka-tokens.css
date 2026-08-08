@@ -185,10 +185,20 @@
      4.5:1 AA floor. At L=0.50 they land 5.54-6.33:1 together. Residual spread
      is hue, not drift: yellow carries more luminance than blue at equal
      lightness, and equalising that would mean abandoning the shared L that
-     makes them a family. */
+     makes them a family.
+
+     All FOUR are declared here, in one block, in both modes. Warning used to
+     sit thirty lines further down beside the -text variants, which is how it
+     came to be the only hue without a dark override: a regeneration that walks
+     "the status block" walks three of them and silently leaves the fourth
+     behind. Grouping is the fix, not a tidy-up. */
   --info: oklch(0.50 0.13 240);         /* blue — informational / "ask" mode */
   --success: oklch(0.50 0.17 145);      /* green — connected, ok */
   --destructive: oklch(0.50 0.24 28);   /* red — errors, denied */
+  /* 警告 must be visually distinct from 提示. Warning is the orange caution
+     hue (h55); info is now cool blue (h240), so the two tiers read as clearly
+     different families — no longer the near-identical ambers they once were. */
+  --warning: oklch(0.50 0.18 55);
 
   /* Legacy brand affordance for a few emphasized surfaces. New checked
      control states use --control instead.
@@ -220,11 +230,6 @@
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));
   --info-text: color-mix(in oklab, var(--info) 50%, var(--foreground));
-  /* 警告 must be visually distinct from 提示. Warning is the orange caution
-     hue (h55); info is now cool blue (h240), so the two tiers read as clearly
-     different families — no longer the near-identical ambers they once were.
-     Still derived nowhere else, safe across palettes. */
-  --warning: oklch(0.50 0.18 55);
   --warning-text: color-mix(in oklab, var(--warning) 50%, var(--foreground));
 
   /* === tinted status surfaces (visual system 2.0, T4) =================
@@ -977,14 +982,14 @@
   --link: var(--accent);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
+  /* All four together, same shape as the light block. Warning is the hue that
+     proves why: it was the ONE status without a dark override, so lowering the
+     light value to L=0.50 dragged dark down with it and put dark warning at
+     2.83:1, well under AA. Its measured 5.44:1 is restored, and the structure
+     that let it be missed is gone. */
   --info: oklch(0.74 0.13 240);         /* blue — see light-mode note */
   --success: oklch(0.60 0.17 145);
   --destructive: oklch(0.70 0.19 22);
-  /* Dark warning is stated here because --warning is the ONE status hue that
-     had no dark override: info, success and destructive each carry their own,
-     so lowering the light value to L=0.50 dragged dark down with it and put
-     dark warning at 2.83:1, well under AA. This restores its measured 5.44:1
-     and makes the family's dark half uniform in shape. */
   --warning: oklch(0.66 0.18 55);
 
   --opacity-overlay: 0.06;
