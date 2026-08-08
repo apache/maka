@@ -85,6 +85,7 @@
     "./provider-contract-matrix": "./dist/provider-contract-matrix.js",
     "./model-catalog": "./dist/model-catalog.js",
     "./model-metadata": "./dist/model-metadata.js",
+    "./model-pricing": "./dist/model-pricing.js",
     "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",
     "./chat-model-choice": "./dist/chat-model-choice.js",

@@ -502,16 +502,9 @@ describe('production Usage/Pricing UDS', () => {
         },
       ]);
 
-      const initial = requirePricingPage(
-        await desktop.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
-      );
-      assert.deepEqual(initial, {
-        kind: 'page',
-        revision: 0,
-        offset: 0,
-        entries: builtinPricingEntries(),
-        nextOffset: null,
-      });
+      const initial = await readPricing(desktop);
+      assert.equal(initial.revision, 0);
+      assert.deepEqual(initial.entries, builtinPricingEntries());
       const decomposedModelKey = 'e\u0301';
       const composedModelKey = '\u00e9';
       const candidates = [pricing(decomposedModelKey, 1), pricing(composedModelKey, 2)] as const;
@@ -781,16 +774,27 @@ async function readPricing(client: RuntimeHostConnection): Promise<{
   return { revision: first.revision, entries, pageCount };
 }
 
-async function readCoordinatorPricing(
-  coordinator: HostUsagePricingCoordinator,
-): Promise<Extract<PricingQueryResult, { kind: 'page' }>> {
-  const outcome = await coordinator.handlers['pricing.query'](
-    { kind: 'start' },
-    CONNECTION_CONTEXT,
-  );
-  assert.equal(outcome.ok, true);
-  if (!outcome.ok) throw new Error('Expected an effective pricing page');
-  return requirePricingPage(outcome.result);
+async function readCoordinatorPricing(coordinator: HostUsagePricingCoordinator): Promise<{
+  revision: number;
+  entries: readonly EffectivePricingEntry[];
+}> {
+  const query = async (
+    input: { kind: 'start' } | { kind: 'continue'; revision: number; offset: number },
+  ) => {
+    const outcome = await coordinator.handlers['pricing.query'](input, CONNECTION_CONTEXT);
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) throw new Error('Expected an effective pricing page');
+    return requirePricingPage(outcome.result);
+  };
+  const first = await query({ kind: 'start' });
+  const entries = [...first.entries];
+  let nextOffset = first.nextOffset;
+  while (nextOffset !== null) {
+    const page = await query({ kind: 'continue', revision: first.revision, offset: nextOffset });
+    entries.push(...page.entries);
+    nextOffset = page.nextOffset;
+  }
+  return { revision: first.revision, entries };
 }
 
 function builtinPricingEntries(): readonly EffectivePricingEntry[] {
