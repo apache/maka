@@ -1145,6 +1145,24 @@ test('stops before reading tool-result values that cannot fit', async () => {
   }
 });
 
+test('stops before inspecting tool-result containers that cannot fit', async () => {
+  let inspections = 0;
+  const value = new Proxy(
+    {},
+    {
+      ownKeys: (target) => {
+        inspections += 1;
+        return Reflect.ownKeys(target);
+      },
+    },
+  );
+  const result = await executeToolResult(value, { maxResultBytes: 1 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+  assert.equal(inspections, 0);
+});
+
 test('reserves remaining structure before reading tool-result values', async () => {
   let siblingReads = 0;
   const siblings = [0, 0];

@@ -2120,6 +2120,7 @@ function materializePlainData(value: unknown, options: MaterializationOptions): 
     if (typeof current !== 'object') {
       throw new InterpreterError('invalid_data', `${options.label} contains a non-data value`);
     }
+    ensureBytes(2 + requiredAfter);
     nodes += 1;
     if (nodes > MAX_COPY_NODES) {
       throw new InterpreterError('limit_exceeded', `${options.label} traversal limit exceeded`);
@@ -2157,7 +2158,6 @@ function materializePlainData(value: unknown, options: MaterializationOptions): 
       }
       for (const key of keys) assertSafeKey(key);
       const output: Record<string, unknown> = {};
-      ensureBytes(2 + requiredAfter);
       addBytes(1);
       let emitted = 0;
       for (const key of keys) {
