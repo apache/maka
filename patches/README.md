@@ -6,7 +6,7 @@ After bumping a patched dependency, re-run `npx patch-package <name>` so the fil
 
 Every patch needs a reason and a deletion condition, and that is all this file carries — the derivation belongs in the guard test, and the measurements in the upstream issue.
 
-Patch every runtime entrypoint the repository actually resolves. Node and TypeScript normally use `dist/`; the desktop includes the patch contents in Vite's dependency-cache key so a lockfile-stable patch update forces fresh optimization without splitting package entrypoints into separate module instances. A renderer behavior patch therefore keeps source, JavaScript, and declarations paired. The `.map` files stay stale.
+Patch every runtime entrypoint the repository actually resolves. Node, TypeScript, and the desktop currently use `dist/`; the desktop includes the patch contents in Vite's dependency-cache key so a lockfile-stable patch update forces fresh optimization without splitting package entrypoints into separate module instances. When a patch also changes the matching vendored source, keep that behavior aligned with JavaScript and declarations. This does not make Astryx's separate `source` export a supported Maka build mode: older dist-only patches remain. The `.map` files stay stale.
 
 ## `@ai-sdk/provider-utils`: a tool-call delta must agree with the call it continues
 
@@ -44,7 +44,7 @@ Some tool calls produce a durable surface rather than inline detail. A linked su
 
 The patch adds generic per-call `onActivate` and `activateLabel` fields plus a stable row slot. An activatable row uses the existing hover and keyboard treatment, includes the action in its accessible name without replacing the visible status and error text, and shows Astryx's `externalLink` icon; activation takes precedence over inline detail. The row slot lets product typography stay consistent without pretending that an unlinked row is interactive. Maka keeps activation and inline detail mutually exclusive.
 
-Patch-package does not change `package-lock.json`, so desktop development hashes the patch contents into a Vite plugin name. Vite includes plugin names in its dependency-cache key; a changed patch therefore invalidates the old `ChatToolCalls` while every Astryx entry remains in the same optimized module graph.
+Patch-package does not change `package-lock.json`, so the desktop app and Storybook hash the patch contents into a Vite plugin name. Vite includes plugin names in its dependency-cache key; a changed patch therefore invalidates the old `ChatToolCalls` while every Astryx entry remains in the same optimized module graph.
 
 **Delete it when `packages/ui/src/__tests__/subagent-open-session.test.tsx` and the desktop CU path pass without the patch** — linked subagent rows must be directly activatable without a Maka-owned nested card in both Node and Vite resolution modes.
 

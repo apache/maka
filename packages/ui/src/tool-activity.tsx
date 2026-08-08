@@ -370,11 +370,7 @@ function linkedAgentCalls(
     return {
       key: `${item.toolUseId}:${child.itemId}`,
       name,
-      status: !child.started
-        ? 'pending'
-        : child.status === 'completed'
-          ? 'complete'
-          : 'error',
+      status: child.status === 'completed' ? 'complete' : 'error',
       node: redactSecrets(child.profile),
       target: boundedAgentSummary(child.summary),
       duration: formatDuration(child.durationMs) ?? undefined,
