@@ -104,6 +104,12 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // The column resize handle's hit area (Resizable/ResizeHandle themeProps).
   // sidebar.css styles the sidenav handle's own line through it.
   'astryx-resize-handle',
+  // Astryx's shared floating-layer surface. Unlike the entries above this is
+  // not a themeProps class — Astryx labels no hook there — so it is added by
+  // patches/@astryxdesign+core+0.3.0.patch purely so DESIGN.md §5's Floating
+  // Recipe has one place to attach (astryx-mount.css). It leaves with the
+  // patch; see patches/README.md for the exit condition.
+  'astryx-layer-surface',
   // A form field's outer box (Field themeProps). module-shell.css gives up the
   // vendor's tuned control widths inside the module page's control bar once the
   // column is narrower than they are.

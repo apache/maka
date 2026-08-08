@@ -71,7 +71,7 @@ index ea27cd5..6daf0d8 100644
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts
-index 7bece68..94b8001 100644
+index 7bece68..a8f5e93 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.d.ts
 @@ -45,6 +45,10 @@ export interface ChatToolCallItem {
@@ -102,7 +102,7 @@ index 7bece68..94b8001 100644
      isExpanded?: boolean;
      /** Default expanded state. @default true for ≤3 calls, false for >3. */
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-index 791909e..febce87 100644
+index 791909e..a868491 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 @@ -107,20 +107,24 @@ function CallRow({
@@ -274,6 +274,28 @@ index 08b5f7d..94c623b 100644
      "aria-labelledby": header != null ? headerId : undefined,
      ...(isOrdered && start != null && start !== 1 ? {
        start
+diff --git a/node_modules/@astryxdesign/core/dist/Popover/usePopover.js b/node_modules/@astryxdesign/core/dist/Popover/usePopover.js
+index 0df806d..31e1a91 100644
+--- a/node_modules/@astryxdesign/core/dist/Popover/usePopover.js
++++ b/node_modules/@astryxdesign/core/dist/Popover/usePopover.js
+@@ -193,7 +193,16 @@ export function usePopover(options = {}) {
+       role: role === 'dialog' ? 'dialog' : undefined,
+       "aria-modal": role === 'dialog' && isModal ? true : undefined,
+       "aria-label": role === 'dialog' ? dialogLabel : undefined,
+-      ...stylex.props(styles.contentWrapper, hasSurface && styles.surface, xstyle),
++      ...(() => {
++        // maka patch: tag the floating surface so the product can apply
++        // DESIGN.md §5's Floating Recipe in ONE place. Adds a class name only —
++        // no values are decided here. See patches/README for the exit condition.
++        const surfaceProps = stylex.props(styles.contentWrapper, hasSurface && styles.surface, xstyle);
++        if (hasSurface) {
++          surfaceProps.className = `${surfaceProps.className || ''} astryx-layer-surface`.trim();
++        }
++        return surfaceProps;
++      })(),
+       children: [children, hasCloseButton && /*#__PURE__*/_jsx("div", {
+         ...stylex.props(styles.closeButtonWrapper, rtlStyles.centerInline('100%')),
+         children: /*#__PURE__*/_jsx(Button, {
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 index 65f9278..c2e72d1 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
@@ -306,7 +328,7 @@ index 234a2e4..bee69b4 100644
 +  /** Accessible name for an activatable row. */
 +  activateLabel?: string;
  }
-
+ 
  export interface ChatToolCallsProps extends BaseProps<HTMLDivElement> {
 @@ -366,32 +370,36 @@ function getToolCallKey(call: ChatToolCallItem): string {
  function CallRow({call}: {call: ChatToolCallItem}) {
@@ -317,12 +339,12 @@ index 234a2e4..bee69b4 100644
 +  const interactive = hasActivation || hasDetail;
    const [isDetailOpen, setIsDetailOpen] = useState(false);
    const detailId = useId();
-
+ 
    const toggleDetail = hasDetail
      ? () => setIsDetailOpen(prev => !prev)
      : undefined;
 +  const activate = hasActivation ? call.onActivate : toggleDetail;
-
+ 
    const row = (
      <div
 -      role={hasDetail ? 'button' : undefined}
@@ -362,7 +384,7 @@ index 234a2e4..bee69b4 100644
          <span
            {...stylex.props(
              styles.callDetailChevron,
-@@ -459,9 +467,12 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+@@ -459,10 +467,13 @@ function CallRow({call}: {call: ChatToolCallItem}) {
            <Icon icon="chevronDown" size="xsm" color="inherit" />
          </span>
        )}
@@ -371,8 +393,9 @@ index 234a2e4..bee69b4 100644
 +      )}
      </div>
    );
-
+ 
 -  if (!hasDetail) {
 +  if (hasActivation || !hasDetail) {
      return row;
    }
+ 

@@ -122,7 +122,7 @@ Three strengths, each a job, spaced at ~1.6× like the ink ladder:
 Default surfaces are flat. Depth comes first from the surface ladder, then a line, then shadow only when an element genuinely floats above the plane.
 
 - Product elevation names alias the theme scale: `--elevation-raised` (low), `--elevation-overlay` (med), `--elevation-drag` (high). A scale only gets used when product code can name it — the theme shipped three shadows for months and product CSS consumed one, because the names meant nothing at a call site.
-- **The Floating Recipe.** Every portal surface (menu, popover, dialog, toast) is: `--surface-overlay` fill + `--border-soft` ring + `--elevation-overlay` + `overflow: hidden` + container radius. No portal invents its own mix.
+- **The Floating Recipe.** Every portal surface (menu, popover, dialog, toast) is: `--surface-overlay` fill + `--border-soft` ring + `--elevation-overlay` + `overflow: hidden` + container radius. No portal invents its own mix. The recipe is currently enforced on Astryx's shared layer surface through a vendor patch that adds a hook class and decides no values — a transitional implementation with a stated exit condition (`patches/README.md`), not a second styling path. Tooltips are out of scope: a transient label is not a surface that holds content.
 - Dark mode relies on tone and rings before shadow. Neon edges and lifted-everything styling are forbidden.
 - Native shell vibrancy is allowed only in designated material; generic glassmorphism is not.
 

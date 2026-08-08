@@ -64,3 +64,11 @@ a non-blank value keeps deciding exactly as before.
 (the "blank UA-CH" test, which fakes `platform: ''` + `MacIntel` via an init
 script) passes without the patch — that means Astryx's own probe learned to
 distrust the blank.
+
+## `@astryxdesign/core`: the shared layer surface needs a hook so one floating recipe can reach it
+
+DESIGN.md §5 states one recipe for every portal: `--surface-overlay` fill + `--border-soft` ring + `--elevation-overlay` + `overflow: hidden` + container radius. Astryx's shared layer surface supplies the fill and the radius and hardcodes the rest against it — `styles.surface` reaches for the LOW shadow atom, which is `--elevation-raised`, so every menu, popover and dialog floated with a plate's shadow; there is no ring; and `overflow: visible` lets content corners escape the radius the surface just drew. The surface is an anonymous wrapper outside `[role=menu]` and carries no themeProps label, so the product had nothing to select and each portal would otherwise re-invent the mix — which is the one thing the recipe exists to prevent.
+
+The patch adds a class name and nothing else: `astryx-layer-surface` on the wrapper when `hasSurface` is set. It decides no values. The recipe lives in `apps/desktop/src/renderer/styles/astryx-mount.css`, where it is reviewable and where DESIGN.md puts product compositions. Tooltips are out of scope and need no exclusion — Astryx builds them from a different style object, so they never receive the class.
+
+**Delete it when `apps/desktop/e2e/floating-recipe.spec.ts` passes without the patch.** That guard asserts the rendered result (ring present, container radius, clipping, overlay-tier shadow) rather than the hook, so an Astryx release that ships the recipe itself — or exposes themeProps on the layer surface, at which point re-point the selector instead — turns it green with the patch removed. Upstream ask: stable themeProps on the layer surface.
