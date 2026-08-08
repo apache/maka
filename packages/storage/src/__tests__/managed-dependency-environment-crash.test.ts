@@ -73,7 +73,7 @@ for (const failpoint of [
       await readFile(join(lease.dependencyRoot, 'fixture-package', 'index.js'), 'utf8'),
       'safe\n',
     );
-    assert.equal(provisionCalls, failpoint === 'after_environment_publish' ? 0 : 1);
+    assert.equal(provisionCalls, failpoint === 'after_environment_receipt_durable' ? 0 : 1);
     assert.deepEqual(
       await readdir(join(storageRoot, 'managed-workspaces', 'dependency-environments', '.staging')),
       [],

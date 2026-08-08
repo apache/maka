@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { createRequire } from 'node:module';
 import {
   lstat,
   mkdir,
@@ -15,10 +17,11 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, posix, relative, resolve } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 
 const MANAGED_DEPENDENCY_IDENTITY_DOMAIN = 'maka.managed_dependency_environment.v1\0';
 const MANAGED_DEPENDENCY_TREE_DOMAIN = 'maka.managed_dependency_environment.tree.v1\0';
-const RECEIPT_FILE = 'environment-receipt.json';
+const AUTHORITY_DATABASE_NAME = 'dependency-environment-authority-v1.sqlite';
 const DEPENDENCY_ROOT_NAME = 'node_modules';
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const MANAGED_DEPENDENCY_PRODUCER_POLICY_DOMAIN =
@@ -51,7 +54,9 @@ const RECEIPT_KEYS = [
   'dependencyRootName',
   'contentTreeSha256',
   'contentBytes',
+  'contentEntries',
 ] as const;
+const require = createRequire(import.meta.url);
 
 export type ManagedDependencyPackageManager = 'npm' | 'pnpm' | 'yarn';
 
@@ -104,8 +109,10 @@ export interface ManagedDependencyEnvironmentProducerCapabilityV1 {
 export interface ManagedDependencyEnvironmentProducerInput {
   readonly identity: ManagedDependencyEnvironmentIdentityV1;
   readonly outputRoot: string;
+  readonly scratchRoot: string;
   readonly manifestBytes: Uint8Array;
   readonly lockfileBytes: Uint8Array;
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface ManagedDependencyEnvironmentProducer {
@@ -148,6 +155,7 @@ export type ManagedDependencyEnvironmentFailpoint =
 export interface AcquireManagedDependencyEnvironmentInput {
   readonly manifestBytes: Uint8Array;
   readonly lockfileBytes: Uint8Array;
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface ManagedDependencyEnvironmentLease {
@@ -168,11 +176,126 @@ interface ManagedDependencyEnvironmentReceiptV1 extends ManagedDependencyEnviron
   readonly dependencyRootName: typeof DEPENDENCY_ROOT_NAME;
   readonly contentTreeSha256: `sha256:${string}`;
   readonly contentBytes: number;
+  readonly contentEntries: number;
 }
 
 interface PublishedManagedDependencyEnvironment {
   readonly receipt: ManagedDependencyEnvironmentReceiptV1;
   readonly dependencyRoot: string;
+}
+
+interface DependencyReceiptAuthority {
+  read(digest: string): ManagedDependencyEnvironmentReceiptV1 | undefined;
+  list(): readonly ManagedDependencyEnvironmentReceiptV1[];
+  write(receipt: ManagedDependencyEnvironmentReceiptV1): void;
+  delete(digest: string): void;
+  close(): void;
+}
+
+function openDependencyReceiptAuthority(path: string): DependencyReceiptAuthority {
+  const Database = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+  const database: DatabaseSync = new Database(path);
+  database.exec('PRAGMA synchronous = FULL');
+  const version = Number(
+    (database.prepare('PRAGMA user_version').get() as { user_version?: unknown }).user_version,
+  );
+  if (version !== 0 && version !== 1) {
+    database.close();
+    throw new Error(`Unsupported managed dependency receipt authority version ${version}`);
+  }
+  database.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE IF NOT EXISTS managed_dependency_environment_receipts (
+      environment_digest TEXT PRIMARY KEY NOT NULL CHECK (
+        length(environment_digest) = 64 AND
+        environment_digest NOT GLOB '*[^0-9a-f]*'
+      ),
+      receipt_json TEXT NOT NULL
+    ) STRICT;
+    PRAGMA user_version = 1;
+    COMMIT;
+  `);
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) throw new Error('Managed dependency receipt authority is closed');
+  };
+  return Object.freeze({
+    read(digest: string) {
+      assertOpen();
+      requireDigest(digest);
+      const row = database
+        .prepare(
+          'SELECT receipt_json FROM managed_dependency_environment_receipts WHERE environment_digest = ?',
+        )
+        .get(digest) as { receipt_json?: unknown } | undefined;
+      if (!row) return undefined;
+      if (typeof row.receipt_json !== 'string') {
+        throw new Error('Managed dependency receipt authority contains an invalid row');
+      }
+      return decodeReceipt(JSON.parse(row.receipt_json));
+    },
+    list() {
+      assertOpen();
+      return Object.freeze(
+        (
+          database
+            .prepare(
+              'SELECT environment_digest, receipt_json FROM managed_dependency_environment_receipts ORDER BY environment_digest',
+            )
+            .all() as Array<{ environment_digest?: unknown; receipt_json?: unknown }>
+        ).map((row) => {
+          if (
+            typeof row.environment_digest !== 'string' ||
+            typeof row.receipt_json !== 'string'
+          ) {
+            throw new Error('Managed dependency receipt authority contains an invalid row');
+          }
+          const receipt = decodeReceipt(JSON.parse(row.receipt_json));
+          if (receipt.environmentId !== `sha256:${row.environment_digest}`) {
+            throw new Error('Managed dependency receipt row does not match its payload identity');
+          }
+          return receipt;
+        }),
+      );
+    },
+    write(receipt: ManagedDependencyEnvironmentReceiptV1) {
+      assertOpen();
+      const digest = receipt.environmentId.slice('sha256:'.length);
+      requireDigest(digest);
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        database
+          .prepare(
+            'INSERT INTO managed_dependency_environment_receipts (environment_digest, receipt_json) VALUES (?, ?)',
+          )
+          .run(digest, JSON.stringify(receipt));
+        database.exec('COMMIT');
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      }
+    },
+    delete(digest: string) {
+      assertOpen();
+      requireDigest(digest);
+      database
+        .prepare(
+          'DELETE FROM managed_dependency_environment_receipts WHERE environment_digest = ?',
+        )
+        .run(digest);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      database.close();
+    },
+  });
+}
+
+function requireDigest(value: string): void {
+  if (!/^[0-9a-f]{64}$/u.test(value)) {
+    throw new Error('Managed dependency receipt digest is invalid');
+  }
 }
 
 export function computeManagedDependencyEnvironmentIdentity(
@@ -244,21 +367,38 @@ export async function createManagedDependencyEnvironmentAuthority(
     'managed-workspaces',
     'dependency-environments',
   );
+  const authorityDatabasePath = join(
+    canonicalStorageRoot,
+    'managed-workspaces',
+    AUTHORITY_DATABASE_NAME,
+  );
   const stagingRoot = join(environmentsRoot, '.staging');
   const maxCacheBytes = input.maxCacheBytes ?? 2 * 1024 * 1024 * 1024;
   if (!Number.isSafeInteger(maxCacheBytes) || maxCacheBytes < 0) {
     throw new TypeError('Managed dependency cache quota must be a non-negative safe integer');
   }
-  await mkdir(stagingRoot, { recursive: true });
+  await Promise.all([
+    ensureOwnedDirectory(environmentsRoot, canonicalStorageRoot),
+  ]);
+  await ensureOwnedDirectory(stagingRoot, environmentsRoot);
   await cleanupOrphanStaging(stagingRoot);
+  const receiptAuthority = openDependencyReceiptAuthority(authorityDatabasePath);
+  try {
+    await cleanupIncompletePublications(environmentsRoot, receiptAuthority);
+  } catch (error) {
+    receiptAuthority.close();
+    throw error;
+  }
   const inflight = new Map<string, Promise<PublishedManagedDependencyEnvironment>>();
   const leaseCounts = new Map<string, number>();
+  const pendingCounts = new Map<string, number>();
   let closed = false;
   let gcTask = Promise.resolve();
 
   const authority: ManagedDependencyEnvironmentAuthority = {
     async acquire(identity, source) {
       if (closed) throw new Error('Managed dependency environment authority is closed');
+      assertCanonicalIdentity(identity, source);
       if (
         identity.packageManagerName !== input.producer.packageManagerName ||
         identity.packageManagerVersion !== input.producer.packageManagerVersion ||
@@ -274,22 +414,29 @@ export async function createManagedDependencyEnvironmentAuthority(
       }
       assertSourceMatchesIdentity(identity, source);
       const digest = identity.environmentId.slice('sha256:'.length);
-      let task = inflight.get(digest);
-      if (!task) {
-        task = openOrPublishEnvironment({
-          environmentsRoot,
-          stagingRoot,
-          identity,
-          source,
-          producer: input.producer,
-          failpoint: input.failpoint,
-        }).finally(() => inflight.delete(digest));
-        inflight.set(digest, task);
+      pendingCounts.set(digest, (pendingCounts.get(digest) ?? 0) + 1);
+      let artifact: PublishedManagedDependencyEnvironment;
+      try {
+        let task = inflight.get(digest);
+        if (!task) {
+          task = openOrPublishEnvironment({
+            environmentsRoot,
+            receiptAuthority,
+            stagingRoot,
+            identity,
+            source,
+            producer: input.producer,
+            failpoint: input.failpoint,
+          }).finally(() => inflight.delete(digest));
+          inflight.set(digest, task);
+        }
+        artifact = await task;
+        const now = new Date();
+        await utimes(dirname(artifact.dependencyRoot), now, now);
+        leaseCounts.set(digest, (leaseCounts.get(digest) ?? 0) + 1);
+      } finally {
+        decrementCount(pendingCounts, digest);
       }
-      const artifact = await task;
-      const now = new Date();
-      await utimes(dirname(artifact.dependencyRoot), now, now);
-      leaseCounts.set(digest, (leaseCounts.get(digest) ?? 0) + 1);
       let released = false;
       return Object.freeze({
         environmentId: identity.environmentId,
@@ -300,11 +447,13 @@ export async function createManagedDependencyEnvironmentAuthority(
           const remaining = (leaseCounts.get(digest) ?? 1) - 1;
           if (remaining > 0) leaseCounts.set(digest, remaining);
           else leaseCounts.delete(digest);
-          gcTask = gcTask.then(() =>
+          gcTask = gcTask.catch(() => undefined).then(() =>
             collectEnvironmentGarbage({
               environmentsRoot,
+              receiptAuthority,
               maxCacheBytes,
               leaseCounts,
+              pendingCounts,
               protectedDigest: digest,
             }),
           );
@@ -316,11 +465,18 @@ export async function createManagedDependencyEnvironmentAuthority(
       if (closed) return;
       closed = true;
       await Promise.allSettled(inflight.values());
-      await gcTask;
+      let gcError: unknown;
+      try {
+        await gcTask;
+      } catch (error) {
+        gcError = error;
+      }
       if (leaseCounts.size > 0) {
         closed = false;
         throw new Error('Managed dependency environment authority still has active leases');
       }
+      receiptAuthority.close();
+      if (gcError) throw gcError;
     },
   };
   return Object.freeze(authority);
@@ -328,6 +484,7 @@ export async function createManagedDependencyEnvironmentAuthority(
 
 async function openOrPublishEnvironment(input: {
   readonly environmentsRoot: string;
+  readonly receiptAuthority: DependencyReceiptAuthority;
   readonly stagingRoot: string;
   readonly identity: ManagedDependencyEnvironmentIdentityV1;
   readonly source: AcquireManagedDependencyEnvironmentInput;
@@ -335,42 +492,76 @@ async function openOrPublishEnvironment(input: {
   readonly failpoint?: (point: ManagedDependencyEnvironmentFailpoint) => void | Promise<void>;
 }): Promise<PublishedManagedDependencyEnvironment> {
   const digest = input.identity.environmentId.slice('sha256:'.length);
-  const artifactRoot = join(input.environmentsRoot, digest);
-  const existing = await openPublishedEnvironment(artifactRoot, input.identity);
+  const artifactRoot = publicationPath(input.environmentsRoot, digest);
+  const existing = await openPublishedEnvironment(
+    artifactRoot,
+    input.environmentsRoot,
+    input.receiptAuthority,
+    input.identity,
+  );
   if (existing) return existing;
 
-  const staging = join(input.stagingRoot, `${digest}-${randomUUID()}`);
-  const dependencyRoot = join(staging, DEPENDENCY_ROOT_NAME);
-  await mkdir(dependencyRoot, { recursive: true });
+  const transactionRoot = join(input.stagingRoot, `${digest}-${randomUUID()}`);
+  const producerRoot = join(transactionRoot, 'producer');
+  const projectRoot = join(producerRoot, 'project');
+  const producerOutputRoot = join(projectRoot, DEPENDENCY_ROOT_NAME);
+  const scratchRoot = join(projectRoot, '.maka-runtime');
+  const artifactStagingRoot = join(transactionRoot, 'artifact');
+  const dependencyRoot = join(artifactStagingRoot, DEPENDENCY_ROOT_NAME);
+  await Promise.all([
+    mkdir(producerOutputRoot, { recursive: true }),
+    mkdir(scratchRoot, { recursive: true }),
+    mkdir(artifactStagingRoot, { recursive: true }),
+  ]);
   try {
     await input.producer.provision({
       identity: input.identity,
-      outputRoot: dependencyRoot,
+      outputRoot: producerOutputRoot,
+      scratchRoot,
       manifestBytes: input.source.manifestBytes,
       lockfileBytes: input.source.lockfileBytes,
+      ...(input.source.abortSignal ? { abortSignal: input.source.abortSignal } : {}),
     });
+    const canonicalOutput = await realpath(producerOutputRoot);
+    if (!isPathWithin(canonicalOutput, producerRoot)) {
+      throw new Error('Managed dependency producer output escapes its staging authority');
+    }
+    await rename(producerOutputRoot, dependencyRoot);
+    await rm(producerRoot, { recursive: true, force: true });
     const content = await hashDependencyTree(dependencyRoot);
     const receipt: ManagedDependencyEnvironmentReceiptV1 = Object.freeze({
       ...input.identity,
       dependencyRootName: DEPENDENCY_ROOT_NAME,
       contentTreeSha256: content.sha256,
       contentBytes: content.bytes,
+      contentEntries: content.entries,
     });
-    await writeFile(join(staging, RECEIPT_FILE), `${JSON.stringify(receipt)}\n`, {
-      encoding: 'utf8',
-      flag: 'wx',
-    });
-    await syncFile(join(staging, RECEIPT_FILE));
-    await syncDirectory(staging);
-    await input.failpoint?.('after_environment_receipt_durable');
-    await rename(staging, artifactRoot);
+    await syncDirectory(artifactStagingRoot);
+    await rename(artifactStagingRoot, artifactRoot);
     await syncDirectory(input.environmentsRoot);
     await input.failpoint?.('after_environment_publish');
-    return await requirePublishedEnvironment(artifactRoot, input.identity);
+    input.receiptAuthority.write(receipt);
+    await input.failpoint?.('after_environment_receipt_durable');
+    await rm(transactionRoot, { recursive: true, force: true });
+    return await requirePublishedEnvironment(
+      artifactRoot,
+      input.environmentsRoot,
+      input.receiptAuthority,
+      input.identity,
+    );
   } catch (error) {
-    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
-    const raced = await openPublishedEnvironment(artifactRoot, input.identity);
+    await rm(transactionRoot, { recursive: true, force: true }).catch(() => undefined);
+    const raced = await openPublishedEnvironment(
+      artifactRoot,
+      input.environmentsRoot,
+      input.receiptAuthority,
+      input.identity,
+    );
     if (raced) return raced;
+    const receiptExists = input.receiptAuthority.read(digest) !== undefined;
+    if (!receiptExists) {
+      await rm(artifactRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
     throw error;
   }
 }
@@ -387,12 +578,80 @@ async function cleanupOrphanStaging(stagingRoot: string): Promise<void> {
   }
 }
 
+async function ensureOwnedDirectory(path: string, parentRoot: string): Promise<string> {
+  await mkdir(path, { recursive: true });
+  const info = await lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error('Managed dependency authority path is not an owned directory');
+  }
+  const canonical = normalize(await realpath(path));
+  const canonicalParent = normalize(await realpath(parentRoot));
+  if (!isPathWithin(canonical, canonicalParent)) {
+    throw new Error('Managed dependency authority path escapes its storage root');
+  }
+  return canonical;
+}
+
+async function cleanupIncompletePublications(
+  environmentsRoot: string,
+  receiptAuthority: DependencyReceiptAuthority,
+): Promise<void> {
+  const receipts = new Set<string>();
+  for (const receipt of receiptAuthority.list()) {
+    const digest = receipt.environmentId.slice('sha256:'.length);
+    if (receipt.environmentId !== `sha256:${digest}`) {
+      throw new Error('Managed dependency authority receipt has the wrong identity');
+    }
+    receipts.add(digest);
+  }
+  const artifacts = new Set<string>();
+  for (const entry of await readdir(environmentsRoot, { withFileTypes: true })) {
+    if (entry.name === '.staging') continue;
+    if (!entry.isDirectory() || !/^[0-9a-f]{64}$/u.test(entry.name)) {
+      throw new Error('Managed dependency cache contains an unowned entry');
+    }
+    const info = await lstat(join(environmentsRoot, entry.name));
+    if (info.isSymbolicLink()) {
+      throw new Error('Managed dependency cache contains a reparse point');
+    }
+    artifacts.add(entry.name);
+  }
+  for (const digest of artifacts) {
+    if (!receipts.has(digest)) {
+      await rm(join(environmentsRoot, digest), { recursive: true, force: true });
+    }
+  }
+  for (const digest of receipts) {
+    if (!artifacts.has(digest)) {
+      receiptAuthority.delete(digest);
+    }
+  }
+}
+
+function publicationPath(environmentsRoot: string, digest: string) {
+  if (!/^[0-9a-f]{64}$/u.test(digest)) {
+    throw new Error('Managed dependency environment identity is not a canonical SHA-256 digest');
+  }
+  const artifactRoot = join(environmentsRoot, digest);
+  if (!isPathWithin(artifactRoot, environmentsRoot)) {
+    throw new Error('Managed dependency publication path escapes its authority root');
+  }
+  return artifactRoot;
+}
+
 async function openPublishedEnvironment(
   artifactRoot: string,
+  environmentsRoot: string,
+  receiptAuthority: DependencyReceiptAuthority,
   identity: ManagedDependencyEnvironmentIdentityV1,
 ): Promise<PublishedManagedDependencyEnvironment | undefined> {
   try {
-    return await requirePublishedEnvironment(artifactRoot, identity);
+    return await requirePublishedEnvironment(
+      artifactRoot,
+      environmentsRoot,
+      receiptAuthority,
+      identity,
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
@@ -401,14 +660,24 @@ async function openPublishedEnvironment(
 
 async function requirePublishedEnvironment(
   artifactRoot: string,
+  environmentsRoot: string,
+  receiptAuthority: DependencyReceiptAuthority,
   identity: ManagedDependencyEnvironmentIdentityV1,
 ): Promise<PublishedManagedDependencyEnvironment> {
   const artifactInfo = await lstat(artifactRoot);
   if (!artifactInfo.isDirectory() || artifactInfo.isSymbolicLink()) {
     throw new Error('Managed dependency environment artifact root is not an owned directory');
   }
-  const raw = await readFile(join(artifactRoot, RECEIPT_FILE), 'utf8');
-  const receipt = decodeReceipt(JSON.parse(raw));
+  const canonicalArtifactRoot = normalize(await realpath(artifactRoot));
+  if (!isPathWithin(canonicalArtifactRoot, environmentsRoot)) {
+    throw new Error('Managed dependency environment artifact escapes its authority root');
+  }
+  const artifactEntries = await readdir(artifactRoot);
+  if (artifactEntries.length !== 1 || artifactEntries[0] !== DEPENDENCY_ROOT_NAME) {
+    throw new Error('Managed dependency environment artifact contains an unowned entry');
+  }
+  const receipt = receiptAuthority.read(identity.environmentId.slice('sha256:'.length));
+  if (!receipt) throw Object.assign(new Error('Managed dependency receipt is unavailable'), { code: 'ENOENT' });
   if (!sameIdentity(receipt, identity)) {
     throw new Error('Managed dependency environment receipt identity does not match the request');
   }
@@ -418,7 +687,11 @@ async function requirePublishedEnvironment(
     throw new Error('Managed dependency environment content root is unavailable');
   }
   const content = await hashDependencyTree(dependencyRoot);
-  if (content.sha256 !== receipt.contentTreeSha256 || content.bytes !== receipt.contentBytes) {
+  if (
+    content.sha256 !== receipt.contentTreeSha256 ||
+    content.bytes !== receipt.contentBytes ||
+    content.entries !== receipt.contentEntries
+  ) {
     throw new Error('Managed dependency environment content does not match its receipt');
   }
   return Object.freeze({ receipt, dependencyRoot: await realpath(dependencyRoot) });
@@ -436,26 +709,63 @@ function assertSourceMatchesIdentity(
   }
 }
 
+function assertCanonicalIdentity(
+  identity: ManagedDependencyEnvironmentIdentityV1,
+  source: AcquireManagedDependencyEnvironmentInput,
+): void {
+  const expected = computeManagedDependencyEnvironmentIdentity({
+    manifestPath: identity.manifestPath,
+    manifestBytes: source.manifestBytes,
+    lockfilePath: identity.lockfilePath,
+    lockfileBytes: source.lockfileBytes,
+    packageManagerName: identity.packageManagerName,
+    packageManagerVersion: identity.packageManagerVersion,
+    nodeVersion: identity.nodeVersion,
+    nodeAbi: identity.nodeAbi,
+    platform: identity.platform,
+    arch: identity.arch,
+    producerRuntimeIdentitySha256: identity.producerRuntimeIdentitySha256,
+    producerPolicyIdentitySha256: identity.producerPolicyIdentitySha256,
+    policyVersion: identity.policyVersion,
+  });
+  if (!sameEnvironmentIdentity(expected, identity)) {
+    throw new Error('Managed dependency environment identity is not canonical');
+  }
+}
+
 async function hashDependencyTree(
   root: string,
-): Promise<{ readonly sha256: `sha256:${string}`; readonly bytes: number }> {
+): Promise<{
+  readonly sha256: `sha256:${string}`;
+  readonly bytes: number;
+  readonly entries: number;
+}> {
   const hash = createHash('sha256');
-  const counter = { bytes: 0 };
+  const counter = { bytes: 0, entries: 0 };
   hash.update(MANAGED_DEPENDENCY_TREE_DOMAIN);
   await hashDirectory(root, '', hash, counter);
-  return Object.freeze({ sha256: `sha256:${hash.digest('hex')}`, bytes: counter.bytes });
+  if (process.platform === 'win32') await assertNoWindowsAlternateStreams(root);
+  return Object.freeze({
+    sha256: `sha256:${hash.digest('hex')}`,
+    bytes: counter.bytes,
+    entries: counter.entries,
+  });
 }
 
 async function hashDirectory(
   root: string,
   relativeRoot: string,
   hash: ReturnType<typeof createHash>,
-  counter: { bytes: number },
+  counter: { bytes: number; entries: number },
 ) {
   const directory = relativeRoot ? join(root, relativeRoot) : root;
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)));
   for (const entry of entries) {
+    if (entry.name.includes(':') || entry.name.includes('\0')) {
+      throw new Error('Managed dependency environment contains a non-portable path');
+    }
+    counter.entries += 1;
     const relativePath = relativeRoot ? join(relativeRoot, entry.name) : entry.name;
     const portablePath = relativePath.replaceAll('\\', '/');
     const absolutePath = join(root, relativePath);
@@ -474,6 +784,9 @@ async function hashDirectory(
       continue;
     }
     if (entry.isSymbolicLink()) {
+      if (process.platform === 'win32') {
+        throw new Error('Managed dependency environment contains a Windows reparse point');
+      }
       const target = await readlink(absolutePath);
       if (isAbsolute(target) || !isPathWithin(resolve(dirname(absolutePath), target), root)) {
         throw new Error('Managed dependency environment contains an escaping symbolic link');
@@ -483,6 +796,53 @@ async function hashDirectory(
     }
     throw new Error('Managed dependency environment contains an unsupported filesystem entry');
   }
+}
+
+async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  if (!systemRoot) {
+    throw new Error('Cannot verify Windows alternate streams without SystemRoot');
+  }
+  const powershell = join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$root = $env:MAKA_ADS_ROOT',
+    '$items = @((Get-Item -LiteralPath $root -Force)) + @(Get-ChildItem -LiteralPath $root -Force -Recurse)',
+    'foreach ($item in $items) {',
+    '  $streams = @(Get-Item -LiteralPath $item.FullName -Stream * -ErrorAction SilentlyContinue)',
+    '  foreach ($stream in $streams) {',
+    "    if ($stream.Stream -ne ':$DATA') { throw 'alternate data stream detected' }",
+    '  }',
+    '}',
+  ].join('; ');
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    execFile(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      {
+        windowsHide: true,
+        timeout: 30_000,
+        env: { SystemRoot: systemRoot, WINDIR: systemRoot, MAKA_ADS_ROOT: root },
+      },
+      (error) => {
+        if (error) {
+          rejectPromise(
+            new Error('Managed dependency environment contains an alternate data stream', {
+              cause: error,
+            }),
+          );
+        } else {
+          resolvePromise();
+        }
+      },
+    );
+  });
 }
 
 function isPathWithin(candidate: string, root: string): boolean {
@@ -507,6 +867,9 @@ function decodeReceipt(value: unknown): ManagedDependencyEnvironmentReceiptV1 {
     typeof receipt.contentBytes !== 'number' ||
     !Number.isSafeInteger(receipt.contentBytes) ||
     receipt.contentBytes < 0 ||
+    typeof receipt.contentEntries !== 'number' ||
+    !Number.isSafeInteger(receipt.contentEntries) ||
+    receipt.contentEntries < 0 ||
     typeof receipt.manifestSha256 !== 'string' ||
     !SHA256_PATTERN.test(receipt.manifestSha256) ||
     typeof receipt.lockfileSha256 !== 'string' ||
@@ -534,8 +897,10 @@ function decodeReceipt(value: unknown): ManagedDependencyEnvironmentReceiptV1 {
 
 async function collectEnvironmentGarbage(input: {
   readonly environmentsRoot: string;
+  readonly receiptAuthority: DependencyReceiptAuthority;
   readonly maxCacheBytes: number;
   readonly leaseCounts: ReadonlyMap<string, number>;
+  readonly pendingCounts: ReadonlyMap<string, number>;
   readonly protectedDigest: string;
 }): Promise<void> {
   const artifacts: Array<{
@@ -550,14 +915,18 @@ async function collectEnvironmentGarbage(input: {
       throw new Error('Managed dependency cache contains an unowned entry');
     }
     const root = join(input.environmentsRoot, entry.name);
-    const receipt = decodeReceipt(JSON.parse(await readFile(join(root, RECEIPT_FILE), 'utf8')));
+    const receipt = input.receiptAuthority.read(entry.name);
+    if (!receipt) throw new Error('Managed dependency cache is missing its authority receipt');
     if (receipt.environmentId !== `sha256:${entry.name}`) {
       throw new Error('Managed dependency cache directory does not match its receipt');
     }
     artifacts.push({
       digest: entry.name,
       root,
-      bytes: receipt.contentBytes,
+      // Empty files and directories consume filesystem metadata even when
+      // contentBytes is zero. Charge one conservative 4 KiB unit per entry so
+      // inode-only trees cannot bypass the cache quota.
+      bytes: receipt.contentBytes + receipt.contentEntries * 4_096,
       lastUsedMs: (await stat(root)).mtimeMs,
     });
   }
@@ -567,9 +936,14 @@ async function collectEnvironmentGarbage(input: {
   );
   for (const artifact of artifacts) {
     if (totalBytes <= input.maxCacheBytes) break;
-    if (artifact.digest === input.protectedDigest || input.leaseCounts.has(artifact.digest))
+    if (
+      artifact.digest === input.protectedDigest ||
+      input.leaseCounts.has(artifact.digest) ||
+      input.pendingCounts.has(artifact.digest)
+    )
       continue;
     await rm(artifact.root, { recursive: true, force: true });
+    input.receiptAuthority.delete(artifact.digest);
     totalBytes -= artifact.bytes;
   }
 }
@@ -594,6 +968,35 @@ function sameIdentity(
     receipt.producerPolicyIdentitySha256 === identity.producerPolicyIdentitySha256 &&
     receipt.policyVersion === identity.policyVersion
   );
+}
+
+function sameEnvironmentIdentity(
+  left: ManagedDependencyEnvironmentIdentityV1,
+  right: ManagedDependencyEnvironmentIdentityV1,
+): boolean {
+  return (
+    left.protocolVersion === right.protocolVersion &&
+    left.environmentId === right.environmentId &&
+    left.manifestPath === right.manifestPath &&
+    left.manifestSha256 === right.manifestSha256 &&
+    left.lockfilePath === right.lockfilePath &&
+    left.lockfileSha256 === right.lockfileSha256 &&
+    left.packageManagerName === right.packageManagerName &&
+    left.packageManagerVersion === right.packageManagerVersion &&
+    left.nodeVersion === right.nodeVersion &&
+    left.nodeAbi === right.nodeAbi &&
+    left.platform === right.platform &&
+    left.arch === right.arch &&
+    left.producerRuntimeIdentitySha256 === right.producerRuntimeIdentitySha256 &&
+    left.producerPolicyIdentitySha256 === right.producerPolicyIdentitySha256 &&
+    left.policyVersion === right.policyVersion
+  );
+}
+
+function decrementCount(counts: Map<string, number>, key: string): void {
+  const remaining = (counts.get(key) ?? 1) - 1;
+  if (remaining > 0) counts.set(key, remaining);
+  else counts.delete(key);
 }
 
 async function syncFile(path: string): Promise<void> {

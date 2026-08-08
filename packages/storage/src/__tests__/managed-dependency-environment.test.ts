@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -127,7 +127,7 @@ test('rejects a published environment whose dependency content was modified', as
   await reopened.close();
 });
 
-test('rejects a receipt with fields outside the v1 envelope', async (t) => {
+test('keeps the receipt in a constrained authority outside the producer-owned artifact domain', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-receipt-'));
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
   const producer = {
@@ -157,15 +157,137 @@ test('rejects a receipt with fields outside the v1 envelope', async (t) => {
   const identity = computeManagedDependencyEnvironmentIdentity(source);
   const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
   const lease = await authority.acquire(identity, source);
-  const receiptPath = join(dirname(lease.dependencyRoot), 'environment-receipt.json');
+  const artifactRoot = dirname(lease.dependencyRoot);
+  const authorityDatabasePath = join(
+    storageRoot,
+    'managed-workspaces',
+    'dependency-environment-authority-v1.sqlite',
+  );
   await lease.release();
-  const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Record<string, unknown>;
-  receipt.unexpected = true;
-  await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, 'utf8');
-
-  await assert.rejects(authority.acquire(identity, source), /Invalid dependency receipt/u);
+  await assert.rejects(readFile(join(artifactRoot, 'environment-receipt.json'), 'utf8'), {
+    code: 'ENOENT',
+  });
+  await access(authorityDatabasePath);
+  const reopened = await authority.acquire(identity, source);
+  await reopened.release();
   await authority.close();
 });
+
+test('rejects a coordinated artifact and co-located receipt rewrite', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-coordinated-tamper-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      await writeFile(join(input.outputRoot, 'index.js'), 'trusted\n', 'utf8');
+    },
+  };
+  const source = {
+    manifestPath: 'package.json',
+    manifestBytes: Buffer.from('{"packageManager":"npm@11.12.1"}\n'),
+    lockfilePath: 'package-lock.json',
+    lockfileBytes: Buffer.from('{"lockfileVersion":3}\n'),
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeVersion: '24.7.0',
+    nodeAbi: '137',
+    platform: process.platform,
+    arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
+    policyVersion: 'managed_dependency_environment_v1' as const,
+  };
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  const lease = await authority.acquire(identity, source);
+  const artifactRoot = dirname(lease.dependencyRoot);
+  await lease.release();
+  await authority.close();
+
+  await writeFile(join(lease.dependencyRoot, 'index.js'), 'malicious\n', 'utf8');
+  await writeFile(
+    join(artifactRoot, 'environment-receipt.json'),
+    `${JSON.stringify({ environmentId: identity.environmentId, contentTreeSha256: 'forged' })}\n`,
+    'utf8',
+  );
+
+  const reopened = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  await assert.rejects(
+    reopened.acquire(identity, source),
+    /artifact contains an unowned entry|content does not match its receipt/u,
+  );
+  await reopened.close();
+});
+
+test('rejects an environment id that is not the digest of the requested identity', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-identity-forgery-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision() {},
+  };
+  const source = {
+    manifestPath: 'package.json',
+    manifestBytes: Buffer.from('{"packageManager":"npm@11.12.1"}\n'),
+    lockfilePath: 'package-lock.json',
+    lockfileBytes: Buffer.from('{"lockfileVersion":3}\n'),
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeVersion: '24.7.0',
+    nodeAbi: '137',
+    platform: process.platform,
+    arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
+    policyVersion: 'managed_dependency_environment_v1' as const,
+  };
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  await assert.rejects(
+    authority.acquire({ ...identity, environmentId: `sha256:${'f'.repeat(64)}` }, source),
+    /identity is not canonical/u,
+  );
+  await assert.rejects(
+    authority.acquire(
+      { ...identity, environmentId: 'sha256:../../escaped' } as typeof identity,
+      source,
+    ),
+    /identity is not canonical/u,
+  );
+  await assert.rejects(access(join(storageRoot, 'escaped')), { code: 'ENOENT' });
+  await authority.close();
+});
+
+test(
+  'rejects an NTFS alternate stream created inside a dependency artifact',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-ads-'));
+    t.after(() => rm(storageRoot, { recursive: true, force: true }));
+    const producer = {
+      capability: FIXTURE_PRODUCER_CAPABILITY,
+      packageManagerName: 'npm' as const,
+      packageManagerVersion: '11.12.1',
+      nodeRuntime: fixtureNodeRuntime(),
+      async provision(input: { outputRoot: string }) {
+        const target = join(input.outputRoot, 'index.js');
+        await writeFile(target, 'trusted\n', 'utf8');
+        await writeFile(`${target}:unhashed`, 'malicious\n', 'utf8');
+      },
+    };
+    const source = dependencySourceForName('ads');
+    const identity = computeManagedDependencyEnvironmentIdentity(source);
+    const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+    await assert.rejects(authority.acquire(identity, source), /alternate data stream/u);
+    await authority.close();
+  },
+);
 
 test('publishes one Maka-owned artifact for concurrent equivalent acquisitions', async (t) => {
   const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-environment-'));
@@ -276,6 +398,72 @@ test('collects the least-recently-used unleased environment under the cache quot
   await firstAgain.release();
   await authority.close();
 });
+
+test('does not collect a published environment while its acquisition is still pending', async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-pending-gc-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  let releasePendingPublish!: () => void;
+  const pendingPublish = new Promise<void>((resolve) => {
+    releasePendingPublish = resolve;
+  });
+  let acknowledgeReceiptDurable!: () => void;
+  const receiptDurable = new Promise<void>((resolve) => {
+    acknowledgeReceiptDurable = resolve;
+  });
+  let pendingDigest: string | undefined;
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string; identity: { lockfileSha256: string } }) {
+      await writeFile(join(input.outputRoot, 'payload'), input.identity.lockfileSha256, 'utf8');
+    },
+  };
+  const authority = await createManagedDependencyEnvironmentAuthority({
+    storageRoot,
+    producer,
+    maxCacheBytes: 0,
+    async failpoint(point) {
+      if (point === 'after_environment_receipt_durable' && pendingDigest) {
+        acknowledgeReceiptDurable();
+        await pendingPublish;
+      }
+    },
+  });
+  const firstSource = dependencySourceForName('first');
+  const firstIdentity = computeManagedDependencyEnvironmentIdentity(firstSource);
+  const first = await authority.acquire(firstIdentity, firstSource);
+  const secondSource = dependencySourceForName('second');
+  const secondIdentity = computeManagedDependencyEnvironmentIdentity(secondSource);
+  pendingDigest = secondIdentity.environmentId;
+  const secondTask = authority.acquire(secondIdentity, secondSource);
+  await receiptDurable;
+  await first.release();
+  releasePendingPublish();
+  const second = await secondTask;
+  assert.equal(await readFile(join(second.dependencyRoot, 'payload'), 'utf8'), secondIdentity.lockfileSha256);
+  await second.release();
+  await authority.close();
+});
+
+function dependencySourceForName(name: string) {
+  return {
+    manifestPath: 'package.json',
+    manifestBytes: Buffer.from('{"packageManager":"npm@11.12.1"}\n'),
+    lockfilePath: 'package-lock.json',
+    lockfileBytes: Buffer.from(`{"lockfileVersion":3,"name":"${name}"}\n`),
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeVersion: '24.7.0',
+    nodeAbi: '137',
+    platform: process.platform,
+    arch: process.arch,
+    producerRuntimeIdentitySha256: FIXTURE_PRODUCER_RUNTIME_IDENTITY,
+    producerPolicyIdentitySha256: FIXTURE_PRODUCER_CAPABILITY.policyIdentitySha256,
+    policyVersion: 'managed_dependency_environment_v1' as const,
+  };
+}
 
 function fixtureNodeRuntime() {
   return {

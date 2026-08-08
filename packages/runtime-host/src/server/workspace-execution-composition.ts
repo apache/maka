@@ -133,7 +133,10 @@ export function createRuntimeHostWorkspaceExecutionComposition(
             profile.executionHandle,
             (scope) =>
               input.managedOwner!.executeReadOnlyFilesystemOperation(scope, operation, abortSignal),
-            { provisioning: profile.provisioning },
+            {
+              provisioning: profile.provisioning,
+              ...(abortSignal ? { abortSignal } : {}),
+            },
           );
         }
         if (!input.filesystemWorker) {

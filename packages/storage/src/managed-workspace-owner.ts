@@ -104,6 +104,7 @@ export interface OpenManagedWorkspaceBaselineResult {
 
 export interface ManagedWorkspaceExecutionOptions {
   readonly provisioning?: 'canonical_tree_only_v1' | 'dependency_environment_v1';
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface ManagedWorkspaceOwner {
@@ -365,7 +366,7 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       const provisioning = options.provisioning ?? 'canonical_tree_only_v1';
       const dependencyLease =
         provisioning === 'dependency_environment_v1'
-          ? await this.#acquireDependencyEnvironment(binding)
+          ? await this.#acquireDependencyEnvironment(binding, options.abortSignal)
           : undefined;
       try {
         // Provisioning can take minutes. The root write lease excludes
@@ -535,7 +536,10 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
     }
   }
 
-  async #acquireDependencyEnvironment(binding: ManagedWorkspaceBinding) {
+  async #acquireDependencyEnvironment(
+    binding: ManagedWorkspaceBinding,
+    abortSignal?: AbortSignal,
+  ) {
     if (!this.dependencyProducer || !this.dependencyAuthority) {
       throw new ManagedWorkspaceOwnerError(
         'managed_dependency_producer_unavailable',
@@ -578,7 +582,11 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         producerPolicyIdentitySha256: this.dependencyProducer.capability.policyIdentitySha256,
         policyVersion: 'managed_dependency_environment_v1',
       });
-      return await this.dependencyAuthority.acquire(identity, { manifestBytes, lockfileBytes });
+      return await this.dependencyAuthority.acquire(identity, {
+        manifestBytes,
+        lockfileBytes,
+        ...(abortSignal ? { abortSignal } : {}),
+      });
     } catch (error) {
       if (error instanceof ManagedWorkspaceOwnerError) throw error;
       throw new ManagedWorkspaceOwnerError(

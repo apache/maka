@@ -124,7 +124,7 @@ test('routes relative and cwd-absolute dependency paths through the owner-bound 
     async execute(input) {
       routedPaths.push(input.operation.path);
       if (input.operation.kind === 'glob') {
-        return { kind: 'glob', files: [join(dependencyRoot, 'fixture', 'index.js')] };
+        return { kind: 'glob', files: ['fixture/index.js'] };
       }
       return { kind: 'read', content: 'trusted' };
     },
@@ -163,6 +163,26 @@ test('rejects dependency traversal before worker dispatch', async () => {
 
   await assert.rejects(
     bridge.execute(scope, { kind: 'read', path: 'node_modules/../outside.txt' }),
+    (error) =>
+      error instanceof ManagedWorkspaceWorkerBridgeError &&
+      error.code === 'managed_workspace_operation_denied',
+  );
+  assert.equal(dispatches, 0);
+});
+
+test('rejects Windows alternate-stream syntax before dependency worker dispatch', async () => {
+  const ownerToken = {};
+  let dispatches = 0;
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute() {
+      dispatches += 1;
+      return { kind: 'read', content: 'unexpected' };
+    },
+  });
+  const scope = dependencyScopeFor(ownerToken, join('/maka', 'environment', 'node_modules'));
+
+  await assert.rejects(
+    bridge.execute(scope, { kind: 'read', path: 'node_modules/fixture/index.js:unhashed' }),
     (error) =>
       error instanceof ManagedWorkspaceWorkerBridgeError &&
       error.code === 'managed_workspace_operation_denied',

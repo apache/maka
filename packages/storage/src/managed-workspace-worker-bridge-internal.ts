@@ -108,7 +108,7 @@ export function createManagedWorkspaceWorkerBridgeInternal(
           'Managed workspace execution scope does not permit filesystem mutation',
         );
       }
-      const routedOperation = routeDependencyOperation(operation, state.cwd, state.dependencyRoot);
+      const route = routeDependencyOperation(operation, state.cwd, state.dependencyRoot);
       const baseProfile = createReadOnlyPermissionProfile();
       const profile = state.dependencyRoot
         ? {
@@ -129,12 +129,12 @@ export function createManagedWorkspaceWorkerBridgeInternal(
           }
         : baseProfile;
       const result = await worker.execute({
-        operation: routedOperation,
+        operation: route.operation,
         cwd: state.cwd,
         executionBoundary: createManagedExecutionBoundary(profile, 0),
         ...(abortSignal ? { abortSignal } : {}),
       });
-      return remapDependencyResult(result, state.dependencyRoot);
+      return remapDependencyResult(result, state.dependencyRoot, route.provenance);
     },
   };
   return Object.freeze(bridge);
@@ -144,21 +144,36 @@ function routeDependencyOperation(
   operation: ManagedWorkspaceReadOnlyOperation,
   cwd: string,
   dependencyRoot: string | undefined,
-): ManagedWorkspaceReadOnlyOperation {
-  if (!dependencyRoot) return operation;
+): {
+  readonly operation: ManagedWorkspaceReadOnlyOperation;
+  readonly provenance: 'workspace' | 'dependency';
+} {
+  if (!dependencyRoot) return Object.freeze({ operation, provenance: 'workspace' });
   let segments: string[];
   if (isAbsolute(operation.path)) {
     const logicalDependencyRoot = join(cwd, 'node_modules');
     const suffix = relative(logicalDependencyRoot, operation.path);
-    if (suffix.startsWith('..') || isAbsolute(suffix)) return operation;
+    if (suffix.startsWith('..') || isAbsolute(suffix)) {
+      return Object.freeze({ operation, provenance: 'workspace' });
+    }
     segments = suffix === '' ? [] : suffix.split(/[\\/]/u);
   } else {
     const portable = operation.path.replaceAll('\\', '/');
     const portableSegments = portable.split('/');
-    if (portableSegments[0] !== 'node_modules') return operation;
+    if (portableSegments[0] !== 'node_modules') {
+      return Object.freeze({ operation, provenance: 'workspace' });
+    }
     segments = portableSegments.slice(1);
   }
-  if (segments.some((segment) => segment === '..' || segment === '')) {
+  if (
+    segments.some(
+      (segment) =>
+        segment === '..' ||
+        segment === '' ||
+        segment.includes(':') ||
+        segment.includes('\0'),
+    )
+  ) {
     throw new ManagedWorkspaceWorkerBridgeError(
       'managed_workspace_operation_denied',
       'Managed dependency path is invalid',
@@ -171,14 +186,18 @@ function routeDependencyOperation(
       'Managed dependency path escapes its environment',
     );
   }
-  return Object.freeze({ ...operation, path: routedPath });
+  return Object.freeze({
+    operation: Object.freeze({ ...operation, path: routedPath }),
+    provenance: 'dependency' as const,
+  });
 }
 
 function remapDependencyResult(
   result: ManagedWorkspaceReadOnlyResult,
   dependencyRoot: string | undefined,
+  provenance: 'workspace' | 'dependency',
 ): ManagedWorkspaceReadOnlyResult {
-  if (!dependencyRoot) return result;
+  if (!dependencyRoot || provenance !== 'dependency') return result;
   if (result.kind === 'grep') {
     return Object.freeze({
       kind: 'grep',
@@ -195,6 +214,9 @@ function remapDependencyResult(
 }
 
 function remapDependencyPath(path: string, dependencyRoot: string): string {
+  if (!isAbsolute(path)) {
+    return `node_modules/${path.replaceAll('\\', '/')}`;
+  }
   const prefix = normalize(dependencyRoot);
   if (path !== prefix && !path.startsWith(`${prefix}${sep}`)) return path;
   return `node_modules${path.slice(prefix.length)}`.replaceAll('\\', '/');
