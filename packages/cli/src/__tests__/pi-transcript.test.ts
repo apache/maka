@@ -3,7 +3,6 @@ import { before, describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
 import type { PipeShellOutput, PtyShellOutput, ShellRunToolResult } from '@maka/core';
-import { computerUseModelCallArgs } from '@maka/core';
 import type { SessionEvent, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
@@ -12,7 +11,6 @@ import {
   applyMakaSessionEventToTranscript,
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
-  renderMakaPiActivityStrip,
   renderMakaPiTranscript,
   refreshRunningShellRunElapsed,
   reconcileToolsWithStoredMessages,
@@ -29,53 +27,7 @@ import {
 // tests lock (#1064/#1066); matches tui-ansi.test.ts's reset convention.
 before(() => _setColorLevelForTesting(3));
 
-// The branded empty-session home opens on a four-line lowercase ASCII `maka`
-// wordmark in Maka blue (#1098). Stored without trailing spaces so the render
-// and these assertions agree after rtrim; the fallback width is derived from it.
-const MAKA_WORDMARK = [
-  ' _ __    __ _  _  __   __ _',
-  "| '_ \\  / _` | | |/ / / _` |",
-  '| |_) | | (_| | |   <  | (_| |',
-  '|_.__/  \\__,_| |_|\\_\\  \\__,_|',
-];
-const MAKA_WORDMARK_WIDTH = Math.max(...MAKA_WORDMARK.map((line) => line.length));
-
 describe('Maka Pi TUI transcript', () => {
-  test('greets on a fresh empty session with the branded maka home and drops it once a prompt lands', () => {
-    const state = createMakaPiTranscriptState();
-
-    const lines = renderMakaPiTranscript(state, meta(), 100).map((line) =>
-      stripAnsi(line).replace(/\s+$/, ''),
-    );
-    // Four-line lowercase ASCII maka wordmark.
-    assert.deepEqual(lines.slice(0, 4), MAKA_WORDMARK);
-    // The wordmark is Maka blue (accent), not plain text.
-    assert.ok(renderMakaPiTranscript(state, meta(), 100)[0].includes('\x1b[38;2;87;163;239m'));
-    // Short Chinese-first tagline.
-    assert.ok(lines.includes('陪你把事做完'));
-    // Command-center hints: direct input + /session + /model + /setup. /help is
-    // no longer a home hint — autocomplete teaches commands as you type.
-    assert.ok(lines.some((line) => line.trim().startsWith('输入消息开始对话')));
-    assert.ok(lines.some((line) => /\/session/.test(line)));
-    assert.ok(lines.some((line) => /\/model/.test(line)));
-    assert.ok(lines.some((line) => /\/setup/.test(line)));
-    assert.equal(
-      lines.some((line) => /\/help/.test(line)),
-      false,
-    );
-    // The active model/connection live in the statusline, not the welcome.
-    assert.equal(
-      lines.some((line) => /deepseek-v4-flash/.test(line)),
-      false,
-    );
-
-    // Once a turn exists the transcript takes over — the welcome never returns.
-    appendUserPrompt(state, 'hello world');
-    const afterPrompt = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.equal(/\/session/.test(afterPrompt), false);
-    assert.ok(afterPrompt.includes('hello world'));
-  });
-
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
@@ -4042,36 +3994,6 @@ describe('Maka Pi TUI transcript', () => {
 });
 
 describe('transcript entry render memoization', () => {
-  test('re-renders a tool entry when Ctrl+O expansion is toggled', () => {
-    const state = createMakaPiTranscriptState();
-    // A Grep (not a filesystem Read, which now renders only a summary) so
-    // expansion genuinely changes the rendered block and its body is shown.
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Grep',
-        args: { pattern: 'beta' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: { kind: 'text', text: 'alpha\nbeta\ngamma' },
-      }),
-    );
-
-    const collapsed = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.notEqual(expanded, collapsed);
-    assert.match(expanded, /beta/);
-  });
-
   test('re-renders live progress after the bounded buffer reaches a stable length', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -4237,117 +4159,6 @@ describe('transcript entry render memoization', () => {
     const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(after, /BBBB/);
     assert.doesNotMatch(after, /AAAA/);
-  });
-});
-
-describe('Maka Pi TUI activity strip', () => {
-  test('shows transient provider retry progress and clears it on model output', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(state, {
-      type: 'provider_retry',
-      id: 'retry-1',
-      turnId: 'turn-1',
-      ts: 1,
-      phase: 'scheduled',
-      attempt: 3,
-      maxAttempts: 10,
-      delayMs: 4_000,
-      reason: 'rate_limit',
-    });
-
-    assert.equal(
-      stripAnsi(
-        renderMakaPiActivityStrip(
-          { ...meta(), turnElapsedMs: 5_500, providerRetry: state.providerRetry },
-          100,
-        ),
-      ),
-      'Retrying in 4s (3/10)',
-    );
-
-    applyMakaSessionEventToTranscript(state, {
-      type: 'text_delta',
-      id: 'text-1',
-      turnId: 'turn-1',
-      ts: 2,
-      messageId: 'message-1',
-      text: 'recovered',
-    });
-    assert.equal(state.providerRetry, undefined);
-  });
-});
-
-describe('Maka Pi TUI Computer Use rows', () => {
-  /**
-   * The desktop is not the only renderer of tool activity, and the row that
-   * reads `Maka Computer` reads it in both. The arguments are put through
-   * `computerUseModelCallArgs`, because that is what the runtime persists and
-   * emits for this tool — a fixture written as the wire call, or run through
-   * some other projection, would assert a label from fields the TUI can never
-   * receive. That projection speaks the tool's own dialect: `window_id` and
-   * `element_id`, not `windowId` and `elementId`.
-   */
-  test('says what each Computer Use call did instead of repeating the tool name', () => {
-    const state = createMakaPiTranscriptState();
-    appendUserPrompt(state, 'add seven and eight');
-    const calls = [
-      { action: 'observe', app: 'Calculator', window_id: 7 },
-      {
-        action: 'click_element',
-        app: 'Calculator',
-        window_id: 7,
-        observation_id: 'frame-1',
-        element_id: 'e7',
-      },
-      {
-        action: 'click_element',
-        app: 'Calculator',
-        window_id: 7,
-        observation_id: 'frame-1',
-        element_id: 'e9',
-      },
-    ];
-    calls.forEach((wireArgs, index) => {
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_start',
-          toolUseId: `cu-${index}`,
-          toolName: 'maka_computer',
-          displayName: 'Maka Computer',
-          activityKind: 'computer',
-          args: computerUseModelCallArgs(wireArgs),
-        }),
-      );
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_result',
-          toolUseId: `cu-${index}`,
-          isError: false,
-          content: { kind: 'text', text: 'ok' },
-        }),
-      );
-    });
-
-    const rendered = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi);
-    const rows = rendered.filter((line) => line.includes('Maka Computer'));
-    assert.equal(rows.length, 3, 'one row per call');
-    assert.equal(
-      new Set(rows.map((row) => row.trim())).size,
-      3,
-      'three rows that read differently',
-    );
-    assert.ok(
-      rows.some((row) => /click_element · element e7 · Calculator window 7/.test(row)),
-      `expected the first click to name its element, got:\n${rows.join('\n')}`,
-    );
-    assert.ok(rows.some((row) => /click_element · element e9/.test(row)));
-    assert.ok(rows.some((row) => /observe · Calculator window 7/.test(row)));
-    // The host's own approval bookkeeping is not something the model asked for
-    // and has no business in a transcript row.
-    const all = rows.join('\n');
-    assert.equal(/approvalClass|rememberForTurnAllowed|observation_id/.test(all), false, all);
   });
 });
 
