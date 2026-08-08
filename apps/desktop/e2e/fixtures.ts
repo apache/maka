@@ -305,6 +305,7 @@ export const test = base.extend<{
   sandboxBoundaryWindow: Page;
   readOnlyBoundaryWindow: Page;
   sessionWorkbarWindow: Page;
+  artifactPaneWindow: Page;
   botSettingsWindow: Page;
   invocableSkillsWindow: Page;
   settingsProjectsWindow: Page;
@@ -384,6 +385,17 @@ export const test = base.extend<{
         // would pin an implementation detail the design system owns.
         readinessSelector: '[data-maka-contract="session-workbar-right"]',
         e2eFixtureScenario: 'task-ledger',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  artifactPaneWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.maka-artifact-list',
+        e2eFixtureScenario: 'artifact-pane',
         locale: 'zh',
       },
       use,

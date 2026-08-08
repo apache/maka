@@ -171,8 +171,8 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-control-branch-orphan',
   // PR-UI-RENDER-3a-smoke: registry-driven artifact preview fixtures.
   // Each shares the standard chat seed + same ARTIFACT_SESSION_ID but
-  // writes a different single artifact so the ArtifactPane default
-  // selection deterministically shows the artifact we want.
+  // writes a different single artifact so opening the only list row reaches
+  // the intended preview deterministically.
   'artifact-preview-image',
   'artifact-preview-unsupported',
   'artifact-preview-oversize',
@@ -462,8 +462,8 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
     case 'artifact-errors':
     // PR-UI-RENDER-3a-smoke: each preview scenario shares the same
     // chat session as `artifact-pane`; only the on-disk artifact
-    // varies. The ArtifactPane selects records[0] by default so the
-    // single seeded artifact is what gets rendered.
+    // varies. Each list contains exactly one row so the intended preview is
+    // deterministic after the normal list-to-preview interaction.
     case 'artifact-preview-image':
     case 'artifact-preview-unsupported':
     case 'artifact-preview-oversize':
