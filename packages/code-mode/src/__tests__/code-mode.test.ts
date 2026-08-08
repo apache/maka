@@ -1022,7 +1022,7 @@ test('bounds collection amplification before splitting into too many items', asy
   assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
 });
 
-test('bounds cumulative output traversal for shared DAGs', async () => {
+test('enforces the output byte limit while materializing shared DAGs', async () => {
   const result = await executeCodeCell({
     code: `
       let value = [0];
@@ -1031,11 +1031,28 @@ test('bounds cumulative output traversal for shared DAGs', async () => {
     `,
     tools: [],
     callTool: async () => null,
+    limits: { maxOutputBytes: 64 },
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  assert.match(result.ok ? '' : result.error.message, /traversal/i);
+  assert.match(result.ok ? '' : result.error.message, /output byte limit/i);
+});
+
+test('enforces the tool-result byte limit while materializing shared DAGs', async () => {
+  let value: unknown = [0];
+  for (let index = 0; index < 18; index += 1) value = [value, value];
+
+  const result = await executeCodeCell({
+    code: 'return await tools.load({});',
+    tools: [{ name: 'load' }],
+    callTool: async () => value,
+    limits: { maxResultBytes: 64 },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+  assert.match(result.ok ? '' : result.error.message, /result from load byte limit/i);
 });
 
 test('keeps traversal budget independent from per-collection item limits', async () => {

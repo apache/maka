@@ -236,6 +236,9 @@ const SUPPORTED_COLLECTION_METHODS = new Set([
 interface CopyBudget {
   nodes: number;
   maxNodes: number;
+  serializedBytes: number;
+  maxSerializedBytes: number;
+  byteLimitLabel?: string;
 }
 
 const MAX_COPY_NODES = 100_000;
@@ -298,8 +301,9 @@ class Interpreter {
         0,
         new Set(),
         this.limits.maxCollectionItems,
+        false,
+        createCopyBudget(this.limits.maxOutputBytes, 'output'),
       );
-      assertByteLimit(copied, this.limits.maxOutputBytes, 'output');
       return { ok: true, value: copied, toolCalls: [...this.toolCalls] };
     } catch (error) {
       if (!this.cellAbortController.signal.aborted) this.cellAbortController.abort(error);
@@ -1510,8 +1514,9 @@ class Interpreter {
         0,
         new Set(),
         this.limits.maxCollectionItems,
+        false,
+        createCopyBudget(this.limits.maxResultBytes, `result from ${name}`),
       );
-      assertByteLimit(copied, this.limits.maxResultBytes, `result from ${name}`);
       return copied;
     } catch (error) {
       if (this.input.signal?.aborted) throw abortReason(this.input.signal);
@@ -2072,20 +2077,25 @@ function copyPlainData(
   seen = new Set<object>(),
   maxCollectionItems = Number.MAX_SAFE_INTEGER,
   preserveUndefined = false,
-  budget: CopyBudget = {
-    nodes: 0,
-    maxNodes: MAX_COPY_NODES,
-  },
+  budget: CopyBudget = createCopyBudget(),
 ): unknown {
   if (depth > maxDepth)
     throw new InterpreterError('invalid_data', `${label} exceeds the data-depth limit`);
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    addCopySerializedBytes(budget, value);
+    return value;
+  }
   if (typeof value === 'number') {
     if (!Number.isFinite(value))
       throw new InterpreterError('invalid_data', `${label} contains a non-finite number`);
+    addCopySerializedBytes(budget, value);
     return value;
   }
-  if (value === undefined) return preserveUndefined ? undefined : null;
+  if (value === undefined) {
+    const copied = preserveUndefined ? undefined : null;
+    addCopySerializedBytes(budget, copied);
+    return copied;
+  }
   if (typeof value !== 'object')
     throw new InterpreterError('invalid_data', `${label} contains a non-data value`);
   budget.nodes += 1;
@@ -2099,18 +2109,25 @@ function copyPlainData(
       if (value.length > maxCollectionItems) {
         throw new InterpreterError('limit_exceeded', `${label} item limit exceeded`);
       }
-      return value.map((item) =>
-        copyPlainData(
-          item,
-          label,
-          maxDepth,
-          depth + 1,
-          seen,
-          maxCollectionItems,
-          preserveUndefined,
-          budget,
-        ),
-      );
+      addCopyBytes(budget, 1);
+      const output: unknown[] = [];
+      for (const [index, item] of value.entries()) {
+        if (index > 0) addCopyBytes(budget, 1);
+        output.push(
+          copyPlainData(
+            item,
+            label,
+            maxDepth,
+            depth + 1,
+            seen,
+            maxCollectionItems,
+            preserveUndefined,
+            budget,
+          ),
+        );
+      }
+      addCopyBytes(budget, 1);
+      return output;
     }
     if (!isPlainRecord(value))
       throw new InterpreterError('invalid_data', `${label} contains a host object`);
@@ -2118,8 +2135,12 @@ function copyPlainData(
       throw new InterpreterError('limit_exceeded', `${label} item limit exceeded`);
     }
     const output: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
+    addCopyBytes(budget, 1);
+    for (const [index, [key, item]] of Object.entries(value).entries()) {
       assertSafeKey(key);
+      if (index > 0) addCopyBytes(budget, 1);
+      addCopySerializedBytes(budget, key);
+      addCopyBytes(budget, 1);
       output[key] = copyPlainData(
         item,
         label,
@@ -2131,10 +2152,39 @@ function copyPlainData(
         budget,
       );
     }
+    addCopyBytes(budget, 1);
     return output;
   } finally {
     seen.delete(value);
   }
+}
+
+function createCopyBudget(
+  maxSerializedBytes = Number.POSITIVE_INFINITY,
+  byteLimitLabel?: string,
+): CopyBudget {
+  return {
+    nodes: 0,
+    maxNodes: MAX_COPY_NODES,
+    serializedBytes: 0,
+    maxSerializedBytes,
+    byteLimitLabel,
+  };
+}
+
+function addCopySerializedBytes(budget: CopyBudget, value: unknown): void {
+  if (!budget.byteLimitLabel) return;
+  const remaining = budget.maxSerializedBytes - budget.serializedBytes;
+  const bytes = serializedByteLength(value, Math.max(0, remaining));
+  addCopyBytes(budget, bytes);
+}
+
+function addCopyBytes(budget: CopyBudget, bytes: number): void {
+  if (!budget.byteLimitLabel) return;
+  if (bytes > budget.maxSerializedBytes - budget.serializedBytes) {
+    throw new InterpreterError('limit_exceeded', `${budget.byteLimitLabel} byte limit exceeded`);
+  }
+  budget.serializedBytes += bytes;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
