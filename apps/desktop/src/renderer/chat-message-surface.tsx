@@ -10,6 +10,7 @@ import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
+import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { getShellCopy } from './locales/shell-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector';
@@ -42,6 +43,7 @@ interface ChatMessageSurfaceProps extends Omit<
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
   sessionHealthNotice?: SessionHealthNoticeView;
+  workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
@@ -58,6 +60,7 @@ export function ChatMessageSurface({
   sessionUiController,
   activeSessionId,
   sessionHealthNotice,
+  workspaceReadinessRecovery,
   showOnboardingHero,
   onboardingState,
   isOnboardingLoading,
@@ -74,6 +77,21 @@ export function ChatMessageSurface({
   // Every session-health-notice CTA routes to 设置 · 模型 (U1); this is the
   // action button's visible label.
   const goToModelsLabel = copy.goToModels;
+  const handleWorkspaceRecovery = () => {
+    const target = workspaceReadinessRecovery?.target;
+    if (!target) return;
+    switch (target.kind) {
+      case 'provider_catalog':
+        onBrowseProviders();
+        return;
+      case 'models':
+        onOpenSettings('models');
+        return;
+      case 'connection':
+        onOpenConnectionDetail(target.connectionSlug);
+        return;
+    }
+  };
   const activeSession = chatViewRest.activeSession;
   const deepResearchRun = useDeepResearchRun(
     activeSession?.id,
@@ -129,6 +147,22 @@ export function ChatMessageSurface({
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
       />
+      {workspaceReadinessRecovery && (
+        <div className="maka-workspace-readiness-notice">
+          <Banner
+            status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}
+            className="maka-workspace-readiness-notice-alert"
+            role="status"
+            title={workspaceReadinessRecovery.title}
+            description={workspaceReadinessRecovery.description}
+            endContent={<Button
+              label={workspaceReadinessRecovery.actionLabel}
+              variant="ghost"
+              size="sm"
+              onClick={handleWorkspaceRecovery}
+            />} />
+        </div>
+      )}
       {sessionHealthNotice && (
         <div className="maka-session-health-notice">
           <Banner
