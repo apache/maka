@@ -29,6 +29,7 @@ apps/desktop/resources/bin/
 # Rebuilt from experiments/windows-sandbox by scripts/package-windows-x64.mjs.
 apps/desktop/resources/windows-sandbox/
 apps/desktop/bundled-git.json
+apps/desktop/.generated/bundled-npm/
 
 # Generated desktop release inputs and outputs.
 apps/desktop/resources/tools/

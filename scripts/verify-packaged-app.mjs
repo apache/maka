@@ -747,6 +747,9 @@ export async function assertPackagedResources(
   const required = [
     'app.asar',
     'bundled-tools.json',
+    'bundled-npm.json',
+    join('npm', 'bin', 'npm-cli.js'),
+    join('licenses', 'npm-cli', 'LICENSE'),
     ...(requiresLegacyBundledGit
       ? [
           'bundled-git.json',

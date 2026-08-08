@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import * as runtimeHostServer from '../server/index.js';
+import { resolveBundledNpmRuntime } from '../server/bundled-npm-runtime.js';
 import {
   isManagedNpmNodeVersionSupported,
   runManagedDependencyProducerProcessInternal,
@@ -15,8 +17,39 @@ const productionProfileSkip = isManagedNpmNodeVersionSupported(process.versions.
   ? false
   : `Host Node ${process.versions.node} is outside the attested managed npm profile`;
 
-test('does not expose an npm entry before runtime attestation is installed', () => {
+test('keeps npm attestation and provisioning package-internal until composition owns both', () => {
+  assert.equal('resolveBundledNpmRuntime' in runtimeHostServer, false);
   assert.equal('runManagedNpmDependencyProvision' in runtimeHostServer, false);
+});
+
+test('rejects a structurally valid but unissued npm runtime capability', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-managed-npm-forged-runtime-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectRoot = join(root, 'project');
+  const outputRoot = join(projectRoot, 'node_modules');
+  const scratchRoot = join(projectRoot, '.maka-runtime');
+  await Promise.all([
+    mkdir(outputRoot, { recursive: true }),
+    mkdir(scratchRoot, { recursive: true }),
+  ]);
+
+  await assert.rejects(
+    runManagedNpmDependencyProvision({
+      producerInput: fixtureProducerInput(outputRoot, scratchRoot),
+      runtime: Object.freeze({
+        npmVersion: '12.0.2',
+        nodeVersion: process.versions.node,
+        nodeAbi: process.versions.modules ?? 'unknown',
+        platform: process.platform,
+        arch: process.arch,
+        nodeExecutablePath: process.execPath,
+        npmRuntimeRoot: root,
+        npmCliPath: join(root, 'npm-cli.js'),
+        runtimeIdentitySha256: `sha256:${'6'.repeat(64)}`,
+      }),
+    } as never),
+    /attested runtime capability/u,
+  );
 });
 
 test('admits only Node versions compatible with the fixed npm execution profile', () => {
@@ -66,9 +99,7 @@ test('runs the fixed npm install protocol with a hermetic environment', {
 
   await runManagedNpmDependencyProvision({
     producerInput: fixtureProducerInput(outputRoot, scratchRoot),
-    nodeExecutablePath: process.execPath,
-    npmRuntimeRoot: root,
-    npmCliPath,
+    runtime: await attestFixtureRuntime(root, npmCliPath),
   });
 
   const invocation = JSON.parse(await readFile(join(projectRoot, 'invocation.json'), 'utf8')) as {
@@ -116,9 +147,7 @@ test('rejects lifecycle-script lock entries before starting npm', {
   await assert.rejects(
     runManagedNpmDependencyProvision({
       producerInput,
-      nodeExecutablePath: process.execPath,
-      npmRuntimeRoot: root,
-      npmCliPath,
+      runtime: await attestFixtureRuntime(root, npmCliPath),
     }),
     /unsafe dependency entry/u,
   );
@@ -155,9 +184,7 @@ test('rejects a pre-positioned scratch redirect before starting npm', {
   await assert.rejects(
     runManagedNpmDependencyProvision({
       producerInput: fixtureProducerInput(outputRoot, scratchRoot),
-      nodeExecutablePath: process.execPath,
-      npmRuntimeRoot: root,
-      npmCliPath,
+      runtime: await attestFixtureRuntime(root, npmCliPath),
     }),
     /scratch entry was not created/u,
   );
@@ -191,9 +218,7 @@ test('denies child-process creation inside the fixed npm execution profile', {
   await assert.rejects(
     runManagedNpmDependencyProvision({
       producerInput: fixtureProducerInput(outputRoot, scratchRoot),
-      nodeExecutablePath: process.execPath,
-      npmRuntimeRoot: root,
-      npmCliPath,
+      runtime: await attestFixtureRuntime(root, npmCliPath),
     }),
     /child_process|permission|access denied/iu,
   );
@@ -467,6 +492,78 @@ async function waitForFile(path: string): Promise<string> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Timed out waiting for ${path}`);
+}
+
+async function attestFixtureRuntime(root: string, fixtureCliPath: string) {
+  const resourcesRoot = join(root, 'runtime-resources');
+  const npmRoot = join(resourcesRoot, 'npm');
+  const npmCliPath = join(npmRoot, 'bin', 'npm-cli.js');
+  const packageJson = '{"name":"npm","version":"12.0.2","license":"Artistic-2.0"}\n';
+  const license = 'Artistic License fixture\n';
+  const cli = await readFile(fixtureCliPath);
+  await mkdir(join(npmRoot, 'bin'), { recursive: true });
+  await Promise.all([
+    writeFile(join(npmRoot, 'package.json'), packageJson),
+    writeFile(join(npmRoot, 'LICENSE'), license),
+    writeFile(npmCliPath, cli),
+  ]);
+  const files = [
+    manifestFile('LICENSE', Buffer.from(license)),
+    manifestFile('bin/npm-cli.js', cli),
+    manifestFile('package.json', Buffer.from(packageJson)),
+  ];
+  await writeFile(
+    join(resourcesRoot, 'bundled-npm.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      protocol: 'maka_bundled_npm_runtime_v1',
+      provider: 'desktop/npm-cli',
+      npmVersion: '12.0.2',
+      platform: process.platform,
+      arch: process.arch,
+      runtimeRootRelativePath: 'npm',
+      cliRelativePath: 'npm/bin/npm-cli.js',
+      securityPatches: approvedSecurityPatches,
+      files,
+      distributionReady: true,
+    })}\n`,
+  );
+  return await resolveBundledNpmRuntime({ resourcesRoot });
+}
+
+const approvedSecurityPatches = [
+  {
+    packageName: 'tar',
+    fromVersion: '7.5.19',
+    toVersion: '7.5.22',
+    advisories: ['GHSA-r292-9mhp-454m'],
+  },
+  {
+    packageName: 'brace-expansion',
+    fromVersion: '5.0.7',
+    toVersion: '5.0.9',
+    advisories: ['GHSA-mh99-v99m-4gvg', 'GHSA-rgw5-rvv9-x895'],
+  },
+  {
+    packageName: 'ip-address',
+    fromVersion: '10.2.0',
+    toVersion: '10.4.0',
+    advisories: ['GHSA-mwp4-54f8-5fhr', 'GHSA-4xrf-jv44-h6hh', 'GHSA-22jq-vg5j-6vgg'],
+  },
+  {
+    packageName: 'undici',
+    fromVersion: '6.27.0',
+    toVersion: '6.28.0',
+    advisories: ['GHSA-8xcm-r25x-g524', 'GHSA-m8rv-5g2x-5cg5', 'GHSA-v3r7-h72x-cjcm'],
+  },
+] as const;
+
+function manifestFile(path: string, bytes: Buffer) {
+  return {
+    path,
+    bytes: bytes.byteLength,
+    sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+  };
 }
 
 async function waitForProcessExit(pid: number): Promise<void> {

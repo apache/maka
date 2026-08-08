@@ -67,6 +67,14 @@ export default {
   ],
   extraResources: [
     {
+      from: '.generated/bundled-npm/npm',
+      to: 'npm',
+    },
+    {
+      from: '.generated/bundled-npm/bundled-npm.json',
+      to: 'bundled-npm.json',
+    },
+    {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
     },
@@ -104,6 +112,10 @@ export default {
     {
       from: '../../LICENSE',
       to: 'licenses/maka/LICENSE',
+    },
+    {
+      from: '../../node_modules/npm/LICENSE',
+      to: 'licenses/npm-cli/LICENSE',
     },
     {
       from: '../../NOTICE',
