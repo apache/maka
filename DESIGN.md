@@ -35,6 +35,7 @@ typography:
   label: { fontSize: "14px", fontWeight: 500, lineHeight: 1.4286 }
   supporting: { fontSize: "12px", fontWeight: 400, lineHeight: 1.6667 }
   code: { fontSize: "14px", fontWeight: 400, lineHeight: 1.4286 }
+  badge: { fontSize: "12px", fontWeight: 500, lineHeight: 1.6667 }
 rounded:
   control: "6px"
   surface: "8px"
@@ -45,14 +46,14 @@ rounded:
   astryx-container: "0.75rem"
   astryx-page: "1.75rem"
   astryx-full: "9999px"
-spacing: { base: "4px", xs: "2px", sm: "8px", md: "12px", lg: "16px", xl: "24px", "2xl": "32px", "3xl": "48px", "4xl": "64px" }
+spacing: { space-0-5: "2px", space-1: "4px", space-1-5: "6px", space-2: "8px", space-2-5: "10px", space-3: "12px", space-4: "16px", space-5: "20px", space-6: "24px", space-8: "32px", space-10: "40px", space-12: "48px", space-16: "64px" }
 components:
   button-default: { typography: "{typography.label}", rounded: "{rounded.astryx-element}", padding: "8px 12px", height: "32px" }
   button-primary-light: { backgroundColor: "{colors.accent-solid-light}", textColor: "{colors.on-accent-light}", typography: "{typography.label}", rounded: "{rounded.astryx-element}", height: "32px" }
   button-primary-dark: { backgroundColor: "{colors.accent-solid-dark}", textColor: "{colors.on-accent-dark}", typography: "{typography.label}", rounded: "{rounded.astryx-element}", height: "32px" }
   input-default: { typography: "{typography.body}", rounded: "{rounded.astryx-element}", height: "32px" }
-  badge: { typography: "{typography.supporting}", rounded: "{rounded.astryx-full}", padding: "0 8px", height: "20px" }
-  card-default: { rounded: "{rounded.astryx-container}", padding: "16px" }
+  badge: { typography: "{typography.badge}", rounded: "{rounded.astryx-full}", padding: "0 8px", height: "20px" }
+  card-default: { rounded: "{rounded.astryx-container}", padding: "12px" }
 ---
 
 # Design System: Maka
@@ -67,7 +68,9 @@ The system is calm, native, and compact: spacious around reading and decisions, 
 
 This document governs the default light and dark themes. Optional palettes may change canvas, ink, accent, and semantic colors, but must preserve their roles, contrast, and hierarchy.
 
-**Authority:** `astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `maka-tokens.css` owns product palettes, spacing, radii, motion, and the Astryx bridge; Astryx owns primitive geometry and states; product source owns Maka-specific compositions. Generated `maka.css` is not an editing authority.
+**Authority:** `apps/desktop/src/renderer/astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `apps/desktop/src/renderer/maka-tokens.css` owns product palettes, spacing, radii, motion, and the Astryx bridge; Astryx owns primitive geometry and states; product source owns Maka-specific compositions. Generated `apps/desktop/src/renderer/astryx-theme/maka.css` is not an editing authority.
+
+Frontmatter is a snapshot of the current default theme. When it diverges from source or contract tests, source and tests win and this document must be refreshed.
 
 ## 2. Colors
 
@@ -103,7 +106,7 @@ Use the system UI stack with explicit platform CJK fallbacks; Geist Variable is 
 Default surfaces are flat. Depth comes first from canvas-to-surface tone, then a hairline, then shadow only when an element genuinely floats.
 
 - Use `--shadow-minimal-flat` for compact previews and menus that need an edge without visible lift.
-- Use Astryx low, medium, or high elevation through component APIs for floating controls, popovers, dialogs, and overlays.
+- Use Astryx `low`, `med`, or `high` elevation through component APIs for floating controls, popovers, dialogs, and overlays.
 - Dark mode relies on tone and rings before shadow. Neon edges and lifted-everything styling are forbidden.
 - Native shell vibrancy is allowed only in designated material; generic glassmorphism is not.
 
@@ -111,12 +114,12 @@ Default surfaces are flat. Depth comes first from canvas-to-surface tone, then a
 
 ## 5. Components
 
-Use Astryx primitives as the default seam. Maka CSS composes product meaning around them and does not restyle their internals.
+Use Astryx primitives as the default seam. New work composes product meaning through published props, tokens, and stable `themeProps` hooks; internal-DOM overrides are acknowledged transitional states, not precedent.
 
-- **Controls:** default height is 32px, with 28px and 36px variants. Hover is restrained; press may use `scale(0.98)`; keyboard focus is always visible.
-- **Fields:** labels, descriptions, validation, disabled reason, and focus belong to the field primitive. Do not rebuild field chrome around a bare input.
+- **Controls:** Maka uses a 20/24/28/32/36/40px height ruler with 32px as the default; Astryx owns the 28/32/36px variants. Hover is restrained; press may use `scale(0.98)`; keyboard focus is always visible.
+- **Fields:** labels, descriptions, validation, and focus belong to the field primitive. Keep disabled reasons discoverable through the owning control’s tooltip; do not rebuild field chrome around a bare input.
 - **Badges and status:** Badge is 20px high and pill-shaped. Choose semantic variants by meaning, not hue; use status dots for success, active, attention, error, or neutral.
-- **Cards:** Astryx Card uses 12px radius, 16px default padding, and no resting elevation. A container earns chrome only from a real ownership boundary.
+- **Cards:** In the Maka theme, Astryx Card uses 12px radius, 12px default padding, and no resting elevation. Astryx components own their geometry; use Maka radii only for product-drawn containers.
 - **Workspace:** conversation, tool activity, artifacts, browser state, and generated files stay connected to the task that produced them. Assistant messages remain quiet and avatar-free.
 - **Custom companion:** a desktop pet is the sole mascot exception: user-supplied, disabled by default, decorative, pointer-transparent, hidden from assistive technology, and reduced-motion aware. It never conveys required status or speaks for the agent.
 
