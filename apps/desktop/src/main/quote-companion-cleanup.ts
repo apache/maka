@@ -92,8 +92,8 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
       return active.operation as Promise<T>;
     }
     const task = (async () => {
-      await this.store.beginCreation(normalized, this.processId);
       try {
+        await this.store.beginCreation(normalized, this.processId);
         const result = await operation();
         const record = await this.store.markLive(normalized.sessionId);
         if (record?.cancelRequested) void this.settleCleanup(normalized.sessionId);

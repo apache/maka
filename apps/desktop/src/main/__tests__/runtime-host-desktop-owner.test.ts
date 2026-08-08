@@ -8,14 +8,19 @@ import type {
 } from '../runtime-host-desktop-candidate.js';
 import { startRuntimeHostDesktopOwner } from '../runtime-host-desktop-owner.js';
 
-test('replaces a disconnected generation without falling back to embedded Runtime', async () => {
+test('replaces a disconnected generation without falling back to embedded Runtime', { timeout: 10_000 }, async () => {
   const first = candidateHarness();
   const second = candidateHarness();
   const queue = [ready(first.candidate), ready(second.candidate)];
   let starts = 0;
+  let resolveSecondStart!: () => void;
+  const secondStarted = new Promise<void>((resolve) => {
+    resolveSecondStart = resolve;
+  });
   const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => {
       starts += 1;
+      if (starts === 2) resolveSecondStart();
       const result = queue.shift();
       assert.ok(result);
       return result;
@@ -23,7 +28,8 @@ test('replaces a disconnected generation without falling back to embedded Runtim
   });
 
   first.disconnect();
-  await eventually(() => starts === 2);
+  await secondStarted;
+  await new Promise<void>((resolve) => setImmediate(resolve));
   await owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
   await owner.stopSession('session-1');
 
@@ -34,10 +40,13 @@ test('replaces a disconnected generation without falling back to embedded Runtim
   assert.equal(second.closeCalls, 1);
 });
 
-test('reports exhausted reconnect attempts as fatal and never starts a fallback', async () => {
+test('reports exhausted reconnect attempts as fatal and never starts a fallback', { timeout: 10_000 }, async () => {
   const first = candidateHarness();
   let starts = 0;
-  let fatal: Error | undefined;
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
   const owner = await startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async (): Promise<DesktopRuntimeHostCandidateStartResult> => {
       starts += 1;
@@ -46,14 +55,14 @@ test('reports exhausted reconnect attempts as fatal and never starts a fallback'
         : { kind: 'failed', reason: 'host_unresponsive' };
     },
     onFatalError: (error) => {
-      fatal = error;
+      reportFatal(error);
     },
   });
 
   first.disconnect();
-  await eventually(() => fatal !== undefined, 2_000);
+  const fatal = await fatalReported;
   assert.equal(starts, 4);
-  assert.match(fatal?.message ?? '', /host_unresponsive/);
+  assert.match(fatal.message, /host_unresponsive/);
   await owner.close();
 });
 
@@ -98,12 +107,4 @@ function candidateHarness() {
 
 function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandidateStartResult {
   return { kind: 'ready', candidate };
-}
-
-async function eventually(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('condition did not settle');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }

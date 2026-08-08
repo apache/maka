@@ -34,7 +34,7 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     queryDeepResearch: async () => hostedResearch(),
   });
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc({ client, emitModeChanged() {} }, ipc);
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
 
   assert.equal(((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id, 'task-1');
   assert.equal(
@@ -119,7 +119,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
     size: { cols: 80, rows: 24 },
   };
   const ipc = ipcHarness();
-  const handle = registerRuntimeHostSessionDomainsIpc(
+  const handle = registerDomainsIpc(
     {
       client: domainClient({
         startRuntimeResource: async (input) => {
@@ -212,7 +212,7 @@ test('reuses terminal controller identity after an ambiguous acquire response', 
   let attempt = 0;
   const ref = 'maka://runtime/background-tasks/shell-1';
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc(
+  registerDomainsIpc(
     {
       client: domainClient({
         acquireRuntimeResourceController: async (input) => {
@@ -259,7 +259,7 @@ test('restores terminal observation after the observer drops its registration', 
   let observeCalls = 0;
   let observationActive = false;
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc(
+  registerDomainsIpc(
     {
       client: domainClient({
         acquireRuntimeResourceController: async (input) => ({
@@ -301,7 +301,7 @@ test('reacquires a missing terminal controller with protocol-exact identity fiel
   const ref = 'maka://runtime/background-tasks/shell-1';
   let acquired: unknown;
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc(
+  registerDomainsIpc(
     {
       client: domainClient({
         acquireRuntimeResourceController: async (input) => {
@@ -354,7 +354,7 @@ test('adapts Plan controls and starts approved execution through one Host comman
     executions: [],
   };
   const ipc = ipcHarness();
-  registerRuntimeHostSessionDomainsIpc(
+  registerDomainsIpc(
     {
       client: domainClient({
         getPlanState: async () => state,
@@ -499,7 +499,7 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     },
   });
   const ipc = ipcHarness();
-  const handle = registerRuntimeHostSessionDomainsIpc(
+  const handle = registerDomainsIpc(
     {
       client: domainClient({
         listRuntimeResources: async () => {
@@ -771,4 +771,21 @@ function ipcHarness() {
       return handler({} as never, ...args);
     },
   };
+}
+
+function registerDomainsIpc(
+  deps: Omit<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'> &
+    Partial<Pick<RuntimeHostSessionDomainsIpcDeps, 'sessionObserver'>>,
+  ipcMain: Pick<IpcMain, 'handle'>,
+) {
+  return registerRuntimeHostSessionDomainsIpc(
+    {
+      ...deps,
+      sessionObserver: deps.sessionObserver ?? {
+        async observe() {},
+        async unobserve() {},
+      },
+    },
+    ipcMain,
+  );
 }

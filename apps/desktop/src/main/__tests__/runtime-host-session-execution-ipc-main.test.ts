@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +45,7 @@ test("advances the Host read marker through the last visible message", async () 
     },
   ]);
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         setSessionReadMarker: async (sessionId, readThroughMessageId) => {
@@ -94,7 +95,7 @@ test("keeps synthetic E2E interactions visible through Host hydration and retire
   };
   let active = true;
   const configurationUpdates: unknown[] = [];
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         updateSessionConfiguration: async (sessionId, patch) => {
@@ -148,7 +149,7 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
   }> = [];
   let fallbackIds = 0;
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         copySession: async (kind, input) => {
@@ -232,17 +233,20 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
 
 test("marks Runtime Host Branch copies as side conversations", async () => {
   const metadataUpdates: unknown[] = [];
+  const abandonedOwners: string[] = [];
   const ipc = ipcHarness();
   const sessionCopyCleanup = {
     ownCreation: <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
     async cleanup() {},
     async schedule() {},
-    async abandonOwner() {},
+    async abandonOwner(ownerId: string) {
+      abandonedOwners.push(ownerId);
+    },
     async recover() {
       return { removed: [], failed: [] };
     },
   };
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         copySession: async (_kind, input) => ({
@@ -290,6 +294,8 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
     "source-label",
     SIDE_CONVERSATION_SESSION_LABEL,
   ]);
+  ipc.rendererGone();
+  assert.deepEqual(abandonedOwners, ['web-contents:9']);
 });
 
 test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
@@ -328,7 +334,7 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
     },
   });
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client,
       observer: unusedObserver(),
@@ -418,7 +424,7 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
     },
   };
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         getSession: async () => session(cwd),
@@ -471,7 +477,7 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
 test("forwards explicit Skill invocation to the Host-owned Turn admission", async () => {
   const starts: unknown[] = [];
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         getSession: async () => session(),
@@ -561,7 +567,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   });
   const observer = observerWithSnapshot();
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client,
       observer,
@@ -703,6 +709,7 @@ type IpcHandler = Parameters<Pick<IpcMain, "handle">["handle"]>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
+  const sender = Object.assign(new EventEmitter(), { id: 9 });
   return {
     handle(channel: string, handler: IpcHandler) {
       assert.equal(
@@ -715,7 +722,36 @@ function ipcHarness() {
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({ sender: { id: 9 } } as never, ...args);
+      return handler({ sender } as never, ...args);
+    },
+    rendererGone() {
+      sender.emit('render-process-gone');
+    },
+  };
+}
+
+function registerExecutionIpc(
+  deps: Omit<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup'> &
+    Partial<Pick<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup'>>,
+  ipcMain: Pick<IpcMain, 'handle'>,
+): (sessionId: string) => Promise<void> {
+  return registerRuntimeHostSessionExecutionIpc(
+    {
+      ...deps,
+      sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
+    },
+    ipcMain,
+  );
+}
+
+function unusedSessionCopyCleanup(): RuntimeHostSessionExecutionIpcDeps['sessionCopyCleanup'] {
+  return {
+    ownCreation: async (_creation, operation) => operation(),
+    async cleanup() {},
+    async schedule() {},
+    async abandonOwner() {},
+    async recover() {
+      return { removed: [], failed: [] };
     },
   };
 }

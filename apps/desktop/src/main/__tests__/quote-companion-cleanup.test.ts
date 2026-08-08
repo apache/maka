@@ -19,6 +19,34 @@ afterEach(async () => {
 });
 
 describe('quote companion cleanup authority', () => {
+  it('releases a rejected creation lease so the same identity can retry', async () => {
+    const workspaceRoot = await createWorkspace();
+    let removalFails = true;
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      removeSession: async () => {
+        if (removalFails) throw new Error('temporary removal failure');
+      },
+    });
+    await assert.rejects(authority.cleanup('fork-retry'), /temporary removal failure/);
+
+    const creation = {
+      sessionId: 'fork-retry',
+      kind: 'branch' as const,
+      sourceSessionId: 'source-session',
+      sourceTurnId: 'source-turn',
+      ownerId: 'web-contents:1',
+    };
+    await assert.rejects(
+      authority.ownCreation(creation, async () => 'unreachable'),
+      /scheduled for cleanup/,
+    );
+
+    removalFails = false;
+    await authority.cleanup('fork-retry');
+    assert.equal(await authority.ownCreation(creation, async () => 'created'), 'created');
+  });
+
   it('orders cancellation after an in-flight copy reaches a known outcome', async () => {
     const workspaceRoot = await createWorkspace();
     let releaseCreation!: () => void;

@@ -37,7 +37,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
 export interface RuntimeHostSessionDomainsIpcDeps {
   client: RuntimeHostSessionDomainClient;
   emitModeChanged(sessionId: string): void;
-  sessionObserver?: Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'>;
+  sessionObserver: Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'>;
   sendToRenderer?(channel: string, payload: unknown): void;
   now?: () => number;
   newId?: () => string;

@@ -21,7 +21,7 @@ export function registerRuntimeHostShellRunsIpc(
   deps: {
     client: RuntimeHostShellRunsClient;
     newId?: () => string;
-    sessionObserver?: {
+    sessionObserver: {
       observe(
         sessionId: string,
         observerId: string,
@@ -92,23 +92,21 @@ interface RuntimeResourceControllerState {
 class RuntimeResourceControllers {
   readonly #client: RuntimeHostShellRunsClient;
   readonly #newId: () => string;
-  readonly #sessionObserver:
-    | {
-        observe(
-          sessionId: string,
-          observerId: string,
-          target: RuntimeHostSessionObserverTarget,
-        ): Promise<void>;
-        unobserve(observerId: string): Promise<void>;
-      }
-    | undefined;
+  readonly #sessionObserver: {
+    observe(
+      sessionId: string,
+      observerId: string,
+      target: RuntimeHostSessionObserverTarget,
+    ): Promise<void>;
+    unobserve(observerId: string): Promise<void>;
+  };
   readonly #states = new Map<string, RuntimeResourceControllerState>();
   readonly #tails = new Map<string, Promise<void>>();
 
   constructor(
     client: RuntimeHostShellRunsClient,
     newId: () => string,
-    sessionObserver?: {
+    sessionObserver: {
       observe(
         sessionId: string,
         observerId: string,
@@ -128,9 +126,7 @@ class RuntimeResourceControllers {
   ): Promise<ShellRunPtySnapshot> {
     return this.#run(input, async () => {
       const state = this.#state(input);
-      if (this.#sessionObserver) {
-        await this.#sessionObserver.observe(input.sessionId, state.observerId, target);
-      }
+      await this.#sessionObserver.observe(input.sessionId, state.observerId, target);
       return this.#acquire(input, state);
     });
   }
@@ -258,7 +254,6 @@ class RuntimeResourceControllers {
   }
 
   async #releaseObservation(state: RuntimeResourceControllerState): Promise<void> {
-    if (!this.#sessionObserver) return;
     await this.#sessionObserver.unobserve(state.observerId);
   }
 }
