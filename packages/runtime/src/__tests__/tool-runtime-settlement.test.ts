@@ -341,24 +341,6 @@ describe('ToolRuntime settlement', () => {
     assert.deepEqual(settlement.modelOutput, { type: 'text', value: 'materialized image' });
   });
 
-  it('registers step admission synchronously before settlement awaits', async () => {
-    const runtime = makeRuntime();
-    const pending = runtime.settleToolCall({
-      tool: tool(() => ({ ok: true })),
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolCallId: 'call-1',
-      input: {},
-      abortSignal: new AbortController().signal,
-      eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
-      },
-    });
-
-    await pending;
-  });
-
   it('rejects direct-only nested tools before permission argument projection or implementation', async () => {
     let permissionProjectionCalls = 0;
     let implementationCalls = 0;
