@@ -103,18 +103,21 @@
      same `--background` keeps card surfaces consistently white. */
   --background-elevated: var(--surface-overlay);
   /* Visual System 2.0 (T3). NOT a ladder tier, and deliberately outside it.
-     This is the viewport we hand to a document we did not author and cannot
-     restyle: the HTML-artifact iframe (`srcDoc`, sandboxed) and the PDF embed.
-     Such documents assume paper — an HTML artifact usually declares no
-     background and black body text, so the backdrop IS its readability.
-     Resolving these two call sites to `--surface-raised` would satisfy
-     DESIGN.md §10's "no literal surface color" and make dark mode render black
-     text on a dark plate; that rule exists to stop OUR surfaces drifting off
-     the ladder, and a document viewport is not one of our surfaces.
-     Mode-invariant on purpose — it does not get a `.dark` override. Two
-     consumers, both in chat-detail.css; if a third appears that is really app
-     chrome, it belongs on the ladder instead. */
-  --surface-document: oklch(1 0 0);
+     Paper: the backing we hand to content whose own contrast assumes a light
+     background and which we cannot restyle. Four consumers, two kinds:
+       - foreign documents — the sandboxed HTML-artifact iframe (`srcDoc`,
+         which usually declares no background and black body text) and the PDF
+         embed, where the backdrop IS the content's readability;
+       - QR codes (bot onboarding, WeChat pairing), where dark-on-light is a
+         scanning requirement, not a preference — a QR on a dark plate is not
+         "low contrast", it is unreadable by the camera it exists for.
+     Resolving these to `--surface-raised` would satisfy DESIGN.md §10's ban on
+     literal surface colors and break all four in dark mode. That ban exists to
+     stop OUR surfaces drifting off the ladder; none of these is one of our
+     surfaces. Mode-invariant on purpose — it deliberately has no `.dark`
+     override. If a fifth consumer appears that is really app chrome, it
+     belongs on the ladder instead. */
+  --surface-paper: oklch(1 0 0);
   /* PR-UI-ALIGN-0: warm near-black (#141414-like) at a faint warm hue, so
      ALL derived grays (#636261/#838280-like) pick up the reference's warm cast
      instead of reading as cold neutral. */

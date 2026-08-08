@@ -25,7 +25,9 @@
   place-items: center;
   border: var(--border-width-hairline) solid color-mix(in srgb, var(--brand-wechat) 20%, var(--border));
   border-radius: var(--radius-surface);
-  background: white;
+  /* Paper, not a ladder tier: a QR code has to stay dark-on-light to be
+     scannable at all. See --surface-paper in maka-tokens.css. */
+  background: var(--surface-paper);
   padding: var(--space-3);
 }
 

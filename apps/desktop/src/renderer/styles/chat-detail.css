@@ -1172,9 +1172,9 @@
   height: 100%;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  /* Paper, not a ladder tier — see --surface-document in maka-tokens.css. The
+  /* Paper, not a ladder tier — see --surface-paper in maka-tokens.css. The
      srcDoc we render declares no background of its own. */
-  background: var(--surface-document);
+  background: var(--surface-paper);
   /* iframe sandbox attribute on the JSX side carries the real boundary;
      this is only visual. NEVER ship `allow-same-origin` here. */
 }
@@ -1274,7 +1274,7 @@
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
   /* Same document viewport as the HTML artifact above. */
-  background: var(--surface-document);
+  background: var(--surface-paper);
   min-height: 240px;
 }
 

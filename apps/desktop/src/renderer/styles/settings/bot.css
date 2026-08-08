@@ -186,7 +186,9 @@
   overflow: hidden;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: white;
+  /* Paper, not a ladder tier: a QR code has to stay dark-on-light to be
+     scannable at all. See --surface-paper in maka-tokens.css. */
+  background: var(--surface-paper);
 }
 
 .settingsBotOnboardingQrFrame img {
