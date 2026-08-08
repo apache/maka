@@ -42,6 +42,10 @@ import { createMainWindowController } from "./main-window.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
+import {
+  createDesktopTaskSubmissionReadinessService,
+  registerTaskSubmissionReadinessIpc,
+} from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerPlanReminderIpc } from "./plan-reminders-ipc-main.js";
 import { createPlanReminderMainService } from "./plan-reminders-main.js";
@@ -536,7 +540,36 @@ function registerHostClientIpc(
       return status?.configured === true;
     },
   });
+  const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot,
+    runtimeState: () => ({ state: client.lifecycleState, checkedAt: Date.now() }),
+    listConnections: async () =>
+      projectHostConnections(await client.loadConnectionCatalog()),
+    getDefaultSlug: async () => {
+      const catalog = await client.loadConnectionCatalog();
+      const target = catalog.defaultTarget;
+      return target === null
+        ? null
+        : (catalog.connections.find(
+            ({ connectionId }) => connectionId === target.connectionId,
+          )?.slug ?? null);
+    },
+    hasCredential: async (connection) => {
+      if (!providerAuthRequiresSecret(connection.providerType)) return true;
+      const catalog = await client.loadConnectionCatalog();
+      const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
+      if (!entry) return false;
+      const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+      const status = await client.queryCredential({
+        scope: "connection",
+        connectionId: entry.connectionId,
+        kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+      });
+      return status?.configured === true;
+    },
+  });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
+  registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {

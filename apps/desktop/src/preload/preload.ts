@@ -3,6 +3,7 @@ import { encodeIngestItems } from './attachment-ingest-payload.js';
 import type {
   MakaBridge,
   OnboardingSnapshot,
+  DesktopTaskSubmissionReadinessRequest,
   PermissionActionResult,
   PermissionOverlayStartResult,
   RendererIngestInput,
@@ -588,6 +589,11 @@ const makaBridge = {
     },
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot> {
       return ipcRenderer.invoke('onboarding:clearMilestone', id);
+    },
+  },
+  taskReadiness: {
+    getSnapshot(input?: DesktopTaskSubmissionReadinessRequest) {
+      return ipcRenderer.invoke('taskReadiness:getSnapshot', input);
     },
   },
   permissions: {

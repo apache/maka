@@ -171,11 +171,20 @@ type PricingReconciliationTarget =
 export class DesktopRuntimeHostClient {
   readonly #sessions = new Set<DesktopSessionHandle>();
   #closeTask: Promise<void> | undefined;
+  #connectionClosed = false;
 
-  constructor(private readonly connection: RuntimeHostConnection) {}
+  constructor(private readonly connection: RuntimeHostConnection) {
+    void connection.closed?.then(() => {
+      this.#connectionClosed = true;
+    });
+  }
 
   get hostEpoch(): string {
     return this.connection.hostEpoch;
+  }
+
+  get lifecycleState(): 'ready' | 'unavailable' {
+    return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {

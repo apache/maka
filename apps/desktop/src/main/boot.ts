@@ -131,6 +131,10 @@ import { createAppUpdateService } from './app-update-service.js';
 import { hasInterruptibleUpdateWork } from './app-update-activity.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
+import {
+  createDesktopTaskSubmissionReadinessService,
+  registerTaskSubmissionReadinessIpc,
+} from './task-submission-readiness-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
 import { ensureBundledSkillInstalled } from './skills.js';
 import {
@@ -1108,6 +1112,13 @@ const onboardingService = createOnboardingService(
     listSessions: () => runtime.listSessions(),
   }),
 );
+const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
+  workspaceRoot,
+  runtimeState: () => ({ state: 'ready', checkedAt: Date.now() }),
+  listConnections: () => connectionStore.list(),
+  getDefaultSlug: () => connectionStore.getDefault(),
+  hasCredential: hasConnectionSecret,
+});
 
 function registerIpc(): void {
   const currentProjectRoot = resolveCurrentProjectRoot;
@@ -1238,6 +1249,7 @@ function registerIpc(): void {
       : {}),
   });
   registerOnboardingIpc({ onboardingService });
+  registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, ipcMain);
   registerPermissionsIpc({
     settingsStore,
     connectionStore,

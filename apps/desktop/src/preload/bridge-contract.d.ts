@@ -116,6 +116,12 @@ export interface OnboardingSnapshot {
   sessionSendOutcomes: Record<string, import('@maka/core').SessionSendProjection>;
 }
 
+export interface DesktopTaskSubmissionReadinessRequest {
+  connectionSlug?: string;
+  model?: string;
+  cwd?: string;
+}
+
 export type RendererIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
   | { file: File };
@@ -485,6 +491,11 @@ export interface MakaBridge {
       status: 'completed' | 'skipped',
     ): Promise<OnboardingSnapshot>;
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot>;
+  };
+  taskReadiness: {
+    getSnapshot(
+      input?: DesktopTaskSubmissionReadinessRequest,
+    ): Promise<import('@maka/core').TaskSubmissionReadinessSnapshot>;
   };
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot>;
