@@ -198,7 +198,10 @@ describe('PetPackStore', () => {
   });
 
   test('detects sprite sheets redirected outside the installed pack', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'Windows file-symlink permissions are not guaranteed in CI'
+        : false,
   }, async () => {
     await withStore(async ({ root, store }) => {
       await store.install({ manifest: manifest(), spriteSheet: pngHeader(64, 64) });
@@ -213,13 +216,15 @@ describe('PetPackStore', () => {
     });
   });
 
-  test('rejects a store root redirected outside the state root', {
-    skip: process.platform === 'win32',
-  }, async () => {
+  test('rejects a store root redirected outside the state root', async () => {
     await withStore(async ({ root, store }) => {
       const outside = await mkdtemp(join(tmpdir(), 'maka-pet-pack-outside-'));
       try {
-        await symlink(outside, join(root, 'pets'));
+        await symlink(
+          outside,
+          join(root, 'pets'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
         await assert.rejects(store.list(), isStoreError('corrupt_store'));
         await assert.rejects(
           store.install({ manifest: manifest(), spriteSheet: pngHeader(64, 64) }),

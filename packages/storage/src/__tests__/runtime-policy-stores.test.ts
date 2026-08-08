@@ -1197,7 +1197,10 @@ describe('runtime policy stores', () => {
   });
 
   test('reports unknown outcome when credential persistence fails after clearing verified state', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1337,7 +1340,10 @@ describe('runtime policy stores', () => {
   });
 
   test('validates proxy policy mutations before clearing and reports failed follow-up commits as unknown', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1540,7 +1546,10 @@ describe('runtime policy stores', () => {
   });
 
   test('reports unknown outcome when active proxy password persistence fails after clearing', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -1864,7 +1873,10 @@ describe('runtime policy stores', () => {
   });
 
   test('preserves unknown commit semantics and consumes the completion ticket', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
@@ -2226,7 +2238,10 @@ describe('runtime policy stores', () => {
   });
 
   test('successor recovery removes credentials orphaned by an interrupted connection removal', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to inject a persistence failure'
+        : false,
   }, async () => {
     await withInteractiveRoot(async ({ root, capability }) => {
       const firstOwner = await tryAcquireInteractiveRootOwner(capability);
