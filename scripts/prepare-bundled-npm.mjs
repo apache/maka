@@ -6,22 +6,46 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const EXPECTED_NPM_VERSION = '12.0.2';
-const EXPECTED_SOURCE_TAR_VERSION = '7.5.19';
-const PATCHED_TAR_VERSION = '7.5.22';
+const EXPECTED_APPROVED_RUNTIME_TREE_SHA256 =
+  'sha256:930e2370422a82f7650387d37a4c6148bbf185e5def442ba8669550252b468e8';
 const SECURITY_PATCHES = Object.freeze([
   Object.freeze({
     packageName: 'tar',
-    fromVersion: EXPECTED_SOURCE_TAR_VERSION,
-    toVersion: PATCHED_TAR_VERSION,
-    advisory: 'GHSA-r292-9mhp-454m',
+    fromVersion: '7.5.19',
+    toVersion: '7.5.22',
+    advisories: Object.freeze(['GHSA-r292-9mhp-454m']),
+  }),
+  Object.freeze({
+    packageName: 'brace-expansion',
+    fromVersion: '5.0.7',
+    toVersion: '5.0.9',
+    advisories: Object.freeze(['GHSA-mh99-v99m-4gvg', 'GHSA-rgw5-rvv9-x895']),
+  }),
+  Object.freeze({
+    packageName: 'ip-address',
+    fromVersion: '10.2.0',
+    toVersion: '10.4.0',
+    advisories: Object.freeze([
+      'GHSA-mwp4-54f8-5fhr',
+      'GHSA-4xrf-jv44-h6hh',
+      'GHSA-22jq-vg5j-6vgg',
+    ]),
+  }),
+  Object.freeze({
+    packageName: 'undici',
+    fromVersion: '6.27.0',
+    toVersion: '6.28.0',
+    advisories: Object.freeze(['GHSA-8xcm-r25x-g524', 'GHSA-m8rv-5g2x-5cg5', 'GHSA-v3r7-h72x-cjcm']),
   }),
 ]);
 
 export async function prepareBundledNpm({
   sourceNpmRoot = join(repoRoot, 'node_modules', 'npm'),
-  patchedTarRoot = join(repoRoot, 'node_modules', 'tar'),
+  patchedPackagesRoot = join(repoRoot, 'node_modules'),
   runtimeOutputRoot = join(repoRoot, 'apps', 'desktop', '.generated', 'bundled-npm', 'npm'),
   outputPath = join(repoRoot, 'apps', 'desktop', '.generated', 'bundled-npm', 'bundled-npm.json'),
+  auditRoot = join(dirname(outputPath), 'audit'),
+  sourceLockPath = join(repoRoot, 'package-lock.json'),
   platform = process.platform,
   arch = process.arch,
 } = {}) {
@@ -35,22 +59,26 @@ export async function prepareBundledNpm({
       `Bundled npm preparation requires npm ${EXPECTED_NPM_VERSION} under Artistic-2.0.`,
     );
   }
-  await requirePackageVersion(
-    join(sourceNpmRoot, 'node_modules', 'tar', 'package.json'),
-    'tar',
-    EXPECTED_SOURCE_TAR_VERSION,
-    'npm source tar',
-  );
-  await requirePackageVersion(
-    join(patchedTarRoot, 'package.json'),
-    'tar',
-    PATCHED_TAR_VERSION,
-    'patched tar',
-  );
+  for (const patch of SECURITY_PATCHES) {
+    await requirePackageVersion(
+      join(sourceNpmRoot, 'node_modules', patch.packageName, 'package.json'),
+      patch.packageName,
+      patch.fromVersion,
+      `npm source ${patch.packageName}`,
+    );
+    await requirePackageVersion(
+      join(patchedPackagesRoot, patch.packageName, 'package.json'),
+      patch.packageName,
+      patch.toVersion,
+      `patched ${patch.packageName}`,
+    );
+  }
   // Validate the immutable inputs before copying so symlink/junction failures
   // have one stable policy error on every platform.
   await inventoryFiles(sourceNpmRoot);
-  await inventoryFiles(patchedTarRoot);
+  for (const patch of SECURITY_PATCHES) {
+    await inventoryFiles(join(patchedPackagesRoot, patch.packageName));
+  }
   await rm(runtimeOutputRoot, { recursive: true, force: true });
   await mkdir(dirname(runtimeOutputRoot), { recursive: true });
   await cp(sourceNpmRoot, runtimeOutputRoot, {
@@ -59,17 +87,31 @@ export async function prepareBundledNpm({
     errorOnExist: true,
     verbatimSymlinks: true,
   });
-  const runtimeTarRoot = join(runtimeOutputRoot, 'node_modules', 'tar');
-  await rm(runtimeTarRoot, { recursive: true, force: true });
-  await cp(patchedTarRoot, runtimeTarRoot, {
-    recursive: true,
-    force: false,
-    errorOnExist: true,
-    verbatimSymlinks: true,
-  });
+  for (const patch of SECURITY_PATCHES) {
+    const runtimePackageRoot = join(runtimeOutputRoot, 'node_modules', patch.packageName);
+    await rm(runtimePackageRoot, { recursive: true, force: true });
+    await cp(join(patchedPackagesRoot, patch.packageName), runtimePackageRoot, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      verbatimSymlinks: true,
+    });
+  }
   await requireRegularFile(join(runtimeOutputRoot, 'LICENSE'), 'npm license');
   await requireRegularFile(join(runtimeOutputRoot, 'bin', 'npm-cli.js'), 'npm CLI');
   const files = await inventoryFiles(runtimeOutputRoot);
+  const runtimeTreeSha256 = sha256(Buffer.from(JSON.stringify(files)));
+  const usesRepositoryRuntimeInputs =
+    sourceNpmRoot === join(repoRoot, 'node_modules', 'npm') &&
+    patchedPackagesRoot === join(repoRoot, 'node_modules');
+  if (
+    usesRepositoryRuntimeInputs &&
+    runtimeTreeSha256 !== EXPECTED_APPROVED_RUNTIME_TREE_SHA256
+  ) {
+    throw new Error(
+      `Bundled npm approved runtime tree mismatch: expected ${EXPECTED_APPROVED_RUNTIME_TREE_SHA256}, received ${runtimeTreeSha256}.`,
+    );
+  }
   const identity = JSON.stringify({
     protocol: 'maka_bundled_npm_runtime_identity_v1',
     npmVersion: EXPECTED_NPM_VERSION,
@@ -94,7 +136,57 @@ export async function prepareBundledNpm({
   };
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  await writeBundledRuntimeAuditLock({ auditRoot, sourceLockPath });
   return manifest;
+}
+
+async function writeBundledRuntimeAuditLock({ auditRoot, sourceLockPath }) {
+  const sourceLock = JSON.parse(await readFile(sourceLockPath, 'utf8'));
+  const packages = Object.fromEntries(
+    Object.entries(sourceLock.packages ?? {})
+      .filter(([path]) => path === 'node_modules/npm' || path.startsWith('node_modules/npm/'))
+      .map(([path, value]) => [path, { ...value, dev: false }]),
+  );
+  for (const patch of SECURITY_PATCHES) {
+    const patchedEntry = sourceLock.packages?.[`node_modules/${patch.packageName}`];
+    if (!patchedEntry || patchedEntry.version !== patch.toVersion) {
+      throw new Error(
+        `Bundled npm audit requires ${patch.packageName} ${patch.toVersion} in the root lockfile.`,
+      );
+    }
+    packages[`node_modules/npm/node_modules/${patch.packageName}`] = {
+      ...patchedEntry,
+      dev: false,
+    };
+  }
+  packages[''] = {
+    name: 'maka-bundled-npm-audit',
+    version: '1.0.0',
+    dependencies: { npm: EXPECTED_NPM_VERSION },
+  };
+  const auditPackage = {
+    name: 'maka-bundled-npm-audit',
+    version: '1.0.0',
+    private: true,
+    dependencies: { npm: EXPECTED_NPM_VERSION },
+  };
+  const auditLock = {
+    name: auditPackage.name,
+    version: auditPackage.version,
+    lockfileVersion: 3,
+    requires: true,
+    packages,
+  };
+  await rm(auditRoot, { recursive: true, force: true });
+  await mkdir(auditRoot, { recursive: true });
+  await Promise.all([
+    writeFile(join(auditRoot, 'package.json'), `${JSON.stringify(auditPackage, null, 2)}\n`, 'utf8'),
+    writeFile(
+      join(auditRoot, 'package-lock.json'),
+      `${JSON.stringify(auditLock, null, 2)}\n`,
+      'utf8',
+    ),
+  ]);
 }
 
 async function requirePackageVersion(path, name, version, label) {

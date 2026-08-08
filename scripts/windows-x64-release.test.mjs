@@ -43,6 +43,7 @@ function packagedAppOptions(overrides = {}) {
     forbidPath: async () => {},
     readMachine: async () => 0x8664,
     smokeRenderer: async () => {},
+    smokeBundledNpm: async () => {},
     ...overrides,
   };
 }
@@ -87,6 +88,7 @@ test('Windows packaging regenerates bundled Git evidence before electron-builder
     'npm run build',
     'npm run prepare:bundled-git',
     'npm run prepare:bundled-npm',
+    'npm run audit:bundled-npm',
     'npm run verify:bundled-npm',
     'npm run check:release',
     'npm --workspace @maka/desktop run package:windows-x64',
@@ -166,7 +168,7 @@ test('the packaged Windows app is checked for every unsigned helper that could s
   // The exact set, not "some path ends with each name": a helper is forbidden in
   // both the directories it could be staged from, and matching either one would
   // let the other be dropped without a test noticing.
-  assert.deepEqual(forbidden.map((path) => path.slice('C:/app/resources/'.length)).sort(), [
+  assert.deepEqual(forbidden.map((path) => path.replaceAll('\\', '/').slice('C:/app/resources/'.length)).sort(), [
     'bin/cua-driver',
     'bin/maka-cu',
     'licenses/officecli',

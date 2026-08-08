@@ -44,6 +44,7 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
       requirePath: async () => {},
       forbidPath: async () => {},
       smokeRenderer: async () => {},
+      smokeBundledNpm: async () => {},
     }),
     /arm64/,
   );
@@ -81,6 +82,7 @@ test('the packaged app is checked for every unsigned helper that could still be 
         forbidden.push(path);
       },
       smokeRenderer: async () => {},
+      smokeBundledNpm: async () => {},
     }),
     /arm64/,
   );

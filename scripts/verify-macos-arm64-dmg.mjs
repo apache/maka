@@ -19,6 +19,7 @@ import {
   runCommand,
   sha256File,
   smokePackagedRenderer,
+  smokePackagedBundledNpm,
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -101,6 +102,7 @@ export async function verifyPackagedMacApp(
     forbidPath = assertMissing,
     smokeRenderer = smokePackagedRenderer,
     smokeFilesystemWorker = smokePackagedFilesystemWorker,
+    smokeBundledNpm = smokePackagedBundledNpm,
     workingDirectory = dirname(appPath),
   } = {},
 ) {
@@ -128,6 +130,7 @@ export async function verifyPackagedMacApp(
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');
+  await smokeBundledNpm(resources, executable);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);

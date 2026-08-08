@@ -11,11 +11,15 @@ const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-bundled-npm-smoke-'));
 try {
   const producer = await resolveBundledNpmDependencyProducer({
     resourcesRoot,
-    cacheRoot: join(temporaryRoot, 'cache'),
     nodeExecutablePath: process.execPath,
   });
-  const outputRoot = join(temporaryRoot, 'project', 'node_modules');
-  await mkdir(outputRoot, { recursive: true });
+  const projectRoot = join(temporaryRoot, 'project');
+  const outputRoot = join(projectRoot, 'node_modules');
+  const scratchRoot = join(projectRoot, '.maka-runtime');
+  await Promise.all([
+    mkdir(outputRoot, { recursive: true }),
+    mkdir(scratchRoot, { recursive: true }),
+  ]);
   const manifestBytes = Buffer.from(
     '{"name":"maka-bundled-npm-smoke","version":"1.0.0","packageManager":"npm@12.0.2"}\n',
   );
@@ -39,6 +43,7 @@ try {
       policyVersion: 'managed_dependency_environment_v1',
     },
     outputRoot,
+    scratchRoot,
     manifestBytes,
     lockfileBytes,
   });

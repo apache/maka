@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // `timeoutMs` is opt-in, for the commands that have actually hung: node-pty
@@ -344,6 +345,58 @@ export async function assertPackagedResources(
   ];
   for (const path of forbidden) {
     await forbidPath(join(resourcesPath, path));
+  }
+}
+
+export async function smokePackagedBundledNpm(resourcesPath, nodeExecutablePath) {
+  const [{ resolveBundledNpmDependencyProducer }, { computeManagedDependencyEnvironmentIdentity }] =
+    await Promise.all([
+      import('../packages/runtime-host/dist/server/bundled-npm-dependency-producer.js'),
+      import('../packages/storage/dist/managed-dependency-environment.js'),
+    ]);
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-packaged-npm-'));
+  try {
+    const producer = await resolveBundledNpmDependencyProducer({
+      resourcesRoot: resourcesPath,
+      nodeExecutablePath,
+    });
+    const manifestBytes = Buffer.from(
+      `{"name":"maka-packaged-npm-smoke","version":"1.0.0","packageManager":"npm@${producer.packageManagerVersion}"}\n`,
+    );
+    const lockfileBytes = Buffer.from(
+      '{"name":"maka-packaged-npm-smoke","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"maka-packaged-npm-smoke","version":"1.0.0"}}}\n',
+    );
+    const identity = computeManagedDependencyEnvironmentIdentity({
+      manifestPath: 'package.json',
+      manifestBytes,
+      lockfilePath: 'package-lock.json',
+      lockfileBytes,
+      packageManagerName: producer.packageManagerName,
+      packageManagerVersion: producer.packageManagerVersion,
+      nodeVersion: producer.nodeRuntime.version,
+      nodeAbi: producer.nodeRuntime.abi,
+      platform: producer.nodeRuntime.platform,
+      arch: producer.nodeRuntime.arch,
+      producerRuntimeIdentitySha256: producer.capability.runtimeIdentitySha256,
+      producerPolicyIdentitySha256: producer.capability.policyIdentitySha256,
+      policyVersion: 'managed_dependency_environment_v1',
+    });
+    const projectRoot = join(temporaryRoot, 'project');
+    const outputRoot = join(projectRoot, 'node_modules');
+    const scratchRoot = join(projectRoot, '.maka-runtime');
+    await Promise.all([
+      mkdir(outputRoot, { recursive: true }),
+      mkdir(scratchRoot, { recursive: true }),
+    ]);
+    await producer.provision({
+      identity,
+      outputRoot,
+      scratchRoot,
+      manifestBytes,
+      lockfileBytes,
+    });
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 

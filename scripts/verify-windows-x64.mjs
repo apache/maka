@@ -10,6 +10,7 @@ import {
   runCommand,
   sha256File,
   smokePackagedRenderer,
+  smokePackagedBundledNpm,
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -84,6 +85,7 @@ export async function verifyPackagedWindowsApp(
     forbidPath = assertMissing,
     readMachine = readPeMachine,
     smokeRenderer = smokePackagedRenderer,
+    smokeBundledNpm = smokePackagedBundledNpm,
     workingDirectory = appDirectory,
   } = {},
 ) {
@@ -102,6 +104,9 @@ export async function verifyPackagedWindowsApp(
   if (machine !== amd64Machine) {
     throw new Error(`${executableName} must be x64, found PE machine 0x${machine.toString(16)}.`);
   }
+
+  step('verifying the packaged npm runtime and CLI');
+  await smokeBundledNpm(resources, executable);
 
   step('reading the product version resource');
   const { stdout } = await runPowerShell(
