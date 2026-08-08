@@ -16,7 +16,7 @@ export interface DesktopTaskSubmissionReadinessDeps {
   workspaceRoot: string;
   runtimeState(): { state: 'ready' | 'starting' | 'unavailable' | 'unknown'; checkedAt: number };
   resolveModelTarget(requestedSlug: string | undefined): Promise<DesktopModelTargetResolution>;
-  inspectWorkspace?(cwd: string): Promise<'ready' | 'unavailable' | 'unknown'>;
+  inspectWorkspace?(cwd: string): Promise<'ready' | 'missing' | 'unavailable' | 'unknown'>;
   now?(): number;
 }
 
@@ -77,17 +77,19 @@ export function registerTaskSubmissionReadinessIpc(
   );
 }
 
-async function inspectWorkspace(cwd: string): Promise<'ready' | 'unavailable' | 'unknown'> {
+async function inspectWorkspace(
+  cwd: string,
+): Promise<'ready' | 'missing' | 'unavailable' | 'unknown'> {
   try {
     return (await stat(cwd)).isDirectory() ? 'ready' : 'unavailable';
   } catch (error) {
-    return isConfirmedMissingWorkspace(error) ? 'unavailable' : 'unknown';
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    // Missing path is repairable (pick a workspace). Access failures stay
+    // unavailable; everything else is an unknown observation.
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing';
+    if (code === 'EACCES') return 'unavailable';
+    return 'unknown';
   }
-}
-
-function isConfirmedMissingWorkspace(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES';
 }
 
 function normalizeRequest(input: unknown): DesktopTaskSubmissionReadinessRequest {

@@ -108,6 +108,22 @@ test('rejects malformed renderer input before reading stores', async () => {
   assert.equal(reads, 0);
 });
 
+
+test('maps a missing cwd to repairable workspace_missing', async () => {
+  const service = createDesktopTaskSubmissionReadinessService({
+    workspaceRoot: '/workspace',
+    runtimeState: () => ({ state: 'ready', checkedAt: 90 }),
+    resolveModelTarget: async () => ({ kind: 'resolved', connection: connection(), hasSecret: true }),
+    inspectWorkspace: async () => 'missing',
+    now: () => 100,
+  });
+
+  const snapshot = await service.getSnapshot({ cwd: '/gone' });
+  assert.equal(snapshot.state, 'repair_required');
+  assert.equal(snapshot.blockers[0]?.blockerCode, 'workspace_missing');
+  assert.deepEqual(snapshot.blockers[0]?.repairTarget, { kind: 'workspace_picker' });
+});
+
 function connection(): LlmConnection {
   return {
     slug: 'provider',
