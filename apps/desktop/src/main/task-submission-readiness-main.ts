@@ -15,11 +15,31 @@ export interface DesktopTaskSubmissionReadinessRequest {
 export interface DesktopTaskSubmissionReadinessDeps {
   workspaceRoot: string;
   runtimeState(): { state: 'ready' | 'starting' | 'unavailable' | 'unknown'; checkedAt: number };
-  listConnections(): Promise<LlmConnection[]>;
-  getDefaultSlug(): Promise<string | null>;
-  hasCredential(connection: LlmConnection): Promise<boolean>;
+  resolveModelTarget(requestedSlug: string | undefined): Promise<DesktopModelTargetResolution>;
   inspectWorkspace?(cwd: string): Promise<'ready' | 'unavailable' | 'unknown'>;
   now?(): number;
+}
+
+export type DesktopModelTargetResolution =
+  | { kind: 'resolved'; connection: LlmConnection; hasSecret?: boolean }
+  | { kind: 'missing_default' }
+  | { kind: 'connection_missing'; connectionSlug: string }
+  | { kind: 'unknown' };
+
+export async function resolveStoredModelTarget(
+  requestedSlug: string | undefined,
+  deps: {
+    getSnapshot(): Promise<{ defaultSlug: string | null; connections: LlmConnection[] }>;
+    hasCredential(connection: LlmConnection): Promise<boolean>;
+  },
+): Promise<DesktopModelTargetResolution> {
+  const catalog = await deps.getSnapshot();
+  const connectionSlug = requestedSlug ?? catalog.defaultSlug ?? undefined;
+  if (!connectionSlug) return { kind: 'missing_default' };
+  const connection = catalog.connections.find((candidate) => candidate.slug === connectionSlug);
+  if (!connection) return { kind: 'connection_missing', connectionSlug };
+  const hasSecret = await deps.hasCredential(connection).catch(() => undefined);
+  return { kind: 'resolved', connection, hasSecret };
 }
 
 export function createDesktopTaskSubmissionReadinessService(
@@ -29,29 +49,19 @@ export function createDesktopTaskSubmissionReadinessService(
     async getSnapshot(input: unknown): Promise<TaskSubmissionReadinessSnapshot> {
       const request = normalizeRequest(input);
       const checkedAt = deps.now?.() ?? Date.now();
-      const [connections, defaultSlug] = await Promise.all([
-        deps.listConnections(),
-        deps.getDefaultSlug(),
-      ]);
-      const connectionSlug = request.connectionSlug ?? defaultSlug ?? undefined;
-      const connection = connectionSlug
-        ? connections.find((candidate) => candidate.slug === connectionSlug)
-        : undefined;
-      const hasSecret = connection
-        ? await deps.hasCredential(connection).catch(() => undefined)
-        : undefined;
+      const modelTarget = await deps.resolveModelTarget(request.connectionSlug).catch(
+        (): DesktopModelTargetResolution => ({ kind: 'unknown' }),
+      );
       const cwd = request.cwd ?? deps.workspaceRoot;
       const workspaceState = await (deps.inspectWorkspace ?? inspectWorkspace)(cwd);
 
       return deriveTaskSubmissionReadiness({
         checkedAt,
         runtime: deps.runtimeState(),
-        modelTarget: {
-          connection,
-          hasSecret,
-          requestedModel: request.model,
-          checkedAt,
-        },
+        modelTarget:
+          modelTarget.kind === 'resolved'
+            ? { ...modelTarget, requestedModel: request.model, checkedAt }
+            : { ...modelTarget, checkedAt },
         workspace: { state: workspaceState, checkedAt },
       });
     },
