@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
-import type { McpBoundTool, McpCallResult, McpToolBinding } from '@maka/core/mcp';
+import type { McpCallResult, McpToolBinding, McpToolSnapshot } from '@maka/core/mcp';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
@@ -15,7 +15,7 @@ const MAX_SUMMARIZED_BLOCKS = 100;
 const TRUNCATION_MARKER = '\n…[truncated by Maka]';
 
 export interface McpToolProvider {
-  boundTools(): readonly McpBoundTool[];
+  toolSnapshot(): McpToolSnapshot;
   callTool(
     binding: McpToolBinding,
     args: Record<string, unknown>,
@@ -48,7 +48,8 @@ export function buildMcpTools(
   options: BuildMcpToolsOptions = {},
 ): MakaTool[] {
   const names = new Map<string, string>();
-  return provider.boundTools().map(({ descriptor, binding }) => {
+  const snapshot = provider.toolSnapshot();
+  return snapshot.tools.map(({ descriptor, binding }) => {
     const identity = `${descriptor.serverId}\0${descriptor.name}`;
     const name = mcpProxyToolName(descriptor.serverId, descriptor.name);
     const collision = names.get(name);

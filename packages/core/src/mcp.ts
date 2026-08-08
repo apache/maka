@@ -53,8 +53,14 @@ declare const mcpToolBindingBrand: unique symbol;
 export type McpToolBinding = string & { readonly [mcpToolBindingBrand]: true };
 
 export interface McpBoundTool {
-  descriptor: McpToolDescriptor;
-  binding: McpToolBinding;
+  readonly descriptor: McpToolDescriptor;
+  readonly binding: McpToolBinding;
+}
+
+/** One immutable, provider-owned view of every currently callable MCP tool. */
+export interface McpToolSnapshot {
+  readonly revision: number;
+  readonly tools: readonly McpBoundTool[];
 }
 
 export interface McpServerStatus {

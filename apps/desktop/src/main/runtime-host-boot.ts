@@ -269,7 +269,7 @@ const currentDesktopWorkspaceTarget = async (): Promise<WorkspaceTarget> => {
     : { kind: "host_path", path: current.path };
 };
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
-  mcpManager.toolSnapshotRevision(),
+  mcpManager.toolSnapshot().revision,
 );
 let settingsBotsIpc: SettingsBotsIpcHandle | undefined;
 const botRegistry = new BotRegistry({

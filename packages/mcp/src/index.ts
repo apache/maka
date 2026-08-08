@@ -18,6 +18,7 @@ import {
   type McpTestResult,
   type McpToolBinding,
   type McpToolDescriptor,
+  type McpToolSnapshot,
 } from '@maka/core/mcp';
 import {
   formatMcpDiagnosticText,
@@ -115,6 +116,10 @@ export class McpClientManager {
   private readonly toolCallPreparer = new McpToolCallPreparer();
   private readonly bindingManagerId = randomBytes(16).toString('base64url');
   private lastConnectionGeneration = 0;
+  private callableSnapshot: McpToolSnapshot = Object.freeze({
+    revision: 0,
+    tools: Object.freeze([]),
+  });
 
   constructor(options: McpClientManagerOptions = {}) {
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
@@ -175,16 +180,8 @@ export class McpClientManager {
     return value ? cloneStatus(value) : undefined;
   }
 
-  boundTools(): McpBoundTool[] {
-    if (this.closed) return [];
-    return [...this.connections.values()]
-      .filter((entry) => entry.status.state === 'connected' && !entry.closing && entry.client)
-      .flatMap((entry) =>
-        [...entry.toolSnapshot.values()].map(({ descriptor, binding }) => ({
-          descriptor: cloneTool(descriptor),
-          binding,
-        })),
-      );
+  toolSnapshot(): McpToolSnapshot {
+    return this.callableSnapshot;
   }
 
   async connect(serverId: string): Promise<McpServerStatus> {
@@ -247,13 +244,12 @@ export class McpClientManager {
 
   async close(): Promise<void> {
     this.closed = true;
-    this.bindingIndex.clear();
     const closing = [...this.connections.values()].map((entry) => {
       entry.closing = true;
       entry.connectController?.abort(
         new Error(`MCP client manager closed: ${entry.status.serverId}`),
       );
-      entry.toolSnapshot = new Map();
+      this.replaceToolSnapshot(entry, new Map());
       entry.connectionGeneration = undefined;
       entry.refreshState = undefined;
       return safeClose(entry.client, entry.transport);
@@ -719,8 +715,44 @@ export class McpClientManager {
       }
       nextIndex.set(current.binding, { connection: entry, snapshot: current });
     }
+    const nextCallableSnapshot = this.buildCallableSnapshot(entry, snapshot);
     entry.toolSnapshot = snapshot;
     this.bindingIndex = nextIndex;
+    this.callableSnapshot = nextCallableSnapshot;
+  }
+
+  private buildCallableSnapshot(
+    replacedEntry: Connection,
+    replacement: ReadonlyMap<string, ToolSnapshotEntry>,
+  ): McpToolSnapshot {
+    const entries = this.closed
+      ? []
+      : [...this.connections.values()]
+          .filter((entry) => !entry.closing && entry.client && entry.connectionGeneration)
+          .flatMap((entry) => [
+            ...(entry === replacedEntry ? replacement : entry.toolSnapshot).values(),
+          ]);
+    const nextBindings = entries.map(({ binding }) => binding).sort(compareText);
+    const previousBindings = this.callableSnapshot.tools
+      .map(({ binding }) => binding)
+      .sort(compareText);
+    if (
+      nextBindings.length === previousBindings.length &&
+      nextBindings.every((binding, index) => binding === previousBindings[index])
+    ) {
+      return this.callableSnapshot;
+    }
+    if (this.callableSnapshot.revision >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('MCP tool snapshot revision exhausted');
+    }
+    const tools = entries.map(
+      ({ descriptor, binding }) =>
+        deepFreeze({ descriptor: cloneTool(descriptor), binding }) as McpBoundTool,
+    );
+    return Object.freeze({
+      revision: this.callableSnapshot.revision + 1,
+      tools: Object.freeze(tools),
+    });
   }
 
   private allocateConnectionGeneration(): number {
@@ -1024,6 +1056,16 @@ function cloneTool(tool: McpToolDescriptor): McpToolDescriptor {
     inputSchema: structuredClone(tool.inputSchema),
     annotations: tool.annotations ? { ...tool.annotations } : undefined,
   };
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
 }
 
 function errorMessage(error: unknown): string {
