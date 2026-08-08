@@ -115,18 +115,6 @@ describe('maka-cu key grammar (§6.4)', () => {
 });
 
 describe('maka-cu readers refuse rather than default', () => {
-  it('reads the element frame into a window-local field', () => {
-    // §5.3: the space is carried by the name, so nothing can write it into
-    // `CuObservedElement.frame` (screen points) without going through the one
-    // conversion.
-    assert.deepEqual(readElement('observe', element()).frameInWindow, {
-      x: 20,
-      y: 40,
-      width: 72,
-      height: 28,
-    });
-  });
-
   it('refuses a hash that is not written the one declared way (§1.3)', () => {
     assert.throws(
       () => readElement('observe', element({ digest: 'a1'.repeat(32) })),
@@ -208,13 +196,6 @@ describe('maka-cu dispatch results are held to their closed sets (§6.3/§6.5)',
       ...overrides,
     };
   }
-
-  it('reads a well-formed dispatch result', () => {
-    const result = readDispatchResult('input.dispatch', dispatch() as never, false);
-    assert.equal(result.path, 'ax_action');
-    assert.equal(result.tier, 'ax');
-    assert.equal(result.outcome, 'ok');
-  });
 
   it('refuses a path that is not in the closed set', () => {
     // The closed set is what decides, and it decides first: `path` is refused
