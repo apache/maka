@@ -385,7 +385,9 @@ export class RootTurnCoordinator {
       const pendingRecoveryClosures: RootTurnAdmission[] = [];
       for (const admission of admissions) {
         const run = runsById.get(admission.runId);
-        const userMessages = messageIndex.userMessagesByTurnId.get(admission.turnId) ?? [];
+        const rootUserMessages = (
+          messageIndex.userMessagesByTurnId.get(admission.turnId) ?? []
+        ).filter((message) => message.steeringEventId === undefined);
         const messageIdOwners = admission.userMessageId
           ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
           : [];
@@ -413,7 +415,7 @@ export class RootTurnCoordinator {
           );
         }
         if (admission.userMessageId === null) {
-          if (userMessages.length > 0) {
+          if (rootUserMessages.length > 0) {
             throw new Error(`Admitted Turn ${admission.turnId} must not record a UserMessage`);
           }
           if (!run) {
@@ -438,10 +440,10 @@ export class RootTurnCoordinator {
         }
         const messageIdOwner = messageIdOwners[0];
         if (!run && executionContract.pendingWithoutRun === 'host_recovery_closure') {
-          if (userMessages.length > 1) {
+          if (rootUserMessages.length > 1) {
             throw new Error(`Admitted Turn ${admission.turnId} has multiple UserMessages`);
           }
-          const userMessage = userMessages[0];
+          const userMessage = rootUserMessages[0];
           if (userMessage) {
             if (
               messageIdOwner !== userMessage ||
@@ -466,17 +468,17 @@ export class RootTurnCoordinator {
           continue;
         }
         if (!run) {
-          if (userMessages.length > 0 || messageIdOwner) {
+          if (rootUserMessages.length > 0 || messageIdOwner) {
             throw new Error(`Admitted Turn ${admission.turnId} has a UserMessage but no Run`);
           }
           pending.push(admission);
           continue;
         }
         await this.assertRunMatchesDurableExecution(run, admission.turnId, admission.execution);
-        if (userMessages.length > 1) {
+        if (rootUserMessages.length > 1) {
           throw new Error(`Admitted Turn ${admission.turnId} has multiple UserMessages`);
         }
-        const userMessage = userMessages[0];
+        const userMessage = rootUserMessages[0];
         if (userMessage) {
           if (
             messageIdOwner !== userMessage ||

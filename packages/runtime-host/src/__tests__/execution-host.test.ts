@@ -80,6 +80,7 @@ import {
   assertJsonLines,
   attachment,
   connectClient,
+  requireStartedTurn,
   operationError,
   quotedContent,
   sendStartWithoutReadingResponse,
@@ -572,13 +573,15 @@ test('two Clients share one execution after the starting Client disconnects', as
     const second = await connectClient(fixture.root, 'tui');
     const turnId = randomUUID();
 
-    const started = await first.startTurn(
-      {
-        sessionId: fixture.sessionId,
-        turnId,
-        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-      },
-      PROCESS_TIMEOUT_MS,
+    const started = requireStartedTurn(
+      await first.startTurn(
+        {
+          sessionId: fixture.sessionId,
+          turnId,
+          content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+        },
+        PROCESS_TIMEOUT_MS,
+      ),
     );
     assert.equal(started.turnId, turnId);
     const secondSubscription = await second.openSessionSubscription({
@@ -660,22 +663,26 @@ test('two Clients share one execution after the starting Client disconnects', as
     );
 
     const nextTurnId = randomUUID();
-    const next = await second.startTurn(
-      {
-        sessionId: fixture.sessionId,
-        turnId: nextTurnId,
-        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-      },
-      PROCESS_TIMEOUT_MS,
-    );
-    assert.deepEqual(
+    const next = requireStartedTurn(
       await second.startTurn(
         {
           sessionId: fixture.sessionId,
-          turnId,
+          turnId: nextTurnId,
           content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
         },
         PROCESS_TIMEOUT_MS,
+      ),
+    );
+    assert.deepEqual(
+      requireStartedTurn(
+        await second.startTurn(
+          {
+            sessionId: fixture.sessionId,
+            turnId,
+            content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+          },
+          PROCESS_TIMEOUT_MS,
+        ),
       ),
       stopped,
     );
@@ -841,11 +848,13 @@ test('context actions share root admission and expose backend capability honestl
         status: 'unavailable',
         reason: 'no_completed_request',
       });
-      const started = await first.startTurn({
-        sessionId: fixture.sessionId,
-        turnId,
-        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-      });
+      const started = requireStartedTurn(
+        await first.startTurn({
+          sessionId: fixture.sessionId,
+          turnId,
+          content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+        }),
+      );
       await waitForRunningTurn(second, fixture.sessionId, turnId);
       await assert.rejects(
         second.compactContext({
@@ -887,11 +896,13 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     const firstHost = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
     const turnId = randomUUID();
-    const started = await first.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
+    const started = requireStartedTurn(
+      await first.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
     await first.close();
 
     const second = await connectClient(fixture.root, 'tui');
@@ -992,11 +1003,13 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
     const subscription = await first.openSessionSubscription({ sessionId: fixture.sessionId });
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
-    const started = await starter.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_SANDBOX_BOUNDARY_PROMPT },
-    });
+    const started = requireStartedTurn(
+      await starter.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_SANDBOX_BOUNDARY_PROMPT },
+      }),
+    );
     await starter.close();
 
     const pending = await waitForPendingInteraction(subscription, probe, started.runId);

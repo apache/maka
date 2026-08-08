@@ -11,7 +11,7 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import type { SessionEvent, SessionSummary, StoredMessage, TurnRecord, TurnStatus } from '@maka/core';
+import type { SessionEvent, SessionSummary, TurnRecord, TurnStatus } from '@maka/core';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
@@ -22,6 +22,7 @@ import {
   isCompanionTurnTerminal,
   latestSettledTurnId,
   performCompanionTurn,
+  recoverOrphanedCompanionCopies,
   type CompanionSessionApi,
 } from '../../renderer/quote-companion-core.js';
 
@@ -67,7 +68,6 @@ function makeApi(control: FakeControl = {}) {
         attachmentItems?: unknown;
       };
     }[],
-    setMode: [] as [string, string][],
     branchedFrom: [] as Array<{
       sourceTurnId: string;
       name?: string;
@@ -78,7 +78,6 @@ function makeApi(control: FakeControl = {}) {
     created: 0,
   };
   const api: CompanionSessionApi = {
-    readMessages: async () => [{ turnId: 'x' } as unknown as StoredMessage],
     listTurns: async () => {
       if (control.listTurnsThrows) throw new Error('listTurns failed');
       return control.turns ?? [turn('main-turn-1', 'completed')];
@@ -94,10 +93,6 @@ function makeApi(control: FakeControl = {}) {
         throw new Error('Committed response was lost');
       }
       return forked;
-    },
-    setPermissionMode: async (id, mode) => {
-      calls.setMode.push([id, mode]);
-      return summary(id, mode);
     },
     cleanupSessionCopy: async (id) => {
       calls.removed.push(id);
@@ -220,6 +215,42 @@ describe('deriveCompanionComposerState', () => {
 });
 
 describe('performCompanionTurn', () => {
+  it('abandons every panel-scoped copy orphaned by a renderer reload', async () => {
+    const control: FakeControl = { loseFirstBranchResponse: true };
+    const { api, calls } = makeApi(control);
+    const sourceSession = summary('quote-reload-source', 'execute');
+    const first = await performCompanionTurn({
+      api,
+      isDisposed: () => false,
+      ...base,
+      sourceSession,
+      panelId: 'panel-before-reload',
+      ...recorder(),
+    });
+    assert.equal(first.status, 'error');
+    const orphanedCopyId = calls.branchedFrom[0]?.copyId;
+
+    await recoverOrphanedCompanionCopies(api);
+
+    assert.deepEqual(calls.abandoned, [orphanedCopyId]);
+    const afterReload = await performCompanionTurn({
+      api,
+      isDisposed: () => false,
+      ...base,
+      sourceSession,
+      panelId: 'panel-after-reload',
+      ...recorder(),
+    });
+    assert.equal(afterReload.status, 'sent');
+    assert.notEqual(calls.branchedFrom[1]?.copyId, orphanedCopyId);
+    await cleanupCompanionCopy(
+      api,
+      sourceSession.id,
+      'panel-after-reload',
+      calls.branchedFrom[1]!.copyId,
+    );
+  });
+
   it('happy path: forks at the completed turn, preserves permission, sends, then commits + consumes', async () => {
     const { api, calls } = makeApi({
       turns: [turn('t-old', 'completed'), turn('t-settled', 'completed'), turn('t-running', 'running')],
@@ -235,7 +266,6 @@ describe('performCompanionTurn', () => {
       })),
       [{ sourceTurnId: 't-settled', name: base.name, sideConversation: true }],
     );
-    assert.deepEqual(calls.setMode, []);
     assert.equal(calls.sent.length, 1);
     assert.deepEqual(calls.sent[0].cmd.quotes, [{ text: 'excerpt' }]);
     assert.deepEqual(calls.removed, []);
@@ -300,7 +330,6 @@ describe('performCompanionTurn', () => {
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
     assert.deepEqual(result, { status: 'error', code: 'fork_setup_failed' });
-    assert.deepEqual(calls.setMode, []);
     assert.equal(calls.sent.length, 0);
     assert.deepEqual(rec.events, []);
   });
@@ -438,7 +467,6 @@ describe('performCompanionTurn', () => {
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
     assert.deepEqual(result, { status: 'error', code: 'fork_setup_failed' });
-    assert.deepEqual(calls.setMode, []);
     assert.equal(calls.sent.length, 0);
     assert.deepEqual(rec.events, []);
   });
@@ -452,7 +480,6 @@ describe('performCompanionTurn', () => {
     const result = await performCompanionTurn({ api, isDisposed: () => disposed, ...base, ...rec });
     assert.equal(result.status, 'disposed');
     assert.deepEqual(calls.removed, [calls.branchedFrom[0]!.copyId]);
-    assert.deepEqual(calls.setMode, []);
     assert.equal(calls.sent.length, 0);
     assert.deepEqual(rec.events, []);
   });
@@ -491,7 +518,6 @@ describe('performCompanionTurn', () => {
     });
     assert.deepEqual(result, { status: 'sent', forkId: 'fork-existing' });
     assert.equal(calls.created, 0);
-    assert.deepEqual(calls.setMode, []);
     assert.deepEqual(rec.events, ['beforeSend:fork-existing', 'consumed']);
   });
 });

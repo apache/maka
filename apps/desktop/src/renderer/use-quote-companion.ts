@@ -103,9 +103,8 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * Companion for the quote side panel. On the first question it FORKS the main
  * session (`branchFromTurn` from the latest SETTLED turn) into a child that
  * carries the whole main conversation as context and inherits its model / cwd.
- * The fork is pinned read-only (`explore`): it explains and explores the selected
- * context — writes / shell / destructive operations are hard-blocked, while web /
- * custom tools follow the normal permission path (surfaced here as a prompt).
+ * The fork inherits the source permission profile and exposes the normal
+ * permission control for later changes.
  * Follow-ups stream through the SAME live-turn reducer the main shell uses, and
  * hand off from the live projection only once the persisted message settles (the
  * shared `readSettledMessages` + `reconcileTerminalLiveTurn` rule) so a completed
@@ -129,8 +128,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
   const companionRef = useRef<SessionSummary | undefined>(undefined);
   const companionIdRef = useRef<string | null>(null);
-  // A created fork is hidden immediately, before its permission pin completes,
-  // but is not considered usable until onForkCommitted promotes it.
+  // A created fork is hidden immediately, but is not considered usable until
+  // onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
   const sourceSessionIdRef = useRef(sourceSession?.id);
   sourceSessionIdRef.current = sourceSession?.id;

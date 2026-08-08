@@ -83,6 +83,61 @@ test('independent Branch and Revision actions never share a copy identity', asyn
   revision.complete();
 });
 
+test('renderer reload can enumerate every orphaned Side Chat copy owner', async () => {
+  const storage = memoryStorage();
+  const firstModule = await loadFreshModule('side-chat-first');
+  const first = firstModule.acquireSessionCopyAttempt(
+    {
+      scope: 'quote-companion:panel-a',
+      kind: 'branch',
+      sourceSessionId: 'source-side-chat',
+    },
+    'turn-a',
+    storage,
+    () => 'copy-a',
+  );
+  const second = firstModule.acquireSessionCopyAttempt(
+    {
+      scope: 'quote-companion:panel-b',
+      kind: 'branch',
+      sourceSessionId: 'source-side-chat',
+    },
+    'turn-b',
+    storage,
+    () => 'copy-b',
+  );
+  firstModule.startSessionCopyAttempt(
+    {
+      scope: 'quote-companion:panel-a',
+      kind: 'branch',
+      sourceSessionId: 'source-side-chat',
+    },
+    first.copyId,
+    storage,
+  );
+  firstModule.startSessionCopyAttempt(
+    {
+      scope: 'quote-companion:panel-b',
+      kind: 'branch',
+      sourceSessionId: 'source-side-chat',
+    },
+    second.copyId,
+    storage,
+  );
+
+  const reloadedModule = await loadFreshModule('side-chat-reloaded');
+  assert.deepEqual(
+    reloadedModule
+      .listSessionCopyAttempts('quote-companion:', storage)
+      .map(({ key, attempt }) => ({ scope: key.scope, copyId: attempt.copyId }))
+      .sort((left, right) => left.scope.localeCompare(right.scope)),
+    [
+      { scope: 'quote-companion:panel-a', copyId: 'copy-a' },
+      { scope: 'quote-companion:panel-b', copyId: 'copy-b' },
+    ],
+  );
+});
+
 async function loadFreshModule(name: string): Promise<typeof SessionCopyAttemptModule> {
   const url = new URL('../../renderer/session-copy-attempt.js', import.meta.url);
   url.searchParams.set('instance', name);

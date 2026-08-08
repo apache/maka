@@ -62,6 +62,7 @@ import {
 import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { PROCESS_TIMEOUT_MS, withTimeout } from './fixtures/execution-host-suite.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 const HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT = 'hold follow-up before context recovery';
@@ -136,7 +137,16 @@ test('startup recovery replays one admitted safe-boundary continuation without a
     observer.activate(opened.result.subscriptionId);
 
     await recovery.recover();
-    assert.equal((await terminal.promise).status, 'completed');
+    assert.equal(
+      (
+        await withTimeout(
+          terminal.promise,
+          PROCESS_TIMEOUT_MS,
+          'Recovered safe-boundary continuation did not publish a terminal fact',
+        )
+      ).status,
+      'completed',
+    );
     assert.equal(
       (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
         (message) => message.type === 'user' && message.turnId === pending.targetTurnId,

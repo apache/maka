@@ -591,6 +591,7 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
+      ...(event.content.steering === true ? { steeringEventId: event.id } : {}),
       ...(event.content.displayText !== undefined
         ? { displayText: event.content.displayText }
         : {}),

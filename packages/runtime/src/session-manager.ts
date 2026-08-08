@@ -919,6 +919,7 @@ export class SessionManager {
         runStore: deps.runStore,
         runtimeEventStore: deps.runtimeEventStore,
         readMessages: (sessionId) => deps.store.readMessages(sessionId),
+        appendMessage: (sessionId, message) => deps.store.appendMessage(sessionId, message),
         appendTurnState: (sessionId, turnId, status, lineage, options) =>
           this.appendTurnState(sessionId, turnId, status, lineage, options),
         newId: deps.newId,
@@ -1402,6 +1403,13 @@ export class SessionManager {
     );
     const recovered = new Set<string>();
     for (const session of interrupted) {
+      if (this.runtimeLedgerRepair) {
+        await recoverOr(
+          policy,
+          () => this.runtimeLedgerRepair!.repairSteeringMessagesOnce(session.id),
+          0,
+        );
+      }
       if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
       // Fail-closed: a request whose live owner died can never be answered, so
       // it settles as `deny` with a durable `host_restarted` reason. The run

@@ -118,6 +118,18 @@ test('re-reads the Session revision before retrying a product update', async () 
   ]);
 });
 
+test('settles cleanup when its copy target is already absent', async () => {
+  const { client } = clientWithResponses([
+    new RuntimeHostOperationError(
+      'session.catalog.query',
+      'not_found',
+      'Session copy is already absent',
+    ),
+  ]);
+
+  assert.equal(await client.removeSessionCopy('lost-copy-response'), 'removed');
+});
+
 test('merges a configuration patch into each fresh CAS projection', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 10) },

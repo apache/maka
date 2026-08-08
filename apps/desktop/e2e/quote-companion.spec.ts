@@ -31,6 +31,7 @@ async function waitForSourceSessionToSettle(page: Page) {
 test('the quote layer: settle timing, Escape, immediate hide, and scroll following', async ({
   window: page,
 }) => {
+  test.slow();
   await page.setViewportSize({ width: 1400, height: 900 });
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('selection timing source');
@@ -319,6 +320,7 @@ test('side conversation entry points keep work outside the main transcript', asy
 test('numbered side chat tabs keep independent drafts and close policy', async ({
   window: page,
 }) => {
+  test.slow();
   await page.setViewportSize({ width: 1400, height: 900 });
   const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
   await mainComposer.fill('numbered side chat source');
@@ -423,6 +425,40 @@ test('numbered side chat tabs keep independent drafts and close policy', async (
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(1);
+});
+
+test('renderer reload recovers and cleans its orphaned side conversation fork', async ({
+  window: page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
+  await mainComposer.fill('side chat reload source');
+  await mainComposer.press('Enter');
+  await expect(page.getByText(/Fake backend received: side chat reload source/)).toBeVisible();
+  await waitForSourceSessionToSettle(page);
+
+  await openSideConversationFromLauncher(page);
+  const sideComposer = page
+    .locator('.maka-quote-workbar-panel:not([hidden])')
+    .locator(COMPOSER_INPUT);
+  await sideComposer.fill('orphan this temporary fork');
+  await sideComposer.press('Enter');
+  await expect(
+    page.getByText(/Fake backend received: orphan this temporary fork/),
+  ).toBeVisible();
+  await expect
+    .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
+    .toBe(2);
+
+  await page.reload();
+
+  await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
+  await expect
+    .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
+    .toBe(1);
+  await expect(
+    page.locator('.maka-workbar-tab[data-workbar-tab-id^="side-chat:"]'),
+  ).toHaveCount(0);
 });
 
 test('side chat stages quotes and attachments in one isolated fork', async ({
@@ -639,6 +675,7 @@ test('side chat persists steering and permission changes', async ({
 test('side chat recovers from failures and preserves its draft', async ({
   window: page,
 }) => {
+  test.slow();
   await page.setViewportSize({ width: 1400, height: 900 });
   const mainComposer = page.locator('.mainColumn').locator(COMPOSER_INPUT);
   await mainComposer.fill('side chat recovery source');

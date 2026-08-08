@@ -704,7 +704,15 @@ export class DesktopRuntimeHostClient {
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
-    const current = await this.#requireSession(sessionId);
+    let current: SessionCatalogItem;
+    try {
+      current = await this.#requireSession(sessionId);
+    } catch (error) {
+      if (error instanceof RuntimeHostOperationError && error.code === 'not_found') {
+        return 'removed';
+      }
+      throw error;
+    }
     if (current.revisionOfTurnId !== undefined) {
       const result = await this.#request('session.revision.abandon', {
         targetSessionId: sessionId,

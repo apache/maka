@@ -68,6 +68,7 @@ import {
   assertJsonLines,
   attachment,
   connectClient,
+  requireStartedTurn,
   operationError,
   quotedContent,
   sendStartWithoutReadingResponse,
@@ -104,11 +105,13 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     const committed = await waitForTurn(observer, fixture.sessionId, turnId);
     dropped.destroy();
 
-    const retried = await observer.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text },
-    });
+    const retried = requireStartedTurn(
+      await observer.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text },
+      }),
+    );
     assert.equal(retried.runId, committed.runId);
     await assert.rejects(
       () =>
@@ -127,11 +130,13 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     const successorHost = await fixture.startHost();
     const successorClient = await connectClient(fixture.root, 'run');
     assert.deepEqual(
-      await successorClient.startTurn({
-        sessionId: fixture.sessionId,
-        turnId,
-        content: { text },
-      }),
+      requireStartedTurn(
+        await successorClient.startTurn({
+          sessionId: fixture.sessionId,
+          turnId,
+          content: { text },
+        }),
+      ),
       terminal,
     );
     const successorTurnId = randomUUID();

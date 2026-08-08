@@ -70,6 +70,7 @@ import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureLedgerRecord,
 } from './provider-request-telemetry.js';
+import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -682,8 +683,12 @@ export class AgentRun {
       const steering =
         runtimeEvent.content?.kind === 'text' && runtimeEvent.content.steering === true;
       await this.recordRuntimeEvents([runtimeEvent], steering ? { requireDurableWrite: true } : {});
-      if (steering && sessionEvent.type === 'steering_message') {
-        await this.recordSteeringMessage(sessionEvent);
+      if (this.recordsSessionMessages()) {
+        await materializeRuntimeEventTranscriptProjection(
+          this.input.store,
+          this.sessionId,
+          runtimeEvent,
+        );
       }
     }
   }
@@ -881,21 +886,6 @@ export class AgentRun {
     if (ev.type === 'token_usage') {
       await this.input.store.appendMessage(this.sessionId, { ...ev } satisfies StoredMessage);
     }
-  }
-
-  private async recordSteeringMessage(
-    event: Extract<SessionEvent, { type: 'steering_message' }>,
-  ): Promise<void> {
-    if (!this.recordsSessionMessages()) return;
-    const messages = await this.input.store.readMessages(this.sessionId);
-    if (messages.some((message) => message.id === event.messageId)) return;
-    await this.input.store.appendMessage(this.sessionId, {
-      type: 'user',
-      id: event.messageId,
-      turnId: event.turnId,
-      ts: event.ts,
-      ...event.content,
-    });
   }
 
   async recordSessionEvent(

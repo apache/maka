@@ -11,6 +11,7 @@ import {
   createWorkspaceRuntimeStore,
 } from '@maka/storage';
 import { AgentRun } from '../agent-run.js';
+import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
 
 test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
@@ -274,6 +275,69 @@ test('materializes a durable steering event into the transcript exactly once', a
         turnId,
         ts: sessionEvent.ts,
         text: sessionEvent.content.text,
+        steeringEventId: sessionEvent.id,
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('recovers a steering transcript message from the committed RuntimeEvent ledger', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-crash-cut-'));
+  try {
+    const store = createSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runId = 'run-steering-crash-cut';
+    const turnId = 'turn-steering-crash-cut';
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await runStore.createRun(makeRunHeader(session.id, runId, turnId));
+    const runtimeEvent: RuntimeEvent = {
+      id: 'runtime-steering-crash-cut',
+      invocationId: 'invocation-steering-crash-cut',
+      runId,
+      sessionId: session.id,
+      turnId,
+      ts: 2,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'recover this interjection', steering: true },
+      refs: { providerEventId: 'message-steering-crash-cut' },
+    };
+    await runtimeEventStore.appendRuntimeEvent(session.id, runId, runtimeEvent);
+    assert.deepEqual(await store.readMessages(session.id), []);
+
+    const recoveredStore = createSessionStore(root);
+    const recoveredRunStore = createSqliteAgentRunStore(root);
+    const recoveredRuntimeEventStore = createWorkspaceRuntimeStore(root);
+    const repair = new RuntimeLedgerRepair({
+      runStore: recoveredRunStore,
+      runtimeEventStore: recoveredRuntimeEventStore,
+      readMessages: (sessionId) => recoveredStore.readMessages(sessionId),
+      appendMessage: (sessionId, message) => recoveredStore.appendMessage(sessionId, message),
+      appendTurnState: async () => {},
+      newId: () => 'unused-id',
+      now: () => 10,
+    });
+
+    assert.equal(await repair.repairSteeringMessagesOnce(session.id), 1);
+    assert.equal(await repair.repairSteeringMessagesOnce(session.id), 0);
+    assert.deepEqual(await recoveredStore.readMessages(session.id), [
+      {
+        type: 'user',
+        id: 'message-steering-crash-cut',
+        turnId,
+        ts: 2,
+        text: 'recover this interjection',
+        steeringEventId: runtimeEvent.id,
       },
     ]);
   } finally {

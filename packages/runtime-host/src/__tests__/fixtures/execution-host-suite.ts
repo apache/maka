@@ -70,6 +70,7 @@ import {
   type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
+  type TurnStartResult,
 } from '../../protocol/index.js';
 import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
 import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
@@ -1226,14 +1227,20 @@ export async function waitForTerminalTurn(
 ): Promise<TurnSnapshot> {
   const subscription = await connection.openSessionSubscription({ sessionId });
   try {
-    const current = await connection.queryTurn({ sessionId, turnId });
-    if (isTerminalTurnSnapshot(current)) return current;
-    for await (const frame of subscription) {
-      if (frame.kind !== 'subscription.session_projection') continue;
-      const projected = frame.snapshot.rootTurn;
-      if (projected?.turnId === turnId && isTerminalTurnSnapshot(projected)) return projected;
-    }
-    throw new Error('Session subscription closed before the Turn reached a terminal fact');
+    return await withTimeout(
+      (async () => {
+        const current = await connection.queryTurn({ sessionId, turnId });
+        if (isTerminalTurnSnapshot(current)) return current;
+        for await (const frame of subscription) {
+          if (frame.kind !== 'subscription.session_projection') continue;
+          const projected = frame.snapshot.rootTurn;
+          if (projected?.turnId === turnId && isTerminalTurnSnapshot(projected)) return projected;
+        }
+        throw new Error('Session subscription closed before the Turn reached a terminal fact');
+      })(),
+      PROCESS_TIMEOUT_MS,
+      `Turn ${turnId} in Session ${sessionId} did not reach a terminal fact`,
+    );
   } finally {
     await subscription.close();
   }
@@ -1318,6 +1325,12 @@ export function quoteRefs(prefix: string) {
 
 export function quotedContent(text: string): MessageContent {
   return { text, quotes: quoteRefs(text.replaceAll(' ', '-')) };
+}
+
+export function requireStartedTurn(result: TurnStartResult): TurnSnapshot {
+  assert.equal(result.kind, 'started', JSON.stringify(result));
+  if (result.kind !== 'started') assert.fail('Expected a started Turn');
+  return result.turn;
 }
 
 export function userRuntimeContent(

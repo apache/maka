@@ -59,6 +59,7 @@ import {
   type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
+  type TurnStartResult,
   type TurnStopInput,
   requireClientInstanceId,
   validateProtocolRange,
@@ -160,7 +161,7 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
   regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
@@ -223,18 +224,6 @@ export class RuntimeHostOperationError extends Error {
   ) {
     super(message);
     this.name = 'RuntimeHostOperationError';
-  }
-}
-
-export class RuntimeHostTurnBlockedError extends Error {
-  constructor(
-    readonly skillInvocation: Extract<
-      OperationOutput<'turn.start'>,
-      { kind: 'blocked' }
-    >['skillInvocation'],
-  ) {
-    super('Explicit Skill invocation could not be resolved');
-    this.name = 'RuntimeHostTurnBlockedError';
   }
 }
 
@@ -392,12 +381,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return status;
   }
 
-  async startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    const result = await this.request('turn.start', input, timeoutMs);
-    if (result.kind === 'blocked') {
-      throw new RuntimeHostTurnBlockedError(result.skillInvocation);
-    }
-    return result.turn;
+  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {
+    return this.request('turn.start', input, timeoutMs);
   }
 
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {

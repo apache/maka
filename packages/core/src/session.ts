@@ -662,6 +662,8 @@ export interface UserMessage extends MessageContent {
   id: string;
   turnId: string;
   ts: number;
+  /** Canonical RuntimeEvent that materialized this mid-Turn steering projection. */
+  steeringEventId?: string;
   /** Non-user trigger source. Lets the chat mark turns the user did not
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
@@ -853,7 +855,7 @@ export interface SystemNoteMessage {
 
 const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
-  ['displayText', 'attachments', 'quotes', 'inlineReferences', 'origin'],
+  ['displayText', 'attachments', 'quotes', 'inlineReferences', 'steeringEventId', 'origin'],
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
