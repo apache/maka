@@ -153,9 +153,19 @@
      --warning's orange h55 (info + warning were indistinguishable). Blue is
      also consistent with the accent (h250) and unambiguously reads as
      informational, not cautionary. */
-  --info: oklch(0.68 0.13 240);         /* blue — informational / "ask" mode */
-  --success: oklch(0.55 0.17 145);      /* green — connected, ok */
-  --destructive: oklch(0.58 0.24 28);   /* red — errors, denied */
+  /* Status family, specified rather than picked (visual system 2.0, T1).
+     One lightness for all four hues, each keeping its own chroma, so the
+     family reads as one system instead of four independent choices.
+
+     Measured against white before this: info 2.82:1, warning 3.29:1, success
+     4.55:1, destructive 4.81:1 — a 1.7x spread with TWO of the four under the
+     4.5:1 AA floor. At L=0.50 they land 5.54-6.33:1 together. Residual spread
+     is hue, not drift: yellow carries more luminance than blue at equal
+     lightness, and equalising that would mean abandoning the shared L that
+     makes them a family. */
+  --info: oklch(0.50 0.13 240);         /* blue — informational / "ask" mode */
+  --success: oklch(0.50 0.17 145);      /* green — connected, ok */
+  --destructive: oklch(0.50 0.24 28);   /* red — errors, denied */
 
   /* Legacy brand affordance for a few emphasized surfaces. New checked
      control states use --control instead.
@@ -191,7 +201,7 @@
      hue (h55); info is now cool blue (h240), so the two tiers read as clearly
      different families — no longer the near-identical ambers they once were.
      Still derived nowhere else, safe across palettes. */
-  --warning: oklch(0.66 0.18 55);
+  --warning: oklch(0.50 0.18 55);
   --warning-text: color-mix(in oklab, var(--warning) 50%, var(--foreground));
 
   /* === foreground solid mix scale ===
