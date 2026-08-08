@@ -14,6 +14,7 @@
     "./deep-research-authority": "./dist/deep-research-authority.js",
     "./plan-authority": "./dist/plan-authority.js",
     "./execution-stores": "./dist/execution-stores.js",
+    "./external-sessions": "./dist/external-sessions.js",
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",
     "./interaction-store": "./dist/interaction-store-public.js",
     "./git-worktree-child-executor": "./dist/git-worktree-child-executor.js",

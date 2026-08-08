@@ -45,6 +45,9 @@ import {
   type ArtifactQueryResult,
   type ArtifactTextPreview,
   type EffectivePricingEntry,
+  type ExternalSessionCatalogQueryInput,
+  type ExternalSessionCatalogQueryResult,
+  type ExternalSessionSourceQueryResult,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type InteractionAnswerInput,
@@ -579,6 +582,24 @@ export class DesktopRuntimeHostClient {
     return requireSessionProjection(
       await this.#request("session.create", input),
     );
+  }
+
+  listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
+    return this.#request("external-session.source.query", {});
+  }
+
+  listExternalSessions(
+    input: ExternalSessionCatalogQueryInput,
+  ): Promise<ExternalSessionCatalogQueryResult> {
+    return this.#request("external-session.catalog.query", input);
+  }
+
+  async importExternalSession(input: {
+    readonly adapterId: string;
+    readonly sourceSessionId: string;
+  }): Promise<SessionCatalogProjection> {
+    const result = await this.#request("external-session.import", input);
+    return requireSessionProjection(result.session);
   }
 
   updateSessionMetadata(

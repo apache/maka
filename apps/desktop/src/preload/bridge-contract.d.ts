@@ -37,6 +37,7 @@ import type {
   UsageRange,
   UsageStats,
   E2eFixtureState,
+  ExternalSessionSummary,
   GitReviewReadResult,
   GitReviewMutationAction,
   GitReviewMutationResult,
@@ -363,6 +364,16 @@ export interface MakaBridge {
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sessionId: string): Promise<void>;
+  };
+  externalSessions: {
+    listSources(): Promise<{ adapterIds: string[] }>;
+    list(input: {
+      adapterId: string;
+      includeArchived?: boolean;
+      cwd?: string;
+      cursor?: string;
+    }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }>;
+    import(input: { adapterId: string; sourceSessionId: string }): Promise<SessionSummary>;
   };
   projects: {
     list(): Promise<ProjectRecord[]>;

@@ -1,5 +1,5 @@
 import type { PlanReminder } from '@maka/core';
-import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer } from './icons.js';
+import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer, Upload } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -14,6 +14,7 @@ export function SessionSidebarNav(props: {
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;
+  onImport?(): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
@@ -44,6 +45,9 @@ export function SessionSidebarNav(props: {
         onClick={props.onNew}
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
       />
+      {props.onImport && (
+        <SideNavItem label={copy.importSession} icon={Upload} size="md" onClick={props.onImport} />
+      )}
       <SideNavItem
         label={copy.extensions}
         icon={Blocks}

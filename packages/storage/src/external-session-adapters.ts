@@ -5,7 +5,7 @@ export interface ExternalSessionAdapterOptions {
   codex?: CodexSessionAdapterOptions;
 }
 
-/** Internal default registry. Product entry points are intentionally added later. */
+/** Default source registry shared by product-facing external Session import surfaces. */
 export function createExternalSessionAdapterRegistry(
   options: ExternalSessionAdapterOptions = {},
 ): ExternalSessionAdapterRegistry {

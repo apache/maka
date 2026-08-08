@@ -20,6 +20,7 @@
 @import "./styles/shell-layout.css" layer(components);
 @import "./styles/sidebar.css" layer(components);
 @import "./styles/search-modal.css" layer(components);
+@import "./styles/external-session-import.css" layer(components);
 @import "./styles/prompt-suggestions.css" layer(components);
 @import "./styles/deep-research.css" layer(components);
 @import "./styles/onboarding.css" layer(components);

@@ -32,6 +32,9 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
     ((await ipc.invoke('sessions:list')) as SessionCatalogProjection[]).map(({ id }) => id),
     ['session-first'],
   );
+  assert.deepEqual(await ipc.invoke('external-sessions:listSources'), {
+    adapterIds: ['codex'],
+  });
   assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-first'), []);
   assert.deepEqual(await ipc.invoke('sessions:readExecutionBoundary', 'session-first'), {
     kind: 'managed',
@@ -412,6 +415,9 @@ function connectionHarness(
       }
       if (operation === 'session.create') {
         return session((input as { sessionId: string }).sessionId);
+      }
+      if (operation === 'external-session.source.query') {
+        return { adapterIds: ['codex'] };
       }
       if (
         operation === 'session.catalog.query' &&

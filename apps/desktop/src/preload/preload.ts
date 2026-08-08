@@ -53,6 +53,7 @@ import type {
   UsageRange,
   UsageStats,
   E2eFixtureState,
+  ExternalSessionSummary,
   GitReviewReadResult,
   GitReviewMutationAction,
   GitReviewMutationResult,
@@ -395,6 +396,22 @@ const makaBridge = {
     },
     abandonSessionCopy(sessionId: string): Promise<void> {
       return ipcRenderer.invoke('sessions:abandonSessionCopy', sessionId);
+    },
+  },
+  externalSessions: {
+    listSources(): Promise<{ adapterIds: string[] }> {
+      return ipcRenderer.invoke('external-sessions:listSources');
+    },
+    list(input: {
+      adapterId: string;
+      includeArchived?: boolean;
+      cwd?: string;
+      cursor?: string;
+    }): Promise<{ sessions: ExternalSessionSummary[]; nextCursor: string | null }> {
+      return ipcRenderer.invoke('external-sessions:list', input);
+    },
+    import(input: { adapterId: string; sourceSessionId: string }): Promise<SessionSummary> {
+      return ipcRenderer.invoke('external-sessions:import', input);
     },
   },
   projects: {

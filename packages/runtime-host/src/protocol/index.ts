@@ -32,6 +32,7 @@ export * from './client-capability.js';
 export * from './goal.js';
 export * from './plan.js';
 export * from './execution-inspect.js';
+export * from './external-session.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
@@ -48,7 +49,8 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // 5: relay capability declarations moved off the connection header onto
 // each enabled_model_id item (`relayProfile`) — header items are atomic to
 // the paginator, so a per-model table there could make an entry unreadable.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 5 as const;
+// 6: external Session discovery and import added three closed operation keys.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 6 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such

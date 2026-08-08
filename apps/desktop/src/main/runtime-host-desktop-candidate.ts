@@ -25,6 +25,7 @@ import {
   type DesktopNativeCapabilityProviderInput,
 } from "./runtime-host-native-capabilities.js";
 import { registerRuntimeHostSessionCatalogIpc } from "./runtime-host-session-catalog-ipc-main.js";
+import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
 import {
   registerRuntimeHostSessionDomainsIpc,
   type RuntimeHostSessionDomainsIpcDeps,
@@ -354,6 +355,13 @@ export async function createDesktopRuntimeHostCandidate(
         releaseSessionResources: releaseNativeSession,
         sessionCopyCleanup,
         ...(deps.newId ? { newId: deps.newId } : {}),
+      },
+      ipc,
+    );
+    registerRuntimeHostExternalSessionsIpc(
+      {
+        client,
+        emitSessionsChanged: deps.emitSessionsChanged,
       },
       ipc,
     );
