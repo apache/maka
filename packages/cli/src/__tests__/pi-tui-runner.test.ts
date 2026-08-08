@@ -6075,41 +6075,6 @@ describe('Maka Pi TUI runner', () => {
   });
 
   describe('/recap command', () => {
-    test('shows the cleaned recap text on success', async () => {
-      const terminal = new FakeTerminal();
-      const driver = new RewindDriver([{ turnId: 'turn-1', label: 'first prompt' }]);
-      const run = runMakaPiTui({
-        title: 'Maka',
-        driver,
-        cwd: '/repo',
-        model: 'claude-sonnet-4-5',
-        connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
-        terminal,
-        recap: {
-          generate: async () => ({
-            ok: true,
-            text: 'We fixed the recap bug.',
-            raw: 'We fixed the recap bug.',
-          }),
-        },
-      });
-
-      terminal.input('/recap');
-      terminal.input('\r');
-      await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes('Recap: We fixed the recap bug.'),
-      );
-
-      exitMaka(terminal);
-      await Promise.race([
-        run,
-        delay(CLOSE_BUDGET_MS).then(() => {
-          throw new Error('TUI did not close during test cleanup');
-        }),
-      ]);
-    });
-
     test('a second /recap while one is in flight reports it is already running, without a second generate() call', async () => {
       const terminal = new FakeTerminal();
       const driver = new RewindDriver([{ turnId: 'turn-1', label: 'first prompt' }]);

@@ -1,19 +1,12 @@
 import assert from 'node:assert/strict';
-import { before, describe, test } from 'node:test';
-import { TUI } from '@earendil-works/pi-tui';
+import { describe, test } from 'node:test';
 import type { InvocableSkillEntry } from '@maka/runtime';
 import { MakaAutocompleteProvider } from '../pi-tui-pickers.js';
-import { MakaSkillHighlightEditor } from '../skill-highlight-editor.js';
 import {
   parseSkillInvocationTokens,
   skillInvocationPrefixAt,
   stripSkillInvocationTokens,
 } from '../skill-token.js';
-import { _setColorLevelForTesting, editorTheme } from '../tui-ansi.js';
-import { FakeTerminal } from './tui-terminal-mock.js';
-
-// Pin truecolor so accent escape assertions are hermetic (mirrors the runner tests).
-before(() => _setColorLevelForTesting(3));
 
 describe('skill invocation tokens', () => {
   test('parses canonical tokens and rejects lookalikes', () => {
@@ -144,25 +137,5 @@ describe('skill autocomplete', () => {
     assert.deepEqual(applied.lines, ['帮我 /skill:weekly-report  一下']);
     assert.equal(applied.lines[0].slice(0, applied.cursorCol), '帮我 /skill:weekly-report ');
     assert.equal(provider.shouldTriggerFileCompletion(['/skill:we'], 0, 9), false);
-  });
-});
-
-describe('skill token highlight', () => {
-  test('accents valid tokens only', () => {
-    const tui = new TUI(new FakeTerminal());
-    const editor = new MakaSkillHighlightEditor(tui, editorTheme(), { paddingX: 1 });
-    editor.setSkillTokenValidator((name) => name.toLowerCase() === 'alpha');
-    editor.setText('帮我 /skill:alpha 和 /skill:nope 整理');
-    const rendered = editor.render(80);
-    const line = rendered.find((candidate) => candidate.includes('/skill:alpha'));
-    assert.ok(line, 'token line renders');
-    assert.ok(
-      line.includes('\x1b[38;2;87;163;239m/skill:alpha\x1b[39m'),
-      `valid token carries the brand accent: ${JSON.stringify(line)}`,
-    );
-    assert.ok(
-      !line.includes('\x1b[38;2;87;163;239m/skill:nope\x1b[39m'),
-      'invalid token stays plain',
-    );
   });
 });

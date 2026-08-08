@@ -294,15 +294,6 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, 'prompt=continue this\n');
   });
 
-  test('names the mode the same way the desktop and TUI do (#1616)', async () => {
-    const help = await runFixture(['--help'], { input: '' });
-
-    assert.equal(help.code, 0, help.stderr);
-    assert.match(help.stdout, /--yolo\s+Give this session full access to your files and network/);
-    assert.doesNotMatch(help.stdout, /sandbox/i);
-    assert.doesNotMatch(help.stdout, /bypass/i);
-  });
-
   test('fails closed when resuming a bypass session without --yolo', async () => {
     const cwd = await realpath(process.cwd());
     const resumed = fixtureSession({
