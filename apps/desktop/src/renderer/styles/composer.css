@@ -215,9 +215,8 @@
    session state, not context staged for the next send, so they no longer live
    in the drawer.
 
-   The active palette's interaction accent is the single product accent
-   (DESIGN.md), and an active mode is exactly what it is for; which mode a mark
-   is comes from its icon, not a hue,
+   Maka blue is the single product accent (DESIGN.md), and an active mode is
+   exactly what it is for; which mode a mark is comes from its icon, not a hue,
    so all three share the one accent. The wash derives from currentColor so a
    disabled mark dims both layers together.
 

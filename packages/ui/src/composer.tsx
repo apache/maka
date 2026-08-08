@@ -182,6 +182,11 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     disabled?: boolean;
+    /**
+     * Prevent submission while leaving the draft and recovery controls usable.
+     * Hosts use this for configuration failures that the model picker can fix.
+     */
+    sendBlocked?: boolean;
     hidden?: boolean;
     /**
      * When true, a turn is in flight — live output OR the pre-first-token wait.
@@ -847,9 +852,8 @@ export const Composer = forwardRef<
         // user types are the same thing, and both survive every path the text
         // survives.
         //
-        // No extra colour: the active palette's interaction accent is the
-        // single product accent, and a staged Skill is identified by its
-        // sparkle and its label.
+        // No colour: Maka blue is the single product accent, and a staged
+        // Skill is identified by its sparkle and its label.
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
           if (suggestion.kind === 'command') {
@@ -983,7 +987,12 @@ export const Composer = forwardRef<
   );
 
   async function sendCurrent() {
-    if (props.disabled || sendPendingRef.current || importActionOwnerRef.current?.pending) return;
+    if (
+      props.disabled
+      || props.sendBlocked
+      || sendPendingRef.current
+      || importActionOwnerRef.current?.pending
+    ) return;
     // There is one authoritative draft: staged Skills and files serialize into
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
@@ -1165,6 +1174,7 @@ export const Composer = forwardRef<
   const noModelConnection = props.noModelConnection === true;
   const sendDisabled =
     props.disabled ||
+    props.sendBlocked ||
     sendPending ||
     importActionBusy ||
     !text.trim() ||
@@ -1230,10 +1240,10 @@ export const Composer = forwardRef<
    * the tail of the footer's left controls, after the model and thinking
    * pickers, so switching a mode never shifts those two.
    *
-   * Which mode a mark is comes from its icon, never from a hue. The active
-   * palette's interaction accent is the single product accent (DESIGN.md), so
-   * a per-mode colour would be a second and third accent carrying no semantic
-   * — and a coloured pill per status is on the same file's Don't list.
+   * Which mode a mark is comes from its icon, never from a hue. Maka blue is
+   * the single product accent (DESIGN.md), so a per-mode colour would be a
+   * second and third accent carrying no semantic — and a coloured pill per
+   * status is on the same file's Don't list.
    */
   const modes: ReadonlyArray<{
     id: 'plan' | 'swarm' | 'graph';

@@ -76,8 +76,8 @@ Frontmatter is a snapshot of the current default theme. When it diverges from so
 The palette is cool-neutral and quiet. Light mode places white work surfaces on a near-white canvas; dark mode uses close zinc tones separated by hairlines.
 
 - **Brand mark** is fixed `#71a8fd`; it identifies Maka and is never the general CTA color.
-- **Interaction accent** follows the active palette for focus rings, selection, live-state indicators, borders, and washes—not text.
-- **Primary solid accent** is the contrast-safe variant for filled controls, links, and all accent-colored text or icons.
+- **Interaction accent** follows the active palette for focus, links, selection, and live state.
+- **Primary solid accent** is the contrast-safe variant for filled controls and other accent-colored text or icons.
 - **Surface, canvas, and ink** create hierarchy through tone; derive secondary text, borders, and washes from ink.
 - **Info, success, warning, and destructive** are meanings, not decoration. Enabled is not automatically success.
 
