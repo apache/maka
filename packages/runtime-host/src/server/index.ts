@@ -30,3 +30,11 @@ export {
   readRuntimeHostAccessCredentialMetadata,
   type RuntimeHostAccessCredentialMetadata,
 } from './access-credential-metadata.js';
+export {
+  MANAGED_NPM_PACKAGE_MANAGER_VERSION,
+  ManagedDependencyProducerProcessError,
+  isManagedNpmNodeVersionSupported,
+  runManagedNpmDependencyProvision,
+  type ManagedDependencyProducerProcessFailureReason,
+  type RunManagedNpmDependencyProvisionInput,
+} from './managed-dependency-producer-process.js';
