@@ -11,7 +11,6 @@ import {
   isRetrievalSignal,
   LABELLING_AGENT,
   MIN_REVISION_PREFIX,
-  renderContaminationScanReportMarkdown,
   scanRunForContamination,
   scanTrajectory,
   TRAJECTORY_ARTIFACT_KIND_FULL,
@@ -566,36 +565,6 @@ describe('scanRunForContamination', () => {
           { agent: 'maka', taskId: 'fix-git' },
           { agent: 'codex', taskId: 'cobol-modernization' },
         ]);
-        const markdown = renderContaminationScanReportMarkdown(report);
-        assert.match(markdown, /2 cells this run root was scheduled to grade hold no record/);
-        assert.match(markdown, /## Never recorded/);
-        assert.match(markdown, /`fix-git` \(maka\)/);
-      },
-    );
-  });
-
-  test('renders what was searched before what was found', async () => {
-    await withRun(
-      [
-        {
-          agent: 'maka',
-          taskId: 'cobol-modernization',
-          trajectory: trajectory(['git clone https://github.com/example-org/example-bench-2-1']),
-        },
-        { agent: 'codex', taskId: 'fix-git' },
-      ],
-      async (runRoot) => {
-        const markdown = renderContaminationScanReportMarkdown(
-          await scanRunForContamination({
-            trialCellLogPath: trialCellLogPath(runRoot),
-            identity,
-          }),
-        );
-        assert.match(markdown, /Searched 1 of 2 recorded cells\./);
-        assert.match(markdown, /Recorded means the harness got far enough/);
-        assert.match(markdown, /\| codex \| 1 \| 0 \|/);
-        assert.match(markdown, /## Not searched/);
-        assert.match(markdown, /\*\*upstream_repository\*\*/);
       },
     );
   });

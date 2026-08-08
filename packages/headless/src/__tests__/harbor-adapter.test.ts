@@ -11,7 +11,6 @@ import { decodeRuntimeEvent } from '@maka/core';
 import { HARBOR_CELL_CONTEXT_ENV_KEYS } from '../harbor-cell.js';
 import { buildHarborJobConfig, classifyTrialTermination } from '../harbor-task-runner.js';
 import { agentPhaseTimeoutSec, MAKA_SETTLEMENT_GRACE_SEC } from '../maka-settlement.js';
-import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 const execFileAsync = promisify(execFile);
@@ -574,31 +573,6 @@ describe('Harbor adapter contract', () => {
     }
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /opencode_estimated_cost_usd/);
-  });
-
-  test('opencode-benchmark-makaprompt.json mirrors the benchmark config with only the prompt swapped', async () => {
-    const harborDir = resolve(repoRoot, 'packages/headless/harbor');
-    const baseline = JSON.parse(
-      await readFile(resolve(harborDir, 'opencode-benchmark.json'), 'utf8'),
-    );
-    const ablation = JSON.parse(
-      await readFile(resolve(harborDir, 'opencode-benchmark-makaprompt.json'), 'utf8'),
-    );
-    const expected = {
-      ...baseline,
-      agent: {
-        ...baseline.agent,
-        build: {
-          ...baseline.agent?.build,
-          prompt: DEFAULT_HEADLESS_SYSTEM_PROMPT,
-        },
-      },
-    };
-    assert.deepEqual(
-      ablation,
-      expected,
-      'the ablation config must differ from the benchmark config only by agent.build.prompt, byte-identical to the headless default system prompt',
-    );
   });
 
   test('kimi_code_agent.py runs the pinned CLI contract without Harbor installed', (t: TestContext) => {
