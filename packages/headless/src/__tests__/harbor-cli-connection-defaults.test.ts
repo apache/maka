@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, test, afterEach } from 'node:test';
 import { resolveEconomyTaskMode } from '../economy-task-policy.js';
 import { resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
@@ -19,10 +19,11 @@ let cleanupDirs: string[] = [];
 function makeTempConnections(content: object): string {
   const dir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
   cleanupDirs.push(dir);
-  // MAKA_CONNECTIONS_PATH is the workspace ROOT (the directory), not the
-  // file path — createConnectionStore joins 'llm-connections.json' onto it.
-  writeFileSync(join(dir, 'llm-connections.json'), JSON.stringify(content), 'utf8');
-  return dir;
+  // Returns the connections FILE path — MAKA_CONNECTIONS_PATH is a file path
+  // (the existing contract); createConnectionStoreForFile honors it verbatim.
+  const filePath = join(dir, 'llm-connections.json');
+  writeFileSync(filePath, JSON.stringify(content), 'utf8');
+  return filePath;
 }
 
 afterEach(() => {
@@ -60,7 +61,7 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
     assert.equal(env.MAKA_BASE_URL, 'http://127.0.0.1:8537');
-    assert.equal(env.MAKA_CREDENTIALS_PATH, join(connectionsPath, 'credentials.json'));
+    assert.equal(env.MAKA_CREDENTIALS_PATH, join(dirname(connectionsPath), 'credentials.json'));
   });
 
   test('does not override explicit model, provider, or connection authority', async () => {
@@ -85,14 +86,15 @@ describe('applyConnectionDefaults', () => {
   });
 
   test('ignores missing, malformed, disabled, incomplete, or unsupported connection sources', async () => {
-    // Malformed: a workspace dir whose llm-connections.json is not valid JSON.
+    // Malformed: a connections file that is not valid JSON.
     const malformedDir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
     cleanupDirs.push(malformedDir);
-    writeFileSync(join(malformedDir, 'llm-connections.json'), '{ not valid json!!!', 'utf8');
+    const malformedPath = join(malformedDir, 'llm-connections.json');
+    writeFileSync(malformedPath, '{ not valid json!!!', 'utf8');
 
     const sources = [
-      '/tmp/nonexistent-path-abc123',
-      malformedDir,
+      '/tmp/nonexistent-path-abc123/llm-connections.json',
+      malformedPath,
       makeTempConnections(defaultDocument({ enabled: false })),
       makeTempConnections({
         connections: [
@@ -200,36 +202,50 @@ describe('applyConnectionDefaults', () => {
     assert.equal(env.MAKA_BASE_URL, 'https://chatgpt.com/backend-api/codex');
   });
 
-  test('MAKA_CONNECTIONS_PATH is a directory: a non-standard filename is ignored', async () => {
-    // MAKA_CONNECTIONS_PATH points at the workspace ROOT (the directory
-    // containing llm-connections.json), not the file itself. The store joins
-    // 'llm-connections.json' onto it, so a sibling file with a different name
-    // (e.g. custom.json) is never read — pinning this so the choice does not
-    // silently revert to the old "full file path" semantics.
-    const dir = makeTempConnections(defaultDocument());
-    // Drop a decoy file that must NOT be read.
+  test('MAKA_CONNECTIONS_PATH honors a non-standard filename (file-path contract)', async () => {
+    // MAKA_CONNECTIONS_PATH is the connections FILE path, and any filename is
+    // honored — pinning the existing file-path contract so it does not silently
+    // revert to "directory" semantics. A decoy llm-connections.json sits next to
+    // the custom-named file and must NOT be read when the env var points at the
+    // custom file.
+    const dir = mkdtempSync(join(tmpdir(), 'maka-conn-test-'));
+    cleanupDirs.push(dir);
+    const customPath = join(dir, 'custom.json');
     writeFileSync(
-      join(dir, 'custom.json'),
+      customPath,
       JSON.stringify({
-        defaultSlug: 'decoy',
+        defaultSlug: 'harbor-anthropic',
         connections: [
           {
-            slug: 'decoy',
-            providerType: 'deepseek',
-            defaultModel: 'decoy-model',
+            slug: 'harbor-anthropic',
+            providerType: 'anthropic',
+            defaultModel: 'claude-sonnet-4-20250514',
+            baseUrl: 'http://127.0.0.1:8537',
             enabled: true,
           },
         ],
       }),
       'utf8',
     );
-    const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: dir };
+    // Decoy with the standard name — must be ignored when env points at custom.json.
+    writeFileSync(
+      join(dir, 'llm-connections.json'),
+      JSON.stringify({
+        defaultSlug: 'decoy',
+        connections: [
+          { slug: 'decoy', providerType: 'deepseek', defaultModel: 'decoy-model', enabled: true },
+        ],
+      }),
+      'utf8',
+    );
+    const env: Record<string, string | undefined> = { MAKA_CONNECTIONS_PATH: customPath };
 
     await applyConnectionDefaults(env);
 
-    // The real llm-connections.json wins; the decoy custom.json is ignored.
+    // The custom.json (named in the env var) wins; the decoy is ignored.
     assert.equal(env.MAKA_MODEL, 'anthropic/claude-sonnet-4-20250514');
     assert.equal(env.MAKA_LLM_CONNECTION_SLUG, 'harbor-anthropic');
+    assert.equal(env.MAKA_CREDENTIALS_PATH, join(dir, 'credentials.json'));
   });
 });
 describe('resolveHarborRunOptions backend guard', () => {

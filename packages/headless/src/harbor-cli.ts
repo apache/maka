@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { BackendKind, ProviderType } from '@maka/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
-import { createConnectionStore, resolveMakaWorkspaceRoot } from '@maka/storage';
+import { createConnectionStoreForFile, resolveMakaWorkspaceRoot } from '@maka/storage';
 import type { Config, Task } from './contracts.js';
 import {
   type HarborCellExecutionIdentity,
@@ -849,13 +849,12 @@ export async function applyConnectionDefaults(
   // Skip for non-ai-sdk backends
   if (env.MAKA_BACKEND === 'fake' || env.MAKA_BACKEND === 'pi-agent') return;
 
-  // MAKA_CONNECTIONS_PATH is the workspace ROOT (the directory containing
-  // llm-connections.json), not the file path — createConnectionStore joins
-  // 'llm-connections.json' onto it internally. A basename other than
-  // llm-connections.json is intentionally ignored (pinned by a test). When
-  // unset, fall back to the shared workspace-path authority.
-  const root = env.MAKA_CONNECTIONS_PATH ?? resolveMakaWorkspaceRoot();
-  const store = createConnectionStore(root);
+  // MAKA_CONNECTIONS_PATH is the connections FILE path (the existing contract —
+  // any filename is honored). When unset, fall back to the shared workspace-path
+  // authority joined with the standard filename.
+  const connectionsPath =
+    env.MAKA_CONNECTIONS_PATH ?? join(resolveMakaWorkspaceRoot(), 'llm-connections.json');
+  const store = createConnectionStoreForFile(connectionsPath);
   try {
     const slug = await store.getDefault();
     if (!slug) return;
@@ -875,7 +874,7 @@ export async function applyConnectionDefaults(
     // point readStoredMakaApiKey at it so Windows/Linux no-env works too,
     // not just macOS.
     if (env.MAKA_CREDENTIALS_PATH === undefined) {
-      env.MAKA_CREDENTIALS_PATH = join(root, 'credentials.json');
+      env.MAKA_CREDENTIALS_PATH = join(dirname(connectionsPath), 'credentials.json');
     }
   } catch {
     // File doesn't exist or is malformed — fall through to existing hardcoded

@@ -44,12 +44,23 @@ export function createConnectionStore(workspaceRoot: string): ConnectionStore {
   return new FileConnectionStore(workspaceRoot);
 }
 
+/**
+ * Construct a store rooted at an explicit `llm-connections.json` file path
+ * rather than a workspace directory. Use this when the caller already holds
+ * the full file path (e.g. headless honoring the MAKA_CONNECTIONS_PATH file-path
+ * contract); prefer {@link createConnectionStore} when you have the workspace
+ * root, since desktop/CLI share that root across stores.
+ */
+export function createConnectionStoreForFile(connectionsFilePath: string): ConnectionStore {
+  return new FileConnectionStore(dirname(connectionsFilePath), connectionsFilePath);
+}
+
 class FileConnectionStore implements ConnectionStore {
   private readonly path: string;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(workspaceRoot: string) {
-    this.path = join(workspaceRoot, 'llm-connections.json');
+  constructor(workspaceRoot: string, explicitPath?: string) {
+    this.path = explicitPath ?? join(workspaceRoot, 'llm-connections.json');
   }
 
   async list(): Promise<LlmConnection[]> {
