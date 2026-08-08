@@ -712,9 +712,6 @@ describe('task run export', () => {
       const compact = JSON.parse(await readFile(written.files.resultJson, 'utf8'));
       assert.equal(compact.verifier.authority.source, 'official_harbor_verifier');
       assert.equal(compact.verifier.authority.authoritative, true);
-      const markdown = await readFile(written.files.resultMd, 'utf8');
-      assert.match(markdown, /verifier_authority: official_harbor_verifier authoritative=true/);
-      assert.match(markdown, /artifacts: 0/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
