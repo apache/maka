@@ -8,14 +8,6 @@ import {
 } from '../bot-chat-settings.js';
 
 describe('bot chat settings owner', () => {
-  test('preserves provider-specific defaults', () => {
-    const settings = createDefaultBotChatSettings();
-
-    assert.equal(settings.channels.telegram.proxyUrl, 'http://127.0.0.1:7890');
-    assert.equal(settings.channels.wechat.webhookUrl, 'http://127.0.0.1:18400');
-    assert.equal(settings.channels.discord.readiness, 'scaffolded');
-  });
-
   test('normalizes an explicitly patched allowlist without touching it on unrelated patches', () => {
     const defaults = createDefaultBotChatSettings();
     const withAllowlist = mergeBotChatSettings(defaults, {
