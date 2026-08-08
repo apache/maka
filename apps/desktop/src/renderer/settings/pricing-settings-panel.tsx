@@ -350,6 +350,9 @@ export function PricingSettingsPanel(props: { port: DesktopPricingSettingsPort }
     if (operationGateRef.current.activeKind === 'write') return;
     if (recoveryRef.current?.target.kind === 'upsert') replaceRecovery(null);
     replaceEditor(null);
+    setNotice((current) => snapshotRef.current === null && current
+      ? { ...current, description: undefined }
+      : null);
     requestFocusRestore();
   }
 

@@ -1501,12 +1501,33 @@ export const PricingStaleSnapshot: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const dialog = await submitPricingStoryEditor(canvasElement);
+    const reachStaleRecovery = async () => {
+      const dialog = await submitPricingStoryEditor(canvasElement);
+      await waitForStoryCondition(
+        () => dialog.textContent?.includes('Runtime Host 连接已经变化') === true
+          && dialog.textContent.includes('刷新定价'),
+        'Pricing stale-snapshot recovery did not render',
+      );
+      return dialog;
+    };
+
+    const firstRecovery = await reachStaleRecovery();
+    await clickPricingDialogButton(firstRecovery, '取消');
     await waitForStoryCondition(
-      () => dialog.textContent?.includes('Runtime Host 连接已经变化') === true
-        && dialog.textContent.includes('刷新定价'),
-      'Pricing stale-snapshot recovery did not render',
+      () => document.querySelector('dialog[open]') === null
+        && canvasElement.textContent?.includes('草稿已保留') === false,
+      'Cancelling stale Pricing recovery still claimed to preserve the draft',
     );
+    const refresh = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '刷新定价',
+    );
+    await userEvent.click(refresh);
+    await waitForStoryCondition(
+      () => canvasElement.textContent?.includes('已加载最新生效价格') === true,
+      'Pricing authority did not reload after abandoning stale recovery',
+    );
+    await reachStaleRecovery();
   },
 };
 
@@ -1524,18 +1545,25 @@ export const PricingConflictReview: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const dialog = await openPricingStoryEditor(canvasElement, '自定义');
-    const save = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === '保存',
-    );
-    if (!save) throw new Error('Pricing save action did not render');
-    await userEvent.click(save);
+    const reachConflictReview = async () => {
+      const dialog = await submitPricingStoryEditor(canvasElement);
+      await waitForStoryCondition(
+        () => dialog.textContent?.includes('当前权威值') === true
+          && dialog.textContent.includes('内置')
+          && dialog.textContent.includes('自定义 · 有内置回退'),
+        'Pricing conflict comparison did not render',
+      );
+      return dialog;
+    };
+
+    const firstReview = await reachConflictReview();
+    await clickPricingDialogButton(firstReview, '取消');
     await waitForStoryCondition(
-      () => dialog.textContent?.includes('当前权威值') === true
-        && dialog.textContent.includes('内置')
-        && dialog.textContent.includes('自定义 · 有内置回退'),
-      'Pricing conflict comparison did not render',
+      () => document.querySelector('dialog[open]') === null
+        && canvasElement.textContent?.includes('定价已被其他更改更新') === false,
+      'Cancelling Pricing editor review left an actionless warning',
     );
+    await reachConflictReview();
   },
 };
 
