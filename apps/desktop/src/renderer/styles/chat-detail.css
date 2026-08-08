@@ -1006,7 +1006,10 @@
 
 .maka-artifact-row[data-selected="true"] {
   background: var(--state-selected-bg);
-  border-color: oklch(from var(--link) l c h / 0.24);
+  /* Selection chrome follows the interaction accent (DESIGN.md §2), not the
+     link text role — --link is a text token and moves with link-contrast
+     fixes independently of selection styling. */
+  border-color: oklch(from var(--accent) l c h / 0.24);
 }
 
 @media (prefers-reduced-motion: reduce) {
