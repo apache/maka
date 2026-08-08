@@ -16,7 +16,8 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -268,9 +269,7 @@ test('an archived Session rejects a new Turn before durable admission', async ()
   });
 });
 
-test('a killed Host is recovered exactly once before its successor becomes ready', {
-  skip: process.platform === 'win32' ? 'POSIX process death gate' : false,
-}, async () => {
+test('a killed Host is recovered exactly once before its successor becomes ready', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
@@ -529,8 +528,9 @@ test('startup recovery canonically closes pending linked child admissions withou
     const reader = await tryAcquireInteractiveRootReader(fixture.capability);
     assert.ok(reader);
     if (!reader) throw new Error('Unable to acquire recovery result reader');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
       for (const recovered of [initial, resume, retry, graph]) {
         const run = await stores.agentRunStore.readRun(recovered.sessionId, recovered.runId);
         assert.equal(run.status, 'failed');
@@ -558,15 +558,16 @@ test('startup recovery canonically closes pending linked child admissions withou
           assert.equal(terminal.fact.runStatus, 'failed');
           assert.equal(terminal.fact.failureClass, 'app_restarted');
         }
-        const userMessages = (await stores.sessionStore.readMessages(recovered.sessionId)).filter(
-          (message) => message.type === 'user' && message.turnId === recovered.turnId,
-        );
+        const userMessages: StoredMessage[] = (
+          await stores.sessionStore.readMessages(recovered.sessionId)
+        ).filter((message) => message.type === 'user' && message.turnId === recovered.turnId);
         assert.equal(userMessages.length, recovered.kind === 'linked_child_provider_retry' ? 0 : 1);
         if (recovered.kind !== 'linked_child_provider_retry') {
           assert.equal(userMessages[0]?.id, recovered.userMessageId);
         }
       }
     } finally {
+      await stores?.sessionStore.close?.();
       await reader.close();
     }
   });

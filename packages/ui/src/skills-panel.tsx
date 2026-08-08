@@ -39,6 +39,7 @@ import {
   SegmentedControlItem,
   Selector,
   StatusDot,
+  Text,
   TextInput,
   Toolbar,
 } from '@astryxdesign/core';
@@ -66,6 +67,15 @@ import { useToast } from './toast.js';
 const MARKET_CATEGORY_ALL = '__all__';
 type MarketSort = 'name' | 'recent';
 type SkillTab = 'market' | 'builtin' | 'installed';
+
+/**
+ * Icon sizes by the role the glyph plays, not by call site. Eight hand-written
+ * numbers were scattered through this file; the values are unchanged, but a
+ * size is now a decision recorded once.
+ */
+const SKILL_ROW_ICON_SIZE = 18;
+const SKILL_INLINE_ICON_SIZE = 16;
+const SKILL_META_ICON_SIZE = 14;
 
 export function SkillsModuleMain(props: {
   skills?: SkillEntry[];
@@ -227,7 +237,39 @@ export function SkillsModuleMain(props: {
     if (!normalizedSkillQuery) return true;
     return `${entry.id} ${entry.name} ${entry.description} ${entry.category}`.toLowerCase().includes(normalizedSkillQuery);
   });
+  /**
+   * Built-in skills grouped by category.
+   *
+   * Structure, not colour, is how a browse surface gets richer: a reader
+   * scanning for "something that writes docs" is served by a heading, and no
+   * amount of tinting substitutes for one.
+   *
+   * Guarded twice, because grouping can make a list WORSE. With one category
+   * the headings are pure overhead, and while searching the user has already
+   * said what they want — splitting the few hits across headings buries them.
+   */
+  const bundledCatalogGroups = useMemo(() => {
+    const byCategory = new Map<ManagedSkillCategory, BundledSkillCatalogEntry[]>();
+    for (const entry of bundledCatalogFiltered) {
+      const group = byCategory.get(entry.category);
+      if (group) group.push(entry);
+      else byCategory.set(entry.category, [entry]);
+    }
+    return [...byCategory.entries()];
+  }, [bundledCatalogFiltered]);
+  const showBundledGroups = normalizedSkillQuery === '' && bundledCatalogGroups.length > 1;
+
   const allManagedSources = props.managedSkillSources ?? [];
+  // Distinct ids across both catalogs: a skill offered by the marketplace and
+  // shipped built-in is one thing you can install, not two.
+  const availableToInstallCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of bundledCatalog) if (!entry.installed) ids.add(entry.id);
+    for (const source of allManagedSources) {
+      if (!skills.some((skill) => skill.id === source.id)) ids.add(source.id);
+    }
+    return ids.size;
+  }, [bundledCatalog, allManagedSources, skills]);
   const marketSources = useMemo(() => {
     const filtered = allManagedSources.filter((source) => {
       if (marketCategory !== MARKET_CATEGORY_ALL && source.category !== marketCategory) return false;
@@ -290,7 +332,7 @@ export function SkillsModuleMain(props: {
         isDisabled={installed || skillActionBusy || !onInstall}
         label={copy.install.action(name)}
         tooltip={installed ? copy.install.installedTitle : copy.install.action(name)}
-        icon={installing ? <Loader2 size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
+        icon={installing ? <Loader2 size={SKILL_INLINE_ICON_SIZE} aria-hidden="true" /> : <Download size={SKILL_INLINE_ICON_SIZE} aria-hidden="true" />}
       />
     );
   }
@@ -342,10 +384,18 @@ export function SkillsModuleMain(props: {
               <ListItem
                 key={source.id}
                 label={source.name}
-                description={[source.description || copy.market.sourceFallback, installed ? copy.install.installed : null]
+                description={[
+                  copy.categories[source.category],
+                  installed ? copy.install.installed : null,
+                  source.description || copy.market.sourceFallback,
+                ]
                   .filter(Boolean)
                   .join(' · ')}
-                startContent={<Blocks size={18} aria-hidden="true" />}
+                startContent={(
+                  <span className="maka-module-market-icon" aria-hidden="true">
+                    <Blocks size={SKILL_ROW_ICON_SIZE} />
+                  </span>
+                )}
                 endContent={catalogInstallButton(
                   source.id,
                   source.name,
@@ -378,13 +428,41 @@ export function SkillsModuleMain(props: {
           actions={<UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />}
         />
       ) : (
-        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.builtin.ariaLabel}>
-          {bundledCatalogFiltered.map((entry) => (
+        // One List per category when grouping is on, each carrying its own
+        // heading; a single flat List otherwise. `header` is List's own slot,
+        // so the heading is associated with its rows rather than floating
+        // above them as loose text.
+        (showBundledGroups ? bundledCatalogGroups : [[null, bundledCatalogFiltered] as const]).map(
+          ([category, entries]) => (
+        <List
+          key={category ?? 'all'}
+          density="balanced"
+          hasDividers
+          className="maka-module-page-rows"
+          aria-label={category ? copy.categories[category] : copy.builtin.ariaLabel}
+          header={category ? <Text type="label" size="sm" color="secondary">{copy.categories[category]}</Text> : undefined}
+        >
+          {entries.map((entry) => (
             <ListItem
               key={entry.id}
               label={entry.name}
-              description={entry.description || copy.builtin.fallback}
-              startContent={<Blocks size={18} aria-hidden="true" />}
+              description={[
+                // The category is the group heading when grouping is on;
+                // repeating it on every row under that heading is the
+                // duplicate-count noise we removed from this page before.
+                showBundledGroups ? null : copy.categories[entry.category],
+                entry.declaredTools.length > 0
+                  ? copy.builtin.toolCount(entry.declaredTools.length)
+                  : null,
+                entry.description || copy.builtin.fallback,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+              startContent={(
+                <span className="maka-module-market-icon" aria-hidden="true">
+                  <Blocks size={SKILL_ROW_ICON_SIZE} />
+                </span>
+              )}
               endContent={catalogInstallButton(
                 entry.id,
                 entry.name,
@@ -395,6 +473,8 @@ export function SkillsModuleMain(props: {
             />
           ))}
         </List>
+          ),
+        )
       )}
     </div>
   );
@@ -498,9 +578,14 @@ export function SkillsModuleMain(props: {
     <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="skills" aria-label={props.hubHeader?.title ?? copy.page.title}>
       <ModulePage
         title={props.hubHeader?.title ?? copy.page.title}
+        // The page header said only how many skills are installed, which made
+        // a page whose other two tabs are catalogs look like it had nothing in
+        // them. Counting what is available to install is the number a browser
+        // is actually looking for.
         meta={[
           copy.page.metaInstalled(skills.length),
           updateAvailableCount > 0 ? copy.page.metaUpdates(updateAvailableCount) : null,
+          availableToInstallCount > 0 ? copy.page.metaAvailable(availableToInstallCount) : null,
         ].filter(Boolean).join(' · ')}
         inspectorLabel={copy.detail.label}
         inspectorAutoSaveId="maka-skill-inspector"
@@ -535,7 +620,7 @@ export function SkillsModuleMain(props: {
             <DropdownMenu
               button={{
                 label: copy.page.moreActions,
-                icon: <MoreHorizontal size={16} aria-hidden="true" />,
+                icon: <MoreHorizontal size={SKILL_INLINE_ICON_SIZE} aria-hidden="true" />,
                 isIconOnly: true,
                 variant: 'ghost',
                 isDisabled: skillActionBusy,
@@ -543,21 +628,21 @@ export function SkillsModuleMain(props: {
             >
               {props.onOpenSkillsFolder ? (
                 <DropdownMenuItem
-                  icon={<FolderOpen size={14} aria-hidden="true" />}
+                  icon={<FolderOpen size={SKILL_META_ICON_SIZE} aria-hidden="true" />}
                   label={copy.page.openFolder}
                   onClick={() => runPageActionAfterMenuClose('folder', props.onOpenSkillsFolder)}
                 />
               ) : null}
               {props.onImportManagedSkillSource ? (
                 <DropdownMenuItem
-                  icon={<Download size={14} aria-hidden="true" />}
+                  icon={<Download size={SKILL_META_ICON_SIZE} aria-hidden="true" />}
                   label={copy.market.importLocal}
                   onClick={() => runPageActionAfterMenuClose('source:import', props.onImportManagedSkillSource)}
                 />
               ) : null}
               {canRefreshSkillData ? (
                 <DropdownMenuItem
-                  icon={<RefreshCcw size={14} aria-hidden="true" />}
+                  icon={<RefreshCcw size={SKILL_META_ICON_SIZE} aria-hidden="true" />}
                   label={pendingSkillAction === 'refresh' ? copy.page.refreshing : copy.page.refresh}
                   onClick={() => runPageActionAfterMenuClose('refresh', refreshSkillData)}
                 />

@@ -16,7 +16,8 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -117,8 +118,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for Session setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const session = await stores.sessionStore.create({
         cwd: this.root,
         backend: 'fake',
@@ -128,6 +130,7 @@ export class ExecutionFixture {
       });
       return session.id;
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -141,8 +144,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for continuation setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const sourceInvocationId = randomUUID();
       const sourceRunId = randomUUID();
       const sourceTurnId = randomUUID();
@@ -240,6 +244,7 @@ export class ExecutionFixture {
         sourceRuntimeEventHighWater: requiredToolName ? 4 : 2,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -259,8 +264,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for continuation crash setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const backends = new BackendRegistry();
       backends.register(
         'fake',
@@ -347,6 +353,7 @@ export class ExecutionFixture {
         targetTurnId,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -361,8 +368,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for continuation setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
       const manager = new SessionManager({
         store: stores.sessionStore,
@@ -423,6 +431,7 @@ export class ExecutionFixture {
         targetTurnId,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -450,8 +459,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for child admission setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const turnId = randomUUID();
       const runId = randomUUID();
       const sourceRunId =
@@ -598,6 +608,7 @@ export class ExecutionFixture {
         agentName,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -607,8 +618,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for graph lineage setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const ts = Date.now();
       await stores.agentRunStore.createRun(
         {
@@ -632,6 +644,7 @@ export class ExecutionFixture {
         { durable: true },
       );
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -647,10 +660,12 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for archive');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       await stores.sessionStore.archive(this.sessionId);
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -719,8 +734,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for regenerate admission setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const messages = await stores.sessionStore.readMessages(this.sessionId);
       const source = messages.find(
         (message): message is Extract<StoredMessage, { type: 'user' }> =>
@@ -747,6 +763,7 @@ export class ExecutionFixture {
         userMessageId: result.admission.userMessageId,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -760,8 +777,9 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for admission setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const admittedAt = Date.now();
       const content = typeof input === 'string' ? { text: input } : input;
       const result = await stores.agentRunStore.admitRootTurn({
@@ -807,6 +825,7 @@ export class ExecutionFixture {
         userMessageId: result.admission.userMessageId,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -840,7 +859,7 @@ export class ExecutionFixture {
     host: ExecutionHostHandle,
   ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     if (host.child.exitCode === null && host.child.signalCode === null) {
-      host.child.kill('SIGTERM');
+      host.child.send({ type: 'shutdown' });
     }
     const exit = await withTimeout(
       waitForExitResult(host.child),
@@ -857,12 +876,9 @@ export class ExecutionFixture {
   }
 
   async killHost(host: ExecutionHostHandle): Promise<void> {
+    const closed = waitForCloseResult(host.child);
     host.child.kill('SIGKILL');
-    await withTimeout(
-      waitForExit(host.child),
-      PROCESS_TIMEOUT_MS,
-      'execution Host survived SIGKILL',
-    );
+    await withTimeout(closed, PROCESS_TIMEOUT_MS, 'execution Host survived SIGKILL');
     this.#children.delete(host.child);
   }
 
@@ -877,8 +893,9 @@ export class ExecutionFixture {
 
   async readTurn(turnId: string): Promise<TurnLedger> {
     const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
       const admission = await stores.agentRunStore.readRootTurnAdmission(this.sessionId, turnId);
       assert.ok(admission);
       const runs = (await stores.agentRunStore.listSessionRuns(this.sessionId)).filter(
@@ -901,6 +918,7 @@ export class ExecutionFixture {
         classification: classifyTerminalRuntimeLedger(run, runtimeEvents),
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await reader.close();
     }
   }
@@ -909,10 +927,12 @@ export class ExecutionFixture {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
     if (!owner) throw new Error('Unable to acquire execution root for admission inspection');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      return stores.agentRunStore.listRootTurnAdmissionsForRecovery(this.sessionId);
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      return await stores.agentRunStore.listRootTurnAdmissionsForRecovery(this.sessionId);
     } finally {
+      await stores?.sessionStore.close?.();
       await owner.close();
     }
   }
@@ -923,8 +943,9 @@ export class ExecutionFixture {
     userMessageCount: number;
   }> {
     const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
     try {
-      const stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
       const [admission, runs, messages] = await Promise.all([
         stores.agentRunStore.readRootTurnAdmission(this.sessionId, turnId),
         stores.agentRunStore.listSessionRuns(this.sessionId),
@@ -938,6 +959,7 @@ export class ExecutionFixture {
         ).length,
       };
     } finally {
+      await stores?.sessionStore.close?.();
       await reader.close();
     }
   }
@@ -992,8 +1014,9 @@ export async function withExecutionRoot(
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   let sessionId: string;
+  let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
   try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
       backend: 'fake',
@@ -1003,6 +1026,7 @@ export async function withExecutionRoot(
     });
     sessionId = session.id;
   } finally {
+    await stores?.sessionStore.close?.();
     await owner.close();
   }
   const fixture = new ExecutionFixture(base, root, capability, sessionId);
@@ -1424,6 +1448,27 @@ function waitForExitResult(
     };
     child.once('error', onError);
     child.once('exit', onExit);
+  });
+}
+
+function waitForCloseResult(
+  child: ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      child.off('error', onError);
+      child.off('close', onClose);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      resolve({ code, signal });
+    };
+    child.once('error', onError);
+    child.once('close', onClose);
   });
 }
 

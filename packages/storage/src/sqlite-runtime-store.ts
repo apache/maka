@@ -5,33 +5,19 @@ import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
-  canonicalToolArgsHash,
   buildWorkspaceBaselineAuthorityEvents,
-  buildImmutableRuntimePrefix,
-  decodeContinuationClaim,
   decodeRuntimeEvent,
-  encodeCanonicalRuntimeEvent,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
   scanWorkspaceBaselineAuthority,
-  scanToolLedger,
-  stableJsonStringify,
   TOOL_BOUNDARY_PROTOCOL_V1,
   TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
-  ToolLedgerCorruptionError,
-  ToolLedgerRejectionError,
   WORKSPACE_AUTHORITY_SESSION_ID,
   WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
-  validateGenericToolLedgerAppend,
-  validateToolLedgerEventLane,
-  validateToolLedgerTransition,
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
-  type ContinuationClaimV1,
   type RuntimeEvent,
-  type ImmutableRuntimePrefixV1,
-  type RuntimeBoundaryDigest,
   type RuntimeContinuationAuthorityStore,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
@@ -47,6 +33,23 @@ import {
   type WorkspaceProjectionRebuildResult,
   type WorkspaceVersionRecordV1,
 } from '@maka/core';
+import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import {
+  scanToolLedger,
+  ToolLedgerCorruptionError,
+  ToolLedgerRejectionError,
+  validateGenericToolLedgerAppend,
+  validateToolLedgerEventLane,
+  validateToolLedgerTransition,
+} from '@maka/core/tool-ledger-scanner';
+import {
+  buildImmutableRuntimePrefix,
+  decodeContinuationClaim,
+  type ContinuationClaimV1,
+  type ImmutableRuntimePrefixV1,
+  type RuntimeBoundaryDigest,
+} from '@maka/core/runtime-boundary';
 import {
   assertToolRecoveryEventBundle,
   interpretScannedToolRecovery,

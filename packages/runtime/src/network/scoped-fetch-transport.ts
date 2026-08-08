@@ -28,6 +28,15 @@ export interface ProxiedFetchTransport {
   close(): Promise<void>;
 }
 
+export function inheritFetchProxySnapshot(
+  fetch: typeof globalThis.fetch,
+  source: typeof globalThis.fetch,
+): typeof globalThis.fetch {
+  const descriptor = Object.getOwnPropertyDescriptor(source, FETCH_PROXY_SNAPSHOT);
+  if (descriptor) Object.defineProperty(fetch, FETCH_PROXY_SNAPSHOT, descriptor);
+  return fetch;
+}
+
 export function createConnectionEffectFetchTransport(
   proxy: ConnectionEffectProxySnapshot | null,
 ): ConnectionEffectFetchTransport {

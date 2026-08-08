@@ -26,6 +26,7 @@
    session-health-notice layout contract reads its rule body by matching the
    selector immediately before the brace. */
 .maka-boundary-unreadable-notice,
+.maka-workspace-readiness-notice,
 .maka-session-health-notice {
   width: min(
     var(--maka-chat-measure),
@@ -37,6 +38,7 @@
 }
 
 .maka-boundary-unreadable-notice-alert,
+.maka-workspace-readiness-notice-alert,
 .maka-session-health-notice-alert {
   width: 100%;
   box-sizing: border-box;

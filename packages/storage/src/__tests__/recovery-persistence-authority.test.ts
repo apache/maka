@@ -4,11 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import {
-  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
-  canonicalToolArgsHash,
-  type RuntimeEvent,
-} from '@maka/core';
+import { TOOL_RECOVERY_BUNDLE_CAPABILITY_V1, type RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 import type { SqliteRuntimeStoreFailpoint } from '../sqlite-runtime-store.js';
 

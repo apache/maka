@@ -5,7 +5,7 @@ import {
   buildImmutableRuntimePrefix,
   type ImmutableRuntimePrefixV1,
 } from '@maka/core/runtime-boundary';
-import { canonicalToolArgsHash } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 

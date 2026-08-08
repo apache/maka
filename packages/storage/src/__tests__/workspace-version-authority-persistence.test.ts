@@ -7,11 +7,11 @@ import { describe, it } from 'node:test';
 import {
   WORKSPACE_AUTHORITY_SESSION_ID,
   buildWorkspaceBaselineAuthorityEvents,
-  canonicalToolArgsHash,
   workspaceAuthorityIdentity,
   type RuntimeEvent,
   type WorkspaceBaselineAuthorityInput,
 } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createConversationOperationalStateStore } from '../conversation-operational-state.js';
 import {
   createSqliteRuntimeStore,

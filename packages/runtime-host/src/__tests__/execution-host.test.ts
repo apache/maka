@@ -16,7 +16,8 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -350,8 +351,9 @@ async function seedDispatchedClientCapability(
   const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire execution root for Client Capability setup');
+  let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
   try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const operationId = 'client-capability-before-ready';
     const invocationId = `${operationId}-invocation`;
     const runId = `${operationId}-run`;
@@ -413,6 +415,7 @@ async function seedDispatchedClientCapability(
     });
     return { runId, toolName };
   } finally {
+    await stores?.sessionStore.close?.();
     await owner.close();
   }
 }
@@ -1101,13 +1104,15 @@ async function withOwnedTaskLedgerToolPort<T>(
   const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire the interactive Task Ledger tool port');
+  let writer: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>> | undefined;
   try {
-    const writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
     const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate(), {
       probeSessionRemoval: async () => ({ kind: 'present' }),
     });
     return await run(coordinator, buildTaskLedgerTools({ store: coordinator }));
   } finally {
+    writer?.close();
     await owner.close();
   }
 }

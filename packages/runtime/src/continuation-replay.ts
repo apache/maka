@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
+import type { RuntimeEvent } from '@maka/core';
+import { stableJsonStringify } from '@maka/core/tool-args-identity';
 import {
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,
-  stableJsonStringify,
   type ImmutableRuntimePrefixV1,
   type RuntimeBoundaryCursorV1,
   type RuntimeBoundaryDigest,
-  type RuntimeEvent,
   type RuntimePrefixSegmentV1,
-} from '@maka/core';
+} from '@maka/core/runtime-boundary';
 import type { RuntimeEventModelReplayItem, RuntimeEventReplayDiagnostic } from './model-history.js';
 import {
   buildRuntimeEventModelReplayPlan,

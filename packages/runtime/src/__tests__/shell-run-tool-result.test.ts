@@ -3,12 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import {
-  encodeCanonicalRuntimeEvent,
-  type PtyShellOutput,
-  type RuntimeEvent,
-  type ShellRunRecord,
-} from '@maka/core';
+import { type PtyShellOutput, type RuntimeEvent, type ShellRunRecord } from '@maka/core';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { createSessionStore } from '@maka/storage';
 
 import {
