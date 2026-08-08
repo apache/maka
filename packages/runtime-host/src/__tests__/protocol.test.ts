@@ -280,6 +280,19 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       { ...identity, type: 'tool_progress', chunk: 'working' },
       { ...identity, type: 'tool_result', status: 'completed', durationMs: 3 },
+      {
+        ...identity,
+        type: 'tool_result_preview',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          childSessionId: 'child-1',
+          agentName: 'Local Read',
+          turnId: 'turn-child',
+          status: 'running',
+          permissionMode: 'explore',
+        },
+      },
     ]) {
       assert.doesNotThrow(() => decodeHostFrame({ ...envelope, event }));
     }
@@ -301,6 +314,19 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_result',
         status: 'errored',
         error: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result_preview',
+        isError: false,
+        content: {
+          kind: 'subagent',
+          agentName: 'Local Read',
+          turnId: 'turn-child',
+          status: 'running',
+          permissionMode: 'explore',
+          summary: 'bulk is not open-facts',
+        },
       },
     ]) {
       assert.throws(() => decodeHostFrame({ ...envelope, event }), isInvalidFrame);

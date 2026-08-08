@@ -313,6 +313,25 @@ function mapBackendSessionEvent(
             : {}),
         },
       };
+    case 'tool_result_preview':
+      // Live-only mid-flight open-facts. Not function_response.
+      return {
+        ...base,
+        partial: true,
+        role: 'tool',
+        author: 'tool',
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+        ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
+        refs: {
+          toolCallId: event.toolUseId,
+          ...(event.parentToolCallId !== undefined
+            ? { parentToolCallId: event.parentToolCallId }
+            : {}),
+          ...(event.parentOperationId !== undefined
+            ? { parentOperationId: event.parentOperationId }
+            : {}),
+        },
+      };
     case 'tool_result': {
       const name = memory.toolNameByUseId.get(event.toolUseId) ?? '';
       const ev: RuntimeEvent = {

@@ -43,6 +43,8 @@ export type {
   ToolOutputStream,
   ToolProgressEvent,
   ToolResultEvent,
+  ToolResultPreviewEvent,
+  ToolResultPreviewContent,
   ToolResultContent,
   ShellRunSnapshotResult,
   ShellRunCompactResult,
@@ -111,6 +113,12 @@ export {
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
 } from './events.js';
+
+// tool-result-preview.ts — live-only open-facts for mid-flight tool UI
+export {
+  decodeToolResultPreviewContent,
+  materializeToolResultPreviewForActivity,
+} from './tool-result-preview.js';
 
 // tool-result-status.ts — tool activity status from a result, or from its absence
 export type {

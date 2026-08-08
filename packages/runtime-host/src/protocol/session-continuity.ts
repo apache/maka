@@ -1,4 +1,6 @@
 import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import type { ToolResultPreviewContent } from '@maka/core/events';
+import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
 import {
   assertExactKeys,
@@ -142,6 +144,11 @@ export type SessionToolEvent =
       operationId?: string;
       status: 'completed' | 'errored';
       durationMs?: number;
+    })
+  | (SessionToolEventIdentity & {
+      type: 'tool_result_preview';
+      isError: boolean;
+      content: ToolResultPreviewContent;
     });
 
 export interface SessionEventFrame extends SubscriptionEnvelope {
@@ -631,6 +638,32 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
         : {
             durationMs: requireCount(record.durationMs, 'Session tool result duration'),
           }),
+    };
+  }
+  if (record.type === 'tool_result_preview') {
+    assertExactKeys(record, 'Session tool result preview event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'toolUseId',
+      'isError',
+      'content',
+    ]);
+    if (typeof record.isError !== 'boolean') {
+      throw invalidProtocolFrame('Invalid Session tool result preview isError');
+    }
+    let content: ToolResultPreviewContent;
+    try {
+      content = decodeToolResultPreviewContent(record.content);
+    } catch {
+      throw invalidProtocolFrame('Invalid Session tool result preview content');
+    }
+    return {
+      type: record.type,
+      ...identity,
+      isError: record.isError,
+      content,
     };
   }
   throw invalidProtocolFrame('Invalid Session tool event type');

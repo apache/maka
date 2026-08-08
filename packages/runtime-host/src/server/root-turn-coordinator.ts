@@ -3661,6 +3661,7 @@ function isRuntimeSessionTransientEvent(
     event.type === 'tool_start' ||
     event.type === 'tool_output_delta' ||
     event.type === 'tool_progress' ||
+    event.type === 'tool_result_preview' ||
     event.type === 'tool_result'
   );
 }

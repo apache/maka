@@ -936,4 +936,79 @@ describe('reconcileTerminalLiveTurn', () => {
       steps: [projection.steps[1]!],
     });
   });
+
+  it('attaches a live tool_result_preview without settling the tool', () => {
+    const started = applyLiveTurnEvent(undefined, {
+      type: 'tool_start',
+      id: 'event-1',
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolUseId: 'tool-1',
+      toolName: 'agent_spawn',
+      args: { profile: 'local_read', task: 'Inspect' },
+      ts: 100,
+    });
+    const previewed = applyLiveTurnEvent(started, {
+      type: 'tool_result_preview',
+      id: 'event-2',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-session',
+        agentId: 'local_read',
+        agentName: 'Local Read',
+        turnId: 'child-turn',
+        runId: 'child-run',
+        status: 'running',
+        permissionMode: 'explore',
+      },
+      ts: 101,
+    });
+
+    assert.equal(previewed.steps[0]?.tools[0]?.status, 'running');
+    assert.deepEqual(previewed.steps[0]?.tools[0]?.result, {
+      kind: 'subagent',
+      childSessionId: 'child-session',
+      agentId: 'local_read',
+      agentName: 'Local Read',
+      turnId: 'child-turn',
+      runId: 'child-run',
+      status: 'running',
+      permissionMode: 'explore',
+      summary: '',
+      artifactIds: [],
+    });
+
+    const settled = applyLiveTurnEvent(previewed, {
+      type: 'tool_result',
+      id: 'event-3',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-session',
+        agentId: 'local_read',
+        agentName: 'Local Read',
+        turnId: 'child-turn',
+        runId: 'child-run',
+        status: 'completed',
+        permissionMode: 'explore',
+        summary: 'done',
+        artifactIds: [],
+      },
+      ts: 102,
+    });
+    assert.equal(settled.steps[0]?.tools[0]?.status, 'completed');
+    assert.equal(
+      settled.steps[0]?.tools[0]?.result &&
+        settled.steps[0]?.tools[0]?.result.kind === 'subagent'
+        ? settled.steps[0]?.tools[0]?.result.summary
+        : undefined,
+      'done',
+    );
+  });
+
 });

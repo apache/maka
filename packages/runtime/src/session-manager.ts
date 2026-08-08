@@ -306,6 +306,7 @@ export interface SpawnChildSessionInput {
     runId: string;
     agentId: string;
     agentName: string;
+    permissionMode: SessionHeader['permissionMode'];
   }) => void | Promise<void>;
   /** Presentation-only observer for projecting child activity into a parent surface. */
   onEvent?: (event: SessionEvent) => void;
@@ -3169,6 +3170,7 @@ export class SessionManager {
         runId,
         agentId: snapshot.agentId,
         agentName: snapshot.agentName,
+        permissionMode: child.permissionMode,
       };
       let readyNotification: Promise<void> | undefined;
       const notifyReady = (): Promise<void> => {
