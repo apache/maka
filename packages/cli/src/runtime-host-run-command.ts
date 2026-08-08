@@ -28,6 +28,11 @@ import {
   type RuntimeHostMakaSessionDriver,
 } from './runtime-host-session-driver.js';
 import type { MakaPreparedSessionTurn } from './session-driver.js';
+import {
+  formatRuntimeHostCliTaskBlockers,
+  isRuntimeHostCliTaskBlocked,
+  readRuntimeHostCliTaskReadiness,
+} from './runtime-host-task-readiness.js';
 
 const GRAPH_POLL_INTERVAL_MS = 25;
 
@@ -37,7 +42,7 @@ export interface RuntimeHostRunCommandDeps {
     connection: RuntimeHostConnection,
     catalog: RuntimeHostCliConnectionContext['catalog'],
     input: Parameters<MakaRunDeps['createContext']>[0],
-  ): MakaRunContext;
+  ): MakaRunContext | Promise<MakaRunContext>;
   run: typeof runMakaTextCliCore;
 }
 
@@ -68,6 +73,7 @@ export async function runRuntimeHostTextCli(
           ),
         createContext: async (input) => {
           const context = await connect(input.workspaceRoot);
+          await assertRuntimeHostRunReady(context.connection, context.catalog, input);
           return commandDeps.createContext(context.connection, context.catalog, input);
         },
       },
@@ -128,6 +134,23 @@ export function createRuntimeHostRunContext(
       : {}),
     close: async () => runtime.close(),
   };
+}
+
+async function assertRuntimeHostRunReady(
+  connection: RuntimeHostConnection,
+  catalog: RuntimeHostCliConnectionContext['catalog'],
+  input: Parameters<MakaRunDeps['createContext']>[0],
+): Promise<void> {
+  const snapshot = await readRuntimeHostCliTaskReadiness({
+    connection,
+    catalog,
+    cwd: input.cwd,
+    ...(input.requestedConnectionSlug ? { connectionSlug: input.requestedConnectionSlug } : {}),
+    ...(input.requestedModel ? { model: input.requestedModel } : {}),
+  });
+  if (isRuntimeHostCliTaskBlocked(snapshot)) {
+    throw new Error(`Task is not ready:\n${formatRuntimeHostCliTaskBlockers(snapshot)}`);
+  }
 }
 
 class RuntimeHostRunRuntime implements MakaRunRuntime {
