@@ -321,23 +321,12 @@ describe('Runtime Host bootstrap protocol', () => {
         isError: false,
         content: {
           kind: 'subagent',
+          childSessionId: 'child-1',
           agentName: 'Local Read',
           turnId: 'turn-child',
           status: 'running',
           permissionMode: 'explore',
           summary: 'bulk is not open-facts',
-        },
-      },
-      {
-        ...identity,
-        type: 'tool_result_preview',
-        isError: false,
-        content: {
-          kind: 'subagent',
-          agentName: 'Local Read',
-          turnId: 'turn-child',
-          status: 'running',
-          permissionMode: 'explore',
         },
       },
     ]) {

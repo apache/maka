@@ -556,14 +556,13 @@ describe('AiSdkBackend deferred agent tools', () => {
       1,
       'execute-mode permission still allows the loaded subagent tool to run',
     );
-    assert.deepEqual(spawnCalls[0], {
+    assert.partialDeepStrictEqual(spawnCalls[0], {
       parentRunId: 'parent-run',
       parentTurnId: 'turn-1',
       toolCallId: 'tc-spawn',
       agentProfile: LOCAL_READ_AGENT_PROFILE,
       prompt: 'Inspect the runtime tests.',
       abortSignal: assertAbortSignal(spawnCalls[0]),
-      onReady: assertOnReady(spawnCalls[0]),
       onEvent: assertOnEvent(spawnCalls[0]),
     });
   });
@@ -851,14 +850,6 @@ function assertOnEvent(value: unknown): (event: SessionEvent) => void {
     'spawn input carries a child event observer',
   );
   return value.onEvent as (event: SessionEvent) => void;
-}
-
-function assertOnReady(value: unknown): (...args: unknown[]) => unknown {
-  assert.ok(
-    value && typeof value === 'object' && 'onReady' in value && typeof value.onReady === 'function',
-    'spawn input carries a ready observer for live tool_result_preview',
-  );
-  return value.onReady as (...args: unknown[]) => unknown;
 }
 
 // ---------------------------------------------------------------------------

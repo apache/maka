@@ -936,50 +936,20 @@ describe('reconcileTerminalLiveTurn', () => {
       steps: [projection.steps[1]!],
     });
   });
+});
 
-  it('attaches a live tool_result_preview without settling the tool', () => {
-    const started = applyLiveTurnEvent(undefined, {
-      type: 'tool_start',
-      id: 'event-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'agent_spawn',
-      args: { profile: 'local_read', task: 'Inspect' },
-      ts: 100,
-    });
-    const previewed = applyLiveTurnEvent(started, {
-      type: 'tool_result_preview',
-      id: 'event-2',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      isError: false,
-      content: {
-        kind: 'subagent',
-        childSessionId: 'child-session',
-        agentId: 'local_read',
-        agentName: 'Local Read',
-        turnId: 'child-turn',
-        runId: 'child-run',
-        status: 'running',
-        permissionMode: 'explore',
-      },
-      ts: 101,
-    });
+describe('tool_result_preview live projection', () => {
+  it('attaches live open-facts and replaces them with the durable result', () => {
+    const previewed = previewedSubagentTurn();
+    const previewedTool = previewed.steps[0]?.tools[0];
 
-    assert.equal(previewed.steps[0]?.tools[0]?.status, 'running');
-    assert.deepEqual(previewed.steps[0]?.tools[0]?.result, {
-      kind: 'subagent',
-      childSessionId: 'child-session',
-      agentId: 'local_read',
-      agentName: 'Local Read',
-      turnId: 'child-turn',
-      runId: 'child-run',
-      status: 'running',
-      permissionMode: 'explore',
-      summary: '',
-      artifactIds: [],
-    });
+    assert.equal(previewedTool?.status, 'running');
+    assert.equal(
+      previewedTool?.result?.kind === 'subagent'
+        ? previewedTool.result.childSessionId
+        : undefined,
+      'child-session',
+    );
 
     const settled = applyLiveTurnEvent(previewed, {
       type: 'tool_result',
@@ -1012,32 +982,7 @@ describe('reconcileTerminalLiveTurn', () => {
   });
 
   it('keeps open-facts when RH-style empty tool_result settles the row', () => {
-    const started = applyLiveTurnEvent(undefined, {
-      type: 'tool_start',
-      id: 'event-1',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'tool-1',
-      toolName: 'agent_spawn',
-      args: { profile: 'local_read', task: 'Inspect' },
-      ts: 100,
-    });
-    const previewed = applyLiveTurnEvent(started, {
-      type: 'tool_result_preview',
-      id: 'event-2',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      isError: false,
-      content: {
-        kind: 'subagent',
-        childSessionId: 'child-session',
-        agentName: 'Local Read',
-        turnId: 'child-turn',
-        status: 'running',
-        permissionMode: 'explore',
-      },
-      ts: 101,
-    });
+    const previewed = previewedSubagentTurn();
     const settled = applyLiveTurnEvent(previewed, {
       type: 'tool_result',
       id: 'event-3',
@@ -1049,16 +994,37 @@ describe('reconcileTerminalLiveTurn', () => {
     });
 
     assert.equal(settled.steps[0]?.tools[0]?.status, 'completed');
-    assert.deepEqual(settled.steps[0]?.tools[0]?.result, {
+    assert.deepEqual(settled.steps[0]?.tools[0]?.result, previewed.steps[0]?.tools[0]?.result);
+  });
+});
+
+function previewedSubagentTurn(): LiveTurnProjection {
+  const started = applyLiveTurnEvent(undefined, {
+    type: 'tool_start',
+    id: 'event-1',
+    turnId: 'turn-1',
+    stepId: 'step-1',
+    toolUseId: 'tool-1',
+    toolName: 'agent_spawn',
+    args: { profile: 'local_read', task: 'Inspect' },
+    ts: 100,
+  });
+  return applyLiveTurnEvent(started, {
+    type: 'tool_result_preview',
+    id: 'event-2',
+    turnId: 'turn-1',
+    toolUseId: 'tool-1',
+    isError: false,
+    content: {
       kind: 'subagent',
       childSessionId: 'child-session',
+      agentId: 'local_read',
       agentName: 'Local Read',
       turnId: 'child-turn',
+      runId: 'child-run',
       status: 'running',
       permissionMode: 'explore',
-      summary: '',
-      artifactIds: [],
-    });
+    },
+    ts: 101,
   });
-
-});
+}

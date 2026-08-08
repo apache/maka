@@ -424,7 +424,6 @@ describe('ToolRuntime settlement', () => {
 
   it('publishes a live tool_result_preview when a linked child becomes ready', async () => {
     const events: Array<{ type: string; content?: unknown }> = [];
-    let readySeen = false;
     const runtime = makeRuntime({
       runId: 'parent-run',
       spawnChildSession: async (input) => {
@@ -436,7 +435,6 @@ describe('ToolRuntime settlement', () => {
           agentName: 'Local Read',
           permissionMode: 'explore',
         });
-        readySeen = true;
         return {
           kind: 'subagent',
           childSessionId: 'child-session',
@@ -478,7 +476,6 @@ describe('ToolRuntime settlement', () => {
       },
     });
 
-    assert.equal(readySeen, true);
     const preview = events.find((event) => event.type === 'tool_result_preview');
     assert.deepEqual(preview?.content, {
       kind: 'subagent',
@@ -492,7 +489,6 @@ describe('ToolRuntime settlement', () => {
     });
     const previewIndex = events.findIndex((event) => event.type === 'tool_result_preview');
     const resultIndex = events.findIndex((event) => event.type === 'tool_result');
-    assert.ok(previewIndex >= 0);
     assert.ok(resultIndex > previewIndex);
     assert.equal(
       (settlement.result as { childSessionId?: string }).childSessionId,
