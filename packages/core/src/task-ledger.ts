@@ -455,9 +455,13 @@ export function validateTaskUpdate(
       explicitReopen,
     })
   ) {
+    const recovery =
+      previousTask.status === 'pending' && normalized.value.status === 'completed'
+        ? '. Call task_update with status "in_progress" first, then call task_update with status "completed" and completionEvidence.'
+        : '';
     return invalid(
       'invalid_transition',
-      `Invalid task status transition from ${previousTask.status} to ${normalized.value.status}`,
+      `Invalid task status transition from ${previousTask.status} to ${normalized.value.status}${recovery}`,
     );
   }
   const evidence = validateTaskEvidence(nextTask);

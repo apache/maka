@@ -314,6 +314,27 @@ describe('task lifecycle validators', () => {
     );
   });
 
+  test('names the recovery calls for pending tasks completed out of order', () => {
+    const result = validateTaskUpdate(
+      {
+        id: 't1',
+        key: 'T1',
+        subject: 'x',
+        status: 'pending',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      { status: 'completed', completionEvidence: 'test passed' },
+    );
+
+    assert.deepEqual(result, {
+      ok: false,
+      reason: 'invalid_transition',
+      message:
+        'Invalid task status transition from pending to completed. Call task_update with status "in_progress" first, then call task_update with status "completed" and completionEvidence.',
+    });
+  });
+
   test('normalizes explicit reopen as a one-shot update option', () => {
     assert.deepEqual(normalizeUpdateTaskInput({ explicitReopen: true }), {
       ok: true,
