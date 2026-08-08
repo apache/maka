@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { PersonalizationSettingsPage } from "./appearance-settings-page";
+import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
   SettingsActions,
   SettingsField,
@@ -62,7 +62,7 @@ export function GeneralSettingsPage(props: {
       {/* Designer audit P2-13: identity fields (显示名称/界面语言/语气偏好)
           moved here from the 外观 page — they configure who you are to the
           app, not how the app looks. The component keeps its save flow. */}
-      <PersonalizationSettingsPage
+      <PersonalizationSettingsSection
         settings={props.settings}
         onUpdate={props.onUpdate}
       />

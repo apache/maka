@@ -1,6 +1,8 @@
 import { parse } from 'acorn';
 import {
+  createSourceFile,
   DiagnosticCategory,
+  isFunctionDeclaration,
   ModuleKind,
   ScriptTarget,
   flattenDiagnosticMessageText,
@@ -233,9 +235,13 @@ const SUPPORTED_COLLECTION_METHODS = new Set([
   'substring',
 ]);
 
-interface CopyBudget {
-  nodes: number;
-  maxNodes: number;
+interface MaterializationOptions {
+  label: string;
+  maxDepth: number;
+  maxCollectionItems: number;
+  preserveUndefined?: boolean;
+  maxBytes?: number;
+  byteLimitLabel?: string;
 }
 
 const MAX_COPY_NODES = 100_000;
@@ -291,15 +297,13 @@ class Interpreter {
       this.throwIfTerminalFailure();
       await this.superviseUnobservedPromises();
       this.throwIfTerminalFailure();
-      const copied = copyPlainData(
-        value,
-        'execution result',
-        this.limits.maxDataDepth,
-        0,
-        new Set(),
-        this.limits.maxCollectionItems,
-      );
-      assertByteLimit(copied, this.limits.maxOutputBytes, 'output');
+      const copied = materializePlainData(value, {
+        label: 'execution result',
+        maxDepth: this.limits.maxDataDepth,
+        maxCollectionItems: this.limits.maxCollectionItems,
+        maxBytes: this.limits.maxOutputBytes,
+        byteLimitLabel: 'output',
+      });
       return { ok: true, value: copied, toolCalls: [...this.toolCalls] };
     } catch (error) {
       if (!this.cellAbortController.signal.aborted) this.cellAbortController.abort(error);
@@ -1048,14 +1052,11 @@ class Interpreter {
           throw new InterpreterError('execution_error', 'JSON.parse expects one string', node);
         }
         try {
-          return copyPlainData(
-            JSON.parse(args[0]),
-            'JSON.parse result',
-            this.limits.maxDataDepth,
-            0,
-            new Set(),
-            this.limits.maxCollectionItems,
-          );
+          return materializePlainData(JSON.parse(args[0]), {
+            label: 'JSON.parse result',
+            maxDepth: this.limits.maxDataDepth,
+            maxCollectionItems: this.limits.maxCollectionItems,
+          });
         } catch (error) {
           if (error instanceof InterpreterError) throw error;
           throw new InterpreterError(
@@ -1068,15 +1069,12 @@ class Interpreter {
       if (args.length !== 1) {
         throw new InterpreterError('execution_error', 'JSON.stringify expects one value', node);
       }
-      const copied = copyPlainData(
-        args[0],
-        'JSON.stringify input',
-        this.limits.maxDataDepth,
-        0,
-        new Set(),
-        this.limits.maxCollectionItems,
-        true,
-      );
+      const copied = materializePlainData(args[0], {
+        label: 'JSON.stringify input',
+        maxDepth: this.limits.maxDataDepth,
+        maxCollectionItems: this.limits.maxCollectionItems,
+        preserveUndefined: true,
+      });
       assertByteLimit(copied, this.limits.maxIntermediateBytes, 'JSON.stringify');
       return JSON.stringify(copied);
     }
@@ -1487,14 +1485,11 @@ class Interpreter {
     if (this.activeToolCalls >= this.limits.maxConcurrency) {
       throw new InterpreterError('limit_exceeded', 'Tool concurrency limit exceeded', node);
     }
-    const input = copyPlainData(
-      value,
-      `arguments for ${name}`,
-      this.limits.maxDataDepth,
-      0,
-      new Set(),
-      this.limits.maxCollectionItems,
-    );
+    const input = materializePlainData(value, {
+      label: `arguments for ${name}`,
+      maxDepth: this.limits.maxDataDepth,
+      maxCollectionItems: this.limits.maxCollectionItems,
+    });
     assertByteLimit(input, this.limits.maxIntermediateBytes, 'tool arguments');
     const call = { index: this.toolCalls.length + 1, name };
     this.toolCalls.push(call);
@@ -1503,15 +1498,13 @@ class Interpreter {
       const operation = this.input.callTool(name, input, this.cellAbortController.signal);
       this.hostToolOperations.push(operation);
       const output = await awaitWithAbort(operation, this.cellAbortController.signal);
-      const copied = copyPlainData(
-        output,
-        `result from ${name}`,
-        this.limits.maxDataDepth,
-        0,
-        new Set(),
-        this.limits.maxCollectionItems,
-      );
-      assertByteLimit(copied, this.limits.maxResultBytes, `result from ${name}`);
+      const copied = materializePlainData(output, {
+        label: `result from ${name}`,
+        maxDepth: this.limits.maxDataDepth,
+        maxCollectionItems: this.limits.maxCollectionItems,
+        maxBytes: this.limits.maxResultBytes,
+        byteLimitLabel: `result from ${name}`,
+      });
       return copied;
     } catch (error) {
       if (this.input.signal?.aborted) throw abortReason(this.input.signal);
@@ -2025,7 +2018,19 @@ function isAstNode(value: unknown): value is AstNode {
 }
 
 function parseCell(code: string): AstNode {
-  const transpiled = transpileModule(`async function __maka_cell__() {\n${code}\n}`, {
+  const wrappedSource = `async function __maka_cell__() {\n${code}\n}`;
+  const sourceFile = createSourceFile('cell.ts', wrappedSource, ScriptTarget.ESNext, true);
+  const sourceWrapper = sourceFile.statements[0];
+  if (
+    sourceFile.statements.length !== 1 ||
+    !sourceWrapper ||
+    !isFunctionDeclaration(sourceWrapper) ||
+    sourceWrapper.name?.text !== '__maka_cell__' ||
+    !sourceWrapper.body
+  ) {
+    throw new InterpreterError('parse_error', 'Cell source escaped its wrapper');
+  }
+  const transpiled = transpileModule(wrappedSource, {
     reportDiagnostics: true,
     compilerOptions: { target: ScriptTarget.ESNext, module: ModuleKind.ESNext },
   });
@@ -2052,85 +2057,128 @@ function parseCell(code: string): AstNode {
     );
   }
   const root = asAst(parsed);
-  const wrapper = nodes(root, 'body').find(
-    (node) =>
-      node.type === 'FunctionDeclaration' && optionalAst(node, 'id')?.name === '__maka_cell__',
-  );
-  if (!wrapper) throw new InterpreterError('parse_error', 'Cell wrapper could not be parsed');
+  const body = nodes(root, 'body');
+  const wrapper = body[0];
+  if (
+    body.length !== 1 ||
+    wrapper?.type !== 'FunctionDeclaration' ||
+    optionalAst(wrapper, 'id')?.name !== '__maka_cell__'
+  ) {
+    throw new InterpreterError('parse_error', 'Cell source escaped its wrapper');
+  }
   return ast(wrapper, 'body');
 }
 
-function copyPlainData(
-  value: unknown,
-  label: string,
-  maxDepth: number,
-  depth = 0,
-  seen = new Set<object>(),
-  maxCollectionItems = Number.MAX_SAFE_INTEGER,
-  preserveUndefined = false,
-  budget: CopyBudget = {
-    nodes: 0,
-    maxNodes: MAX_COPY_NODES,
-  },
-): unknown {
-  if (depth > maxDepth)
-    throw new InterpreterError('invalid_data', `${label} exceeds the data-depth limit`);
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value))
-      throw new InterpreterError('invalid_data', `${label} contains a non-finite number`);
-    return value;
-  }
-  if (value === undefined) return preserveUndefined ? undefined : null;
-  if (typeof value !== 'object')
-    throw new InterpreterError('invalid_data', `${label} contains a non-data value`);
-  budget.nodes += 1;
-  if (budget.nodes > budget.maxNodes) {
-    throw new InterpreterError('limit_exceeded', `${label} traversal limit exceeded`);
-  }
-  if (seen.has(value)) throw new InterpreterError('invalid_data', `${label} contains a cycle`);
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      if (value.length > maxCollectionItems) {
-        throw new InterpreterError('limit_exceeded', `${label} item limit exceeded`);
+function materializePlainData(value: unknown, options: MaterializationOptions): unknown {
+  const seen = new Set<object>();
+  let nodes = 0;
+  let serializedBytes = 0;
+
+  const ensureBytes = (bytes: number): void => {
+    if (options.maxBytes === undefined) return;
+    if (bytes > options.maxBytes - serializedBytes) {
+      throw new InterpreterError(
+        'limit_exceeded',
+        `${options.byteLimitLabel ?? options.label} byte limit exceeded`,
+      );
+    }
+  };
+  const addBytes = (bytes: number): void => {
+    ensureBytes(bytes);
+    if (options.maxBytes === undefined) return;
+    serializedBytes += bytes;
+  };
+  const addSerializedBytes = (item: unknown, requiredAfter = 0): void => {
+    if (options.maxBytes === undefined) return;
+    ensureBytes(requiredAfter);
+    const available = options.maxBytes - serializedBytes - requiredAfter;
+    const bytes = serializedByteLength(item, Math.max(0, available));
+    ensureBytes(bytes + requiredAfter);
+    addBytes(bytes);
+  };
+
+  const copy = (current: unknown, depth: number, requiredAfter: number): unknown => {
+    if (depth > options.maxDepth) {
+      throw new InterpreterError('invalid_data', `${options.label} exceeds the data-depth limit`);
+    }
+    if (current === null || typeof current === 'string' || typeof current === 'boolean') {
+      addSerializedBytes(current, requiredAfter);
+      return current;
+    }
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) {
+        throw new InterpreterError('invalid_data', `${options.label} contains a non-finite number`);
       }
-      return value.map((item) =>
-        copyPlainData(
-          item,
-          label,
-          maxDepth,
-          depth + 1,
-          seen,
-          maxCollectionItems,
-          preserveUndefined,
-          budget,
-        ),
-      );
+      addSerializedBytes(current, requiredAfter);
+      return current;
     }
-    if (!isPlainRecord(value))
-      throw new InterpreterError('invalid_data', `${label} contains a host object`);
-    if (Object.keys(value).length > maxCollectionItems) {
-      throw new InterpreterError('limit_exceeded', `${label} item limit exceeded`);
+    if (current === undefined) {
+      const copied = options.preserveUndefined ? undefined : null;
+      addSerializedBytes(copied, requiredAfter);
+      return copied;
     }
-    const output: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      assertSafeKey(key);
-      output[key] = copyPlainData(
-        item,
-        label,
-        maxDepth,
-        depth + 1,
-        seen,
-        maxCollectionItems,
-        preserveUndefined,
-        budget,
-      );
+    if (typeof current !== 'object') {
+      throw new InterpreterError('invalid_data', `${options.label} contains a non-data value`);
     }
-    return output;
-  } finally {
-    seen.delete(value);
-  }
+    ensureBytes(2 + requiredAfter);
+    nodes += 1;
+    if (nodes > MAX_COPY_NODES) {
+      throw new InterpreterError('limit_exceeded', `${options.label} traversal limit exceeded`);
+    }
+    if (seen.has(current)) {
+      throw new InterpreterError('invalid_data', `${options.label} contains a cycle`);
+    }
+    seen.add(current);
+    try {
+      if (Array.isArray(current)) {
+        const length = current.length;
+        if (length > options.maxCollectionItems) {
+          throw new InterpreterError('limit_exceeded', `${options.label} item limit exceeded`);
+        }
+        ensureBytes((length === 0 ? 2 : length * 2 + 1) + requiredAfter);
+        addBytes(1);
+        const output = new Array<unknown>(length);
+        for (let index = 0; index < length; index += 1) {
+          if (index > 0) addBytes(1);
+          const requiredAfterItem = (length - index - 1) * 2 + 1 + requiredAfter;
+          if (index in current) {
+            ensureBytes(1 + requiredAfterItem);
+            output[index] = copy(current[index], depth + 1, requiredAfterItem);
+          } else addSerializedBytes(null, requiredAfterItem);
+        }
+        addBytes(1);
+        return output;
+      }
+      if (!isPlainRecord(current)) {
+        throw new InterpreterError('invalid_data', `${options.label} contains a host object`);
+      }
+      const keys = Object.keys(current);
+      if (keys.length > options.maxCollectionItems) {
+        throw new InterpreterError('limit_exceeded', `${options.label} item limit exceeded`);
+      }
+      for (const key of keys) assertSafeKey(key);
+      const output: Record<string, unknown> = {};
+      addBytes(1);
+      let emitted = 0;
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (!descriptor?.enumerable) continue;
+        if (emitted > 0) addBytes(1);
+        addSerializedBytes(key);
+        addBytes(1);
+        const requiredAfterItem = 1 + requiredAfter;
+        ensureBytes(1 + requiredAfterItem);
+        output[key] = copy(current[key], depth + 1, requiredAfterItem);
+        emitted += 1;
+      }
+      addBytes(1);
+      return output;
+    } finally {
+      seen.delete(current);
+    }
+  };
+
+  return copy(value, 0, 0);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

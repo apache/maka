@@ -280,10 +280,14 @@ test('drives the renderer Session execution facade through real UDS framing', as
             return {
               ok: true,
               result: {
-                sessionId: input.sessionId,
-                turnId: input.turnId,
-                runId: 'run-1',
-                status: 'running',
+                kind: 'started',
+                turn: {
+                  sessionId: input.sessionId,
+                  turnId: input.turnId,
+                  runId: 'run-1',
+                  status: 'running',
+                },
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
               },
             };
           },

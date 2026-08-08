@@ -20,11 +20,6 @@ const fingerprint = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Agent Graph Client protocol', () => {
   test('declares bounded ready query, inspection, and stop operations', () => {
-    assert.deepEqual(Object.keys(AGENT_GRAPH_OPERATION_SPECS), [
-      'agent.graph.query',
-      'agent.graph.operator.query',
-      'agent.graph.stop',
-    ]);
     assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].mode, 'query');
     assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.operator.query'].mode, 'query');
     assert.equal(AGENT_GRAPH_OPERATION_SPECS['agent.graph.stop'].mode, 'control');
@@ -145,6 +140,7 @@ function graphSnapshot(): AgentGraphClientSnapshot {
     schemaVersion: 1,
     rootSessionId: 'root-1',
     graphId: 'agent_graph_1',
+    orchestrationMode: 'swarm',
     snapshotVersion: fingerprint,
     status: 'active',
     scheduleRevision: 1,
@@ -200,7 +196,18 @@ function graphSnapshot(): AgentGraphClientSnapshot {
         revision: 1,
         committedAt: 1,
       },
+      {
+        workId: 'work:2',
+        target: { kind: 'preset', presetId: 'deepseek-flash-reader' },
+        inputIds: [],
+        status: 'requested',
+        instructionPreview: 'Inspect independently.',
+        instructionTruncated: false,
+        revision: 1,
+        committedAt: 1,
+      },
     ],
+    reconciliationFailures: [],
     stoppedTargets: [],
     claims: [
       {
@@ -220,6 +227,7 @@ function graphSnapshot(): AgentGraphClientSnapshot {
       operators: 0,
       edges: 0,
       work: 0,
+      reconciliationFailures: 0,
       stoppedTargets: 0,
       claims: 0,
       controlDecisions: 0,

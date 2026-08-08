@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { IpcMain } from "electron";
-import type { AttachmentRef } from "@maka/core";
+import {
+  SIDE_CONVERSATION_SESSION_LABEL,
+  type AttachmentRef,
+} from "@maka/core";
 import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
@@ -227,6 +230,58 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
   assert.equal(committed.size, 3);
 });
 
+test("marks Runtime Host Branch copies as side conversations", async () => {
+  const metadataUpdates: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionExecutionIpc(
+    {
+      client: executionClient({
+        copySession: async (_kind, input) => ({
+          ...session(),
+          id: input.targetSessionId,
+          labels: ["source-label"],
+        }),
+        updateSessionMetadata: async (sessionId, patch) => {
+          metadataUpdates.push({ sessionId, patch });
+          return {
+            ...session(),
+            id: sessionId,
+            labels: patch.labels ?? [],
+          };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+    },
+    ipc,
+  );
+
+  const branch = (await ipc.invoke("sessions:branchFromTurn", "source-session", {
+    sourceTurnId: "source-turn",
+    copyId: "side-copy",
+    name: "Side chat",
+    sideConversation: true,
+  })) as { labels: string[] };
+
+  assert.deepEqual(metadataUpdates, [
+    {
+      sessionId: "side-copy",
+      patch: {
+        name: "Side chat",
+        labels: ["source-label", SIDE_CONVERSATION_SESSION_LABEL],
+      },
+    },
+  ]);
+  assert.deepEqual(branch.labels, [
+    "source-label",
+    SIDE_CONVERSATION_SESSION_LABEL,
+  ]);
+});
+
 test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
   const starts: unknown[] = [];
   const uploads: unknown[] = [];
@@ -251,10 +306,14 @@ test("sends canonical content and uploads owned Attachment bytes through the Hos
     startTurn: async (input) => {
       starts.push(input);
       return {
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        runId: "run-1",
-        status: "running",
+        kind: "started",
+        turn: {
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          runId: "run-1",
+          status: "running",
+        },
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
       };
     },
   });
@@ -360,10 +419,14 @@ test("uploads a selected workspace file as a Host-owned Session Artifact", async
         startTurn: async (input) => {
           starts.push(input);
           return {
-            sessionId: input.sessionId,
-            turnId: input.turnId,
-            runId: "run-1",
-            status: "running",
+            kind: "started",
+            turn: {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              runId: "run-1",
+              status: "running",
+            },
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
           };
         },
       }),
@@ -402,7 +465,7 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
     {
       client: executionClient({
         getSession: async () => session(),
-        startSkillTurn: async (input) => {
+        startTurn: async (input) => {
           starts.push(input);
           return {
             kind: "started",
@@ -549,7 +612,6 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
     setSessionReadMarker: unavailable,
-    startSkillTurn: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,
     submitMessage: unavailable,

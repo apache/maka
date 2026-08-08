@@ -3,7 +3,7 @@ import type { SettingsSection, ThemePreference, UiLocale } from '@maka/core';
 import type { ComposerHandle, InteractionQueues, LiveTurnProjection } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
-import type { SessionWorkbarTab } from './session-workbar-layout';
+import type { SessionWorkbarTabKind } from './session-workbar-tabs';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 
@@ -25,7 +25,11 @@ export function createAppShellE2eFixtureActions(options: {
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
   setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
   setWorkbarCollapsed: Dispatch<SetStateAction<boolean>>;
-  setWorkbarTab: Dispatch<SetStateAction<SessionWorkbarTab>>;
+  openWorkbarTab: (
+    kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
+    placement?: 'right' | 'bottom',
+    options?: { preview?: boolean },
+  ) => void;
   setThemePref: Dispatch<SetStateAction<ThemePreference>>;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
 }): AppShellE2eFixtureActions {
@@ -43,7 +47,7 @@ export function createAppShellE2eFixtureActions(options: {
     setSearchModalOpen,
     setSessionListCollapsed,
     setWorkbarCollapsed,
-    setWorkbarTab,
+    openWorkbarTab,
     setThemePref,
     setUiLocaleOverride,
   } = options;
@@ -125,7 +129,18 @@ export function createAppShellE2eFixtureActions(options: {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
     if (state.workbarCollapsed !== undefined) setWorkbarCollapsed(state.workbarCollapsed);
-    if (state.workbarTab) setWorkbarTab(state.workbarTab);
+    if (
+      state.workbarTab === 'review' ||
+      state.workbarTab === 'terminal' ||
+      state.workbarTab === 'tasks' ||
+      state.workbarTab === 'browser' ||
+      state.workbarTab === 'files' ||
+      state.workbarTab === 'inspector'
+    ) {
+      openWorkbarTab(state.workbarTab, 'right', {
+        preview: state.workbarPreview,
+      });
+    }
     if (state.openConnectionDetailSlug) {
       // oauth-relogin fixture: open Settings → 模型 with the seeded
       // needs_reauth connection's detail sheet expanded so the re-login

@@ -35,9 +35,7 @@ export interface TurnStartInput {
   maxSteps?: number;
 }
 
-export type SkillTurnStartInput = TurnStartInput;
-
-export type SkillTurnStartResult =
+export type TurnStartResult =
   | {
       kind: 'started';
       turn: TurnSnapshot;
@@ -171,28 +169,7 @@ export const TURN_OPERATION_SPECS = {
       'internal_failure',
     ] as const,
     decodeInput: decodeTurnStartInput,
-    decodeOutput: decodeTurnSnapshot,
-    assertOutputForInput: (input, output) => {
-      if (input.sessionId !== output.sessionId || input.turnId !== output.turnId) {
-        throw invalidProtocolFrame('Turn start changed operation identity');
-      }
-    },
-  }),
-  'turn.skill.start': defineOperation({
-    mode: 'command',
-    availability: 'ready',
-    errors: [
-      'host_not_ready',
-      'host_draining',
-      'operation_unavailable',
-      'not_found',
-      'session_archived',
-      'session_busy',
-      'operation_conflict',
-      'internal_failure',
-    ] as const,
-    decodeInput: decodeTurnStartInput,
-    decodeOutput: decodeSkillTurnStartResult,
+    decodeOutput: decodeTurnStartResult,
     assertOutputForInput: (input, output) => {
       if (
         output.kind === 'started' &&
@@ -576,7 +553,7 @@ export function decodeTurnResumeStartResult(value: unknown): TurnResumeStartResu
   throw invalidProtocolFrame('Invalid Turn resume start result');
 }
 
-export function decodeSkillTurnStartResult(value: unknown): SkillTurnStartResult {
+export function decodeTurnStartResult(value: unknown): TurnStartResult {
   const record = requireRecord(value, 'Turn start result');
   let skillInvocation: SkillInvocationResult;
   try {

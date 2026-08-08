@@ -14,6 +14,14 @@ import type {
   StopSessionInput,
   MakaTool,
 } from '@maka/runtime';
+import {
+  AgentGraphSupervisorWakeCoordinator,
+  SessionActivityRegistry,
+  drainGoalTurn,
+  renderAgentSwarmSupervisorWake,
+  shouldWakeAgentSwarmSupervisor,
+} from '@maka/runtime';
+import type { AgentGraphSupervisorWakeStore, AgentRunStore, SessionHeader } from '@maka/core';
 
 export interface HeadlessSessionCapabilities {
   spawnChildAgent(sessionId: string, input: SpawnChildAgentInput): Promise<SpawnChildAgentResult>;
@@ -34,11 +42,16 @@ export interface HeadlessSessionCapabilities {
 
 export function createHeadlessSessionCapabilityBridge(): {
   capabilities: HeadlessSessionCapabilities;
-  bind(manager: SessionManager, graphCoordinator?: AgentGraphCoordinator): void;
+  bind(
+    manager: SessionManager,
+    graphCoordinator?: AgentGraphCoordinator,
+    graphWakeCoordinator?: AgentGraphSupervisorWakeCoordinator,
+  ): void;
   settle(sessionId: string, input?: StopSessionInput): Promise<void>;
 } {
   let manager: SessionManager | undefined;
   let graphCoordinator: AgentGraphCoordinator | undefined;
+  let graphWakeCoordinator: AgentGraphSupervisorWakeCoordinator | undefined;
   const activeOperations = new Set<Promise<unknown>>();
   const requireManager = (): SessionManager => {
     if (!manager) {
@@ -76,15 +89,35 @@ export function createHeadlessSessionCapabilityBridge(): {
         return graphCoordinator.toolsForSession(sessionId);
       },
     },
-    bind(nextManager, nextGraphCoordinator) {
+    bind(nextManager, nextGraphCoordinator, nextGraphWakeCoordinator) {
       if (manager) {
         throw new Error('Headless session capabilities are already bound');
       }
       manager = nextManager;
       graphCoordinator = nextGraphCoordinator;
+      graphWakeCoordinator = nextGraphWakeCoordinator;
     },
     async settle(sessionId, input) {
       const operations = [...activeOperations];
+      if (!input?.source && graphCoordinator) {
+        if (!graphWakeCoordinator) {
+          await graphCoordinator.waitForIdle(sessionId);
+        } else {
+          for (let cycle = 0; cycle < 64; cycle += 1) {
+            await graphCoordinator.waitForIdle(sessionId);
+            await graphWakeCoordinator.waitForIdle();
+            await graphCoordinator.waitForIdle(sessionId);
+            await graphWakeCoordinator.waitForIdle();
+            const snapshot = await graphCoordinator.getSnapshot(sessionId);
+            if (snapshot.scheduleRevision === 0 || snapshot.closed) break;
+            if (cycle === 63) {
+              throw new Error(
+                `Headless agent graph ${snapshot.graphId} did not finish after 64 supervisor checkpoints`,
+              );
+            }
+          }
+        }
+      }
       let graphStopError: unknown;
       if (graphCoordinator) {
         try {
@@ -114,4 +147,61 @@ export function createHeadlessSessionCapabilityBridge(): {
       if (error !== undefined) throw error;
     },
   };
+}
+
+export function createHeadlessAgentGraphWakeCoordinator(input: {
+  manager: SessionManager;
+  graphCoordinator: AgentGraphCoordinator;
+  activityRegistry: SessionActivityRegistry;
+  wakeStore: AgentGraphSupervisorWakeStore;
+  runStore: Pick<AgentRunStore, 'listSessionRuns'>;
+  sessionStore: { readHeader(sessionId: string): Promise<SessionHeader> };
+  newId(): string;
+}): AgentGraphSupervisorWakeCoordinator {
+  return new AgentGraphSupervisorWakeCoordinator({
+    activityRegistry: input.activityRegistry,
+    wakeStore: input.wakeStore,
+    readSnapshot: (rootSessionId) => input.graphCoordinator.getSnapshot(rootSessionId),
+    startTurn: async (sessionId, message, activity, abortSignal, isCurrent) => {
+      if (!(await isCurrent())) {
+        return {
+          kind: 'superseded',
+          turnId: message.turnId,
+          reason: 'Agent graph supervisor checkpoint was superseded before execution.',
+        };
+      }
+      let stopPromise: Promise<void> | undefined;
+      const stop = () => {
+        stopPromise ??= input.manager.stopSession(sessionId, { source: 'graph_supervisor' });
+      };
+      abortSignal.addEventListener('abort', stop, { once: true });
+      if (abortSignal.aborted) stop();
+      try {
+        return await drainGoalTurn({
+          events: input.manager.sendMessage(sessionId, message),
+          turnId: message.turnId,
+          activity,
+        });
+      } finally {
+        abortSignal.removeEventListener('abort', stop);
+        await stopPromise;
+      }
+    },
+    inspectAttempt: async (rootSessionId, attemptId, turnId) => {
+      const runs = (await input.runStore.listSessionRuns(rootSessionId)).filter(
+        (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+      );
+      if (runs.length > 1) {
+        throw new Error(`Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`);
+      }
+      return runs[0]?.status ?? 'missing';
+    },
+    isSessionDeliverable: async (sessionId) => {
+      const header = await input.sessionStore.readHeader(sessionId);
+      return !header.isArchived && header.status !== 'archived';
+    },
+    shouldWake: shouldWakeAgentSwarmSupervisor,
+    renderWake: renderAgentSwarmSupervisorWake,
+    newId: input.newId,
+  });
 }

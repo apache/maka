@@ -23,8 +23,6 @@ export type MakaPiTuiTurnRequest =
       prompt: string;
       /** Model-facing text after explicit skill expansion, when different. */
       sendText?: string;
-      /** Ask the Runtime Host to resolve explicit Skill tokens atomically with Turn admission. */
-      invokeSkills?: boolean;
       /** Session observed before preparation; null is valid for the first turn. */
       sessionId: string | null;
       /** Trusted one-turn orchestration override supplied by a host command. */
@@ -83,7 +81,6 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
         ? request.turn
         : await input.driver.preparePrompt(request.prompt, {
             ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
-            ...(request.invokeSkills ? { invokeSkills: true } : {}),
             ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           });
     preparedTurnId = turn.turnId;

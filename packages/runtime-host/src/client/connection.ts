@@ -59,8 +59,6 @@ import {
   type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
-  type SkillTurnStartInput,
-  type SkillTurnStartResult,
   type TurnStopInput,
   requireClientInstanceId,
   validateProtocolRange,
@@ -87,6 +85,20 @@ export interface ConnectRuntimeHostInput {
   clientInstanceId?: string;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
+  /**
+   * Interval between liveness probes while a domain request is outstanding.
+   * Injectable so tests exercise requests that outlive a probe cycle without
+   * waiting the real cadence; defaults to DEFAULT_LIVENESS_INTERVAL_MS (2s).
+   */
+  livenessIntervalMs?: number;
+  /**
+   * Invoked after each liveness probe round-trips and validates its Host
+   * Epoch. Test observability: lets a probe-crossing test prove probes
+   * actually fired inside its window instead of assuming the cadence took.
+   * Diagnostics only — exceptions it throws are swallowed and never affect
+   * connection health.
+   */
+  onLivenessProbe?: () => void;
 }
 
 export type RuntimeHostUnavailableReason =
@@ -149,7 +161,6 @@ export interface RuntimeHostConnection {
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  startSkillTurn(input: SkillTurnStartInput, timeoutMs?: number): Promise<SkillTurnStartResult>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
   regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
@@ -215,6 +226,18 @@ export class RuntimeHostOperationError extends Error {
   }
 }
 
+export class RuntimeHostTurnBlockedError extends Error {
+  constructor(
+    readonly skillInvocation: Extract<
+      OperationOutput<'turn.start'>,
+      { kind: 'blocked' }
+    >['skillInvocation'],
+  ) {
+    super('Explicit Skill invocation could not be resolved');
+    this.name = 'RuntimeHostTurnBlockedError';
+  }
+}
+
 interface PendingRequest {
   operation: OperationKey;
   accept(value: unknown): unknown;
@@ -240,6 +263,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #livenessTimer: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #terminalError: Error | undefined;
+  readonly #livenessIntervalMs: number;
+  readonly #onLivenessProbe: (() => void) | undefined;
 
   constructor(
     transport: FramedTransport,
@@ -248,7 +273,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       connectionId: string;
       selectedProtocol: number;
     },
+    // livenessIntervalMs is validated by connectResolvedRuntimeHost alongside
+    // the other connect timeouts, before any transport work happens.
+    options?: { livenessIntervalMs?: number; onLivenessProbe?: () => void },
   ) {
+    this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
+    this.#onLivenessProbe = options?.onLivenessProbe;
     this.#transport = transport;
     this.hostEpoch = accepted.hostEpoch;
     this.connectionId = accepted.connectionId;
@@ -362,12 +392,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return status;
   }
 
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.start', input, timeoutMs);
-  }
-
-  startSkillTurn(input: SkillTurnStartInput, timeoutMs?: number): Promise<SkillTurnStartResult> {
-    return this.request('turn.skill.start', input, timeoutMs);
+  async startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot> {
+    const result = await this.request('turn.start', input, timeoutMs);
+    if (result.kind === 'blocked') {
+      throw new RuntimeHostTurnBlockedError(result.skillInvocation);
+    }
+    return result.turn;
   }
 
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {
@@ -620,7 +650,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#livenessTimer = setTimeout(() => {
       this.#livenessTimer = undefined;
       this.#startLivenessProbe();
-    }, DEFAULT_LIVENESS_INTERVAL_MS);
+    }, this.#livenessIntervalMs);
   }
 
   #hasOutstandingDomainRequest(): boolean {
@@ -643,6 +673,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       (status) => {
         if (status.hostEpoch !== this.hostEpoch) {
           throw new Error('Runtime Host returned status for a different Host Epoch');
+        }
+        try {
+          this.#onLivenessProbe?.();
+        } catch {
+          // Diagnostics hook: an observer exception must never fail the
+          // connection it is watching.
         }
       },
       'connection',
@@ -827,6 +863,10 @@ export async function connectResolvedRuntimeHost(
     input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
     'handshakeTimeoutMs',
   );
+  const livenessIntervalMs = requireTimeout(
+    input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
+    'livenessIntervalMs',
+  );
   let registration: HostRegistration | undefined;
   try {
     registration = await readRegistrationBeforeDeadline(
@@ -935,7 +975,10 @@ export async function connectResolvedRuntimeHost(
       return {
         kind: 'connected',
         registration,
-        connection: new RuntimeHostConnectionImpl(transport, handshake),
+        connection: new RuntimeHostConnectionImpl(transport, handshake, {
+          livenessIntervalMs,
+          onLivenessProbe: input.onLivenessProbe,
+        }),
       };
     }
     transport.destroy();

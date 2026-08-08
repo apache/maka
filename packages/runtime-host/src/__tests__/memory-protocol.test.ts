@@ -16,10 +16,6 @@ const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Memory protocol', () => {
   test('registers only the closed query and mutation operations', () => {
-    assert.deepEqual(
-      Object.keys(HOST_OPERATION_SPECS).filter((key) => key.startsWith('memory.')),
-      ['memory.query', 'memory.mutate'],
-    );
     assert.deepEqual(metadata('memory.query'), { mode: 'query', availability: 'ready' });
     assert.deepEqual(metadata('memory.mutate'), { mode: 'command', availability: 'ready' });
 

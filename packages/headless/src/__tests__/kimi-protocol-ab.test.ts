@@ -9,7 +9,6 @@ import {
   compareKimiProtocolSmokeTrace,
   kimiProtocolAbArms,
   recommendKimiProtocolDefault,
-  renderKimiProtocolAbMarkdown,
   runKimiProtocolAbComparison,
   summarizeKimiProtocolRequestMetrics,
 } from '../kimi-protocol-ab.js';
@@ -63,8 +62,6 @@ describe('Kimi protocol A/B', () => {
       kimiProtocolAbArms().map((arm) => arm.metadata?.protocol),
       ['anthropic-messages', 'openai-chat'],
     );
-    assert.match(renderKimiProtocolAbMarkdown(result), /Raw request telemetry/);
-    assert.match(renderKimiProtocolAbMarkdown(result), /trace-anthropic/);
     assert.equal((await readFile(resultsJsonlPath, 'utf8')).trimEnd().split('\n').length, 2);
   });
 

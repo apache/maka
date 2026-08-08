@@ -351,8 +351,9 @@ describe('stream graph supervisor tools', () => {
         operation: 'add_work',
         add_work: [
           {
-            target_kind: 'new_agent',
-            agent_id: 'implementation',
+            target_kind: 'new_preset',
+            subagent_id: 'deepseek-flash-reader',
+            agent_id: { malformed: true },
             operator_id: { malformed: true },
             instruction: 'Implement node A.',
             replacement_mode: 'none',
@@ -369,8 +370,8 @@ describe('stream graph supervisor tools', () => {
         operation: 'add_work',
         add_work: [
           {
-            target_kind: 'new_agent',
-            agent_id: 'implementation',
+            target_kind: 'new_preset',
+            subagent_id: 'deepseek-flash-reader',
             instruction: 'Implement node A.',
             input_ids: [],
             replacement_mode: 'none',
@@ -383,8 +384,9 @@ describe('stream graph supervisor tools', () => {
           operation: 'add_work',
           add_work: [
             {
-              target_kind: 'new_agent',
-              agent_id: 'implementation',
+              target_kind: 'new_preset',
+              subagent_id: 'deepseek-flash-reader',
+              agent_id: 'provider-placeholder',
               operator_id: 'provider-placeholder',
               instruction: 'Implement node A.',
               input_ids: [],
@@ -404,8 +406,8 @@ describe('stream graph supervisor tools', () => {
       assert.equal(result.schedule.closed, false);
       assert.equal(result.schedule.finish, undefined);
       assert.deepEqual(result.schedule.work[0]?.target, {
-        kind: 'agent',
-        agentId: 'implementation',
+        kind: 'preset',
+        presetId: 'deepseek-flash-reader',
       });
       assert.equal(result.schedule.work[0]?.replaces, undefined);
     } finally {

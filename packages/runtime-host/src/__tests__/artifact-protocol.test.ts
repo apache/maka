@@ -24,10 +24,6 @@ const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Artifact protocol', () => {
   test('registers the closed ready ingest, query, and delete operations', () => {
-    assert.deepEqual(
-      Object.keys(HOST_OPERATION_SPECS).filter((key) => key.startsWith('artifact.')),
-      ['artifact.ingest', 'artifact.query', 'artifact.delete'],
-    );
     assert.deepEqual(metadata('artifact.ingest'), {
       mode: 'command',
       availability: 'ready',

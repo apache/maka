@@ -24,6 +24,7 @@ import {
   AGENT_GRAPH_MAX_OPERATOR_READINESS,
   AGENT_GRAPH_MAX_OPERATOR_REFS,
   AGENT_GRAPH_MAX_READINESS_WAITS,
+  AGENT_GRAPH_MAX_RECONCILIATION_FAILURES,
   AGENT_GRAPH_MAX_STOPPED_TARGETS,
   AGENT_GRAPH_MAX_TERMINAL_ACTIVITY,
   AGENT_GRAPH_MAX_WORK,
@@ -157,6 +158,7 @@ function projectSnapshot(snapshot: RuntimeAgentGraphClientSnapshot): AgentGraphC
     schemaVersion: 1,
     rootSessionId: snapshot.rootSessionId,
     graphId: snapshot.graphId,
+    orchestrationMode: snapshot.orchestrationMode,
     snapshotVersion: requireFingerprint(snapshot.snapshotVersion),
     status: snapshot.status,
     scheduleRevision: snapshot.scheduleRevision,
@@ -168,6 +170,9 @@ function projectSnapshot(snapshot: RuntimeAgentGraphClientSnapshot): AgentGraphC
     operators,
     edges: candidateEdges.slice(0, AGENT_GRAPH_MAX_EDGES).map(projectEdge),
     work: snapshot.work.slice(0, AGENT_GRAPH_MAX_WORK).map(projectWork),
+    reconciliationFailures: snapshot.reconciliationFailures
+      .slice(-AGENT_GRAPH_MAX_RECONCILIATION_FAILURES)
+      .map((failure) => ({ ...failure })),
     stoppedTargets: snapshot.stoppedTargets
       .slice(-AGENT_GRAPH_MAX_STOPPED_TARGETS)
       .map(projectStoppedTarget),
@@ -192,6 +197,12 @@ function projectSnapshot(snapshot: RuntimeAgentGraphClientSnapshot): AgentGraphC
         snapshot.edges.length -
         Math.min(candidateEdges.length, AGENT_GRAPH_MAX_EDGES),
       work: snapshot.omitted.work + Math.max(0, snapshot.work.length - AGENT_GRAPH_MAX_WORK),
+      reconciliationFailures:
+        snapshot.omitted.reconciliationFailures +
+        Math.max(
+          0,
+          snapshot.reconciliationFailures.length - AGENT_GRAPH_MAX_RECONCILIATION_FAILURES,
+        ),
       stoppedTargets:
         snapshot.omitted.stoppedTargets +
         Math.max(0, snapshot.stoppedTargets.length - AGENT_GRAPH_MAX_STOPPED_TARGETS),
@@ -361,7 +372,9 @@ function projectWork(
     target:
       work.target.kind === 'agent'
         ? { kind: work.target.kind, agentId: work.target.agentId }
-        : { kind: work.target.kind, operatorId: work.target.operatorId },
+        : work.target.kind === 'preset'
+          ? { kind: work.target.kind, presetId: work.target.presetId }
+          : { kind: work.target.kind, operatorId: work.target.operatorId },
     inputIds: [...work.inputIds],
     ...(work.replaces ? { replaces: work.replaces } : {}),
     status: work.status,
@@ -487,6 +500,10 @@ function fitSnapshot(snapshot: Mutable<AgentGraphClientSnapshot>): void {
     }
     if (snapshot.stoppedTargets.shift()) {
       snapshot.omitted.stoppedTargets += 1;
+      continue;
+    }
+    if (snapshot.reconciliationFailures.shift()) {
+      snapshot.omitted.reconciliationFailures += 1;
       continue;
     }
     if (snapshot.claims.shift()) {

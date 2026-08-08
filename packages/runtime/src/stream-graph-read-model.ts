@@ -31,6 +31,8 @@ export const AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 const MAX_VISIBLE_OPERATORS = 256;
 const MAX_VISIBLE_EDGES = 512;
 const MAX_VISIBLE_WORK = 256;
+const MAX_VISIBLE_RECONCILIATION_FAILURES = 64;
+const MAX_RECONCILIATION_FAILURE_REASON_CHARS = 1_000;
 const MAX_VISIBLE_STOPPED_TARGETS = 128;
 const MAX_RECENT_CONTROL_DECISIONS = 32;
 const MAX_VISIBLE_CLAIMS = 256;
@@ -113,7 +115,10 @@ export interface AgentGraphClientEdge {
 
 export interface AgentGraphClientScheduledWork {
   workId: string;
-  target: { kind: 'agent'; agentId: string } | { kind: 'operator'; operatorId: string };
+  target:
+    | { kind: 'agent'; agentId: string }
+    | { kind: 'preset'; presetId: string }
+    | { kind: 'operator'; operatorId: string };
   inputIds: string[];
   replaces?: string;
   status: AgentGraphScheduleWorkView['status'];
@@ -121,6 +126,12 @@ export interface AgentGraphClientScheduledWork {
   instructionTruncated: boolean;
   revision: number;
   committedAt: number;
+}
+
+export interface AgentGraphClientReconciliationFailure {
+  workId: string;
+  phase: 'schedule' | 'topology' | 'stop' | 'render' | 'dispatch';
+  reason: string;
 }
 
 export interface AgentGraphClientStoppedTarget {
@@ -181,6 +192,7 @@ export interface AgentGraphClientSnapshot {
   schemaVersion: typeof AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION;
   rootSessionId: string;
   graphId: string;
+  orchestrationMode: 'graph' | 'swarm';
   snapshotVersion: string;
   status: AgentGraphClientStatus;
   scheduleRevision: number;
@@ -190,6 +202,7 @@ export interface AgentGraphClientSnapshot {
   operators: AgentGraphClientOperator[];
   edges: AgentGraphClientEdge[];
   work: AgentGraphClientScheduledWork[];
+  reconciliationFailures: AgentGraphClientReconciliationFailure[];
   stoppedTargets: AgentGraphClientStoppedTarget[];
   finish?: AgentGraphClientFinish;
   claims: AgentGraphClientClaimRef[];
@@ -200,6 +213,7 @@ export interface AgentGraphClientSnapshot {
     operators: number;
     edges: number;
     work: number;
+    reconciliationFailures: number;
     stoppedTargets: number;
     claims: number;
     controlDecisions: number;
@@ -244,6 +258,8 @@ export interface BuildAgentGraphClientReadModelInput {
   provisions: readonly AgentGraphOperatorProvision[];
   scheduleUpdates: readonly AgentGraphScheduleUpdate[];
   schedule?: AgentGraphScheduleProjection;
+  orchestrationMode?: 'graph' | 'swarm';
+  reconciliationFailures?: readonly AgentGraphClientReconciliationFailure[];
   claimAdmissions?: readonly AgentGraphClientClaimAdmission[];
   observation: AgentGraphSupervisorObservation;
 }
@@ -490,6 +506,12 @@ function snapshotFromModel(
   );
   const edges = candidateEdges.slice(0, MAX_VISIBLE_EDGES);
   const work = boundWork(model.work);
+  const allReconciliationFailures = normalizeReconciliationFailures(
+    input.reconciliationFailures ?? [],
+  );
+  const reconciliationFailures = allReconciliationFailures.slice(
+    -MAX_VISIBLE_RECONCILIATION_FAILURES,
+  );
   const stoppedTargets = model.stoppedTargets.slice(-MAX_VISIBLE_STOPPED_TARGETS);
   const claims = model.claims.slice(-MAX_VISIBLE_CLAIMS);
   const recentControlDecisions = model.recentControlDecisions.slice(-MAX_RECENT_CONTROL_DECISIONS);
@@ -498,6 +520,7 @@ function snapshotFromModel(
     schemaVersion: AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION,
     rootSessionId: input.rootSessionId,
     graphId: input.graphId,
+    orchestrationMode: input.orchestrationMode ?? 'graph',
     snapshotVersion: '',
     status: graphStatus(model.schedule, model.operators, model.claims, model.activity),
     scheduleRevision: model.schedule.revision,
@@ -509,6 +532,7 @@ function snapshotFromModel(
     operators: visibleOperators,
     edges,
     work,
+    reconciliationFailures,
     stoppedTargets,
     ...(model.finish ? { finish: model.finish } : {}),
     claims,
@@ -519,6 +543,7 @@ function snapshotFromModel(
       operators: model.operators.length - visibleOperators.length,
       edges: model.edges.length - edges.length,
       work: model.work.length - work.length,
+      reconciliationFailures: allReconciliationFailures.length - reconciliationFailures.length,
       stoppedTargets: model.stoppedTargets.length - stoppedTargets.length,
       claims: model.claims.length - claims.length,
       controlDecisions: model.recentControlDecisions.length - recentControlDecisions.length,
@@ -1255,10 +1280,12 @@ export function decodeMaterializedAgentGraphClientSnapshot(
     snapshot.schemaVersion !== AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION ||
     snapshot.rootSessionId !== expected.rootSessionId ||
     snapshot.graphId !== expected.graphId ||
+    (snapshot.orchestrationMode !== 'graph' && snapshot.orchestrationMode !== 'swarm') ||
     snapshot.snapshotVersion !== expected.snapshotVersion ||
     !Array.isArray(snapshot.operators) ||
     !Array.isArray(snapshot.edges) ||
     !Array.isArray(snapshot.work) ||
+    !Array.isArray(snapshot.reconciliationFailures) ||
     !Array.isArray(snapshot.stoppedTargets) ||
     !Array.isArray(snapshot.claims) ||
     !Array.isArray(snapshot.recentControlDecisions) ||
@@ -1366,6 +1393,19 @@ function clientSnapshotVersion(snapshot: AgentGraphClientSnapshot): string {
     ...boundedContent
   } = snapshot;
   return stableHash(boundedContent);
+}
+
+function normalizeReconciliationFailures(
+  failures: readonly AgentGraphClientReconciliationFailure[],
+): AgentGraphClientReconciliationFailure[] {
+  const byWorkId = new Map<string, AgentGraphClientReconciliationFailure>();
+  for (const failure of failures) {
+    const workId = requireIdentity(failure.workId, 'reconciliation failure work id');
+    const reason = failure.reason.trim().slice(0, MAX_RECONCILIATION_FAILURE_REASON_CHARS);
+    if (!reason) continue;
+    byWorkId.set(workId, { workId, phase: failure.phase, reason });
+  }
+  return [...byWorkId.values()].sort((a, b) => compareIdentity(a.workId, b.workId));
 }
 
 function compareIdentity(a: string, b: string): number {

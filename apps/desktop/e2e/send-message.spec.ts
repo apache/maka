@@ -2,32 +2,19 @@ import { test, expect, COMPOSER_INPUT } from './fixtures';
 import { FAKE_MERMAID_HOSTILE_PROMPT, FAKE_MERMAID_PROMPT } from '@maka/runtime';
 
 /**
- * Core chat loop: type a message, send it, see the deterministic fake backend
- * stream a reply back into the transcript. Depends on the E2E seam: the
- * fixture's MAKA_E2E=1 forces sessions:create onto the fake backend, and the
- * seeded 'e2e' connection clears onboarding so the composer is usable.
- */
-test('send a message and see the fake backend stream a reply', async ({ window: page }) => {
-  const composer = page.locator(COMPOSER_INPUT);
-  // #1433: the deleted first-run panel had its own input, and the spec that
-  // covered the handoff between the two asserted this accessible name. With
-  // one composer left, the name is what a screen-reader user has to find the
-  // send target by — assert it on the path that exercises it.
-  await expect(composer).toHaveAttribute('aria-label', '消息输入框');
-  await composer.fill('hello e2e');
-  await composer.press('Enter');
-
-  await expect(page.getByText(/Fake backend received: hello e2e/)).toBeVisible();
-});
-
-/**
  * Enter commits a candidate in a CJK IME; nothing else may act on it. Both the
  * composer's send and ChatComposerInput's trigger menu read Enter, and the
  * component runs its menu handling before the `onKeyDown` we pass it — so the
  * guard is a native capture on the composer root that takes the key away from
  * React entirely.
  */
-test('Enter mid-IME-composition commits the candidate instead of sending', async ({
+/**
+ * Core chat loop: type a message, send it, see the deterministic fake backend
+ * stream a reply back into the transcript. Depends on the E2E seam: the
+ * fixture's MAKA_E2E=1 forces sessions:create onto the fake backend, and the
+ * seeded 'e2e' connection clears onboarding so the composer is usable.
+ */
+test('Enter mid-IME commits the candidate, then an ordinary send streams a reply', async ({
   window: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -48,11 +35,28 @@ test('Enter mid-IME-composition commits the candidate instead of sending', async
   // different and pin the total instead.
   await composer.fill('中文草稿 已提交');
   await composer.press('Enter');
-  await expect(page.getByText(/Fake backend received: 中文草稿 已提交/)).toBeVisible();
+  await expect(page.getByRole('log').getByText(/Fake backend received: 中文草稿 已提交/)).toBeVisible();
   await expect(page.getByLabel('你发送的消息')).toHaveCount(1);
+
+  // Settle before the ordinary send: an Enter during a streaming turn would
+  // become steering instead of a second message.
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
+
+  // #1433: the deleted first-run panel had its own input, and the spec that
+  // covered the handoff between the two asserted this accessible name. With
+  // one composer left, the name is what a screen-reader user has to find the
+  // send target by — assert it on the path that exercises it.
+  await expect(composer).toHaveAttribute('aria-label', '消息输入框');
+  await composer.fill('hello e2e');
+  await composer.press('Enter');
+
+  await expect(page.getByRole('log').getByText(/Fake backend received: hello e2e/)).toBeVisible();
 });
 
-test('renders a settled Mermaid fence as a diagram', async ({ window: page }) => {
+// Mermaid rendering and sanitization share one transcript: the settled
+// diagram journey first, then the hostile fence as a second turn in the same
+// window (the sanitizer assertions anchor on the newest diagram).
+test('renders a settled Mermaid fence and keeps hostile directives inert', async ({ window: page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_MERMAID_PROMPT);
@@ -181,17 +185,19 @@ test('renders a settled Mermaid fence as a diagram', async ({ window: page }) =>
   await page.setViewportSize({ width: 340, height: 900 });
   await expect(diagram.getByRole('button', { name: '全屏查看图表' })).toBeVisible();
   await expect(diagram.getByRole('button', { name: '放大图表' })).toBeHidden();
-});
 
-test('keeps hostile Mermaid directives inert', async ({ window: page }) => {
-  const composer = page.locator(COMPOSER_INPUT);
+  // Back to a regular width for the hostile fence, and settle the first turn
+  // before sending the second.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
+
   await composer.fill(FAKE_MERMAID_HOSTILE_PROMPT);
   await composer.press('Enter');
 
-  await expect(page.getByRole('button', { name: '重新生成' })).toBeVisible();
-  const diagram = page.locator('[data-maka-contract="mermaid"]').last();
-  await expect(diagram).toHaveAttribute('data-maka-mermaid-state', 'rendered');
-  await expect(diagram.locator('.maka-mermaid-svg > svg')).toBeVisible();
-  await expect(diagram.locator('script, foreignObject, a')).toHaveCount(0);
-  await expect(diagram.locator('[onclick], [onerror], [onload], [href^="javascript:"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(2, { timeout: 20_000 });
+  const hostileDiagram = page.locator('[data-maka-contract="mermaid"]').last();
+  await expect(hostileDiagram).toHaveAttribute('data-maka-mermaid-state', 'rendered');
+  await expect(hostileDiagram.locator('.maka-mermaid-svg > svg')).toBeVisible();
+  await expect(hostileDiagram.locator('script, foreignObject, a')).toHaveCount(0);
+  await expect(hostileDiagram.locator('[onclick], [onerror], [onload], [href^="javascript:"]')).toHaveCount(0);
 });

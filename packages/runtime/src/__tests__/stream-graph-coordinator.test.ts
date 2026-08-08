@@ -463,6 +463,118 @@ describe('host-managed agent graph coordinator', () => {
     assert.notEqual(graphId, agentGraphIdForRootSession('other-root'));
   });
 
+  test('persists work-keyed reconciliation failures across coordinator recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-graph-failure-recovery-'));
+    const sessionStore = createSessionStore(root);
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const controlStore = createSqliteSessionMetadataStore(
+      join(root, OPERATIONAL_STATE_DATABASE_NAME),
+    );
+    const backends = new BackendRegistry();
+    backends.register('fake', (context) => new FakeBackend(context));
+    const manager = new SessionManager({
+      store: sessionStore,
+      runStore,
+      runtimeEventStore,
+      backends,
+      childTools: localReadTools(),
+      newId: randomUUID,
+      now: Date.now,
+    });
+    let coordinator: AgentGraphCoordinator | undefined;
+    let recovered: AgentGraphCoordinator | undefined;
+    try {
+      const rootSession = await manager.createSession({
+        cwd: root,
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        permissionMode: 'ask',
+        orchestrationMode: 'swarm',
+        name: 'Failure recovery supervisor',
+      });
+      const sourceTurnId = randomUUID();
+      for await (const _event of manager.sendMessage(rootSession.id, {
+        turnId: sourceTurnId,
+        text: 'Schedule failing graph work.',
+      })) {
+        // Drain the source turn so its AgentRun is durable.
+      }
+      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+        (run) => run.turnId === sourceTurnId,
+      );
+      assert.ok(sourceRun);
+      const failingRuntime: AgentGraphCoordinatorInput['runtime'] = {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('preset provider unavailable');
+        },
+        runClaimedAgentGraphIntent: manager.runClaimedAgentGraphIntent.bind(manager),
+        stopSession: manager.stopSession.bind(manager),
+      };
+      const create = () =>
+        new AgentGraphCoordinator({
+          sessionStore,
+          runStore,
+          runtimeEventStore,
+          controlStore,
+          runtime: failingRuntime,
+          newId: randomUUID,
+          rootSessionId: rootSession.id,
+        });
+      coordinator = create();
+      const update = (await coordinator.toolsForSession(rootSession.id)).find(
+        (tool) => tool.name === UPDATE_AGENT_GRAPH_TOOL_NAME,
+      );
+      assert.ok(update);
+      const committed = (await update.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'new_agent',
+              agent_id: 'local-read',
+              instruction: 'This provision is expected to fail.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+          ],
+        },
+        {
+          ...toolContext(rootSession.id, sourceRun.runId, sourceTurnId, 'failure-work'),
+          orchestrationMode: 'swarm',
+        },
+      )) as { schedule: { work: Array<{ workId: string }> } };
+      await coordinator.waitForIdle(rootSession.id);
+      const beforeRestart = await coordinator.getSnapshot(rootSession.id);
+      assert.deepEqual(beforeRestart.reconciliationFailures, [
+        {
+          workId: committed.schedule.work[0]!.workId,
+          phase: 'topology',
+          reason: 'preset provider unavailable',
+        },
+      ]);
+      assert.equal(beforeRestart.orchestrationMode, 'swarm');
+
+      await coordinator.close();
+      coordinator = undefined;
+      recovered = create();
+      const afterRestart = await recovered.getSnapshot(rootSession.id);
+      assert.deepEqual(afterRestart.reconciliationFailures, beforeRestart.reconciliationFailures);
+      assert.equal(afterRestart.orchestrationMode, 'swarm');
+      assert.deepEqual(await recovered.recover(), [rootSession.id]);
+      assert.deepEqual(
+        (await recovered.getSnapshot(rootSession.id)).reconciliationFailures,
+        beforeRestart.reconciliationFailures,
+      );
+    } finally {
+      await coordinator?.close();
+      await recovered?.close();
+      controlStore.close();
+      await sessionStore.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('keeps completed graph snapshots readable after the root Session is archived', async () => {
     let projection:
       | {

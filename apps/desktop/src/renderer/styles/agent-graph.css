@@ -11,6 +11,11 @@
   color: var(--foreground);
 }
 
+.maka-agent-graph-panel[data-collapsed="true"] {
+  max-height: none;
+  overflow: visible;
+}
+
 .maka-agent-graph-heading,
 .maka-agent-graph-heading > div,
 .maka-agent-graph-results {
@@ -21,6 +26,25 @@
 
 .maka-agent-graph-heading {
   justify-content: space-between;
+}
+
+.maka-agent-graph-heading-copy {
+  min-width: 0;
+}
+
+.maka-agent-graph-heading-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-agent-graph-collapse-toggle svg {
+  transition: transform var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-agent-graph-collapse-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
 }
 
 .maka-agent-graph-heading strong {

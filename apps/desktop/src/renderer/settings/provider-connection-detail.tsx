@@ -1,9 +1,28 @@
-import { useState, type ReactNode } from 'react';
-import { Banner, Divider, Grid, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
+import { useEffect, useState, type ReactNode } from 'react';
+import {
+  Banner,
+  Divider,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  Grid,
+  Heading,
+  HStack,
+  Link,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
+  DECLARABLE_RELAY_THINKING_LEVELS,
+  THINKING_LEVELS,
+  type RelayModelProfile,
+  type ThinkingLevel,
+} from '@maka/core/model-thinking';
+import {
   Button,
+  NumberInput,
   RelativeTime,
+  Selector,
   TextInput,
   useMountedRef,
   useToast,
@@ -118,11 +137,28 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    relayProfileDraft,
+    hasRelayProfileChanges,
+    setDraftThinkingLevels,
+    setDraftVision,
+    setDraftContextWindow,
+    saveRelayProfiles,
     runTest,
     refreshModels,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
+  // Capability switches only exist for openai-compatible relays: built-in
+  // providers declare their thinking support in model metadata, a custom
+  // relay's backing model is unknown until the user says what it can do. The
+  // declaration is per model — a relay can front both a reasoner and a plain
+  // instruct model.
+  const showsCapabilities = connection.providerType === 'openai-compatible';
+  // Rows are the enabled models, exactly — the store prunes a model's profile
+  // the moment it is disabled, so no declaration can ever belong to a row
+  // this list does not show. The editor edits the per-model draft; 保存
+  // commits the whole table in one write.
+  const capabilityModelIds = enabledModelIds;
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
@@ -306,6 +342,134 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           )}
         </HStack>
       </DetailSection>
+      {showsCapabilities && (
+        <>
+          <Divider />
+          <DetailSection title={copy.capabilities} description={copy.capabilitiesHelp}>
+            <VStack gap={4}>
+              {capabilityModelIds.map((modelId, modelIndex) => {
+                const declared: RelayModelProfile | undefined = relayProfileDraft[modelId];
+                // Vision resolves to one of three states: absent (Auto),
+                // true (Enabled), false (explicitly Disabled). Only Auto is
+                // ever ambiguous, and three distinct controls keep it honest.
+                const visionValue =
+                  declared?.vision === true
+                    ? 'enabled'
+                    : declared?.vision === false
+                      ? 'disabled'
+                      : 'auto';
+                const draftLevels = declared?.thinkingLevels ?? [];
+                // The menu offers the five declarable levels PLUS anything
+                // the stored table already claims — a level saved while it
+                // was still declarable (or hand-written into the document)
+                // must stay visible and un-checkable, never an invisible
+                // selection the trigger counts but the menu cannot show.
+                const menuLevels: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
+                  (level) =>
+                    (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(
+                      level,
+                    ) || draftLevels.includes(level),
+                );
+                return (
+                  <VStack key={modelId} gap={3}>
+                    {modelIndex > 0 && <Divider />}
+                    <Text weight="semibold">{modelId}</Text>
+                    {/* One row per declaration: label + what it does on the
+                        left, one compact control on the right (the 模型功能
+                        row language). A CheckboxList wall was the reason this
+                        section looked like a form from a different app. */}
+                    <CapabilityRow label={copy.thinkingEffort} description={copy.thinkingEffortHelp}>
+                      {/* DropdownMenu, not MultiSelector: levels have a
+                          canonical order (low → max) that must not shuffle —
+                          MultiSelector pins the selected-at-open options to
+                          the top with no opt-out, which misread as the
+                          declaration being order-sensitive. Checkbox items
+                          stay open between toggles; the trigger carries the
+                          已选择 N 个 state line. */}
+                      <DropdownMenu
+                        button={{
+                          variant: 'secondary',
+                          size: 'sm',
+                          label:
+                            draftLevels.length > 0
+                              ? copy.thinkingSelectedCount(draftLevels.length)
+                              : copy.thinkingUndeclared,
+                          'aria-label': `${copy.thinkingEffort} — ${modelId}`,
+                          isDisabled: detailActionBusy,
+                        }}
+                        hasChevron
+                        menuWidth={224}
+                      >
+                        {menuLevels.map((level) => (
+                          <DropdownMenuCheckboxItem
+                            key={level}
+                            label={level}
+                            aria-label={`${modelId} ${level}`}
+                            value={draftLevels.includes(level)}
+                            onChange={(checked) => {
+                              setDraftThinkingLevels(
+                                modelId,
+                                checked
+                                  ? [...draftLevels, level]
+                                  : draftLevels.filter((existing) => existing !== level),
+                              );
+                            }}
+                            isDisabled={detailActionBusy}
+                          />
+                        ))}
+                      </DropdownMenu>
+                    </CapabilityRow>
+                    <CapabilityRow label={copy.visionInput} description={copy.visionInputHelp}>
+                      <Selector
+                        label={`${copy.visionInput} — ${modelId}`}
+                        isLabelHidden
+                        size="sm"
+                        width={132}
+                        options={[
+                          { value: 'auto', label: copy.visionAuto },
+                          { value: 'enabled', label: copy.visionEnabledOption },
+                          { value: 'disabled', label: copy.visionDisabledOption },
+                        ]}
+                        value={visionValue}
+                        onChange={(value) =>
+                          setDraftVision(
+                            modelId,
+                            value === 'auto' ? undefined : value === 'enabled',
+                          )
+                        }
+                        isDisabled={detailActionBusy}
+                      />
+                    </CapabilityRow>
+                    <CapabilityRow label={copy.contextWindow} description={copy.contextWindowHelp}>
+                      <DeclaredContextWindowField
+                        declared={declared?.contextWindow}
+                        disabled={detailActionBusy}
+                        label={copy.contextWindow}
+                        onCommit={(value) =>
+                          setDraftContextWindow(modelId, value ?? undefined)
+                        }
+                      />
+                    </CapabilityRow>
+                  </VStack>
+                );
+              })}
+              {/* One commit for the whole table. Draft edits stay local until
+                  this lands; the button only arms when the draft truly differs
+                  from the saved table (both sides pass the write-path
+                  normalizer, so reordering levels doesn't arm it falsely). */}
+              <HStack gap={2} justify="end">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  isDisabled={detailActionBusy || !hasRelayProfileChanges}
+                  clickAction={() => void saveRelayProfiles()}
+                  label={copy.saveCapabilities}
+                />
+              </HStack>
+            </VStack>
+          </DetailSection>
+        </>
+      )}
       <Divider />
       {/* Deletion is last, and the only thing beside it is its own warning —
           no quiet action next to the destructive one for a mis-aimed cursor. */}
@@ -332,6 +496,60 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
  * as heading → sentence → controls; it splits into two columns for free if the
  * shell ever widens.
  */
+// A context-window draft commits on blur/Enter only: NumberInput fires
+// onChange per *valid* keystroke, and "128000" must arrive as one draft edit,
+// not six. The committed draft stays local until the section's 保存 — nothing
+// here writes the connection itself. The draft resyncs from the controller's
+// draft whenever it changes (seed, save round-trip, or an unrelated field).
+function DeclaredContextWindowField(props: {
+  declared: number | undefined;
+  disabled: boolean;
+  label: string;
+  onCommit: (value: number | null) => void;
+}) {
+  const [draft, setDraft] = useState<number | null>(props.declared ?? null);
+  useEffect(() => {
+    setDraft(props.declared ?? null);
+  }, [props.declared]);
+  function commit() {
+    if ((draft ?? undefined) === props.declared) return;
+    props.onCommit(draft);
+  }
+  return (
+    <NumberInput
+      size="sm"
+      width={200}
+      label={props.label}
+      isLabelHidden
+      value={draft}
+      hasClear
+      isIntegerOnly
+      min={1}
+      onChange={setDraft}
+      onBlur={commit}
+      onEnter={commit}
+      isDisabled={props.disabled}
+    />
+  );
+}
+
+/**
+ * One declaration row in the 模型功能 shape: what it is (label) and what it
+ * does (one supporting sentence) on the left, its one compact control on the
+ * right. The text column flexes and wraps; the control never does.
+ */
+function CapabilityRow(props: { label: string; description: string; children: ReactNode }) {
+  return (
+    <HStack gap={4} justify="between" vAlign="start">
+      <VStack gap={1} maxWidth={380}>
+        <Text size="sm">{props.label}</Text>
+        <Text type="supporting" color="secondary">{props.description}</Text>
+      </VStack>
+      {props.children}
+    </HStack>
+  );
+}
+
 function DetailSection(props: { title: string; description: string; children: ReactNode }) {
   return (
     /* `columnGap`, not `gap`: the template's 10 is the gutter BETWEEN the two

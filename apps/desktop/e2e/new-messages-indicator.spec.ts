@@ -53,9 +53,16 @@ async function scrollToBottom(page: import('@playwright/test').Page) {
   // Astryx's synthetic-scroll guard bails out of the scroll handler while
   // scrollHeight is still changing, which a programmatic jump right after the
   // reply settles can trip; a real user's scroll keeps firing until the
-  // layout stops. Drive one more cycle after the layout settles so
+  // layout stops. Wait for the layout fact itself — scrollHeight stable across
+  // two consecutive animation frames — then drive one more cycle so
   // `isScrolledUp` follows the final position.
-  await page.waitForTimeout(250);
+  await page.waitForFunction(() => {
+    const el = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!el) return false;
+    const sampled = (window as { __scrollHeightSample?: number }).__scrollHeightSample;
+    (window as { __scrollHeightSample?: number }).__scrollHeightSample = el.scrollHeight;
+    return sampled === el.scrollHeight;
+  });
   await page.evaluate(() => {
     const el = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
     el?.dispatchEvent(new Event('scroll'));
@@ -93,7 +100,7 @@ async function growTranscriptOverflow(page: import('@playwright/test').Page) {
   throw new Error('transcript did not overflow past the 100px button threshold after 6 messages');
 }
 
-test('clears the "New messages" indicator once the user scrolls back to the bottom', async ({ window: page }) => {
+test('clears the "New messages" indicator at the bottom and never leaks it into a new conversation', async ({ window: page }) => {
   // Locale-agnostic matchers: zh overrides ("跳到最新消息"/"滚动到底部") or
   // Astryx en ("New messages"/"Scroll to bottom") — see the file header.
   const newMessagesBtn = page.getByRole('button', { name: /New messages|跳到最新消息/ });
@@ -128,18 +135,28 @@ test('clears the "New messages" indicator once the user scrolls back to the bott
   // → auto-follow re-locks → the indicator must clear (#2205).
   await scrollToBottom(page);
   await expect(newMessagesBtn).toHaveCount(0);
-});
 
-test('does not leak the indicator into a new conversation', async ({ window: page }) => {
-  // Same locale-agnostic matchers as the first test (see file header).
-  const newMessagesBtn = page.getByRole('button', { name: /New messages|跳到最新消息/ });
-
-  // Build the flagged state: a long transcript, scrolled up, then a new reply
-  // while unlocked.
-  await growTranscriptOverflow(page);
+  // Phase 2 (#2205's second half), reusing the transcript grown above instead
+  // of paying the six-message seed again: re-flag the conversation, then prove
+  // the indicator does not leak into a brand-new conversation.
+  //
+  // Every turn must be fully settled first — a send while one still streams
+  // becomes steering, and no fresh reply would arrive to flag. The transcript
+  // length is dynamic (growTranscriptOverflow stops at overflow), so settle
+  // means: as many settled-turn footers as sent messages.
+  await expect
+    .poll(
+      async () => {
+        const [settled, sent] = await Promise.all([
+          page.getByRole('button', { name: '重新生成' }).count(),
+          page.getByLabel('你发送的消息').count(),
+        ]);
+        return sent > 0 && settled === sent;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
   await scrollToTop(page);
-  const composer = page.locator(COMPOSER_INPUT);
-  await expect(composer).toHaveAttribute('aria-label', '消息输入框');
   await composer.fill('flag this conversation');
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: flag this conversation', { exact: true })).toBeAttached();

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { executeCodeCell, serializedByteLength } from '../index.js';
+import { type ExecuteCodeCellInput, executeCodeCell, serializedByteLength } from '../index.js';
+
+function executeToolResult(value: unknown, limits?: ExecuteCodeCellInput['limits']) {
+  return executeCodeCell({
+    code: 'return await tools.load({});',
+    tools: [{ name: 'load' }],
+    callTool: async () => value,
+    limits,
+  });
+}
 
 test('caps serialized-byte traversal before materializing an oversized representation', () => {
   const repeated = Array.from({ length: 1_024 }, () => '\0'.repeat(128));
@@ -180,6 +189,18 @@ test('rejects Promise.race before starting nested tool calls', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.ok ? undefined : result.error.kind, 'unsupported_syntax');
   assert.match(result.ok ? '' : result.error.message, /Promise\.race/);
+});
+
+test('rejects source that escapes the cell wrapper', async () => {
+  for (const code of [`}\nconst escaped = 1;\n{`, `}\ninterface Escaped {`]) {
+    const result = await executeCodeCell({
+      code,
+      tools: [],
+      callTool: async () => null,
+    });
+    assert.equal(result.ok, false, code);
+    assert.equal(result.ok ? undefined : result.error.kind, 'parse_error');
+  }
 });
 
 test('rejects unsupported operators before starting nested tool calls', async () => {
@@ -1009,7 +1030,7 @@ test('bounds collection amplification before splitting into too many items', asy
   assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
 });
 
-test('bounds cumulative output traversal for shared DAGs', async () => {
+test('enforces the output byte limit while materializing shared DAGs', async () => {
   const result = await executeCodeCell({
     code: `
       let value = [0];
@@ -1018,11 +1039,203 @@ test('bounds cumulative output traversal for shared DAGs', async () => {
     `,
     tools: [],
     callTool: async () => null,
+    limits: { maxOutputBytes: 64 },
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  assert.match(result.ok ? '' : result.error.message, /traversal/i);
+  assert.match(result.ok ? '' : result.error.message, /output byte limit/i);
+});
+
+test('enforces the tool-result byte limit while materializing shared DAGs', async () => {
+  let value: unknown = [0];
+  for (let index = 0; index < 18; index += 1) value = [value, value];
+
+  const result = await executeToolResult(value, { maxResultBytes: 64 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+  assert.match(result.ok ? '' : result.error.message, /result from load byte limit/i);
+});
+
+test('honors exact output byte boundaries', async () => {
+  const cases = [
+    { name: 'escaped string', code: 'return "\\0";', bytes: 8 },
+    { name: 'array', code: 'return [1, 2];', bytes: 5 },
+    { name: 'record', code: 'return { a: 1, b: 2 };', bytes: 13 },
+  ];
+  for (const testCase of cases) {
+    const atLimit = await executeCodeCell({
+      code: testCase.code,
+      tools: [],
+      callTool: async () => null,
+      limits: { maxOutputBytes: testCase.bytes },
+    });
+    assert.equal(atLimit.ok, true, testCase.name);
+
+    const belowLimit = await executeCodeCell({
+      code: testCase.code,
+      tools: [],
+      callTool: async () => null,
+      limits: { maxOutputBytes: testCase.bytes - 1 },
+    });
+    assert.equal(belowLimit.ok, false, testCase.name);
+    assert.equal(belowLimit.ok ? undefined : belowLimit.error.kind, 'limit_exceeded');
+  }
+});
+
+test('preserves sparse arrays returned by tools', async () => {
+  const result = await executeCodeCell({
+    code: `const value = await tools.load({});
+      return { isNull: value[0] === null, type: typeof value[0] };`,
+    tools: [{ name: 'load' }],
+    callTool: async () => new Array(1),
+  });
+
+  assert.deepEqual(result.ok ? result.value : undefined, { isNull: false, type: 'undefined' });
+});
+
+test('materializes the initial tool-result array length', async () => {
+  const value = new Array(1);
+  Object.defineProperty(value, 0, {
+    enumerable: true,
+    get: () => {
+      value.length = 100_001;
+      return 0;
+    },
+  });
+  const result = await executeCodeCell({
+    code: 'return (await tools.load({})).length;',
+    tools: [{ name: 'load' }],
+    callTool: async () => value,
+    limits: { maxCollectionItems: 1 },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.value : undefined, 1);
+});
+
+test('stops before reading tool-result values that cannot fit', async () => {
+  let reads = 0;
+  const array = new Array(1);
+  Object.defineProperty(array, 0, {
+    enumerable: true,
+    get: () => {
+      reads += 1;
+      return 0;
+    },
+  });
+  const record = {};
+  Object.defineProperty(record, 'a', {
+    enumerable: true,
+    get: () => {
+      reads += 1;
+      return 0;
+    },
+  });
+  for (const [value, maxResultBytes] of [
+    [array, 1],
+    [record, 5],
+  ] as const) {
+    const result = await executeToolResult(value, { maxResultBytes });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+    assert.equal(reads, 0);
+  }
+});
+
+test('stops before inspecting tool-result containers that cannot fit', async () => {
+  let inspections = 0;
+  const value = new Proxy(
+    {},
+    {
+      ownKeys: (target) => {
+        inspections += 1;
+        return Reflect.ownKeys(target);
+      },
+    },
+  );
+  const result = await executeToolResult(value, { maxResultBytes: 1 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+  assert.equal(inspections, 0);
+});
+
+test('reserves remaining structure before reading tool-result values', async () => {
+  let siblingReads = 0;
+  const siblings = [0, 0];
+  for (const index of [0, 1]) {
+    Object.defineProperty(siblings, index, {
+      enumerable: true,
+      get: () => {
+        siblingReads += 1;
+        return index === 0 ? 'long' : 0;
+      },
+    });
+  }
+  const siblingResult = await executeToolResult(siblings, { maxResultBytes: 8 });
+  assert.equal(siblingResult.ok, false);
+  assert.equal(siblingReads, 1);
+
+  let nestedReads = 0;
+  const nested = new Array(1);
+  Object.defineProperty(nested, 0, {
+    enumerable: true,
+    get: () => {
+      nestedReads += 1;
+      return 0;
+    },
+  });
+  const nestedResult = await executeToolResult({ a: nested }, { maxResultBytes: 8 });
+  assert.equal(nestedResult.ok, false);
+  assert.equal(nestedReads, 0);
+});
+
+test('rejects unsafe tool-result keys before reading values', async () => {
+  let reads = 0;
+  const value = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(value, 'first', {
+    enumerable: true,
+    get: () => {
+      reads += 1;
+      return 0;
+    },
+  });
+  Object.defineProperty(value, '__proto__', { enumerable: true, value: null });
+  const result = await executeToolResult(value);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? undefined : result.error.kind, 'invalid_data');
+  assert.equal(reads, 0);
+});
+
+test('omits tool-result properties deleted during materialization', async () => {
+  const value: Record<string, unknown> = {};
+  Object.defineProperty(value, 'a', {
+    enumerable: true,
+    get: () => {
+      delete value.b;
+      return 1;
+    },
+  });
+  value.b = 2;
+  const result = await executeToolResult(value);
+
+  assert.deepEqual(result.ok ? result.value : undefined, { a: 1 });
+});
+
+test('reads tool-result values through standard property access', async () => {
+  const value = new Proxy(
+    { a: 1 },
+    {
+      get: (target, key, receiver) => (key === 'a' ? 2 : Reflect.get(target, key, receiver)),
+    },
+  );
+  const result = await executeToolResult(value);
+
+  assert.deepEqual(result.ok ? result.value : undefined, { a: 2 });
 });
 
 test('keeps traversal budget independent from per-collection item limits', async () => {
@@ -1087,35 +1300,13 @@ test('bounds the values retained by Array.filter rather than its predicates', as
   assert.match(result.ok ? '' : result.error.message, /Array\.filter byte limit/i);
 });
 
-test('bounds collection-producing array and object helpers', async () => {
-  const largeArray = Array.from({ length: 100_001 }, () => 0);
-  const spreadResult = await executeCodeCell({
-    code: 'const values = await tools.load({}); return [...values].length;',
-    tools: [{ name: 'load' }],
-    callTool: async () => largeArray,
-  });
-  assert.equal(spreadResult.ok, false);
-  assert.equal(spreadResult.ok ? undefined : spreadResult.error.kind, 'limit_exceeded');
-
-  const mapResult = await executeCodeCell({
-    code: 'const values = await tools.load({}); return values.map((value) => value).length;',
-    tools: [{ name: 'load' }],
-    callTool: async () => largeArray,
-  });
-  assert.equal(mapResult.ok, false);
-  assert.equal(mapResult.ok ? undefined : mapResult.error.kind, 'limit_exceeded');
-
-  const largeRecord = Object.fromEntries(
-    Array.from({ length: 100_001 }, (_value, index) => [`key${index}`, index]),
-  );
-  const keysResult = await executeCodeCell({
-    code: 'return Object.keys(await tools.load({})).length;',
-    tools: [{ name: 'load' }],
-    callTool: async () => largeRecord,
-    limits: { maxResultBytes: 8 * 1024 * 1024 },
-  });
-  assert.equal(keysResult.ok, false);
-  assert.equal(keysResult.ok ? undefined : keysResult.error.kind, 'limit_exceeded');
+test('rejects oversized collections at the tool-result boundary', async () => {
+  for (const value of [[0, 0], { a: 1, b: 2 }]) {
+    const result = await executeToolResult(value, { maxCollectionItems: 1 });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+    assert.match(result.ok ? '' : result.error.message, /result from load item limit/i);
+  }
 });
 
 test('enforces source, call, concurrency, result, and output byte limits', async (t) => {
@@ -1173,28 +1364,6 @@ test('enforces source, call, concurrency, result, and output byte limits', async
       limits: { maxResultBytes: 32 },
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  });
-
-  await t.test('output bytes', async () => {
-    const result = await executeCodeCell({
-      code: 'return { text: "too large" };',
-      tools: [],
-      callTool: async () => null,
-      limits: { maxOutputBytes: 4 },
-    });
-    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-  });
-
-  await t.test('output bytes stop amplified serialization at the configured limit', async () => {
-    const repeated = Array.from({ length: 1_024 }, () => '\0'.repeat(128));
-    const result = await executeCodeCell({
-      code: 'return await tools.lookup({});',
-      tools: [{ name: 'lookup' }],
-      callTool: async () => repeated,
-      limits: { maxResultBytes: 1_024 * 1_024, maxOutputBytes: 64 },
-    });
-    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-    assert.match(result.ok ? '' : result.error.message, /output byte limit/i);
   });
 });
 

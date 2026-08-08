@@ -866,12 +866,6 @@ export class DesktopRuntimeHostClient {
     return this.#request("turn.start", input);
   }
 
-  startSkillTurn(
-    input: OperationInput<"turn.skill.start">,
-  ): Promise<OperationOutput<"turn.skill.start">> {
-    return this.#request("turn.skill.start", input);
-  }
-
   queryTurn(
     input: OperationInput<"turn.query">,
   ): Promise<OperationOutput<"turn.query">> {
@@ -1190,6 +1184,12 @@ export class DesktopRuntimeHostClient {
       throw invalidProjection("Runtime Resource");
     }
     return result.resource;
+  }
+
+  startRuntimeResource(
+    input: OperationInput<"runtime.resource.start">,
+  ): Promise<OperationOutput<"runtime.resource.start">> {
+    return this.#request("runtime.resource.start", input);
   }
 
   acquireRuntimeResourceController(

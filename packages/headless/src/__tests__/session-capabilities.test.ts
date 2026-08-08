@@ -155,6 +155,10 @@ test('settles the scoped graph before stopping the root Session', async () => {
       },
     } as unknown as SessionManager,
     {
+      waitForIdle: async (sessionId: string) => {
+        assert.equal(sessionId, 'root-session');
+        order.push('idle');
+      },
       stop: async (sessionId: string) => {
         assert.equal(sessionId, 'root-session');
         order.push('graph');
@@ -163,5 +167,5 @@ test('settles the scoped graph before stopping the root Session', async () => {
   );
 
   await bridge.settle('root-session');
-  assert.deepEqual(order, ['graph', 'session']);
+  assert.deepEqual(order, ['idle', 'graph', 'session']);
 });

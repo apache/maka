@@ -17,8 +17,8 @@ import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
 const PROCESS_TIMEOUT_MS = 10_000;
 
-test('a live Host serves Interactive inspection over its real UDS while retaining exclusive ownership', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+test('a live Host serves Interactive inspection over its real endpoint while retaining exclusive ownership', {
+  skip: process.platform === 'win32' ? 'Windows execution Host startup lifecycle' : false,
   timeout: 60_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-inspect-'));

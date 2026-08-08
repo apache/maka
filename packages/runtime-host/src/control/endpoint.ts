@@ -31,6 +31,7 @@ export class RuntimeHostEndpointError extends Error {
 export async function prepareRuntimeHostEndpoint(
   input: RuntimeHostEndpointInput,
 ): Promise<RuntimeHostEndpoint> {
+  assertValidRootId(input.rootId);
   if (process.platform === 'win32') {
     const path = `\\\\.\\pipe\\maka-runtime-host-${input.rootId.slice(0, 16)}-${input.hostEpoch}`;
     return {
@@ -115,13 +116,16 @@ function endpointDirectoryPrefix(rootPrefix: string, pid: number): string {
 }
 
 function endpointRootTag(rootId: string): string {
+  return Buffer.from(rootId, 'hex').toString('base64url');
+}
+
+function assertValidRootId(rootId: string): void {
   if (!/^[a-f0-9]{64}$/.test(rootId)) {
     throw new RuntimeHostEndpointError(
       'insecure_endpoint_directory',
       'Runtime Host endpoint requires a valid storage root identity',
     );
   }
-  return Buffer.from(rootId, 'hex').toString('base64url');
 }
 
 // Reclaims same-rootId endpoint directories whose owning process is gone,

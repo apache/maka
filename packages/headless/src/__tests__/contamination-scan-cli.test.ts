@@ -13,6 +13,7 @@ import {
   scheduledCellLogPath,
   trialCellLogPath,
 } from '../trial-cell-log.js';
+import { withCapturedProcessIo } from './helpers/capture-process-io.js';
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -123,14 +124,38 @@ async function withRunRoot<T>(
   }
 }
 
+/**
+ * The script's exported entry, invoked in process with the executable
+ * footer's contract mirrored exactly: a thrown error lands on stderr and
+ * exits 2. The real-subprocess route stays in 'refuses an invocation it
+ * cannot act on' as the representative coverage of that footer itself.
+ */
+async function runScanScript(
+  argv: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { main } = (await import(
+    new URL('../../harbor/run-contamination-scan.mjs', import.meta.url).href
+  )) as { main: (argv?: string[]) => Promise<number> };
+  const {
+    result: code,
+    stdout,
+    stderr,
+  } = await withCapturedProcessIo(async () => {
+    try {
+      return await main(argv);
+    } catch (error) {
+      process.stderr.write(
+        `${error instanceof Error ? (error.stack ?? String(error)) : String(error)}\n`,
+      );
+      return 2;
+    }
+  });
+  return { code, stdout, stderr };
+}
+
 async function scan(runRoot: string): Promise<{ code: number; report: ContaminationScanReport }> {
   const jsonPath = join(runRoot, 'report.json');
-  let code = 0;
-  try {
-    await execFileAsync(process.execPath, [SCRIPT, '--run-root', runRoot, '--json', jsonPath]);
-  } catch (error) {
-    code = (error as { code?: number }).code ?? -1;
-  }
+  const { code } = await runScanScript(['--run-root', runRoot, '--json', jsonPath]);
   return { code, report: JSON.parse(await readFile(jsonPath, 'utf8')) as ContaminationScanReport };
 }
 
@@ -184,13 +209,8 @@ describe('run-contamination-scan', () => {
       [{ agent: 'maka', taskId: 'cobol-modernization', messages: ['ran the tests'] }],
       async (runRoot, armIds) => {
         const markdownPath = join(runRoot, 'report.md');
-        await execFileAsync(process.execPath, [
-          SCRIPT,
-          '--run-root',
-          runRoot,
-          '--markdown',
-          markdownPath,
-        ]);
+        const { code } = await runScanScript(['--run-root', runRoot, '--markdown', markdownPath]);
+        assert.equal(code, 0);
         assert.match(
           await readFile(markdownPath, 'utf8'),
           new RegExp(`Searched ${armIds.length} of ${armIds.length} recorded cells\\.`),
@@ -200,13 +220,8 @@ describe('run-contamination-scan', () => {
   });
 
   test('refuses a flag it does not know', async () => {
-    await assert.rejects(
-      execFileAsync(process.execPath, [SCRIPT, '--run-root', '/tmp', '--depth', '2']),
-      (error: { code?: number }) => {
-        assert.equal(error.code, 2);
-        return true;
-      },
-    );
+    const { code } = await runScanScript(['--run-root', '/tmp', '--depth', '2']);
+    assert.equal(code, 2);
   });
 
   // A cell whose trajectory never landed was not searched, and a zero exit here
@@ -282,14 +297,9 @@ describe('run-contamination-scan', () => {
   test('says what is missing when a run root is not one', async () => {
     const empty = await mkdtemp(join(tmpdir(), 'maka-contamination-empty-'));
     try {
-      await assert.rejects(
-        execFileAsync(process.execPath, [SCRIPT, '--run-root', empty]),
-        (error: { code?: number; stderr?: string }) => {
-          assert.equal(error.code, 2);
-          assert.match(error.stderr ?? '', /no schedule recorded at .*scheduled-cells\.jsonl/);
-          return true;
-        },
-      );
+      const { code, stderr } = await runScanScript(['--run-root', empty]);
+      assert.equal(code, 2);
+      assert.match(stderr, /no schedule recorded at .*scheduled-cells\.jsonl/);
     } finally {
       await rm(empty, { recursive: true, force: true });
     }
@@ -323,14 +333,9 @@ describe('run-contamination-scan', () => {
     const runRoot = await mkdtemp(join(tmpdir(), 'maka-contamination-torn-'));
     try {
       await writeFile(scheduledCellLogPath(runRoot), '', 'utf8');
-      await assert.rejects(
-        execFileAsync(process.execPath, [SCRIPT, '--run-root', runRoot]),
-        (error: { code?: number; stderr?: string }) => {
-          assert.equal(error.code, 2);
-          assert.match(error.stderr ?? '', /names no cells/);
-          return true;
-        },
-      );
+      const { code, stderr } = await runScanScript(['--run-root', runRoot]);
+      assert.equal(code, 2);
+      assert.match(stderr, /names no cells/);
     } finally {
       await rm(runRoot, { recursive: true, force: true });
     }

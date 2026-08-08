@@ -103,6 +103,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'runtime.resource.controller.control',
       'runtime.resource.controller.release',
       'runtime.resource.query',
+      'runtime.resource.start',
       'runtime.resource.stop',
       'session.branch.create',
       'session.catalog.query',
@@ -131,7 +132,6 @@ describe('Runtime Host bootstrap protocol', () => {
       'turn.regenerate',
       'turn.resume.query',
       'turn.resume.start',
-      'turn.skill.start',
       'turn.start',
       'turn.stop',
       'usage.query',
@@ -1043,11 +1043,11 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('accepts bounded explicit Skill identities only on turn.skill.start', () => {
+  test('accepts bounded explicit Skill identities on turn.start', () => {
     const start = (skillIds: unknown, text = '') =>
       decodeClientFrame({
         requestId: 'skill-start',
-        operation: 'turn.skill.start',
+        operation: 'turn.start',
         input: {
           sessionId: 'session-1',
           turnId: 'turn-skill-1',
@@ -1057,7 +1057,7 @@ describe('Runtime Host bootstrap protocol', () => {
       });
     assert.deepEqual(start(['writer', 'project:maka:reviewer']), {
       requestId: 'skill-start',
-      operation: 'turn.skill.start',
+      operation: 'turn.start',
       input: {
         sessionId: 'session-1',
         turnId: 'turn-skill-1',
@@ -1077,10 +1077,18 @@ describe('Runtime Host bootstrap protocol', () => {
     ]) {
       assert.throws(() => start(skillIds), isInvalidFrame);
     }
-    assert.throws(() => start(undefined), isInvalidFrame);
+    assert.deepEqual(start(undefined, 'plain'), {
+      requestId: 'skill-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-skill-1',
+        content: { text: 'plain' },
+      },
+    });
     assert.deepEqual(start([], 'plain'), {
       requestId: 'skill-start',
-      operation: 'turn.skill.start',
+      operation: 'turn.start',
       input: {
         sessionId: 'session-1',
         turnId: 'turn-skill-1',
@@ -1089,7 +1097,7 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
-  test('bounds turn.skill.start feedback as one transport-safe result', () => {
+  test('bounds turn.start feedback as one transport-safe result', () => {
     const receipt = {
       invocation: 'explicit' as const,
       request: 'writer',
@@ -1103,7 +1111,7 @@ describe('Runtime Host bootstrap protocol', () => {
     };
     const response = {
       requestId: 'skill-start-response',
-      operation: 'turn.skill.start' as const,
+      operation: 'turn.start' as const,
       ok: true as const,
       result: {
         kind: 'started' as const,

@@ -34,10 +34,17 @@ export interface LiveTextProjection {
   sourceEndOffset?: number;
 }
 
+export interface LiveSteeringProjection {
+  id: string;
+  text: string;
+  ts: number;
+}
+
 export interface LiveTurnProjection {
   turnId: string;
   phase: 'waiting' | 'streamed';
   terminal?: true;
+  steering?: LiveSteeringProjection[];
   /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
    * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
@@ -137,6 +144,26 @@ export function applyLiveTurnEvent(
   event: SessionEvent,
   locale: UiLocale = 'zh',
 ): LiveTurnProjection | undefined {
+  if (event.type === 'steering_message') {
+    const prior = current?.turnId === event.turnId
+      ? current
+      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+    const steering = prior.steering ?? [];
+    if (steering.some((message) => message.id === event.messageId)) {
+      return confirmed(prior);
+    }
+    return {
+      ...confirmed(prior),
+      steering: [
+        ...steering,
+        {
+          id: event.messageId,
+          text: event.content.displayText ?? event.content.text,
+          ts: event.ts,
+        },
+      ],
+    };
+  }
   if (event.type === 'provider_retry') {
     const prior = current?.turnId === event.turnId
       ? current
@@ -152,7 +179,9 @@ export function applyLiveTurnEvent(
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
-    if (current.steps.length === 0) return undefined;
+    if (current.steps.length === 0 && (current.steering?.length ?? 0) === 0) {
+      return undefined;
+    }
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return {
       ...withoutRetry,

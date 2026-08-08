@@ -1,6 +1,7 @@
 import {
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
+  redactSecrets,
   type ConnectionTestResult,
   type CreateConnectionInput,
   type LlmConnection,
@@ -11,6 +12,7 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
+import { cleanErrorMessage } from '../model-connection-errors.js';
 
 export interface ConnectionsBridge {
   list(): Promise<LlmConnection[]>;
@@ -28,8 +30,21 @@ export interface ConnectionsBridge {
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';
 
 export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale = 'zh'): string {
-  const fallback = getProviderSettingsCopy(locale).shared.actionFallback;
-  return locale === 'zh' ? generalizedErrorMessageChinese(error, fallback) : generalizedErrorMessage(error, fallback);
+  const shared = getProviderSettingsCopy(locale).shared;
+  // Electron wraps ipcMain.handle rejections as "Error invoking remote method
+  // '<channel>': Error: <message>". Classify the original message, not the
+  // wrapper — channel names like 'connections:fetchModels' contain "fetch",
+  // which the keyword classifier reads as a network error.
+  const cleaned = redactSecrets(cleanErrorMessage(error)).trim();
+  const known = (shared.lastTest as Readonly<Record<string, string>>)[cleaned.toLowerCase()];
+  if (known) return known;
+  // Main-process handlers throw display-ready Chinese copy; keep it instead
+  // of flattening it into a coarser classification or the generic fallback.
+  if (/[\u3400-\u9fff]/.test(cleaned)) return cleaned;
+  const classified = locale === 'zh'
+    ? generalizedErrorMessageChinese(new Error(cleaned), '')
+    : generalizedErrorMessage(new Error(cleaned), '');
+  return classified || shared.actionFallback;
 }
 
 export interface ConnectionTestTroubleshootingCopy {

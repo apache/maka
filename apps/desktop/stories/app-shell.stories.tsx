@@ -364,6 +364,7 @@ function ComposedShell(props: {
         <AppShellWorkspaceTopActions
           workbarAvailable
           workbarCollapsed={false}
+          onOpenWorkbarLauncher={noop}
           onToggleWorkbar={noop}
         />
       </header>

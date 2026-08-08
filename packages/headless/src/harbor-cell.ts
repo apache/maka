@@ -10,13 +10,19 @@ import type {
   ProviderType,
   RuntimeEvent,
 } from '@maka/core';
-import { isTerminalRuntimeEvent, isThinkingLevel, resolveModelVisionSupport } from '@maka/core';
+import {
+  relayModelProfile,
+  isTerminalRuntimeEvent,
+  isThinkingLevel,
+  resolveModelVisionSupport,
+} from '@maka/core';
 import {
   AgentGraphCoordinator,
   AGENT_TOOL_GROUP_ID,
   AiSdkBackend,
   BackendRegistry,
   PiAgentBackend,
+  SessionActivityRegistry,
   SessionManager,
   buildChildAgentTools,
   buildProviderOptions,
@@ -72,7 +78,10 @@ import {
   buildHeadlessProductToolSurfaceForBackend,
   buildIsolatedHeadlessSupplementalTools,
 } from './tools.js';
-import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
+import {
+  createHeadlessAgentGraphWakeCoordinator,
+  createHeadlessSessionCapabilityBridge,
+} from './session-capabilities.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
 import {
   createInMemoryTaskLedgerExperimentStore,
@@ -425,6 +434,8 @@ export async function runHarborCellWithStorage(
       { initialBoundary: { kind: 'external', revision: 0 } },
     ));
   const graphControlStore = createAgentGraphControlStore(input.storageRoot);
+  const graphWakeActivities = new SessionActivityRegistry();
+  let graphWakeCoordinator: import('@maka/runtime').AgentGraphSupervisorWakeCoordinator | undefined;
   const graphCoordinator = new AgentGraphCoordinator({
     sessionStore,
     runStore: agentRunStore,
@@ -433,8 +444,23 @@ export async function runHarborCellWithStorage(
     runtime: manager,
     newId,
     rootSessionId: session.id,
+    onReconciliation: (rootSessionId, result) => {
+      graphWakeCoordinator?.notify(rootSessionId, result);
+    },
+    onCheckpoint: (rootSessionId) => {
+      graphWakeCoordinator?.notify(rootSessionId);
+    },
   });
-  sessionCapabilities.bind(manager, graphCoordinator);
+  graphWakeCoordinator = createHeadlessAgentGraphWakeCoordinator({
+    manager,
+    graphCoordinator,
+    activityRegistry: graphWakeActivities,
+    wakeStore: graphControlStore,
+    runStore: agentRunStore,
+    sessionStore,
+    newId,
+  });
+  sessionCapabilities.bind(manager, graphCoordinator, graphWakeCoordinator);
   let deadlineReached = false;
   let settlementError: unknown;
   let settlementAttempt: Promise<void> | undefined;
@@ -476,15 +502,20 @@ export async function runHarborCellWithStorage(
       attemptedTurnId = turnId;
       attemptedRunId = runId;
       invocation = undefined;
-      for await (const _event of manager.sendMessage(
-        session.id,
-        { turnId, text: nextText },
-        {
-          runId,
-          ...(input.onRunStarted ? { onRunStarted: input.onRunStarted } : {}),
-        },
-      )) {
-        // Event consumption drives the externally isolated Harbor run.
+      const rootActivity = graphWakeActivities.reserve(session.id);
+      try {
+        for await (const _event of manager.sendMessage(
+          session.id,
+          { turnId, text: nextText },
+          {
+            runId,
+            ...(input.onRunStarted ? { onRunStarted: input.onRunStarted } : {}),
+          },
+        )) {
+          // Event consumption drives the externally isolated Harbor run.
+        }
+      } finally {
+        rootActivity.release();
       }
       if (!invocation)
         throw new Error('Harbor cell turn finished without a runtime invocation result');
@@ -521,9 +552,13 @@ export async function runHarborCellWithStorage(
       }
     } finally {
       try {
-        await graphCoordinator.close();
+        await graphWakeCoordinator.close();
       } finally {
-        graphControlStore.close();
+        try {
+          await graphCoordinator.close();
+        } finally {
+          graphControlStore.close();
+        }
       }
     }
   }
@@ -1202,6 +1237,7 @@ export function buildAiSdkCellBackendRegistration(input: {
           connection.providerType,
           connection.models,
           input.model,
+          relayModelProfile(connection, input.model)?.vision,
         ),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore,

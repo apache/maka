@@ -128,7 +128,9 @@ interface ActiveRootTurn {
 }
 
 export type TurnStartOutcome = OperationOutcome<'turn.start'>;
-type SkillTurnStartOutcome = OperationOutcome<'turn.skill.start'>;
+type RootMessageStartOutcome =
+  | { ok: true; result: TurnSnapshot }
+  | Extract<TurnStartOutcome, { ok: false }>;
 
 const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
   loaded: [],
@@ -178,7 +180,7 @@ export type RootMessageContentPreparation =
     }
   | {
       readonly kind: 'rejected';
-      readonly outcome: TurnStartOutcome;
+      readonly outcome: RootMessageStartOutcome;
       readonly skillInvocation?: SkillInvocationResult;
     };
 
@@ -216,7 +218,7 @@ type ReconstructedContinuation =
     };
 
 type TurnStartDisposition =
-  | { kind: 'complete'; outcome: TurnStartOutcome }
+  | { kind: 'complete'; outcome: RootMessageStartOutcome }
   | { kind: 'await_start'; active: ActiveRootTurn };
 
 type TurnStopOutcome = OperationOutcome<'turn.stop'>;
@@ -327,7 +329,6 @@ interface HostTurnAttachmentValidator {
 export class RootTurnCoordinator {
   readonly handlers: TurnOperationHandlerMap & ContextOperationHandlerMap = {
     'turn.start': (input, context) => this.startTurn(input, context),
-    'turn.skill.start': (input, context) => this.startSkillTurn(input, context),
     'turn.query': (input) => this.queryTurn(input),
     'turn.stop': (input) => this.stopTurn(input),
     'turn.regenerate': (input, context) => this.regenerateTurn(input, context),
@@ -670,7 +671,7 @@ export class RootTurnCoordinator {
   startHostedExternalTransition(
     input: HostedExternalTurnTransitionInput,
     context: ConnectionContext,
-  ): Promise<TurnStartOutcome> {
+  ): Promise<RootMessageStartOutcome> {
     return this.startRootMessage(
       {
         sessionId: input.sessionId,
@@ -1671,9 +1672,26 @@ export class RootTurnCoordinator {
     }));
   }
 
-  private startTurn(input: TurnStartInput, context: ConnectionContext): Promise<TurnStartOutcome> {
+  private async startTurn(
+    input: TurnStartInput,
+    context: ConnectionContext,
+  ): Promise<TurnStartOutcome> {
     const content = normalizeMessageContent(input.content);
-    return this.startRootMessage(
+    const skillIds = input.skillIds ?? [];
+    if (skillIds.length > 0 || parseSkillInvocationTokens(content.text).length > 0) {
+      return this.runSkillInvocationStart(
+        input,
+        content,
+        skillIds,
+        {
+          kind: 'external_message',
+          inputDigest: hostedExternalInputDigest(content, skillIds),
+          ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+        },
+        context,
+      );
+    }
+    const outcome = await this.startRootMessage(
       {
         sessionId: input.sessionId,
         turnId: input.turnId,
@@ -1687,30 +1705,16 @@ export class RootTurnCoordinator {
       },
       context,
     );
-  }
-
-  private startSkillTurn(
-    input: TurnStartInput,
-    context: ConnectionContext,
-  ): Promise<SkillTurnStartOutcome> {
-    const content = normalizeMessageContent(input.content);
-    const skillIds = input.skillIds ?? [];
-    if (skillIds.length === 0 && parseSkillInvocationTokens(content.text).length === 0) {
-      return Promise.resolve(
-        operationConflict('Skill Turn start requires an explicit Skill invocation'),
-      );
-    }
-    return this.runSkillInvocationStart(
-      input,
-      content,
-      skillIds,
-      {
-        kind: 'external_message',
-        inputDigest: hostedExternalInputDigest(content, skillIds),
-        ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
-      },
-      context,
-    );
+    return outcome.ok
+      ? {
+          ok: true,
+          result: {
+            kind: 'started',
+            turn: outcome.result,
+            skillInvocation: EMPTY_SKILL_INVOCATION,
+          },
+        }
+      : outcome;
   }
 
   private async runSkillInvocationStart(
@@ -1719,8 +1723,7 @@ export class RootTurnCoordinator {
     skillIds: readonly string[],
     execution: Extract<RootExecutionDescriptor, { kind: 'external_message' }>,
     context: ConnectionContext,
-  ): Promise<SkillTurnStartOutcome> {
-    let blocked: SkillInvocationResult | undefined;
+  ): Promise<TurnStartOutcome> {
     const outcome = await this.startRootMessage(
       {
         sessionId: input.sessionId,
@@ -1742,7 +1745,6 @@ export class RootTurnCoordinator {
                 ),
               };
             }
-            blocked = existing.skillInvocation;
             return {
               kind: 'rejected',
               outcome: operationConflict('Explicit Skill invocation was durably rejected'),
@@ -1772,13 +1774,21 @@ export class RootTurnCoordinator {
               ),
             };
           }
-          blocked = committed.rejection.skillInvocation;
           return prepared;
         },
       },
       context,
     );
-    if (blocked) return { ok: true, result: { kind: 'blocked', skillInvocation: blocked } };
+    const rejection = await this.stores.agentRunStore.readRootTurnStartRejection(
+      input.sessionId,
+      input.turnId,
+    );
+    if (rejection && isDeepStrictEqual(rejection.execution, execution)) {
+      return {
+        ok: true,
+        result: { kind: 'blocked', skillInvocation: rejection.skillInvocation },
+      };
+    }
     if (!outcome.ok) return outcome;
     const admission = await this.stores.agentRunStore.readRootTurnAdmission(
       input.sessionId,
@@ -1897,7 +1907,7 @@ export class RootTurnCoordinator {
   private startRootMessage(
     request: RootMessageStartRequest,
     context: ConnectionContext,
-  ): Promise<TurnStartOutcome> {
+  ): Promise<RootMessageStartOutcome> {
     return this.runCommand(async () => {
       await this.awaitTerminalRootCleanup(request.sessionId);
       const activeAtEntry = this.#activeBySession.has(request.sessionId);
@@ -2718,7 +2728,7 @@ export class RootTurnCoordinator {
   private async resolveStartDisposition(
     input: Pick<RootTurnActivationInput, 'sessionId' | 'turnId'>,
     disposition: TurnStartDisposition,
-  ): Promise<TurnStartOutcome> {
+  ): Promise<RootMessageStartOutcome> {
     if (disposition.kind === 'complete') return disposition.outcome;
     await disposition.active.startSettled.promise;
     const result = await this.readCanonicalSnapshot(
@@ -3265,7 +3275,7 @@ function preflightRootMessageContent(
   content: MessageContent,
 ):
   | { readonly ok: true; readonly content: MessageContent }
-  | { readonly ok: false; readonly outcome: TurnStartOutcome } {
+  | { readonly ok: false; readonly outcome: RootMessageStartOutcome } {
   try {
     return {
       ok: true,
@@ -3797,7 +3807,7 @@ function isInteractionAnswerAck(event: SessionEvent): boolean {
   return event.type === 'user_question_answer_ack';
 }
 
-function completedStart(outcome: TurnStartOutcome): TurnStartDisposition {
+function completedStart(outcome: RootMessageStartOutcome): TurnStartDisposition {
   return { kind: 'complete', outcome };
 }
 

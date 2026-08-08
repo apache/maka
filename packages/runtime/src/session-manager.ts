@@ -75,6 +75,7 @@ import {
 import {
   DEFAULT_SESSION_NAME,
   DEEP_RESEARCH_SESSION_LABEL,
+  SIDE_CONVERSATION_SESSION_LABEL,
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
   childSessionsForParent,
@@ -323,7 +324,8 @@ export interface SpawnChildSessionResult extends SpawnChildAgentResult {
 export interface ProvisionAgentGraphOperatorInput {
   graphId: string;
   workId: string;
-  agentId: string;
+  agentId?: string;
+  subagentId?: string;
   operatorId: string;
   source: AgentGraphScheduleUpdateSource;
   edges: AgentGraphProvisionedEdge[];
@@ -2483,7 +2485,18 @@ export class SessionManager {
       throw new Error('Graph schedule source does not match its durable supervisor run');
     }
 
-    const definition = requireBuiltinAgentDefinition(input.agentId);
+    if ((input.agentId ? 1 : 0) + (input.subagentId ? 1 : 0) !== 1) {
+      throw new Error('Graph operator provision requires exactly one agent or subagent preset id');
+    }
+    const resolvedPreset = input.subagentId
+      ? await this.deps.subagentCatalog?.resolve(input.subagentId)
+      : undefined;
+    if (input.subagentId && !resolvedPreset) {
+      throw new Error('Configured subagent catalog is unavailable in this runtime');
+    }
+    const definition = resolvedPreset
+      ? requireBuiltinAgentDefinitionByProfile(resolvedPreset.profile)
+      : requireBuiltinAgentDefinition(input.agentId!);
     assertAgentDefinitionRunnable({
       definition,
       tools: await this.childToolsForSession(input.source.sessionId),
@@ -2503,7 +2516,7 @@ export class SessionManager {
       schemaVersion: AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION,
       graphId: input.graphId,
       workId: input.workId,
-      agentId: input.agentId,
+      agentId: definition.id,
       operatorId: input.operatorId,
       source: input.source,
       edges: input.edges,
@@ -2516,6 +2529,17 @@ export class SessionManager {
         toolNames: [...definition.tools],
         categoryPolicy: {},
         systemPrompt: definition.systemPrompt,
+        ...(resolvedPreset
+          ? {
+              preset: {
+                id: resolvedPreset.id,
+                name: resolvedPreset.name,
+                connectionSlug: resolvedPreset.connectionSlug,
+                model: resolvedPreset.model,
+                thinkingLevel: resolvedPreset.thinkingLevel,
+              },
+            }
+          : {}),
       },
     });
     const workspace = await this.provisionChildWorkspace(
@@ -2529,7 +2553,7 @@ export class SessionManager {
       provisionFingerprint,
       graphId: input.graphId,
       workId: input.workId,
-      agentId: input.agentId,
+      agentId: definition.id,
       operatorId: input.operatorId,
       initialTurnId,
       initialRunId,
@@ -2540,13 +2564,17 @@ export class SessionManager {
       {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
-        name: definition.name,
+        name: resolvedPreset?.name ?? definition.name,
         backend: parentHeader.backend,
-        llmConnectionSlug: parentHeader.llmConnectionSlug,
-        model: parentHeader.model,
-        ...(parentHeader.thinkingLevel !== undefined
-          ? { thinkingLevel: parentHeader.thinkingLevel }
-          : {}),
+        llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
+        model: resolvedPreset?.model ?? parentHeader.model,
+        ...(resolvedPreset
+          ? resolvedPreset.thinkingLevel !== undefined
+            ? { thinkingLevel: resolvedPreset.thinkingLevel }
+            : {}
+          : parentHeader.thinkingLevel !== undefined
+            ? { thinkingLevel: parentHeader.thinkingLevel }
+            : {}),
         permissionMode: childPermissionMode,
         collaborationMode: 'agent',
         orchestrationMode: 'default',
@@ -2569,8 +2597,9 @@ export class SessionManager {
           schemaVersion: SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
           definitionVersion: definition.definitionVersion,
           agentId: definition.id,
-          agentName: definition.name,
+          agentName: resolvedPreset?.name ?? definition.name,
           profile: definition.profile,
+          ...(resolvedPreset ? { presetId: resolvedPreset.id } : {}),
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
           categoryPolicy: {},
@@ -5091,7 +5120,9 @@ export class SessionManager {
         collaborationMode: header.collaborationMode,
         orchestrationMode: header.orchestrationMode ?? 'default',
         name: input.name ?? `${header.name} · 分支`,
-        labels: header.labels,
+        labels: input.sideConversation
+          ? [...new Set([...header.labels, SIDE_CONVERSATION_SESSION_LABEL])]
+          : header.labels,
         parentSessionId: sessionId,
         branchOfTurnId: input.sourceTurnId,
         status: 'active',

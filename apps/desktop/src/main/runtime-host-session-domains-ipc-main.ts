@@ -6,14 +6,20 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
   GoalState,
+  ShellRunPtyDataEvent,
 } from '@maka/runtime';
 import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
+import {
+  registerRuntimeHostShellRunsIpc,
+  type RuntimeHostShellRunsClient,
+} from './runtime-host-shell-runs-ipc-main.js';
 
-type RuntimeHostSessionDomainClient = Pick<
-  DesktopRuntimeHostClient,
-  | 'clearGoal'
+type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
+  Pick<
+    DesktopRuntimeHostClient,
+    | 'clearGoal'
   | 'controlPlan'
   | 'getRuntimeResource'
   | 'getPlanState'
@@ -24,8 +30,8 @@ type RuntimeHostSessionDomainClient = Pick<
   | 'queryDeepResearch'
   | 'queryGoal'
   | 'startPlanTurn'
-  | 'stopAgentGraph'
->;
+    | 'stopAgentGraph'
+  >;
 
 export interface RuntimeHostSessionDomainsIpcDeps {
   client: RuntimeHostSessionDomainClient;
@@ -38,7 +44,9 @@ export interface RuntimeHostSessionDomainsIpcDeps {
 
 export interface RuntimeHostSessionDomainsIpcHandle {
   sessionDomainChanged(change: SessionDomainChange): void;
+  runtimeResourcePtyData(event: ShellRunPtyDataEvent): void;
   agentGraphChanged(event: AgentGraphClientChangedEvent): void;
+  close(): Promise<void>;
 }
 
 /**
@@ -52,12 +60,13 @@ export function registerRuntimeHostSessionDomainsIpc(
 ): RuntimeHostSessionDomainsIpcHandle {
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? Date.now;
+  const shellRuns = registerRuntimeHostShellRunsIpc(
+    { client: deps.client, newId },
+    ipcMain,
+  );
 
   ipcMain.handle('tasks:list', (_event, sessionId: unknown) =>
     deps.client.listTasks(requiredId(sessionId, 'Session')),
-  );
-  ipcMain.handle('shell-runs:list', (_event, sessionId: unknown) =>
-    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
   );
   ipcMain.handle('deepResearch:get', async (_event, sessionId: unknown) =>
     projectHostedDeepResearch(
@@ -214,9 +223,13 @@ export function registerRuntimeHostSessionDomainsIpc(
           break;
       }
     },
+    runtimeResourcePtyData(event) {
+      deps.sendToRenderer?.('shell-runs:pty-data', event);
+    },
     agentGraphChanged(event) {
       deps.sendToRenderer?.('graphs:changed', event);
     },
+    close: () => shellRuns.close(),
   };
 }
 

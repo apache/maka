@@ -38,6 +38,9 @@ export function sessionEventErrorMessage(
   event: Extract<SessionEvent, { type: 'error' }>,
   locale: UiLocale = 'zh',
 ): string {
+  if (isNoRealConnectionEvent(event)) {
+    return noRealConnectionSetupDescription(noRealConnectionReasonFromEvent(event), locale);
+  }
   const reasonDescription = describeSessionErrorReason(event.reason, locale);
   if (reasonDescription) return reasonDescription;
   const fallback = getDesktopConversationCopy(locale).actions.conversationErrorFallback;
@@ -45,11 +48,11 @@ export function sessionEventErrorMessage(
 }
 
 /**
- * @knipignore Retained as the canonical raw-error cleaner. It has no live
- * call sites by design: the fail-soft contract tests (session-open-routing,
- * permission-response-ipc-boundary, renderer-startup-fail-soft, skills, etc.)
- * assert.doesNotMatch that visible toasts pipe `cleanErrorMessage(error)`, so
- * this export is referenced by name across the suite even though nothing imports it.
+ * Canonical raw-error cleaner: strips the Electron IPC wrapper so error
+ * classifiers see the main-process message, not the channel name (which can
+ * contain classifier keywords, e.g. the "fetch" in 'connections:fetchModels').
+ * Raw output must not reach a toast unclassified — see
+ * providerPanelActionErrorMessage for the display-side contract.
  */
 export function cleanErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -57,8 +60,10 @@ export function cleanErrorMessage(error: unknown): string {
 }
 
 export function cleanEventMessage(message: string): string {
+  // Electron serializes a rejected handler as `${error.name}: ${error.message}`,
+  // so custom classes arrive as e.g. "ConnectionModelDiscoveryPreconditionError: …".
   return message
-    .replace(/^Error invoking remote method '[^']+': Error: /, '')
+    .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z_$][\w$]*)?Error: /, '')
     .replace(NO_REAL_CONNECTION_REASON_RE, '')
     .replace(`${NO_REAL_CONNECTION_CODE}: `, '');
 }

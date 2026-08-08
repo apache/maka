@@ -50,3 +50,29 @@ test('redacts OAuth names and normalizes legacy Codex inventory', () => {
   assert.equal(choice?.connectionName, undefined);
   assert.equal(choice?.isDefault, true);
 });
+
+test('openai-compatible relay choices carry the thinking levels declared per model', () => {
+  const [declared, undeclared] = buildChatModelChoices([
+    connection({
+      slug: 'relay-think',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example/v1',
+      defaultModel: 'my-reasoning-model',
+      enabledModelIds: ['my-reasoning-model'],
+      models: [{ id: 'my-reasoning-model' }],
+      relayModelProfiles: {
+        'my-reasoning-model': { thinkingLevels: ['low', 'medium', 'high'] },
+      },
+    }),
+    connection({
+      slug: 'relay-plain',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay2.example/v1',
+      defaultModel: 'my-plain-model',
+      enabledModelIds: ['my-plain-model'],
+      models: [{ id: 'my-plain-model' }],
+    }),
+  ]);
+  assert.deepEqual(declared?.thinkingLevels, ['low', 'medium', 'high']);
+  assert.deepEqual(undeclared?.thinkingLevels, []);
+});

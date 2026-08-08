@@ -1376,7 +1376,7 @@ describe('runTaskOnce', () => {
       assert.ok(observed.childSessionId);
       assert.deepEqual(observed.listedSessionIds, [observed.childSessionId]);
       assert.equal(observed.outputSessionId, observed.childSessionId);
-      for (const toolName of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
+      for (const toolName of ['agent_spawn', 'agent_list', 'agent_output']) {
         assert.ok(result.projection.toolExecutors[0]?.toolNames.includes(toolName));
       }
       assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
@@ -1391,7 +1391,6 @@ describe('runTaskOnce', () => {
           'agent_list',
           'agent_output',
           'agent_spawn',
-          'agent_swarm',
         ],
       });
     });

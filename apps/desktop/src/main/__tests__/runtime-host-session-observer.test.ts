@@ -554,6 +554,7 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
   const events = new AsyncFrameQueue();
   const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
   const domainChanges: Array<{ sessionId: string; domain: string }> = [];
+  const ptyData: unknown[] = [];
   const graphChanges: unknown[] = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -569,6 +570,7 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     emitSessionsChanged: (reason, sessionId) =>
       sessionChanges.push({ reason, sessionId }),
     emitSessionDomainChanged: (change) => domainChanges.push(change),
+    emitRuntimeResourcePtyData: (event) => ptyData.push(event),
     emitAgentGraphChanged: (event) => graphChanges.push(event),
   });
   await observer.observe("session-1", "observer-1", eventTarget(11));
@@ -608,10 +610,20 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     domain: "plan",
   });
   events.push({
-    kind: "subscription.agent_graph_changed",
+    kind: "subscription.runtime_resource_pty_data",
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
     sequence: 3,
+    sessionId: "session-1",
+    ref: "maka://runtime/background-tasks/shell-1",
+    ptySequence: 7,
+    data: "ready",
+  });
+  events.push({
+    kind: "subscription.agent_graph_changed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 4,
     rootSessionId: "session-1",
     graphId: "graph-1",
     reason: "runtime_activity",
@@ -619,6 +631,12 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
   await waitFor(() => graphChanges.length === 1);
 
   assert.deepEqual(domainChanges, [{ sessionId: "session-1", domain: "plan" }]);
+  assert.deepEqual(ptyData, [{
+    sessionId: "session-1",
+    ref: "maka://runtime/background-tasks/shell-1",
+    sequence: 7,
+    data: "ready",
+  }]);
   assert.ok(
     sessionChanges.some(
       (change) =>

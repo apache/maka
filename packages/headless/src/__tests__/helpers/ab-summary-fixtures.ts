@@ -40,20 +40,6 @@ export function withUsage(
   };
 }
 
-export function withTrace<T extends FixedPromptTaskCompletedEvent>(
-  event: T,
-  arm: 'A' | 'B',
-  taskId: string,
-): T {
-  return {
-    ...event,
-    id: `event-${arm}-${taskId}-r0`,
-    roundId: `ab-${arm === 'A' ? 'prune-off' : 'prune-on'}-r0-${taskId}`,
-    runtimeEventsPath: `/logs/${arm}/${taskId}/runtime-events.jsonl`,
-    traceEventsPath: `/traces/${arm}/${taskId}/events.jsonl`,
-  };
-}
-
 export function budgetExhausted(taskId: string): FixedPromptTaskBudgetExhaustedEvent {
   return {
     schemaVersion: FIXED_PROMPT_WAL_SCHEMA_VERSION,
@@ -103,32 +89,6 @@ export function contextBudgetSummary(
     semanticCompactCallCacheReadInputTokens: 0,
     semanticCompactCallCacheWriteInputTokens: 0,
     semanticCompactCallTotalTokens: 0,
-    ...input,
-  };
-}
-
-export function continuationSummary(
-  input: Partial<NonNullable<FixedPromptTaskCompletedEvent['continuationSummary']>>,
-): NonNullable<FixedPromptTaskCompletedEvent['continuationSummary']> {
-  return {
-    enabled: true,
-    maxTurns: 3,
-    maxTotalRuntimeSteps: 150,
-    turnsUsed: 1,
-    continuedTurns: 0,
-    stepCapHits: 0,
-    capExhausted: false,
-    totalRuntimeSteps: 1,
-    turns: [{ turnIndex: 0, status: 'completed', stepCapHit: false, runtimeSteps: 1 }],
-    ...input,
-  };
-}
-
-export function taskToolSummary(
-  input: Partial<NonNullable<FixedPromptTaskCompletedEvent['taskToolSummary']>>,
-): NonNullable<FixedPromptTaskCompletedEvent['taskToolSummary']> {
-  return {
-    todoWriteCalls: 0,
     ...input,
   };
 }

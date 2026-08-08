@@ -137,6 +137,8 @@ export interface RegenerateTurnInput {
 export interface BranchFromTurnInput {
   sourceTurnId: string;
   name?: string;
+  /** Marks a transient read-only fork whose inherited history is reference-only. */
+  sideConversation?: boolean;
 }
 
 export interface ReviseBeforeTurnInput {

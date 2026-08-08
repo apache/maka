@@ -5,10 +5,7 @@ import type {
   PromptCandidateRationale,
   PromptCandidateRewardHackScan,
 } from '../fixed-prompt-controller.js';
-import {
-  promptStructuralSmokeReport,
-  renderPromptStructuralSmokeMarkdown,
-} from '../prompt-structural-smoke.js';
+import { promptStructuralSmokeReport } from '../prompt-structural-smoke.js';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
 
 describe('prompt structural smoke report', () => {
@@ -35,12 +32,6 @@ describe('prompt structural smoke report', () => {
     assert.equal(report.decisions.discard, 10);
     assert.equal(report.totalCostUsd, 1);
     assert.deepEqual(report.failures, []);
-
-    const markdown = renderPromptStructuralSmokeMarkdown(report);
-    assert.match(markdown, /# Prompt Structural Smoke/);
-    assert.match(markdown, /- status: pass/);
-    assert.match(markdown, /- rounds: 10 \/ 10/);
-    assert.match(markdown, /- cost_usd: 1 \/ 30/);
   });
 
   test('fails when structural smoke evidence is incomplete or unsafe', () => {
@@ -78,10 +69,6 @@ describe('prompt structural smoke report', () => {
     ]);
     assert.equal(report.observedRounds, 9);
     assert.equal(report.totalCostUsd, 37);
-
-    const markdown = renderPromptStructuralSmokeMarkdown(report);
-    assert.match(markdown, /## failures/);
-    assert.match(markdown, /- cost_ceiling_exceeded/);
   });
 
   test('fails when task cost reaches the configured ceiling exactly', () => {

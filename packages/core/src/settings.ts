@@ -63,6 +63,7 @@ export {
 export const SETTINGS_SECTIONS = [
   'general',
   'appearance',
+  'projects',
   'memory',
   'daily-review',
   'models',
@@ -204,6 +205,23 @@ export interface WorkspaceInstructionsSettings {
   enabled: boolean;
 }
 
+/**
+ * Which project a new conversation opens in.
+ *
+ * `defaultProjectId` absent means "no preference", and the app keeps its
+ * existing behaviour of reopening whatever project was used last. Set, it wins
+ * every time — a default that only applied when nothing else was remembered
+ * would be a default in name only, and the composer picker is what overrides
+ * it for a single conversation.
+ *
+ * A project id rather than a path: the catalog owns identity (a project can be
+ * relinked to a new location and keep its id), so storing the path would make
+ * this preference silently point at the wrong project after a move.
+ */
+export interface ProjectPreferencesSettings {
+  defaultProjectId?: string;
+}
+
 export interface PrivacySettings {
   incognitoActive: boolean;
 }
@@ -289,6 +307,7 @@ export interface AppSettings {
   workspaceInstructions: WorkspaceInstructionsSettings;
   privacy: PrivacySettings;
   chatDefaults: ChatDefaultsSettings;
+  projects: ProjectPreferencesSettings;
   notifications: NotificationSettings;
   system: SystemSettings;
   subagents: SubagentSettings;
@@ -390,6 +409,7 @@ export type UpdateAppSettingsInput = Partial<{
   workspaceInstructions: Partial<WorkspaceInstructionsSettings>;
   privacy: Partial<PrivacySettings>;
   chatDefaults: Partial<ChatDefaultsSettings>;
+  projects: Partial<ProjectPreferencesSettings>;
   notifications: Partial<NotificationSettings>;
   system: Partial<SystemSettings>;
   webSearch: WebSearchSettingsPatch;
@@ -462,6 +482,7 @@ export function createDefaultSettings(): AppSettings {
       enabled: true,
     },
     privacy: defaultPrivacySettings(),
+    projects: defaultProjectPreferencesSettings(),
     chatDefaults: defaultChatDefaultsSettings(),
     notifications: {
       runComplete: true,
@@ -525,6 +546,9 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
     privacy: patch.privacy
       ? normalizePrivacySettings({ ...current.privacy, ...patch.privacy })
       : current.privacy,
+    projects: patch.projects
+      ? normalizeProjectPreferencesSettings({ ...current.projects, ...patch.projects })
+      : current.projects,
     chatDefaults: patch.chatDefaults
       ? normalizeChatDefaultsSettings({
           ...current.chatDefaults,
@@ -562,6 +586,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     workspaceInstructions: value.workspaceInstructions,
     privacy: value.privacy,
     chatDefaults: value.chatDefaults,
+    projects: value.projects,
     notifications: value.notifications,
     system: value.system,
     subagents: value.subagents,
@@ -621,6 +646,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     localMemory: normalizeLocalMemorySettings(base.localMemory),
     workspaceInstructions: normalizeWorkspaceInstructionsSettings(base.workspaceInstructions),
     privacy: normalizePrivacySettings(base.privacy),
+    projects: normalizeProjectPreferencesSettings(base.projects),
     chatDefaults: normalizeChatDefaultsSettings(base.chatDefaults),
     // Fail-closed boolean coercion: mergeSettings spreads the raw user
     // value, so a non-boolean `runComplete` (from a hand-edited or
@@ -661,6 +687,10 @@ function defaultPrivacySettings(): PrivacySettings {
   return { incognitoActive: false };
 }
 
+function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
+  return {};
+}
+
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
   return { permissionMode: 'ask' };
 }
@@ -689,4 +719,17 @@ function normalizePrivacySettings(settings: PrivacySettings): PrivacySettings {
   return {
     incognitoActive: settings.incognitoActive === true,
   };
+}
+
+// A blank or non-string id is dropped rather than carried: it cannot name a
+// project, and letting it through would make "has a default" true while
+// nothing resolves. Whether the id still names a LIVE project is decided at
+// read time by the catalog, not here -- a project can be archived or its folder
+// removed long after this value was written, so normalization is the wrong
+// place to answer that.
+function normalizeProjectPreferencesSettings(
+  settings: ProjectPreferencesSettings | undefined,
+): ProjectPreferencesSettings {
+  const id = settings?.defaultProjectId;
+  return typeof id === 'string' && id.trim() !== '' ? { defaultProjectId: id } : {};
 }

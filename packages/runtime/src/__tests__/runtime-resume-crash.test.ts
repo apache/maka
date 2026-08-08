@@ -15,6 +15,7 @@ import {
   buildResumePlanFromRuntimeEvents,
   type RuntimeResumeCommittedPrefix,
 } from '../runtime-resume.js';
+import { terminateChildProcessTree } from '../process-tree-terminator.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_RESUME_CRASH_CHILD';
 
@@ -41,7 +42,8 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           // Production creates the run header before any RuntimeEvent append. Keep the
           // crash boundary focused on the child event writer while preserving the
           // storage identity contract used when the ledger is reopened.
-          await createSqliteAgentRunStore(workspaceRoot).createRun({
+          const runStore = createSqliteAgentRunStore(workspaceRoot);
+          await runStore.createRun({
             runId,
             invocationId: `invocation-${runId}`,
             sessionId,
@@ -55,6 +57,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             createdAt: 1,
             updatedAt: 1,
           });
+          runStore.close?.();
 
           await crashWriterAfterCommit({
             workspaceRoot,
@@ -86,6 +89,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             recoveredEvents,
             `${failpoint.id} projection mutated the durable ledger`,
           );
+          reopened.close();
         }
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -150,23 +154,28 @@ async function crashWriterAfterCommit(input: {
     stderr += chunk;
   });
 
-  const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>;
+  const closed = once(child, 'close') as Promise<[number | null, NodeJS.Signals | null]>;
   const deadline = Date.now() + 10_000;
   while (!stdout.includes('READY\n') && child.exitCode === null && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   if (!stdout.includes('READY\n')) {
-    child.kill('SIGKILL');
-    await exited;
+    await killCrashChild(child);
+    await closed;
     throw new Error(`crash child did not reach committed boundary: ${stderr || stdout}`);
   }
 
-  assert.equal(child.kill('SIGKILL'), true);
-  const [exitCode, signal] = await exited;
+  assert.equal(await killCrashChild(child), true);
+  const [exitCode, signal] = await closed;
   assert.ok(
     exitCode !== 0 || signal !== null,
     'crash child exited successfully instead of being killed',
   );
+}
+
+function killCrashChild(child: ReturnType<typeof spawn>): Promise<boolean> {
+  if (process.platform === 'win32') return terminateChildProcessTree(child, 'SIGKILL');
+  return Promise.resolve(child.kill('SIGKILL'));
 }
 
 function ledgerEvents(sessionId: string, runId: string): RuntimeEvent[] {

@@ -1,13 +1,16 @@
 import { _electron as electron, test as base, expect } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
+const execFileAsync = promisify(execFile);
 
 /**
  * The composer's text surface. It is Astryx's `ChatComposerInput`, so the
@@ -136,6 +139,48 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
   ]);
 }
 
+async function seedE2eGitReviewProject(
+  userDataDir: string,
+  extraUntrackedFiles = 0,
+): Promise<void> {
+  const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
+  const projectRoot = path.join(userDataDir, 'git-review-project');
+  await mkdir(projectRoot, { recursive: true });
+  const git = (...args: string[]) =>
+    execFileAsync('git', ['-C', projectRoot, ...args], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+  await git('init', '-b', 'main');
+  await git('config', 'user.name', 'Maka E2E');
+  await git('config', 'user.email', 'maka-e2e@example.invalid');
+  await writeFile(path.join(projectRoot, 'base.txt'), 'base\n', 'utf8');
+  await git('add', 'base.txt');
+  await git('commit', '-m', 'base');
+  await git('checkout', '-b', 'feature/review');
+  await writeFile(path.join(projectRoot, 'feature.txt'), 'feature\n', 'utf8');
+  await git('add', 'feature.txt');
+  await git('commit', '-m', 'feature');
+  await writeFile(path.join(projectRoot, 'base.txt'), 'base\nunstaged\n', 'utf8');
+  await writeFile(path.join(projectRoot, 'staged.txt'), 'staged\n', 'utf8');
+  await git('add', 'staged.txt');
+  await writeFile(path.join(projectRoot, 'untracked.txt'), 'untracked\n', 'utf8');
+  await Promise.all(
+    Array.from({ length: extraUntrackedFiles }, (_, index) =>
+      writeFile(
+        path.join(projectRoot, `bulk-${String(index).padStart(3, '0')}.txt`),
+        `bulk ${index}\n`,
+        'utf8',
+      ),
+    ),
+  );
+  await writeFile(
+    path.join(workspaceRoot, 'last-project-path.json'),
+    JSON.stringify({ projectPath: projectRoot }),
+    'utf8',
+  );
+}
+
 /**
  * The sandboxed HOME of the run currently under test. Set by withE2eWindow
  * before Electron launches.
@@ -167,6 +212,7 @@ async function withE2eWindow(
     platform,
     showWindow,
     invocableSkills,
+    gitReviewExtraFiles,
     extraConnectionCount,
   }: {
     seed: boolean;
@@ -178,6 +224,7 @@ async function withE2eWindow(
     /** Show fixtures whose contract depends on compositor-paced frames. */
     showWindow?: boolean;
     invocableSkills?: boolean;
+    gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
   },
   use: (page: Page) => Promise<void>,
@@ -194,6 +241,9 @@ async function withE2eWindow(
   try {
     if (seed) await seedE2eConnection(userDataDir, extraConnectionCount);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
+    if (gitReviewExtraFiles !== undefined) {
+      await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
+    }
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
@@ -255,19 +305,12 @@ export const test = base.extend<{
   window: Page;
   firstRunWindow: Page;
   modelPickerLongWindow: Page;
-  longTranscriptWindow: Page;
-  shortFinalTurnWindow: Page;
-  overflowingRailWindow: Page;
-  sidebarLongSessionsWindow: Page;
-  disclosureOutputWindow: Page;
   sandboxBoundaryWindow: Page;
   readOnlyBoundaryWindow: Page;
-  staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
-  localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
-  planRemindersWindow: Page;
+  settingsProjectsWindow: Page;
   oauthReloginWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
@@ -288,6 +331,20 @@ export const test = base.extend<{
       use,
     );
   },
+  // Settings -> 偏好 -> 项目, with three seeded catalog entries (available,
+  // long-path, and folder-gone) so the list, the default control, and the
+  // unavailable row all render without touching a native directory picker.
+  settingsProjectsWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: '.settingsMainPane',
+        e2eFixtureScenario: 'settings-projects',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
   modelPickerLongWindow: async ({}, use) => {
     await withE2eWindow(
       {
@@ -295,104 +352,6 @@ export const test = base.extend<{
         readinessSelector: COMPOSER_INPUT,
         locale: 'zh',
         extraConnectionCount: 10,
-      },
-      use,
-    );
-  },
-  // Long transcript: boots the e2e-fixture `long-transcript` fixture, which
-  // seeds a 24-turn (~1300px each) session and opens it as the active
-  // session. Fixture mode seeds its own connections, so no connection is
-  // pre-staged here. Readiness = turns on screen and RENDERED BY THE REAL
-  // MARKDOWN PIPELINE: the session is open and above-viewport turns sit at
-  // their content-visibility placeholder size. Used by the scroll-geometry
-  // spec.
-  //
-  // `.maka-markdown-pending` is the Suspense fallback for the lazily imported
-  // markdown chunk, and the turn-size warm-up will not start while one is on
-  // screen. Handing the page over before that chunk lands charged the spec's
-  // settle budget for a module load: under 50x CPU throttling the fallback
-  // holds for ~9.6s of a ~19s cold start, most of the spec's 15s, for work
-  // that is boot rather than settling.
-  longTranscriptWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
-        e2eFixtureScenario: 'long-transcript',
-        locale: 'zh',
-        showWindow: true,
-      },
-      use,
-    );
-  },
-  // Short final turn: boots the e2e-fixture `short-final-turn` fixture — five
-  // tall turns and a one-line last turn — and opens it as the active session.
-  // Same readiness contract as `longTranscriptWindow` and for the same reason:
-  // the markdown chunk must have landed before the spec scrolls. Used by the
-  // prompt-rail spec to reach an end of the scroller that the rail's
-  // activation band never covers.
-  shortFinalTurnWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
-        e2eFixtureScenario: 'short-final-turn',
-        locale: 'zh',
-        showWindow: true,
-      },
-      use,
-    );
-  },
-  // Overflowing rail: boots the e2e-fixture `overflowing-rail` fixture — 90
-  // short turns — and opens it as the active session. Same readiness contract
-  // as the two above. Used by the prompt-rail spec to exercise the rail once it
-  // is past its cap and scrolling independently of the transcript.
-  overflowingRailWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
-        e2eFixtureScenario: 'overflowing-rail',
-        locale: 'zh',
-        showWindow: true,
-      },
-      use,
-    );
-  },
-  // Long sidebar sessions: boots the e2e-fixture `sidebar-long-sessions`
-  // fixture, which seeds 60 active sessions and opens the newest one
-  // (`...-00`) with the sidebar expanded. Fixture mode seeds its own
-  // connections, so no connection is pre-staged here. Readiness = a session
-  // row on screen INSIDE AN EXPANDED SIDEBAR: the panel grid has mounted, the
-  // session list has loaded from IPC, and the footer sits below the
-  // constrained list row. Used by the sidebar-geometry and sidebar-navigation
-  // specs.
-  //
-  // The `[data-sidebar-state="expanded"]` part is load-bearing. The shell
-  // boots collapsed (the localStorage default), and `sidebarCollapsed: false`
-  // only lands later, from `applyE2eFixture` — a rAF plus two IPC round trips
-  // after mount. A bare session label does not gate on it: a collapsed
-  // sidebar keeps the whole list mounted at full width behind `opacity: 0` in
-  // a 0px grid column, which Playwright still reports as visible. Tests then
-  // started against a sidebar that was about to expand under them.
-  sidebarLongSessionsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '[data-sidebar-state="expanded"] [data-session-id]',
-        e2eFixtureScenario: 'sidebar-long-sessions',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  disclosureOutputWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.astryx-chat-tool-calls [role="button"][aria-expanded="false"]',
-        e2eFixtureScenario: 'disclosure-output',
-        locale: 'zh',
       },
       use,
     );
@@ -417,17 +376,6 @@ export const test = base.extend<{
       use,
     );
   },
-  // Stale sessions: boots the e2e-fixture `stale-sessions` fixture — one
-  // healthy session (zai-live, secret seeded) and one locked fake-backend session
-  // (opened active). Exercises the #1038 health-notice authority against real IPC
-  // (connection list, hasSecret probe, connectionLocked summaries).
-  // Readiness = turns on screen: the fake session is open.
-  staleSessionsWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-turn', e2eFixtureScenario: 'stale-sessions', locale: 'zh' },
-      use,
-    );
-  },
   // Session workbar: seeds a task tree and opens the unified auxiliary
   // workspace so its shell controls and peer tabs run against real IPC data.
   sessionWorkbarWindow: async ({}, use) => {
@@ -437,7 +385,7 @@ export const test = base.extend<{
         // The data contract, not the tag: the panel's surface is an Astryx Card
         // (a div carrying role="complementary"), so a tag-anchored selector
         // would pin an implementation detail the design system owns.
-        readinessSelector: '[data-maka-contract="session-workbar"]',
+        readinessSelector: '[data-maka-contract="session-workbar-right"]',
         e2eFixtureScenario: 'task-ledger',
         locale: 'zh',
       },
@@ -453,11 +401,6 @@ export const test = base.extend<{
       use,
     );
   },
-  // Keep this fixture unpinned so the Follow system assertion observes the
-  // actual host language while the legacy fixtures remain deterministic.
-  localeSwitchWindow: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT }, use);
-  },
   // Project + Maka-workspace Skills with one deliberately host-incompatible
   // entry. Proves `/` uses Runtime discovery/gating rather than management UI data.
   invocableSkillsWindow: async ({}, use) => {
@@ -467,17 +410,6 @@ export const test = base.extend<{
       locale: 'zh',
       invocableSkills: true,
     }, use);
-  },
-  planRemindersWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.maka-module-page-rows',
-        e2eFixtureScenario: 'plan-reminders',
-        locale: 'zh',
-      },
-      use,
-    );
   },
   oauthReloginWindow: async ({}, use) => {
     await withE2eWindow(

@@ -37,3 +37,20 @@ A contiguous run of tool calls is one group, and a group collapses by default. T
 The patch adds group-level `additions` / `deletions` and renders them beside the wrench count on the collapsed header. `ToolTrow` passes the run's total; the per-call counts stay on the rows inside.
 
 **Delete it when `packages/ui/src/__tests__/tool-trow-stability.test.tsx` passes without the patch** — its grouped-diff case asserts the summed `+N` / `-N` on a collapsed run.
+
+## `@astryxdesign/core`: a blank UA-CH platform must not decide "not Apple"
+
+`Kbd`'s ⌘/Ctrl display and `useHotkeys`' `mod` binding share one platform
+probe that prefers `navigator.userAgentData.platform` over the deprecated
+`navigator.platform`. Electron bundles whose identity was rewritten after
+copy (the ad-hoc-signed `Maka Dev.app` the TCC workflow builds) ship UA-CH
+**empty** — `platform: ''`, `brands: []` — and the probe read the blank as
+"not Apple": on macOS every `mod` hotkey listened for Ctrl (⌘+/ stopped
+opening the keyboard help) and every keycap drew Ctrl. The patch treats a
+blank `uaData.platform` as absent and falls through to `navigator.platform`;
+a non-blank value keeps deciding exactly as before.
+
+**Delete it when** the guard in `apps/desktop/e2e/keyboard-help.spec.ts`
+(the "blank UA-CH" test, which fakes `platform: ''` + `MacIntel` via an init
+script) passes without the patch — that means Astryx's own probe learned to
+distrust the blank.

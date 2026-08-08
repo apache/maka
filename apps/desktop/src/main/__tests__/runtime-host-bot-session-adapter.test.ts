@@ -136,7 +136,7 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
           terminalEventId: 'terminal-1',
         }),
       );
-      return runningTurn(input.sessionId, input.turnId);
+      return startedTurn(runningTurn(input.sessionId, input.turnId));
     },
   });
   const adapter = createRuntimeHostBotSessionAdapter({
@@ -161,6 +161,44 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
       extra: { turnId: 'turn-1' },
     },
   ]);
+});
+
+test('returns blocked Skill feedback without waiting for a Turn that was not created', async () => {
+  const events = new AsyncFrameQueue();
+  let closeCount = 0;
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => ({
+        snapshot: continuitySnapshot(null),
+        transcript: Promise.resolve([]),
+        events,
+        async close() {
+          closeCount += 1;
+          events.end();
+        },
+      }),
+      startTurn: async () => ({
+        kind: 'blocked',
+        skillInvocation: {
+          loaded: [],
+          failed: [{ request: 'writer', reason: 'not_found' }],
+          receipts: [],
+        },
+      }),
+    }),
+    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'bot-session-1',
+      turnId: 'turn-blocked',
+      text: '/skill:writer help',
+    }),
+    { kind: 'errored', reason: 'writer: not_found' },
+  );
+  assert.equal(closeCount, 1);
 });
 
 test('projects Host interaction and failure outcomes into the Bot reply contract', async () => {
@@ -193,7 +231,7 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
       }),
       startTurn: async () => {
         events.push(projectionFrame(1, rootTurn));
-        return runningTurn(rootTurn.sessionId, rootTurn.turnId);
+        return startedTurn(runningTurn(rootTurn.sessionId, rootTurn.turnId));
       },
     }),
     resolveCreateTarget: async () => ({ cwd: '/workspace' }),
@@ -250,6 +288,14 @@ function session(
 
 function runningTurn(sessionId: string, turnId: string): TurnSnapshot {
   return { sessionId, turnId, runId: 'run-1', status: 'running' };
+}
+
+function startedTurn(turn: TurnSnapshot) {
+  return {
+    kind: 'started' as const,
+    turn,
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  };
 }
 
 function continuitySnapshot(rootTurn: TurnSnapshot | null): SessionContinuitySnapshot {

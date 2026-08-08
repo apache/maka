@@ -44,6 +44,7 @@ export interface ShellRunProcessManagerInput {
   newId: () => string;
   now: () => number;
   onShellRunUpdate?: (update: ShellRunUpdate) => void;
+  onPtyData?: (event: ShellRunPtyDataEvent) => void;
   maxLiveShellRuns?: number;
   maxLivePtyRuns?: number;
   flushIntervalMs?: number;
@@ -86,6 +87,21 @@ export interface ShellRunWriteInput {
   input?: string;
   size?: { cols: number; rows: number };
   abortSignal?: AbortSignal;
+}
+
+export interface ShellRunPtyDataEvent {
+  sessionId: string;
+  ref: string;
+  sequence: number;
+  data: string;
+}
+
+export interface ShellRunPtySnapshot {
+  sessionId: string;
+  ref: string;
+  sequence: number;
+  buffer: string;
+  size: { cols: number; rows: number };
 }
 
 export interface RuntimeResourceReader {

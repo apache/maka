@@ -6,6 +6,7 @@
  */
 
 import type { BackendKind } from './session.js';
+import type { RelayModelProfiles } from './model-thinking.js';
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -90,6 +91,20 @@ export interface RuntimeExecutionConnection {
   baseUrl?: string;
   defaultModel: string;
   models?: ModelInfo[];
+  /**
+   * Per-model user declarations for an `openai-compatible` relay: the facts
+   * (offered thinking levels, vision enable/disable, context window) that
+   * neither the relay's /models report nor built-in metadata can decide
+   * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
+   * relay models are unknown to metadata and a catalog refresh rewrites
+   * `models[]` rows, so declarations live next to the user-edited fields.
+   * Invariants enforced at store boundaries: only `openai-compatible`
+   * connections carry profiles, and only for ids in `enabledModelIds`
+   * (disabling a model deletes its profile).
+   */
+  relayModelProfiles?: RelayModelProfiles;
+  /** Free-form, non-secret per-connection data; nothing reads a key unless it is shaped for the connection's provider type. */
+  extras?: Record<string, unknown>;
 }
 
 export interface LlmConnection extends RuntimeExecutionConnection {
@@ -107,7 +122,6 @@ export interface LlmConnection extends RuntimeExecutionConnection {
   lastTestMessage?: string;
   createdAt: number;
   updatedAt: number;
-  extras?: Record<string, unknown>;
 }
 
 /**
@@ -506,6 +520,7 @@ export interface CreateConnectionInput {
   /** When omitted, falls back to the default model alone. */
   enabledModelIds?: string[];
   apiKey?: string;
+  relayModelProfiles?: RelayModelProfiles;
   extras?: Record<string, unknown>;
 }
 
@@ -522,6 +537,12 @@ export interface UpdateConnectionInput {
   lastTestStatus?: ConnectionLastTestStatus;
   lastTestAt?: string;
   lastTestMessage?: string;
+  /**
+   * Replace the whole relay profiles table: absent leaves it untouched,
+   * `null` clears it outright, a table replaces it (with the usual rules —
+   * only `openai-compatible`, only for `enabledModelIds`).
+   */
+  relayModelProfiles?: RelayModelProfiles | null;
   extras?: Record<string, unknown>;
 }
 

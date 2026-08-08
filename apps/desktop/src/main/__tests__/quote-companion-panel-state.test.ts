@@ -3,6 +3,8 @@ import { describe, it } from 'node:test';
 import type { QuoteRef } from '@maka/core';
 import {
   consumeCompanionQuoteSnapshot,
+  consumeCompanionInitialPrompt,
+  openCompanionPanel,
   removeStagedCompanionQuote,
   snapshotCompanionQuotes,
   stageCompanionQuote,
@@ -19,6 +21,58 @@ function quote(text: string): QuoteRef {
 }
 
 describe('quote companion panel ownership', () => {
+  it('opens an empty companion and reuses it for the same source session', () => {
+    const panel = openCompanionPanel(null, {
+      sourceSessionId: 'source',
+      newId: ids('panel-1'),
+    });
+    assert.deepEqual(panel, {
+      id: 'panel-1',
+      sourceSessionId: 'source',
+      quotes: [],
+    });
+    assert.equal(
+      openCompanionPanel(panel, {
+        sourceSessionId: 'source',
+        newId: ids('unused'),
+      }),
+      panel,
+    );
+  });
+
+  it('replaces an empty companion when the source session changes', () => {
+    const first = openCompanionPanel(null, {
+      sourceSessionId: 'source-a',
+      newId: ids('panel-1'),
+    });
+    assert.deepEqual(
+      openCompanionPanel(first, {
+        sourceSessionId: 'source-b',
+        newId: ids('panel-2'),
+      }),
+      {
+        id: 'panel-2',
+        sourceSessionId: 'source-b',
+        quotes: [],
+      },
+    );
+  });
+
+  it('owns and consumes an initial slash-command prompt exactly once', () => {
+    const panel = openCompanionPanel(null, {
+      sourceSessionId: 'source',
+      initialPrompt: 'inspect this',
+      newId: ids('panel-1'),
+    });
+    assert.equal(panel.initialPrompt, 'inspect this');
+    assert.deepEqual(consumeCompanionInitialPrompt(panel, panel.id), {
+      id: 'panel-1',
+      sourceSessionId: 'source',
+      quotes: [],
+    });
+    assert.equal(consumeCompanionInitialPrompt(panel, 'stale-panel'), panel);
+  });
+
   it('consumes only the snapshot attached to the accepted send', () => {
     const newId = ids('quote-a', 'panel-1', 'quote-b');
     let panel: QuoteCompanionPanelState | null = stageCompanionQuote(null, {

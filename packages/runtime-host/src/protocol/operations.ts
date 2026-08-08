@@ -101,8 +101,6 @@ export type {
 } from './message.js';
 export type {
   TurnQueryInput,
-  SkillTurnStartInput,
-  SkillTurnStartResult,
   TurnRegenerateInput,
   TurnResumeParkReason,
   TurnResumePlan,
@@ -112,6 +110,7 @@ export type {
   TurnRunStatus,
   TurnSnapshot,
   TurnStartInput,
+  TurnStartResult,
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';

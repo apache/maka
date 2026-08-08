@@ -255,3 +255,25 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
   );
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
 });
+
+test('no default project means no preference, not an empty one', () => {
+  const normalized = normalizeSettings(createDefaultSettings());
+  expect(normalized.projects.defaultProjectId).toBe(undefined);
+});
+
+test('a chosen default project survives normalization', () => {
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), { projects: { defaultProjectId: 'proj-7' } }),
+  );
+  expect(normalized.projects.defaultProjectId).toBe('proj-7');
+});
+
+test('a blank default project id is dropped rather than stored', () => {
+  // A blank id cannot name a project, so carrying it would make "a default is
+  // set" true while nothing resolves — the settings row would claim a default
+  // the app can never open.
+  const normalized = normalizeSettings(
+    mergeSettings(createDefaultSettings(), { projects: { defaultProjectId: '   ' } }),
+  );
+  expect(normalized.projects.defaultProjectId).toBe(undefined);
+});

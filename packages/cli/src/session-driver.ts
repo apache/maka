@@ -53,7 +53,6 @@ export interface MakaPreparePromptOptions {
   modelText?: string;
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
-  invokeSkills?: boolean;
 }
 
 export class SkillInvocationBlockedError extends Error {

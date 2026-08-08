@@ -37,7 +37,6 @@ describe('quote companion cleanup authority', () => {
     await authority.cleanup('fork-scheduled');
     assert.deepEqual(await readPendingIds(workspaceRoot), []);
   });
-
   it('persists a failed removal and recovers it through a new authority instance', async () => {
     const workspaceRoot = await createWorkspace();
     const first = createSessionCopyCleanupAuthority({

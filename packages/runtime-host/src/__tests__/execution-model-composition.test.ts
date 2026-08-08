@@ -141,6 +141,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    // claude-subscription discovery is fallback-only (session-scoped OAuth
+    // tokens cannot call GET /v1/models). Create seeds the curated inventory;
+    // pick an id from that inventory rather than opening a fetch ticket.
+    const subscriptionModelId = 'claude-sonnet-5';
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
@@ -148,7 +152,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
         name: 'OAuth backend creation',
         providerType: 'claude-subscription',
         enabled: true,
-        enabledModelIds: [MODEL_ID],
+        enabledModelIds: [subscriptionModelId],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -156,6 +160,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const connection = created.snapshot.connections[0];
     assert.ok(connection);
     if (!connection) return;
+    assert.ok(
+      connection.models.some((model) => model.id === subscriptionModelId),
+      'create must seed the curated claude-subscription inventory',
+    );
     const tokens: OAuthSubscriptionTokens = {
       access_token: 'expired-oauth-access',
       refresh_token: 'rotating-oauth-refresh',
@@ -187,13 +195,13 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       )}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     transports = controlledOAuthTransports();
     const authority = new HostOAuthExecutionAuthority(policy);
     const firstAbort = new AbortController();
     const firstCreation = createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: firstAbort.signal,
+        modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
@@ -218,6 +226,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     secondBackend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
+        modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
@@ -719,7 +728,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
             ? `/skill:hosted-skill Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`
             : `Continue hosted execution turn ${index}.${' HISTORY_PRESSURE'.repeat(160)}`,
         connectionContext,
-        index === 1,
       );
       const terminal = await waitForTerminal(
         composition,
@@ -982,13 +990,15 @@ test('production Host executes and durably supervises an Agent Graph over a real
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assert.equal(started.result.kind, 'started');
+    if (started.result.kind !== 'started') return;
     let initialTerminal: TurnSnapshot;
     try {
       initialTerminal = await waitForTerminal(
         composition,
         session.id,
         turnId,
-        started.result,
+        started.result.turn,
         context,
       );
     } catch (error) {
@@ -2063,6 +2073,7 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   } as const;
 
   const firstPrompt = await composition.systemPrompt(firstContext);
+  assert.match(firstPrompt ?? '', /^You are Maka,/);
   assert.match(firstPrompt ?? '', /OLD_DESCRIPTION/);
   assert.match(firstPrompt ?? '', /MEMORY_BODY/);
   assert.equal(policyReads, 0);
@@ -2150,6 +2161,38 @@ test('Client Capability tools join the existing load_tools catalog without a par
   );
 });
 
+test('Side conversations end the Host-owned system prompt with an isolation boundary', async () => {
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    sideConversation: true,
+  });
+
+  const prompt =
+    (await composition.systemPrompt({
+      sessionId: 'side-session',
+      turnId: 'turn-1',
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+    })) ?? '';
+  assert.match(prompt, /Side conversation boundary/);
+  assert.match(prompt, /inherited parent history is reference context only/i);
+  assert.equal(
+    prompt.trimEnd().endsWith('Workspace changes may be visible to both conversations.'),
+    true,
+  );
+});
+
 test('Deep Research composition keeps one read-only research surface and prompt', async () => {
   const tool = (name: string, categoryHint?: MakaTool['categoryHint']): MakaTool => ({
     name,
@@ -2218,7 +2261,13 @@ test('Deep Research composition keeps one read-only research surface and prompt'
       workspaceRoot: process.cwd(),
     })) ?? '';
   assert.match(prompt, /Deep research mode is active/);
-  assert.match(prompt, /ExploreAgent/);
+  assert.doesNotMatch(prompt, /ExploreAgent/);
+  // The Deep Research contract is a trailing assertion that constrains the
+  // fragments before it; it must be the last non-empty fragment. With no skills
+  // or workspace instructions in this fixture, the contract follows identity.
+  const drIndex = prompt.indexOf('Deep research mode is active');
+  assert.ok(drIndex > 0, 'deep research contract must be present');
+  assert.ok(prompt.indexOf('You are Maka,') < drIndex, 'identity must lead the contract');
 });
 
 test('Plan composition admits only planning tools before approval and execution controls after', async () => {
@@ -2441,7 +2490,7 @@ test('root model composition defers the canonical parent-agent tool group', () =
 
   assert.deepEqual(
     composition.toolAvailability.groups?.find((group) => group.id === 'agent')?.toolNames,
-    ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output'],
+    ['agent_spawn', 'agent_list', 'agent_output'],
   );
   assert.ok(parentAgentTools.every((tool) => composition.tools.includes(tool)));
 });
@@ -2474,27 +2523,16 @@ async function startTurn(
   turnId: string,
   text: string,
   context: ConnectionContext,
-  invokeSkill = false,
 ): Promise<TurnSnapshot> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const input = { sessionId, turnId, content: { text } };
-    if (invokeSkill) {
-      const started = await composition.handlers['turn.skill.start'](input, context);
-      if (started.ok) {
-        if (started.result.kind === 'started') return started.result.turn;
-        throw new Error(
-          `Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`,
-        );
-      }
-      if (started.error.code !== 'session_busy') {
-        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
-      }
-    } else {
-      const started = await composition.handlers['turn.start'](input, context);
-      if (started.ok) return started.result;
-      if (started.error.code !== 'session_busy') {
-        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
-      }
+    const started = await composition.handlers['turn.start'](input, context);
+    if (started.ok) {
+      if (started.result.kind === 'started') return started.result.turn;
+      throw new Error(`Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`);
+    }
+    if (started.error.code !== 'session_busy') {
+      throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }

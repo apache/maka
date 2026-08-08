@@ -8,6 +8,7 @@ import {
   createWorkspaceWritePermissionProfile,
   canonicalToolArgsHash,
   DEEP_RESEARCH_SESSION_LABEL,
+  SIDE_CONVERSATION_SESSION_LABEL,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
   buildImmutableRuntimePrefix,
   decodeContinuationClaim,
@@ -445,6 +446,19 @@ describe('SessionManager graph operator provisioning', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => ({
+          id,
+          name: 'Fast graph reader',
+          description: 'Cheap graph scans',
+          profile: 'local_read',
+          connectionSlug: 'worker-connection',
+          model: 'worker-model',
+          thinkingLevel: 'low',
+          enabled: true,
+        }),
+      },
       newId: nextId(),
       now: nextNow(10),
     });
@@ -461,7 +475,7 @@ describe('SessionManager graph operator provisioning', () => {
       .provisionAgentGraphOperator({
         graphId: 'graph-active-supervisor',
         workId: `graph_work_${'8'.repeat(32)}`,
-        agentId: LOCAL_READ_AGENT_ID,
+        subagentId: 'fast-reader',
         operatorId: `graph_operator_${'9'.repeat(32)}`,
         source: {
           sessionId: parent.id,
@@ -477,7 +491,14 @@ describe('SessionManager graph operator provisioning', () => {
       });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(provisionSettled).toBe(true);
-    expect((await provision).created).toBe(true);
+    const provisioned = await provision;
+    expect(provisioned.created).toBe(true);
+    expect(provisioned.header.name).toBe('Fast graph reader');
+    expect(provisioned.header.llmConnectionSlug).toBe('worker-connection');
+    expect(provisioned.header.model).toBe('worker-model');
+    expect(provisioned.header.thinkingLevel).toBe('low');
+    expect(provisioned.header.subagentRuntime?.presetId).toBe('fast-reader');
+    expect(provisioned.provision.agentId).toBe(LOCAL_READ_AGENT_ID);
 
     parentGate.release();
     while (!(await parentTurn.next()).done) {}
@@ -15792,6 +15813,39 @@ describe('SessionManager permission mode updates', () => {
       childMessages.some((message) => (message as { turnId?: string }).turnId === 'after'),
     ).toBe(false);
     expect(childMessages.some((message) => message.type === 'turn_state')).toBe(false);
+  });
+
+  test('branchFromTurn marks side conversations without changing ordinary branches', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register(
+      'fake',
+      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(15_500),
+    });
+    const session = await manager.createSession(makeInput({ name: 'Parent', labels: ['kept'] }));
+    await drain(manager.sendMessage(session.id, { turnId: 'source', text: 'context' }));
+
+    const ordinary = await manager.branchFromTurn(session.id, {
+      sourceTurnId: 'source',
+      name: 'Ordinary',
+    });
+    const side = await manager.branchFromTurn(session.id, {
+      sourceTurnId: 'source',
+      name: 'Side',
+      sideConversation: true,
+    });
+
+    expect(ordinary.labels).toEqual(['kept']);
+    expect(side.labels).toEqual(['kept', SIDE_CONVERSATION_SESSION_LABEL]);
   });
 
   test('conversation copies inherit the authoritative execution boundary', async () => {

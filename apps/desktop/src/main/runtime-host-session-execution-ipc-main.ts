@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import {
   deriveTurnRecords,
-  SKILL_INVOCATION_TOKEN_SOURCE,
+  SIDE_CONVERSATION_SESSION_LABEL,
   type ActiveInteractionRequestEvent,
   type AttachmentRef,
   type PermissionMode,
@@ -11,7 +11,6 @@ import {
   type SessionChangedReason,
   type StoredMessage,
 } from "@maka/core";
-import type { SkillInvocationResult } from "@maka/runtime";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
   resolveAttachmentRefs,
@@ -33,12 +32,6 @@ import {
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
 
-const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
-  loaded: [],
-  failed: [],
-  receipts: [],
-};
-
 type RuntimeHostSessionExecutionClient = Pick<
   DesktopRuntimeHostClient,
   | "answerInteraction"
@@ -52,7 +45,6 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "regenerateTurn"
   | "setSessionReadMarker"
   | "startTurn"
-  | "startSkillTurn"
   | "startTurnResume"
   | "submitMessage"
   | "updateSessionMetadata"
@@ -196,16 +188,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
       };
-      const skillInvocationRequested =
-        (command.skillIds?.length ?? 0) > 0 ||
-        new RegExp(SKILL_INVOCATION_TOKEN_SOURCE).test(command.text);
-      const startResult = skillInvocationRequested
-        ? await deps.client.startSkillTurn(startInput)
-        : {
-            kind: "started" as const,
-            turn: await deps.client.startTurn(startInput),
-            skillInvocation: EMPTY_SKILL_INVOCATION,
-          };
+      const startResult = await deps.client.startTurn(startInput);
       if (startResult.kind === "blocked") {
         return {
           ok: false as const,
@@ -354,9 +337,19 @@ export function registerRuntimeHostSessionExecutionIpc(
         targetSessionId: normalized.copyId,
         sourceTurnId: normalized.sourceTurnId,
       });
-      if (normalized.name) {
+      if (normalized.name || normalized.sideConversation) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
-          name: normalized.name,
+          ...(normalized.name ? { name: normalized.name } : {}),
+          ...(normalized.sideConversation
+            ? {
+                labels: [
+                  ...new Set([
+                    ...branch.labels,
+                    SIDE_CONVERSATION_SESSION_LABEL,
+                  ]),
+                ],
+              }
+            : {}),
         });
       }
       deps.emitSessionsChanged("created", branch.id);

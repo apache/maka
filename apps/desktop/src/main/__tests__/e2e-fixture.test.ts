@@ -495,34 +495,6 @@ describe('e2e-fixture mode', () => {
     }
   });
 
-  describe('settings sub-page scenarios (PR108j)', () => {
-    // Each scenario opens a specific Settings section over the shared
-    // connection/session seed. The seed file shape is identical to
-    // `provider-workspace` — the only difference is `openSettingsSection`.
-    // PR-SETTINGS-IA-CONSOLIDATE-0 (2026-06-23): consolidated nav.
-    const cases = [
-      { scenario: 'settings-data', expectedSection: 'data' },
-      { scenario: 'settings-appearance', expectedSection: 'appearance' },
-      { scenario: 'settings-bots', expectedSection: 'bot-chat' },
-      { scenario: 'settings-about', expectedSection: 'about' },
-      { scenario: 'settings-general', expectedSection: 'general' },
-      { scenario: 'settings-memory', expectedSection: 'memory' },
-      { scenario: 'settings-daily-review', expectedSection: 'daily-review' },
-    ] as const;
-
-    for (const { scenario, expectedSection } of cases) {
-      it(`${scenario} opens Settings · ${expectedSection}`, () => {
-        const fixture = resolveE2eFixture(scenario, false);
-        assert.ok(fixture, `${scenario} should resolve`);
-        const state = getE2eFixtureState(fixture);
-        assert.equal(state?.openSettingsSection, expectedSection);
-        // Active session is the standard turn fixture so the chat
-        // surface behind the modal renders meaningful context.
-        assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
-      });
-    }
-  });
-
   it('stale-sessions seed reproduces the P0 workspace with active stale session', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-stale-'));
     try {
@@ -710,20 +682,10 @@ describe('e2e-fixture mode', () => {
     }
   });
 
-  it('module fixtures open Skills, MCP and Daily Review in the app module surface', async () => {
-    const skills = resolveE2eFixture('module-skills', false);
-    const mcp = resolveE2eFixture('module-mcp', false);
+  it('module Daily Review fixture opens in the app module surface', async () => {
     const dailyReview = resolveE2eFixture('module-daily-review', false);
 
-    assert.ok(skills);
-    assert.ok(mcp);
     assert.ok(dailyReview);
-    assert.equal(getE2eFixtureState(skills)?.sidebarSection, 'skills');
-    assert.equal(getE2eFixtureState(skills)?.sidebarCollapsed, false);
-    assert.equal(getE2eFixtureState(skills)?.activeSessionId, 'e2e-fixture-turn');
-    assert.equal(getE2eFixtureState(mcp)?.sidebarSection, 'mcp');
-    assert.equal(getE2eFixtureState(mcp)?.sidebarCollapsed, false);
-    assert.equal(getE2eFixtureState(mcp)?.activeSessionId, 'e2e-fixture-turn');
     assert.equal(getE2eFixtureState(dailyReview)?.sidebarSection, 'daily-review');
     assert.equal(getE2eFixtureState(dailyReview)?.sidebarCollapsed, false);
     assert.equal(getE2eFixtureState(dailyReview)?.activeSessionId, 'e2e-fixture-turn');
@@ -1353,63 +1315,6 @@ describe('settings-bots-onboarding fixture (#1233 deferral)', () => {
     // Active session is the standard turn fixture so the chat surface behind
     // the Settings modal renders meaningful context.
     assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
-  });
-
-  it('reuses the standard turn seed so no bot-specific durable seed is needed', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-bots-onboarding-'));
-    try {
-      const fixture = resolveE2eFixture('settings-bots-onboarding', false);
-      assert.ok(fixture);
-      await seedE2eFixture({
-        workspaceRoot,
-        fixture,
-        credentialStore: fakeCredentialStore(),
-        now: 1_700_000_000_000,
-      });
-      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-turn');
-      assert.equal(header.id, 'e2e-fixture-turn');
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('browser-empty chrome fixture (#819)', () => {
-  it('seeds a live browser session id so BrowserPanel mounts over the turn chat in empty state', () => {
-    const fixture = resolveE2eFixture('browser-empty', false);
-    assert.ok(fixture, 'browser-empty should resolve');
-    const state = getE2eFixtureState(fixture);
-    // Active session is the standard turn session so the chat surface
-    // behind the browser panel renders meaningful context.
-    assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
-    // liveBrowserSessionIds is the contract the renderer reads to mount
-    // BrowserPanel (app-shell gates on activeId && liveBrowserSessionIds
-    // .includes(activeId)). Seeding the active session makes the panel
-    // mount; with no real WebContentsView in e2e-fixture mode,
-    // browser.getState returns null → BrowserPanel renders EMPTY_STATE →
-    // the empty-state chrome (#818 defect surface) is what screenshots.
-    assert.deepEqual(state?.liveBrowserSessionIds, ['e2e-fixture-turn']);
-  });
-
-  it('reuses the always-seeded turn Session so no browser-specific durable seed is needed', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-browser-empty-'));
-    try {
-      const fixture = resolveE2eFixture('browser-empty', false);
-      assert.ok(fixture);
-      await seedE2eFixture({
-        workspaceRoot,
-        fixture,
-        credentialStore: fakeCredentialStore(),
-        now: 1_700_000_000_000,
-      });
-      // The turn Session is part of the standard seed, so the active browser
-      // Session has a real durable chat behind the
-      // panel without a browser-specific seed branch.
-      const header = await readSessionHeader(workspaceRoot, 'e2e-fixture-turn');
-      assert.equal(header.id, 'e2e-fixture-turn');
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-    }
   });
 });
 

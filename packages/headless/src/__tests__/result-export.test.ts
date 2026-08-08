@@ -3,11 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import {
-  renderTaskRunMarkdown,
-  taskRunExportFromProjection,
-  writeTaskRunExport,
-} from '../result-export.js';
+import { taskRunExportFromProjection, writeTaskRunExport } from '../result-export.js';
 import type { HeavyTaskTodoItem, TaskEvent } from '../task-contracts.js';
 import { projectTaskRun } from '../task-run-projection.js';
 
@@ -207,12 +203,6 @@ describe('task run export', () => {
     assert.equal(exported.isolation.policy?.mode, 'inert_fake_backend');
     assert.equal(exported.taxonomy.value, 'passed');
     assert.equal(exported.legacyResultRecord.passed, true);
-    const markdown = renderTaskRunMarkdown(exported);
-    assert.match(markdown, /verifier_authority: official_harbor_verifier authoritative=true/);
-    assert.match(markdown, /artifacts: 2/);
-    assert.match(markdown, /tool_calls: 2/);
-    assert.match(markdown, /tokens: 3/);
-    assert.match(markdown, /workspace_diff/);
   });
 
   test('omits default-off task policy metadata from compact exports', () => {
@@ -722,9 +712,6 @@ describe('task run export', () => {
       const compact = JSON.parse(await readFile(written.files.resultJson, 'utf8'));
       assert.equal(compact.verifier.authority.source, 'official_harbor_verifier');
       assert.equal(compact.verifier.authority.authoritative, true);
-      const markdown = await readFile(written.files.resultMd, 'utf8');
-      assert.match(markdown, /verifier_authority: official_harbor_verifier authoritative=true/);
-      assert.match(markdown, /artifacts: 0/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

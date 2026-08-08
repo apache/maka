@@ -37,6 +37,10 @@ import type {
   UsageRange,
   UsageStats,
   E2eFixtureState,
+  GitReviewReadResult,
+  GitReviewMutationAction,
+  GitReviewMutationResult,
+  GitReviewSource,
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
   ArtifactDescriptor,
@@ -90,6 +94,8 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
   BotStatus,
+  ShellRunPtyDataEvent,
+  ShellRunPtySnapshot,
   WechatBridgeQrCodeResult,
 } from '@maka/runtime';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
@@ -369,13 +375,46 @@ export interface MakaBridge {
     relink(
       projectId: string,
     ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
+    /** Open a catalogued project's folder in the OS file manager. */
+    reveal(projectId: string): Promise<OpenPathResult>;
     rename(projectId: string, name: string): Promise<ProjectRecord>;
     archive(projectId: string): Promise<ProjectRecord>;
     restore(projectId: string): Promise<ProjectRecord>;
   };
   shellRuns: {
     list(sessionId: string): Promise<ShellRunUpdate[]>;
+    attach(input: {
+      sessionId: string;
+      ref: string;
+    }): Promise<ShellRunPtySnapshot | null>;
+    detach(input: { sessionId: string; ref: string }): Promise<void>;
+    start(sessionId: string): Promise<ShellRunUpdate>;
+    write(input: {
+      sessionId: string;
+      ref: string;
+      input?: string;
+      size?: { cols: number; rows: number };
+    }): Promise<ShellRunUpdate | null>;
+    stop(input: {
+      sessionId: string;
+      ref: string;
+    }): Promise<ShellRunUpdate | null>;
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void;
+    subscribePtyData(handler: (event: ShellRunPtyDataEvent) => void): () => void;
+  };
+  gitReview: {
+    read(input: {
+      sessionId: string;
+      source: GitReviewSource;
+      baseBranch?: string;
+    }): Promise<GitReviewReadResult>;
+    mutate(input: {
+      sessionId: string;
+      source: Extract<GitReviewSource, 'unstaged' | 'staged'>;
+      revision: string;
+      path: string;
+      action: GitReviewMutationAction;
+    }): Promise<GitReviewMutationResult>;
   };
   goal: {
     /** The session's current goal (null when none is set). */
@@ -686,6 +725,8 @@ export interface MakaBridge {
       arch: string;
       osRelease: string;
       workspacePath: string;
+      /** The OS home directory, for collapsing displayed paths to `~`. */
+      homePath: string;
       projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };

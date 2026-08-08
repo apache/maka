@@ -20,19 +20,6 @@ export function _setColorLevelForTesting(level: 0 | 1 | 2 | 3): void {
   rebuildAnsi();
 }
 
-/**
- * Detect color level from an explicit env snapshot — for unit-testing the
- * detection logic directly. Production code uses `detectColorLevel()` which
- * reads `process.env` at module load.
- */
-export function _detectColorLevelForTesting(env: {
-  NO_COLOR?: string;
-  TERM?: string;
-  COLORTERM?: string;
-}): 0 | 1 | 2 | 3 {
-  return detectColorLevelFromEnv(env);
-}
-
 export let ansi = buildAnsi();
 
 // #1053: status disc — a single `●` tinted by tone. The shared visual primitive

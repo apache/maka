@@ -246,6 +246,35 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.writeCount, 2);
   });
 
+  test('starts an interactive login shell inside the canonical Session workspace', async () => {
+    const harness = createHarness();
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-1' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.equal(started.ok && started.result.resource.mode, 'pty');
+    assert.deepEqual(
+      harness.lastBackgroundInput && {
+        sessionId: harness.lastBackgroundInput.sessionId,
+        sourceTurnId: harness.lastBackgroundInput.sourceTurnId,
+        sourceToolCallId: harness.lastBackgroundInput.sourceToolCallId,
+        cwd: harness.lastBackgroundInput.cwd,
+        pty: harness.lastBackgroundInput.pty,
+      },
+      {
+        sessionId: SESSION_ID,
+        sourceTurnId: 'desktop-launch-1',
+        sourceToolCallId: 'desktop-launch-1',
+        cwd: '/workspace',
+        pty: true,
+      },
+    );
+    harness.finishBackground({ successful: true });
+    assert.equal(harness.activeResidencies, 0);
+  });
+
   test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
     const harness = createHarness();
     const firstConnection = connection('connection-1');
@@ -365,6 +394,7 @@ function createHarness() {
     pointReadCount: 0,
     stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
+    lastBackgroundInput: undefined as ShellRunBashInput | undefined,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
     runForegroundBash: async () => ({
@@ -376,7 +406,12 @@ function createHarness() {
       output: pipeOutput(''),
     }),
     runBackgroundBash: async (input) => {
+      state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
+      if (input.pty) {
+        const { output: _output, ...snapshot } = currentSnapshot;
+        return snapshot;
+      }
       return compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
@@ -426,6 +461,13 @@ function createHarness() {
       };
     },
     inspectResource: async () => structuredClone(currentSnapshot),
+    getLivePtySnapshot: (sessionId, ref) => ({
+      sessionId,
+      ref,
+      sequence: 0,
+      buffer: '',
+      size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
+    }),
     terminateAll: async () => {
       state.terminateCount += 1;
     },
@@ -448,6 +490,7 @@ function createHarness() {
       readHeader: async (sessionId) => {
         if (state.sessionState === 'missing') throw new SessionNotFoundError(sessionId);
         return {
+          cwd: '/workspace',
           status: state.sessionState === 'archived' ? 'archived' : 'idle',
           isArchived: state.sessionState === 'archived',
         };

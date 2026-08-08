@@ -56,7 +56,7 @@ describe('real Host Runtime Resource process lifecycle', {
           manager.getSessionUpdate(sessionId, ref).then((update) => update ?? null),
       },
       sessionHeaders: {
-        readHeader: async () => ({ status: 'idle', isArchived: false }),
+        readHeader: async () => ({ cwd: base, status: 'idle', isArchived: false }),
       },
       sessionAdmission: new SessionAdmissionGate(),
       acquireResidency: () => {

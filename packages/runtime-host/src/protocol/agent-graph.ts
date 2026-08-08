@@ -15,6 +15,7 @@ export const AGENT_GRAPH_TERMINAL_CURSOR_MAX_BYTES = 2 * 1024;
 export const AGENT_GRAPH_MAX_OPERATORS = 32;
 export const AGENT_GRAPH_MAX_EDGES = 64;
 export const AGENT_GRAPH_MAX_WORK = 32;
+export const AGENT_GRAPH_MAX_RECONCILIATION_FAILURES = 32;
 export const AGENT_GRAPH_MAX_STOPPED_TARGETS = 16;
 export const AGENT_GRAPH_MAX_CLAIMS = 32;
 export const AGENT_GRAPH_MAX_CONTROL_DECISIONS = 16;
@@ -34,6 +35,7 @@ export const AGENT_GRAPH_MAX_INSPECTION_RECORDS = 32;
 
 const AGENT_GRAPH_INSTRUCTION_PREVIEW_MAX_BYTES = 2 * 1024;
 const AGENT_GRAPH_REASON_MAX_BYTES = 12 * 1024;
+const AGENT_GRAPH_RECONCILIATION_FAILURE_REASON_MAX_BYTES = 4 * 1024;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -164,6 +166,7 @@ export interface AgentGraphClientScheduledWork {
   readonly workId: string;
   readonly target:
     | { readonly kind: 'agent'; readonly agentId: string }
+    | { readonly kind: 'preset'; readonly presetId: string }
     | { readonly kind: 'operator'; readonly operatorId: string };
   readonly inputIds: readonly string[];
   readonly replaces?: string;
@@ -172,6 +175,12 @@ export interface AgentGraphClientScheduledWork {
   readonly instructionTruncated: boolean;
   readonly revision: number;
   readonly committedAt: number;
+}
+
+export interface AgentGraphClientReconciliationFailure {
+  readonly workId: string;
+  readonly phase: 'schedule' | 'topology' | 'stop' | 'render' | 'dispatch';
+  readonly reason: string;
 }
 
 export interface AgentGraphClientStoppedTarget {
@@ -227,6 +236,7 @@ export interface AgentGraphClientSnapshot {
   readonly schemaVersion: typeof AGENT_GRAPH_CLIENT_SCHEMA_VERSION;
   readonly rootSessionId: string;
   readonly graphId: string;
+  readonly orchestrationMode: 'graph' | 'swarm';
   readonly snapshotVersion: `sha256:${string}`;
   readonly status: AgentGraphClientStatus;
   readonly scheduleRevision: number;
@@ -236,6 +246,7 @@ export interface AgentGraphClientSnapshot {
   readonly operators: readonly AgentGraphClientOperator[];
   readonly edges: readonly AgentGraphClientEdge[];
   readonly work: readonly AgentGraphClientScheduledWork[];
+  readonly reconciliationFailures: readonly AgentGraphClientReconciliationFailure[];
   readonly stoppedTargets: readonly AgentGraphClientStoppedTarget[];
   readonly finish?: AgentGraphClientFinish;
   readonly claims: readonly AgentGraphClientClaimRef[];
@@ -249,6 +260,7 @@ export interface AgentGraphClientSnapshot {
     readonly operators: number;
     readonly edges: number;
     readonly work: number;
+    readonly reconciliationFailures: number;
     readonly stoppedTargets: number;
     readonly claims: number;
     readonly controlDecisions: number;
@@ -398,6 +410,7 @@ export function decodeAgentGraphClientSnapshot(value: unknown): AgentGraphClient
       'schemaVersion',
       'rootSessionId',
       'graphId',
+      'orchestrationMode',
       'snapshotVersion',
       'status',
       'scheduleRevision',
@@ -406,6 +419,7 @@ export function decodeAgentGraphClientSnapshot(value: unknown): AgentGraphClient
       'operators',
       'edges',
       'work',
+      'reconciliationFailures',
       'stoppedTargets',
       'claims',
       'recentControlDecisions',
@@ -420,6 +434,7 @@ export function decodeAgentGraphClientSnapshot(value: unknown): AgentGraphClient
     schemaVersion: AGENT_GRAPH_CLIENT_SCHEMA_VERSION,
     rootSessionId: requireEntityId(record.rootSessionId, 'rootSessionId'),
     graphId: requireOpaqueIdentity(record.graphId, 'graphId'),
+    orchestrationMode: requireGraphOrchestrationMode(record.orchestrationMode),
     snapshotVersion: requireFingerprint(record.snapshotVersion, 'snapshotVersion'),
     status: requireGraphStatus(record.status),
     scheduleRevision: requireCount(record.scheduleRevision, 'scheduleRevision'),
@@ -436,6 +451,12 @@ export function decodeAgentGraphClientSnapshot(value: unknown): AgentGraphClient
     ),
     edges: decodeArray(record.edges, 'agent graph edges', AGENT_GRAPH_MAX_EDGES, decodeEdge),
     work: decodeArray(record.work, 'agent graph work', AGENT_GRAPH_MAX_WORK, decodeWork),
+    reconciliationFailures: decodeArray(
+      record.reconciliationFailures,
+      'agent graph reconciliation failures',
+      AGENT_GRAPH_MAX_RECONCILIATION_FAILURES,
+      decodeReconciliationFailure,
+    ),
     stoppedTargets: decodeArray(
       record.stoppedTargets,
       'agent graph stopped targets',
@@ -462,6 +483,11 @@ export function decodeAgentGraphClientSnapshot(value: unknown): AgentGraphClient
   assertUnique(snapshot.operators, (item) => item.operatorId, 'agent graph operator');
   assertUnique(snapshot.edges, (item) => item.edgeId, 'agent graph edge');
   assertUnique(snapshot.work, (item) => item.workId, 'agent graph work');
+  assertUnique(
+    snapshot.reconciliationFailures,
+    (item) => item.workId,
+    'agent graph reconciliation failure',
+  );
   assertUnique(snapshot.claims, (item) => item.claimId, 'agent graph claim');
   return snapshot;
 }
@@ -729,12 +755,38 @@ function decodeWork(value: unknown): AgentGraphClientScheduledWork {
   };
 }
 
+function decodeReconciliationFailure(value: unknown): AgentGraphClientReconciliationFailure {
+  const record = requireExactRecord(value, 'agent graph reconciliation failure', [
+    'workId',
+    'phase',
+    'reason',
+  ]);
+  if (
+    record.phase !== 'schedule' &&
+    record.phase !== 'topology' &&
+    record.phase !== 'stop' &&
+    record.phase !== 'render' &&
+    record.phase !== 'dispatch'
+  ) {
+    throw invalidProtocolFrame('Invalid agent graph reconciliation failure phase');
+  }
+  return {
+    workId: requireOpaqueIdentity(record.workId, 'workId'),
+    phase: record.phase,
+    reason: requireUtf8String(
+      record.reason,
+      'reason',
+      AGENT_GRAPH_RECONCILIATION_FAILURE_REASON_MAX_BYTES,
+    ),
+  };
+}
+
 function decodeWorkTarget(value: unknown): AgentGraphClientScheduledWork['target'] {
   const record = requireShapedRecord(
     value,
     'agent graph work target',
     ['kind'],
-    ['agentId', 'operatorId'],
+    ['agentId', 'presetId', 'operatorId'],
   );
   if (record.kind === 'agent') {
     requireExactRecord(record, 'agent graph agent target', ['kind', 'agentId']);
@@ -745,6 +797,13 @@ function decodeWorkTarget(value: unknown): AgentGraphClientScheduledWork['target
     return {
       kind: record.kind,
       operatorId: requireOpaqueIdentity(record.operatorId, 'operatorId'),
+    };
+  }
+  if (record.kind === 'preset') {
+    requireExactRecord(record, 'agent graph preset target', ['kind', 'presetId']);
+    return {
+      kind: record.kind,
+      presetId: requireOpaqueIdentity(record.presetId, 'presetId'),
     };
   }
   throw invalidProtocolFrame('Invalid agent graph work target');
@@ -984,6 +1043,7 @@ function decodeSnapshotOmitted(value: unknown): AgentGraphClientSnapshot['omitte
     'operators',
     'edges',
     'work',
+    'reconciliationFailures',
     'stoppedTargets',
     'claims',
     'controlDecisions',
@@ -993,6 +1053,10 @@ function decodeSnapshotOmitted(value: unknown): AgentGraphClientSnapshot['omitte
     operators: requireCount(record.operators, 'omitted operators'),
     edges: requireCount(record.edges, 'omitted edges'),
     work: requireCount(record.work, 'omitted work'),
+    reconciliationFailures: requireCount(
+      record.reconciliationFailures,
+      'omitted reconciliationFailures',
+    ),
     stoppedTargets: requireCount(record.stoppedTargets, 'omitted stoppedTargets'),
     claims: requireCount(record.claims, 'omitted claims'),
     controlDecisions: requireCount(record.controlDecisions, 'omitted controlDecisions'),
@@ -1135,6 +1199,11 @@ function requireGraphStatus(value: unknown): AgentGraphClientStatus {
     return value;
   }
   throw invalidProtocolFrame('Invalid agent graph status');
+}
+
+function requireGraphOrchestrationMode(value: unknown): 'graph' | 'swarm' {
+  if (value === 'graph' || value === 'swarm') return value;
+  throw invalidProtocolFrame('Invalid agent graph orchestration mode');
 }
 
 function requireFacet(value: unknown): AgentGraphRecordFacet {

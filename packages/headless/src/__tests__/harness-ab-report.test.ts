@@ -6,10 +6,6 @@ import {
   assertHarnessAbReportCompleted,
   buildHarnessAbReport,
   buildHarnessCohortReport,
-  renderHarnessCohortReportCsv,
-  renderHarnessCohortReportMarkdown,
-  renderHarnessAbReportCsv,
-  renderHarnessAbReportMarkdown,
 } from '../harness-ab-report.js';
 import type { HarnessAbRunManifest } from '../harness-ab-manifest.js';
 import { budgetExhausted, completed, withUsage } from './helpers/ab-summary-fixtures.js';
@@ -50,10 +46,6 @@ describe('harness A/B report', () => {
         { armId: 'codex', placement: 'task-container' },
       ],
     });
-    assert.match(
-      renderHarnessAbReportMarkdown(report),
-      /Execution placement: maka=task-container; codex=task-container\./,
-    );
     const partialManifest = {
       arms: [manifest.arms[0], { ...manifest.arms[1], metadata: { config: {} } }],
     } as Pick<HarnessAbRunManifest, 'arms'>;
@@ -134,11 +126,6 @@ describe('harness A/B report', () => {
       codex: 'openai-chat',
       'claude-code': 'openai-responses',
     });
-    const escapedCsv = renderHarnessCohortReportCsv({
-      ...report,
-      tasks: [{ ...report.tasks[0]!, taskId: 'task,"quoted"' }],
-    });
-    assert.match(escapedCsv, /^"task,""quoted""",maka,/m);
     assert.deepEqual(report.tasks[0]?.arms, [
       {
         armId: 'maka',
@@ -180,17 +167,9 @@ describe('harness A/B report', () => {
         missing: 0,
       },
     ]);
-    assert.match(renderHarnessCohortReportMarkdown(report), /Common cohort: 1\/1/);
-    assert.match(
-      renderHarnessCohortReportCsv(report),
-      /^task_id,arm_id,observed,valid,passed,pass_rate,completed,budget_exhausted,infra_failed,plumbing_failed,attestation_warnings,missing\n/,
-    );
-    assert.match(renderHarnessCohortReportCsv(report), /a,claude-code,1,1,1,1,1,0,0,0,0,0/);
     assert.deepEqual(report.oracleEvidence?.stateCounts, { passed: 1 });
     assert.ok(report.pairwise.every((pair) => pair.oracleEvidence?.stateCounts.passed === 1));
     assert.ok(report.pairwise.every((pair) => pair.execution?.arms.length === 2));
-    assert.match(renderHarnessCohortReportMarkdown(report), /Oracle evidence: passed 1\./);
-    assert.match(renderHarnessCohortReportMarkdown(report), /Warning: frozen Oracle warning/);
   });
 
   test('keeps effectiveness and economy as separate reproducible axes', () => {
@@ -241,30 +220,6 @@ describe('harness A/B report', () => {
     assert.equal(report.economy.baseline.costPerPassUsd, 0.00018);
     assert.equal(report.economy.candidate.costPerPassUsd, 0.00064);
     assert.equal('score' in report, false);
-
-    const csv = renderHarnessAbReportCsv(report);
-    assert.match(
-      csv,
-      /^run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_non_budget_evaluated,budget_excluded_pairs,paired_metered,missing_usage_pairs,axis,metric,baseline_arm,baseline_value,candidate_arm,candidate_value,candidate_minus_baseline\n/,
-    );
-    assert.match(
-      csv,
-      /completed,,metered,cache-aware-api-equivalent-usd,4,4,4,0,0,0,2,2,0,2,0,effectiveness,end_to_end_pass_at_1,maka,1,opencode,0.5,-0.5/,
-    );
-    assert.match(
-      csv,
-      /completed,,metered,cache-aware-api-equivalent-usd,4,4,4,0,0,0,2,2,0,2,0,economy,total_tokens,maka,240,opencode,360,120/,
-    );
-
-    const markdown = renderHarnessAbReportMarkdown(report);
-    assert.match(markdown, /# maka vs opencode — Harness Comparison/);
-    assert.match(markdown, /Pass@1/);
-    assert.match(markdown, /Recorded cost/);
-    assert.match(
-      markdown,
-      /Cell coverage: 4\/4 attempted; 4 model-scored; 0 unscored \(including 0 infra-failed\); 0 missing final usage\./,
-    );
-    assert.match(markdown, /No composite score/);
   });
 
   test('reports end-to-end, paired non-budget conditional, and budget exhaustion rates', () => {
@@ -318,12 +273,6 @@ describe('harness A/B report', () => {
       candidate: { armId: 'opencode', exhausted: 1, evaluated: 3, rate: 1 / 3 },
       candidateMinusBaseline: 0,
     });
-
-    const markdown = renderHarnessAbReportMarkdown(report);
-    assert.match(markdown, /End-to-end Pass@1/);
-    assert.match(markdown, /Non-budget Conditional Pass Rate/);
-    assert.match(markdown, /Budget Exhaustion Rate/);
-    assert.match(markdown, /excludes the entire pair when either arm is budget-exhausted/);
   });
 
   test('labels account-plan cost without presenting it as public API pricing', () => {
@@ -338,13 +287,9 @@ describe('harness A/B report', () => {
     });
 
     const report = buildHarnessAbReport(summary, undefined, 'account-plan');
-    const markdown = renderHarnessAbReportMarkdown(report);
 
     assert.equal(report.billingMode, 'account-plan');
     assert.equal(report.economy.basis, 'account-plan-recorded-usd');
-    assert.match(markdown, /# maka vs kimi-code — Harness Comparison/);
-    assert.match(markdown, /Recorded cost is zero under the frozen account-plan billing profile/);
-    assert.doesNotMatch(markdown, /public price snapshot/);
   });
 
   test('completes with explicit cell coverage when every cell is attempted but one fails in infrastructure', () => {
@@ -371,11 +316,6 @@ describe('harness A/B report', () => {
       missingFinalUsageCells: 0,
     });
     assert.throws(() => assertHarnessAbReportCompleted(report), /completed with gaps/);
-    assert.match(
-      renderHarnessAbReportCsv(report),
-      /completed_with_gaps,,metered,cache-aware-api-equivalent-usd,4,4,3,1,1,0,1,1,0,1,0,effectiveness,end_to_end_pass_at_1/,
-    );
-    assert.match(renderHarnessAbReportMarkdown(report), /Status: completed_with_gaps\./);
     assert.deepEqual(report.effectiveness.baseline, {
       armId: 'maka',
       passed: 2,
@@ -493,7 +433,6 @@ describe('harness A/B report', () => {
     assert.equal(report.economy.candidate.totalTokens, 150);
     assert.equal(report.economy.baseline.costPerPassUsd, 0.1);
     assert.equal(report.economy.candidate.costPerPassUsd, 0.2);
-    assert.match(renderHarnessAbReportMarkdown(report), /fully metered pairs: 1; missing usage: 1/);
     assert.throws(() => assertHarnessAbReportCompleted(report), /completed with gaps/);
   });
 
@@ -521,7 +460,7 @@ describe('harness A/B report', () => {
     assert.equal(report.coverage.missingFinalUsageCells, 1);
   });
 
-  test('preserves an early stop in every report format and rejects completion', () => {
+  test('preserves an early stop and rejects completion', () => {
     const summary = summarizeAbComparison({
       runId: 'glm-harness-ab',
       roundId: 'ab-summary',
@@ -538,25 +477,13 @@ describe('harness A/B report', () => {
 
     assert.equal(report.runStatus, 'stopped');
     assert.equal(report.stopReason, 'systemic_provider_failure');
-    assert.match(
-      renderHarnessAbReportCsv(report),
-      /^run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_non_budget_evaluated,budget_excluded_pairs,paired_metered,missing_usage_pairs,axis,metric,/,
-    );
-    assert.match(
-      renderHarnessAbReportCsv(report),
-      /stopped,systemic_provider_failure,metered,cache-aware-api-equivalent-usd,2,2,1,1,1,0,0,0,0,0,0,effectiveness,end_to_end_pass_at_1/,
-    );
-    assert.match(
-      renderHarnessAbReportMarkdown(report),
-      /Status: stopped \(systemic_provider_failure\)\./,
-    );
     assert.throws(
       () => assertHarnessAbReportCompleted(report),
       /harness A\/B stopped: systemic_provider_failure/,
     );
   });
 
-  test('renders advisory Oracle states and warnings without changing statistical inclusion', () => {
+  test('keeps advisory Oracle states from changing statistical inclusion', () => {
     const summary = summarizeAbComparison({
       runId: 'glm-harness-ab',
       roundId: 'ab-summary',
@@ -583,11 +510,6 @@ describe('harness A/B report', () => {
         { taskId: 'a', state: 'passed' },
         { taskId: 'b', state: 'missing' },
       ],
-    );
-    assert.match(renderHarnessAbReportMarkdown(report), /Oracle evidence: passed 1, missing 1\./);
-    assert.match(
-      renderHarnessAbReportMarkdown(report),
-      /Warning: Oracle evidence missing for task b/,
     );
   });
 });

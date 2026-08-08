@@ -1,7 +1,13 @@
 import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
 import { test, expect, COMPOSER_INPUT } from './fixtures.js';
 
-test('rehydrates a prompt the surface never received live', async ({ window: page }) => {
+// One seeded prompt, one launch: the reload-rehydration contract and the
+// answer flow are consecutive phases of the same parked turn. Answering
+// *after* the reload is the stronger form of both tests — it proves the
+// rehydrated prompt is not a rendering of lost state but the live turn.
+test('rehydrates a prompt across reload, then answers all three questions in the same turn', async ({
+  window: page,
+}) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_ASK_USER_QUESTION_PROMPT);
   await composer.press('Enter');
@@ -21,16 +27,6 @@ test('rehydrates a prompt the surface never received live', async ({ window: pag
     .click();
 
   await expect(prompt).toBeVisible();
-  await expect(prompt.getByText('1 / 3', { exact: true })).toBeVisible();
-});
-
-test('answers three questions and continues the same fake-backend turn', async ({ window: page }) => {
-  const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill(FAKE_ASK_USER_QUESTION_PROMPT);
-  await composer.press('Enter');
-
-  const prompt = page.locator('.maka-user-question-prompt');
-  await expect(prompt).toBeVisible();
   await expect(page.locator('.maka-composer')).toBeHidden();
   await expect(prompt.getByText('1 / 3', { exact: true })).toBeVisible();
   await expect(prompt.getByText('先验证核心流程，再逐步扩大范围。')).toBeVisible();
@@ -40,11 +36,23 @@ test('answers three questions and continues the same fake-backend turn', async (
   await selectedOption.click();
   await expect(selectedOption).toBeChecked();
   await expect(unselectedOption).not.toBeChecked();
+  // The first question has nothing to go back to: no previous button at all,
+  // not a disabled one.
+  const previous = prompt.getByRole('button', { name: '上一题' });
+  await expect(previous).toHaveCount(0);
   const next = prompt.getByRole('button', { name: '下一题' });
   await next.click();
 
   await expect(prompt.getByText('2 / 3', { exact: true })).toBeVisible();
   await expect(next).toBeFocused();
+  // Going back keeps the answer already chosen on the first question.
+  await expect(previous).toBeVisible();
+  await previous.click();
+  await expect(prompt.getByText('1 / 3', { exact: true })).toBeVisible();
+  await expect(selectedOption).toBeChecked();
+  await expect(previous).toHaveCount(0);
+  await next.click();
+  await expect(prompt.getByText('2 / 3', { exact: true })).toBeVisible();
   const thisWeek = prompt.getByRole('radio', { name: '本周' });
   const nextWeek = prompt.getByRole('radio', { name: '下周' });
   await thisWeek.focus();

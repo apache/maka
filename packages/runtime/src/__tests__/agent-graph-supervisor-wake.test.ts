@@ -56,6 +56,67 @@ describe('Agent Graph supervisor wake delivery', () => {
     });
   });
 
+  test('lets Swarm suppress dispatch wakes and choose a status-only wake turn', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let ready = false;
+    const starts: Array<{ text: string; mode: string | undefined }> = [];
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      shouldWake: async () => ready,
+      renderWake: async () => ({
+        text: 'Read compact swarm status only.',
+        displayText: 'Agent swarm needs attention.',
+        orchestrationMode: 'swarm',
+      }),
+      startTurn: async (_sessionId, input) => {
+        starts.push({ text: input.text, mode: input.turnOrchestration?.mode });
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.deepEqual(starts, []);
+
+      ready = true;
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.deepEqual(starts, [{ text: 'Read compact swarm status only.', mode: 'swarm' }]);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
+  test('admits a checkpoint-only wake without a reconciliation result', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot({ orchestrationMode: 'swarm' }),
+      shouldWake: async (_rootSessionId, result) => result === undefined,
+      startTurn: async (_sessionId, input) => {
+        turns += 1;
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session');
+      await coordinator.waitForIdle();
+      assert.equal(turns, 1);
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
+
   test('retries failures before and after prompt persistence, delivering only a completed turn', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const persistedAttempts: string[] = [];
@@ -675,6 +736,7 @@ function snapshot(overrides: Partial<AgentGraphClientSnapshot> = {}): AgentGraph
     schemaVersion: 1,
     rootSessionId: 'root-session',
     graphId: 'graph-1',
+    orchestrationMode: 'graph',
     snapshotVersion: 'snapshot-1',
     status: 'waiting',
     scheduleRevision: 1,
@@ -683,6 +745,7 @@ function snapshot(overrides: Partial<AgentGraphClientSnapshot> = {}): AgentGraph
     operators: [],
     edges: [],
     work: [],
+    reconciliationFailures: [],
     stoppedTargets: [],
     claims: [],
     recentControlDecisions: [],
@@ -692,6 +755,7 @@ function snapshot(overrides: Partial<AgentGraphClientSnapshot> = {}): AgentGraph
       operators: 0,
       edges: 0,
       work: 0,
+      reconciliationFailures: 0,
       stoppedTargets: 0,
       claims: 0,
       controlDecisions: 0,

@@ -4,10 +4,11 @@ import type {
   AgentGraphIntentClaimStore,
 } from './agent-graph-control.js';
 import type { AgentGraphTopologyStore } from './agent-graph-topology.js';
+import type { OrchestrationMode } from './orchestration.js';
 
 export const AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION = 1 as const;
 
-export const AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK = 20;
+export const AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK = 32;
 export const AGENT_GRAPH_SCHEDULE_MAX_STOP = 20;
 export const AGENT_GRAPH_SCHEDULE_MAX_INPUT_IDS = 64;
 export const AGENT_GRAPH_SCHEDULE_MAX_RESULT_IDS = 64;
@@ -19,12 +20,18 @@ export interface AgentGraphScheduleUpdateSource {
   runId: string;
   turnId: string;
   toolCallId: string;
+  /** Durable mode that created the graph; optional only on legacy updates. */
+  orchestrationMode?: OrchestrationMode;
 }
 
 export type AgentGraphWorkTarget =
   | {
       kind: 'agent';
       agentId: string;
+    }
+  | {
+      kind: 'preset';
+      presetId: string;
     }
   | {
       kind: 'operator';
@@ -242,11 +249,21 @@ export function decodeAgentGraphScheduleUpdate(value: unknown): AgentGraphSchedu
 
 function isScheduleSource(value: unknown): value is AgentGraphScheduleUpdateSource {
   return (
-    isExactRecord(value, ['sessionId', 'runId', 'turnId', 'toolCallId']) &&
+    isExactRecord(value, [
+      'sessionId',
+      'runId',
+      'turnId',
+      'toolCallId',
+      ...(hasOwn(value, 'orchestrationMode') ? ['orchestrationMode'] : []),
+    ]) &&
     isOpaqueIdentity(value.sessionId) &&
     isOpaqueIdentity(value.runId) &&
     isOpaqueIdentity(value.turnId) &&
-    isOpaqueIdentity(value.toolCallId)
+    isOpaqueIdentity(value.toolCallId) &&
+    (value.orchestrationMode === undefined ||
+      value.orchestrationMode === 'default' ||
+      value.orchestrationMode === 'graph' ||
+      value.orchestrationMode === 'swarm')
   );
 }
 
@@ -281,6 +298,13 @@ function isWorkTarget(value: unknown): value is AgentGraphWorkTarget {
     isExactRecord(value, ['kind', 'agentId']) &&
     value.kind === 'agent' &&
     isOpaqueIdentity(value.agentId)
+  ) {
+    return true;
+  }
+  if (
+    isExactRecord(value, ['kind', 'presetId']) &&
+    value.kind === 'preset' &&
+    isOpaqueIdentity(value.presetId)
   ) {
     return true;
   }

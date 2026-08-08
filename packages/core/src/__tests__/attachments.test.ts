@@ -1,37 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  attachmentKindFromMimeType,
-  formatAttachmentResourceRef,
-  guessMimeFromName,
-  parseAttachmentResourceRef,
-} from '../index.js';
-
-describe('attachment MIME routing', () => {
-  test('routes representative MIME and filename decisions', () => {
-    for (const [mime, name, kind] of [
-      ['image/png', undefined, 'image'],
-      ['application/pdf', undefined, 'pdf'],
-      ['application/octet-stream', 'budget.xlsx', 'doc'],
-      ['', 'slides.pptx', 'doc'],
-      ['text/plain', 'server.ts', 'code'],
-      ['application/octet-stream', 'MAIN.PY', 'code'],
-      ['text/markdown', 'notes.md', 'other'],
-      ['', 'archive.tar.gz', 'other'],
-    ] as const) {
-      assert.equal(attachmentKindFromMimeType(mime, name), kind);
-    }
-    for (const [name, mime] of [
-      ['photo.JPG', 'image/jpeg'],
-      ['doc.pdf', 'application/pdf'],
-      ['sheet.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
-      ['unknown.xyz', 'application/octet-stream'],
-      ['noext', 'application/octet-stream'],
-    ]) {
-      assert.equal(guessMimeFromName(name), mime);
-    }
-  });
-});
+import { formatAttachmentResourceRef, parseAttachmentResourceRef } from '../index.js';
 
 describe('attachment resource refs', () => {
   test('round-trips one canonical Session Artifact without embedding Session authority', () => {

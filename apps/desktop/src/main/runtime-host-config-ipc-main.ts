@@ -173,7 +173,9 @@ function runtimeHostTransferDeps(
   };
 }
 
-async function saveConnection(
+// Exported for the import-overwrite tests: this adapter is where snapshot
+// semantics meet the Host's tri-state update contract.
+export async function saveConnection(
   client: DesktopRuntimeHostClient,
   connection: LlmConnection,
 ): Promise<LlmConnection> {
@@ -198,12 +200,17 @@ async function saveConnection(
         ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
         enabled: connection.enabled,
         enabledModelIds: [...(connection.enabledModelIds ?? [])],
+        // Import-overwrite is snapshot replacement: absent in the snapshot
+        // must CLEAR, not inherit — the update contract's "absent means
+        // untouched" would otherwise resurrect the old profiles.
+        relayModelProfiles: connection.relayModelProfiles ?? null,
       },
     );
     if (updated.kind !== 'committed') {
       throw new Error(`Unable to update imported Connection: ${updated.kind}`);
     }
   } else {
+    const importedProfiles = connection.relayModelProfiles;
     const created = await client.createConnection(catalog.revision, {
       slug: connection.slug,
       name: connection.name,
@@ -211,6 +218,7 @@ async function saveConnection(
       ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
       enabled: connection.enabled,
       enabledModelIds: [...(connection.enabledModelIds ?? [])],
+      ...(importedProfiles === undefined ? {} : { relayModelProfiles: importedProfiles }),
     });
     if (created.kind !== 'committed') {
       throw new Error(`Unable to create imported Connection: ${created.kind}`);

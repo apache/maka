@@ -14,6 +14,7 @@ import { createSqliteAgentRunStore } from '@maka/storage';
 import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { FakeBackend } from '../fake-backend.js';
+import { terminateChildProcessTree } from '../process-tree-terminator.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_CONTINUATION_CRASH_CHILD';
 const FAILPOINTS: readonly RuntimeContinuationFailpoint[] = [
@@ -60,6 +61,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           await store.close?.();
           const {
             manager,
+            agentRunStore: recoveryAgentRunStore,
             runtimeEventStore: recoveryRuntimeStore,
             sessionStore: recoverySessionStore,
           } = createManager(workspaceRoot);
@@ -102,6 +104,8 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
               `${failpoint} left the continuation non-terminal`,
             );
           }
+          recoveryAgentRunStore.close?.();
+          runStore.close?.();
           recoveryRuntimeStore.close();
           await recoverySessionStore.close?.();
         }
@@ -212,6 +216,7 @@ async function suspendCrashChild(
 
 function createManager(workspaceRoot: string): {
   manager: SessionManager;
+  agentRunStore: ReturnType<typeof createSqliteAgentRunStore>;
   runtimeEventStore: ReturnType<typeof createSqliteRuntimeStore>;
   sessionStore: ReturnType<typeof createSessionStore>;
 } {
@@ -231,6 +236,7 @@ function createManager(workspaceRoot: string): {
   );
   let id = 100;
   return {
+    agentRunStore: runStore,
     runtimeEventStore,
     sessionStore: store,
     manager: new SessionManager({
@@ -288,13 +294,18 @@ async function crashContinuationAt(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   if (!stdout.includes(`READY:${failpoint}\n`)) {
-    child.kill('SIGKILL');
+    await killCrashChild(child);
     await closed;
     throw new Error(`${failpoint} child did not reach boundary: ${stderr || stdout}`);
   }
-  assert.equal(child.kill('SIGKILL'), true);
+  assert.equal(await killCrashChild(child), true);
   const [exitCode, signal] = await closed;
   assert.ok(exitCode !== 0 || signal !== null);
+}
+
+function killCrashChild(child: ReturnType<typeof spawn>): Promise<boolean> {
+  if (process.platform === 'win32') return terminateChildProcessTree(child, 'SIGKILL');
+  return Promise.resolve(child.kill('SIGKILL'));
 }
 
 function assertPrefix(

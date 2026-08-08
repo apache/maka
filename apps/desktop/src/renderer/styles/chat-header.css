@@ -14,7 +14,8 @@
    outside the message scroll area (sibling of maka-composer-interaction-slot).
    It is a peer of the composer form, so it must resolve to the SAME box as the
    composer card: capped at the chat measure, centered, and inset by the
-   composer's own `--space-6` gutters. The old `margin: 0 var(--space-3)` left it
+   composer's own `--space-6` gutters plus Astryx balanced dock's `--space-3`.
+   The old `margin: 0 var(--space-3)` left it
    uncapped, so on a wide window the notice ran the full chat column while the
    composer stayed at 680px — a visibly mismatched edge. Same formula as
    `.maka-composer-no-model-hint` / `.maka-composer-revision-notice`.
@@ -26,7 +27,10 @@
    selector immediately before the brace. */
 .maka-boundary-unreadable-notice,
 .maka-session-health-notice {
-  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  width: min(
+    var(--maka-chat-measure),
+    calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
+  );
   max-width: var(--maka-chat-measure);
   margin: 0 auto var(--space-2);
   -webkit-app-region: no-drag;

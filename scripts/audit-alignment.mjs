@@ -38,12 +38,32 @@ const FIXTURES = [
   // #1233 deferral: bot QR-onboarding modal in its deterministic waiting state.
   ['settings-bots-onboarding', '.settingsSurface'],
 ];
-// 2500ms, not the capture harness's 1000ms: this audit is a CI gate, and its
-// slowest surfaces (the QR-onboarding modal, the usage stats tables) populate
-// after their settings shell mounts. The readiness selector proves the shell
-// rendered; the settle budget is what covers content that arrives after it,
-// and CI runners are the slow end of the fleet.
+// The readiness selector proves the shell rendered; content that arrives
+// after it (the QR-onboarding modal, the usage stats tables) lands as DOM
+// mutations, so the audit waits for a mutation-quiet window instead of
+// sleeping a flat budget. QUIET_MS must outlast the longest fixture-internal
+// deferral (settings-bots-onboarding arms its waiting state ~300ms after
+// mount); SETTLE_MS caps the whole wait so a never-quiet page (an animating
+// fixture) still proceeds on the old CI-gate budget.
 const SETTLE_MS = Number(process.env.AUDIT_SETTLE_MS ?? 2_500);
+const QUIET_MS = Number(process.env.AUDIT_QUIET_MS ?? 500);
+
+// Resolves once the DOM has stayed mutation-free for `quietMs`, bounded by
+// `budgetMs` overall. Runs after withFixtureWindow's own settle expression,
+// which has already frozen animations and awaited document.fonts, so the only
+// remaining movement is real content landing.
+const QUIESCENT_EXPR = (quietMs, budgetMs) => `new Promise((resolve)=>{
+  let last=performance.now();
+  const observer=new MutationObserver(()=>{ last=performance.now(); });
+  observer.observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});
+  const started=performance.now();
+  const tick=()=>{
+    const now=performance.now();
+    if(now-last>=${quietMs} || now-started>=${budgetMs}){ observer.disconnect(); resolve('settled'); return; }
+    setTimeout(tick,50);
+  };
+  tick();
+})`;
 let totalIssues = 0;
 let fixtureErrors = 0;
 
@@ -86,8 +106,11 @@ for (const [fixture, readySelector] of FIXTURES) {
   try {
     const issues = await withFixtureWindow(
       fixture,
-      { theme: 'light', readySelector, settleMs: SETTLE_MS },
-      async ({ evaluate }) => JSON.parse(await evaluate(EXPR)),
+      { theme: 'light', readySelector, settleMs: 0 },
+      async ({ evaluate }) => {
+        await evaluate(QUIESCENT_EXPR(QUIET_MS, SETTLE_MS));
+        return JSON.parse(await evaluate(EXPR));
+      },
     );
     console.log('==', fixture, '==');
     for (const issue of issues) console.log(JSON.stringify(issue));

@@ -60,7 +60,89 @@ export interface DesktopConversationCopy {
     regeneratedTo: string;
     regeneratedToTooltip: string;
   };
-  workbar: { ariaLabel: string; sectionsAriaLabel: string; tasks: string; browser: string; files: string; inspector: string; quoteTab: string };
+  workbar: {
+    ariaLabel: string;
+    sectionsAriaLabel: string;
+    review: string;
+    terminal: string;
+    terminalNumbered(index: number): string;
+    tasks: string;
+    browser: string;
+    files: string;
+    inspector: string;
+    sideChat: string;
+    sideChatNumbered(index: number): string;
+    openTab: string;
+    closeTab(label: string): string;
+    tabMenu(label: string): string;
+    moveLeft: string;
+    moveRight: string;
+    moveToRight: string;
+    moveToBottom: string;
+    pinTab: string;
+    pinTabHint: string;
+    close: string;
+    closeOthers: string;
+    closeToRight: string;
+    launcher: {
+      review: string;
+      terminal: string;
+      tasks: string;
+      browser: string;
+      files: string;
+      inspector: string;
+      sideChat: string;
+    };
+  };
+  reviewPanel: {
+    ariaLabel: string;
+    empty: string;
+    sourceLabel: string;
+    branchSource: string;
+    unstagedSource: string;
+    stagedSource: string;
+    lastTurnSource: string;
+    notGitRepository: string;
+    workspaceUnavailable: string;
+    unbornRepository: string;
+    gitFailed: string;
+    invalidBaseBranch: string;
+    truncated: string;
+    stageFile: string;
+    unstageFile: string;
+    mutationFailed: string;
+    snapshotChanged: string;
+    revertFile: string;
+    revertTitle: string;
+    revertDescription(path: string): string;
+    revertConfirm: string;
+    cancel: string;
+    showMore(remaining: number): string;
+    summary(files: number, additions: number, deletions: number): string;
+    comparison(base: string, current: string): string;
+    workingTree(branch: string): string;
+    loadFailed: string;
+    retry: string;
+    refresh: string;
+    diffCount(count: number): string;
+  };
+  terminalPanel: {
+    ariaLabel: string;
+    empty: string;
+    loadFailed: string;
+    retry: string;
+    refresh: string;
+    readOnly: string;
+    runCount(count: number): string;
+    newTerminal: string;
+    commandPlaceholder: string;
+    commandLabel: string;
+    runCommand: string;
+    stopTerminal: string;
+    startFailed: string;
+    writeFailed: string;
+    stopFailed: string;
+  };
   inspector: {
     ariaLabel: string;
     loadFailed: string;
@@ -128,23 +210,29 @@ export interface DesktopConversationCopy {
     };
   };
   quoteCompanion: {
-    /** Read-only exploration hint shown in the empty companion panel. */
-    hint: string;
-    /** The exit / dismiss action label. */
-    exit: string;
+    /** Initial title used while the eager side-conversation fork is empty. */
+    defaultName: string;
     /** Prefix for the companion fork's session name (followed by the excerpt). */
     namePrefix: string;
+    /** Short-lived status while the eager fork is created. */
+    preparing: string;
+    permissionStreaming: string;
+    closeConfirmation: {
+      title(count: number): string;
+      description(count: number): string;
+      dontAskAgain: string;
+      cancel: string;
+      confirm: string;
+    };
     errors: {
       /** Reading the source boundary or creating the companion fork failed. */
       forkSetupFailed: string;
-      /** Fork could not be pinned read-only (`explore`), so the send was aborted. */
-      permissionPinFailed: string;
-      /** The companion run reported an error event. */
-      runError: string;
       /** `sessions.send` was rejected without throwing (e.g. an unresolved skill). */
       sendRejected: string;
       /** `sessions.send` threw / the turn could not be started. */
       sendFailed: string;
+      /** The run ended but the persisted transcript could not be refreshed. */
+      settlementFailed: string;
       /** Responding to a permission / question prompt failed. */
       respondFailed: string;
     };
@@ -243,7 +331,7 @@ function enDetail(parts: readonly string[]): string {
 
 const COPY = {
   zh: {
-    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '会话操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新会话列表失败', refreshSessionsFailedFallback: '刷新会话列表失败，请稍后重试。', conversationErrorTitle: '对话出错', conversationErrorFallback: '对话运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新会话 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原对话仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '对话操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原会话使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取对话失败' },
+    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '会话操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新会话列表失败', refreshSessionsFailedFallback: '刷新会话列表失败，请稍后重试。', conversationErrorTitle: '对话出错', conversationErrorFallback: '对话运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新会话 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原对话仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '对话操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原会话使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取对话失败' },
     attachments: { tooMany: '附件数量超过 8 个', tooLarge: '附件大小超过 50MB', duplicate: '附件来源重复，请勿重复添加同一文件。' },
     model: {
       fakeBackendLabel: '本地模拟连接',
@@ -265,7 +353,91 @@ const COPY = {
     },
     footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新对话', branch: '基于此回答的上下文分支出新对话', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
-    workbar: { ariaLabel: '会话工作栏', sectionsAriaLabel: '会话工作栏栏目', tasks: '任务', browser: '浏览器', files: '文件', inspector: '追踪', quoteTab: '追问引用' },
+    workbar: {
+      ariaLabel: '会话工作栏',
+      sectionsAriaLabel: '会话工作栏标签',
+      review: '审阅',
+      terminal: '终端',
+      terminalNumbered: (index) => `终端 ${index}`,
+      tasks: '任务',
+      browser: '浏览器',
+      files: '文件',
+      inspector: '追踪',
+      sideChat: '侧边对话',
+      sideChatNumbered: (index) => `侧边对话 ${index}`,
+      openTab: '打开工作栏标签',
+      closeTab: (label) => `关闭${label}`,
+      tabMenu: (label) => `${label}标签菜单`,
+      moveLeft: '向左移动',
+      moveRight: '向右移动',
+      moveToRight: '移动到右侧面板',
+      moveToBottom: '移动到底部面板',
+      pinTab: '固定标签',
+      pinTabHint: '预览标签，双击或在内容中操作即可固定',
+      close: '关闭',
+      closeOthers: '关闭其他标签',
+      closeToRight: '关闭右侧标签',
+      launcher: {
+        review: '审阅当前会话产生的文件差异',
+        terminal: '查看当前会话的终端运行和实时输出',
+        tasks: '查看和维护当前会话的任务台账',
+        browser: '打开内置浏览器并保留当前页面',
+        files: '浏览当前会话生成的文件',
+        inspector: '检查会话调用、工具与耗时记录',
+        sideChat: '在不打断主任务的情况下追问和只读探索',
+      },
+    },
+    reviewPanel: {
+      ariaLabel: '会话审阅',
+      empty: '当前会话还没有文件差异',
+      sourceLabel: '审阅来源',
+      branchSource: '分支',
+      unstagedSource: '未暂存',
+      stagedSource: '已暂存',
+      lastTurnSource: '上一轮',
+      notGitRepository: '当前会话目录不是 Git 仓库',
+      workspaceUnavailable: '当前会话目录已不可用',
+      unbornRepository: 'Git 仓库还没有可比较的提交',
+      gitFailed: '无法读取 Git 工作区变化',
+      invalidBaseBranch: '选择的比较分支已不可用',
+      truncated: '变化过多，仅显示前一部分文件',
+      stageFile: '暂存文件',
+      unstageFile: '取消暂存文件',
+      mutationFailed: '无法更新 Git 暂存区',
+      snapshotChanged: 'Git 变化已更新，请重试',
+      revertFile: '还原文件',
+      revertTitle: '还原未暂存变化？',
+      revertDescription: (path) =>
+        `${path} 的未暂存变化会被移除；未跟踪文件会被删除。`,
+      revertConfirm: '确认还原',
+      cancel: '取消',
+      showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
+      summary: (files, additions, deletions) =>
+        `${files} 个文件 · +${additions} · -${deletions}`,
+      comparison: (base, current) => `${current} 相对 ${base}`,
+      workingTree: (branch) => `${branch} 工作区`,
+      loadFailed: '无法读取会话差异',
+      retry: '重试',
+      refresh: '刷新审阅',
+      diffCount: (count) => `${count} 个差异`,
+    },
+    terminalPanel: {
+      ariaLabel: '会话终端',
+      empty: '当前会话还没有终端运行',
+      loadFailed: '无法读取终端运行',
+      retry: '重试',
+      refresh: '刷新终端',
+      readOnly: '显示代理和你在当前会话中启动的终端运行',
+      runCount: (count) => `${count} 个终端运行`,
+      newTerminal: '新建终端',
+      commandPlaceholder: '输入命令并回车',
+      commandLabel: '终端命令',
+      runCommand: '运行命令',
+      stopTerminal: '停止当前终端',
+      startFailed: '无法启动终端',
+      writeFailed: '无法发送终端输入',
+      stopFailed: '无法停止终端',
+    },
     inspector: {
       ariaLabel: '会话追踪',
       loadFailed: '追踪读取失败',
@@ -306,15 +478,25 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      hint: '这里的追问会带上主对话的完整上下文：只做解释和只读探索，不会改动文件，也不写回主对话。在主对话里继续选中文本追问，会加进这个侧栏。',
-      exit: '退出',
-      namePrefix: '追问：',
+      defaultName: '侧边对话',
+      namePrefix: '侧聊：',
+      preparing: '正在建立侧边对话…',
+      permissionStreaming: '侧边对话运行中暂时不能更改权限',
+      closeConfirmation: {
+        title: (count) => count > 1 ? `关闭 ${count} 个侧边对话？` : '关闭侧边对话？',
+        description: (count) =>
+          count > 1
+            ? `这 ${count} 个临时侧边对话会被永久删除，之后无法恢复。`
+            : '这个临时侧边对话会被永久删除，之后无法恢复。',
+        dontAskAgain: '以后不再询问',
+        cancel: '取消',
+        confirm: '关闭侧边对话',
+      },
       errors: {
         forkSetupFailed: '无法创建追问会话，请稍后重试。',
-        permissionPinFailed: '无法将追问会话设为只读探索模式，已取消（避免以主对话的高权限执行）。',
-        runError: '追问出错了，请重试。',
         sendRejected: '追问未能开始，请稍后重试。',
         sendFailed: '追问失败，请稍后重试。',
+        settlementFailed: '对话已结束，但消息加载失败。请重试或重新打开侧边对话。',
         respondFailed: '响应失败，请稍后重试。',
       },
     },
@@ -337,7 +519,7 @@ const COPY = {
     turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试', sandboxBoundaryClosed: '访问范围没有放开，重试本轮后可重新决定' } },
   },
   en: {
-    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The conversation action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh conversations', refreshSessionsFailedFallback: 'The conversation list could not be refreshed. Try again later.', conversationErrorTitle: 'Conversation error', conversationErrorFallback: 'The conversation run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New conversation: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original conversation is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The conversation action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load conversation' },
+    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The conversation action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh conversations', refreshSessionsFailedFallback: 'The conversation list could not be refreshed. Try again later.', conversationErrorTitle: 'Conversation error', conversationErrorFallback: 'The conversation run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New conversation: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original conversation is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The conversation action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load conversation' },
     attachments: { tooMany: 'You can attach at most 8 files', tooLarge: 'Attachments must be 50 MB or smaller', duplicate: 'This attachment was already added.' },
     model: {
       fakeBackendLabel: 'Local simulation',
@@ -359,7 +541,92 @@ const COPY = {
     },
     footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new conversation from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
-    workbar: { ariaLabel: 'Conversation workbar', sectionsAriaLabel: 'Conversation workbar sections', tasks: 'Tasks', browser: 'Browser', files: 'Files', inspector: 'Trace', quoteTab: 'Quoted' },
+    workbar: {
+      ariaLabel: 'Conversation workbar',
+      sectionsAriaLabel: 'Conversation workbar tabs',
+      review: 'Review',
+      terminal: 'Terminal',
+      terminalNumbered: (index) => `Terminal ${index}`,
+      tasks: 'Tasks',
+      browser: 'Browser',
+      files: 'Files',
+      inspector: 'Trace',
+      sideChat: 'Side chat',
+      sideChatNumbered: (index) => `Side chat ${index}`,
+      openTab: 'Open workbar tab',
+      closeTab: (label) => `Close ${label}`,
+      tabMenu: (label) => `${label} tab menu`,
+      moveLeft: 'Move left',
+      moveRight: 'Move right',
+      moveToRight: 'Move to right panel',
+      moveToBottom: 'Move to bottom panel',
+      pinTab: 'Pin tab',
+      pinTabHint: 'Preview tab. Double-click or interact with its content to pin it',
+      close: 'Close',
+      closeOthers: 'Close other tabs',
+      closeToRight: 'Close tabs to the right',
+      launcher: {
+        review: 'Review file diffs produced by this conversation',
+        terminal: 'Inspect terminal runs and live output for this conversation',
+        tasks: 'View and maintain the task ledger for this conversation',
+        browser: 'Open the embedded browser and keep the current page',
+        files: 'Browse files generated by this conversation',
+        inspector: 'Inspect model calls, tools, and timing',
+        sideChat: 'Ask and explore read-only without interrupting the main task',
+      },
+    },
+    reviewPanel: {
+      ariaLabel: 'Conversation review',
+      empty: 'No file diffs in this conversation yet',
+      sourceLabel: 'Review source',
+      branchSource: 'Branch',
+      unstagedSource: 'Unstaged',
+      stagedSource: 'Staged',
+      lastTurnSource: 'Last turn',
+      notGitRepository: 'This conversation directory is not a Git repository',
+      workspaceUnavailable: 'This conversation directory is unavailable',
+      unbornRepository: 'This Git repository has no commit to compare yet',
+      gitFailed: 'Could not read Git workspace changes',
+      invalidBaseBranch: 'The selected comparison branch is unavailable',
+      truncated: 'Too many changes; showing the first files only',
+      stageFile: 'Stage file',
+      unstageFile: 'Unstage file',
+      mutationFailed: 'Could not update the Git index',
+      snapshotChanged: 'Git changes were refreshed; try again',
+      revertFile: 'Revert file',
+      revertTitle: 'Revert unstaged changes?',
+      revertDescription: (path) =>
+        `Unstaged changes in ${path} will be removed; untracked files will be deleted.`,
+      revertConfirm: 'Revert',
+      cancel: 'Cancel',
+      showMore: (remaining) =>
+        `Show ${Math.min(20, remaining)} more file${Math.min(20, remaining) === 1 ? '' : 's'}`,
+      summary: (files, additions, deletions) =>
+        `${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
+      comparison: (base, current) => `${current} compared with ${base}`,
+      workingTree: (branch) => `${branch} working tree`,
+      loadFailed: 'Could not read conversation diffs',
+      retry: 'Retry',
+      refresh: 'Refresh review',
+      diffCount: (count) => `${count} diff${count === 1 ? '' : 's'}`,
+    },
+    terminalPanel: {
+      ariaLabel: 'Conversation terminal',
+      empty: 'No terminal runs in this conversation yet',
+      loadFailed: 'Could not read terminal runs',
+      retry: 'Retry',
+      refresh: 'Refresh terminal',
+      readOnly: 'Shows terminal runs started by the agent or you in this conversation',
+      runCount: (count) => `${count} terminal run${count === 1 ? '' : 's'}`,
+      newTerminal: 'New terminal',
+      commandPlaceholder: 'Enter a command and press Enter',
+      commandLabel: 'Terminal command',
+      runCommand: 'Run command',
+      stopTerminal: 'Stop current terminal',
+      startFailed: 'Could not start terminal',
+      writeFailed: 'Could not send terminal input',
+      stopFailed: 'Could not stop terminal',
+    },
     inspector: {
       ariaLabel: 'Session trace',
       loadFailed: 'Could not read the trace',
@@ -402,15 +669,25 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      hint: 'Questions here carry the full context of the main conversation: read-only exploration and explanation, no file changes, and nothing is written back to the main conversation. Select more text in the main transcript to add it to this side panel.',
-      exit: 'Exit',
-      namePrefix: 'Quote: ',
+      defaultName: 'Side chat',
+      namePrefix: 'Side: ',
+      preparing: 'Preparing side chat…',
+      permissionStreaming: 'Permissions cannot change while the side chat is running',
+      closeConfirmation: {
+        title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
+        description: (count) =>
+          count > 1
+            ? `These ${count} temporary side chats will be permanently deleted and cannot be recovered.`
+            : 'This temporary side chat will be permanently deleted and cannot be recovered.',
+        dontAskAgain: 'Don’t ask again',
+        cancel: 'Cancel',
+        confirm: 'Close side chat',
+      },
       errors: {
         forkSetupFailed: 'Could not create the companion conversation. Please try again.',
-        permissionPinFailed: 'Could not set the companion to read-only exploration mode; canceled (to avoid running with the main conversation’s elevated permissions).',
-        runError: 'The companion run errored. Please try again.',
         sendRejected: 'The companion could not start. Please try again.',
         sendFailed: 'The companion request failed. Please try again.',
+        settlementFailed: 'The run ended, but its messages could not be loaded. Retry or reopen the side chat.',
         respondFailed: 'The response failed. Please try again.',
       },
     },

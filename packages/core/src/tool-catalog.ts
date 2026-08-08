@@ -129,9 +129,9 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'RiveWorkflow' },
     // agent surface (id matches AGENT_TOOL_GROUP_ID)
     { name: 'agent_spawn' },
-    { name: 'agent_swarm' },
     { name: 'agent_list' },
     { name: 'agent_output' },
+    { name: 'agent_swarm_status' },
     // Host-managed agent graph supervisor surface
     { name: 'view_agent_graph' },
     { name: 'update_agent_graph' },
@@ -185,9 +185,9 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       economy: 'deferred' as const,
       toolNames: [
         'agent_spawn',
-        'agent_swarm',
         'agent_list',
         'agent_output',
+        'agent_swarm_status',
         'view_agent_graph',
         'update_agent_graph',
         'yield_agent_graph',

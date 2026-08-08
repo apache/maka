@@ -20,7 +20,6 @@ import {
   LOCAL_READ_AGENT_PROFILE,
   requireBuiltinAgentDefinitionByProfile,
 } from '../agent-catalog.js';
-import { AGENT_SWARM_TOOL_NAME } from '../agent-swarm-tools.js';
 import {
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
@@ -363,7 +362,7 @@ describe('AiSdkBackend deferred tool loading', () => {
 });
 
 describe('AiSdkBackend deferred agent tools', () => {
-  test('Swarm Mode injects the shared prompt and pins agent_swarm at step 0', async () => {
+  test('Swarm Mode injects the async prompt and pins durable swarm controls at step 0', async () => {
     const capturedTools: string[][] = [];
     const capturedPrompts: string[] = [];
     const model = new MockLanguageModelV4({
@@ -384,7 +383,16 @@ describe('AiSdkBackend deferred agent tools', () => {
     });
 
     await drain(
-      agentBackend(model, []).send({
+      agentBackend(model, [], {
+        extraTools: ['update_agent_graph', 'yield_agent_graph', 'agent_swarm_status'].map(
+          (name) => ({
+            name,
+            description: name,
+            parameters: z.object({}),
+            impl: () => ({ ok: true }),
+          }),
+        ),
+      }).send({
         turnId: 'turn-swarm-mode',
         text: 'fan out',
         context: [],
@@ -396,11 +404,16 @@ describe('AiSdkBackend deferred agent tools', () => {
       }),
     );
 
-    assert.ok(capturedTools[0]?.includes(AGENT_SWARM_TOOL_NAME));
+    assert.ok(capturedTools[0]?.includes('agent_list'));
+    assert.ok(capturedTools[0]?.includes('update_agent_graph'));
+    assert.ok(capturedTools[0]?.includes('yield_agent_graph'));
+    assert.ok(capturedTools[0]?.includes('agent_swarm_status'));
+    assert.ok(capturedTools[0]?.includes('agent_output'));
+    assert.ok(!capturedTools[0]?.includes('agent_swarm'));
     assert.match(capturedPrompts[0] ?? '', /Orchestration Mode: Swarm/);
-    assert.match(capturedPrompts[0] ?? '', /preferred default execution strategy/);
+    assert.match(capturedPrompts[0] ?? '', /preferred execution strategy/);
     assert.match(capturedPrompts[0] ?? '', /You may continue directly/);
-    assert.match(capturedPrompts[0] ?? '', /only tool in its assistant step/);
+    assert.match(capturedPrompts[0] ?? '', /Do not poll, sleep, watch child logs/);
   });
 
   test('Graph Mode injects the supervisor prompt and pins controls plus agent output at step 0', async () => {
@@ -480,7 +493,7 @@ describe('AiSdkBackend deferred agent tools', () => {
 
     assert.ok(captured[0].includes(LOAD_TOOLS_NAME), 'load_tools advertised');
     assert.ok(!captured[0].includes(AGENT_SPAWN_TOOL_NAME), 'agent_spawn hidden at step 0');
-    assert.ok(!captured[0].includes(AGENT_SWARM_TOOL_NAME), 'agent_swarm hidden at step 0');
+    assert.ok(!captured[0].includes('agent_swarm'), 'agent_swarm removed at step 0');
     assert.ok(!captured[0].includes(AGENT_LIST_TOOL_NAME), 'agent_list hidden at step 0');
     assert.ok(!captured[0].includes(AGENT_OUTPUT_TOOL_NAME), 'agent_output hidden at step 0');
 
@@ -488,10 +501,7 @@ describe('AiSdkBackend deferred agent tools', () => {
       captured[1].includes(AGENT_SPAWN_TOOL_NAME),
       'agent_spawn visible after loading the agent group',
     );
-    assert.ok(
-      captured[1].includes(AGENT_SWARM_TOOL_NAME),
-      'agent_swarm visible after loading the agent group',
-    );
+    assert.ok(!captured[1].includes('agent_swarm'), 'agent_swarm stays removed after loading');
     assert.ok(
       captured[1].includes(AGENT_LIST_TOOL_NAME),
       'agent_list visible after loading the agent group',
@@ -519,25 +529,6 @@ describe('AiSdkBackend deferred agent tools', () => {
       'agent_spawn is not advertised at step 0',
     );
     assert.deepEqual(spawnCalls, [], 'agent_spawn must not run before the agent group is active');
-  });
-
-  test('guard rejects same-step load_tools(agent)+agent_swarm before spawning children', async () => {
-    const captured: string[][] = [];
-    const spawnCalls: unknown[] = [];
-    await drain(
-      agentBackend(parallelLoadAgentAndSwarmModel(captured), spawnCalls).send({
-        turnId: 'turn-1',
-        text: 'load and fan out in one step',
-        context: [],
-        runId: 'parent-run',
-      }),
-    );
-
-    assert.ok(
-      !captured[0].includes(AGENT_SWARM_TOOL_NAME),
-      'agent_swarm is not advertised at step 0',
-    );
-    assert.deepEqual(spawnCalls, [], 'agent_swarm must not run before the agent group is active');
   });
 
   test('deferred agent group is prompt economy only: loaded agent_spawn still uses its permission model', async () => {
@@ -574,54 +565,6 @@ describe('AiSdkBackend deferred agent tools', () => {
       abortSignal: assertAbortSignal(spawnCalls[0]),
       onEvent: assertOnEvent(spawnCalls[0]),
     });
-  });
-
-  test('loaded agent_swarm fans out through the shared spawn capability', async () => {
-    const durable = createDurableTurnHarness({
-      turnId: 'turn-1',
-      text: 'load then fan out',
-      runId: 'parent-run',
-    });
-    const captured: string[][] = [];
-    const spawnCalls: unknown[] = [];
-    const events = await drainWithDurableTurn(
-      agentBackend(loadAgentThenSwarmModel(captured), spawnCalls, {
-        permissionMode: 'execute',
-        durable,
-      }).send(durable.sendInput({ runId: 'parent-run' })),
-      durable,
-    );
-
-    assert.ok(captured[1].includes(AGENT_SWARM_TOOL_NAME));
-    assert.equal(spawnCalls.length, 2);
-    assert.deepEqual(
-      spawnCalls.map((call) => (call as { prompt?: string }).prompt),
-      ['Inspect auth.', 'Inspect storage.'],
-    );
-    assert.ok(
-      spawnCalls.every((call) => (call as { parentRunId?: string }).parentRunId === 'parent-run'),
-    );
-    const result = events.find(
-      (
-        event,
-      ): event is Extract<SessionEvent, { type: 'tool_result' }> & {
-        content: Extract<SessionEvent, { type: 'tool_result' }>['content'] & {
-          kind: 'agent_swarm';
-        };
-      } => event.type === 'tool_result' && event.content.kind === 'agent_swarm',
-    );
-    assert.ok(result);
-    assert.deepEqual(
-      result.content.items.map((item) => ({
-        itemId: item.itemId,
-        runId: item.runId,
-        turnId: item.turnId,
-      })),
-      [
-        { itemId: 'auth', runId: 'child-run-0', turnId: 'child-turn-0' },
-        { itemId: 'storage', runId: 'child-run-1', turnId: 'child-turn-1' },
-      ],
-    );
   });
 });
 
@@ -834,41 +777,6 @@ function parallelLoadAgentAndSpawnModel(captured: string[][]): MockLanguageModel
   });
 }
 
-function parallelLoadAgentAndSwarmModel(captured: string[][]): MockLanguageModelV4 {
-  return new MockLanguageModelV4({
-    doStream: async ({ tools: stepTools }) => {
-      captured.push((stepTools ?? []).map((t) => t.name));
-      const first = captured.length === 1;
-      const parts: LanguageModelV4StreamPart[] = first
-        ? [
-            { type: 'stream-start', warnings: [] },
-            {
-              type: 'tool-call',
-              toolCallId: 'tc-load',
-              toolName: LOAD_TOOLS_NAME,
-              input: JSON.stringify({ group: 'agent' }),
-            },
-            {
-              type: 'tool-call',
-              toolCallId: 'tc-swarm',
-              toolName: AGENT_SWARM_TOOL_NAME,
-              input: agentSwarmInput(),
-            },
-            {
-              type: 'finish',
-              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-              usage: ZERO_USAGE,
-            },
-          ]
-        : [
-            { type: 'stream-start', warnings: [] },
-            { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: ZERO_USAGE },
-          ];
-      return { stream: convertArrayToReadableStream(parts) };
-    },
-  });
-}
-
 function loadAgentThenSpawnModel(captured: string[][]): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doStream: async ({ tools: stepTools }) => {
@@ -918,77 +826,10 @@ function loadAgentThenSpawnModel(captured: string[][]): MockLanguageModelV4 {
   });
 }
 
-function loadAgentThenSwarmModel(captured: string[][]): MockLanguageModelV4 {
-  return new MockLanguageModelV4({
-    doStream: async ({ tools: stepTools }) => {
-      captured.push((stepTools ?? []).map((t) => t.name));
-      const step = captured.length;
-      const parts: LanguageModelV4StreamPart[] =
-        step === 1
-          ? [
-              { type: 'stream-start', warnings: [] },
-              {
-                type: 'tool-call',
-                toolCallId: 'tc-load',
-                toolName: LOAD_TOOLS_NAME,
-                input: JSON.stringify({ group: 'agent' }),
-              },
-              {
-                type: 'finish',
-                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                usage: ZERO_USAGE,
-              },
-            ]
-          : step === 2
-            ? [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'tool-call',
-                  toolCallId: 'tc-swarm',
-                  toolName: AGENT_SWARM_TOOL_NAME,
-                  input: agentSwarmInput(),
-                },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                  usage: ZERO_USAGE,
-                },
-              ]
-            : [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'stop', raw: 'stop' },
-                  usage: ZERO_USAGE,
-                },
-              ];
-      return { stream: convertArrayToReadableStream(parts) };
-    },
-  });
-}
-
 function agentSpawnInput(): string {
   return JSON.stringify({
     profile: LOCAL_READ_AGENT_PROFILE,
     task: 'Inspect the runtime tests.',
-  });
-}
-
-function agentSwarmInput(): string {
-  return JSON.stringify({
-    items: [
-      {
-        item_id: 'auth',
-        profile: LOCAL_READ_AGENT_PROFILE,
-        task: 'Inspect auth.',
-      },
-      {
-        item_id: 'storage',
-        profile: LOCAL_READ_AGENT_PROFILE,
-        task: 'Inspect storage.',
-      },
-    ],
-    max_concurrency: 2,
   });
 }
 

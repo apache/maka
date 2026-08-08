@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 0.1.8 - 2026-08-08
+
+### Highlights
+
+- Added Codex-style side conversations: branch a side thread from the one you
+  are in and come back with the answer (#2428).
+- Gave projects a first-class Settings page: manage every project Maka knows,
+  pick the default one new conversations open in (explicit default beats
+  last-used; the composer can still switch per conversation) (#2446), rename
+  and reveal a project from its row menu (#2447), and carried the list on the
+  entity-list components with folder anchors and tail-preserving path
+  truncation (#2451).
+- Closed three self-serve gaps reported by users: the Models page can set the
+  default connection where the 默认 badge lives (#2421), new conversations
+  take a configurable default thinking level and the composer menu says
+  模型默认 instead of a deceptive 默认 (#2430), and the 外观 page structure,
+  grouping, and copy were brought under the settings idiom (#2343).
+- Introduced custom pets end to end: a pack contract with atomic storage
+  (#2422), safe pack import (#2423), a pack library (#2427), persisted
+  selection (#2437), management in Settings (#2440), rendering (#2442), and
+  runtime-state-driven animation (#2444).
+- Enabled Mimo and DeepSeek free models by default for OpenCode Free (#2431)
+  and seeded its default inventory on create (#2443).
+- Removed the product Voice module end to end (#2426).
+- Closed the Runtime Host M4 readiness gaps (#2419).
+
+### Reliability and developer experience
+
+- Windows: serialized root marker repair (#2438), stabilized portable path
+  tests (#2395), enabled long paths for bare Git fixtures (#2435), normalized
+  CI process identities (#2334), and refreshed the test skip inventory
+  (#2434).
+- Storage: removed worktrees outside their cwd (#2424).
+- Renamed the desktop UI components to kebab-case (#2417), finished two CI
+  cleanups and reformatted what landed unformatted (#2432), and trimmed
+  low-value guard and CSS-contract suites while fixing sqlite warning noise
+  (#2425).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
 ## 0.1.7 - 2026-08-07
 
 ### Highlights

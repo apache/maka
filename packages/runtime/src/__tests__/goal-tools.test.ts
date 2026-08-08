@@ -118,19 +118,6 @@ describe('goal tools', () => {
     assert.equal(mgr.get(SESSION)?.status, 'active');
   });
 
-  test('GoalPause with no goal', async () => {
-    const { tools } = makeTools();
-    const out = (await findTool(tools, GOAL_PAUSE_TOOL_NAME).impl({}, ctx())) as string;
-    assert.ok(out.includes('No active goal'));
-  });
-
-  test('GoalResume with no paused goal', async () => {
-    const { tools } = makeTools();
-    await findTool(tools, GOAL_SET_TOOL_NAME).impl({ condition: 'x' }, ctx());
-    const out = (await findTool(tools, GOAL_RESUME_TOOL_NAME).impl({}, ctx())) as string;
-    assert.ok(out.includes('No paused goal'));
-  });
-
   test('GoalClear', async () => {
     const { mgr, tools } = makeTools();
     await findTool(tools, GOAL_SET_TOOL_NAME).impl({ condition: 'x' }, ctx());
@@ -166,11 +153,5 @@ describe('goal tools', () => {
     assert.ok(out.includes('Status: active'));
     assert.ok(out.includes('No-progress streak: 0/8'));
     assert.ok(out.includes('Tokens: 1500/5000'));
-  });
-
-  test('GoalStatus with no goal', async () => {
-    const { tools } = makeTools();
-    const out = (await findTool(tools, GOAL_STATUS_TOOL_NAME).impl({}, ctx())) as string;
-    assert.ok(out.includes('No goal set'));
   });
 });

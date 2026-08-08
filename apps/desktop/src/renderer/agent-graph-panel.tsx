@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { UiLocale } from '@maka/core';
 import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime';
+import { IconButton } from '@maka/ui';
+import { ChevronDown } from '@maka/ui/icons';
 import { Button } from '@astryxdesign/core/Button';
 
 type GraphPanelCopy = {
   title: string;
   loading: string;
   retry: string;
+  collapse: string;
+  expand: string;
   stop: string;
   stopping: string;
   stopFailed: string;
@@ -31,6 +35,8 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
       title: 'Agent Graph',
       loading: '正在读取 Graph 状态…',
       retry: '重试',
+      collapse: '收起 Agent Graph',
+      expand: '展开 Agent Graph',
       stop: '停止 Graph',
       stopping: '停止中…',
       stopFailed: '停止 Graph 失败，请重试。',
@@ -71,6 +77,8 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
     title: 'Agent Graph',
     loading: 'Loading graph state…',
     retry: 'Retry',
+    collapse: 'Collapse Agent Graph',
+    expand: 'Expand Agent Graph',
     stop: 'Stop graph',
     stopping: 'Stopping…',
     stopFailed: 'Could not stop the graph. Try again.',
@@ -119,6 +127,8 @@ export function AgentGraphPanel(props: {
   const [error, setError] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const [stopError, setStopError] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const contentId = useId();
   const refreshRef = useRef<() => void>(() => {});
   const copy = getAgentGraphPanelCopy(props.locale);
 
@@ -130,6 +140,7 @@ export function AgentGraphPanel(props: {
     setSnapshot(undefined);
     setError(false);
     setStopError(false);
+    setCollapsed(false);
     setLoading(props.enabled);
 
     const refresh = (): void => {
@@ -201,9 +212,13 @@ export function AgentGraphPanel(props: {
     snapshot !== undefined && ['active', 'waiting', 'closing'].includes(snapshot.status);
 
   return (
-    <section className="maka-agent-graph-panel" aria-label={copy.title}>
+    <section
+      className="maka-agent-graph-panel"
+      aria-label={copy.title}
+      data-collapsed={collapsed ? 'true' : 'false'}
+    >
       <header className="maka-agent-graph-heading">
-        <div>
+        <div className="maka-agent-graph-heading-copy">
           <strong>{copy.title}</strong>
           {snapshot ? (
             <span className="maka-agent-graph-progress">
@@ -216,83 +231,98 @@ export function AgentGraphPanel(props: {
             </span>
           ) : null}
         </div>
-        {stopAvailable ? (
-          <Button
-            variant="secondary"
+        <div className="maka-agent-graph-heading-actions">
+          {stopAvailable ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              label={stopPending ? copy.stopping : copy.stop}
+              isDisabled={stopPending}
+              onClick={() => void stopGraph()}
+            />
+          ) : null}
+          <IconButton
+            variant="ghost"
             size="sm"
-            label={stopPending ? copy.stopping : copy.stop}
-            isDisabled={stopPending}
-            onClick={() => void stopGraph()}
+            className="maka-agent-graph-collapse-toggle"
+            label={collapsed ? copy.expand : copy.collapse}
+            tooltip={collapsed ? copy.expand : copy.collapse}
+            icon={<ChevronDown size={16} aria-hidden="true" />}
+            aria-expanded={!collapsed}
+            aria-controls={contentId}
+            onClick={() => setCollapsed((current) => !current)}
           />
-        ) : null}
+        </div>
       </header>
-      {stopError ? (
-        <p className="maka-agent-graph-error" role="alert">
-          {copy.stopFailed}
-        </p>
-      ) : null}
+      {!collapsed ? (
+        <div className="maka-agent-graph-content" id={contentId}>
+          {stopError ? (
+            <p className="maka-agent-graph-error" role="alert">
+              {copy.stopFailed}
+            </p>
+          ) : null}
 
-      {loading && !snapshot ? <p className="maka-agent-graph-empty">{copy.loading}</p> : null}
-      {error ? (
-        <p className="maka-agent-graph-error" role="alert">
-          <span>{copy.loadFailed}</span>{' '}
-          <Button
-            variant="secondary"
-            size="sm"
-            label={copy.retry}
-            onClick={() => refreshRef.current()}
-          />
-        </p>
-      ) : null}
+          {loading && !snapshot ? <p className="maka-agent-graph-empty">{copy.loading}</p> : null}
+          {error ? (
+            <p className="maka-agent-graph-error" role="alert">
+              <span>{copy.loadFailed}</span>{' '}
+              <Button
+                variant="secondary"
+                size="sm"
+                label={copy.retry}
+                onClick={() => refreshRef.current()}
+              />
+            </p>
+          ) : null}
 
-      {snapshot ? (
-        <>
-          <div className="maka-agent-graph-section-label">{copy.operators}</div>
-          {snapshot.operators.length === 0 ? (
-            <p className="maka-agent-graph-empty">{copy.noOperators}</p>
-          ) : (
-            <ul className="maka-agent-graph-operators">
-              {snapshot.operators.slice(0, 8).map((operator) => {
-                const wait = copy.wait(operator);
-                const work = snapshot.work.find((candidate) =>
-                  operator.scheduledWorkIds.includes(candidate.workId),
-                );
-                return (
-                  <li key={operator.operatorId} data-status={operator.status}>
-                    <span className="maka-agent-graph-status-dot" aria-hidden="true" />
-                    <span className="maka-agent-graph-operator-copy">
-                      <strong>{operator.agentId}</strong>
-                      <span>{work?.instructionPreview ?? operator.operatorId}</span>
-                      {wait ? <span className="maka-agent-graph-wait">{wait}</span> : null}
-                    </span>
-                    <span className="maka-agent-graph-operator-status">
-                      {copy.operatorStatus(operator.status)}
-                    </span>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      label={copy.openSession}
-                      onClick={() => props.onOpenSession(operator.childSessionId)}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {snapshot.operators.length > 8 || snapshot.omitted.operators > 0 ? (
-            <div className="maka-agent-graph-omitted">
-              {copy.hiddenOperators(
-                Math.max(0, snapshot.operators.length - 8) + snapshot.omitted.operators,
+          {snapshot ? (
+            <>
+              <div className="maka-agent-graph-section-label">{copy.operators}</div>
+              {snapshot.operators.length === 0 ? (
+                <p className="maka-agent-graph-empty">{copy.noOperators}</p>
+              ) : (
+                <ul className="maka-agent-graph-operators">
+                  {snapshot.operators.map((operator) => {
+                    const wait = copy.wait(operator);
+                    const work = snapshot.work.find((candidate) =>
+                      operator.scheduledWorkIds.includes(candidate.workId),
+                    );
+                    return (
+                      <li key={operator.operatorId} data-status={operator.status}>
+                        <span className="maka-agent-graph-status-dot" aria-hidden="true" />
+                        <span className="maka-agent-graph-operator-copy">
+                          <strong>{operator.agentId}</strong>
+                          <span>{work?.instructionPreview ?? operator.operatorId}</span>
+                          {wait ? <span className="maka-agent-graph-wait">{wait}</span> : null}
+                        </span>
+                        <span className="maka-agent-graph-operator-status">
+                          {copy.operatorStatus(operator.status)}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          label={copy.openSession}
+                          onClick={() => props.onOpenSession(operator.childSessionId)}
+                        />
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
-            </div>
+              {snapshot.omitted.operators > 0 ? (
+                <div className="maka-agent-graph-omitted">
+                  {copy.hiddenOperators(snapshot.omitted.operators)}
+                </div>
+              ) : null}
+              {snapshot.finish ? (
+                <div className="maka-agent-graph-results">
+                  <span>{copy.selectedResults}</span>
+                  <code>{snapshot.finish.resultIds.join(', ')}</code>
+                </div>
+              ) : null}
+            </>
           ) : null}
-          {snapshot.finish ? (
-            <div className="maka-agent-graph-results">
-              <span>{copy.selectedResults}</span>
-              <code>{snapshot.finish.resultIds.join(', ')}</code>
-            </div>
-          ) : null}
-        </>
+        </div>
       ) : null}
     </section>
   );

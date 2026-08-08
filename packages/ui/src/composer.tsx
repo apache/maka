@@ -11,6 +11,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   ArrowUp,
@@ -19,6 +20,7 @@ import {
   Network,
   Pencil,
   Plus,
+  Square,
   Sparkles,
   Upload,
   Workflow,
@@ -90,6 +92,19 @@ export interface ComposerSkillOption {
   name: string;
   description?: string;
 }
+
+export interface ComposerSlashCommandOption {
+  id: string;
+  name: string;
+  description?: string;
+  keywords?: readonly string[];
+  Icon?: LucideIcon;
+  onSelect(): void;
+}
+
+type ComposerSlashSuggestion =
+  | { kind: 'command'; command: ComposerSlashCommandOption }
+  | { kind: 'skill'; skill: ComposerSkillOption };
 
 /**
  * The draft text a chosen Skill becomes. This is the product-wide invocation
@@ -196,6 +211,11 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
+    /** Insert a text-only instruction into the active turn at its next step boundary. */
+    onSteer?(
+      text: string,
+      metadata?: ComposerSendMetadata,
+    ): boolean | void | Promise<boolean | void>;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
@@ -214,6 +234,10 @@ export const Composer = forwardRef<
     /** Quoted excerpts staged for the next send; rendered as removable chips. */
     pendingQuotes?: readonly QuoteRef[];
     onRemoveQuote?(index: number): void;
+    /** Start staged context collapsed on compact secondary composer surfaces. */
+    contextDrawerDefaultCollapsed?: boolean;
+    /** Hide the unavailable dot when an inherited model is intentionally read-only. */
+    showStaticModelUnavailableStatus?: boolean;
     /**
      * Stage a reference-sized paste as a quote chip rather than letting it
      * flood the textarea. Omitted by hosts that don't compose quotes, in which
@@ -322,6 +346,7 @@ export const Composer = forwardRef<
      *   - `onSearchMentionFiles` powers the `@` popup.
      */
     mentionSkills?: ReadonlyArray<ComposerSkillOption>;
+    slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
 >(function Composer(props, ref) {
@@ -651,11 +676,13 @@ export const Composer = forwardRef<
   // through this ref instead.
   const mentionSourceRef = useRef({
     mentionSkills: props.mentionSkills,
+    slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
   });
   useEffect(() => {
     mentionSourceRef.current = {
       mentionSkills: props.mentionSkills,
+      slashCommands: props.slashCommands,
       onSearchMentionFiles: props.onSearchMentionFiles,
     };
   });
@@ -672,21 +699,41 @@ export const Composer = forwardRef<
       );
     };
     const files = createTriggerSearchSource<SearchableItem>(runFileSearch);
-    const listSkills = (rawQuery: string): SearchableItem[] => {
+    const listSlashSuggestions = (rawQuery: string): SearchableItem[] => {
       const skills = mentionSourceRef.current.mentionSkills ?? [];
+      const commands = mentionSourceRef.current.slashCommands ?? [];
       const query = skillMentionQuery(rawQuery);
-      return skills
+      const commandItems = commands
+        .filter((command) =>
+          mentionQueryMatches(
+            query,
+            `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
+          ),
+        )
+        .map((command) => ({
+          id: `command:${command.id}`,
+          label: command.name,
+          auxiliaryData: { kind: 'command', command } satisfies ComposerSlashSuggestion,
+        }));
+      const skillItems = skills
         .filter((skill) =>
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
         )
-        .slice(0, 50)
-        .map((skill) => ({ id: skill.id, label: skill.name, auxiliaryData: skill }));
+        .map((skill) => ({
+          id: `skill:${skill.id}`,
+          label: skill.name,
+          auxiliaryData: { kind: 'skill', skill } satisfies ComposerSlashSuggestion,
+        }));
+      return [...commandItems, ...skillItems].slice(0, 50);
     };
     // `bootstrap` is required by SearchSource but never called by
     // `useTriggerMenu`; the menu opens straight into `search`.
     searchSourcesRef.current = {
       files,
-      skills: { bootstrap: () => listSkills(''), search: listSkills },
+      skills: {
+        bootstrap: () => listSlashSuggestions(''),
+        search: listSlashSuggestions,
+      },
     };
   }
 
@@ -726,17 +773,26 @@ export const Composer = forwardRef<
           inlineReferenceToken(workspaceFileInlineReference(item.id)),
       });
     }
-    if (props.mentionSkills !== undefined) {
+    if (
+      props.mentionSkills !== undefined ||
+      (props.slashCommands?.length ?? 0) > 0
+    ) {
       list.push({
         character: '/',
         searchSource: sources.skills,
-        menuLabel: mentionCopy.skillsAriaLabel,
-        emptySearchResultsText: mentionCopy.noSkills,
+        menuLabel:
+          (props.slashCommands?.length ?? 0) > 0
+            ? mentionCopy.commandsAndSkillsAriaLabel
+            : mentionCopy.skillsAriaLabel,
+        emptySearchResultsText:
+          (props.slashCommands?.length ?? 0) > 0
+            ? mentionCopy.noCommandsOrSkills
+            : mentionCopy.noSkills,
         loadingText: mentionCopy.loading,
         // Name over description, and no id: the second line is one line wide,
         // and the id spent a dozen characters of it on a string nobody types
         // here — the menu is how you avoid typing it. It stays searchable
-        // (`listSkills` matches against it) and it is still what the chip
+        // (the slash source matches against it) and it is still what the chip
         // serializes to; it just no longer crowds out the sentence that tells
         // two Skills apart.
         //
@@ -745,7 +801,29 @@ export const Composer = forwardRef<
         // and none carries one on hover. A `/` menu is driven with ↑↓, so a
         // hover-only description would be invisible to the way it is used.
         renderItem: (item) => {
-          const skill = item.auxiliaryData as ComposerSkillOption;
+          const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
+          if (suggestion.kind === 'command') {
+            const { command } = suggestion;
+            const Icon = command.Icon;
+            return (
+              <>
+                {Icon ? (
+                  <Icon
+                    size={14}
+                    aria-hidden="true"
+                    className="maka-composer-mention-icon"
+                  />
+                ) : null}
+                <span className="maka-composer-mention-text">
+                  <span className="maka-composer-mention-name">{command.name}</span>
+                  <span className="maka-composer-mention-secondary">
+                    {command.description}
+                  </span>
+                </span>
+              </>
+            );
+          }
+          const { skill } = suggestion;
           return (
             <>
               <Sparkles size={14} aria-hidden="true" className="maka-composer-mention-icon" />
@@ -771,18 +849,29 @@ export const Composer = forwardRef<
         //
         // No colour: Maka blue is the single product accent, and a staged
         // Skill is identified by its sparkle and its label.
-        onSelect: (item): ChatComposerToken =>
-          inlineReferenceToken({
+        onSelect: (item): string | ChatComposerToken => {
+          const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
+          if (suggestion.kind === 'command') {
+            suggestion.command.onSelect();
+            return '';
+          }
+          return inlineReferenceToken({
             kind: 'skill',
-            value: skillTokenValue(item.id),
-            label: (item.auxiliaryData as ComposerSkillOption).name,
-          }),
+            value: skillTokenValue(suggestion.skill.id),
+            label: suggestion.skill.name,
+          });
+        },
       });
     }
     return list;
     // The sources live in a ref, so only the localized copy, provider presence,
     // and the Skill projection identity (see the refresh effect below) matter.
-  }, [locale, Boolean(props.onSearchMentionFiles), props.mentionSkills]);
+  }, [
+    locale,
+    Boolean(props.onSearchMentionFiles),
+    props.mentionSkills,
+    props.slashCommands,
+  ]);
 
   /**
    * A visible `/` menu must never keep offering a Skill the host has since
@@ -795,7 +884,7 @@ export const Composer = forwardRef<
     const editable = editableNode();
     if (editable?.getAttribute('aria-expanded') !== 'true') return;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }, [props.mentionSkills]);
+  }, [props.mentionSkills, props.slashCommands]);
 
   /**
    * An open menu must follow the caret, not just the text. `useTriggerMenu`
@@ -906,7 +995,8 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(
+      const submit = props.streaming && props.onSteer ? props.onSteer : props.onSend;
+      sent = await submit(
         text,
         workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
       );
@@ -919,10 +1009,20 @@ export const Composer = forwardRef<
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
     rememberSentEntry(text);
-    clearDraft(submittedDraftKey);
     // The owner may have changed while onSend awaited (new-session creation,
     // revision branch, or user navigation). Never erase a foreign draft.
-    if (activeDraftKey() !== submittedDraftKey) return;
+    if (activeDraftKey() !== submittedDraftKey) {
+      clearDraft(submittedDraftKey);
+      return;
+    }
+    // The user can begin the next message while the send IPC is still
+    // resolving. Clear only the exact draft that was submitted; a newer value
+    // belongs to the next send and must survive this older completion.
+    if (composerWireText(textPort.getValue()) !== text) {
+      saveCurrentDraft(textPort.getValue());
+      return;
+    }
+    clearDraft(submittedDraftKey);
     textPort.setValue('');
     saveCurrentDraft('');
   }
@@ -1253,8 +1353,10 @@ export const Composer = forwardRef<
           isDisabled={props.disabled}
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer
+              className="maka-composer-drawer"
               count={drawerTokenCount}
               label={copy.stagedContext}
+              defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
               // The collapse band's tooltip (composer.css ::after) follows the
               // pointer instead of sitting at a fixed offset — on a full-width
               // band a fixed bubble can be half a window away from the cursor.
@@ -1549,7 +1651,11 @@ export const Composer = forwardRef<
                     onPick={props.onPickNewChatModel}
                   />
                 ) : (
-                  <ModelChipStatic label={modelChipLabel} onOpenSettings={props.onOpenModelSettings} />
+                  <ModelChipStatic
+                    label={modelChipLabel}
+                    onOpenSettings={props.onOpenModelSettings}
+                    showUnavailableStatus={props.showStaticModelUnavailableStatus}
+                  />
                 )}
                 {props.activeSession ? (
                   <ThinkingLevelSelector
@@ -1617,7 +1723,33 @@ export const Composer = forwardRef<
           sendActions={(
             <div className="maka-composer-right-controls" />
           )}
-          sendButton={props.streaming ? (
+          sendButton={props.streaming && props.onSteer ? (
+            <div className="maka-composer-running-actions">
+              <IconButton
+                variant="ghost"
+                type="button"
+                isDisabled={props.stopPending}
+                label={props.stopPending ? copy.stopping : copy.stopLabel}
+                aria-busy={props.stopPending ? 'true' : undefined}
+                data-pending={props.stopPending ? 'true' : undefined}
+                onClick={() => {
+                  if (props.stopPending) return;
+                  void props.onStop();
+                }}
+                icon={<Square size={14} aria-hidden="true" />}
+              />
+              <IconButton
+                variant="primary"
+                type="submit"
+                isDisabled={sendDisabled}
+                label={copy.steerLabel}
+                aria-busy={sendPending ? 'true' : undefined}
+                data-pending={sendPending ? 'true' : undefined}
+                tooltip={copy.steerLabel}
+                icon={<ArrowUp size={16} aria-hidden="true" />}
+              />
+            </div>
+          ) : props.streaming ? (
             <UiButton
               variant="primary"
               isDisabled={props.stopPending}

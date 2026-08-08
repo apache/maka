@@ -37,7 +37,6 @@ export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
 export type TurnOperationKey = Extract<
   OperationKey,
   | 'turn.start'
-  | 'turn.skill.start'
   | 'turn.query'
   | 'turn.stop'
   | 'turn.regenerate'

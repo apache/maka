@@ -139,11 +139,3 @@ export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAct
 
   return [regenerate, branch, copy, ...(info ? [info] : [])];
 }
-
-/**
- * Convenience filter: keep only actions that are enabled. Used by the
- * compact-mode renderer where disabled buttons are hidden.
- */
-export function enabledTurnFooterActions(input: TurnFooterContext): TurnFooterAction[] {
-  return deriveTurnFooterActions(input).filter((action) => action.enabled);
-}

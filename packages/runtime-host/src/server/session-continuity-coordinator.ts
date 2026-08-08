@@ -6,7 +6,9 @@ import {
   encodeProtocolFrame,
   RUNTIME_HOST_MAX_FRAME_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
+  SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
+  SESSION_SUBSCRIPTION_FRAME_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
@@ -16,6 +18,7 @@ import {
   type SessionDomainChange,
   type SessionDomainChangedFrame,
   type SessionEventFrame,
+  type SessionRuntimeResourcePtyDataFrame,
   type SessionToolEvent,
   type SessionTranscriptQueryInput,
   type OperationOutcome,
@@ -323,6 +326,47 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       };
       this.#pendingSessionDomainChanges.set(sessionId, changes);
       this.#scheduleSessionDomainChanges(sessionId, changes);
+    }
+  }
+
+  /** Publish live PTY bytes on the same ordered Session subscription as its durable projection. */
+  async enqueueRuntimeResourcePtyData(event: {
+    sessionId: string;
+    ref: string;
+    sequence: number;
+    data: string;
+  }): Promise<void> {
+    if (
+      this.#closed ||
+      Buffer.byteLength(event.data, 'utf8') > SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES
+    ) {
+      return;
+    }
+    try {
+      await this.sessionAdmission.enqueueDetached(event.sessionId, () => {
+        if (this.#closed) return;
+        const state = this.#sessions.get(event.sessionId);
+        if (!state) return;
+        for (const subscriber of state.subscribers.values()) {
+          const frame: SessionRuntimeResourcePtyDataFrame = {
+            kind: 'subscription.runtime_resource_pty_data',
+            hostEpoch: this.#hostEpoch,
+            subscriptionId: subscriber.subscriptionId,
+            sequence: subscriber.nextSequence,
+            sessionId: event.sessionId,
+            ref: event.ref,
+            ptySequence: event.sequence,
+            data: event.data,
+          };
+          if (
+            Buffer.byteLength(JSON.stringify(frame), 'utf8') <= SESSION_SUBSCRIPTION_FRAME_MAX_BYTES
+          ) {
+            this.#enqueue(subscriber, frame);
+          }
+        }
+      });
+    } catch (error) {
+      this.onPublicationFailure(error);
     }
   }
 

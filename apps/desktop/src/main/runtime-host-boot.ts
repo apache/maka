@@ -103,6 +103,7 @@ import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js"
 import { hasRuntimeHostInterruptibleWork } from "./runtime-host-update-activity.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWebSearchIpc } from "./runtime-host-web-search-ipc-main.js";
+import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
 import { resolveShellEnv } from "./shell-env.js";
 import {
   registerSettingsBotsIpc,
@@ -229,7 +230,26 @@ const oauthPresentation = new RuntimeHostOAuthPresentation(
 );
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
-let projectManagement: ProjectManagementService | undefined;
+const projectManagement: ProjectManagementService = createProjectManagementService({
+  catalog: projectCatalog,
+  sessions: {
+    listHeaders: () => runtimeHostProjectSessionCatalog().listHeaders(),
+    updateHeader: (sessionId, patch) =>
+      runtimeHostProjectSessionCatalog().updateHeader(sessionId, patch),
+  },
+  chooseDirectory: async () => {
+    const result = await mainWindowController.showOpenDialog({
+      title: "Add project",
+      properties: ["openDirectory"],
+    });
+    return result.canceled ? undefined : result.filePaths[0];
+  },
+  selection: projectRoot,
+});
+function runtimeHostProjectSessionCatalog() {
+  if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
+  return createRuntimeHostProjectSessionCatalog(runtimePolicyClient);
+}
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshotRevision(),
 );
@@ -400,8 +420,11 @@ owner = await startRuntimeHostDesktopOwner(
     botRegistry,
     resolveBotCreateTarget: async () => ({ cwd: await projectRoot.current() }),
     resolveSessionCreateProject: async (input) => {
-      if (!projectManagement) throw new Error("Project management is unavailable");
-      const selected = await resolveDesktopSessionSelection(input, projectManagement);
+      const selected = await resolveDesktopSessionSelection(input, {
+        ...projectManagement,
+        defaultProjectId: async () =>
+          (await settingsStore.get()).projects.defaultProjectId,
+      });
       return resolveNewSessionProjectInput(selected, projectCatalog);
     },
     emitSessionsChanged,
@@ -608,6 +631,7 @@ function registerHostClientIpc(
       mainWindowController.send(channel, ...args),
   });
   registerRuntimeHostWebSearchIpc({ ipcMain: scopedIpc, client });
+  registerRuntimeHostWorkspaceIpc({ ipcMain: scopedIpc, client });
   registerPlanReminderIpc({
     ipcMain: scopedIpc,
     planReminders,
@@ -616,19 +640,6 @@ function registerHostClientIpc(
         .incognitoActive,
     }),
   });
-  const candidateProjectManagement = createProjectManagementService({
-    catalog: projectCatalog,
-    sessions: createRuntimeHostProjectSessionCatalog(client),
-    chooseDirectory: async () => {
-      const result = await mainWindowController.showOpenDialog({
-        title: "Add project",
-        properties: ["openDirectory"],
-      });
-      return result.canceled ? undefined : result.filePaths[0];
-    },
-    selection: projectRoot,
-  });
-  projectManagement = candidateProjectManagement;
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {
       currentProjectRoot: () => projectRoot.current(),
@@ -648,7 +659,7 @@ function registerHostClientIpc(
       workspaceRoot,
       buildInfo,
       e2eFixture,
-      projectManagement: candidateProjectManagement,
+      projectManagement,
       updateService,
     },
     scopedIpc,
@@ -698,9 +709,6 @@ function registerHostClientIpc(
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;
-    }
-    if (projectManagement === candidateProjectManagement) {
-      projectManagement = undefined;
     }
     if (runtimePolicyClient === client) runtimePolicyClient = undefined;
     capabilityBinding.dispose();
@@ -783,6 +791,9 @@ function wireLifecycle(): void {
   });
   app.on("second-instance", quitCoordinator.focusOrCreateWindow);
   app.on("activate", quitCoordinator.focusOrCreateWindow);
+  app.on("browser-window-focus", () => {
+    void updateService.checkForUpdatesOnFocus();
+  });
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();

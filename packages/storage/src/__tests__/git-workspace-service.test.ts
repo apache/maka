@@ -818,11 +818,15 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 async function gitBare(repositoryPath: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', ['--git-dir', repositoryPath, ...args], {
-    cwd: dirname(repositoryPath),
-    encoding: 'utf8',
-    maxBuffer: 8 * 1024 * 1024,
-  });
+  const { stdout } = await execFileAsync(
+    'git',
+    ['-c', 'core.longpaths=true', '--git-dir', repositoryPath, ...args],
+    {
+      cwd: dirname(repositoryPath),
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
   return stdout.trim();
 }
 

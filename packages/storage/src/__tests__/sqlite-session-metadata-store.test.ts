@@ -478,6 +478,10 @@ describe('SqliteSessionMetadataStore', () => {
     let rejectedRequestId: string | undefined;
     try {
       await store.create(fullHeader());
+      // Each request stays near MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES so the
+      // cumulative boundary crosses capacity in the fewest settles, using few
+      // near-MAX_SANDBOX_BOUNDARY_PATH_CHARS entries to keep the per-settle
+      // boundary scans cheap.
       for (let request = 0; request < 30; request += 1) {
         const requestId = `capacity-${request}`;
         await store.createSandboxBoundaryRequest({
@@ -486,8 +490,8 @@ describe('SqliteSessionMetadataStore', () => {
           turnId: 'turn-1',
           expansion: {
             filesystem: {
-              entries: Array.from({ length: 32 }, (_, entry) => ({
-                path: `/outside/${request}/${entry}-${'x'.repeat(1_800)}`,
+              entries: Array.from({ length: 15 }, (_, entry) => ({
+                path: `/outside/${request}/${entry}-${'x'.repeat(4_000)}`,
                 access: 'read' as const,
                 scope: 'exact' as const,
               })),

@@ -15,6 +15,7 @@ import {
   AiSdkFlow,
   BackendRegistry,
   RuntimeRunner,
+  SessionActivityRegistry,
   SessionManager,
   buildChildAgentTools,
   type AgentRunActiveSession,
@@ -76,7 +77,10 @@ import {
   restoreProtectedPaths,
 } from './sandbox.js';
 import { defaultFinalScorer } from './scorer.js';
-import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
+import {
+  createHeadlessAgentGraphWakeCoordinator,
+  createHeadlessSessionCapabilityBridge,
+} from './session-capabilities.js';
 import { normalizeVerifier, runVerifier, verifierProtectedPaths } from './verifier.js';
 import {
   backendNeedsIsolation,
@@ -248,6 +252,7 @@ export async function runTaskOnceWithStorage(
   });
   const workspace = await prepareWorkspace(task.workspaceDir);
   let graphCoordinator: AgentGraphCoordinator | undefined;
+  let graphWakeCoordinator: import('@maka/runtime').AgentGraphSupervisorWakeCoordinator | undefined;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
@@ -366,6 +371,7 @@ export async function runTaskOnceWithStorage(
       { kind: 'external', revision: 0 },
     );
     graphControlStore = createAgentGraphControlStore(deps.storageRoot);
+    const graphWakeActivities = new SessionActivityRegistry();
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore,
       runStore: agentRunStore,
@@ -374,8 +380,23 @@ export async function runTaskOnceWithStorage(
       runtime: sessionCapabilityManager,
       newId,
       rootSessionId: header.id,
+      onReconciliation: (rootSessionId, result) => {
+        graphWakeCoordinator?.notify(rootSessionId, result);
+      },
+      onCheckpoint: (rootSessionId) => {
+        graphWakeCoordinator?.notify(rootSessionId);
+      },
     });
-    sessionCapabilities.bind(sessionCapabilityManager, graphCoordinator);
+    graphWakeCoordinator = createHeadlessAgentGraphWakeCoordinator({
+      manager: sessionCapabilityManager,
+      graphCoordinator,
+      activityRegistry: graphWakeActivities,
+      wakeStore: graphControlStore,
+      runStore: agentRunStore,
+      sessionStore,
+      newId,
+    });
+    sessionCapabilities.bind(sessionCapabilityManager, graphCoordinator, graphWakeCoordinator);
     const turnId = newId();
     const active = createSingleRunActiveSession(
       backends,
@@ -427,22 +448,27 @@ export async function runTaskOnceWithStorage(
     let deadlineTriggered = false;
     const runtimeAttempt = await runWithTaskSessionCleanup(
       async () => {
-        const attempt = await runRuntimeAttempt({
-          run,
-          header,
-          instruction,
-          ...(deps.priorRuntimeContext ? { priorRuntimeContext: deps.priorRuntimeContext } : {}),
-          requireTerminalRuntimeEventWrite: Boolean(runtimeEventStore),
-          now,
-          newId,
-          settleByDeadline: active.settleByDeadline,
-          onDeadlineTriggered: () => {
-            deadlineTriggered = true;
-          },
-          ...(deps.deadlineAtMs !== undefined ? { deadlineAtMs: deps.deadlineAtMs } : {}),
-        });
-        settledByDeadline = attempt.settledByDeadline;
-        return attempt;
+        const rootActivity = graphWakeActivities.reserve(header.id);
+        try {
+          const attempt = await runRuntimeAttempt({
+            run,
+            header,
+            instruction,
+            ...(deps.priorRuntimeContext ? { priorRuntimeContext: deps.priorRuntimeContext } : {}),
+            requireTerminalRuntimeEventWrite: Boolean(runtimeEventStore),
+            now,
+            newId,
+            settleByDeadline: active.settleByDeadline,
+            onDeadlineTriggered: () => {
+              deadlineTriggered = true;
+            },
+            ...(deps.deadlineAtMs !== undefined ? { deadlineAtMs: deps.deadlineAtMs } : {}),
+          });
+          settledByDeadline = attempt.settledByDeadline;
+          return attempt;
+        } finally {
+          rootActivity.release();
+        }
       },
       () =>
         disposeTaskRunSession(
@@ -804,12 +830,16 @@ export async function runTaskOnceWithStorage(
       await endManagedShellSessions(deps.realBackendIsolation);
     } finally {
       try {
-        await graphCoordinator?.close();
+        await graphWakeCoordinator?.close();
       } finally {
         try {
-          graphControlStore?.close();
+          await graphCoordinator?.close();
         } finally {
-          await workspace.cleanup();
+          try {
+            graphControlStore?.close();
+          } finally {
+            await workspace.cleanup();
+          }
         }
       }
     }

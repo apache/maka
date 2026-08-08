@@ -2,12 +2,11 @@
  * Focused unit tests for the quote companion's fork/guard/send orchestration and
  * event routing (extracted from `useQuoteCompanion` so the React hook stays a
  * thin shell — same pattern as `use-onboarding-snapshot.test.ts`). Covers the
- * review gaps: fork setup rejections are structured, the read-only guardrail
- * must fail CLOSED to `explore`, a created fork is exposed for hiding before the
- * permission round-trip, an unmount mid-create must not leak a hidden fork, a
- * failed OR `{ ok: false }` send must be retryable (quotes kept), the fork
- * branches at the latest settled turn, and interaction routing must resolve
- * web/custom-tool approvals.
+ * review gaps: fork setup rejections are structured, the fork inherits the
+ * parent's permission profile, an unmount mid-create must not leak a hidden
+ * fork, a failed OR `{ ok: false }` send must be retryable (quotes kept), the
+ * fork branches at the latest completed turn, and interaction routing must
+ * resolve web/custom-tool approvals.
  */
 
 import { strict as assert } from 'node:assert';
@@ -18,6 +17,7 @@ import {
   applyCompanionInteractionEvent,
   cleanupCompanionCopy,
   createCompanionDismissalGuard,
+  companionRunEventEffect,
   deriveCompanionComposerState,
   isCompanionTurnTerminal,
   latestSettledTurnId,
@@ -47,9 +47,6 @@ interface FakeControl {
   branchThrows?: boolean;
   loseFirstBranchResponse?: boolean;
   createdId?: string;
-  /** permissionMode `setPermissionMode` returns (default = the requested mode). */
-  afterSetMode?: string;
-  setModeThrows?: boolean;
   cleanupThrows?: boolean;
   abandonThrows?: boolean;
   sendThrows?: boolean;
@@ -61,9 +58,22 @@ interface FakeControl {
 function makeApi(control: FakeControl = {}) {
   const calls = {
     removed: [] as string[],
-    sent: [] as { id: string; cmd: { turnId: string; text: string; quotes?: unknown } }[],
+    sent: [] as {
+      id: string;
+      cmd: {
+        turnId: string;
+        text: string;
+        quotes?: unknown;
+        attachmentItems?: unknown;
+      };
+    }[],
     setMode: [] as [string, string][],
-    branchedFrom: [] as Array<{ sourceTurnId: string; copyId: string }>,
+    branchedFrom: [] as Array<{
+      sourceTurnId: string;
+      name?: string;
+      copyId: string;
+      sideConversation?: boolean;
+    }>,
     abandoned: [] as string[],
     created: 0,
   };
@@ -87,8 +97,7 @@ function makeApi(control: FakeControl = {}) {
     },
     setPermissionMode: async (id, mode) => {
       calls.setMode.push([id, mode]);
-      if (control.setModeThrows) throw new Error('setPermissionMode failed');
-      return summary(id, control.afterSetMode ?? mode);
+      return summary(id, mode);
     },
     cleanupSessionCopy: async (id) => {
       calls.removed.push(id);
@@ -135,12 +144,25 @@ afterEach(async () => {
 });
 
 describe('latestSettledTurnId', () => {
-  it('picks the latest non-running turn (skips a trailing running turn)', () => {
+  it('picks the latest completed turn and excludes failed or aborted parent work', () => {
     assert.equal(
-      latestSettledTurnId([turn('a', 'completed'), turn('b', 'completed'), turn('c', 'running')]),
+      latestSettledTurnId([
+        turn('a', 'completed'),
+        turn('b', 'completed'),
+        turn('c', 'failed'),
+        turn('d', 'aborted'),
+        turn('e', 'running'),
+      ]),
       'b',
     );
-    assert.equal(latestSettledTurnId([turn('a', 'running')]), undefined);
+    assert.equal(
+      latestSettledTurnId([
+        turn('a', 'failed'),
+        turn('b', 'aborted'),
+        turn('c', 'running'),
+      ]),
+      undefined,
+    );
     assert.equal(latestSettledTurnId([]), undefined);
   });
 });
@@ -197,16 +219,22 @@ describe('deriveCompanionComposerState', () => {
 });
 
 describe('performCompanionTurn', () => {
-  it('happy path: forks at the settled turn, confirms explore, sends, then commits + consumes', async () => {
+  it('happy path: forks at the completed turn, preserves permission, sends, then commits + consumes', async () => {
     const { api, calls } = makeApi({
       turns: [turn('t-old', 'completed'), turn('t-settled', 'completed'), turn('t-running', 'running')],
-      afterSetMode: 'explore',
     });
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
     assert.equal(result.status, 'sent');
-    assert.deepEqual(calls.branchedFrom.map(({ sourceTurnId }) => sourceTurnId), ['t-settled']);
-    assert.deepEqual(calls.setMode, [[calls.branchedFrom[0]!.copyId, 'explore']]);
+    assert.deepEqual(
+      calls.branchedFrom.map(({ sourceTurnId, name, sideConversation }) => ({
+        sourceTurnId,
+        name,
+        sideConversation,
+      })),
+      [{ sourceTurnId: 't-settled', name: base.name, sideConversation: true }],
+    );
+    assert.deepEqual(calls.setMode, []);
     assert.equal(calls.sent.length, 1);
     assert.deepEqual(calls.sent[0].cmd.quotes, [{ text: 'excerpt' }]);
     assert.deepEqual(calls.removed, []);
@@ -219,14 +247,9 @@ describe('performCompanionTurn', () => {
     ]);
   });
 
-  it('reports the created id before awaiting the permission pin', async () => {
+  it('reports and commits the created id before sending', async () => {
     const events: string[] = [];
-    const { api } = makeApi({ afterSetMode: 'explore' });
-    const originalSetPermissionMode = api.setPermissionMode;
-    api.setPermissionMode = async (...args) => {
-      events.push('pin-started');
-      return originalSetPermissionMode(...args);
-    };
+    const { api } = makeApi();
     const result = await performCompanionTurn({
       api,
       isDisposed: () => false,
@@ -239,10 +262,26 @@ describe('performCompanionTurn', () => {
     assert.equal(result.status, 'sent');
     assert.deepEqual(events, [
       `created:${(result as { forkId: string }).forkId}`,
-      'pin-started',
       `committed:${(result as { forkId: string }).forkId}`,
       'send-started',
     ]);
+  });
+
+  it('forwards staged attachments through the same session send command', async () => {
+    const { api, calls } = makeApi();
+    const rec = recorder();
+    const attachmentItems = [
+      { approvalId: 'attachment-1', name: 'notes.txt', mimeType: 'text/plain' },
+    ];
+    const result = await performCompanionTurn({
+      api,
+      isDisposed: () => false,
+      ...base,
+      ...rec,
+      attachmentItems,
+    });
+    assert.equal(result.status, 'sent');
+    assert.deepEqual(calls.sent[0].cmd.attachmentItems, attachmentItems);
   });
 
   it('structures listTurns rejection and never creates or sends', async () => {
@@ -255,7 +294,7 @@ describe('performCompanionTurn', () => {
     assert.deepEqual(rec.events, []);
   });
 
-  it('structures branchFromTurn rejection and never pins or sends', async () => {
+  it('structures branchFromTurn rejection and never sends', async () => {
     const { api, calls } = makeApi({ branchThrows: true });
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
@@ -269,7 +308,6 @@ describe('performCompanionTurn', () => {
     const control: FakeControl = {
       turns: [turn('quote-boundary-1', 'completed')],
       loseFirstBranchResponse: true,
-      afterSetMode: 'explore',
     };
     const { api, calls } = makeApi(control);
     const input = {
@@ -299,7 +337,6 @@ describe('performCompanionTurn', () => {
     const control: FakeControl = {
       turns: [turn('quote-abandon-boundary', 'completed')],
       loseFirstBranchResponse: true,
-      afterSetMode: 'explore',
     };
     const { api, calls } = makeApi(control);
     const sourceSession = summary('quote-abandon-source', 'execute');
@@ -325,7 +362,6 @@ describe('performCompanionTurn', () => {
       turns: [turn('quote-ambiguous-abandon-boundary', 'completed')],
       loseFirstBranchResponse: true,
       abandonThrows: true,
-      afterSetMode: 'explore',
     };
     const { api, calls } = makeApi(control);
     const sourceSession = summary('quote-ambiguous-abandon-source', 'execute');
@@ -350,7 +386,6 @@ describe('performCompanionTurn', () => {
   it('completes the copy lease by copy id when an embedded fork has another id', async () => {
     const control: FakeControl = {
       createdId: 'embedded-fork',
-      afterSetMode: 'explore',
     };
     const { api, calls } = makeApi(control);
     const sourceSession = summary('embedded-source', 'execute');
@@ -373,7 +408,7 @@ describe('performCompanionTurn', () => {
     await cleanupCompanionCopy(api, sourceSession.id, 'embedded-fork-2');
   });
 
-  it('does not create a companion before the source has a settled turn', async () => {
+  it('does not create or send before the source has a completed turn', async () => {
     const { api, calls } = makeApi({ turns: [] });
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
@@ -383,61 +418,22 @@ describe('performCompanionTurn', () => {
     assert.deepEqual(rec.events, []);
   });
 
-  it('fail-closed: setPermissionMode throwing removes the fork and never sends', async () => {
-    const { api, calls } = makeApi({ setModeThrows: true });
-    const rec = recorder();
-    const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
-    assert.deepEqual(result, { status: 'error', code: 'permission_pin_failed' });
-    assert.deepEqual(calls.removed, [calls.branchedFrom[0]!.copyId]);
-    assert.equal(calls.sent.length, 0);
-    assert.deepEqual(rec.events, [`created:${calls.branchedFrom[0]!.copyId}`]);
-  });
-
-  it('does not release a hidden fork when authoritative cleanup fails', async () => {
-    const { api, calls } = makeApi({ setModeThrows: true, cleanupThrows: true });
-    const events: string[] = [];
-
-    const result = await performCompanionTurn({
-      api,
-      isDisposed: () => false,
-      ...base,
-      onForkCreated: (session) => events.push(`created:${session.id}`),
-      onForkCleanupSucceeded: (sessionId) => events.push(`cleaned:${sessionId}`),
-      onForkCommitted: () => {},
-      onBeforeSend: () => {},
-      onQuotesConsumed: () => {},
-    });
-    await Promise.resolve();
-
-    assert.deepEqual(result, { status: 'error', code: 'permission_pin_failed' });
-    assert.deepEqual(events, [`created:${calls.branchedFrom[0]!.copyId}`]);
-  });
-
-  it('fail-closed: a fork not confirmed `explore` is removed and never sends', async () => {
-    const { api, calls } = makeApi({ afterSetMode: 'execute' }); // stayed elevated
-    const rec = recorder();
-    const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
-    assert.deepEqual(result, { status: 'error', code: 'permission_pin_failed' });
-    assert.deepEqual(calls.removed, [calls.branchedFrom[0]!.copyId]);
-    assert.equal(calls.sent.length, 0);
-  });
-
   it('unmount during create: removes the just-created fork and aborts (no send)', async () => {
     let disposed = false;
-    const { api, calls } = makeApi({ afterSetMode: 'explore', afterCreate: () => {
+    const { api, calls } = makeApi({ afterCreate: () => {
       disposed = true;
     } });
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => disposed, ...base, ...rec });
     assert.equal(result.status, 'disposed');
     assert.deepEqual(calls.removed, [calls.branchedFrom[0]!.copyId]);
-    assert.deepEqual(calls.setMode, []); // bailed before pinning
+    assert.deepEqual(calls.setMode, []);
     assert.equal(calls.sent.length, 0);
     assert.deepEqual(rec.events, []);
   });
 
   it('send rejection (thrown) is retryable: arms but does NOT consume the staged quotes', async () => {
-    const { api, calls } = makeApi({ afterSetMode: 'explore', sendThrows: true });
+    const { api, calls } = makeApi({ sendThrows: true });
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
     assert.deepEqual(result, { status: 'error', code: 'send_failed' });
@@ -450,7 +446,7 @@ describe('performCompanionTurn', () => {
   });
 
   it('non-throwing send rejection ({ ok: false }) surfaces an error and keeps quotes', async () => {
-    const { api, calls } = makeApi({ afterSetMode: 'explore', sendResult: { ok: false } });
+    const { api, calls } = makeApi({ sendResult: { ok: false } });
     const rec = recorder();
     const result = await performCompanionTurn({ api, isDisposed: () => false, ...base, ...rec });
     assert.deepEqual(result, { status: 'error', code: 'send_rejected' });
@@ -458,7 +454,7 @@ describe('performCompanionTurn', () => {
     assert.equal(rec.events.includes('consumed'), false);
   });
 
-  it('existing fork: skips creation + permission pin and sends directly', async () => {
+  it('existing fork: skips creation and sends directly', async () => {
     const { api, calls } = makeApi();
     const rec = recorder();
     const result = await performCompanionTurn({
@@ -488,6 +484,97 @@ describe('isCompanionTurnTerminal', () => {
       true,
     );
     assert.equal(isCompanionTurnTerminal({ type: 'text_delta' } as SessionEvent), false);
+  });
+});
+
+describe('companionRunEventEffect', () => {
+  const errorEvent = (
+    turnId: string,
+    reason: string | undefined,
+    message = 'Provider failed',
+  ): SessionEvent =>
+    ({
+      type: 'error',
+      id: `error-${turnId}`,
+      turnId,
+      ts: 1,
+      recoverable: false,
+      ...(reason ? { reason } : {}),
+      message,
+    }) as SessionEvent;
+
+  it('uses the main-chat localized error classification for the active turn', () => {
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('active', 'network'), 'active', false, 'zh'),
+      {
+        kind: 'active',
+        terminal: true,
+        error: '网络错误',
+      },
+    );
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('active', 'auth'), 'active', false, 'en'),
+      {
+        kind: 'active',
+        terminal: true,
+        error: 'Authentication failed',
+      },
+    );
+  });
+
+  it('ignores a late error from an older turn', () => {
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('old-turn', 'network'), 'new-turn', false, 'zh'),
+      { kind: 'ignore' },
+    );
+  });
+
+  it('suppresses a late error after Stop while still settling the active turn', () => {
+    assert.deepEqual(
+      companionRunEventEffect(errorEvent('active', 'network'), 'active', true, 'zh'),
+      {
+        kind: 'active',
+        terminal: true,
+        error: null,
+      },
+    );
+  });
+
+  it('keeps unknown provider text behind the safe localized fallback', () => {
+    const effect = companionRunEventEffect(
+      errorEvent('active', 'future_provider_failure', 'token=provider-secret'),
+      'active',
+      false,
+      'zh',
+    );
+    assert.deepEqual(effect, {
+      kind: 'active',
+      terminal: true,
+      error: '对话运行失败，请稍后重试。',
+    });
+    assert.equal(JSON.stringify(effect).includes('provider-secret'), false);
+  });
+
+  it('clears an earlier error for user-stop terminal events', () => {
+    assert.deepEqual(
+      companionRunEventEffect(
+        {
+          type: 'complete',
+          id: 'complete-stop',
+          turnId: 'active',
+          ts: 2,
+          stopReason: 'user_stop',
+        },
+        'active',
+        true,
+        'zh',
+      ),
+      {
+        kind: 'active',
+        terminal: true,
+        error: null,
+      },
+    );
   });
 });
 

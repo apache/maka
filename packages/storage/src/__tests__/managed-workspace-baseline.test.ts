@@ -512,9 +512,7 @@ test('rejects a canonical SQLite database copied from a different durable storag
   }
 });
 
-test('preserves the durable database root binding across formal whole-root import', {
-  skip: process.platform === 'win32',
-}, async () => {
+test('preserves the durable database root binding across formal whole-root import', async () => {
   const root = await temporaryRoot();
   const sourceStorageRoot = join(root, 'storage-a');
   const importedStorageRoot = join(root, 'storage-imported');
@@ -652,7 +650,10 @@ test('rejects final admission when the root marker changes after post-commit art
 });
 
 test('rejects an authority database whose file identity changes after registration', {
-  skip: process.platform === 'win32',
+  skip:
+    process.platform === 'win32'
+      ? 'Windows cannot rename an open SQLite database to replace its file identity'
+      : false,
 }, async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
@@ -683,7 +684,10 @@ test('rejects an authority database whose file identity changes after registrati
 });
 
 test('does not return an accepted baseline when runtime.sqlite is replaced after the initial root check', {
-  skip: process.platform === 'win32',
+  skip:
+    process.platform === 'win32'
+      ? 'Windows cannot rename an open SQLite database during the verification race'
+      : false,
 }, async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');

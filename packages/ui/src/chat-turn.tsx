@@ -522,6 +522,24 @@ export const TurnView = memo(function TurnView(props: {
 
         </LocalizedChatMessage>
       )}
+      {turn.userInterjections?.map((message) => (
+        <LocalizedChatMessage
+          key={message.id}
+          accessibleLabel={copy.userAriaLabel}
+          sender="user"
+          className="maka-chat-message maka-user-message maka-steering-message"
+        >
+          <MessageBody
+            role="user"
+            text={message.text}
+            ts={message.ts}
+            attachments={message.attachments}
+            quotes={message.quotes}
+            inlineReferences={message.inlineReferences}
+            onReadAttachmentBytes={props.onReadAttachmentBytes}
+          />
+        </LocalizedChatMessage>
+      ))}
       {turn.notes.map((note) => (
         <ChatSystemMessage
           key={note.id}

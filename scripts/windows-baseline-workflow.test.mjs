@@ -7,6 +7,50 @@ import { fileURLToPath } from 'node:url';
 const workflowUrl = new URL('../.github/workflows/windows-baseline.yml', import.meta.url);
 const processIdentityScriptUrl = new URL('./windows-process-identity.ps1', import.meta.url);
 
+function powerShellArgs(command) {
+  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command];
+}
+
+function resolvePowerShellExecutable(spawn = spawnSync) {
+  const failures = [];
+  for (const executable of ['pwsh.exe', 'powershell.exe']) {
+    const probe = spawn(executable, powerShellArgs('exit 0'), {
+      encoding: 'utf8',
+    });
+    if (probe.status === 0) return executable;
+    failures.push(
+      `${executable}: ${probe.error?.message || probe.stderr || probe.stdout || `exit ${probe.status}`}`,
+    );
+  }
+  assert.fail(`No usable PowerShell executable (${failures.join('; ')})`);
+}
+
+test('PowerShell resolution covers the documented Windows PowerShell fallback', () => {
+  for (const pwshFailure of [
+    {
+      status: null,
+      error: Object.assign(new Error('spawnSync pwsh.exe ENOENT'), { code: 'ENOENT' }),
+    },
+    { status: 1, error: undefined },
+  ]) {
+    const calls = [];
+    const executable = resolvePowerShellExecutable((command, args, options) => {
+      calls.push({ command, args, options });
+      return command === 'pwsh.exe'
+        ? { ...pwshFailure, stdout: '', stderr: '' }
+        : { status: 0, error: undefined, stdout: '', stderr: '' };
+    });
+
+    assert.equal(executable, 'powershell.exe');
+    assert.deepEqual(
+      calls.map(({ command }) => command),
+      ['pwsh.exe', 'powershell.exe'],
+    );
+    assert.deepEqual(calls[0].args, powerShellArgs('exit 0'));
+    assert.equal(calls[0].options.encoding, 'utf8');
+  }
+});
+
 test('Windows baseline workflow keeps its non-blocking evidence contract', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
@@ -76,7 +120,7 @@ test('Windows process identity matches a non-empty JSON baseline to a live proce
       $captured = [pscustomobject]@{
         Processes = @([pscustomobject]@{
           ProcessId = 4242
-          CreationDate = [DateTimeOffset]::Parse('2026-08-05T08:09:10.1234567+08:00')
+          CreationDate = [DateTimeOffset]::Parse('2026-08-05T08:09:10.1234567+08:00').ToUniversalTime().ToString('o')
         })
       } | ConvertTo-Json -Depth 3 | ConvertFrom-Json
       $live = [pscustomobject]@{
@@ -87,8 +131,8 @@ test('Windows process identity matches a non-empty JSON baseline to a live proce
         exit 1
       }
     `;
-  const result = spawnSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', fixture], {
+  const result = spawnSync(resolvePowerShellExecutable(), powerShellArgs(fixture), {
     encoding: 'utf8',
   });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });

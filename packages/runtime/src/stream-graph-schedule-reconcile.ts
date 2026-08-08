@@ -169,7 +169,7 @@ export async function reconcileAgentGraphSchedule(
 
     const stopWave = await applyScheduleStops(input, snapshot);
     stops.push(...stopWave.stops);
-    failures.push(...stopWave.failures);
+    for (const failure of stopWave.failures) recordReconciliationFailure(input, failures, failure);
     if (failures.length > 0) {
       snapshot = await readScheduleSnapshot(input);
       return reconciliationResult(
@@ -196,7 +196,7 @@ export async function reconcileAgentGraphSchedule(
     let topologyStale = false;
 
     for (const work of orderedRequestedWork(snapshot.schedule)) {
-      if (work.target.kind !== 'agent' || provisionsByWork.has(work.workId)) continue;
+      if (work.target.kind === 'operator' || provisionsByWork.has(work.workId)) continue;
       if (snapshot.schedule.closed) {
         deferredWork.push({ work, reason: 'graph_closed' });
         continue;
@@ -212,7 +212,7 @@ export async function reconcileAgentGraphSchedule(
       }
       const source = snapshot.sourceByWorkId.get(work.workId);
       if (!source) {
-        failures.push({
+        recordReconciliationFailure(input, failures, {
           phase: 'topology',
           work,
           error: new Error(`Graph work ${work.workId} has no durable schedule source`),
@@ -235,7 +235,7 @@ export async function reconcileAgentGraphSchedule(
           topologyStale = true;
           break;
         }
-        failures.push({ phase: 'topology', work, error });
+        recordReconciliationFailure(input, failures, { phase: 'topology', work, error });
       }
     }
     if (topologyChanged || topologyStale) {
@@ -262,7 +262,7 @@ export async function reconcileAgentGraphSchedule(
     }> = [];
 
     for (const work of orderedRequestedWork(snapshot.schedule)) {
-      if (work.target.kind === 'agent' && !provisionsByWork.has(work.workId)) continue;
+      if (work.target.kind !== 'operator' && !provisionsByWork.has(work.workId)) continue;
       let intent: AgentGraphRunnableIntent;
       try {
         intent = scheduledWorkIntent(
@@ -272,7 +272,7 @@ export async function reconcileAgentGraphSchedule(
           provisionsByWork.get(work.workId),
         );
       } catch (error) {
-        failures.push({ phase: 'schedule', work, error });
+        recordReconciliationFailure(input, failures, { phase: 'schedule', work, error });
         continue;
       }
       if (processedIntentIds.has(intent.intentId)) continue;
@@ -345,7 +345,7 @@ export async function reconcileAgentGraphSchedule(
       if (result.status === 'fulfilled') {
         prepared.push(result.value);
       } else {
-        failures.push({
+        recordReconciliationFailure(input, failures, {
           phase: 'render',
           work: selected[index]!.work,
           intent: selected[index]!.intent,
@@ -368,7 +368,13 @@ export async function reconcileAgentGraphSchedule(
     }
 
     const outcomes = await Promise.all(
-      prepared.map((work) => dispatchScheduledWork(input, work, snapshot.schedule.revision)),
+      prepared.map(async (work) => {
+        const outcome = await dispatchScheduledWork(input, work, snapshot.schedule.revision);
+        if (outcome.status === 'rejected') {
+          notifySupervisor(input.supervisor?.onReconciliationFailure, outcome.failure);
+        }
+        return outcome;
+      }),
     );
     let stale = false;
     for (const outcome of outcomes) {
@@ -676,11 +682,11 @@ function scheduledWorkIntent(
   work: AgentGraphScheduleWorkView,
   provision?: AgentGraphOperatorProvision,
 ): AgentGraphRunnableIntent {
-  if (work.target.kind === 'agent') {
+  if (work.target.kind !== 'operator') {
     if (
       !provision ||
       provision.workId !== work.workId ||
-      provision.agentId !== work.target.agentId
+      (work.target.kind === 'agent' ? provision.agentId !== work.target.agentId : false)
     ) {
       throw new Error(`Graph work ${work.workId} has no matching topology provision`);
     }
@@ -747,8 +753,8 @@ function buildOperatorProvisionInput(
   source: AgentGraphScheduleUpdateSource,
   expectedScheduleRevision: number,
 ): ProvisionAgentGraphOperatorInput {
-  if (work.target.kind !== 'agent') {
-    throw new Error(`Graph work ${work.workId} does not target a catalog agent`);
+  if (work.target.kind === 'operator') {
+    throw new Error(`Graph work ${work.workId} targets an existing operator`);
   }
   const operatorHash = stableHash({
     schemaVersion: SCHEDULE_INTENT_SCHEMA_VERSION,
@@ -784,7 +790,9 @@ function buildOperatorProvisionInput(
   return {
     graphId: topology.graphId,
     workId: work.workId,
-    agentId: work.target.agentId,
+    ...(work.target.kind === 'preset'
+      ? { subagentId: work.target.presetId }
+      : { agentId: work.target.agentId }),
     operatorId,
     source,
     edges,
@@ -954,6 +962,15 @@ function reconciliationResult(
     schedule: snapshot.schedule,
     observation: snapshot.observation,
   };
+}
+
+function recordReconciliationFailure(
+  input: ReconcileAgentGraphScheduleInput,
+  failures: AgentGraphScheduleReconciliationFailure[],
+  failure: AgentGraphScheduleReconciliationFailure,
+): void {
+  failures.push(failure);
+  notifySupervisor(input.supervisor?.onReconciliationFailure, failure);
 }
 
 function dedupeStops(

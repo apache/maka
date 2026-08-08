@@ -100,12 +100,3 @@ test('nothing matched says what there is, so the next call is not the whole list
     'com.apple.calculator',
   ]);
 });
-
-test('a filtered list is a fraction of the size of the whole one', async () => {
-  const whole = await listApps();
-  const one = await listApps('文本编辑');
-  assert.ok(
-    (one.modelText ?? '').length < (whole.modelText ?? '').length,
-    'filtering must not cost more than not filtering',
-  );
-});

@@ -117,6 +117,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly #ipc: ScopedIpcMain;
   readonly #botIncoming: BotIncomingMainService;
   readonly #closeNativeCapabilities: () => Promise<void>;
+  readonly #closeSessionDomains: () => Promise<void>;
   readonly #disposeClientIpc: (() => void | Promise<void>) | undefined;
   readonly #hasRegisteredCapabilities: () => boolean;
   readonly #stopSession: (sessionId: string) => Promise<void>;
@@ -128,6 +129,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     ipc: ScopedIpcMain;
     botIncoming: BotIncomingMainService;
     closeNativeCapabilities: () => Promise<void>;
+    closeSessionDomains: () => Promise<void>;
     disposeClientIpc: (() => void | Promise<void>) | undefined;
     connectionClosed: Promise<void>;
     hasRegisteredCapabilities: () => boolean;
@@ -139,6 +141,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     this.#ipc = input.ipc;
     this.#botIncoming = input.botIncoming;
     this.#closeNativeCapabilities = input.closeNativeCapabilities;
+    this.#closeSessionDomains = input.closeSessionDomains;
     this.#disposeClientIpc = input.disposeClientIpc;
     this.#hasRegisteredCapabilities = input.hasRegisteredCapabilities;
     this.#stopSession = input.stopSession;
@@ -156,13 +159,14 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   }
 
   async #close(): Promise<void> {
+    const domainResults = await Promise.allSettled([this.#closeSessionDomains()]);
     const results = await Promise.allSettled([
       this.#botIncoming.close(),
       this.#closeNativeCapabilities(),
       Promise.resolve().then(() => this.#disposeClientIpc?.()),
       this.#closeConnection(),
     ]);
-    const failed = results.find(
+    const failed = [...domainResults, ...results].find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     );
     if (failed) throw failed.reason;
@@ -278,6 +282,7 @@ export async function createDesktopRuntimeHostCandidate(
     if (failed) throw failed.reason;
   };
   let observer: RuntimeHostSessionObserver | undefined;
+  let closeSessionDomains: (() => Promise<void>) | undefined;
   let disposeClientIpc: (() => void | Promise<void>) | undefined;
   let capabilitiesRegistered = false;
   try {
@@ -292,11 +297,13 @@ export async function createDesktopRuntimeHostCandidate(
       },
       ipc,
     );
+    closeSessionDomains = domains.close;
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       emitSessionsChanged: (reason, sessionId, extra) =>
         deps.emitSessionsChanged(reason, sessionId, extra),
       emitSessionDomainChanged: domains.sessionDomainChanged,
+      emitRuntimeResourcePtyData: domains.runtimeResourcePtyData,
       emitAgentGraphChanged: domains.agentGraphChanged,
       onWatchedTurnFinished: (sessionId, outcome) =>
         outcome === "completed"
@@ -406,6 +413,7 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
       botIncoming,
       closeNativeCapabilities,
+      closeSessionDomains: domains.close,
       disposeClientIpc,
       connectionClosed: connection.closed,
       hasRegisteredCapabilities: () => capabilitiesRegistered,
@@ -414,6 +422,7 @@ export async function createDesktopRuntimeHostCandidate(
   } catch (error) {
     ipc.close();
     await Promise.resolve(disposeClientIpc?.()).catch(() => undefined);
+    await closeSessionDomains?.().catch(() => undefined);
     await observer?.close().catch(() => undefined);
     await client.close().catch(() => undefined);
     await closeNativeCapabilities().catch(() => undefined);

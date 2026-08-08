@@ -53,6 +53,10 @@ import type {
   UsageRange,
   UsageStats,
   E2eFixtureState,
+  GitReviewReadResult,
+  GitReviewMutationAction,
+  GitReviewMutationResult,
+  GitReviewSource,
   ArtifactBinaryReadResult,
   ArtifactChangedEvent,
   ArtifactDescriptor,
@@ -94,6 +98,8 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
   BotStatus,
+  ShellRunPtyDataEvent,
+  ShellRunPtySnapshot,
   WechatBridgeQrCodeResult,
 } from '@maka/runtime';
 import type { GoalState } from '@maka/runtime';
@@ -410,6 +416,15 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('projects:relink', projectId);
     },
+    reveal(projectId: string): Promise<
+      | { ok: true; opened: string }
+      | {
+          ok: false;
+          reason: 'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed';
+        }
+    > {
+      return ipcRenderer.invoke('projects:reveal', projectId);
+    },
     rename(projectId: string, name: string): Promise<ProjectRecord> {
       return ipcRenderer.invoke('projects:rename', projectId, name);
     },
@@ -424,10 +439,60 @@ const makaBridge = {
     list(sessionId: string): Promise<ShellRunUpdate[]> {
       return ipcRenderer.invoke('shell-runs:list', sessionId);
     },
+    attach(input: {
+      sessionId: string;
+      ref: string;
+    }): Promise<ShellRunPtySnapshot | null> {
+      return ipcRenderer.invoke('shell-runs:attach', input);
+    },
+    detach(input: { sessionId: string; ref: string }): Promise<void> {
+      return ipcRenderer.invoke('shell-runs:detach', input);
+    },
+    start(sessionId: string): Promise<ShellRunUpdate> {
+      return ipcRenderer.invoke('shell-runs:start', sessionId);
+    },
+    write(input: {
+      sessionId: string;
+      ref: string;
+      input?: string;
+      size?: { cols: number; rows: number };
+    }): Promise<ShellRunUpdate | null> {
+      return ipcRenderer.invoke('shell-runs:write', input);
+    },
+    stop(input: {
+      sessionId: string;
+      ref: string;
+    }): Promise<ShellRunUpdate | null> {
+      return ipcRenderer.invoke('shell-runs:stop', input);
+    },
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, update: ShellRunUpdate) => handler(update);
       ipcRenderer.on('shell-runs:update', listener);
       return () => ipcRenderer.off('shell-runs:update', listener);
+    },
+    subscribePtyData(handler: (event: ShellRunPtyDataEvent) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ShellRunPtyDataEvent) =>
+        handler(payload);
+      ipcRenderer.on('shell-runs:pty-data', listener);
+      return () => ipcRenderer.off('shell-runs:pty-data', listener);
+    },
+  },
+  gitReview: {
+    read(input: {
+      sessionId: string;
+      source: GitReviewSource;
+      baseBranch?: string;
+    }): Promise<GitReviewReadResult> {
+      return ipcRenderer.invoke('git-review:read', input);
+    },
+    mutate(input: {
+      sessionId: string;
+      source: Extract<GitReviewSource, 'unstaged' | 'staged'>;
+      revision: string;
+      path: string;
+      action: GitReviewMutationAction;
+    }): Promise<GitReviewMutationResult> {
+      return ipcRenderer.invoke('git-review:mutate', input);
     },
   },
   goal: {
@@ -1017,6 +1082,7 @@ const makaBridge = {
       arch: string;
       osRelease: string;
       workspacePath: string;
+      homePath: string;
       projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };

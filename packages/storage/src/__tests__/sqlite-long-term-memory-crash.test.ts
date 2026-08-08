@@ -18,7 +18,6 @@ if (childMode) {
   await runCrashChild(childMode);
 } else {
   test('retains one committed Item and its receipt when killed between COMMIT and return', {
-    skip: process.platform === 'win32',
     timeout: 30_000,
   }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-long-term-memory-crash-'));

@@ -129,12 +129,14 @@ export function UserQuestionPrompt(props: {
             onClick={() => void props.onStop()}
             label={props.stopPending ? copy.stopping : copy.stop}
           />
-          <Button
-            variant="ghost"
-            isDisabled={questionIndex === 0 || interactionDisabled}
-            onClick={() => setQuestionIndex((current) => current - 1)}
-            label={copy.previous}
-          />
+          {questionIndex > 0 ? (
+            <Button
+              variant="ghost"
+              isDisabled={interactionDisabled}
+              onClick={() => setQuestionIndex((current) => current - 1)}
+              label={copy.previous}
+            />
+          ) : null}
           <Button
             variant="primary"
             className="maka-question-submit"

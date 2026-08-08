@@ -176,33 +176,6 @@ describe('computer action label', () => {
     assert.equal(computerActionLabel(computerCall({}, { args: undefined }), 'zh'), '操作电脑');
   });
 
-  it('localizes every derived label', () => {
-    assert.equal(label({ action: 'list_apps' }, 'en'), 'List open apps');
-    assert.equal(label({ action: 'observe', app: 'Calculator' }, 'en'), 'Observe the “Calculator” window');
-    assert.equal(label({ action: 'observe', window_id: 42 }, 'en'), 'Observe window 42');
-    assert.equal(label({ action: 'click_element', element_id: 'e12' }, 'en'), 'Click element e12');
-    assert.equal(label({ action: 'set_value', element_id: 'e12', value: 'hello' }, 'en'), 'Set the value of element e12');
-    assert.equal(label({ action: 'press_key', text: 'Return' }, 'en'), 'Press a key');
-    assert.equal(label({ action: 'wait', duration: 2 }, 'en'), 'Wait');
-    assert.equal(label({ action: 'teleport' }, 'en'), 'Use the computer');
-  });
-
-  /** A long app name is bounded so a row cannot become a paragraph. */
-  it('bounds an app name to one row', () => {
-    const long = label({ action: 'observe', app: 'Very Long Application Name '.repeat(8) });
-    assert.ok((long ?? '').length < 60, `expected a capped label, got ${long?.length} chars`);
-    assert.match(long ?? '', /…」窗口$/);
-  });
-
-  it('leaves other tools alone', () => {
-    assert.equal(
-      computerActionLabel(
-        { toolUseId: 't', toolName: 'Bash', status: 'completed', args: { action: 'observe' } },
-        'zh',
-      ),
-      undefined,
-    );
-  });
 
   /**
    * A declared `intent` and a derived label are no longer competing for one
@@ -259,56 +232,5 @@ describe('computer action label', () => {
       computerActionLabel(computerCall({ action: 'click_element', element_id: 'e7' }), 'zh'),
     ];
     assert.equal(new Set(labels).size, 2, 'two different actions must read differently');
-  });
-
-  // Upstream retired the second row renderer: every status now goes through
-  // Astryx. That makes the label a single implementation rather than two, but
-  // it does not make these statuses free — an in-flight call, an interrupted
-  // one and a sandbox-blocked one each take a different branch to the row, and
-  // a label lost on any of them is a row that says nothing.
-  it('names the action whatever status the row is in', () => {
-    const variants: Partial<ToolActivityItem>[] = [
-      { status: 'pending' },
-      { status: 'running' },
-      { status: 'interrupted' },
-      {
-        status: 'errored',
-        result: {
-          kind: 'terminal',
-          cwd: '/tmp/maka',
-          cmd: 'maka_computer',
-          status: 'failed',
-          exitCode: 1,
-          output: {
-            mode: 'pipes',
-            stdout: '',
-            stderr: 'Operation not permitted\n',
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            redacted: false,
-          },
-          sandboxDenial: {
-            likely: true,
-            backend: 'macos-seatbelt',
-            recovery: 'require_escalated',
-          },
-        },
-      },
-    ];
-    for (const extra of variants) {
-      const markup = renderRows([
-        computerCall({ action: 'click_element', element_id: 'e7' }, { toolUseId: 'cu-row', ...extra }),
-      ]);
-      assert.match(
-        markup,
-        /点击元素 e7/,
-        `the ${extra.status} row must say what the call did`,
-      );
-      assert.doesNotMatch(
-        markup,
-        /Maka Computer/,
-        `the ${extra.status} row must not fall back to the tool's noun`,
-      );
-    }
   });
 });

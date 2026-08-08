@@ -41,8 +41,8 @@ const CURRENT_PROTOCOL = {
 const PROCESS_TIMEOUT_MS = 10_000;
 const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
 
-test('two UDS Clients share stable Session creation, CAS configuration, and catalog continuity', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+test('two Clients share stable Session creation, CAS configuration, and catalog continuity', {
+  skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
   timeout: 120_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-catalog-'));
@@ -665,7 +665,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
 });
 
 test('stable Session creation survives response loss and Host restart', {
-  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+  skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
   timeout: 120_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-create-retry-'));

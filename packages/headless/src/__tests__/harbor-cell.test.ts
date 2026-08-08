@@ -2218,12 +2218,12 @@ describe('runHarborCell', () => {
       const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
       const toolNames = backendInput.tools.map((tool) => tool.name);
 
-      for (const expected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
+      for (const expected of ['agent_spawn', 'agent_list', 'agent_output']) {
         assert.ok(toolNames.includes(expected), `expected enabled Agent tool ${expected}`);
       }
       assert.deepEqual(
         backendInput.toolAvailability?.groups?.find((group) => group.id === 'agent')?.toolNames,
-        ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output'],
+        ['agent_spawn', 'agent_list', 'agent_output'],
       );
       for (const capability of AGENT_RUNTIME_CAPABILITIES) {
         assert.equal(typeof backendInput[capability], 'function', `expected root ${capability}`);

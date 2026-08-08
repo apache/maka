@@ -1,17 +1,35 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useResizable } from '@astryxdesign/core/Resizable';
 import { readSessionListCollapsed, readSessionListWidth } from './session-list-layout';
 import {
+  readSessionBottomPanelHeight,
+  readSessionBottomPanelOpen,
   readSessionWorkbarCollapsed,
-  readSessionWorkbarTab,
   readSessionWorkbarWidth,
+  SESSION_BOTTOM_PANEL_MAX_HEIGHT,
+  SESSION_BOTTOM_PANEL_MIN_HEIGHT,
   SESSION_WORKBAR_MAX_WIDTH,
   SESSION_WORKBAR_MIN_WIDTH,
 } from './session-workbar-layout';
+import {
+  activateSessionWorkbarPanelTab,
+  closeSessionWorkbarPanelTabs,
+  moveSessionWorkbarPanelTab,
+  moveSessionWorkbarTabToPanel,
+  openSessionWorkbarPanelLauncher,
+  openSessionWorkbarPanelTab,
+  pinSessionWorkbarPanelTab,
+  readSessionWorkbarPanels,
+  reorderSessionWorkbarPanelTab,
+  titleSessionWorkbarPanelTab,
+  type SessionWorkbarTab,
+  type SessionWorkbarTabKind,
+  type SessionWorkbarPlacement,
+} from './session-workbar-tabs';
 
 /**
  * Owns the shell layout state (issue #1043): widths, collapse flags and the
- * active workbar tab, each hydrated from localStorage on first render and
+ * workbar tab controller, each hydrated from localStorage on first render and
  * persisted by `useAppShellPersistenceEffects`.
  *
  * `useResizable` owns the workbar's clamping and its pointer/keyboard resizing
@@ -24,6 +42,7 @@ export function useShellLayout() {
   const [sessionListWidth, setSessionListWidth] = useState(() => readSessionListWidth());
   const [sessionListCollapsed, setSessionListCollapsed] = useState(() => readSessionListCollapsed());
   const [workbarCollapsed, setWorkbarCollapsed] = useState(() => readSessionWorkbarCollapsed());
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(() => readSessionBottomPanelOpen());
   // Read once: useResizable only consumes defaultSize on its first render, and
   // AppShell re-renders on every stream tick.
   const [workbarDefaultWidth] = useState(() => readSessionWorkbarWidth());
@@ -31,6 +50,12 @@ export function useShellLayout() {
     defaultSize: workbarDefaultWidth,
     minSizePx: SESSION_WORKBAR_MIN_WIDTH,
     maxSizePx: SESSION_WORKBAR_MAX_WIDTH,
+  });
+  const [bottomPanelDefaultHeight] = useState(() => readSessionBottomPanelHeight());
+  const bottomPanel = useResizable({
+    defaultSize: bottomPanelDefaultHeight,
+    minSizePx: SESSION_BOTTOM_PANEL_MIN_HEIGHT,
+    maxSizePx: SESSION_BOTTOM_PANEL_MAX_HEIGHT,
   });
   // `_onResizeMove` takes the distance from where the pointer went down, not a
   // per-move increment, so rounding here quantises the drag to whole pixels
@@ -45,6 +70,14 @@ export function useShellLayout() {
     }),
     [workbar.props],
   );
+  const bottomPanelResizable = useMemo(
+    () => ({
+      ...bottomPanel.props,
+      _onResizeMove: (delta: number) =>
+        bottomPanel.props._onResizeMove(Math.round(delta)),
+    }),
+    [bottomPanel.props],
+  );
   // Astryx ends a drag on pointerup, pointercancel or unmount, but not on focus
   // loss: Cmd+Tab mid-drag and release outside the app leaves the listeners
   // attached and `body` stuck at `cursor: col-resize; user-select: none`. The
@@ -55,7 +88,125 @@ export function useShellLayout() {
     window.addEventListener('blur', cancelDrag);
     return () => window.removeEventListener('blur', cancelDrag);
   }, []);
-  const [workbarTab, setWorkbarTab] = useState(() => readSessionWorkbarTab());
+  const [workbarPanelsState, setWorkbarPanelsState] = useState(() =>
+    readSessionWorkbarPanels(),
+  );
+  const workbarPanelsStateRef = useRef(workbarPanelsState);
+  workbarPanelsStateRef.current = workbarPanelsState;
+  const pendingPanelAutoCloseRef = useRef(new Set<SessionWorkbarPlacement>());
+  const markPanelForAutoClose = useCallback(
+    (placement: SessionWorkbarPlacement, tabIds: readonly string[]) => {
+      const closing = new Set(tabIds);
+      if (
+        workbarPanelsStateRef.current[placement].tabs.some((tab) =>
+          closing.has(tab.id),
+        )
+      ) {
+        pendingPanelAutoCloseRef.current.add(placement);
+      }
+    },
+    [],
+  );
+  const openWorkbarTab = useCallback(
+    (
+      kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
+      placement: SessionWorkbarPlacement = 'right',
+      options: { preview?: boolean } = {},
+    ) =>
+      setWorkbarPanelsState((current) =>
+        openSessionWorkbarPanelTab(current, placement, {
+          id: `workbar:${kind}`,
+          kind,
+          ...(options.preview ? { preview: true } : {}),
+        }),
+      ),
+    [],
+  );
+  const openDynamicWorkbarTab = useCallback(
+    (tab: SessionWorkbarTab, placement: SessionWorkbarPlacement = 'right') =>
+      setWorkbarPanelsState((current) =>
+        openSessionWorkbarPanelTab(current, placement, tab),
+      ),
+    [],
+  );
+  const activateWorkbarTab = useCallback(
+    (placement: SessionWorkbarPlacement, tabId: string) =>
+      setWorkbarPanelsState((current) =>
+        activateSessionWorkbarPanelTab(current, placement, tabId),
+      ),
+    [],
+  );
+  const closeWorkbarTab = useCallback(
+    (placement: SessionWorkbarPlacement, tabId: string) => {
+      markPanelForAutoClose(placement, [tabId]);
+      setWorkbarPanelsState((current) =>
+        closeSessionWorkbarPanelTabs(current, placement, [tabId]),
+      );
+    },
+    [markPanelForAutoClose],
+  );
+  const closeWorkbarTabs = useCallback(
+    (placement: SessionWorkbarPlacement, tabIds: readonly string[]) => {
+      markPanelForAutoClose(placement, tabIds);
+      setWorkbarPanelsState((current) =>
+        closeSessionWorkbarPanelTabs(current, placement, tabIds),
+      );
+    },
+    [markPanelForAutoClose],
+  );
+  const reorderWorkbarTab = useCallback(
+    (placement: SessionWorkbarPlacement, tabId: string, targetTabId: string) =>
+      setWorkbarPanelsState((current) =>
+        reorderSessionWorkbarPanelTab(current, placement, tabId, targetTabId),
+      ),
+    [],
+  );
+  const moveWorkbarTab = useCallback(
+    (
+      placement: SessionWorkbarPlacement,
+      tabId: string,
+      direction: 'left' | 'right',
+    ) =>
+      setWorkbarPanelsState((current) =>
+        moveSessionWorkbarPanelTab(current, placement, tabId, direction),
+      ),
+    [],
+  );
+  const openWorkbarLauncher = useCallback(
+    (placement: SessionWorkbarPlacement = 'right') =>
+      setWorkbarPanelsState((current) =>
+        openSessionWorkbarPanelLauncher(current, placement),
+      ),
+    [],
+  );
+  const moveWorkbarTabToPanel = useCallback(
+    (tabId: string, target: SessionWorkbarPlacement) => {
+      setWorkbarPanelsState((current) =>
+        moveSessionWorkbarTabToPanel(current, tabId, target),
+      );
+      if (target === 'right') setWorkbarCollapsed(false);
+      else setBottomPanelOpen(true);
+    },
+    [],
+  );
+  const titleWorkbarTab = useCallback((tabId: string, title: string) => {
+    setWorkbarPanelsState((current) =>
+      titleSessionWorkbarPanelTab(current, tabId, title),
+    );
+  }, []);
+  const pinWorkbarTab = useCallback((tabId: string) => {
+    setWorkbarPanelsState((current) =>
+      pinSessionWorkbarPanelTab(current, tabId),
+    );
+  }, []);
+  useEffect(() => {
+    for (const placement of ['right', 'bottom'] as const) {
+      if (!pendingPanelAutoCloseRef.current.delete(placement)) continue;
+      if (workbarPanelsState[placement].tabs.length > 0) continue;
+      if (placement === 'right') setWorkbarCollapsed(true);
+      else setBottomPanelOpen(false);
+    }
+  }, [workbarPanelsState]);
   return {
     sessionListWidth,
     setSessionListWidth,
@@ -63,9 +214,23 @@ export function useShellLayout() {
     setSessionListCollapsed,
     workbarCollapsed,
     setWorkbarCollapsed,
+    bottomPanelOpen,
+    setBottomPanelOpen,
     workbarWidth: workbar.size,
     workbarResizable,
-    workbarTab,
-    setWorkbarTab,
+    bottomPanelHeight: bottomPanel.size,
+    bottomPanelResizable,
+    workbarPanelsState,
+    openWorkbarTab,
+    openDynamicWorkbarTab,
+    activateWorkbarTab,
+    closeWorkbarTab,
+    closeWorkbarTabs,
+    reorderWorkbarTab,
+    moveWorkbarTab,
+    moveWorkbarTabToPanel,
+    titleWorkbarTab,
+    pinWorkbarTab,
+    openWorkbarLauncher,
   };
 }

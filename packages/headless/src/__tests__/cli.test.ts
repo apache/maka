@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import { createSessionStore } from '@maka/storage';
 import { validateHarborCellOutput } from '../cell-output.js';
+import { mapLegacyMakaHeadlessArgs, runMakaEvalCli } from '../cli.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
+import { withCapturedProcessIo } from './helpers/capture-process-io.js';
 import { readResults } from '../results.js';
 import type { TaskEvent } from '../task-contracts.js';
 import { taskRunLocator } from '../task-run-identity.js';
@@ -15,13 +17,10 @@ import { taskRunLocator } from '../task-run-identity.js';
 const cliPath = fileURLToPath(new URL('../cli.js', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 
-function runCli(
-  args: string[],
-  options: { env?: NodeJS.ProcessEnv } = {},
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
-      env: { ...process.env, ...options.env },
+      env: { ...process.env },
     });
     let stdout = '';
     let stderr = '';
@@ -33,6 +32,46 @@ function runCli(
     });
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+// In-process route for ordinary command semantics: the same legacy argv
+// mapping and canonical router the bin runs, with stdout/stderr captured at
+// the process-stream seam and env overrides applied around the call. The real
+// subprocess route above stays for the representative bin-wiring contract.
+async function runCliInProcess(
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv } = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const mapped = mapLegacyMakaHeadlessArgs(args);
+  assert.ok(mapped && mapped.length > 0, 'in-process runner expects a canonical command');
+  const envOverrides = Object.entries(options.env ?? {});
+  const savedEnv = envOverrides.map(([key]) => [key, process.env[key]] as const);
+  for (const [key, value] of envOverrides) process.env[key] = value;
+  const savedExitCode = process.exitCode;
+  try {
+    const {
+      result: code,
+      stdout,
+      stderr,
+    } = await withCapturedProcessIo(async () => {
+      try {
+        return await runMakaEvalCli(mapped);
+      } catch (error) {
+        // Mirror the bin's fatal handler: report the error and fail with 1.
+        process.stderr.write(
+          `${error instanceof Error ? (error.stack ?? String(error)) : String(error)}\n`,
+        );
+        return 1;
+      }
+    });
+    return { code, stdout, stderr };
+  } finally {
+    process.exitCode = savedExitCode;
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 describe('maka-headless CLI', () => {
@@ -72,7 +111,7 @@ describe('maka-headless CLI', () => {
       };
       const specPath = join(dir, 'spec.json');
       await writeFile(specPath, JSON.stringify(spec), 'utf8');
-      const result = await runCli(['eval', specPath, '--out', join(dir, 'out')]);
+      const result = await runCliInProcess(['eval', specPath, '--out', join(dir, 'out')]);
       assert.equal(result.code, 1);
       assert.match(result.stderr, /protectedPaths/);
     } finally {
@@ -84,7 +123,7 @@ describe('maka-headless CLI', () => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
     try {
       await mkdir(join(dir, 'fixture'), { recursive: true });
-      const result = await runCli([
+      const result = await runCliInProcess([
         'harbor',
         'run',
         '--backend',
@@ -105,7 +144,7 @@ describe('maka-headless CLI', () => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
     try {
       await mkdir(join(dir, 'fixture'), { recursive: true });
-      const missingUrl = await runCli([
+      const missingUrl = await runCliInProcess([
         'harbor',
         'run',
         '--backend',
@@ -120,7 +159,7 @@ describe('maka-headless CLI', () => {
       assert.equal(missingUrl.code, 1);
       assert.match(missingUrl.stderr, /MAKA_HARBOR_TOOL_EXECUTOR_URL is required/);
 
-      const missingToken = await runCli(
+      const missingToken = await runCliInProcess(
         [
           'harbor',
           'run',
@@ -151,7 +190,7 @@ describe('maka-headless CLI', () => {
       await mkdir(fixture, { recursive: true });
       await writeFile(join(fixture, 'README.txt'), 'Harbor owns the task workspace.\n', 'utf8');
 
-      const result = await runCli(
+      const result = await runCliInProcess(
         [
           'harbor',
           'run',
@@ -239,7 +278,7 @@ describe('maka-headless CLI', () => {
       await mkdir(fixture, { recursive: true });
       await writeFile(join(fixture, 'README.txt'), 'Harbor owns the task workspace.\n', 'utf8');
 
-      const result = await runCli(
+      const result = await runCliInProcess(
         [
           'harbor',
           'run',
@@ -309,7 +348,7 @@ describe('maka-headless CLI', () => {
       };
       const specPath = join(dir, 'spec.json');
       await writeFile(specPath, JSON.stringify(spec), 'utf8');
-      const result = await runCli(['eval', specPath, '--out', join(dir, 'out')]);
+      const result = await runCliInProcess(['eval', specPath, '--out', join(dir, 'out')]);
       assert.equal(result.code, 0, result.stderr);
       const records = await readResults(join(dir, 'out', 'results.jsonl'));
       assert.equal(records[0]?.passed, false);
@@ -347,7 +386,7 @@ describe('maka-headless CLI', () => {
       const outDir = join(dir, 'out');
       await writeFile(specPath, JSON.stringify(spec), 'utf8');
 
-      const run = await runCli([
+      const run = await runCliInProcess([
         'task',
         'run',
         specPath,
@@ -364,7 +403,7 @@ describe('maka-headless CLI', () => {
       assert.equal(run.code, 1);
       assert.match(run.stdout, /taskRunId: task-run-1/);
 
-      const inspect = await runCli([
+      const inspect = await runCliInProcess([
         'task',
         'inspect',
         'task-run-1',
@@ -379,7 +418,7 @@ describe('maka-headless CLI', () => {
       assert.equal(inspectDocument.taskRun.result.taxonomy, 'verification_failed');
       assert.ok(Array.isArray(inspectDocument.attempts));
 
-      const humanInspect = await runCli([
+      const humanInspect = await runCliInProcess([
         'task',
         'inspect',
         'task-run-1',
@@ -391,7 +430,7 @@ describe('maka-headless CLI', () => {
       assert.match(humanInspect.stdout, /Task Events task_event:task-run-1/);
 
       const exportDir = join(dir, 'manual-export');
-      const exported = await runCli([
+      const exported = await runCliInProcess([
         'task',
         'export',
         'task-run-1',
@@ -422,7 +461,7 @@ describe('maka-headless CLI', () => {
       }
 
       const aheExportDir = join(dir, 'ahe-export');
-      const aheExported = await runCli([
+      const aheExported = await runCliInProcess([
         'ahe',
         'export',
         'task-run-1',
@@ -513,7 +552,7 @@ describe('maka-headless CLI', () => {
       const taskRunId = `long-task-run-${'x'.repeat(320)}`;
       await writeFile(specPath, JSON.stringify(spec), 'utf8');
 
-      const run = await runCli([
+      const run = await runCliInProcess([
         'task',
         'run',
         specPath,
@@ -529,7 +568,7 @@ describe('maka-headless CLI', () => {
       ]);
       assert.equal(run.code, 0, run.stderr);
 
-      const inspect = await runCli([
+      const inspect = await runCliInProcess([
         'task',
         'inspect',
         taskRunId,
@@ -638,7 +677,7 @@ describe('maka-headless CLI', () => {
       const { taskRunStore } = await openHeadlessStorageForWrite(join(outDir, 'runs'));
       for (const event of initialEvents) await taskRunStore.appendEvent(taskRunId, event);
 
-      const resumed = await runCli([
+      const resumed = await runCliInProcess([
         'task',
         'resume',
         taskRunId,
@@ -651,7 +690,7 @@ describe('maka-headless CLI', () => {
       assert.match(resumed.stdout, /resumed: parked-run/);
       assert.match(resumed.stdout, /status: completed/);
 
-      const inspect = await runCli([
+      const inspect = await runCliInProcess([
         'task',
         'inspect',
         taskRunId,
@@ -738,7 +777,7 @@ describe('maka-headless CLI', () => {
       );
 
       const outDir = join(dir, 'out');
-      const result = await runCli([
+      const result = await runCliInProcess([
         'task',
         'retry-failed',
         priorPath,

@@ -62,6 +62,7 @@
    type lives on `.maka-quote-chip-text`, which is why the derived scan needed
    two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
+.maka-composer-running-actions { display: inline-flex; align-items: center; gap: var(--space-1); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted-foreground); }
@@ -406,6 +407,7 @@
 .maka-tool-output-command-row { display: flex; min-width: 0; align-items: flex-start; gap: 8px; }
 .maka-tool-output-command-row:not(:last-child) { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .maka-tool-output-command-row .maka-tool-output-command { flex: 1 1 auto; }
+.maka-tool-output-command-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
 .maka-tool-output-command-copy { flex: 0 0 auto; }
 .maka-tool-output-command-copy[data-copy-feedback="pending"] { cursor: progress; }
 .maka-tool-output-command-copy[data-copy-feedback="copied"] { color: var(--link); }

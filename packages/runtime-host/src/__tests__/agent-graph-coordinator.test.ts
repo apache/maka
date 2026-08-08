@@ -56,6 +56,10 @@ describe('Host Agent Graph coordinator', () => {
     assert.equal(queried.ok, true);
     if (!queried.ok) return;
     assert.equal(queried.result.rootSessionId, 'root-1');
+    assert.deepEqual(queried.result.work[0]?.target, {
+      kind: 'preset',
+      presetId: 'deepseek-flash-reader',
+    });
 
     const inspected = await coordinator.handlers['agent.graph.operator.query'](
       { rootSessionId: 'root-1', operatorId: 'operator-1' },
@@ -274,6 +278,7 @@ function graphSnapshot(): RuntimeAgentGraphClientSnapshot {
     schemaVersion: 1,
     rootSessionId: 'root-1',
     graphId: agentGraphIdForRootSession('root-1'),
+    orchestrationMode: 'swarm',
     snapshotVersion: fingerprint,
     status: 'active',
     scheduleRevision: 1,
@@ -282,7 +287,19 @@ function graphSnapshot(): RuntimeAgentGraphClientSnapshot {
     latestEventTime: 10,
     operators: [graphOperator('operator-1', 1)],
     edges: [],
-    work: [],
+    work: [
+      {
+        workId: 'work-1',
+        target: { kind: 'preset', presetId: 'deepseek-flash-reader' },
+        inputIds: [],
+        status: 'requested',
+        instructionPreview: 'Inspect independently.',
+        instructionTruncated: false,
+        revision: 1,
+        committedAt: 1,
+      },
+    ],
+    reconciliationFailures: [],
     stoppedTargets: [],
     claims: [],
     recentControlDecisions: [],
@@ -292,6 +309,7 @@ function graphSnapshot(): RuntimeAgentGraphClientSnapshot {
       operators: 0,
       edges: 0,
       work: 0,
+      reconciliationFailures: 0,
       stoppedTargets: 0,
       claims: 0,
       controlDecisions: 0,

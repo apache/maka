@@ -7,6 +7,7 @@ import {
   CalendarDays,
   Cpu,
   Database,
+  FolderOpen,
   Info,
   Palette,
   Search,
@@ -59,6 +60,7 @@ export type { SettingsNavGroup };
 export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'general', Icon: SettingsIcon, enabled: true, group: 'preferences' },
   { id: 'appearance', Icon: Palette, enabled: true, group: 'preferences' },
+  { id: 'projects', Icon: FolderOpen, enabled: true, group: 'preferences' },
   { id: 'models', Icon: Cpu, enabled: true, group: 'capabilities' },
   { id: 'subagents', Icon: Workflow, enabled: true, group: 'capabilities' },
   { id: 'memory', Icon: Brain, enabled: true, group: 'capabilities' },

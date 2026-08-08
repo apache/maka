@@ -40,7 +40,7 @@ import {
 } from '@maka/storage/execution-stores';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import type { SubscriptionFrame } from '../protocol/index.js';
+import type { SubscriptionFrame, TurnSnapshot } from '../protocol/index.js';
 import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
@@ -53,6 +53,7 @@ import {
   continuationSafetyDigest,
   type HostGoalRootAuthority,
   RootTurnCoordinator,
+  type TurnStartOutcome,
 } from '../server/root-turn-coordinator.js';
 import {
   SessionAdmissionGate,
@@ -71,6 +72,22 @@ const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
   }),
   matchesActive: () => false,
 };
+
+type StartedTurnOutcome = {
+  ok: true;
+  result: {
+    kind: 'started';
+    turn: TurnSnapshot;
+    skillInvocation: Extract<TurnStartOutcome, { ok: true }>['result']['skillInvocation'];
+  };
+};
+
+function assertStartedTurn(outcome: TurnStartOutcome): asserts outcome is StartedTurnOutcome {
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  if (!outcome.ok || outcome.result.kind !== 'started') {
+    assert.fail('Expected a started Turn outcome');
+  }
+}
 
 test('startup recovery replays one admitted safe-boundary continuation without a UserMessage', async () => {
   const workspaceIdentity = 'workspace-safe-boundary-recovery';
@@ -337,8 +354,12 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
     );
     assert.equal(started.ok, true, JSON.stringify(started));
     if (!started.ok) return;
+    assertStartedTurn(started);
 
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    const run = await fixture.stores.agentRunStore.readRun(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
     assert.equal(run.orchestrationMode, 'swarm');
     assert.equal(run.orchestrationSource, 'turn_override');
     assert.equal(run.agentSwarmAuthorization, 'turn_override');
@@ -368,7 +389,7 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
   }
 });
 
-test('turn.skill.start resolves explicit Skills once before durable admission and replays the result', async () => {
+test('turn.start resolves explicit Skills once before durable admission and replays the result', async () => {
   let preparationCount = 0;
   let blocked = false;
   let observedCapabilityPreview = false;
@@ -436,7 +457,7 @@ test('turn.skill.start resolves explicit Skills once before durable admission an
       'inspect',
     ]);
     const context = operationContext(fixture.hostEpoch, fixture.acquireResidency, 'skill-provider');
-    const started = await fixture.coordinator.handlers['turn.skill.start'](input, context);
+    const started = await fixture.coordinator.handlers['turn.start'](input, context);
     assert.equal(started.ok, true);
     if (!started.ok) return;
     assert.equal(started.result.kind, 'started');
@@ -462,12 +483,12 @@ test('turn.skill.start resolves explicit Skills once before durable admission an
     });
 
     blocked = true;
-    const exactRetry = await fixture.coordinator.handlers['turn.skill.start'](input, context);
+    const exactRetry = await fixture.coordinator.handlers['turn.start'](input, context);
     assert.equal(exactRetry.ok, true);
     if (exactRetry.ok) assert.deepEqual(exactRetry.result, started.result);
     assert.equal(preparationCount, 1, 'durable replay must not resolve a mutable Skill catalog');
 
-    const conflictingRetry = await fixture.coordinator.handlers['turn.skill.start'](
+    const conflictingRetry = await fixture.coordinator.handlers['turn.start'](
       { ...input, skillIds: ['writer', 'another'] },
       context,
     );
@@ -480,7 +501,7 @@ test('turn.skill.start resolves explicit Skills once before durable admission an
   }
 });
 
-test('turn.skill.start durably replays an all-failed invocation without creating a Turn', async () => {
+test('turn.start durably replays an all-failed invocation without creating a Turn', async () => {
   let preparationCount = 0;
   const skillInvocation = {
     loaded: [],
@@ -508,7 +529,7 @@ test('turn.skill.start durably replays an all-failed invocation without creating
   } as const;
   try {
     const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
-    const first = await fixture.coordinator.handlers['turn.skill.start'](input, context);
+    const first = await fixture.coordinator.handlers['turn.start'](input, context);
     assert.deepEqual(first, {
       ok: true,
       result: { kind: 'blocked', skillInvocation },
@@ -518,7 +539,7 @@ test('turn.skill.start durably replays an all-failed invocation without creating
       undefined,
     );
 
-    const retry = await fixture.coordinator.handlers['turn.skill.start'](input, context);
+    const retry = await fixture.coordinator.handlers['turn.start'](input, context);
     assert.deepEqual(retry, first);
     assert.equal(preparationCount, 1);
   } finally {
@@ -590,7 +611,7 @@ test('idle turn.message.submit applies hosted Skill preparation before durable a
   }
 });
 
-test('turn.skill.start rejects oversized preparation before admission and preserves not-found semantics', async () => {
+test('turn.start rejects oversized preparation before admission and preserves not-found semantics', async () => {
   let preparationCount = 0;
   let preparation: 'blocked' | 'oversized_content' | 'oversized_feedback' = 'blocked';
   const fixture = await createFailureFixture({
@@ -643,7 +664,7 @@ test('turn.skill.start rejects oversized preparation before admission and preser
   });
   const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
   try {
-    const blocked = await fixture.coordinator.handlers['turn.skill.start'](
+    const blocked = await fixture.coordinator.handlers['turn.start'](
       {
         sessionId: fixture.sessionId,
         turnId: 'turn-hosted-skill-blocked',
@@ -662,7 +683,7 @@ test('turn.skill.start rejects oversized preparation before admission and preser
     );
 
     preparation = 'oversized_content';
-    const oversized = await fixture.coordinator.handlers['turn.skill.start'](
+    const oversized = await fixture.coordinator.handlers['turn.start'](
       {
         sessionId: fixture.sessionId,
         turnId: 'turn-hosted-skill-oversized',
@@ -682,7 +703,7 @@ test('turn.skill.start rejects oversized preparation before admission and preser
     );
 
     preparation = 'oversized_feedback';
-    const oversizedFeedback = await fixture.coordinator.handlers['turn.skill.start'](
+    const oversizedFeedback = await fixture.coordinator.handlers['turn.start'](
       {
         sessionId: fixture.sessionId,
         turnId: 'turn-hosted-skill-oversized-feedback',
@@ -701,7 +722,7 @@ test('turn.skill.start rejects oversized preparation before admission and preser
       undefined,
     );
 
-    const missingSession = await fixture.coordinator.handlers['turn.skill.start'](
+    const missingSession = await fixture.coordinator.handlers['turn.start'](
       {
         sessionId: 'missing-session',
         turnId: 'turn-hosted-skill-missing-session',
@@ -1994,6 +2015,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     assert.equal(parentStarted.ok, true);
     if (!parentStarted.ok) return;
+    assertStartedTurn(parentStarted);
     const waitingFrame = await waitForContinuityFrame(
       parentSink,
       (frame) =>
@@ -2024,7 +2046,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let closeChildContinuity: (() => void) | undefined;
     const child = await manager.spawnChildSession(parent.id, {
       spawnedBy: {
-        parentRunId: parentStarted.result.runId,
+        parentRunId: parentStarted.result.turn.runId,
         parentTurnId,
         toolCallId: 'linked-initial',
       },
@@ -2113,7 +2135,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let abortedResumeReady = 0;
     await assert.rejects(
       manager.resumeChildAgent(parent.id, {
-        parentRunId: parentStarted.result.runId,
+        parentRunId: parentStarted.result.turn.runId,
         sourceRunId: child.runId,
         prompt: 'must not start',
         abortSignal: resumeAbort.signal,
@@ -2133,7 +2155,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let resumeReadyRunId: string | undefined;
     let resumeEventCount = 0;
     const resumed = await manager.resumeChildAgent(parent.id, {
-      parentRunId: parentStarted.result.runId,
+      parentRunId: parentStarted.result.turn.runId,
       sourceRunId: child.runId,
       prompt: 'rate limit this resumed child',
       onReady: (ready) => {
@@ -2152,7 +2174,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let retryReadyRunId: string | undefined;
     let retryEventCount = 0;
     const retried = await manager.retryChildAgent(parent.id, {
-      parentRunId: parentStarted.result.runId,
+      parentRunId: parentStarted.result.turn.runId,
       sourceRunId: resumed.runId!,
       execution: {
         kind: 'child_session',
@@ -2228,7 +2250,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       | undefined;
     const callbackStopped = await manager.spawnChildSession(parent.id, {
       spawnedBy: {
-        parentRunId: parentStarted.result.runId,
+        parentRunId: parentStarted.result.turn.runId,
         parentTurnId,
         toolCallId: 'linked-ready-stop',
       },
@@ -2284,7 +2306,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
 
     await assert.rejects(
       manager.resumeChildAgent(parent.id, {
-        parentRunId: parentStarted.result.runId,
+        parentRunId: parentStarted.result.turn.runId,
         sourceRunId: retried.runId!,
         prompt: 'internal resume racing the external follow-up',
       }),
@@ -2305,7 +2327,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     });
 
     const failedResume = await manager.resumeChildAgent(parent.id, {
-      parentRunId: parentStarted.result.runId,
+      parentRunId: parentStarted.result.turn.runId,
       sourceRunId: retried.runId!,
       prompt: 'rate limit one more linked child',
     });
@@ -2319,7 +2341,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let abortedRetryReady = 0;
     await assert.rejects(
       manager.retryChildAgent(parent.id, {
-        parentRunId: parentStarted.result.runId,
+        parentRunId: parentStarted.result.turn.runId,
         sourceRunId: failedResume.runId!,
         abortSignal: retryAbort.signal,
         onReady: () => {
@@ -2340,7 +2362,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let joinedInitial: Promise<typeof child> | undefined;
     const interrupted = await manager.spawnChildSession(parent.id, {
       spawnedBy: {
-        parentRunId: parentStarted.result.runId,
+        parentRunId: parentStarted.result.turn.runId,
         parentTurnId,
         toolCallId: 'linked-interrupt',
       },
@@ -2350,7 +2372,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       onReady: () => {
         joinedInitial = manager.spawnChildSession(parent.id, {
           spawnedBy: {
-            parentRunId: parentStarted.result.runId,
+            parentRunId: parentStarted.result.turn.runId,
             parentTurnId,
             toolCallId: 'linked-interrupt',
           },
@@ -2397,7 +2419,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         frame.kind === 'subscription.session_projection' &&
         frame.snapshot.projectionRevision > waitingFrame.snapshot.projectionRevision &&
         frame.snapshot.session.status === 'running' &&
-        frame.snapshot.rootTurn?.runId === parentStarted.result.runId &&
+        frame.snapshot.rootTurn?.runId === parentStarted.result.turn.runId &&
         frame.snapshot.rootTurn.status === 'running' &&
         frame.snapshot.interactions.pending.length === 0,
       'resumed question projection',
@@ -2406,7 +2428,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     await coordinator.stopRoot({
       sessionId: parent.id,
       turnId: parentTurnId,
-      runId: parentStarted.result.runId,
+      runId: parentStarted.result.turn.runId,
     });
     await coordinator.close();
     await messages.close();
@@ -2557,6 +2579,7 @@ test('successor admission failure retains the terminal transition and its confir
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
 
     const submitted = await fixture.messages.handlers['turn.message.submit'](
       {
@@ -2577,7 +2600,7 @@ test('successor admission failure retains the terminal transition and its confir
       kind: 'active' as const,
       sessionId: fixture.sessionId,
       turnId,
-      runId: started.result.runId,
+      runId: started.result.turn.runId,
     };
     assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), expectedOwner);
     assert.deepEqual(
@@ -2866,6 +2889,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
     );
     assert.equal(started.ok, true);
+    assertStartedTurn(started);
     const retried = await fixture.coordinator.handlers['turn.start'](
       input,
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-b'),
@@ -2876,13 +2900,11 @@ test('an exact active retry preserves the Client Capability admission binding', 
     assert.deepEqual(snapshot?.registrationIds, ['registration-a']);
     snapshot?.release();
 
-    if (started.ok) {
-      await fixture.coordinator.stopRoot({
-        sessionId: fixture.sessionId,
-        turnId: input.turnId,
-        runId: started.result.runId,
-      });
-    }
+    await fixture.coordinator.stopRoot({
+      sessionId: fixture.sessionId,
+      turnId: input.turnId,
+      runId: started.result.turn.runId,
+    });
   } finally {
     backend?.release();
     first.close();
@@ -3262,7 +3284,8 @@ test('an exact terminal retry does not require a live Client Capability binding'
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
-    let terminal = started.result;
+    assertStartedTurn(started);
+    let terminal = started.result.turn;
     for (
       let attempt = 0;
       attempt < 200 &&
@@ -3287,7 +3310,14 @@ test('an exact terminal retry does not require a live Client Capability binding'
       input,
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
     );
-    assert.deepEqual(retried, { ok: true, result: terminal });
+    assert.deepEqual(retried, {
+      ok: true,
+      result: {
+        kind: 'started',
+        turn: terminal,
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
+    });
   } finally {
     provider.close();
     await clientCapabilities.close();
@@ -3323,7 +3353,8 @@ test('turn.start returns a published fast terminal before backend iterator clean
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
-    assert.equal(started.result.status, 'completed');
+    assertStartedTurn(started);
+    assert.equal(started.result.turn.status, 'completed');
     assert.ok(backend);
     assert.equal(backend.cleanupReleased, false);
 
@@ -3377,6 +3408,7 @@ test('public turn.stop rejects an admission queued behind its exact-Run closure 
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
     assert.ok(backend);
     assert.ok(fixture.interactions);
     await backend.readyForAdmission.promise;
@@ -3394,7 +3426,7 @@ test('public turn.stop rejects an admission queued behind its exact-Run closure 
       {
         sessionId: fixture.sessionId,
         turnId,
-        runId: started.result.runId,
+        runId: started.result.turn.runId,
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
@@ -3451,6 +3483,7 @@ test('public turn.interrupt contains a question admission rejected by its own st
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
     assert.ok(backend);
     await backend.ready.promise;
 
@@ -3460,7 +3493,7 @@ test('public turn.interrupt contains a question admission rejected by its own st
         interruptId: 'interrupt-stop-released-admission',
         sessionId: fixture.sessionId,
         turnId,
-        runId: started.result.runId,
+        runId: started.result.turn.runId,
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
@@ -3539,7 +3572,12 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
       completesWithin(interrupting, 2_000, 'public interrupt during backend creation'),
     ]);
     assert.equal(startOutcome.ok, true);
-    if (startOutcome.ok) assert.equal(startOutcome.result.status, 'cancelled');
+    if (startOutcome.ok) {
+      assert.equal(startOutcome.result.kind, 'started');
+      if (startOutcome.result.kind === 'started') {
+        assert.equal(startOutcome.result.turn.status, 'cancelled');
+      }
+    }
     assert.equal(interruptOutcome.ok, true);
     if (interruptOutcome.ok) {
       assert.equal(interruptOutcome.result.turn.runId, queried.result.runId);
@@ -3658,6 +3696,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
     );
     assert.equal(unrelatedStarted.ok, true);
     if (!unrelatedStarted.ok) return;
+    assertStartedTurn(unrelatedStarted);
     assert.ok(unrelatedBackend);
 
     const turnId = 'turn-admission-before-backend-failure';
@@ -3682,6 +3721,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
     const started = await completesWithin(starting, 2_000, 'turn start before backend failure');
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
 
     activeBackend.releaseFailure();
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
@@ -3694,13 +3734,16 @@ test('post-start backend failure closes its owner without draining an unrelated 
       kind: 'active',
       sessionId: unrelatedSession.id,
       turnId: unrelatedTurnId,
-      runId: unrelatedStarted.result.runId,
+      runId: unrelatedStarted.result.turn.runId,
     });
     assert.equal(unrelatedBackend.stopCount, 0);
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    const run = await fixture.stores.agentRunStore.readRun(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
-      started.result.runId,
+      started.result.turn.runId,
     );
     const terminal = classifyTerminalRuntimeLedger(run, events);
     assert.equal(terminal.kind, 'fact');
@@ -3709,7 +3752,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
     await fixture.coordinator.stopRoot({
       sessionId: unrelatedSession.id,
       turnId: unrelatedTurnId,
-      runId: unrelatedStarted.result.runId,
+      runId: unrelatedStarted.result.turn.runId,
     });
     await fixture.coordinator.close();
     await fixture.messages.close();
@@ -3866,15 +3909,19 @@ test('post-start backend AggregateError is contained after its failed terminal t
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
 
     backend!.releaseFailure();
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
     assert.equal(fixture.drainRequested(), false);
 
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    const run = await fixture.stores.agentRunStore.readRun(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
-      started.result.runId,
+      started.result.turn.runId,
     );
     const terminal = classifyTerminalRuntimeLedger(run, events);
     assert.equal(terminal.kind, 'fact');
@@ -3930,13 +3977,17 @@ test('post-start message owner cleanup failure drains after its failed terminal 
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
 
     await waitUntil(() => fixture.drainRequested());
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    const run = await fixture.stores.agentRunStore.readRun(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
-      started.result.runId,
+      started.result.turn.runId,
     );
     const terminal = classifyTerminalRuntimeLedger(run, events);
     assert.equal(terminal.kind, 'fact');
@@ -3976,6 +4027,7 @@ test('public turn.stop wins the Session lane before a wire answer for the same R
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
     assert.ok(backend);
     assert.ok(fixture.interactions);
     const requestId = await backend.pendingRequest.promise;
@@ -3993,7 +4045,7 @@ test('public turn.stop wins the Session lane before a wire answer for the same R
       {
         sessionId: fixture.sessionId,
         turnId,
-        runId: started.result.runId,
+        runId: started.result.turn.runId,
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
@@ -4056,6 +4108,7 @@ test('public turn.stop takes over an earlier closure claim queued behind its lea
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
+    assertStartedTurn(started);
     assert.ok(backend);
     assert.ok(fixture.interactions);
     await backend.sendStarted.promise;
@@ -4073,7 +4126,7 @@ test('public turn.stop takes over an earlier closure claim queued behind its lea
       {
         sessionId: fixture.sessionId,
         turnId,
-        runId: started.result.runId,
+        runId: started.result.turn.runId,
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );

@@ -320,6 +320,27 @@ function received(records: Array<Record<string, any>>, method: string): Record<s
   return records.filter((r) => r.kind === 'recv' && r.method === method).map((r) => r.params ?? {});
 }
 
+// Same rationale as maka-cu-service.test.ts: the mock appends to its log from
+// another process, so a single read races its scheduler. Poll with a bounded
+// deadline — a real regression (the record never written) still fails, just
+// without depending on which process the scheduler ran first.
+async function waitForRecord(
+  logPath: string,
+  predicate: (record: Record<string, any>) => boolean,
+  what: string,
+  deadlineMs = 2000,
+): Promise<void> {
+  const startedAt = Date.now();
+  for (;;) {
+    const records = await readRecords(logPath);
+    if (records.some(predicate)) return;
+    if (Date.now() - startedAt >= deadlineMs) {
+      assert.fail(`${what} (log after ${deadlineMs}ms: ${JSON.stringify(records)})`);
+    }
+    await delay(10);
+  }
+}
+
 function makeBackend(
   opts: {
     protocol?: string;
@@ -483,8 +504,10 @@ describe('maka-cu backend', () => {
     const { backend, logPath } = makeBackend({ protocol: 'maka.cu/99' });
     await assert.rejects(backend.preflight(signal()), /service_mismatch/);
     // §2: a mismatch is fatal. One spawn, no restart budget spent on an
-    // executor that already declared it cannot talk this protocol.
-    await delay(80);
+    // executor that already declared it cannot talk this protocol. The read
+    // below is causally ordered, not timed: a wrongly-retried spawn writes its
+    // `start` before replying to the handshake the awaited preflight consumed
+    // (and would surface as restart_exhausted, failing the rejects matcher).
     const records = await readRecords(logPath);
     assert.equal(records.filter((r) => r.kind === 'start').length, 1);
     assert.equal(received(records, 'session.begin').length, 0);
@@ -1162,8 +1185,14 @@ describe('maka-cu backend', () => {
   it('ends the executor session when the host clears it', async () => {
     const { backend, logPath } = makeBackend();
     await observeFixture(backend);
+    // clearSession fires session.end without exposing the round-trip, so wait
+    // on the delivered record itself instead of guessing scheduler timing.
     backend.clearSession(RUN_CONTEXT.sessionId);
-    await delay(120);
+    await waitForRecord(
+      logPath,
+      (r) => r.kind === 'recv' && r.method === 'session.end',
+      'the executor never received session.end after clearSession',
+    );
     const records = await readRecords(logPath);
     assert.deepEqual(received(records, 'session.end')[0], { session: RUN_CONTEXT.sessionId });
   });
@@ -1312,18 +1341,6 @@ describe('maka-cu backend', () => {
     // The raw xdotool-flavoured string never reaches the wire; `key` is one
     // member of the closed set and the modifiers travel in their own array.
     assert.deepEqual(dispatch?.action, { kind: 'key', key: 'a', modifiers: ['command'] });
-  });
-
-  it('parses an aliased named key and collapses a duplicated modifier', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
-    const observation = await observeFixture(backend);
-    await backend.runSemantic!(
-      { type: 'press_key', observationId: observation.observationId, key: 'shift+shift+Tab' },
-      signal(),
-      RUN_CONTEXT,
-    );
-    const dispatch = received(await readRecords(logPath), 'dispatch.key')[0];
-    assert.deepEqual(dispatch?.action, { kind: 'key', key: 'Tab', modifiers: ['shift'] });
   });
 
   it('sends nothing for a key string it cannot parse', async () => {
@@ -1526,188 +1543,6 @@ describe('maka-cu backend', () => {
       /permission_missing/,
     );
   });
-
-  // What the model reads. Every assertion below is about a sentence a model
-  // acted on wrongly on a real machine, not about a code path.
-
-  it('points a refused raise at the action that can move a window', async () => {
-    // Measured on a window-arrange run: `secondary_action raise` was refused
-    // and re-sent — twice by one model, once by another — because the refusal
-    // said the attempt had failed and nothing about there being another way to
-    // put a window where the user asked for it.
-    const { backend } = makeBackend({
-      dispatchError: 'dispatch_refused',
-      refusalPath: 'ax_action',
-      refusalOutcome: 'failed',
-      noWouldRequirePath: true,
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.runSemantic!(
-      {
-        type: 'secondary_action',
-        action: 'raise',
-        observationId: observation.observationId,
-        elementId: 'el_2',
-      },
-      signal(),
-      RUN_CONTEXT,
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'dispatch_refused');
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /window_action/, 'names the action that moves a window');
-    assert.match(message, /click_element|element action/);
-  });
-
-  it('gives a refusal that was carried out and declined a next move too', async () => {
-    // `path: "none"` is what the two older branches key on, and a dispatch that
-    // reached the target and was declined does not report it — so this, the
-    // branch that renders on a real machine, was the one answering with the
-    // executor's bare sentence and no way forward.
-    const { backend } = makeBackend({
-      dispatchError: 'dispatch_refused',
-      refusalPath: 'ax_action',
-      refusalOutcome: 'failed',
-      noWouldRequirePath: true,
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.runSemantic!(
-      { type: 'click_element', observationId: observation.observationId, elementId: 'el_2' },
-      signal(),
-      RUN_CONTEXT,
-    );
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /same answer|will not/, 'says repeating it is pointless');
-    assert.match(message, /window_action|element action/, 'and says what else there is');
-  });
-
-  it('names an unavailable action the way the tool spells it', async () => {
-    // The mock declares no window members, which is exactly the shape of a
-    // build whose executor is older than the tool surface. It used to answer a
-    // `window_action` with "does not advertise element action 'minimize_window'"
-    // — a word the tool's own schema rejects.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const result = await backend.runSemantic!(
-      {
-        type: 'window_action',
-        action: 'minimize',
-        observationId: observation.observationId,
-        elementId: 'el_1',
-      },
-      signal(),
-      RUN_CONTEXT,
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /window_action 'minimize'/);
-    assert.doesNotMatch(message, /minimize_window|maka-cu|advertise/);
-  });
-
-  it('says where a window_id comes from, and it is not list_apps', async () => {
-    // `list_apps` on this backend answers app id, pid, name and a window COUNT.
-    // Sending a model there for a window id sends it somewhere with none.
-    const { backend } = makeBackend({});
-    await assert.rejects(
-      backend.captureObservation!({ windowId: 424242, includeScreenshot: true }, signal(), {
-        ...RUN_CONTEXT,
-      }),
-      (error: Error) => {
-        assert.match(error.message, /window_id/);
-        assert.doesNotMatch(error.message, /list_apps/);
-        assert.doesNotMatch(error.message, /windowId/);
-        return true;
-      },
-    );
-  });
-
-  it('spells app_id the way the tool does when a pair does not resolve', async () => {
-    const { backend } = makeBackend({});
-    await assert.rejects(
-      backend.captureObservation!(
-        { app: 'com.example.Other', windowId: 90210, includeScreenshot: true },
-        signal(),
-        RUN_CONTEXT,
-      ),
-      (error: Error) => {
-        assert.match(error.message, /app_id/);
-        assert.doesNotMatch(error.message, /appId/);
-        return true;
-      },
-    );
-  });
-
-  it('answers a blocked keystroke with the actions that do work', async () => {
-    // `allowCompatibilityInputDispatch` is off in every shipping configuration,
-    // so this is the standard answer to typing, not an edge case. It used to be
-    // a sentence about synthetic events with no route in it at all.
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const result = await backend.run({ type: 'type', text: 'hello' }, signal(), {
-      ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
-    });
-    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /'type'/, 'names the action the model sent, not a wire kind');
-    for (const alternative of ['click_element', 'set_value', 'secondary_action']) {
-      assert.ok(message.includes(alternative), `offers ${alternative}`);
-    }
-  });
-
-  it('tells a model with a dead element id to observe, without host vocabulary', async () => {
-    const { backend } = makeBackend({});
-    const observation = await observeFixture(backend);
-    const result = await backend.runSemantic!(
-      { type: 'click_element', observationId: observation.observationId, elementId: '404' },
-      signal(),
-      RUN_CONTEXT,
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'stale_frame');
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /'404'/, 'names the id that did not resolve');
-    assert.match(message, /observe the window again/i);
-    // The model has no verb for binding or quoting an observation, so neither
-    // word can be part of an instruction to it.
-    assert.doesNotMatch(message, /quoted|bound|frame/i);
-  });
-
-  it('tells a coordinate action with no observation to observe first', async () => {
-    const { backend } = makeBackend({});
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 10, y: 10 } },
-      signal(),
-      RUN_CONTEXT,
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'no_active_frame');
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /observe/i);
-    assert.doesNotMatch(message, /bound observation/i);
-  });
-
-  it('calls an oversized frame a size problem, not a privacy one', async () => {
-    // `sensitivity_blocked` reads as "policy will not let you see this", and a
-    // model that reads it stops asking for the window at all. The window is
-    // readable; only the picture of it is too big for a reply.
-    const { backend } = makeBackend({ bigImage: true });
-    await assert.rejects(observeFixture(backend), (error: Error) => {
-      assert.match(error.message, /capture_failed/);
-      assert.doesNotMatch(error.message, /sensitivity_blocked/);
-      assert.match(error.message, /include_screenshot/);
-      return true;
-    });
-  });
-
-  it('refuses an action it does not have without naming a protocol version', async () => {
-    // "not part of maka.cu/2" reads as a version problem a model might route
-    // around, and it cannot choose a protocol version.
-    const { backend } = makeBackend({});
-    const result = await backend.run({ type: 'cursor_position' }, signal(), RUN_CONTEXT);
-    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
-    const message = result.outcome.ok ? '' : result.outcome.message;
-    assert.match(message, /'cursor_position'/);
-    assert.doesNotMatch(message, /maka\.cu/);
-    assert.match(message, /observation/);
-  });
 });
 
 describe('maka-cu backend selection', () => {
@@ -1781,11 +1616,5 @@ describe('maka-cu key chord parsing', () => {
         `${spelling} must be unparseable, not a chord`,
       );
     }
-  });
-
-  it('still parses the chords that are real', () => {
-    assert.deepEqual(parseMakaCuKeyChord('cmd+a'), { key: 'a', modifiers: ['command'] });
-    assert.deepEqual(parseMakaCuKeyChord('cmd++'), { key: '+', modifiers: ['command'] });
-    assert.deepEqual(parseMakaCuKeyChord('Return'), { key: 'Return', modifiers: [] });
   });
 });

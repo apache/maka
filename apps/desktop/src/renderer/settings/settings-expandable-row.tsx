@@ -37,8 +37,18 @@ export function SettingsExpandableRow(props: {
   label: string;
   /** The settled value, shown while collapsed. */
   value: ReactNode;
-  /** Label for the affordance that opens the editor (更改 / 设置 / 编辑). */
-  actionLabel: string;
+  /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
+   *  Unused when `end` supplies the row's own cluster. */
+  actionLabel?: string;
+  /**
+   * Replaces the built-in 更改 trigger for rows that already own their end
+   * slot — a project row carries a default Badge, a 设为默认 button and a …
+   * menu, and editing is reached from that menu rather than from a second
+   * button competing with them. The editor, its focus move, and the
+   * save/cancel pair stay identical either way, which is the whole reason
+   * this lives here instead of being hand-rolled per page.
+   */
+  end?: ReactNode;
   isEditing: boolean;
   isDisabled?: boolean;
   /** Save stays disabled until the draft actually differs from the value. */
@@ -85,14 +95,14 @@ export function SettingsExpandableRow(props: {
         label={props.label}
         description={props.value}
         align="start"
-        end={(
+        end={props.end ?? (
           <Button
             ref={triggerRef}
             variant="ghost"
             size="sm"
             isDisabled={props.isDisabled}
             onClick={props.onEdit}
-            label={props.actionLabel}
+            label={props.actionLabel ?? ''}
           />
         )}
       />

@@ -24,7 +24,31 @@ import {
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 import { renderSynthesisCacheBlock, selectSynthesisCacheForReplay } from '../synthesis-cache.js';
 import { historyCompactBlockToCompactionBoundary } from '../compaction-boundary.js';
-import { estimateRuntimeEventChars } from '../context-budget-helpers.js';
+import {
+  estimateRuntimeEventChars,
+  estimateRuntimeEventsTokens,
+} from '../context-budget-helpers.js';
+
+test('estimates only model-visible provider context', () => {
+  const visible = textEvent('visible-user', 'turn-1', 'visible context');
+  const hiddenCall = {
+    ...toolCall('hidden-call', 'turn-1', 'nested-call'),
+    origin: 'code_mode' as const,
+    modelVisibility: 'hidden' as const,
+  };
+  const hiddenResult = {
+    ...toolResult('hidden-result', 'turn-1', 'nested-call', {
+      text: 'nested result must not consume provider context',
+    }),
+    origin: 'code_mode' as const,
+    modelVisibility: 'hidden' as const,
+  };
+
+  assert.equal(
+    estimateRuntimeEventsTokens([visible, hiddenCall, hiddenResult], 1),
+    estimateRuntimeEventsTokens([visible], 1),
+  );
+});
 
 describe('context-budget archive retrieval', () => {
   test('does not archive hidden nested tool results', () => {

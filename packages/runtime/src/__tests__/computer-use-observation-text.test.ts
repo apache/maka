@@ -345,28 +345,6 @@ test('a subrole is written only where it says something the role does not', () =
 // instead. What must stay true is that the option changes nothing until it is
 // asked to.
 
-test('rendering with no options is byte-for-byte the shipped rendering', () => {
-  const sample = observation([
-    { elementId: '0', role: 'AXWindow', label: '文稿', actions: ['raise'] },
-    { elementId: '1', role: 'AXGroup', parentElementId: '0' },
-    { elementId: '2', role: 'AXGroup', parentElementId: '1' },
-    { elementId: '3', role: 'AXButton', label: '存储', parentElementId: '2' },
-    { elementId: '4', role: 'AXButton', label: '取消', parentElementId: '2' },
-    { elementId: '5', role: 'AXTextField', subrole: 'AXSecureTextField', parentElementId: '0' },
-    { elementId: '6', role: 'AXMenuBar', parentElementId: undefined },
-    { elementId: '7', role: 'AXMenuBarItem', label: '文件', parentElementId: '6' },
-    { elementId: '8', role: 'AXMenu', parentElementId: '7' },
-    { elementId: '9', role: 'AXMenuItem', label: '打开…', parentElementId: '8' },
-    { elementId: '10', role: 'AXMenuItem', enabled: false, parentElementId: '8' },
-  ]);
-  assert.equal(renderObservationText(sample), renderObservationForModel(sample));
-  assert.equal(renderObservationText(sample, {}), renderObservationForModel(sample));
-  assert.equal(
-    renderObservationText({ ...sample, query: '存储' }),
-    renderObservationForModel({ ...sample, query: '存储' }),
-  );
-});
-
 test('collapsing a wrapper is not the same thing as dropping one', () => {
   // The relaxed form the evaluator measures lifts one clause and only one: a
   // container may hold several children. It still may not carry a name, a

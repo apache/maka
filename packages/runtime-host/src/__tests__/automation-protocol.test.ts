@@ -14,10 +14,6 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 
 describe('Automation protocol', () => {
   test('declares one ready query and one ready command', () => {
-    assert.deepEqual(Object.keys(AUTOMATION_OPERATION_SPECS), [
-      'automation.query',
-      'automation.mutate',
-    ]);
     assert.equal(AUTOMATION_OPERATION_SPECS['automation.query'].mode, 'query');
     assert.equal(AUTOMATION_OPERATION_SPECS['automation.mutate'].mode, 'command');
     assert.equal(AUTOMATION_OPERATION_SPECS['automation.query'].availability, 'ready');

@@ -21,7 +21,9 @@ import {
   prepareSkillInvocationMessageFromInventory,
   RuntimeReadModel,
   routeWebSearchTools,
+  renderAgentSwarmSupervisorWake,
   SessionManager,
+  shouldWakeAgentSwarmSupervisor,
   SessionActivityRegistry,
   ShellRunProcessManager,
   type BackendFactory,
@@ -246,6 +248,7 @@ export async function createExecutionRuntimeHostComposition(
     const sessionAdmission = new SessionAdmissionGate();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
+    let continuity: SessionContinuityCoordinator | undefined;
     let manager: SessionManager | undefined;
     let graphCoordinator: AgentGraphCoordinator | undefined;
     let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
@@ -255,6 +258,9 @@ export async function createExecutionRuntimeHostComposition(
       newId: randomUUID,
       now: Date.now,
       onShellRunUpdate: (update) => runtimeResources?.observeShellRunUpdate(update),
+      onPtyData: (event) => {
+        void continuity?.enqueueRuntimeResourcePtyData(event);
+      },
     });
     const sandboxManager = createBuiltinSandboxManager();
     const filesystemWorkerLaunchSpecProvider =
@@ -395,7 +401,6 @@ export async function createExecutionRuntimeHostComposition(
     );
     const configurationChanges = new HostConfigurationChangeService();
     let rootCoordinator: RootTurnCoordinator | undefined;
-    let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
@@ -821,6 +826,9 @@ export async function createExecutionRuntimeHostComposition(
       onReconciliation: (rootSessionId, result) => {
         void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
       },
+      onCheckpoint: (rootSessionId) => {
+        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId);
+      },
     });
     graphClient = new HostAgentGraphCoordinator({
       authority: graphCoordinator,
@@ -935,6 +943,8 @@ export async function createExecutionRuntimeHostComposition(
           randomUUID(),
           abortSignal,
         ),
+      shouldWake: shouldWakeAgentSwarmSupervisor,
+      renderWake: renderAgentSwarmSupervisorWake,
       newId: randomUUID,
       isSessionDeliverable: async (sessionId) => {
         try {

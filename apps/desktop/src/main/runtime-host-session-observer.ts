@@ -4,7 +4,10 @@ import type {
   SessionEvent,
   StoredMessage,
 } from "@maka/core";
-import type { AgentGraphClientChangedEvent } from "@maka/runtime";
+import type {
+  AgentGraphClientChangedEvent,
+  ShellRunPtyDataEvent,
+} from "@maka/runtime";
 import {
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,
@@ -41,6 +44,7 @@ export interface RuntimeHostSessionObserverDeps {
     extra?: { turnId?: string },
   ) => void;
   emitSessionDomainChanged?: (change: SessionDomainChange) => void;
+  emitRuntimeResourcePtyData?: (event: ShellRunPtyDataEvent) => void;
   emitAgentGraphChanged?: (event: AgentGraphClientChangedEvent) => void;
   onWatchedTurnFinished?: (
     sessionId: string,
@@ -91,6 +95,7 @@ export class RuntimeHostSessionObserver {
   readonly #client: SessionObserverClient;
   readonly #emitSessionsChanged: RuntimeHostSessionObserverDeps["emitSessionsChanged"];
   readonly #emitSessionDomainChanged: (change: SessionDomainChange) => void;
+  readonly #emitRuntimeResourcePtyData: (event: ShellRunPtyDataEvent) => void;
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
@@ -106,6 +111,8 @@ export class RuntimeHostSessionObserver {
     this.#emitSessionsChanged = deps.emitSessionsChanged;
     this.#emitSessionDomainChanged =
       deps.emitSessionDomainChanged ?? (() => undefined);
+    this.#emitRuntimeResourcePtyData =
+      deps.emitRuntimeResourcePtyData ?? (() => undefined);
     this.#emitAgentGraphChanged =
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
@@ -375,6 +382,15 @@ export class RuntimeHostSessionObserver {
   }
 
   #acceptFrame(state: ObservedSessionState, frame: SubscriptionFrame): void {
+    if (frame.kind === "subscription.runtime_resource_pty_data") {
+      this.#emitRuntimeResourcePtyData({
+        sessionId: frame.sessionId,
+        ref: frame.ref,
+        sequence: frame.ptySequence,
+        data: frame.data,
+      });
+      return;
+    }
     if (frame.kind === "subscription.session_domain_changed") {
       this.#emitSessionDomainChanged(
         frame.domain === "runtime_resource"

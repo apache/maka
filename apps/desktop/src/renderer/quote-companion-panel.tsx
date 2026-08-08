@@ -1,18 +1,23 @@
-import { useRef } from 'react';
+import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
 import {
   ChatView,
   ChatSurfaceLayout,
-  Button,
   Composer,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
+  useToast,
   useUiLocale,
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
+import { Loader2 } from '@maka/ui/icons';
 import type { SessionSummary } from '@maka/core';
 import { useQuoteCompanion } from './use-quote-companion';
+import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
+import { preflightAttachmentItems } from './attachment-preflight';
+import { toRendererIngestItems } from './app-shell-chat-actions';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { deriveTurnFooterActions } from './turn-footer-actions';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
@@ -21,7 +26,7 @@ import type {
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 
 /**
- * The "追问引用" workbar tab: a follow-up thread about the selected excerpt(s).
+ * The side-conversation workbar tab: a transient read-only fork of the main session.
  * It renders with the SAME surface as the main conversation — the real
  * `ChatView` transcript (markdown, tool activity, token streaming) and the real
  * `Composer` — bound to a read-only companion fork of the main session (see
@@ -32,19 +37,37 @@ import type { CompanionForkVisibilityEvent } from './quote-companion-visibility'
  */
 export function QuoteCompanionPanel(props: {
   panelId: string;
+  active: boolean;
   /** Excerpts staged for the next send (accumulated as the user adds more). */
   quotes: readonly StagedCompanionQuote[];
+  initialPrompt?: string;
   sourceSession: SessionSummary | undefined;
   /** Shared global choice list, only used to render the inherited model's label. */
   modelChoices: readonly ChatModelChoice[];
-  onClear?: () => void;
+  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
+  onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
+  onContentStateChange?: (panelId: string, hasContent: boolean) => void;
+  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
+  onInitialPromptStarted?: (panelId: string) => void;
+  onPromptAccepted?: (panelId: string, prompt: string) => void;
+  onActivityStateChange?: (panelId: string, active: boolean) => void;
 }) {
   const locale = useUiLocale();
+  const toast = useToast();
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const composerRef = useRef<ComposerHandle>(null);
+  const initialPromptStartedRef = useRef(false);
+  const draftKey = `quote-companion:${props.panelId}`;
+  const {
+    pendingAttachments,
+    pickAttachments,
+    attachFilePaths,
+    removeAttachment,
+    clearSubmittedAttachments,
+  } = useAppShellComposerAttachments({ draftKey, toastApi: toast });
   const companion = useQuoteCompanion({
     panelId: props.panelId,
     pendingQuotes: props.quotes,
@@ -53,6 +76,63 @@ export function QuoteCompanionPanel(props: {
     onQuotesConsumed: props.onQuotesConsumed,
     onForkVisibilityChange: props.onForkVisibilityChange,
   });
+  useEffect(() => {
+    props.onContentStateChange?.(props.panelId, companion.hasContent);
+  }, [companion.hasContent, props.onContentStateChange, props.panelId]);
+  useEffect(() => {
+    props.onPreparingStateChange?.(props.panelId, companion.preparing);
+  }, [companion.preparing, props.onPreparingStateChange, props.panelId]);
+  useEffect(() => {
+    props.onActivityStateChange?.(
+      props.panelId,
+      companion.streaming || companion.processing,
+    );
+  }, [
+    companion.processing,
+    companion.streaming,
+    props.onActivityStateChange,
+    props.panelId,
+  ]);
+  useEffect(() => {
+    if (!props.active || companion.preparing) return;
+    const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [companion.preparing, props.active]);
+  useEffect(() => {
+    const prompt = props.initialPrompt?.trim();
+    if (
+      !props.active ||
+      companion.preparing ||
+      !prompt ||
+      initialPromptStartedRef.current
+    ) {
+      return;
+    }
+    initialPromptStartedRef.current = true;
+    props.onInitialPromptStarted?.(props.panelId);
+    void companion
+      .send(prompt)
+      .then((accepted) => {
+        if (accepted) {
+          props.onPromptAccepted?.(props.panelId, prompt);
+          return;
+        }
+        composerRef.current?.setText(prompt);
+        composerRef.current?.focus();
+      })
+      .catch(() => {
+        composerRef.current?.setText(prompt);
+        composerRef.current?.focus();
+      });
+  }, [
+    companion.preparing,
+    companion.send,
+    props.active,
+    props.initialPrompt,
+    props.onInitialPromptStarted,
+    props.onPromptAccepted,
+    props.panelId,
+  ]);
 
   // The companion inherits the source model and does not switch it; look up a
   // friendly label from the shared choice list purely for a read-only display.
@@ -67,9 +147,35 @@ export function QuoteCompanionPanel(props: {
       : undefined) ?? activeModel?.model;
 
   const activeInteraction = companion.activeSandboxBoundary ?? companion.activeQuestion;
+  const deriveTurnPresentation = useCallback<
+    NonNullable<ComponentProps<typeof ChatView>['deriveTurnPresentation']>
+  >(
+    (turns) => ({
+      footerActionsByTurn: Object.fromEntries(
+        turns.map((turn) => [
+          turn.turnId,
+          deriveTurnFooterActions({
+            status: turn.status,
+            locale,
+            hasContent: Boolean(turn.assistant?.text?.trim()),
+            ...(companion.regeneratePendingTurnId === turn.turnId
+              ? { pendingActions: new Set(['regenerate'] as const) }
+              : {}),
+          }).filter((action) => action.id !== 'branch'),
+        ]),
+      ),
+      failedReasonLabels: {},
+      failedRecoveryLabels: {},
+      lineageBadgesByTurn: {},
+    }),
+    [companion.regeneratePendingTurnId, locale],
+  );
 
   return (
-    <div className="maka-quote-companion">
+    <div
+      className="maka-quote-companion"
+      data-preparing={companion.preparing || undefined}
+    >
       <ChatSurfaceLayout
         // #2205: keyed on the companion session so switching quote sources
         // resets ChatLayout's new-message indicator and scroll lock without
@@ -97,14 +203,44 @@ export function QuoteCompanionPanel(props: {
             )}
             <Composer
               ref={composerRef}
-              onSend={(text) => companion.send(text)}
+              onSend={async (text) => {
+                try {
+                  preflightAttachmentItems(pendingAttachments, locale);
+                } catch (error) {
+                  toast.error(
+                    copy.errors.sendRejected,
+                    error instanceof Error ? error.message : String(error),
+                  );
+                  return false;
+                }
+                const accepted = await companion.send(
+                  text,
+                  pendingAttachments.length > 0
+                    ? toRendererIngestItems(pendingAttachments)
+                    : undefined,
+                );
+                if (accepted) {
+                  props.onPromptAccepted?.(props.panelId, text);
+                }
+                if (accepted) clearSubmittedAttachments(pendingAttachments);
+                return accepted;
+              }}
               onStop={() => void companion.stop()}
+              onSteer={(text: string) => companion.steer(text)}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
-              draftKey={companion.companionSession?.id ?? `quote-companion:${props.sourceSession?.id ?? 'none'}`}
-              disabled={!props.sourceSession}
+              draftKey={draftKey}
+              disabled={!props.sourceSession || companion.preparing}
+              onPickAttachments={pickAttachments}
+              onAttachFilePaths={attachFilePaths}
+              pendingAttachments={pendingAttachments}
+              onRemoveAttachment={removeAttachment}
+              mentionSkills={props.mentionSkills}
+              onSearchMentionFiles={props.onSearchMentionFiles}
               pendingQuotes={props.quotes.map((quote) => quote.value)}
+              contextDrawerDefaultCollapsed
+              showStaticModelUnavailableStatus={false}
               onRemoveQuote={(index) => {
                 const quote = props.quotes[index];
                 if (quote) {
@@ -117,20 +253,15 @@ export function QuoteCompanionPanel(props: {
               // No activeSession / onModelChange → the model shows as a read-only chip
               // (the companion has no independent picker; it inherits the source model).
               modelLabel={activeModelLabel}
+              permissionMode={companion.permissionMode}
+              permissionModePending={companion.permissionModePending}
+              permissionModeDisabledReason={
+                companion.streaming ? copy.permissionStreaming : undefined
+              }
+              onPermissionModeChange={(mode) => {
+                void companion.setPermissionMode(mode);
+              }}
             />
-            {props.onClear && (
-              <div className="maka-quote-companion-actions">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="maka-quote-panel-clear"
-                  label={copy.exit}
-                  onClick={() => {
-                    void companion.abandonPendingCopy().finally(() => props.onClear?.());
-                  }}
-                />
-              </div>
-            )}
           </>
         }
       >
@@ -139,15 +270,30 @@ export function QuoteCompanionPanel(props: {
           liveTurn={companion.liveTurn}
           runningStatus={companion.processing}
           activeSession={companion.companionSession}
+          deriveTurnPresentation={deriveTurnPresentation}
+          onTurnFooterAction={(turnId, actionId) => {
+            if (actionId === 'regenerate') {
+              void companion.regenerate(turnId);
+            }
+          }}
           emptyOverride={
-            <div className="maka-quote-companion-intro">
-              {props.quotes.map((quote) => (
-                <blockquote key={quote.id} className="maka-quote-panel-quote">
-                  {quote.value.text}
-                </blockquote>
-              ))}
-              <p className="maka-quote-panel-hint">{copy.hint}</p>
-            </div>
+            companion.preparing ? (
+              <div
+                className="maka-quote-companion-preparing maka-turn-processing"
+                role="status"
+                aria-busy="true"
+                aria-live="polite"
+              >
+                <Loader2
+                  size={15}
+                  aria-hidden="true"
+                  className="maka-turn-processing-spinner"
+                />
+                <span className="maka-turn-indicator-text">{copy.preparing}</span>
+              </div>
+            ) : (
+              <div className="maka-quote-companion-empty" aria-hidden="true" />
+            )
           }
           onNew={() => {}}
         />

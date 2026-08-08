@@ -6,7 +6,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  open,
   readdir,
   readFile,
   rename,
@@ -18,7 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { unlock, waitForLock } from 'fs-native-extensions';
+import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import {
   adoptStorageRootOnImport,
   assertStorageRootCapability,
@@ -232,7 +231,7 @@ describe('storage root authority', () => {
     });
   });
 
-  test('reopens the current marker when a concurrent repair replaces the locked inode', async () => {
+  test('serializes concurrent repairs across marker replacement', async () => {
     await withRoots(async ({ root }) => {
       await resolveStorageRoot({ path: root, kind: 'interactive' });
       const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
@@ -249,17 +248,10 @@ describe('storage root authority', () => {
       assert.ok(first);
       assert.ok(second);
 
-      const gate = await open(markerPath, 'r+');
-      await waitForLock(gate.fd);
-      const repairs = Promise.allSettled([
+      const results = await Promise.allSettled([
         repairStorageRootIdentity(first),
         repairStorageRootIdentity(second),
       ]);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      unlock(gate.fd);
-      await gate.close();
-
-      const results = await repairs;
       assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
       const rejected = results.find((result) => result.status === 'rejected');
       assert.ok(rejected);
@@ -269,6 +261,49 @@ describe('storage root authority', () => {
         rejected.reason.code === 'root_identity_changed' ||
           rejected.reason.code === 'root_identity_collision',
       );
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+    });
+  });
+
+  test('serializes identity repair behind the Artifact bootstrap writer lock', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      let releaseWriter!: () => void;
+      const writerBlocked = new Promise<void>((resolve) => {
+        releaseWriter = resolve;
+      });
+      let writerAdmitted!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        writerAdmitted = resolve;
+      });
+      const writer = withArtifactWriterLock(root, async () => {
+        writerAdmitted();
+        await writerBlocked;
+      });
+      await admitted;
+
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+      const candidate = await prepareStorageRootIdentityRepair({
+        path: root,
+        kind: 'interactive',
+      });
+      assert.ok(candidate);
+
+      let repairSettled = false;
+      const repair = repairStorageRootIdentity(candidate).finally(() => {
+        repairSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(repairSettled, false);
+
+      releaseWriter();
+      await writer;
+      await repair;
       await resolveStorageRoot({ path: root, kind: 'interactive' });
     });
   });
@@ -459,8 +494,9 @@ describe('storage root authority', () => {
 
   test('preserves unexpected marker I/O failures at the public authority boundary', {
     skip:
-      process.platform === 'win32' ||
-      (typeof process.getuid === 'function' && process.getuid() === 0),
+      process.platform === 'win32'
+        ? 'POSIX permissions are required to make the marker unreadable'
+        : typeof process.getuid === 'function' && process.getuid() === 0,
   }, async () => {
     await withRoots(async ({ root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
@@ -666,7 +702,10 @@ describe('storage root authority', () => {
   });
 
   test('rejects a lock path that aliases another filesystem object', {
-    skip: process.platform === 'win32',
+    skip:
+      process.platform === 'win32'
+        ? 'Windows file-symlink permissions are not guaranteed in CI'
+        : false,
   }, async () => {
     await withRoots(async ({ base, root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
@@ -683,7 +722,7 @@ describe('storage root authority', () => {
     });
   });
 
-  test('normalizes native lock setup failures at the public authority boundary', async () => {
+  test('rejects a directory at the owner lock path', async () => {
     await withRoots(async ({ root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
@@ -692,9 +731,7 @@ describe('storage root authority', () => {
       await assert.rejects(
         () => tryAcquireInteractiveRootOwner(capability),
         (error: unknown) =>
-          error instanceof StorageRootAuthorityError &&
-          error.code === 'lock_failed' &&
-          error.cause instanceof Error,
+          error instanceof StorageRootAuthorityError && error.code === 'invalid_lock_artifact',
       );
     });
   });

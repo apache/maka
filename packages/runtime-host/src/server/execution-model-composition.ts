@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { buildSideConversationSystemPromptFragment, isSideConversationSession } from '@maka/core';
 import {
   buildDeepResearchSystemPromptFragment,
   isDeepResearchSession,
 } from '@maka/core/explore-agent';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
+import { relayModelProfile } from '@maka/core/model-thinking';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
@@ -20,6 +22,7 @@ import {
   buildDefaultContextBudgetPolicy,
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
+  assembleMainSessionSystemPrompt,
   buildPersonalizationPromptFragment,
   buildCancelPlanTool,
   buildParentAgentTools,
@@ -115,6 +118,7 @@ export interface HostExecutionModelCompositionInput {
   readonly memory: HostMemoryCoordinator;
   readonly taskLedger: TaskLedgerStore;
   readonly childInstruction?: string;
+  readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
@@ -221,7 +225,11 @@ export function createHostExecutionModelComposition(
           childInstruction,
         ]);
       }
-      return joinFragments([
+      // Fragment order is load-bearing: the Deep Research mode contract
+      // (deepResearch) is a trailing assertion that constrains the fragments
+      // before it, so it must stay last. Keep this order in sync with the
+      // entry-level prompt-order test.
+      return assembleMainSessionSystemPrompt([
         buildPersonalizationPromptFragment(promptState.policy.personalization).text,
         skills.text,
         workspaceInstructions,
@@ -232,6 +240,7 @@ export function createHostExecutionModelComposition(
               exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
             })
           : undefined,
+        input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
       ]);
     },
     turnTailPrompt: async (context: HostModelPromptContext) => {
@@ -398,6 +407,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       memory: input.memory,
       taskLedger: input.taskLedger,
       ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
+      ...(isSideConversationSession(input.context.header.labels) ? { sideConversation: true } : {}),
       ...(boundTools ? { boundTools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
@@ -577,6 +587,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           target.connection.providerType,
           target.connection.models,
           target.model,
+          relayModelProfile(target.connection, target.model)?.vision,
         ),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,

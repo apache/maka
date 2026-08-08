@@ -186,6 +186,19 @@ export {
   AgentGraphSupervisorWakeCoordinator,
   recoverAgentGraphSupervisorContextOverflow,
 } from './agent-graph-supervisor-wake.js';
+export {
+  AGENT_SWARM_STATUS_TOOL_NAME,
+  buildAgentSwarmStatusTool,
+  isAgentSwarmSupervisorCheckpoint,
+  projectAgentSwarmStatus,
+  renderAgentSwarmSupervisorWake,
+  shouldWakeAgentSwarmSupervisor,
+} from './agent-swarm-status-tool.js';
+export type {
+  AgentSwarmItemStatus,
+  AgentSwarmStatusItem,
+  AgentSwarmStatusResult,
+} from './agent-swarm-status-tool.js';
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,
   AgentGraphSupervisorPartialResult,
@@ -598,6 +611,8 @@ export type {
   PtyControlWriter,
   RuntimeResourceReader,
   ShellRunBashInput,
+  ShellRunPtyDataEvent,
+  ShellRunPtySnapshot,
   ShellRunProcessManagerInput,
   ShellRunWriteInput,
 } from './shell-run-contract.js';
@@ -774,22 +789,6 @@ export type {
 } from './agent-catalog.js';
 export { createConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
 export type { ConfiguredSubagentCatalog } from './configured-subagent-catalog.js';
-export {
-  AGENT_SWARM_DEFAULT_CONCURRENCY,
-  AGENT_SWARM_MAX_CONCURRENCY,
-  AGENT_SWARM_MAX_ITEMS,
-  AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER,
-  AGENT_SWARM_TOOL_NAME,
-  buildAgentSwarmTool,
-} from './agent-swarm-tools.js';
-export type {
-  AgentSwarmExplicitItemInput,
-  AgentSwarmExplicitToolInput,
-  AgentSwarmResumeToolInput,
-  AgentSwarmTemplateToolInput,
-  AgentSwarmToolInput,
-  AgentSwarmToolResult,
-} from './agent-swarm-tools.js';
 export {
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
@@ -1522,6 +1521,10 @@ export { resolveProjectGitInfo, resolveProjectRoot } from './system-prompt/proje
 export type { ProjectGitInfo } from './system-prompt/project-context.js';
 export { buildSessionEnvironmentPromptFragment } from './system-prompt/session-environment-prompt.js';
 export type { SessionEnvironmentPromptInput } from './system-prompt/session-environment-prompt.js';
+export {
+  assembleMainSessionSystemPrompt,
+  type AssembleMainSessionSystemPromptOptions,
+} from './system-prompt/main-session-prompt.js';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Unified Automation (Codex-style: heartbeat + cron, single tool).

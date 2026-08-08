@@ -290,7 +290,11 @@ export function NewChatModelPicker(props: {
  * chevron); otherwise it is plain inert text. Shares the `.maka-composer-model-chip`
  * look with `NewChatModelPicker` so the chip reads identically across states.
  */
-export function ModelChipStatic(props: { label: string; onOpenSettings?: () => void }) {
+export function ModelChipStatic(props: {
+  label: string;
+  onOpenSettings?: () => void;
+  showUnavailableStatus?: boolean;
+}) {
   const copy = getConversationCopy(useUiLocale()).model;
   if (props.onOpenSettings) {
     return (
@@ -308,7 +312,9 @@ export function ModelChipStatic(props: { label: string; onOpenSettings?: () => v
   return (
     <span className="maka-composer-model-chip" title={props.label}>
       <span className="maka-composer-model-chip-text">{props.label}</span>
-      <span className="maka-composer-model-status" aria-hidden="true" />
+      {props.showUnavailableStatus !== false ? (
+        <span className="maka-composer-model-status" aria-hidden="true" />
+      ) : null}
     </span>
   );
 }

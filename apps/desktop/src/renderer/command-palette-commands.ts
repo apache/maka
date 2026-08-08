@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Keyboard,
   MessageSquare,
+  MessageCircleQuestion,
   Moon,
   Palette,
   Plug,
@@ -52,6 +53,7 @@ export function buildCommandList(args: {
   connections: LlmConnection[];
   defaultSlug: string | null;
   onNewChat(): Promise<void> | void;
+  onOpenSideChat?(): Promise<void> | void;
   onStartDeepResearch?(): Promise<void> | void;
   onOpenSettings(): void;
   onOpenSettingsSection(section: SettingsSection): void;
@@ -144,6 +146,18 @@ export function buildCommandList(args: {
       keywords: [...copy.staticKeywords['action:new-chat']],
       run: args.onNewChat,
     },
+    ...(args.activeSessionId && args.onOpenSideChat
+      ? [
+          {
+            id: 'action:side-chat',
+            kind: 'action' as const,
+            ...staticCopy('action:side-chat'),
+            Icon: MessageCircleQuestion,
+            keywords: [...copy.staticKeywords['action:side-chat']],
+            run: args.onOpenSideChat,
+          },
+        ]
+      : []),
     ...(args.onStartDeepResearch
       ? [
           {

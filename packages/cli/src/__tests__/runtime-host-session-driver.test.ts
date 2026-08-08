@@ -680,13 +680,13 @@ describe('Runtime Host Maka Session driver', () => {
     });
     await driver.switchSession('session-1');
 
-    const turn = await driver.preparePrompt('/skill:alpha Help', { invokeSkills: true });
+    const turn = await driver.preparePrompt('/skill:alpha Help');
     assert.deepEqual(turn.skillInvocation?.loaded, [{ id: 'alpha', name: 'Alpha' }]);
-    assert.equal(connection.requests.at(-1)?.operation, 'turn.skill.start');
+    assert.equal(connection.requests.at(-1)?.operation, 'turn.start');
 
     connection.skillStartBlocked = true;
     await assert.rejects(
-      driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked', invokeSkills: true }),
+      driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }),
       SkillInvocationBlockedError,
     );
   });
@@ -791,7 +791,11 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
-    const turnInput = input as { sessionId?: string; turnId?: string };
+    const turnInput = input as {
+      sessionId?: string;
+      turnId?: string;
+      content: { text: string };
+    };
     const result: unknown =
       operation === 'session.catalog.query'
         ? {
@@ -825,37 +829,32 @@ class FakeConnection {
                 : operation === 'interaction.query'
                   ? this.interactionQuery
                   : operation === 'turn.start'
-                    ? {
-                        sessionId: turnInput.sessionId,
-                        turnId: turnInput.turnId,
-                        runId: 'run-1',
-                        status: 'running',
-                      }
-                    : operation === 'turn.skill.start'
-                      ? this.skillStartBlocked
-                        ? {
-                            kind: 'blocked',
-                            skillInvocation: {
-                              loaded: [],
-                              failed: [{ request: 'missing', reason: 'not_found' }],
-                              receipts: [],
-                            },
-                          }
-                        : {
-                            kind: 'started',
-                            turn: {
-                              sessionId: turnInput.sessionId,
-                              turnId: turnInput.turnId,
-                              runId: 'run-skill',
-                              status: 'running',
-                            },
-                            skillInvocation: {
-                              loaded: [{ id: 'alpha', name: 'Alpha' }],
-                              failed: [],
-                              receipts: [],
-                            },
-                          }
-                      : undefined;
+                    ? this.skillStartBlocked
+                      ? {
+                          kind: 'blocked',
+                          skillInvocation: {
+                            loaded: [],
+                            failed: [{ request: 'missing', reason: 'not_found' }],
+                            receipts: [],
+                          },
+                        }
+                      : {
+                          kind: 'started',
+                          turn: {
+                            sessionId: turnInput.sessionId,
+                            turnId: turnInput.turnId,
+                            runId: 'run-1',
+                            status: 'running',
+                          },
+                          skillInvocation: turnInput.content.text.includes('/skill:')
+                            ? {
+                                loaded: [{ id: 'alpha', name: 'Alpha' }],
+                                failed: [],
+                                receipts: [],
+                              }
+                            : { loaded: [], failed: [], receipts: [] },
+                        }
+                    : undefined;
     if (result === undefined) throw new Error(`Unexpected fake operation: ${operation}`);
     return result as OperationOutput<K>;
   }

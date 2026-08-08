@@ -192,17 +192,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
       };
-      let started: OperationOutput<'turn.start'>;
-      let skillInvocation: SkillInvocationResult | undefined;
-      if (options.invokeSkills) {
-        const result = await this.#request('turn.skill.start', startInput);
-        if (result.kind === 'blocked')
-          throw new SkillInvocationBlockedError(result.skillInvocation);
-        started = result.turn;
-        skillInvocation = result.skillInvocation;
-      } else {
-        started = await this.#request('turn.start', startInput);
+      const result = await this.#request('turn.start', startInput);
+      if (result.kind === 'blocked') {
+        throw new SkillInvocationBlockedError(result.skillInvocation);
       }
+      const started = result.turn;
+      const skillInvocation =
+        result.skillInvocation.loaded.length > 0 || result.skillInvocation.failed.length > 0
+          ? result.skillInvocation
+          : undefined;
       return {
         sessionId,
         turnId,

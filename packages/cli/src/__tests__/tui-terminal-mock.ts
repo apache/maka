@@ -133,6 +133,15 @@ export function latestPlainLineContaining(output: string, text: string): string 
 export const WAIT_BUDGET_MS =
   Number(process.env.MAKA_TEST_WAIT_BUDGET_MS ?? '') || (process.env.CI ? 5_000 : 250);
 
+/** Resolves once the TUI is in raw mode and has painted its first frame, so
+ *  typed input reaches a mounted editor instead of racing runner startup. */
+export async function waitForTuiPaint(terminal: FakeTerminal): Promise<void> {
+  await waitFor(
+    () => terminal.startWriteIndex !== null && terminal.writes.length > terminal.startWriteIndex,
+    'the first TUI paint after raw-mode start',
+  );
+}
+
 export async function waitFor(predicate: () => boolean, description?: string): Promise<void> {
   const deadline = Date.now() + WAIT_BUDGET_MS;
   while (Date.now() < deadline) {

@@ -407,6 +407,36 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   coordinator.close();
 });
 
+test('publishes live PTY bytes on the source Session continuity sequence', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.enqueueRuntimeResourcePtyData({
+    sessionId: SESSION_ID,
+    ref: 'maka://runtime/background-tasks/shell-1',
+    sequence: 5,
+    data: 'ready',
+  });
+  assert.deepEqual(sink.frames[0], {
+    kind: 'subscription.runtime_resource_pty_data',
+    hostEpoch: HOST_EPOCH,
+    subscriptionId: opened.subscriptionId,
+    sequence: 1,
+    sessionId: SESSION_ID,
+    ref: 'maka://runtime/background-tasks/shell-1',
+    ptySequence: 5,
+    data: 'ready',
+  });
+  coordinator.close();
+});
+
 test('slow subscriber receives a terminal eviction without delaying another subscriber', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,

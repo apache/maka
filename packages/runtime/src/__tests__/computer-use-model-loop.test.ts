@@ -74,13 +74,6 @@ describe('AiSdkBackend Computer Use model loop', () => {
 
       const serialized = JSON.stringify(declaredTools);
       assert.match(serialized, /maka_computer/);
-      assert.match(serialized, /Prefer click_element or set_value/);
-      assert.match(
-        serialized,
-        /shipping maka-cu host keeps compatibility key and coordinate dispatch disabled/i,
-      );
-      assert.match(serialized, /zoom also have no maka\.cu\/2 execution path/i);
-      assert.doesNotMatch(serialized, /wait, zoom, or another observation/i);
     }
   });
 
@@ -182,11 +175,6 @@ describe('AiSdkBackend Computer Use model loop', () => {
     );
     assert.match(JSON.stringify(modelPrompts[2]), /CUA Lab Set Value Field/);
     assert.match(JSON.stringify(modelPrompts[3]), /model-written/);
-    assert.match(
-      JSON.stringify(modelTools[0]),
-      /shipping maka-cu host keeps compatibility key and coordinate dispatch disabled/i,
-    );
-    assert.match(JSON.stringify(modelTools[0]), /Prefer click_element or set_value/);
     assert.equal(
       (modelTools[0] as Array<{ name?: string }>).some((tool) => tool.name === 'maka_computer'),
       true,
