@@ -122,6 +122,15 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
     }
   }
 
+  async function copyPricingKey(key: string) {
+    try {
+      await navigator.clipboard.writeText(key);
+      toast.success(copy.pricingKeyCopied, key);
+    } catch {
+      toast.error(copy.copyFailed, copy.copyFailedDetail);
+    }
+  }
+
   // The path is split for display only — the directory part truncates while
   // the filename never does, so a narrow panel still says which file the row
   // is about. The full path stays the tooltip and clipboard value, and the
@@ -300,7 +309,12 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
 
               <ol className="maka-inspector-turns">
                 {model.turns.map((turn) => (
-                  <TurnRow key={turn.turnId} turn={turn} copy={copy} />
+                  <TurnRow
+                    key={turn.turnId}
+                    turn={turn}
+                    copy={copy}
+                    onCopyPricingKey={copyPricingKey}
+                  />
                 ))}
               </ol>
             </VStack>
@@ -594,7 +608,11 @@ function formatPercent(ratio: number): string {
  * out-shouts the turn label it qualifies, and the red dot on the rail has
  * already flagged the row from the margin.
  */
-function TurnRow(props: { turn: InspectorTurnRow; copy: InspectorCopy }) {
+function TurnRow(props: {
+  turn: InspectorTurnRow;
+  copy: InspectorCopy;
+  onCopyPricingKey: (key: string) => void | Promise<void>;
+}) {
   const { copy, turn } = props;
   return (
     <li
@@ -629,7 +647,12 @@ function TurnRow(props: { turn: InspectorTurnRow; copy: InspectorCopy }) {
       </div>
       <ol className="maka-inspector-steps">
         {turn.steps.map((step) => (
-          <StepRow key={step.id} step={step} copy={copy} />
+          <StepRow
+            key={step.id}
+            step={step}
+            copy={copy}
+            onCopyPricingKey={props.onCopyPricingKey}
+          />
         ))}
       </ol>
     </li>
@@ -649,8 +672,13 @@ function TurnRow(props: { turn: InspectorTurnRow; copy: InspectorCopy }) {
  * rather than written `×2`, which is the attempts counter's own notation and
  * asks the reader to work out that one of them was a retry.
  */
-function StepRow(props: { step: InspectorStepRow; copy: InspectorCopy }) {
+function StepRow(props: {
+  step: InspectorStepRow;
+  copy: InspectorCopy;
+  onCopyPricingKey: (key: string) => void | Promise<void>;
+}) {
   const { copy, step } = props;
+  const pricingKey = step.unpricedPricingKey;
   // A row names itself with whatever identity it has: a model, a tool, or —
   // for a compaction, an error, a permission prompt with no tool — its kind.
   const label = step.label ?? inspectorStepKindLabel(copy, step.kind);
@@ -675,6 +703,21 @@ function StepRow(props: { step: InspectorStepRow; copy: InspectorCopy }) {
       <span className="maka-inspector-step-text">
         <span className="maka-inspector-step-label">{label}</span>
         {qualifier && <span className="maka-inspector-step-detail">{qualifier}</span>}
+        {pricingKey && (
+          <span className="maka-inspector-pricing-key">
+            <span>{copy.unpricedPricingKey}</span>
+            <code>{pricingKey}</code>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Copy size={14} aria-hidden="true" />}
+              label={copy.copyPricingKey}
+              onClick={() => {
+                void props.onCopyPricingKey(pricingKey);
+              }}
+            />
+          </span>
+        )}
         {step.recovered && (
           <span className="maka-inspector-step-recovered">{copy.recoveredAs(step.recovered)}</span>
         )}

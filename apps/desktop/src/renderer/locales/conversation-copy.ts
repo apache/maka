@@ -148,6 +148,10 @@ export interface DesktopConversationCopy {
     copyPath: string;
     /** Toast after a successful path copy. */
     pathCopied: string;
+    /** Copy action and success copy for an unpriced model call's exact Pricing key. */
+    copyPricingKey: string;
+    pricingKeyCopied: string;
+    unpricedPricingKey: string;
     /** Toast title when the clipboard write is denied or unavailable. */
     copyFailed: string;
     copyFailedDetail: string;
@@ -466,6 +470,9 @@ const COPY = {
       recordFile: '记录文件',
       copyPath: '复制文件路径',
       pathCopied: '已复制文件路径',
+      copyPricingKey: '复制定价键',
+      pricingKeyCopied: '已复制定价键',
+      unpricedPricingKey: '未计价的定价键',
       copyFailed: '复制失败',
       copyFailedDetail: '剪贴板不可用或被系统拒绝。',
       loadFailed: '追踪读取失败',
@@ -663,6 +670,9 @@ const COPY = {
       recordFile: 'Record file',
       copyPath: 'Copy file path',
       pathCopied: 'File path copied',
+      copyPricingKey: 'Copy pricing key',
+      pricingKeyCopied: 'Pricing key copied',
+      unpricedPricingKey: 'Unpriced pricing key',
       copyFailed: 'Copy failed',
       copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.',
       loadFailed: 'Could not read the trace',
