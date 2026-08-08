@@ -1238,6 +1238,7 @@ export class AiSdkBackend implements AgentBackend {
     input: BackendSendInput,
   ): AsyncIterable<SessionEvent> {
     const turnId = input.turnId;
+    const maxSteps = input.maxSteps ?? this.maxSteps;
     const toolRuntime = scope.toolRuntime;
     const turnAbortController = scope.abortController;
 
@@ -1919,9 +1920,9 @@ export class AiSdkBackend implements AgentBackend {
           const projectedMessages = shaped?.messages ?? requestMessages;
           const finalChildSummaryStep =
             this.input.header.collaborationMode === 'agent' &&
-            this.maxSteps !== undefined &&
-            this.maxSteps > 1 &&
-            runtimeSteps === this.maxSteps - 1 &&
+            maxSteps !== undefined &&
+            maxSteps > 1 &&
+            runtimeSteps === maxSteps - 1 &&
             completedProviderSteps.length > 0;
           const activeToolsForRequest = finalChildSummaryStep
             ? []
@@ -2160,7 +2161,7 @@ export class AiSdkBackend implements AgentBackend {
               // A retry is a fresh provider request that would run at least one
               // more step; with the send-level budget already spent there is
               // nothing left to grant it, so the error is terminal.
-              const stepBudgetRemains = this.maxSteps === undefined || runtimeSteps < this.maxSteps;
+              const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
                 stepBudgetRemains && attemptHasNoObservableOutput()
                   ? await this.compaction.recoverFromOverflowError({
@@ -2280,8 +2281,7 @@ export class AiSdkBackend implements AgentBackend {
           await queue.waitUntilConsumedThroughCurrent();
 
           if (returnedToolCalls.length > 0) {
-            const continuationBudgetRemains =
-              this.maxSteps === undefined || runtimeSteps < this.maxSteps;
+            const continuationBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
             if (continuationBudgetRemains && !this.input.loadTurnRuntimeEvents) {
               throw new Error('durable current-run reader is required for tool continuation');
             }
@@ -2362,7 +2362,7 @@ export class AiSdkBackend implements AgentBackend {
             }
 
             const continuationWillRun =
-              (this.maxSteps === undefined || runtimeSteps < this.maxSteps) &&
+              (maxSteps === undefined || runtimeSteps < maxSteps) &&
               !scope.loopStopRequested &&
               !scope.aborted;
             if (
@@ -2387,7 +2387,7 @@ export class AiSdkBackend implements AgentBackend {
             toolCalls: returnedToolCalls,
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
-          const stepLimitReached = this.maxSteps !== undefined && runtimeSteps >= this.maxSteps;
+          const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             returnedToolCalls.length > 0 &&
             !stepLimitReached &&
@@ -2545,7 +2545,7 @@ export class AiSdkBackend implements AgentBackend {
         if (scope.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         const stopReason =
           scope.loopStopReason ??
-          (this.maxSteps !== undefined && finishReason === 'tool-calls'
+          (maxSteps !== undefined && finishReason === 'tool-calls'
             ? 'step_limit'
             : this.mapFinishReason(finishReason));
         if (stopReason === 'error') {

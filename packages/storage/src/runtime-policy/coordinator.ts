@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   decodeConnectionModelId,
   decodeConnectionSlug,
@@ -8,6 +9,7 @@ import {
   normalizeSetCredentialInput,
   normalizeCredentialSecret,
   type ConnectionCatalogEntry,
+  type ConnectionCatalogSnapshot,
   type ConnectionVersionBasis,
   type ConnectionModelDiscoveryResult,
   type ConnectionTestSummary,
@@ -24,7 +26,12 @@ import {
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
-import { effectiveBaseUrl, PROVIDER_DEFAULTS, type ProviderType } from '@maka/core/llm-connections';
+import {
+  deriveConnectionSlug,
+  effectiveBaseUrl,
+  PROVIDER_DEFAULTS,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import { deepFreeze } from './codec.js';
 import {
   catalogSnapshot,
@@ -51,6 +58,7 @@ import {
   commitOutcomeUnknown,
   decodeConnectionInput,
   decodeCredentialInput,
+  RuntimePolicyStoreError,
 } from './errors.js';
 import {
   connectionCredentialLocator,
@@ -61,6 +69,8 @@ import {
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
+  type CommitConnectionOnboardingInput,
+  type CommitConnectionOnboardingResult,
   type ConnectionTestTicket,
   type InteractiveOAuthLoginCompletionResult,
   type InteractiveOAuthLoginProvider,
@@ -75,6 +85,13 @@ import {
   type ResolveWebSearchExecutionInput,
   type ResolveWebSearchExecutionResult,
 } from './operations.js';
+import {
+  clearConnectionOnboardingIntent,
+  prepareConnectionOnboardingIntent,
+  readConnectionOnboardingIntent,
+  writeConnectionOnboardingIntent,
+  type ConnectionOnboardingIntent,
+} from './onboarding-transaction.js';
 import { policySnapshot, RuntimePolicyDocumentOwner } from './policy-document.js';
 import { SerializedOperationLane } from '../serialized-operation-lane.js';
 
@@ -147,14 +164,16 @@ export class RuntimePolicyCoordinator {
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
   private readonly tickets = new WeakMap<object, OperationTicketRecord>();
+  private onboardingRecoveryRequired = false;
 
   constructor(private readonly execute: RootExecutor) {
     this.lane = new SerializedOperationLane(execute);
   }
 
   recoverForWrite(): Promise<void> {
-    return this.inLane(async (root) => {
+    return this.lane.run(async (root) => {
       await cleanupRuntimePolicyDocumentTemps(root);
+      await this.recoverConnectionOnboarding(root);
       const catalog = await this.catalog.read(root);
       const vault = await this.vault.read(root);
       await this.vault.deleteOrphanedConnectionCredentials(
@@ -166,15 +185,15 @@ export class RuntimePolicyCoordinator {
   }
 
   getPolicySnapshot() {
-    return this.execute(async (root) => policySnapshot(await this.policy.read(root)));
+    return this.inLane(async (root) => policySnapshot(await this.policy.read(root)));
   }
 
   getCatalogSnapshot() {
-    return this.execute(async (root) => catalogSnapshot(await this.catalog.read(root)));
+    return this.inLane(async (root) => catalogSnapshot(await this.catalog.read(root)));
   }
 
   getVaultSnapshot() {
-    return this.execute(async (root) => vaultSnapshot(await this.vault.read(root)));
+    return this.inLane(async (root) => vaultSnapshot(await this.vault.read(root)));
   }
 
   getCredentialStatus(rawLocator: CredentialLocator): Promise<CredentialStatusQueryResult> {
@@ -265,9 +284,26 @@ export class RuntimePolicyCoordinator {
   }
 
   setCredential(rawInput: SetCredentialInput) {
+    return this.setCredentialWithAuthority(rawInput, 'client');
+  }
+
+  importConnectionCredential(rawInput: SetCredentialInput) {
+    return this.setCredentialWithAuthority(rawInput, 'migration');
+  }
+
+  private setCredentialWithAuthority(
+    rawInput: SetCredentialInput,
+    authority: 'client' | 'migration',
+  ) {
     return this.inLane(async (root) => {
       const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
       const { locator } = input;
+      if (authority === 'migration' && locator.scope !== 'connection') {
+        throw codecError(
+          'invalid_credential_input',
+          'Connection credential import requires a Connection credential locator',
+        );
+      }
       let catalog: ConnectionCatalogDocument | null = null;
       if (locator.scope === 'connection') {
         catalog = await this.catalog.read(root);
@@ -285,7 +321,11 @@ export class RuntimePolicyCoordinator {
             'Connection credential kind does not match the provider auth contract',
           );
         }
-        if (locator.kind === 'oauth_token' && connection.providerType !== 'github-copilot') {
+        if (
+          authority === 'client' &&
+          locator.kind === 'oauth_token' &&
+          connection.providerType !== 'github-copilot'
+        ) {
           throw codecError(
             'invalid_credential_input',
             'Client-supplied OAuth credentials are only accepted for GitHub Copilot',
@@ -734,6 +774,81 @@ export class RuntimePolicyCoordinator {
     );
   }
 
+  commitConnectionOnboarding(
+    input: CommitConnectionOnboardingInput,
+  ): Promise<CommitConnectionOnboardingResult> {
+    return this.inLane(async (root) => {
+      const catalog = await this.catalog.read(root);
+      const slug = deriveConnectionSlug(input.providerType);
+      const existing = catalog.connections.find((connection) => connection.slug === slug);
+      if (existing && existing.providerType !== input.providerType) {
+        return deepFreeze({ kind: 'slug_conflict' as const });
+      }
+      const connectionId = existing?.connectionId ?? randomUUID();
+      let invalidateLastTest = false;
+      if (input.suppliedSecret !== null) {
+        const locator = {
+          scope: 'connection',
+          connectionId,
+          kind: 'api_key',
+        } as const;
+        const vault = await this.vault.read(root);
+        const credential = findCredential(vault, locator);
+        if (credential?.secret !== input.suppliedSecret) {
+          invalidateLastTest = true;
+          const prepared = this.vault.prepareSet(vault, {
+            locator,
+            expected: credential
+              ? { credentialId: credential.credentialId, revision: credential.revision }
+              : null,
+            secret: input.suppliedSecret,
+          });
+          if (prepared.kind !== 'ready') {
+            throw codecError(
+              'invalid_document',
+              `Onboarding credential preflight returned ${prepared.kind}`,
+            );
+          }
+        }
+      }
+      const intent = prepareConnectionOnboardingIntent({
+        ...input,
+        connectionId,
+        invalidateLastTest,
+      });
+      const catalogPreflight = this.catalog.prepareOnboardingUpsert(
+        catalog,
+        intent.connectionId,
+        intent.providerType,
+        intent.enabledModelIds,
+        intent.discovery,
+        intent.invalidateLastTest,
+      );
+      if (catalogPreflight.kind === 'slug_conflict') {
+        return deepFreeze({ kind: 'slug_conflict' as const });
+      }
+      try {
+        await writeConnectionOnboardingIntent(root, intent);
+      } catch (error) {
+        if (isCommitOutcomeUnknown(error)) this.onboardingRecoveryRequired = true;
+        throw error;
+      }
+      try {
+        const result = await this.applyConnectionOnboarding(root, intent);
+        await clearConnectionOnboardingIntent(root);
+        this.onboardingRecoveryRequired = false;
+        return deepFreeze({ kind: 'committed' as const, ...result });
+      } catch (error) {
+        this.onboardingRecoveryRequired = true;
+        if (isCommitOutcomeUnknown(error)) throw error;
+        throw commitOutcomeUnknown(
+          'Connection onboarding has a durable intent and must recover before retrying',
+          error,
+        );
+      }
+    });
+  }
+
   beginConnectionTest(
     rawConnectionId: string,
     rawModelId: string | null,
@@ -1028,9 +1143,81 @@ export class RuntimePolicyCoordinator {
     }
   }
 
-  private inLane<T>(operation: (root: string) => Promise<T>): Promise<T> {
-    return this.lane.run(operation);
+  private async recoverConnectionOnboarding(root: string): Promise<void> {
+    const intent = await readConnectionOnboardingIntent(root);
+    if (!intent) {
+      this.onboardingRecoveryRequired = false;
+      return;
+    }
+    this.onboardingRecoveryRequired = true;
+    try {
+      await this.applyConnectionOnboarding(root, intent);
+      await clearConnectionOnboardingIntent(root);
+      this.onboardingRecoveryRequired = false;
+    } catch (error) {
+      if (isCommitOutcomeUnknown(error)) throw error;
+      throw commitOutcomeUnknown('Connection onboarding recovery did not converge', error);
+    }
   }
+
+  private async applyConnectionOnboarding(
+    root: string,
+    intent: ConnectionOnboardingIntent,
+  ): Promise<{ readonly snapshot: ConnectionCatalogSnapshot; readonly changed: boolean }> {
+    let changed = false;
+    if (intent.suppliedSecret !== null) {
+      const locator = {
+        scope: 'connection',
+        connectionId: intent.connectionId,
+        kind: 'api_key',
+      } as const;
+      const vault = await this.vault.read(root);
+      const existing = findCredential(vault, locator);
+      if (existing?.secret !== intent.suppliedSecret) {
+        const prepared = this.vault.prepareSet(vault, {
+          locator,
+          expected: existing
+            ? { credentialId: existing.credentialId, revision: existing.revision }
+            : null,
+          secret: intent.suppliedSecret,
+        });
+        if (prepared.kind !== 'ready') {
+          throw codecError(
+            'invalid_document',
+            `Onboarding credential write returned ${prepared.kind}`,
+          );
+        }
+        await this.vault.commitSet(root, prepared);
+        changed = true;
+      }
+    }
+
+    const catalog = await this.catalog.read(root);
+    const prepared = this.catalog.prepareOnboardingUpsert(
+      catalog,
+      intent.connectionId,
+      intent.providerType,
+      intent.enabledModelIds,
+      intent.discovery,
+      intent.invalidateLastTest,
+    );
+    if (prepared.kind === 'slug_conflict') {
+      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');
+    }
+    const snapshot = await this.catalog.commitPreparedOnboarding(root, prepared);
+    return { snapshot, changed: changed || prepared.changed };
+  }
+
+  private inLane<T>(operation: (root: string) => Promise<T>): Promise<T> {
+    return this.lane.run(async (root) => {
+      if (this.onboardingRecoveryRequired) await this.recoverConnectionOnboarding(root);
+      return operation(root);
+    });
+  }
+}
+
+function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
+  return error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown';
 }
 
 function commonSemanticConnectionBasis(

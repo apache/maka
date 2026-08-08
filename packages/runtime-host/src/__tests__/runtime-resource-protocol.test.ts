@@ -19,6 +19,8 @@ import {
   decodeRuntimeResourceControllerReleaseResult,
   decodeRuntimeResourceQueryInput,
   decodeRuntimeResourceQueryResult,
+  decodeRuntimeResourceStartInput,
+  decodeRuntimeResourceStartResult,
   decodeRuntimeResourceStopInput,
   decodeRuntimeResourceStopResult,
   RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES,
@@ -39,7 +41,8 @@ describe('Runtime Resource protocol', () => {
     assert.equal(RUNTIME_RESOURCE_OPERATION_SPECS['runtime.resource.query'].mode, 'query');
     for (const [key, spec] of Object.entries(RUNTIME_RESOURCE_OPERATION_SPECS)) {
       assert.equal(spec.availability, 'ready', key);
-      if (key !== 'runtime.resource.query') assert.equal(spec.mode, 'control', key);
+      if (key === 'runtime.resource.start') assert.equal(spec.mode, 'command', key);
+      else if (key !== 'runtime.resource.query') assert.equal(spec.mode, 'control', key);
     }
   });
 
@@ -78,10 +81,17 @@ describe('Runtime Resource protocol', () => {
       decodeRuntimeResourceControllerAcquireResult({
         controllerId: 'client-1',
         nextSequence: 1,
-        resource: snapshot(),
+        pty: ptySnapshot(),
       }),
-      { controllerId: 'client-1', nextSequence: 1, resource: snapshot() },
+      { controllerId: 'client-1', nextSequence: 1, pty: ptySnapshot() },
     );
+    assert.deepEqual(
+      decodeRuntimeResourceStartInput({ sessionId: 'session-1', launchId: 'launch-1' }),
+      { sessionId: 'session-1', launchId: 'launch-1' },
+    );
+    assert.deepEqual(decodeRuntimeResourceStartResult({ resource: snapshot() }), {
+      resource: snapshot(),
+    });
 
     for (const control of [
       { kind: 'input', input: 'hello' },
@@ -231,6 +241,16 @@ describe('Runtime Resource protocol', () => {
   });
 });
 
+function ptySnapshot() {
+  return {
+    sessionId: 'session-1',
+    ref: runtimeRef,
+    sequence: 2,
+    buffer: '\u001b[2Jready',
+    size: { cols: 80, rows: 24 },
+  };
+}
+
 test('Runtime Resource invalidations batch lightweight unique identities', () => {
   const resources = Array.from({ length: SESSION_RUNTIME_RESOURCE_CHANGES_MAX }, (_, index) => ({
     sourceSessionId: 'source-session',
@@ -267,6 +287,21 @@ test('Runtime Resource invalidations batch lightweight unique identities', () =>
       resources: [resources[0], resources[0]],
     }),
   );
+});
+
+test('Runtime Resource PTY data remains an ordered Session subscription frame', () => {
+  const frame = {
+    kind: 'subscription.runtime_resource_pty_data' as const,
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 4,
+    sessionId: 'session-1',
+    ref: runtimeRef,
+    ptySequence: 9,
+    data: '\u001b[2Jready',
+  };
+  assert.deepEqual(decodeSubscriptionFrame(frame), frame);
+  assertInvalid(() => decodeSubscriptionFrame({ ...frame, ptySequence: 0 }));
 });
 
 function resourceUpdate(overrides: Partial<ShellRunUpdate> = {}): ShellRunUpdate {

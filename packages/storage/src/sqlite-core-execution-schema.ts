@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 1;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 2;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -52,6 +52,14 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS core_root_turn_admissions_order
       ON core_root_turn_admissions(session_id, admitted_at, turn_id);
+
+    CREATE TABLE IF NOT EXISTS core_root_turn_start_rejections (
+      session_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      rejected_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, turn_id)
+    );
 
     CREATE TABLE IF NOT EXISTS core_root_source_message_proofs (
       session_id TEXT NOT NULL,

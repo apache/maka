@@ -13,6 +13,8 @@ import {
   type ClientCapabilityCallFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
+import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
@@ -79,6 +81,47 @@ test('publishes the real Computer Use schema through the Client Capability proto
     | Record<string, { items?: unknown }>
     | undefined;
   assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
+});
+
+test('publishes every production Desktop-owned tool schema through the protocol', () => {
+  const settingsTools = buildClientSettingsTools({
+    async read() {
+      throw new Error('not invoked');
+    },
+    async update() {
+      throw new Error('not invoked');
+    },
+    async confirm() {
+      return false;
+    },
+  });
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_settings',
+        label: 'Client settings',
+        description: 'Client settings',
+        tools: settingsTools,
+      },
+      {
+        offerId: 'desktop_rive',
+        label: 'Rive',
+        description: 'Rive workflows',
+        tools: [buildRiveWorkflowTool()],
+      },
+    ],
+  });
+
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
 });
 
 test('validates before admission and invokes the exact offered tool with Host context', async () => {

@@ -9,6 +9,10 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import {
+  decodeSkillInvocationResult,
+  type SkillInvocationResult,
+} from '@maka/core/skill-invocation';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -28,7 +32,19 @@ export interface TurnStartInput {
   content: MessageContent;
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
+  maxSteps?: number;
 }
+
+export type TurnStartResult =
+  | {
+      kind: 'started';
+      turn: TurnSnapshot;
+      skillInvocation: SkillInvocationResult;
+    }
+  | {
+      kind: 'blocked';
+      skillInvocation: SkillInvocationResult;
+    };
 
 export type { MessageContent };
 
@@ -153,7 +169,15 @@ export const TURN_OPERATION_SPECS = {
       'internal_failure',
     ] as const,
     decodeInput: decodeTurnStartInput,
-    decodeOutput: decodeTurnSnapshot,
+    decodeOutput: decodeTurnStartResult,
+    assertOutputForInput: (input, output) => {
+      if (
+        output.kind === 'started' &&
+        (input.sessionId !== output.turn.sessionId || input.turnId !== output.turn.turnId)
+      ) {
+        throw invalidProtocolFrame('Turn start changed operation identity');
+      }
+    },
   }),
   'turn.query': defineOperation({
     mode: 'query',
@@ -268,7 +292,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['skillIds', 'turnOrchestration'],
+    ['skillIds', 'turnOrchestration', 'maxSteps'],
   );
   const skillIds = decodeSkillIds(record.skillIds);
   return {
@@ -279,7 +303,16 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
       : {}),
+    ...(record.maxSteps !== undefined
+      ? { maxSteps: requirePositiveSafeInteger(record.maxSteps, 'maxSteps') }
+      : {}),
   };
+}
+
+function requirePositiveSafeInteger(value: unknown, label: string): number {
+  const decoded = requireCount(value, label);
+  if (decoded === 0) throw invalidProtocolFrame(`Invalid ${label}`);
+  return decoded;
 }
 
 function decodeSkillIds(value: unknown): string[] {
@@ -518,6 +551,28 @@ export function decodeTurnResumeStartResult(value: unknown): TurnResumeStartResu
     return { kind: 'parked', plan };
   }
   throw invalidProtocolFrame('Invalid Turn resume start result');
+}
+
+export function decodeTurnStartResult(value: unknown): TurnStartResult {
+  const record = requireRecord(value, 'Turn start result');
+  let skillInvocation: SkillInvocationResult;
+  try {
+    skillInvocation = decodeSkillInvocationResult(record.skillInvocation);
+  } catch {
+    throw invalidProtocolFrame('Invalid Turn start Skill invocation result');
+  }
+  if (record.kind === 'started') {
+    assertExactKeys(record, 'started Turn result', ['kind', 'turn', 'skillInvocation']);
+    return { kind: 'started', turn: decodeTurnSnapshot(record.turn), skillInvocation };
+  }
+  if (record.kind === 'blocked') {
+    assertExactKeys(record, 'blocked Turn result', ['kind', 'skillInvocation']);
+    if (skillInvocation.loaded.length !== 0 || skillInvocation.failed.length === 0) {
+      throw invalidProtocolFrame('Blocked Turn requires only failed Skill invocations');
+    }
+    return { kind: 'blocked', skillInvocation };
+  }
+  throw invalidProtocolFrame('Invalid Turn start result');
 }
 
 function requirePositiveCount(value: unknown, label: string): number {

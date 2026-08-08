@@ -1,5 +1,13 @@
+import { parseNoRealConnectionError } from '@maka/core';
+import { SessionActivityRegistry } from '@maka/runtime';
+import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
+import { createForeignSessionStore } from '@maka/storage';
+import { connectRuntimeHostCli } from './runtime-host-cli-context.js';
+import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
+import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
 import { createRuntimeHostTuiContext } from './runtime-host-tui-context.js';
+import type { MakaSessionDriver } from './session-driver.js';
 
 export interface RunRuntimeHostTuiInput {
   readonly workspaceRoot: string;
@@ -9,11 +17,21 @@ export interface RunRuntimeHostTuiInput {
 }
 
 export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<number> {
-  const context = await createRuntimeHostTuiContext({
+  const foreignSessions = createForeignSessionStore();
+  const contextInput = {
     rootPath: input.workspaceRoot,
     cwd: input.cwd,
     ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
-  });
+  };
+  let context;
+  try {
+    context = await createRuntimeHostTuiContext(contextInput);
+  } catch (error) {
+    if (!isMissingDefaultConnection(error) || input.resumeSessionId) throw error;
+    const configured = await runFirstRunOnboarding(input.workspaceRoot, input.cwd);
+    if (!configured) throw error;
+    context = await createRuntimeHostTuiContext(contextInput);
+  }
   try {
     await runMakaPiTui({
       driver: context.driver,
@@ -28,9 +46,11 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: 'ask',
-      goalLifecycle: context.goalLifecycle,
+      turnActivity: context.turnActivity,
       listSkills: context.listSkills,
+      onboarding: context.onboarding,
       recap: context.recap,
+      foreignSessions,
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
@@ -43,4 +63,53 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
   } finally {
     await context.close();
   }
+}
+
+async function runFirstRunOnboarding(rootPath: string, cwd: string): Promise<boolean> {
+  const connected = await connectRuntimeHostCli({ rootPath, surface: 'tui' });
+  try {
+    await runMakaPiTui({
+      driver: createFirstRunSessionDriver(),
+      title: 'Maka',
+      cwd,
+      model: '',
+      connectionSlug: '',
+      permissionMode: 'ask',
+      firstRun: true,
+      turnActivity: {
+        activities: new SessionActivityRegistry(),
+      } satisfies MakaPiTuiTurnActivitySurface,
+      onboarding: createRuntimeHostOnboardingSurface(connected.connection),
+    });
+    return (await readRuntimeHostConnectionCatalog(connected.connection)).defaultTarget !== null;
+  } finally {
+    await connected.close();
+  }
+}
+
+function createFirstRunSessionDriver(): MakaSessionDriver {
+  const unavailable = async (): Promise<never> => {
+    throw new Error('First-run onboarding cannot start an agent turn');
+  };
+  return {
+    getSessionId: () => null,
+    listSessions: async () => [],
+    preparePrompt: unavailable,
+    compactSession: async function* () {},
+    respondToSandboxBoundary: async () => {},
+    setModel: async () => {},
+    setThinkingLevel: async () => {},
+    setPermissionMode: async () => {},
+    renameSession: async () => {},
+    switchSession: unavailable,
+    listRewindTargets: async () => [],
+    rewindToTurn: unavailable,
+    startNewSession: () => {},
+    stop: async () => {},
+  };
+}
+
+function isMissingDefaultConnection(error: unknown): boolean {
+  const parsed = parseNoRealConnectionError(error);
+  return parsed.matched && parsed.reason === 'missing_default_connection';
 }

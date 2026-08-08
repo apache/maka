@@ -19,7 +19,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { promisify } from 'node:util';
-import { connectOrSpawnRuntimeHost, connectRuntimeHost } from '../client/index.js';
+import {
+  connectOrSpawnRuntimeHost,
+  connectRuntimeHost,
+  type RuntimeHostConnection,
+} from '../client/index.js';
 import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
 import {
   launchDetachedRuntimeHostCandidate,
@@ -47,6 +51,8 @@ import {
   type RuntimeHostCompositionContext,
 } from '../server/index.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
+import { HostConfigurationChangeService } from '../server/configuration-change-service.js';
+import { HostSessionCatalogChangeService } from '../server/session-catalog-change-service.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import {
   prepareStorageRootControlDirectory,
@@ -641,26 +647,35 @@ describe('non-serving Runtime Host kernel', () => {
 
   test('a detached Host survives the launcher process that created it', async () => {
     await withHostPaths(async (paths) => {
-      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const launcher = paths.resources.trackChild(
-        fork(
-          new URL('./fixtures/detached-launcher.js', import.meta.url),
-          [paths.root, capability.rootId],
-          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
-        ),
-      );
-      const launchedPid = await waitForLaunch(launcher);
-      paths.resources.trackPid(launchedPid);
-      await waitForExit(launcher);
+      const callerCwd = await mkdtemp(join(tmpdir(), 'maka-runtime-host-launcher-cwd-'));
+      try {
+        const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+        const launcher = paths.resources.trackChild(
+          fork(
+            new URL('./fixtures/detached-launcher.js', import.meta.url),
+            [paths.root, capability.rootId],
+            { cwd: callerCwd, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+          ),
+        );
+        const launchedPid = await waitForLaunch(launcher);
+        paths.resources.trackPid(launchedPid);
+        await waitForExit(launcher);
 
-      const connected = await retryConnect(paths, CURRENT_PROTOCOL);
-      assert.equal(connected.kind, 'connected');
-      if (connected.kind !== 'connected') return;
-      assert.equal(connected.registration.pid, launchedPid);
-      process.kill(launchedPid, 'SIGKILL');
-      await connected.connection.closed;
-      await waitForProcessExit(launchedPid);
-      paths.resources.forgetPid(launchedPid);
+        // The detached Host must not retain a caller directory that may be a
+        // package verifier, updater, or project-owned temporary workspace.
+        await rm(callerCwd, { recursive: true, force: true });
+
+        const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+        assert.equal(connected.kind, 'connected');
+        if (connected.kind !== 'connected') return;
+        assert.equal(connected.registration.pid, launchedPid);
+        process.kill(launchedPid, 'SIGKILL');
+        await connected.connection.closed;
+        await waitForProcessExit(launchedPid);
+        paths.resources.forgetPid(launchedPid);
+      } finally {
+        await rm(callerCwd, { recursive: true, force: true });
+      }
     });
   });
 
@@ -1175,6 +1190,82 @@ describe('non-serving Runtime Host kernel', () => {
         releaseHandler();
         transport.destroy();
         await host.close().catch(() => undefined);
+      }
+    });
+  });
+
+  test('delivers canonical authority changes to a Client admitted during recovery', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const configurationChanges = new HostConfigurationChangeService();
+      const sessionCatalogChanges = new HostSessionCatalogChangeService();
+      let releaseFactory!: () => void;
+      let markFactoryEntered!: () => void;
+      const factoryEntered = new Promise<void>((resolve) => {
+        markFactoryEntered = resolve;
+      });
+      const factoryReleased = new Promise<void>((resolve) => {
+        releaseFactory = resolve;
+      });
+      const hostTask = RuntimeHostKernel.start({
+        owner,
+        idleGraceMs: 10_000,
+        compositionFactory: async () => {
+          markFactoryEntered();
+          await factoryReleased;
+          return {
+            handlers: createUnavailableDomainOperationHandlers(),
+            configurationChanges,
+            sessionCatalogChanges,
+            beginDrain() {},
+            async recover() {},
+            async close() {},
+          };
+        },
+      });
+      let host: RuntimeHostKernel | undefined;
+      let connection: RuntimeHostConnection | undefined;
+      try {
+        await withTimeout(factoryEntered, 1_000, 'Runtime Host did not enter composition');
+        const connected = await connectRuntimeHost({
+          rootPath: paths.root,
+          surface: 'desktop',
+          protocol: CURRENT_PROTOCOL,
+        });
+        assert.equal(connected.kind, 'connected');
+        if (connected.kind !== 'connected') return;
+        const activeConnection = connected.connection;
+        connection = activeConnection;
+        const observed = new Promise<number>((resolve) => {
+          activeConnection.subscribeConfigurationChanges(resolve);
+        });
+        const observedCatalog = new Promise<string>((resolve) => {
+          activeConnection.subscribeSessionCatalogChanges(({ sessionId }) => resolve(sessionId));
+        });
+        releaseFactory();
+        host = await hostTask;
+        configurationChanges.publish();
+        sessionCatalogChanges.publish('session-1');
+        assert.equal(
+          await withTimeout(observed, 1_000, 'Client did not receive configuration change'),
+          1,
+        );
+        assert.equal(
+          await withTimeout(
+            observedCatalog,
+            1_000,
+            'Client did not receive Session catalog change',
+          ),
+          'session-1',
+        );
+      } finally {
+        releaseFactory();
+        await connection?.close();
+        host ??= await hostTask.catch(() => undefined);
+        await host?.close().catch(() => undefined);
       }
     });
   });

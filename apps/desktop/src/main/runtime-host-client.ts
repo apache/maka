@@ -32,6 +32,7 @@ import {
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
   readRuntimeHostConnectionCatalog,
+  readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
@@ -66,6 +67,7 @@ import {
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
+  type SessionCatalogChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionConfiguration,
@@ -78,6 +80,8 @@ import {
   type SessionMetadataPatch,
   type SessionUpdateResult,
   type SkillCatalogLocalContext,
+  type SkillCatalogInvocableItem,
+  type SkillCatalogInvocableTarget,
   type SkillCatalogMutateInput,
   type SkillCatalogMutateResult,
   type SkillCatalogPageItem,
@@ -179,6 +183,18 @@ export class DesktopRuntimeHostClient {
 
   get hostEpoch(): string {
     return this.connection.hostEpoch;
+  }
+
+  subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeSessionCatalogChanges(
+    listener: (frame: SessionCatalogChangedFrame) => void,
+  ): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeSessionCatalogChanges(listener);
   }
 
   async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
@@ -326,6 +342,21 @@ export class DesktopRuntimeHostClient {
       throw new DesktopRuntimeHostClientError(
         "skill_catalog_unstable",
         "Skill catalog kept changing while Desktop read it",
+      );
+    }
+  }
+
+  async listInvocableSkills(
+    target: SkillCatalogInvocableTarget,
+  ): Promise<readonly SkillCatalogInvocableItem[]> {
+    this.#assertOpen();
+    try {
+      return await readRuntimeHostInvocableSkills(this.connection, target);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "skill_catalog_unstable",
+        "Invocable Skill catalog kept changing while Desktop read it",
       );
     }
   }
@@ -702,15 +733,20 @@ export class DesktopRuntimeHostClient {
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
-    const current = await this.#requireSession(sessionId);
-    if (current.revisionOfTurnId !== undefined) {
-      const result = await this.#request('session.revision.abandon', {
-        targetSessionId: sessionId,
-      });
-      return result.kind === 'abandoned' ? 'removed' : 'retained';
+    try {
+      const current = await this.#requireSession(sessionId);
+      if (current.revisionOfTurnId !== undefined) {
+        const result = await this.#request('session.revision.abandon', {
+          targetSessionId: sessionId,
+        });
+        return result.kind === 'abandoned' ? 'removed' : 'retained';
+      }
+      await this.removeSession(sessionId);
+      return 'removed';
+    } catch (error) {
+      if (isMissingSessionError(error)) return 'removed';
+      throw error;
     }
-    await this.removeSession(sessionId);
-    return 'removed';
   }
 
   async copySession(
@@ -1184,6 +1220,12 @@ export class DesktopRuntimeHostClient {
     return result.resource;
   }
 
+  startRuntimeResource(
+    input: OperationInput<"runtime.resource.start">,
+  ): Promise<OperationOutput<"runtime.resource.start">> {
+    return this.#request("runtime.resource.start", input);
+  }
+
   acquireRuntimeResourceController(
     input: OperationInput<"runtime.resource.controller.acquire">,
   ): Promise<OperationOutput<"runtime.resource.controller.acquire">> {
@@ -1391,6 +1433,13 @@ function clientClosed(): DesktopRuntimeHostClientError {
   return new DesktopRuntimeHostClientError(
     "client_closed",
     "Desktop Runtime Host Client is closed",
+  );
+}
+
+function isMissingSessionError(error: unknown): boolean {
+  return (
+    (error instanceof DesktopRuntimeHostClientError && error.code === 'session_not_found') ||
+    (error instanceof RuntimeHostOperationError && error.code === 'not_found')
   );
 }
 

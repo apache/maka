@@ -16,6 +16,7 @@ import {
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type ClientSurface,
+  type ConfigurationChangedFrame,
   type ContextCompactInput,
   type ContextCompactResult,
   type ContextDiagnosticsQueryInput,
@@ -44,6 +45,7 @@ import {
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
+  type SessionCatalogChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SessionCwdRelocateInput,
@@ -58,6 +60,7 @@ import {
   type TurnResumeStartResult,
   type TurnSnapshot,
   type TurnStartInput,
+  type TurnStartResult,
   type TurnStopInput,
   requireClientInstanceId,
   validateProtocolRange,
@@ -159,7 +162,7 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
   regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
@@ -203,6 +206,8 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
+  subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
+  subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
 }
 
 export type DirectRequestOperationKey = Exclude<
@@ -245,6 +250,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #subscriptions = new Map<string, ClientSessionSubscription>();
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
+  readonly #configurationChangeListeners = new Set<(revision: number) => void>();
+  readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #terminalError: Error | undefined;
@@ -377,7 +384,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return status;
   }
 
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot> {
+  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {
     return this.request('turn.start', input, timeoutMs);
   }
 
@@ -518,6 +525,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.#clientCapabilities.unregister(timeoutMs);
   }
 
+  subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
+    this.#configurationChangeListeners.add(listener);
+    return () => this.#configurationChangeListeners.delete(listener);
+  }
+
+  subscribeSessionCatalogChanges(
+    listener: (frame: SessionCatalogChangedFrame) => void,
+  ): () => void {
+    this.#sessionCatalogChangeListeners.add(listener);
+    return () => this.#sessionCatalogChangeListeners.delete(listener);
+  }
+
   async #readResponses(): Promise<void> {
     try {
       while (true) {
@@ -529,10 +548,17 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
             continue;
           }
           switch (frame.kind) {
+            case 'configuration.changed':
+              this.#acceptConfigurationChanged(frame);
+              continue;
+            case 'session.catalog.changed':
+              this.#acceptSessionCatalogChanged(frame);
+              continue;
             case 'subscription.session_projection':
             case 'subscription.session_delta':
             case 'subscription.session_event':
             case 'subscription.session_domain_changed':
+            case 'subscription.runtime_resource_pty_data':
             case 'subscription.agent_graph_changed':
             case 'subscription.closed':
               this.#acceptSubscriptionFrame(frame);
@@ -580,6 +606,26 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     pending.reject(
       new RuntimeHostOperationError(frame.operation, frame.error.code, frame.error.message),
     );
+  }
+
+  #acceptConfigurationChanged(frame: ConfigurationChangedFrame): void {
+    for (const listener of this.#configurationChangeListeners) {
+      try {
+        listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptSessionCatalogChanged(frame: SessionCatalogChangedFrame): void {
+    for (const listener of this.#sessionCatalogChangeListeners) {
+      try {
+        listener(frame);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
   }
 
   #retireRequest(requestId: string, error: Error): void {
@@ -733,6 +779,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#subscriptions.clear();
     this.#retiredSubscriptionIds.clear();
     this.#clientCapabilities.close(error);
+    this.#configurationChangeListeners.clear();
+    this.#sessionCatalogChangeListeners.clear();
     this.#transport.destroy();
   }
 }

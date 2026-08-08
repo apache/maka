@@ -31,7 +31,11 @@ import {
   type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core';
-import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
+import {
+  finalAssistantReplyText,
+  type TurnTimelineItem,
+  type TurnViewModel,
+} from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
@@ -394,7 +398,7 @@ export const TurnView = memo(function TurnView(props: {
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
    * Open a linked subagent child session in the main chat column. Threaded into
-   * tool-detail SubagentPreview; omitted when the host has no navigation.
+   * linked subagent tool rows; omitted when the host has no navigation.
    */
   onOpenLinkedSession?(sessionId: string): void;
 }) {
@@ -647,7 +651,7 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooterActions
                 actions={props.footerActions}
                 onAction={props.onFooterAction ? (actionId) => props.onFooterAction?.(turn.turnId, actionId) : undefined}
-                assistantText={turn.assistant?.text ?? ''}
+                assistantText={finalAssistantReplyText(turn)}
               />
             )
           )}

@@ -1,0 +1,80 @@
+import { realpath, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  isPathInside,
+  isSafeSkillId,
+  resolveSkillDiscoveryPaths,
+  scanSkillsWithDiagnostics,
+} from '@maka/runtime';
+
+export type SkillOpenTarget = 'file' | 'directory';
+
+export type ResolveSkillOpenPathResult =
+  | { readonly ok: true; readonly path: string; readonly target: SkillOpenTarget }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | 'invalid_id'
+        | 'missing'
+        | 'blocked_path'
+        | 'not_file'
+        | 'not_directory';
+    };
+
+export async function resolveSkillOpenPath(
+  workspaceRoot: string,
+  idOrRef: string,
+  target: SkillOpenTarget,
+  projectRoot: string,
+): Promise<ResolveSkillOpenPathResult> {
+  if (target !== 'file' && target !== 'directory') return { ok: false, reason: 'missing' };
+
+  if (!isSafeSkillId(idOrRef)) {
+    if (!idOrRef.includes(':') || idOrRef.length > 512) {
+      return { ok: false, reason: 'invalid_id' };
+    }
+    const scan = await scanSkillsWithDiagnostics(
+      resolveSkillDiscoveryPaths(projectRoot, workspaceRoot),
+    );
+    const skill = [...scan.inventory, ...scan.rejected].find(({ ref }) => ref === idOrRef);
+    if (!skill) return { ok: false, reason: 'missing' };
+    return resolveContainedTarget(skill.discoveryRoot, skill.path, target);
+  }
+
+  const skillsDir = join(workspaceRoot, 'skills');
+  let workspaceReal: string;
+  let skillsReal: string;
+  try {
+    [workspaceReal, skillsReal] = await Promise.all([
+      realpath(workspaceRoot),
+      realpath(skillsDir),
+    ]);
+  } catch {
+    return { ok: false, reason: 'missing' };
+  }
+  if (!isPathInside(workspaceReal, skillsReal)) return { ok: false, reason: 'blocked_path' };
+  return resolveContainedTarget(skillsReal, join(skillsDir, idOrRef), target);
+}
+
+async function resolveContainedTarget(
+  containmentRoot: string,
+  skillPath: string,
+  target: SkillOpenTarget,
+): Promise<ResolveSkillOpenPathResult> {
+  const candidate = target === 'file' ? join(skillPath, 'SKILL.md') : skillPath;
+  try {
+    const [containmentReal, openedPath] = await Promise.all([
+      realpath(containmentRoot),
+      realpath(candidate),
+    ]);
+    if (!isPathInside(containmentReal, openedPath)) return { ok: false, reason: 'blocked_path' };
+    const opened = await stat(openedPath);
+    if (target === 'file' && !opened.isFile()) return { ok: false, reason: 'not_file' };
+    if (target === 'directory' && !opened.isDirectory()) {
+      return { ok: false, reason: 'not_directory' };
+    }
+    return { ok: true, path: openedPath, target };
+  } catch {
+    return { ok: false, reason: 'missing' };
+  }
+}

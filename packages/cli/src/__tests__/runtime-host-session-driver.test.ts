@@ -4,7 +4,6 @@ import { describe, test } from 'node:test';
 import type { StoredMessage } from '@maka/core';
 import type {
   DirectRequestOperationKey,
-  RuntimeHostConnection,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
 import type {
@@ -15,8 +14,11 @@ import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
-import { createRuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
-import type { MakaAttachedSessionTurn } from '../session-driver.js';
+import {
+  createRuntimeHostMakaSessionDriver,
+  type RuntimeHostMakaSessionDriverInput,
+} from '../runtime-host-session-driver.js';
+import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
@@ -665,6 +667,32 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal((await nextEvent(turn.events)).text, 'Recovered');
   });
 
+  test('starts explicit Skills through the Host command and preserves its typed feedback', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('turn-skill'),
+    });
+    await driver.switchSession('session-1');
+
+    const turn = await driver.preparePrompt('/skill:alpha Help');
+    assert.deepEqual(turn.skillInvocation?.loaded, [{ id: 'alpha', name: 'Alpha' }]);
+    assert.equal(connection.requests.at(-1)?.operation, 'turn.start');
+
+    connection.skillStartBlocked = true;
+    await assert.rejects(
+      driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }),
+      SkillInvocationBlockedError,
+    );
+  });
+
   test('retires a pending question when another client answers it', async () => {
     const subscription = new FakeSubscription(
       continuitySnapshot({ interactions: { pending: [pendingQuestion()] } }),
@@ -739,24 +767,22 @@ class FakeConnection {
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
   openedSubscriptions = 0;
   interactionQuery: unknown;
-  readonly value: RuntimeHostConnection;
+  skillStartBlocked = false;
+  readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(private readonly subscriptions: FakeSubscription[]) {
     this.value = {
       hostEpoch: 'host-1',
-      connectionId: 'connection-1',
-      selectedProtocol: 0,
-      closed: new Promise(() => {}),
       request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
         this.request(operation, input),
+      startTurn: (input) => this.request('turn.start', input),
       openSessionSubscription: async () => {
         const subscription = this.subscriptions[this.openedSubscriptions];
         this.openedSubscriptions += 1;
         if (!subscription) throw new Error('No fake subscription available');
         return subscription;
       },
-      close: async () => {},
-    } as unknown as RuntimeHostConnection;
+    } satisfies RuntimeHostMakaSessionDriverInput['connection'];
   }
 
   async request<K extends DirectRequestOperationKey>(
@@ -764,6 +790,11 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
+    const turnInput = input as {
+      sessionId?: string;
+      turnId?: string;
+      content: { text: string };
+    };
     const result: unknown =
       operation === 'session.catalog.query'
         ? {
@@ -797,7 +828,31 @@ class FakeConnection {
                 : operation === 'interaction.query'
                   ? this.interactionQuery
                   : operation === 'turn.start'
-                    ? { kind: 'started' }
+                    ? this.skillStartBlocked
+                      ? {
+                          kind: 'blocked',
+                          skillInvocation: {
+                            loaded: [],
+                            failed: [{ request: 'missing', reason: 'not_found' }],
+                            receipts: [],
+                          },
+                        }
+                      : {
+                          kind: 'started',
+                          turn: {
+                            sessionId: turnInput.sessionId,
+                            turnId: turnInput.turnId,
+                            runId: 'run-1',
+                            status: 'running',
+                          },
+                          skillInvocation: turnInput.content.text.includes('/skill:')
+                            ? {
+                                loaded: [{ id: 'alpha', name: 'Alpha' }],
+                                failed: [],
+                                receipts: [],
+                              }
+                            : { loaded: [], failed: [], receipts: [] },
+                        }
                     : undefined;
     if (result === undefined) throw new Error(`Unexpected fake operation: ${operation}`);
     return result as OperationOutput<K>;

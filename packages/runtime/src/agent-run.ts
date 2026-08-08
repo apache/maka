@@ -66,6 +66,7 @@ import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureLedgerRecord,
 } from './provider-request-telemetry.js';
+import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -571,6 +572,9 @@ export class AgentRun {
         turnId: this.turnId,
         orchestration: this.effectiveOrchestration,
         toolMode: this.toolMode,
+        ...(this.input.userInput.maxSteps !== undefined
+          ? { maxSteps: this.input.userInput.maxSteps }
+          : {}),
         text: this.input.userInput.text,
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
@@ -611,6 +615,9 @@ export class AgentRun {
         text: begin.backendInput.text,
         ...(begin.backendInput.toolMode !== undefined
           ? { toolMode: begin.backendInput.toolMode }
+          : {}),
+        ...(begin.backendInput.maxSteps !== undefined
+          ? { maxSteps: begin.backendInput.maxSteps }
           : {}),
         ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
         ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),
@@ -672,6 +679,13 @@ export class AgentRun {
       const steering =
         runtimeEvent.content?.kind === 'text' && runtimeEvent.content.steering === true;
       await this.recordRuntimeEvents([runtimeEvent], steering ? { requireDurableWrite: true } : {});
+      if (this.recordsSessionMessages()) {
+        await materializeRuntimeEventTranscriptProjection(
+          this.input.store,
+          this.sessionId,
+          runtimeEvent,
+        );
+      }
     }
   }
 
@@ -736,6 +750,9 @@ export class AgentRun {
         turnId: this.turnId,
         orchestration: this.effectiveOrchestration,
         toolMode: this.toolMode,
+        ...(this.input.userInput.maxSteps !== undefined
+          ? { maxSteps: this.input.userInput.maxSteps }
+          : {}),
         text: this.input.userInput.text,
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }

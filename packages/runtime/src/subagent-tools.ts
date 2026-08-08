@@ -395,12 +395,9 @@ export function buildSubagentListTool(): MakaTool<
     categoryHint: 'read',
     nesting: 'direct_only',
     impl: async (input, ctx) => {
-      // Not reachable from the desktop app or the CLI: both pass
-      // `listChildAgents` to ToolRuntime unconditionally
-      // (`session-stream.ts`, `runtime-bootstrap.ts`), and ToolRuntime hands
-      // it straight to the tool context. `harbor-cell.ts` passes it only when
-      // its own context carries one, so a headless embedder can still land
-      // here — which is why this stays a sentence rather than being deleted.
+      // Runtime Host supplies this capability to production clients.
+      // A headless embedder can still construct ToolRuntime without it, so
+      // keep the failure explicit at the embedding boundary.
       if (!ctx.listChildAgents) {
         throw new Error(
           'agent_list is not available in this session, so no agent catalog could be read. ' +

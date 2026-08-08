@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry, SessionManager } from '@maka/runtime';
-import type { SessionEvent } from '@maka/core';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
-import { createEmbeddedBotSessionAdapter } from '../embedded-bot-session-adapter.js';
-import { SessionLifecycleError } from '../session-lifecycle.js';
+import { BotSessionUnavailableError } from '../bot-session-adapter.js';
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
@@ -20,28 +18,24 @@ describe('bot session lifecycle bindings', () => {
     const sent: string[] = [];
     const replies: string[] = [];
     let ensureCalls = 0;
-    const runtime = {
+    const sessions = {
       async createSession() {
         const id = `bot-session-${created.length + 1}`;
         created.push(id);
-        return { id };
+        return id;
       },
-      async setPermissionMode() {},
-      sendMessage(sessionId: string, input: { turnId: string }) {
+      async prepareSession(sessionId: string) {
+        ensureCalls += 1;
+        if (sessionId === 'bot-session-1' && ensureCalls === 1) {
+          throw new BotSessionUnavailableError('archived');
+        }
+        return 'ready' as const;
+      },
+      async runTurn({ sessionId }: { sessionId: string }) {
         sent.push(sessionId);
-        return (async function* (): AsyncIterable<SessionEvent> {
-          yield {
-            type: 'text_complete',
-            id: `text-${sessionId}`,
-            turnId: input.turnId,
-            ts: Date.now(),
-            messageId: `message-${sessionId}`,
-            text: `reply from ${sessionId}`,
-          };
-          yield { type: 'complete', id: `complete-${sessionId}`, turnId: input.turnId, ts: Date.now(), stopReason: 'end_turn' };
-        })();
+        return { kind: 'completed' as const, text: `reply from ${sessionId}` };
       },
-    } as unknown as SessionManager;
+    };
 
     const service = createBotIncomingMainService({
       botRegistry: {
@@ -53,32 +47,7 @@ describe('bot session lifecycle bindings', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      sessions: createEmbeddedBotSessionAdapter({
-        runtime,
-        createSession: (input) =>
-          runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
-        getDefaultConnectionSlug: async () => 'provider',
-        getReadyConnection: async () => ({
-          connection: { slug: 'provider' },
-          model: 'model',
-        }),
-        readSessionHeader: async () => ({
-          permissionMode: 'explore',
-          isArchived: false,
-          status: 'active',
-        }),
-        ensureSessionCanSend: async (sessionId) => {
-          ensureCalls += 1;
-          if (sessionId === 'bot-session-1' && ensureCalls === 2) {
-            throw new SessionLifecycleError('archived');
-          }
-        },
-        emitSessionsChanged() {},
-        runAgentTurn: async ({ iterator, turnId, onEvent }) => {
-          for await (const event of iterator) onEvent(event);
-          return { outcome: { kind: 'completed', turnId } } as never;
-        },
-      }),
+      sessions,
     });
 
     const base = {

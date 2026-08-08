@@ -318,12 +318,12 @@ export const MAKA_AHE_CURRENT_COMPONENTS: readonly MakaAheTargetComponent[] = [
   {
     id: 'maka-system-prompt',
     category: 'system_prompt',
-    label: 'Maka desktop system prompt',
+    label: 'Maka Runtime Host system prompt',
     description:
-      'Desktop main-process prompt and workspace context that shape every interactive Maka turn.',
+      'Runtime Host prompt composition and workspace context that shape every interactive Maka turn.',
     editable: true,
     sourceRefs: [
-      { path: 'apps/desktop/src/main/system-prompt-main.ts' },
+      { path: 'packages/runtime-host/src/server/execution-model-composition.ts' },
       { path: 'packages/runtime/src/system-prompt/session-environment-prompt.ts' },
       { path: 'packages/runtime/src/system-prompt/workspace-instructions.ts' },
     ],

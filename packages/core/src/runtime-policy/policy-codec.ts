@@ -1,5 +1,8 @@
+import { isThinkingLevel } from '../model-thinking.js';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '../settings.js';
+import { normalizeSubagentSettings } from '../subagent-settings.js';
 import type {
+  AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
   RuntimePolicy,
   RuntimePolicyMutation,
@@ -22,6 +25,21 @@ export function decodeCanonicalRuntimePolicy(value: unknown): RuntimePolicy {
   return decoded;
 }
 
+export function decodeLegacyRuntimePolicyV1(value: unknown): RuntimePolicy {
+  const policy = exactRecord(value, 'legacy runtime policy', [
+    'networkProxy',
+    'personalization',
+    'memory',
+    'workspaceInstructions',
+    'privacy',
+    'chatDefaults',
+    'webSearch',
+  ]);
+  const decoded = normalizeRuntimePolicyFields(policy, { presets: [] });
+  assertCanonicalValue(value, withoutSubagents(decoded), 'legacy runtime policy');
+  return decoded;
+}
+
 export function normalizeRuntimePolicyMutation(value: unknown): MutateRuntimePolicyInput {
   const input = exactRecord(value, 'runtime policy mutation', ['expectedRevision', 'operation']);
   const operation = exactRecord(input.operation, 'runtime policy operation', ['kind', 'value']);
@@ -40,7 +58,15 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     'privacy',
     'chatDefaults',
     'webSearch',
+    'subagents',
   ]);
+  return normalizeRuntimePolicyFields(policy, normalizeSubagentSettings(policy.subagents));
+}
+
+function normalizeRuntimePolicyFields(
+  policy: Record<string, unknown>,
+  subagents: RuntimePolicy['subagents'],
+): RuntimePolicy {
   return {
     networkProxy: normalizeNetworkProxy(policy.networkProxy),
     personalization: normalizePersonalization(policy.personalization),
@@ -49,7 +75,13 @@ function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
     privacy: normalizePrivacy(policy.privacy),
     chatDefaults: normalizeChatDefaults(policy.chatDefaults),
     webSearch: normalizeWebSearch(policy.webSearch),
+    subagents,
   };
+}
+
+function withoutSubagents(policy: RuntimePolicy): Omit<RuntimePolicy, 'subagents'> {
+  const { subagents: _subagents, ...legacy } = policy;
+  return legacy;
 }
 
 function normalizeMutationOperation(operation: Record<string, unknown>): RuntimePolicyMutation {
@@ -68,9 +100,88 @@ function normalizeMutationOperation(operation: Record<string, unknown>): Runtime
       return { kind: operation.kind, value: normalizeChatDefaults(operation.value) };
     case 'set_web_search':
       return { kind: operation.kind, value: normalizeWebSearch(operation.value) };
+    case 'set_subagents':
+      return { kind: operation.kind, value: normalizeSubagentSettings(operation.value) };
+    case 'patch_agent_settings':
+      return { kind: operation.kind, value: normalizeAgentRuntimeSettingsPatch(operation.value) };
     default:
       throw domainError(`runtime policy operation '${String(operation.kind)}' is unknown`);
   }
+}
+
+function normalizeAgentRuntimeSettingsPatch(value: unknown): AgentRuntimeSettingsPatch {
+  const patch = exactRecord(
+    value,
+    'agent runtime settings patch',
+    ['personalization', 'memory', 'workspaceInstructions', 'privacy', 'webSearch'],
+    [],
+  );
+  return {
+    ...(patch.personalization === undefined
+      ? {}
+      : { personalization: normalizePersonalizationPatch(patch.personalization) }),
+    ...(patch.memory === undefined ? {} : { memory: normalizeMemoryPatch(patch.memory) }),
+    ...(patch.workspaceInstructions === undefined
+      ? {}
+      : {
+          workspaceInstructions: normalizeEnabledPatch(
+            patch.workspaceInstructions,
+            'workspace instructions patch',
+          ),
+        }),
+    ...(patch.privacy === undefined ? {} : { privacy: normalizePrivacyPatch(patch.privacy) }),
+    ...(patch.webSearch === undefined
+      ? {}
+      : { webSearch: normalizeEnabledPatch(patch.webSearch, 'web search patch') }),
+  };
+}
+
+function normalizePersonalizationPatch(
+  value: unknown,
+): AgentRuntimeSettingsPatch['personalization'] {
+  const patch = exactRecord(value, 'personalization patch', ['displayName', 'assistantTone'], []);
+  return {
+    ...(patch.displayName === undefined
+      ? {}
+      : { displayName: stringValue(patch.displayName, 'personalization displayName', 256) }),
+    ...(patch.assistantTone === undefined
+      ? {}
+      : {
+          assistantTone: stringValue(patch.assistantTone, 'personalization assistantTone', 4_096),
+        }),
+  };
+}
+
+function normalizeMemoryPatch(value: unknown): AgentRuntimeSettingsPatch['memory'] {
+  const patch = exactRecord(value, 'memory patch', ['enabled', 'agentReadEnabled'], []);
+  return {
+    ...(patch.enabled === undefined
+      ? {}
+      : { enabled: booleanValue(patch.enabled, 'memory enabled') }),
+    ...(patch.agentReadEnabled === undefined
+      ? {}
+      : {
+          agentReadEnabled: booleanValue(patch.agentReadEnabled, 'memory agentReadEnabled'),
+        }),
+  };
+}
+
+function normalizePrivacyPatch(value: unknown): AgentRuntimeSettingsPatch['privacy'] {
+  const patch = exactRecord(value, 'privacy patch', ['incognitoActive'], []);
+  return {
+    ...(patch.incognitoActive === undefined
+      ? {}
+      : { incognitoActive: booleanValue(patch.incognitoActive, 'privacy incognitoActive') }),
+  };
+}
+
+function normalizeEnabledPatch(value: unknown, name: string): { readonly enabled?: boolean } {
+  const patch = exactRecord(value, name, ['enabled'], []);
+  return {
+    ...(patch.enabled === undefined
+      ? {}
+      : { enabled: booleanValue(patch.enabled, `${name} enabled`) }),
+  };
 }
 
 function normalizeNetworkProxy(value: unknown): RuntimePolicy['networkProxy'] {
@@ -139,11 +250,22 @@ function normalizePrivacy(value: unknown): RuntimePolicy['privacy'] {
 }
 
 function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
-  const item = exactRecord(value, 'chat defaults', ['permissionMode']);
+  const item = exactRecord(
+    value,
+    'chat defaults',
+    ['permissionMode', 'thinkingLevel'],
+    ['permissionMode'],
+  );
   if (!(CHAT_DEFAULT_PERMISSION_MODES as readonly unknown[]).includes(item.permissionMode)) {
     throw domainError('chat default permission mode is invalid');
   }
-  return { permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'] };
+  if (item.thinkingLevel !== undefined && !isThinkingLevel(item.thinkingLevel)) {
+    throw domainError('chat default thinking level is invalid');
+  }
+  return {
+    permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'],
+    ...(item.thinkingLevel === undefined ? {} : { thinkingLevel: item.thinkingLevel }),
+  };
 }
 
 function normalizeWebSearch(value: unknown): RuntimePolicy['webSearch'] {

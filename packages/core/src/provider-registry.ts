@@ -1,10 +1,16 @@
 import type { BackendKind } from './session.js';
-import { OPENCODE_FREE_DEFAULT_MODEL } from './bootstrap-connections.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
   GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
   GENERATED_MODELS_DEV_PROVIDER_FACTS,
 } from './model-metadata.generated.js';
+
+export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
+export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
+  OPENCODE_FREE_DEFAULT_MODEL,
+  'mimo-v2.5-free',
+  'deepseek-v4-flash-free',
+] as const;
 
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
@@ -56,6 +62,7 @@ export interface ProviderDefaults {
   authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'none';
   backendKind: BackendKind;
   fallbackModels: string[];
+  defaultEnabledModelIds?: readonly string[];
   status: 'ready' | 'phase3-experimental';
   protocol: 'anthropic' | 'openai' | 'google' | 'cohere';
   runtimeAdapter: ProviderRuntimeAdapter;
@@ -1238,6 +1245,7 @@ const providerRegistry = {
     authKind: 'none',
     backendKind: 'ai-sdk',
     fallbackModels: [...opencodeFreeModelIds],
+    defaultEnabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },

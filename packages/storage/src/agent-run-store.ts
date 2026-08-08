@@ -20,6 +20,7 @@ import {
   type EvidenceReadBudget,
 } from './bounded-evidence.js';
 import {
+  decodeSkillInvocationResult,
   DurableStoreWriteError,
   aggregateMessageContents,
   decodeAgentGraphIntentClaim,
@@ -39,6 +40,7 @@ import {
   type RootExecutionDescriptor,
   type RuntimeEvent,
   type RuntimeEventStore,
+  type SkillInvocationResult,
 } from '@maka/core';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
@@ -78,8 +80,18 @@ export interface RootTurnAdmission {
   previousRootTurnId: string | null;
   normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
+  skillInvocation?: SkillInvocationResult;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
+}
+
+export interface RootTurnStartRejection {
+  schemaVersion: 1;
+  sessionId: string;
+  turnId: string;
+  execution: RootExecutionDescriptor;
+  skillInvocation: SkillInvocationResult;
+  rejectedAt: number;
 }
 
 export interface AdmitRootTurnInput {
@@ -91,9 +103,23 @@ export interface AdmitRootTurnInput {
   previousRootTurnId: string | null;
   normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
+  skillInvocation?: SkillInvocationResult;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
 }
+
+export interface CommitRootTurnStartRejectionInput {
+  sessionId: string;
+  turnId: string;
+  execution: RootExecutionDescriptor;
+  skillInvocation: SkillInvocationResult;
+  rejectedAt: number;
+}
+
+export type CommitRootTurnStartRejectionResult =
+  | { kind: 'committed'; rejection: RootTurnStartRejection }
+  | { kind: 'existing'; rejection: RootTurnStartRejection }
+  | { kind: 'conflict'; rejection: RootTurnStartRejection };
 
 export interface RootTurnSourceMessageReceipt {
   admission: RootTurnAdmission;
@@ -119,12 +145,31 @@ export interface RootTurnAdmissionStore {
   listRootTurnAdmissionsForRecovery(sessionId: string): Promise<RootTurnAdmission[]>;
 }
 
-export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionStore {
+export interface RootTurnStartRejectionStore {
+  readRootTurnStartRejection(
+    sessionId: string,
+    turnId: string,
+  ): Promise<RootTurnStartRejection | undefined>;
+  commitRootTurnStartRejection(
+    input: CommitRootTurnStartRejectionInput,
+  ): Promise<CommitRootTurnStartRejectionResult>;
+}
+
+export interface DurableAgentRunStore
+  extends AgentRunStore,
+    RootTurnAdmissionStore,
+    RootTurnStartRejectionStore {
   findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   readEventsBounded(
     sessionId: string,
     runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
+  readEventsByTypeBounded(
+    sessionId: string,
+    runId: string,
+    type: AgentRunEventType,
     budget: EvidenceReadBudget,
   ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
   listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
@@ -393,26 +438,19 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
     assertEvidenceReadBudget(budget);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
-        FROM core_agent_run_events
-        WHERE session_id = ? AND run_id = ?
-        ORDER BY sequence
-        LIMIT ?
-      `)
-      .all(sessionId, runId, budget.maxRecords + 1) as Array<{ stored_bytes?: unknown }>;
-    const measurement = measureEvidenceRows(
-      rows,
-      budget,
-      'Invalid SQLite AgentRun evidence measurement row',
-    );
-    if (!measurement) return { status: 'limit_exceeded' };
-    return {
-      status: 'complete',
-      records: readSqliteAgentRunEventsForEvidence(this.#lease.database, sessionId, runId),
-      ...measurement,
-    };
+    return readBoundedSqliteAgentRunEvents(this.#lease.database, sessionId, runId, budget);
+  }
+
+  async readEventsByTypeBounded(
+    sessionId: string,
+    runId: string,
+    type: AgentRunEventType,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    assertEvidenceReadBudget(budget);
+    return readBoundedSqliteAgentRunEvents(this.#lease.database, sessionId, runId, budget, type);
   }
 
   async readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
@@ -471,6 +509,15 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
           ? { kind: 'existing', admission: existing }
           : { kind: 'conflict', admission: existing };
       }
+      if (
+        readSqliteRootTurnStartRejection(
+          this.#lease.database,
+          admission.sessionId,
+          admission.turnId,
+        )
+      ) {
+        throw new Error('Root Turn identity is already rejected');
+      }
       for (const source of admission.sourceMessages) {
         const proof = this.#lease.database
           .prepare(`
@@ -516,6 +563,55 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(turnId, 'Invalid turn id');
     return readSqliteRootTurnAdmission(this.#lease.database, sessionId, turnId);
+  }
+
+  async readRootTurnStartRejection(
+    sessionId: string,
+    turnId: string,
+  ): Promise<RootTurnStartRejection | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(turnId, 'Invalid turn id');
+    return readSqliteRootTurnStartRejection(this.#lease.database, sessionId, turnId);
+  }
+
+  async commitRootTurnStartRejection(
+    input: CommitRootTurnStartRejectionInput,
+  ): Promise<CommitRootTurnStartRejectionResult> {
+    const rejection = normalizeRootTurnStartRejection(input);
+    return this.#lease.transaction('write', () => {
+      const admission = readSqliteRootTurnAdmission(
+        this.#lease.database,
+        rejection.sessionId,
+        rejection.turnId,
+      );
+      if (admission) {
+        throw new Error('Root Turn identity is already admitted');
+      }
+      const existing = readSqliteRootTurnStartRejection(
+        this.#lease.database,
+        rejection.sessionId,
+        rejection.turnId,
+      );
+      if (existing) {
+        return isDeepStrictEqual(existing.execution, rejection.execution) &&
+          isDeepStrictEqual(existing.skillInvocation, rejection.skillInvocation)
+          ? { kind: 'existing', rejection: existing }
+          : { kind: 'conflict', rejection: existing };
+      }
+      this.#lease.database
+        .prepare(`
+          INSERT INTO core_root_turn_start_rejections(
+            session_id, turn_id, rejected_at, record_json
+          ) VALUES (?, ?, ?, ?)
+        `)
+        .run(
+          rejection.sessionId,
+          rejection.turnId,
+          rejection.rejectedAt,
+          JSON.stringify(rejection),
+        );
+      return { kind: 'committed', rejection };
+    });
   }
 
   async readRootTurnSourceMessageReceipt(
@@ -629,15 +725,27 @@ function readSqliteAgentRunEventsForEvidence(
   db: DatabaseSync,
   sessionId: string,
   runId: string,
+  type?: AgentRunEventType,
 ): AgentRunEvent[] {
-  const rows = db
-    .prepare(`
-      SELECT sequence, record_json
-      FROM core_agent_run_events
-      WHERE session_id = ? AND run_id = ?
-      ORDER BY sequence
-    `)
-    .all(sessionId, runId) as Array<{ sequence?: unknown; record_json?: unknown }>;
+  const rows = (
+    type === undefined
+      ? db
+          .prepare(`
+            SELECT sequence, record_json
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ?
+            ORDER BY sequence
+          `)
+          .all(sessionId, runId)
+      : db
+          .prepare(`
+            SELECT sequence, record_json
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ? AND event_type = ?
+            ORDER BY sequence
+          `)
+          .all(sessionId, runId, type)
+  ) as Array<{ sequence?: unknown; record_json?: unknown }>;
   if (rows.length === 0) return [];
   const header = readSqliteAgentRun(db, sessionId, runId);
   return rows.map((row) => {
@@ -665,6 +773,47 @@ function readSqliteAgentRunEventsForEvidence(
       };
     }
   });
+}
+
+function readBoundedSqliteAgentRunEvents(
+  db: DatabaseSync,
+  sessionId: string,
+  runId: string,
+  budget: EvidenceReadBudget,
+  type?: AgentRunEventType,
+): BoundedEvidenceReadResult<AgentRunEvent> {
+  const rows = (
+    type === undefined
+      ? db
+          .prepare(`
+            SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ?
+            ORDER BY sequence
+            LIMIT ?
+          `)
+          .all(sessionId, runId, budget.maxRecords + 1)
+      : db
+          .prepare(`
+            SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
+            FROM core_agent_run_events
+            WHERE session_id = ? AND run_id = ? AND event_type = ?
+            ORDER BY sequence
+            LIMIT ?
+          `)
+          .all(sessionId, runId, type, budget.maxRecords + 1)
+  ) as Array<{ stored_bytes?: unknown }>;
+  const measurement = measureEvidenceRows(
+    rows,
+    budget,
+    'Invalid SQLite AgentRun evidence measurement row',
+  );
+  if (!measurement) return { status: 'limit_exceeded' };
+  return {
+    status: 'complete',
+    records: readSqliteAgentRunEventsForEvidence(db, sessionId, runId, type),
+    ...measurement,
+  };
 }
 
 function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
@@ -747,6 +896,88 @@ function readSqliteRootTurnAdmission(
   return normalizeRootTurnAdmission(JSON.parse(row.record_json), sessionId, turnId);
 }
 
+function readSqliteRootTurnStartRejection(
+  db: DatabaseSync,
+  sessionId: string,
+  turnId: string,
+): RootTurnStartRejection | undefined {
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_root_turn_start_rejections
+      WHERE session_id = ? AND turn_id = ?
+    `)
+    .get(sessionId, turnId) as { record_json?: unknown } | undefined;
+  if (!row) return undefined;
+  if (typeof row.record_json !== 'string') {
+    throw new Error('Invalid root Turn start rejection row');
+  }
+  return normalizeStoredRootTurnStartRejection(JSON.parse(row.record_json), sessionId, turnId);
+}
+
+function normalizeRootTurnStartRejection(
+  input: CommitRootTurnStartRejectionInput,
+): RootTurnStartRejection {
+  return normalizeStoredRootTurnStartRejection(
+    {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      execution: input.execution,
+      skillInvocation: input.skillInvocation,
+      rejectedAt: input.rejectedAt,
+    },
+    input.sessionId,
+    input.turnId,
+  );
+}
+
+function normalizeStoredRootTurnStartRejection(
+  value: unknown,
+  sessionId: string,
+  turnId: string,
+): RootTurnStartRejection {
+  assertSafeId(sessionId, 'Invalid session id');
+  assertSafeId(turnId, 'Invalid turn id');
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, [
+      'schemaVersion',
+      'sessionId',
+      'turnId',
+      'execution',
+      'skillInvocation',
+      'rejectedAt',
+    ]) ||
+    value.schemaVersion !== 1 ||
+    value.sessionId !== sessionId ||
+    value.turnId !== turnId ||
+    !Number.isSafeInteger(value.rejectedAt) ||
+    (value.rejectedAt as number) < 0
+  ) {
+    throw new Error(`Invalid root Turn start rejection for turn ${turnId}`);
+  }
+  const execution = normalizeRootExecutionDescriptor(value.execution);
+  if (execution.kind !== 'external_message') {
+    throw new Error('Root Turn start rejection requires external message execution');
+  }
+  const skillInvocation = decodeSkillInvocationResult(value.skillInvocation);
+  if (skillInvocation.loaded.length !== 0 || skillInvocation.failed.length === 0) {
+    throw new Error('Root Turn start rejection requires only failed Skill invocations');
+  }
+  const rejection = {
+    schemaVersion: 1 as const,
+    sessionId,
+    turnId,
+    execution,
+    skillInvocation,
+    rejectedAt: value.rejectedAt as number,
+  };
+  assertRootTurnAdmissionSerializedSize(`${JSON.stringify(rejection)}\n`);
+  Object.freeze(rejection.execution);
+  return Object.freeze(rejection);
+}
+
 function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmission {
   assertSafeId(input.sessionId, 'Invalid session id');
   assertSafeId(input.turnId, 'Invalid turn id');
@@ -768,6 +999,10 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     input.sourceMessages,
   );
   const turnOrchestration = normalizeTurnOrchestration(input.turnOrchestration);
+  const skillInvocation =
+    input.skillInvocation === undefined
+      ? undefined
+      : decodeSkillInvocationResult(input.skillInvocation);
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId: input.sessionId,
@@ -778,6 +1013,7 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     previousRootTurnId: input.previousRootTurnId,
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
+    ...(skillInvocation ? { skillInvocation } : {}),
     sourceMessages,
     admittedAt: input.admittedAt,
   };
@@ -961,6 +1197,10 @@ function normalizeRootTurnAdmission(
     record.sourceMessages,
   );
   const turnOrchestration = normalizeTurnOrchestration(record.turnOrchestration);
+  const skillInvocation =
+    record.skillInvocation === undefined
+      ? undefined
+      : decodeSkillInvocationResult(record.skillInvocation);
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId,
@@ -971,6 +1211,7 @@ function normalizeRootTurnAdmission(
     previousRootTurnId: record.previousRootTurnId as string | null,
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
+    ...(skillInvocation ? { skillInvocation } : {}),
     sourceMessages,
     admittedAt: record.admittedAt as number,
   };
@@ -1205,6 +1446,7 @@ function rootTurnAdmissionPayloadsEqual(
   return (
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
+    isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput
       : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
@@ -1268,6 +1510,11 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: host-authored execution cannot have source messages',
     );
   }
+  if (admission.skillInvocation && execution.kind !== 'external_message') {
+    throw new Error(
+      'Invalid root turn admission contract: Skill invocation requires external message execution',
+    );
+  }
   if (execution.kind === 'claimed_agent_graph_intent') {
     if (
       execution.claim.targetSessionId !== admission.sessionId ||
@@ -1328,6 +1575,7 @@ function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmi
   }
   Object.freeze(admission.execution);
   if (admission.turnOrchestration) Object.freeze(admission.turnOrchestration);
+  if (admission.skillInvocation) Object.freeze(admission.skillInvocation);
   if (admission.normalizedInput) deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
     deepFreezeRootTurnMessageContent(sourceMessage.content);
@@ -1363,7 +1611,10 @@ function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boolean {
     'sourceMessages',
     'admittedAt',
   ];
-  return hasExactKeys(record, keys) || hasExactKeys(record, [...keys, 'turnOrchestration']);
+  const optionalKeys = ['turnOrchestration', 'skillInvocation'].filter((key) =>
+    Object.hasOwn(record, key),
+  );
+  return hasExactKeys(record, [...keys, ...optionalKeys]);
 }
 
 function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescriptor {
@@ -1371,16 +1622,25 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest'];
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
     }
     if (value.inputDigest !== undefined && !isSha256Digest(value.inputDigest)) {
       throw new Error('Invalid root execution descriptor');
     }
+    if (
+      value.maxSteps !== undefined &&
+      (typeof value.maxSteps !== 'number' ||
+        !Number.isSafeInteger(value.maxSteps) ||
+        value.maxSteps <= 0)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
     return Object.freeze({
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
+      ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
     });
   }
   if (value.kind === 'regenerate') {

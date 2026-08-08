@@ -42,6 +42,84 @@ test('normalizes policy input while canonical policy decode rejects producer dri
   );
 });
 
+test('preserves a valid default thinking level and rejects unknown levels', () => {
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    chatDefaults: { permissionMode: 'ask' as const, thinkingLevel: 'high' as const },
+  };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(policy).chatDefaults, policy.chatDefaults);
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 0,
+        operation: {
+          kind: 'set_chat_defaults',
+          value: { permissionMode: 'ask', thinkingLevel: 'unbounded' },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
+test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
+  const preset = {
+    id: 'fast-reader',
+    name: 'Fast reader',
+    description: 'Cheap scans',
+    profile: 'local_read' as const,
+    connectionSlug: 'openrouter',
+    model: 'openrouter/free',
+    enabled: true,
+  };
+  const policy = { ...createDefaultRuntimePolicy(), subagents: { presets: [preset] } };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(policy).subagents.presets, [preset]);
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 2,
+      operation: { kind: 'set_subagents', value: { presets: [preset] } },
+    }),
+    { expectedRevision: 2, operation: { kind: 'set_subagents', value: { presets: [preset] } } },
+  );
+});
+
+test('normalizes only the bounded agent settings patch surface', () => {
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 4,
+      operation: {
+        kind: 'patch_agent_settings',
+        value: {
+          personalization: { assistantTone: 'Be direct.' },
+          memory: { agentReadEnabled: true },
+          webSearch: { enabled: true },
+        },
+      },
+    }),
+    {
+      expectedRevision: 4,
+      operation: {
+        kind: 'patch_agent_settings',
+        value: {
+          personalization: { assistantTone: 'Be direct.' },
+          memory: { agentReadEnabled: true },
+          webSearch: { enabled: true },
+        },
+      },
+    },
+  );
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 4,
+        operation: {
+          kind: 'patch_agent_settings',
+          value: { networkProxy: { enabled: false } },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('normalizes catalog inputs while canonical entries reject noncanonical endpoints', () => {
   const input = normalizeCreateCatalogConnectionInput({
     expectedCatalogRevision: 0,

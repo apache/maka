@@ -39,6 +39,8 @@ export interface BackendSendInput {
   runId?: string;
   /** Caller-generated turn id shared by the persisted UserMessage and every emitted event. */
   turnId: string;
+  /** Trusted per-turn cap on provider tool-call steps. */
+  maxSteps?: number;
   /** Trusted effective orchestration snapshot for this run. */
   orchestration?: EffectiveOrchestration;
   /** Trusted per-run tool protocol override. Direct remains the default. */

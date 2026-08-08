@@ -250,7 +250,8 @@ export class ClientSessionSubscription
     } else if (
       (frame.kind === 'subscription.session_delta' ||
         frame.kind === 'subscription.session_event' ||
-        frame.kind === 'subscription.session_domain_changed') &&
+        frame.kind === 'subscription.session_domain_changed' ||
+        frame.kind === 'subscription.runtime_resource_pty_data') &&
       frame.sessionId !== this.#expectedSessionId
     ) {
       throw new RuntimeHostSubscriptionError(

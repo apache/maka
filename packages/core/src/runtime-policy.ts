@@ -4,9 +4,11 @@ import type {
   ModelDiscoveryResult,
   ModelInfo,
 } from './llm-connections.js';
+import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { RelayModelProfile } from './model-thinking.js';
 import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
+import type { SubagentSettings } from './subagent-settings.js';
 import {
   WEB_SEARCH_PROVIDERS,
   type WebSearchCredentialProvider,
@@ -21,6 +23,7 @@ export {
 } from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
+  decodeLegacyRuntimePolicyV1,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
 export {
@@ -95,16 +98,26 @@ export interface RuntimePolicy {
   };
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
+    readonly thinkingLevel?: ThinkingLevel;
   };
   readonly webSearch: {
     readonly enabled: boolean;
     readonly defaultProvider: WebSearchProvider;
   };
+  readonly subagents: SubagentSettings;
 }
 
 export interface RuntimePolicySnapshot {
   readonly revision: Revision;
   readonly policy: RuntimePolicy;
+}
+
+export interface AgentRuntimeSettingsPatch {
+  readonly personalization?: Partial<RuntimePolicy['personalization']>;
+  readonly memory?: Partial<RuntimePolicy['memory']>;
+  readonly workspaceInstructions?: Partial<RuntimePolicy['workspaceInstructions']>;
+  readonly privacy?: Partial<RuntimePolicy['privacy']>;
+  readonly webSearch?: Pick<Partial<RuntimePolicy['webSearch']>, 'enabled'>;
 }
 
 export type RuntimePolicyMutation =
@@ -117,7 +130,9 @@ export type RuntimePolicyMutation =
     }
   | { readonly kind: 'set_privacy'; readonly value: RuntimePolicy['privacy'] }
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
-  | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] };
+  | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
+  | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
+  | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
 export interface MutateRuntimePolicyInput {
   readonly expectedRevision: Revision;
@@ -146,6 +161,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     privacy: { incognitoActive: false },
     chatDefaults: { permissionMode: 'ask' },
     webSearch: { enabled: false, defaultProvider: 'model' },
+    subagents: { presets: [] },
   };
 }
 

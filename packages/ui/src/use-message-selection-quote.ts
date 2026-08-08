@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
+import { flushSync } from 'react-dom';
 import {
   resolveQuoteTarget,
   type QuoteScopeNode,
@@ -102,7 +103,9 @@ export function useMessageSelectionQuote(
     function onSelectionChange(): void {
       // Hide first, re-show only once the selection settles: a layer anchored
       // to the previous selection is wrong the moment that selection changes.
-      setQuote(null);
+      // This listener is outside React's event system, so concurrent rendering
+      // may otherwise leave the stale layer painted for another frame.
+      flushSync(() => setQuote(null));
       window.clearTimeout(settleTimer);
       settleTimer = window.setTimeout(settle, SELECTION_SETTLE_MS);
     }

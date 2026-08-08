@@ -302,31 +302,40 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed[0]?.finalOutput, 'Host answer');
   });
 
-  test('fails closed for a legacy resumed Session whose Host cwd is not canonical', async () => {
+  test('canonicalizes a legacy resumed Session through Host authority', async () => {
     const fixture = runFixture({
       sessionCwdOverride: { sessionId: 'session-legacy', cwd: '/canonical-workspace' },
       switchSummaryCwd: '/workspace-link',
     });
 
-    await assert.rejects(
-      collect(
-        fixture.context.runtime.sendMessage('session-legacy', {
-          turnId: 'turn-1',
-          text: 'resume safely',
-        }),
-      ),
-      new Error(
-        'Runtime Host cannot resume Session session-legacy: its stored working directory is not canonical',
-      ),
+    await collect(
+      fixture.context.runtime.sendMessage('session-legacy', {
+        turnId: 'turn-1',
+        text: 'resume safely',
+      }),
     );
+
+    assert.deepEqual(fixture.moves, ['/canonical-workspace']);
   });
 
-  test('fails explicitly instead of ignoring an unsupported Host step cap', () => {
+  test('applies the requested step cap through the Host turn', async () => {
     const fixture = runFixture({ maxSteps: 3 });
-    assert.throws(
-      () => fixture.context,
-      new Error('--max-steps is not available through the Runtime Host yet'),
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await collect(
+      fixture.context.runtime.sendMessage(session.id, {
+        turnId: 'turn-with-step-cap',
+        text: 'answer within the cap',
+      }),
     );
+
+    assert.deepEqual(fixture.preparedMaxSteps, [3]);
   });
 
   test('never selects a discovered model that the Host has not enabled', () => {
@@ -585,6 +594,7 @@ function runFixture(input: {
   finalMessages?: StoredMessage[];
 }) {
   const switches: string[] = [];
+  const moves: string[] = [];
   const graphStops: string[] = [];
   const exactTurnStops: { sessionId: string; turnId: string; runId: string }[] = [];
   const sandboxResponses: { requestId: string; decision: 'deny' }[] = [];
@@ -594,6 +604,7 @@ function runFixture(input: {
     (sessionId: string, turnId: string, messages: StoredMessage[]) => void
   >();
   let messageReads = 0;
+  const preparedMaxSteps: Array<number | undefined> = [];
   const driver = {
     createSession: async () => sessionSummary('session-created'),
     readMessages: async () => {
@@ -649,7 +660,20 @@ function runFixture(input: {
         messages: [],
       };
     },
-    preparePrompt: async (_prompt: string, options: { turnId?: string } = {}) => {
+    moveSession: async (cwd: string) => {
+      moves.push(cwd);
+      return {
+        previousCwd: input.switchSummaryCwd ?? '/workspace',
+        cwd,
+        changed: true,
+        oldCwdDirty: false,
+      };
+    },
+    preparePrompt: async (
+      _prompt: string,
+      options: { turnId?: string; maxSteps?: number } = {},
+    ) => {
+      preparedMaxSteps.push(options.maxSteps);
       input.onPrepareStarted?.();
       await input.prepareGate;
       const events = input.turnEvents ?? eventsFor(options.turnId ?? 'turn-1', 'Host answer');
@@ -736,8 +760,10 @@ function runFixture(input: {
       return context;
     },
     switches,
+    moves,
     graphStops,
     exactTurnStops,
+    preparedMaxSteps,
     sandboxResponses,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
       for (const listener of pendingInteractionListeners) listener(structuredClone(pending));

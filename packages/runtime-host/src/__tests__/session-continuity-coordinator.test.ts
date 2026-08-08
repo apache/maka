@@ -19,6 +19,7 @@ import {
 } from '../server/session-continuity-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
+import { ClientSessionSubscription } from '../client/session-subscription.js';
 
 const HOST_EPOCH = 'host-epoch';
 const SESSION_ID = 'session-1';
@@ -407,6 +408,36 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   coordinator.close();
 });
 
+test('publishes live PTY bytes on the source Session continuity sequence', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.enqueueRuntimeResourcePtyData({
+    sessionId: SESSION_ID,
+    ref: 'maka://runtime/background-tasks/shell-1',
+    sequence: 5,
+    data: 'ready',
+  });
+  assert.deepEqual(sink.frames[0], {
+    kind: 'subscription.runtime_resource_pty_data',
+    hostEpoch: HOST_EPOCH,
+    subscriptionId: opened.subscriptionId,
+    sequence: 1,
+    sessionId: SESSION_ID,
+    ref: 'maka://runtime/background-tasks/shell-1',
+    ptySequence: 5,
+    data: 'ready',
+  });
+  coordinator.close();
+});
+
 test('slow subscriber receives a terminal eviction without delaying another subscriber', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
@@ -666,6 +697,75 @@ test('an in-flight transcript read cannot outlive its owning connection', async 
   coordinator.close();
 });
 
+test('rejoin seeds tool_result_preview at the open nextSequence without sequence_gap', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', previewEvent());
+
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-rejoin', sink);
+  const opened = await open(coordinator, 'connection-rejoin');
+  assert.equal(opened.nextSequence, 1);
+
+  connection.activate(opened.subscriptionId);
+  await delayImmediate();
+  assert.equal(sink.frames.length, 1);
+  assert.equal(sink.frames[0]?.sequence, 1);
+  assert.equal(sink.frames[0]?.kind, 'subscription.session_event');
+  if (sink.frames[0]?.kind !== 'subscription.session_event') return;
+  assert.equal(sink.frames[0].event.type, 'tool_result_preview');
+
+  const client = new ClientSessionSubscription(
+    opened,
+    async () => {},
+    async () => {
+      throw new Error('transcript unused');
+    },
+  );
+  assert.doesNotThrow(() => client.accept(sink.frames[0]!));
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('tool_result clears retained tool_result_preview so a later open does not seed it', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', previewEvent());
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    isError: false,
+    content: { kind: 'text', text: '' },
+  });
+
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-after-settle', sink);
+  const opened = await open(coordinator, 'connection-after-settle');
+  assert.equal(opened.nextSequence, 1);
+  connection.activate(opened.subscriptionId);
+  await delayImmediate();
+  assert.equal(
+    sink.frames.some(
+      (frame) =>
+        frame.kind === 'subscription.session_event' && frame.event.type === 'tool_result_preview',
+    ),
+    false,
+  );
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 
@@ -820,6 +920,25 @@ function textEvent(index: number) {
     ts: index,
     messageId: 'message-1',
     text: `chunk-${index}`,
+  };
+}
+
+function previewEvent() {
+  return {
+    type: 'tool_result_preview' as const,
+    id: 'preview-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-1',
+    isError: false,
+    content: {
+      kind: 'subagent' as const,
+      childSessionId: 'child-1',
+      agentName: 'Local Read',
+      turnId: 'child-turn',
+      status: 'running' as const,
+      permissionMode: 'explore' as const,
+    },
   };
 }
 

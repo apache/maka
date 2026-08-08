@@ -13,7 +13,13 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
-  test('declares two ready commands with bounded mutation errors', () => {
+  test('declares ready commands with bounded mutation errors', () => {
+    assert.deepEqual(Object.keys(CONNECTION_EFFECT_OPERATION_SPECS).sort(), [
+      'connection.models.fetch',
+      'connection.onboarding.save',
+      'connection.onboarding.verify',
+      'connection.test.run',
+    ]);
     for (const operation of Object.keys(CONNECTION_EFFECT_OPERATION_SPECS) as Array<
       keyof typeof CONNECTION_EFFECT_OPERATION_SPECS
     >) {
@@ -38,6 +44,50 @@ describe('Runtime Host connection effects protocol', () => {
         },
       );
     }
+  });
+
+  test('bounds transient onboarding secrets, models, and save selections', () => {
+    const verify = request('connection.onboarding.verify', {
+      providerType: 'openrouter',
+      apiKey: 'transient-secret',
+    });
+    const save = request('connection.onboarding.save', {
+      providerType: 'openrouter',
+      apiKey: 'transient-secret',
+      enabledModelIds: ['openrouter/free'],
+    });
+    assert.deepEqual(decodeClientFrame(verify), verify);
+    assert.deepEqual(decodeClientFrame(save), save);
+    assert.deepEqual(
+      decodeHostFrame(
+        response('connection.onboarding.verify', {
+          kind: 'verified',
+          models: [{ id: 'openrouter/free', contextWindow: 128_000 }],
+        }),
+      ),
+      response('connection.onboarding.verify', {
+        kind: 'verified',
+        models: [{ id: 'openrouter/free', contextWindow: 128_000 }],
+      }),
+    );
+    assert.deepEqual(
+      decodeHostFrame(response('connection.onboarding.save', { kind: 'saved' })),
+      response('connection.onboarding.save', { kind: 'saved' }),
+    );
+    assertInvalidRequest('connection.onboarding.save', {
+      providerType: 'openrouter',
+      apiKey: null,
+      enabledModelIds: [],
+    });
+    assertInvalidResponse('connection.onboarding.verify', {
+      kind: 'verified',
+      models: [],
+    });
+    assertInvalidResponse('connection.onboarding.save', {
+      kind: 'failed',
+      errorClass: 'auth',
+      secret: 'forbidden',
+    });
   });
 
   test('requires a stable connection identity and an explicit nullable test model', () => {

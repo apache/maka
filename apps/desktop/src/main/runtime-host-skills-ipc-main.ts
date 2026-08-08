@@ -28,7 +28,7 @@ import type {
   DesktopRuntimeHostClient,
   DesktopSkillCatalogSnapshot,
 } from "./runtime-host-client.js";
-import { resolveSkillOpenPath } from "./skills.js";
+import { resolveSkillOpenPath } from "./skill-open-path.js";
 
 const MAX_REVISION_ATTEMPTS = 3;
 
@@ -75,26 +75,20 @@ export function registerRuntimeHostSkillsIpc(
 
   deps.ipcMain.handle(
     "skills:listInvocable",
-    async (_event, sessionId?: unknown) => {
-      const projectRoot = await resolveSkillProjectRoot(
-        deps,
-        typeof sessionId === "string" ? sessionId : undefined,
+    async (_event, sessionId?: unknown, newSessionContext?: unknown) => {
+      const target =
+        typeof sessionId === "string"
+          ? { kind: "session" as const, sessionId }
+          : {
+              kind: "new_session" as const,
+              context: { projectRoot: await deps.getCurrentProjectRoot() },
+              collaborationMode:
+                normalizeNewSessionCollaborationMode(newSessionContext) ??
+                "agent",
+            };
+      return (await deps.client.listInvocableSkills(target)).map(
+        (item): InvocableSkillEntry => ({ ...item }),
       );
-      const snapshot = await deps.client.loadSkillCatalog(
-        { projectRoot },
-        "governance",
-      );
-      return snapshot.items
-        .filter(isGovernanceItem)
-        .filter(isInvocable)
-        .map(
-          (item): InvocableSkillEntry => ({
-            ref: item.ref,
-            id: item.id,
-            name: item.name,
-            description: item.description,
-          }),
-        );
     },
   );
 
@@ -323,9 +317,7 @@ export function registerRuntimeHostSkillsIpc(
         deps.workspaceRoot,
         idOrRef,
         target,
-        {
-          cwd: projectRoot,
-        },
+        projectRoot,
       );
       if (!resolved.ok) return resolved;
       const error = await deps.openPath(resolved.path);
@@ -365,33 +357,18 @@ async function loadSkillPaths(
   ]);
 }
 
-async function resolveSkillProjectRoot(
-  deps: RuntimeHostSkillsIpcDeps,
-  sessionId: string | undefined,
-): Promise<string> {
-  if (!sessionId) return deps.getCurrentProjectRoot();
-  const session = await deps.client.getSession(sessionId);
-  return session?.cwd ?? deps.getCurrentProjectRoot();
-}
-
 function isGovernanceItem(
   item: DesktopSkillCatalogSnapshot["items"][number],
 ): item is SkillCatalogGovernanceItem {
   return item.kind === "skill" || item.kind === "discovery_diagnostic";
 }
 
-function isInvocable(item: SkillCatalogGovernanceItem): boolean {
-  return (
-    item.kind === "skill" &&
-    item.enabled &&
-    item.runtimeStatus === "enabled" &&
-    item.validationStatus !== "metadata_error" &&
-    item.contextStatus !== "disabled" &&
-    item.contextStatus !== "invalid" &&
-    item.contextStatus !== "host_incompatible" &&
-    item.contextStatus !== "shadowed" &&
-    item.contextStatus !== "budget"
-  );
+function normalizeNewSessionCollaborationMode(
+  input: unknown,
+): "agent" | "plan" | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const value = (input as Record<string, unknown>).collaborationMode;
+  return value === "agent" || value === "plan" ? value : undefined;
 }
 
 function resolveGovernanceItem(
@@ -523,9 +500,7 @@ async function resolveProjectedPath(
   projectRoot: string,
   ref: string,
 ): Promise<string> {
-  const resolved = await resolveSkillOpenPath(workspaceRoot, ref, "file", {
-    cwd: projectRoot,
-  });
+  const resolved = await resolveSkillOpenPath(workspaceRoot, ref, "file", projectRoot);
   return resolved.ok ? resolved.path : "";
 }
 

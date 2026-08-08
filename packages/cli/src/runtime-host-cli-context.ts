@@ -1,3 +1,4 @@
+import { NO_REAL_CONNECTION_CODE } from '@maka/core';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   connectOrSpawnRuntimeHost,
@@ -27,6 +28,7 @@ export async function connectRuntimeHostCli(
   input: {
     readonly rootPath: string;
     readonly surface: ClientSurface;
+    readonly legacyConfigurationRoot?: string;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
 ): Promise<RuntimeHostCliConnectionContext> {
@@ -43,6 +45,9 @@ export async function connectRuntimeHostCli(
     surface: input.surface,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
     candidateEntrypoint: deps.executionCandidateEntrypoint,
+    ...(input.legacyConfigurationRoot
+      ? { legacyConfigurationRoot: input.legacyConfigurationRoot }
+      : {}),
   });
   if (connected.kind === 'incompatible') {
     throw new Error(
@@ -80,7 +85,7 @@ export function resolveRuntimeHostCliTarget(
     throw new Error(
       input.connectionSlug
         ? `Runtime Host model connection is unavailable: ${input.connectionSlug}`
-        : 'Runtime Host has no default model connection',
+        : `${NO_REAL_CONNECTION_CODE}:missing_default_connection: Runtime Host has no default model connection`,
     );
   }
   const model =

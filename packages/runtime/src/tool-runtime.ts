@@ -15,6 +15,7 @@ import type {
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
   SessionEvent,
+  ToolResultPreviewContent,
   SandboxDenialSignal,
   ToolActivityKind,
   ToolOutputStream,
@@ -213,6 +214,7 @@ export interface MakaToolContext {
       runId: string;
       agentId: string;
       agentName: string;
+      permissionMode: PermissionMode;
     }) => void | Promise<void>;
     onEvent?: (event: SessionEvent) => void;
   }) => Promise<unknown>;
@@ -380,6 +382,7 @@ export interface ToolRuntimeInput {
       runId: string;
       agentId: string;
       agentName: string;
+      permissionMode: PermissionMode;
     }) => void | Promise<void>;
     onEvent?: (event: SessionEvent) => void;
   }) => Promise<unknown>;
@@ -1340,6 +1343,8 @@ export class ToolRuntime {
             trace,
             toolUseId,
             toolName: tool.name,
+            queue,
+            activityIdentity,
           }),
           askUserQuestion: (questions) =>
             this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
@@ -1845,6 +1850,13 @@ export class ToolRuntime {
     trace: RunTraceLike | null;
     toolUseId: string;
     toolName: string;
+    queue: DurableSessionEventSink;
+    activityIdentity: {
+      origin?: 'provider' | 'code_mode';
+      modelVisibility?: 'visible' | 'hidden';
+      parentToolCallId?: string;
+      parentOperationId?: string;
+    };
   }): Pick<
     MakaToolContext,
     | 'spawnChildAgent'
@@ -1987,7 +1999,30 @@ export class ToolRuntime {
                     prompt: spawnInput.prompt,
                     ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
                     abortSignal,
-                    ...(spawnInput.onReady ? { onReady: spawnInput.onReady } : {}),
+                    onReady: async (ready) => {
+                      // Live-only Open for linked agent_spawn while the tool
+                      // is still in flight. Terminal outcome remains tool_result.
+                      input.queue.push({
+                        type: 'tool_result_preview',
+                        id: this.input.newId(),
+                        turnId: input.turnId,
+                        ts: this.input.now(),
+                        toolUseId: input.toolUseId,
+                        isError: false,
+                        content: {
+                          kind: 'subagent',
+                          childSessionId: ready.childSessionId,
+                          agentId: ready.agentId,
+                          agentName: ready.agentName,
+                          turnId: ready.turnId,
+                          runId: ready.runId,
+                          status: 'running',
+                          permissionMode: ready.permissionMode,
+                        } satisfies ToolResultPreviewContent,
+                        ...input.activityIdentity,
+                      });
+                      await spawnInput.onReady?.(ready);
+                    },
                     ...(spawnInput.onEvent ? { onEvent: spawnInput.onEvent } : {}),
                   }),
               );
@@ -2162,10 +2197,9 @@ export class ToolRuntime {
       // unconditionally a few lines above, so that guard answers only an
       // embedder that builds its own context — never a production tool call.
       //
-      // This one does fire in production. The desktop app supplies both store
-      // callbacks unconditionally (`session-stream.ts`), but the CLI supplies
-      // them only on the `tui` surface (`runtime-bootstrap.ts`), so every
-      // non-TUI CLI surface reaches here for any call that is not a hosted run.
+      // This remains part of the embedding API. Runtime Host supplies the
+      // interaction capability for production clients, while an embedder can
+      // still construct ToolRuntime without one.
       throw new Error(SANDBOX_BOUNDARY_UNAVAILABLE);
     }
     const normalized = await racePromiseWithAbort(

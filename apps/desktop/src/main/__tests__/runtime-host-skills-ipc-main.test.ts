@@ -45,3 +45,40 @@ test('keeps a resolved Skill mutation on one project root', async () => {
   assert.deepEqual(catalogContexts, ['/tmp/project-a', '/tmp/project-a']);
   assert.deepEqual(mutationContexts, ['/tmp/project-a', '/tmp/project-a']);
 });
+
+test('requests the Host-owned invocable projection for existing and new Sessions', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const targets: unknown[] = [];
+  registerRuntimeHostSkillsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      listInvocableSkills: async (target: unknown) => {
+        targets.push(target);
+        return [{ ref: 'project:review', id: 'review', name: 'Review', description: 'Review code' }];
+      },
+    } as never,
+    workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
+    mainWindowController: {} as never,
+    getCurrentProjectRoot: async () => '/tmp/project-a',
+    openPath: async () => '',
+  });
+
+  const list = handlers.get('skills:listInvocable');
+  assert.ok(list);
+  assert.deepEqual(await list({}, 'session-1'), [
+    { ref: 'project:review', id: 'review', name: 'Review', description: 'Review code' },
+  ]);
+  await list({}, undefined, { collaborationMode: 'plan', model: 'ignored-model' });
+  assert.deepEqual(targets, [
+    { kind: 'session', sessionId: 'session-1' },
+    {
+      kind: 'new_session',
+      context: { projectRoot: '/tmp/project-a' },
+      collaborationMode: 'plan',
+    },
+  ]);
+});

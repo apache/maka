@@ -11,9 +11,10 @@ const DESKTOP_ROOT = process.cwd();
 
 /**
  * Startup signal the main process prints synchronously right before showing
- * the repair modal (see `confirmDesktopStorageRootRepair` in boot.ts). It is
+ * the repair modal (see `confirmDesktopStorageRootRepair` in
+ * `runtime-host-boot.ts`). It is
  * an explicit contract between the app and this test: it can only be printed
- * after `ready` — the whole boot module runs inside the `whenReady` callback —
+ * after `ready` — startup runs inside the `whenReady` callback —
  * and only when the root-identity gate fired, so seeing it proves both
  * invariants at once.
  *

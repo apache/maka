@@ -26,7 +26,7 @@ const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
-const PROCESS_TIMEOUT_MS = 10_000;
+const PROCESS_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 10_000;
 const BULK_ARTIFACT_COUNT = 24;
 const BULK_ARTIFACT_SUMMARY = 's'.repeat(7 * 1024);
 const MAX_ARTIFACT_ID = 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS);
@@ -36,7 +36,6 @@ const PROTECTED_ARTIFACTS = [
 ] as const;
 
 test('production Host recovers Artifact publication and preserves deletes across owner death', {
-  skip: process.platform === 'win32' ? 'POSIX process death gate' : false,
   timeout: 120_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-artifacts-'));
@@ -268,8 +267,10 @@ async function seedExecutionRoot(
 ): Promise<{ readonly sessionId: string; readonly otherSessionId: string }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner, 'Artifact test could not acquire the interactive root owner');
+  let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+  let artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
   try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
       backend: 'fake',
@@ -284,11 +285,12 @@ async function seedExecutionRoot(
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
+    const openedArtifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    artifacts = openedArtifacts;
+    await openedArtifacts.recover();
     await Promise.all([
       ...Array.from({ length: 130 }, (_, index) =>
-        artifacts.create({
+        openedArtifacts.create({
           id: index === 2 ? MAX_ARTIFACT_ID : `artifact-${index.toString().padStart(3, '0')}`,
           sessionId: session.id,
           turnId: 'turn-1',
@@ -300,7 +302,7 @@ async function seedExecutionRoot(
           now: 10_000 - index,
         }),
       ),
-      artifacts.create({
+      openedArtifacts.create({
         id: 'small-text',
         sessionId: session.id,
         turnId: 'turn-1',
@@ -311,7 +313,7 @@ async function seedExecutionRoot(
         source: 'fixture',
         now: 20_000,
       }),
-      artifacts.create({
+      openedArtifacts.create({
         id: 'small-binary',
         sessionId: session.id,
         turnId: 'turn-1',
@@ -322,7 +324,7 @@ async function seedExecutionRoot(
         source: 'fixture',
         now: 19_999,
       }),
-      artifacts.create({
+      openedArtifacts.create({
         id: 'replacement-expanded-text',
         sessionId: session.id,
         turnId: 'turn-1',
@@ -334,7 +336,7 @@ async function seedExecutionRoot(
         now: 9_000,
       }),
       ...PROTECTED_ARTIFACTS.map((artifact, index) =>
-        artifacts.create({
+        openedArtifacts.create({
           id: artifact.id,
           sessionId: session.id,
           turnId: 'turn-1',
@@ -348,7 +350,7 @@ async function seedExecutionRoot(
       ),
       ...Array.from({ length: BULK_ARTIFACT_COUNT }, (_, index) => {
         const id = `bulk-${index.toString().padStart(3, '0')}`;
-        return artifacts.create({
+        return openedArtifacts.create({
           id,
           sessionId: session.id,
           turnId: 'turn-1',
@@ -364,6 +366,8 @@ async function seedExecutionRoot(
     ]);
     return { sessionId: session.id, otherSessionId: otherSession.id };
   } finally {
+    artifacts?.close();
+    await stores?.sessionStore.close?.();
     await owner.close();
   }
 }
@@ -402,7 +406,7 @@ async function startHost(root: string, rootId: string): Promise<ExecutionHostHan
 
 async function stopHost(host: ExecutionHostHandle): Promise<void> {
   if (host.child.exitCode === null && host.child.signalCode === null) {
-    host.child.kill('SIGTERM');
+    host.child.send({ type: 'shutdown' });
   }
   const exit = await withTimeout(
     waitForExitResult(host.child),

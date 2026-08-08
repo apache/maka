@@ -21,6 +21,7 @@ import {
 } from '@maka/core/model-thinking';
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import {
   projectRevisionLinkedSessionTree,
   type QueueEnqueueOutcome,
@@ -36,22 +37,16 @@ import {
 import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
-  MakaCliSkillSurface,
   MakaForeignSessionReader,
   MakaOnboardingSurface,
-  MakaPiTuiGoalLifecycle,
+  MakaPiTuiTurnActivitySurface,
   ModelChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
-import {
-  listInvocableSkills,
-  prepareSkillInvocationMessage,
-  type InvocableSkillEntry,
-} from '@maka/runtime';
+import type { InvocableSkillEntry } from '@maka/runtime';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
-import { parseSkillInvocationTokens } from './skill-token.js';
 import {
   parseGraphCommand,
   parseSwarmCommand,
@@ -155,17 +150,10 @@ export interface MakaPiTuiInput {
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
-  /**
-   * Explicit skill invocation surface (issue #1148). When present, `/skill:<name>`
-   * tokens are highlighted in the editor, completed by autocomplete, listed by
-   * `/skill`, and resolved + injected by the CLI at submit time. Omitting it
-   * disables the whole feature (tests, minimal hosts).
-   */
-  skills?: MakaCliSkillSurface;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
-  /** Mandatory turn ownership shared with CLI Automation and Goal continuation. */
-  goalLifecycle: MakaPiTuiGoalLifecycle;
+  /** Serializes TUI turn and control activity for the attached Session. */
+  turnActivity: MakaPiTuiTurnActivitySurface;
   /** API-key onboarding surface (#1098). When present, /setup runs the wizard,
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
@@ -267,7 +255,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
-  let unbindGoalHost: (() => void) | undefined;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -402,7 +389,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const listSkillsCached = async (
     forceRefresh = false,
   ): Promise<readonly InvocableSkillEntry[]> => {
-    if (!input.skills && !input.listSkills) return [];
+    if (!input.listSkills) return [];
     if (
       !forceRefresh &&
       skillListCache &&
@@ -412,9 +399,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return skillListCache.entries;
     }
     try {
-      const entries = input.skills
-        ? await listInvocableSkills(input.skills.source(cwd), input.skills.host)
-        : [...(await input.listSkills!(cwd))];
+      const entries = [...(await input.listSkills(cwd))];
       skillListCache = { cacheCwd: cwd, at: Date.now(), entries };
       // The highlight validator must be sync and cheap (one lookup per token
       // per render): a flat Set over lowercase ids AND display names, since a
@@ -445,47 +430,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     too_many_requests: '调用请求过多',
   };
 
-  interface PreparedSkillPrompt {
-    disposition: 'passthrough' | 'ready' | 'blocked';
-    sendText?: string;
-    loadedNames: string[];
-    warnings: string[];
-  }
-
-  // Resolve `/skill:<name>` tokens through the shared Runtime contract. Failed
-  // invocation tokens never reach the model; when all requests fail, Runtime
-  // returns a bounded receipt and the TUI does not create a provider turn.
-  const prepareSkillInvocation = async (prompt: string): Promise<PreparedSkillPrompt> => {
-    if (!input.skills) {
-      return { disposition: 'passthrough', sendText: prompt, loadedNames: [], warnings: [] };
-    }
-    const prepared = await prepareSkillInvocationMessage({
-      text: prompt,
-      source: input.skills.source(cwd),
-      host: input.skills.host,
-    });
-    const failed = prepared.skillInvocation.failed;
+  const showSkillInvocation = (skillInvocation: SkillInvocationResult): void => {
+    const failed = skillInvocation.failed;
     const failedLabels = failed.map((entry) =>
       entry.reason === 'too_many_requests'
         ? `请求超过 ${entry.requestLimit} 个上限（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason]}）`
         : `/skill:${entry.request}（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason] ?? entry.reason}）`,
     );
-    const warnings =
-      failed.length > 0
-        ? [
-            `未能加载技能 ${failedLabels.join('、')}；${
-              prepared.disposition === 'blocked'
-                ? '未发起模型请求。'
-                : '失败的调用标记未发送给模型。'
-            }`,
-          ]
-        : [];
-    return {
-      disposition: prepared.disposition,
-      ...('sendText' in prepared ? { sendText: prepared.sendText } : {}),
-      loadedNames: prepared.skillInvocation.loaded.map((skill) => skill.name),
-      warnings,
-    };
+    if (failed.length > 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: `未能加载技能 ${failedLabels.join('、')}；${
+          skillInvocation.loaded.length === 0 ? '未发起模型请求。' : '失败的调用标记未发送给模型。'
+        }`,
+      });
+    }
+    if (skillInvocation.loaded.length > 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: `已加载技能：${skillInvocation.loaded.map((skill) => skill.name).join('、')}`,
+      });
+    }
+    requestRender();
   };
 
   // 1-second heartbeat that re-renders the activity strip's elapsed counter
@@ -542,7 +510,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let sessionActivity: SessionActivityLease | undefined;
     try {
       const sessionId = input.driver.getSessionId();
-      if (sessionId) sessionActivity = await input.goalLifecycle.activities.acquire(sessionId);
+      if (sessionId) sessionActivity = await input.turnActivity.activities.acquire(sessionId);
       if (closed) return;
       await action();
     } catch (error) {
@@ -569,8 +537,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const restoreTerminal = () => {
     removeProcessHandlers();
-    unbindGoalHost?.();
-    unbindGoalHost = undefined;
     unsubscribeSessionTitleChanges();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
@@ -740,69 +706,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // is the idle-return submission that triggers the recap below.
     promptSeq += 1;
     maybeTriggerAutoRecap(idleMs);
-    if (!input.skills || parseSkillInvocationTokens(prompt).length === 0) {
-      void runAgentTurn({
-        kind: 'external',
-        prompt,
-        sessionId: input.driver.getSessionId(),
-      });
-      return;
-    }
-    void submitPreparedUserPrompt(prompt);
-  };
-
-  // Resolve skill-invocation tokens, then open the turn. Hold both `busy` and
-  // `editor.disableSubmit` for the async prep window: pi-tui clears the draft
-  // before onSubmit, so a second Enter during prep must not be accepted (it
-  // would be dropped by the busy guard with the draft already gone).
-  // runAgentTurn re-asserts busy for the turn itself and re-enables submit so
-  // mid-turn Enter can still steer.
-  const submitPreparedUserPrompt = async (prompt: string) => {
-    busy = true;
-    const preparationActivity = beginActivity();
-    editor.disableSubmit = true;
-    let handedOff = false;
-    try {
-      const prepared = await prepareSkillInvocation(prompt);
-      // Prep is async (skill scan). If the TUI closed mid-scan (double Ctrl-C /
-      // SIGTERM), do not open a turn after the shell is gone.
-      if (closed) return;
-      for (const warning of prepared.warnings) {
-        state.entries.push({ kind: 'notice', level: 'info', text: warning });
-      }
-      if (prepared.loadedNames.length > 0) {
-        state.entries.push({
-          kind: 'notice',
-          level: 'info',
-          text: `已加载技能：${prepared.loadedNames.join('、')}`,
-        });
-      }
-      if (prepared.disposition === 'blocked') return;
-      // Hand off to the turn: runAgentTurn re-asserts busy and re-enables
-      // submit so mid-turn Enter can steer. Clearing disableSubmit only there
-      // keeps the prep window closed until the turn owns the flags.
-      void runAgentTurn({
-        kind: 'external',
-        prompt,
-        sessionId: input.driver.getSessionId(),
-        ...(prepared.sendText !== undefined && prepared.sendText !== prompt
-          ? { sendText: prepared.sendText }
-          : {}),
-      });
-      handedOff = true;
-    } catch (error) {
-      if (closed) return;
-      reportError(error);
-    } finally {
-      if (!handedOff) {
-        busy = false;
-        editor.disableSubmit = false;
-        requestRender();
-      }
-      // A successful handoff already installed the turn's activity as current;
-      // releasing preparation now wakes observers into that new busy period.
-      preparationActivity.finish();
-    }
+    void runAgentTurn({
+      kind: 'external',
+      prompt,
+      sessionId: input.driver.getSessionId(),
+    });
   };
 
   // Fallback handoff owner. A `fallback` outcome while the turn is running
@@ -1051,8 +959,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     submitPrompt(prompt);
   };
 
-  // Runs one agent turn through the shared activity/drain lifecycle. Shared by
-  // user submits, queued follow-ups, and coordinator-owned goal injections.
+  // Runs one visible agent turn through the shared activity/drain lifecycle.
   function runAgentTurn(
     request: MakaPiTuiTurnRequest,
     authoritativeAttachedTurn?: MakaAttachedSessionTurn,
@@ -1064,14 +971,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     startTurnElapsedTicker();
     interruptRequested = false;
     lastTurnEscapeAt = 0;
-    // Re-enable submit after skill-prep's disableSubmit hold: Enter must steer
-    // a running turn (see editor.onSubmit) instead of being swallowed.
     editor.disableSubmit = false;
     terminal.setProgress(true);
     attention.promptTurnStarted();
     requestRender();
 
     let permissionAlerted = false;
+    let optimisticUserEntry: (typeof state.entries)[number] | undefined;
     const finishTurnUi = () => {
       turnRunning = false;
       turnStartedAt = undefined;
@@ -1087,14 +993,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
     return runMakaPiTuiTurn({
       driver: input.driver,
-      lifecycle: input.goalLifecycle,
+      turnActivity: input.turnActivity,
       request,
       // A requested stop converges through the authoritative event stream.
       // Cutting the iterator short here would make the UI appear idle before
       // the runtime has emitted its terminal event and accepted the stop.
       shouldAbort: () => closed,
       onStart: () => {
-        if (request.kind !== 'attached') appendUserPrompt(state, request.prompt);
+        if (request.kind !== 'attached') {
+          appendUserPrompt(state, request.prompt);
+          optimisticUserEntry = state.entries.at(-1);
+        }
         requestRender();
       },
       onPrepared: async (turn) => {
@@ -1110,6 +1019,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         if (turn.summary) adoptSessionMetadata(turn.summary);
+      },
+      onSkillInvocation: (skillInvocation) => {
+        if (
+          skillInvocation.loaded.length === 0 &&
+          skillInvocation.failed.length > 0 &&
+          optimisticUserEntry
+        ) {
+          const index = state.entries.indexOf(optimisticUserEntry);
+          if (index >= 0) state.entries.splice(index, 1);
+          optimisticUserEntry = undefined;
+        }
+        showSkillInvocation(skillInvocation);
       },
       onEvent: (event) => {
         if (
@@ -1285,41 +1206,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       attached.kind === 'external' ? attached.turn : undefined,
     );
   };
-
-  try {
-    unbindGoalHost = input.goalLifecycle.bindHost({
-      admitTurn: (sessionId, text) => {
-        if (input.driver.getSessionId() !== sessionId) {
-          return { kind: 'unavailable', reason: 'TUI is attached to a different session.' };
-        }
-        if (busy) {
-          return { kind: 'busy', whenIdle: currentActivityCompletion! };
-        }
-        const sessionActivity = input.goalLifecycle.activities.reserveIfIdle(sessionId)!;
-        const turnId = randomUUID();
-        return {
-          kind: 'prepared',
-          turnId,
-          start: () => {
-            try {
-              return runAgentTurn({
-                kind: 'coordinator',
-                prompt: text,
-                turnId,
-                activity: sessionActivity,
-              });
-            } catch (error) {
-              sessionActivity.release();
-              throw error;
-            }
-          },
-        };
-      },
-    });
-  } catch (error) {
-    beginClose(error instanceof Error ? error : new Error(String(error)));
-    return closedPromise;
-  }
 
   const setModel = async (nextModel: string) => {
     await input.driver.setModel(nextModel);

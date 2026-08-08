@@ -1,8 +1,5 @@
 export {
-  createMakaSessionDriver,
   type MakaSessionDriver,
-  type MakaSessionDriverInput,
-  type MakaSessionRuntime,
   type SessionResumeAvailability,
 } from './session-driver.js';
 export {
@@ -11,11 +8,14 @@ export {
 } from './cli.js';
 export {
   parseMakaRunArgs,
-  runMakaTextCli,
   type MakaRunDeps,
   type MakaRunOptions,
   type ParseMakaRunArgsResult,
-} from './run-command.js';
+} from './run-command-core.js';
+export {
+  runRuntimeHostTextCli,
+  runRuntimeHostTextCli as runMakaTextCli,
+} from './runtime-host-run-command.js';
 export {
   decodeActivationRequest,
   parseMakaActivateArgs,
@@ -36,16 +36,6 @@ export {
   type MakaRunSessionSelectionDeps,
   type MakaRunSessionSelectionInput,
 } from './run-session-selection.js';
-export {
-  createMakaCliRuntimeContext,
-  type CreateMakaCliRuntimeContextInput,
-  type MakaCliRuntimeContext,
-} from './runtime-bootstrap.js';
-export {
-  resolveDefaultSessionTarget,
-  type ReadySessionTarget,
-  type ResolveDefaultSessionTargetInput,
-} from './connection-target.js';
 export {
   resolveMakaWorkspaceRoot,
   type ResolveMakaWorkspaceRootInput,

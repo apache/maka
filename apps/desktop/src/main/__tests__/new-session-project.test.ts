@@ -3,47 +3,55 @@ import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { CreateSessionInput } from '@maka/core';
 import { createProjectCatalog } from '@maka/storage';
 import {
   resolveDesktopSessionSelection,
   resolveNewSessionProjectInput,
-  type DesktopCreateSessionInput,
+  type SessionProjectInput,
 } from '../new-session-project.js';
 
-test('default sessions inherit the main-owned project selection', async () => {
-  const resolved = await resolveDesktopSessionSelection(
-    {
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-      name: 'Session',
-      labels: [],
-    },
-    {
-      current: async () => ({ projectId: null, path: '/current/root' }),
-      select: async () => {
-        throw new Error('select must not be called');
-      },
-    },
-  );
+type CreateSessionInput = SessionProjectInput & {
+  cwd: string;
+  backend: string;
+  llmConnectionSlug: string;
+  model: string;
+  permissionMode: string;
+  name: string;
+  labels: string[];
+};
+type DesktopCreateSessionInput = Omit<CreateSessionInput, 'cwd'>;
 
-  assert.equal(resolved.cwd, '/current/root');
-  assert.equal(resolved.projectId, null);
+test('default sessions inherit and register the current Desktop project', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-'));
+  const cwd = join(base, 'project');
+  await mkdir(cwd);
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    createId: () => 'project-1',
+  });
+
+  try {
+    const selected = await resolveDesktopSessionSelection(
+      {},
+      {
+        current: async () => ({ projectId: undefined, path: cwd }),
+        select: async () => {
+          throw new Error('select must not be called');
+        },
+      },
+    );
+    const resolved = await resolveNewSessionProjectInput(selected, catalog);
+
+    assert.equal(resolved.cwd, await realpath(cwd));
+    assert.equal(resolved.projectId, 'project-1');
+    assert.equal((await catalog.list()).length, 1);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
-test('an explicit project id resolves its matching path before session creation', async () => {
-  const resolved = await resolveDesktopSessionSelection(
-    {
-      projectId: 'project-2',
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-      name: 'Session',
-      labels: [],
-    },
+test('an explicit project selection resolves its path before Session creation', async () => {
+  const selected = await resolveDesktopSessionSelection(
+    { projectId: 'project-2' },
     {
       current: async () => {
         throw new Error('current must not be called');
@@ -55,58 +63,53 @@ test('an explicit project id resolves its matching path before session creation'
     },
   );
 
-  assert.equal(resolved.cwd, '/project-2/root');
-  assert.equal(resolved.projectId, 'project-2');
+  assert.deepEqual(selected, {
+    cwd: '/project-2/root',
+    projectId: 'project-2',
+  });
 });
 
-test('new sessions auto-register a project while explicit no-project sessions stay unassigned', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-'));
-  const cwd = join(base, 'project');
-  await mkdir(cwd);
-  const catalog = createProjectCatalog(join(base, 'storage'), {
-    createId: () => 'project-1',
+test('an explicit no-project Session keeps its directory unassigned', async () => {
+  const input = { cwd: '/standalone', projectId: null } as const;
+  const resolved = await resolveNewSessionProjectInput(input, {
+    list: async () => {
+      throw new Error('list must not be called');
+    },
+    register: async () => {
+      throw new Error('register must not be called');
+    },
+    touch: async () => {
+      throw new Error('touch must not be called');
+    },
   });
 
-  try {
-    const automatic = await resolveNewSessionProjectInput(makeInput(cwd), catalog);
-    assert.equal(automatic.projectId, 'project-1');
-    assert.equal((await catalog.list()).length, 1);
-
-    const explicit = await resolveNewSessionProjectInput(
-      makeInput(cwd, { projectId: 'project-1' }),
-      catalog,
-    );
-    assert.equal(explicit.projectId, 'project-1');
-
-    const unassigned = await resolveNewSessionProjectInput(
-      makeInput(cwd, { projectId: null }),
-      catalog,
-    );
-    assert.equal(unassigned.projectId, null);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+  assert.equal(resolved, input);
 });
 
-test('new sessions reject a project id that does not own the selected directory', async () => {
+test('a Session cannot associate a project with a different directory', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-mismatch-'));
-  const cwd = join(base, 'project');
-  await mkdir(cwd);
+  const first = join(base, 'first');
+  const second = join(base, 'second');
+  await mkdir(first);
+  await mkdir(second);
   const catalog = createProjectCatalog(join(base, 'storage'), {
     createId: () => 'project-1',
   });
 
   try {
-    await catalog.register(cwd);
+    await catalog.register(first);
     await assert.rejects(
-      () => resolveNewSessionProjectInput(makeInput(cwd, { projectId: 'project-2' }), catalog),
+      () =>
+        resolveNewSessionProjectInput(
+          { cwd: second, projectId: 'project-1' },
+          catalog,
+        ),
       /does not match/i,
     );
   } finally {
     await rm(base, { recursive: true, force: true });
   }
 });
-
 test('new sessions preserve unexpected catalog failures', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-storage-failure-'));
   const cwd = join(base, 'project');

@@ -18,6 +18,7 @@ import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const RUNTIME_RESOURCE_RESULT_MAX_BYTES = 52 * 1024;
+export const RUNTIME_RESOURCE_CONTROLLER_ACQUIRE_RESULT_MAX_BYTES = 90 * 1024;
 export const RUNTIME_RESOURCE_PAGE_MAX_ITEMS = 64;
 export const RUNTIME_RESOURCE_CURSOR_MAX_BYTES = 32;
 export const RUNTIME_RESOURCE_REF_MAX_BYTES = 256;
@@ -88,7 +89,15 @@ export interface RuntimeResourceControllerAcquireInput {
 export interface RuntimeResourceControllerAcquireResult {
   readonly controllerId: string;
   readonly nextSequence: number;
-  readonly resource: ShellRunSnapshotResult;
+  readonly pty: RuntimeResourcePtySnapshot;
+}
+
+export interface RuntimeResourcePtySnapshot {
+  readonly sessionId: string;
+  readonly ref: string;
+  readonly sequence: number;
+  readonly buffer: string;
+  readonly size: { readonly cols: number; readonly rows: number };
 }
 
 export type RuntimeResourcePtyControl =
@@ -131,6 +140,15 @@ export interface RuntimeResourceStopInput {
   readonly ref: string;
 }
 
+export interface RuntimeResourceStartInput {
+  readonly sessionId: string;
+  readonly launchId: string;
+}
+
+export interface RuntimeResourceStartResult {
+  readonly resource: ShellRunSnapshotResult;
+}
+
 export interface RuntimeResourceStopResult {
   readonly resource: ShellRunSnapshotResult;
 }
@@ -146,6 +164,17 @@ export const RUNTIME_RESOURCE_OPERATION_SPECS = {
     errors: QUERY_ERRORS,
     decodeInput: decodeRuntimeResourceQueryInput,
     decodeOutput: decodeRuntimeResourceQueryResult,
+  }),
+  'runtime.resource.start': defineOperation<
+    RuntimeResourceStartInput,
+    RuntimeResourceStartResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeRuntimeResourceStartInput,
+    decodeOutput: decodeRuntimeResourceStartResult,
   }),
   'runtime.resource.controller.acquire': defineOperation<
     RuntimeResourceControllerAcquireInput,
@@ -192,6 +221,28 @@ export const RUNTIME_RESOURCE_OPERATION_SPECS = {
     decodeOutput: decodeRuntimeResourceStopResult,
   }),
 } as const;
+
+export function decodeRuntimeResourceStartInput(value: unknown): RuntimeResourceStartInput {
+  const input = requireExactRecord(value, 'Runtime Resource start input', [
+    'sessionId',
+    'launchId',
+  ]);
+  return {
+    sessionId: requireEntityId(input.sessionId, 'sessionId'),
+    launchId: requireId(input.launchId, 'launchId'),
+  };
+}
+
+export function decodeRuntimeResourceStartResult(value: unknown): RuntimeResourceStartResult {
+  const result = requireExactRecord(value, 'Runtime Resource start result', ['resource']);
+  const decoded = { resource: decodeRuntimeResourceSnapshot(result.resource) };
+  requireEncodedByteLimit(
+    decoded,
+    'Runtime Resource start result',
+    RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+  );
+  return decoded;
+}
 
 export function decodeRuntimeResourceQueryInput(value: unknown): RuntimeResourceQueryInput {
   const record = requireRecord(value, 'Runtime Resource query input');
@@ -301,19 +352,45 @@ export function decodeRuntimeResourceControllerAcquireResult(
   const result = requireExactRecord(value, 'Runtime Resource controller acquire result', [
     'controllerId',
     'nextSequence',
-    'resource',
+    'pty',
   ]);
   const decoded = {
     controllerId: requireEntityId(result.controllerId, 'controllerId'),
     nextSequence: positiveCount(result.nextSequence, 'nextSequence'),
-    resource: decodeRuntimeResourceSnapshot(result.resource),
+    pty: decodeRuntimeResourcePtySnapshot(result.pty),
   };
   requireEncodedByteLimit(
     decoded,
     'Runtime Resource controller acquire result',
-    RUNTIME_RESOURCE_RESULT_MAX_BYTES,
+    RUNTIME_RESOURCE_CONTROLLER_ACQUIRE_RESULT_MAX_BYTES,
   );
   return decoded;
+}
+
+function decodeRuntimeResourcePtySnapshot(value: unknown): RuntimeResourcePtySnapshot {
+  const snapshot = requireExactRecord(value, 'Runtime Resource PTY snapshot', [
+    'sessionId',
+    'ref',
+    'sequence',
+    'buffer',
+    'size',
+  ]);
+  const size = requireExactRecord(snapshot.size, 'Runtime Resource PTY size', ['cols', 'rows']);
+  const decodedSize = decodeSize(size.cols, size.rows);
+  return {
+    sessionId: requireEntityId(snapshot.sessionId, 'sessionId'),
+    ref: decodeRuntimeResourceRef(snapshot.ref),
+    sequence: requireCount(snapshot.sequence, 'PTY sequence'),
+    buffer: ptyBuffer(snapshot.buffer),
+    size: decodedSize,
+  };
+}
+
+function ptyBuffer(value: unknown): string {
+  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 80 * 1024) {
+    throw invalidProtocolFrame('Invalid PTY buffer');
+  }
+  return value;
 }
 
 export function decodeRuntimeResourceControllerControlInput(

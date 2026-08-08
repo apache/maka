@@ -39,12 +39,8 @@ const ALLOW = new Map([
     'thin ESM entry; pre-ready config, [startup] ready/fatal diagnostics (moved from boot, PR1880).',
   ],
   [
-    'apps/desktop/src/main/boot.ts',
-    'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
-  ],
-  [
     'apps/desktop/src/main/runtime-host-boot.ts',
-    'opt-in Runtime Host startup, reconnect projection, and bounded shutdown diagnostics; no credentials or provider payloads.',
+    'Runtime Host startup, reconnect projection, and bounded shutdown diagnostics; no credentials or provider payloads.',
   ],
   [
     'apps/desktop/src/main/runtime-host-desktop-owner.ts',
@@ -55,32 +51,12 @@ const ALLOW = new Map([
     'names a startup step that has not come back, before any window exists to show it in; a step name and no secrets.',
   ],
   [
-    'apps/desktop/src/main/app-lifecycle.ts',
-    'startup/shutdown diagnostics (dock icon, credential migration, e2e-fixture marker, cleanup failures); no secrets (moved from main.ts, arch R6).',
-  ],
-  [
-    'apps/desktop/src/main/settings-runtime-effects.ts',
-    'external-settings apply failure is a main-process diagnostic, no secrets (moved from main.ts, arch R5).',
-  ],
-  [
-    'apps/desktop/src/main/daily-review-main.ts',
-    'scheduler failures are main-process diagnostics and do not expose secrets.',
-  ],
-  [
     'apps/desktop/src/main/main-window.ts',
     'real-window smoke diagnostics are dev/test gated and stdout-parsed by capture tooling.',
   ],
   [
     'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
     '#1515 drag-grant diagnostics (locale fallback, missing .app bundle, controller log sink); main-process only, paths not secrets.',
-  ],
-  [
-    'apps/desktop/src/main/oauth-model-connections-main.ts',
-    'OAuth model sync logs provider-level failure reason only; no tokens or raw provider bodies.',
-  ],
-  [
-    'apps/desktop/src/main/subscription-ipc-main.ts',
-    'best-effort post-OAuth model discovery diagnostic; main-process only and never logs credentials.',
   ],
   [
     'apps/desktop/src/main/onboarding-service.ts',
@@ -111,10 +87,6 @@ const ALLOW = new Map([
     'Harbor CLI subcommand prints usage and command failures to stderr by design.',
   ],
   [
-    'apps/desktop/src/main/config-file-watcher.ts',
-    'Watcher startup failure and runtime error diagnostics; non-fatal, no secrets.',
-  ],
-  [
     'apps/desktop/src/main/shell-env.ts',
     'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',
   ],
@@ -122,10 +94,6 @@ const ALLOW = new Map([
   [
     'apps/desktop/src/main/computer-use/pip-electron.ts',
     'picture-in-picture load failure: the one state that is otherwise silent and invisible; logs the overlay asset path and the Chromium error code only.',
-  ],
-  [
-    'apps/desktop/src/main/automation-wiring.ts',
-    'best-effort sync warning when durable automation persistence fails.',
   ],
   [
     'packages/storage/src/automation-store.ts',
@@ -136,16 +104,16 @@ const ALLOW = new Map([
     'one-time legacy JSONL session import diagnostics (imported/failed counts + per-file reasons); no credentials or provider payloads.',
   ],
   [
-    'packages/cli/src/runtime-bootstrap.ts',
-    'best-effort warning when CLI durable automation persistence fails.',
-  ],
-  [
     'packages/core/src/shell-run-result.ts',
     'ShellRun reconciliation invariant diagnostics contain only runtime refs and revisions, never command or output data.',
   ],
   [
     'packages/runtime-host/src/server/host-kernel.ts',
     'Host shutdown failure diagnostics print the full nested AggregateError chain (Node truncates it to [errors]: [Array] by default); error metadata only, no secrets (PR1760).',
+  ],
+  [
+    'packages/runtime-host/src/server/execution-composition.ts',
+    'optional environment-backed bootstrap failure is generalized before startup logging; no credential or provider payloads.',
   ],
 ]);
 

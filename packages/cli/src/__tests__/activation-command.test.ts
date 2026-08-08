@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
-import type { InvocationResult, RuntimeContinuation } from '@maka/runtime';
 import {
   decodeActivationRequest,
   parseMakaActivateArgs,
@@ -15,6 +14,7 @@ import {
   type MakaActivationRuntime,
 } from '../activation-command.js';
 import { parseMakaCliArgs } from '../cli.js';
+import type { MakaRunOutcome } from '../run-command-core.js';
 
 const ROOTS = {
   stateRoot: '/tmp/maka-state',
@@ -59,38 +59,33 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
   };
 }
 
-function completedResult(sessionId = 'maka-session-1'): InvocationResult {
+function completedResult(): MakaRunOutcome {
   return {
-    invocationId: 'invocation-1',
-    runId: 'run-1',
-    sessionId,
-    turnId: 'turn-1',
+    outcomeId: 'run-1',
     status: 'completed',
-    finalOutput: 'done',
-    events: [
-      {
-        id: 'event-1',
-        invocationId: 'invocation-1',
-        runId: 'run-1',
-        sessionId,
-        turnId: 'turn-1',
-        ts: 1,
-        partial: false,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'done', apiKey: 'sk-test-secret' } as never,
-      },
-    ],
-    startedAt: 1,
-    finishedAt: 2,
+    finalOutput: 'done sk-test-secret',
+    sandboxBoundary: 'none',
   };
+}
+
+function completedEvents(): SessionEvent[] {
+  return [
+    {
+      type: 'text_delta',
+      id: 'event-1',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'message-1',
+      text: 'done',
+    },
+  ];
 }
 
 function fakeDeps(
   options: {
     input?: string;
     sessions?: SessionSummary[];
-    result?: InvocationResult;
+    result?: MakaRunOutcome;
     events?: SessionEvent[];
     onContext?: (input: Parameters<NonNullable<MakaActivationDeps['createContext']>>[0]) => void;
     onCreateSession?: () => void;
@@ -105,7 +100,7 @@ function fakeDeps(
     ) => AsyncIterable<SessionEvent>;
   } = {},
 ): MakaActivationDeps {
-  let observer: ((result: InvocationResult) => void | Promise<void>) | undefined;
+  let observer: ((result: MakaRunOutcome) => void | Promise<void>) | undefined;
   const sessions = options.sessions ?? [];
   const runtime: MakaActivationRuntime = {
     async createSession() {
@@ -115,25 +110,21 @@ function fakeDeps(
     listSessions: async () => sessions,
     ...(options.safeBoundaryResume
       ? {
-          planLatestAuthoritativeSafeBoundaryContinuation: async () => ({
-            disposition: 'continue' as const,
-            rejectionReasons: [],
-            diagnostics: [],
-            continuation: {} as RuntimeContinuation,
-          }),
-          async *resumeSafeBoundaryContinuation() {
-            options.onResume?.();
-            await observer?.(options.result ?? completedResult('maka-session-1'));
-          },
+          resumeLatest: async () =>
+            (async function* () {
+              options.onResume?.();
+              for (const event of options.events ?? completedEvents()) yield event;
+              await observer?.(options.result ?? completedResult());
+            })(),
         }
       : {}),
     async *sendMessage(sessionId, input) {
       if (options.sendMessage) {
         yield* options.sendMessage(runtime, sessionId, input);
       } else {
-        for (const event of options.events ?? []) yield event;
+        for (const event of options.events ?? completedEvents()) yield event;
       }
-      await observer?.(options.result ?? completedResult(sessionId));
+      await observer?.(options.result ?? completedResult());
     },
     async respondToSandboxBoundary(_sessionId, response) {
       options.onSandboxBoundaryResponse?.(response);
@@ -144,7 +135,7 @@ function fakeDeps(
   return {
     createContext: async (input) => {
       options.onContext?.(input);
-      observer = input.runtimeInvocationObserver;
+      observer = input.runOutcomeObserver;
       const context: MakaActivationContext = {
         runtime,
         target: {
@@ -369,6 +360,7 @@ describe('maka activate JSONL protocol', () => {
             status: 'failed',
             finalOutput: undefined,
             failure: { class: 'permission_denied' },
+            sandboxBoundary: 'unresolved',
           },
           onSandboxBoundaryResponse: (response) => responses.push(response),
           events: [
@@ -426,26 +418,7 @@ describe('maka activate JSONL protocol', () => {
           result: {
             ...completedResult(),
             finalOutput: 'continued after the failed write',
-            events: [
-              {
-                id: 'event-boundary-result',
-                invocationId: 'invocation-1',
-                runId: 'run-1',
-                sessionId: 'maka-session-1',
-                turnId: 'turn-1',
-                ts: 1,
-                partial: false,
-                role: 'tool',
-                author: 'tool',
-                content: {
-                  kind: 'function_response',
-                  id: 'tool-boundary',
-                  name: 'Write',
-                  isError: true,
-                  result: boundaryFailure,
-                },
-              },
-            ],
+            sandboxBoundary: 'unresolved',
           },
           events: [
             {

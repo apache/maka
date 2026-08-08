@@ -1,4 +1,5 @@
 import type { ProviderRetryEvent, SessionEvent, StoredMessage, UiLocale } from '@maka/core';
+import { materializeToolResultPreviewForActivity } from '@maka/core/tool-result-preview';
 import { applyAssistantComplete, applyAssistantDelta } from './assistant-stream.js';
 import { projectToolActivityArgs, toolResultActivityStatus } from '@maka/core';
 import { isInFlightToolStatus } from '@maka/core';
@@ -6,7 +7,7 @@ import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
 
-type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result' }>;
+type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result_preview' | 'tool_result' }>;
 
 export interface LiveThinkingProjection {
   text: string;
@@ -196,6 +197,7 @@ export function applyLiveTurnEvent(
     && event.type !== 'text_complete'
     && event.type !== 'tool_start'
     && event.type !== 'tool_output_delta'
+    && event.type !== 'tool_result_preview'
     && event.type !== 'tool_result'
   ) {
     return current;
@@ -210,6 +212,7 @@ export function applyLiveTurnEvent(
     || event.type === 'text_complete';
   const existingToolStep = event.type === 'tool_start'
     || event.type === 'tool_output_delta'
+    || event.type === 'tool_result_preview'
     || event.type === 'tool_result'
     ? prior.steps.find((candidate) => candidate.tools.some((tool) => tool.toolUseId === event.toolUseId))
     : undefined;
@@ -323,7 +326,9 @@ export function applyLiveTurnEvent(
         ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
         : [...step.tools, tool],
     };
-  } else {
+  } else if (event.type === 'tool_result_preview') {
+    // Live-only open-facts: materialize into activity.result with empty bulk
+    // so ToolTrow can Open without dual storage.
     const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
@@ -331,8 +336,33 @@ export function applyLiveTurnEvent(
     const tool: ToolActivityItem = {
       ...base,
       ...projectToolActivityIdentity(event),
+      status: isInFlightToolStatus(base.status) ? 'running' : base.status,
+      result: materializeToolResultPreviewForActivity(event.content),
+    };
+    nextStep = {
+      ...step,
+      tools: toolIndex >= 0
+        ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
+        : [...step.tools, tool],
+    };
+  } else {
+    const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
+    const base: ToolActivityItem = toolIndex >= 0
+      ? step.tools[toolIndex]!
+      : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'pending', args: undefined };
+    // RH live tool_result deliberately omits content (empty text). Do not wipe
+    // mid-flight open-facts until a meaningful result or persisted merge arrives.
+    const retainOpenFacts =
+      event.content.kind === 'text' &&
+      event.content.text.length === 0 &&
+      base.result?.kind === 'subagent' &&
+      typeof base.result.childSessionId === 'string' &&
+      base.result.childSessionId.length > 0;
+    const tool: ToolActivityItem = {
+      ...base,
+      ...projectToolActivityIdentity(event),
       status: toolResultActivityStatus(event.isError, event.content),
-      result: event.content,
+      result: retainOpenFacts ? base.result : event.content,
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     };
     nextStep = {

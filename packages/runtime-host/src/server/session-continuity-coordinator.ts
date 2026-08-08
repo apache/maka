@@ -6,7 +6,9 @@ import {
   encodeProtocolFrame,
   RUNTIME_HOST_MAX_FRAME_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
+  SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
+  SESSION_SUBSCRIPTION_FRAME_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
@@ -16,6 +18,7 @@ import {
   type SessionDomainChange,
   type SessionDomainChangedFrame,
   type SessionEventFrame,
+  type SessionRuntimeResourcePtyDataFrame,
   type SessionToolEvent,
   type SessionTranscriptQueryInput,
   type OperationOutcome,
@@ -51,6 +54,7 @@ export type RuntimeSessionTransientEvent = Extract<
       | 'tool_start'
       | 'tool_output_delta'
       | 'tool_progress'
+      | 'tool_result_preview'
       | 'tool_result';
   }
 >;
@@ -69,6 +73,15 @@ interface SessionProjectionState {
   revision: number;
   subscribers: Map<string, Subscriber>;
   assistantPrefixes: Map<string, ActiveAssistantPrefix>;
+  /**
+   * Latest live tool_result_preview per toolUseId for the active turn.
+   * Replace semantics; cleared on tool_result and terminal publication.
+   * Seeded to new subscribers so mid-flight Open survives rejoin.
+   */
+  toolResultPreviews: Map<
+    string,
+    Extract<RuntimeSessionTransientEvent, { type: 'tool_result_preview' }>
+  >;
   terminalPublicationFence?: TerminalPublicationFence;
 }
 
@@ -169,6 +182,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly onPublicationFailure: (error: unknown) => void = () => undefined,
     readTranscript?: ReadSessionTranscript,
+    private readonly onCatalogChanged: (sessionId: string) => void = () => undefined,
   ) {
     this.#hostEpoch = hostEpoch;
     this.#readCanonical = readCanonical;
@@ -205,6 +219,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   }
 
   async refreshCanonical(sessionId: string, admission?: SessionAdmissionLease): Promise<void> {
+    this.onCatalogChanged(sessionId);
     await this.#runInSessionLane(
       sessionId,
       async () => {
@@ -326,6 +341,47 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     }
   }
 
+  /** Publish live PTY bytes on the same ordered Session subscription as its durable projection. */
+  async enqueueRuntimeResourcePtyData(event: {
+    sessionId: string;
+    ref: string;
+    sequence: number;
+    data: string;
+  }): Promise<void> {
+    if (
+      this.#closed ||
+      Buffer.byteLength(event.data, 'utf8') > SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES
+    ) {
+      return;
+    }
+    try {
+      await this.sessionAdmission.enqueueDetached(event.sessionId, () => {
+        if (this.#closed) return;
+        const state = this.#sessions.get(event.sessionId);
+        if (!state) return;
+        for (const subscriber of state.subscribers.values()) {
+          const frame: SessionRuntimeResourcePtyDataFrame = {
+            kind: 'subscription.runtime_resource_pty_data',
+            hostEpoch: this.#hostEpoch,
+            subscriptionId: subscriber.subscriptionId,
+            sequence: subscriber.nextSequence,
+            sessionId: event.sessionId,
+            ref: event.ref,
+            ptySequence: event.sequence,
+            data: event.data,
+          };
+          if (
+            Buffer.byteLength(JSON.stringify(frame), 'utf8') <= SESSION_SUBSCRIPTION_FRAME_MAX_BYTES
+          ) {
+            this.#enqueue(subscriber, frame);
+          }
+        }
+      });
+    } catch (error) {
+      this.onPublicationFailure(error);
+    }
+  }
+
   #scheduleSessionDomainChanges(sessionId: string, changes: PendingSessionDomainChanges): void {
     void this.sessionAdmission
       .enqueueDetached(sessionId, () => {
@@ -442,6 +498,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
         state.assistantPrefixes.clear();
+        state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
         if (state.subscribers.size === 0) this.#sessions.delete(sessionId);
       },
@@ -501,6 +558,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
         }
         return;
+      }
+      if (event.type === 'tool_result_preview') {
+        state.toolResultPreviews.set(event.toolUseId, event);
+      } else if (event.type === 'tool_result') {
+        state.toolResultPreviews.delete(event.toolUseId);
       }
       const projected = projectToolEvent(event);
       for (const subscriber of state.subscribers.values()) {
@@ -612,12 +674,33 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         committed.state.subscribers.set(subscriptionId, subscriber);
         this.#subscriptions.set(subscriptionId, subscriber);
         connection.subscriptionIds.add(subscriptionId);
+        // Client expects the first delivered frame at nextSequence from the open
+        // result. Capture that before enqueueing retained previews — each
+        // #enqueue advances nextSequence.
+        const firstSequence = subscriber.nextSequence;
+        // Seed retained live previews so a mid-turn rejoin still has Open facts.
+        const rootTurn = committed.state.canonical.rootTurn;
+        if (rootTurn && !isTerminalTurn(rootTurn)) {
+          for (const preview of committed.state.toolResultPreviews.values()) {
+            if (preview.turnId !== rootTurn.turnId) continue;
+            const frame: SessionEventFrame = {
+              kind: 'subscription.session_event',
+              hostEpoch: this.#hostEpoch,
+              subscriptionId: subscriber.subscriptionId,
+              sequence: subscriber.nextSequence,
+              sessionId,
+              runId: rootTurn.runId,
+              event: projectToolEvent(preview),
+            };
+            this.#enqueue(subscriber, frame);
+          }
+        }
         return {
           ok: true as const,
           value: {
             hostEpoch: this.#hostEpoch,
             subscriptionId,
-            nextSequence: subscriber.nextSequence,
+            nextSequence: firstSequence,
             snapshot: committed.value,
           },
         };
@@ -945,6 +1028,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         revision: 1,
         subscribers: new Map(),
         assistantPrefixes: new Map(),
+        toolResultPreviews: new Map(),
       };
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
@@ -1152,6 +1236,13 @@ function projectToolEvent(
         ...(event.operationId === undefined ? {} : { operationId: event.operationId }),
         status: event.isError ? 'errored' : 'completed',
         ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+      };
+    case 'tool_result_preview':
+      return {
+        type: event.type,
+        ...identity,
+        isError: event.isError,
+        content: event.content,
       };
   }
 }

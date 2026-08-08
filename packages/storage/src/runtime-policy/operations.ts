@@ -3,7 +3,9 @@ import type {
   ConnectionCatalogSnapshot,
   ConnectionModelDiscoveryResult,
   ConnectionTestSummary,
+  CredentialMutationResult,
   CredentialLocator,
+  SetCredentialInput,
   CredentialStatus,
   CredentialVersionBasis,
   RuntimePolicy,
@@ -189,6 +191,21 @@ export type ConnectionEffectCompletionResult =
       readonly changed: readonly ConnectionEffectChangedDomain[];
     };
 
+export interface CommitConnectionOnboardingInput {
+  readonly providerType: ConnectionCatalogEntry['providerType'];
+  readonly suppliedSecret: string | null;
+  readonly enabledModelIds: readonly string[];
+  readonly discovery: ConnectionModelDiscoveryResult;
+}
+
+export type CommitConnectionOnboardingResult =
+  | {
+      readonly kind: 'committed';
+      readonly snapshot: ConnectionCatalogSnapshot;
+      readonly changed: boolean;
+    }
+  | { readonly kind: 'slug_conflict' };
+
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'disabled' }
@@ -215,6 +232,7 @@ export interface RuntimePolicyOperationCoordinator {
   compareAndSetOAuthCredential(
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;
+  importConnectionCredential(input: SetCredentialInput): Promise<CredentialMutationResult>;
   beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
     ticket: InteractiveOAuthLoginTicket,
@@ -225,6 +243,9 @@ export interface RuntimePolicyOperationCoordinator {
     ticket: ModelFetchTicket,
     result: ConnectionModelDiscoveryResult,
   ): Promise<ConnectionEffectCompletionResult>;
+  commitConnectionOnboarding(
+    input: CommitConnectionOnboardingInput,
+  ): Promise<CommitConnectionOnboardingResult>;
   beginConnectionTest(
     connectionId: string,
     modelId: string | null,

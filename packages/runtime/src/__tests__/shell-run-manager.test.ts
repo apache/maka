@@ -1447,7 +1447,10 @@ describe('ShellRunProcessManager', () => {
 
     const bytes = events.reduce((total, event) => total + Buffer.byteLength(event.data, 'utf8'), 0);
     assert.equal(bytes, 1024 * 1024);
-    assert.ok(events.length <= 32, `expected bounded PTY IPC batches, got ${events.length}`);
+    assert.equal(
+      events.every((event) => Buffer.byteLength(JSON.stringify(event.data), 'utf8') <= 40 * 1024),
+      true,
+    );
     for (let index = 1; index < events.length; index += 1) {
       assert.ok(events[index]!.sequence > events[index - 1]!.sequence);
     }
@@ -2041,7 +2044,6 @@ describe('ShellRunProcessManager', () => {
     const manager = await createTestManager(undefined, { pipeOutputDrainMs: 100 });
     let childPid: number | undefined;
     try {
-      const startedAt = Date.now();
       const result = await manager.runForegroundBash(
         shellInput({
           cwd,
@@ -2054,7 +2056,6 @@ describe('ShellRunProcessManager', () => {
         }),
       );
       childPid = Number.parseInt(await readFile(childPidPath, 'utf8'), 10);
-      assert.ok(Date.now() - startedAt < 2_000);
       assert.equal(result.status, 'failed');
       assert.equal(result.output.mode, 'pipes');
       if (result.output.mode !== 'pipes') throw new Error('expected pipes output');

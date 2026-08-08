@@ -1,6 +1,7 @@
 import {
   createDefaultRuntimePolicy,
   decodeCanonicalRuntimePolicy,
+  decodeLegacyRuntimePolicyV1,
   normalizeRuntimePolicyMutation,
   type MutateRuntimePolicyInput,
   type MutateRuntimePolicyResult,
@@ -23,7 +24,7 @@ import {
 } from './document-io.js';
 
 const FILE = 'runtime-policy.json';
-const SCHEMA_VERSION = 1 as const;
+const SCHEMA_VERSION = 2 as const;
 
 export interface RuntimePolicyDocument {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -48,13 +49,17 @@ export class RuntimePolicyDocumentOwner {
       'revision',
       'policy',
     ]);
-    if (document.schemaVersion !== SCHEMA_VERSION) {
+    if (document.schemaVersion !== 1 && document.schemaVersion !== SCHEMA_VERSION) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     return {
       schemaVersion: SCHEMA_VERSION,
       revision: revision(document.revision, `${FILE}.revision`, 'invalid_document'),
-      policy: decodePersistedDomain(() => decodeCanonicalRuntimePolicy(document.policy)),
+      policy: decodePersistedDomain(() =>
+        document.schemaVersion === 1
+          ? decodeLegacyRuntimePolicyV1(document.policy)
+          : decodeCanonicalRuntimePolicy(document.policy),
+      ),
     };
   }
 
@@ -125,5 +130,31 @@ function applyMutation(policy: RuntimePolicy, operation: RuntimePolicyMutation):
       return { ...policy, chatDefaults: operation.value };
     case 'set_web_search':
       return { ...policy, webSearch: operation.value };
+    case 'set_subagents':
+      return { ...policy, subagents: operation.value };
+    case 'patch_agent_settings':
+      return {
+        ...policy,
+        ...(operation.value.personalization
+          ? { personalization: { ...policy.personalization, ...operation.value.personalization } }
+          : {}),
+        ...(operation.value.memory
+          ? { memory: { ...policy.memory, ...operation.value.memory } }
+          : {}),
+        ...(operation.value.workspaceInstructions
+          ? {
+              workspaceInstructions: {
+                ...policy.workspaceInstructions,
+                ...operation.value.workspaceInstructions,
+              },
+            }
+          : {}),
+        ...(operation.value.privacy
+          ? { privacy: { ...policy.privacy, ...operation.value.privacy } }
+          : {}),
+        ...(operation.value.webSearch
+          ? { webSearch: { ...policy.webSearch, ...operation.value.webSearch } }
+          : {}),
+      };
   }
 }

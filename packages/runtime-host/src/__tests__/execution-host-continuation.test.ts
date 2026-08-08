@@ -4,6 +4,7 @@ import { mcpProxyToolName } from '@maka/runtime';
 import { type ClientCapabilityProvider, RuntimeHostOperationError } from '../client/index.js';
 import {
   connectClient,
+  requireStartedTurn,
   waitForTerminalTurn,
   withExecutionRoot,
 } from './fixtures/execution-host-suite.js';
@@ -47,7 +48,8 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
       const retry = await second.startTurnResume(input);
       assert.deepEqual(retry, { kind: 'started', turn: terminal });
 
-      assert.deepEqual(await first.queryTurnResume({ sessionId: fixture.sessionId }), {
+      const settledPlan = await first.queryTurnResume({ sessionId: fixture.sessionId });
+      assert.deepEqual(settledPlan, {
         sessionId: fixture.sessionId,
         disposition: 'parked',
         reason: 'continuation_already_exists',
@@ -231,11 +233,13 @@ test('startup parks a provider-indeterminate continuation without blocking the H
         (error) => error instanceof RuntimeHostOperationError && error.code === 'session_busy',
       );
 
-      const sibling = await client.startTurn({
-        sessionId: siblingSessionId,
-        turnId: 'turn-unrelated-to-indeterminate-continuation',
-        content: { text: 'Continue normally.' },
-      });
+      const sibling = requireStartedTurn(
+        await client.startTurn({
+          sessionId: siblingSessionId,
+          turnId: 'turn-unrelated-to-indeterminate-continuation',
+          content: { text: 'Continue normally.' },
+        }),
+      );
       assert.equal(sibling.sessionId, siblingSessionId);
     } finally {
       await client.close();
@@ -271,11 +275,13 @@ test('startup parks a provider-indeterminate continuation when resume is disable
           reason: 'continuation_unavailable',
         },
       );
-      const sibling = await client.startTurn({
-        sessionId: siblingSessionId,
-        turnId: 'turn-unrelated-to-disabled-indeterminate-continuation',
-        content: { text: 'Continue normally.' },
-      });
+      const sibling = requireStartedTurn(
+        await client.startTurn({
+          sessionId: siblingSessionId,
+          turnId: 'turn-unrelated-to-disabled-indeterminate-continuation',
+          content: { text: 'Continue normally.' },
+        }),
+      );
       assert.equal(sibling.sessionId, siblingSessionId);
     } finally {
       await client.close();

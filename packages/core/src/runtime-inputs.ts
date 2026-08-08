@@ -78,6 +78,8 @@ export interface UserMessageInput extends MessageContent {
   /** Caller-generated uuid. Same id used in the UserMessage.turnId and in
    *  every event emitted by this turn. */
   turnId: string;
+  /** Trusted per-turn cap on provider tool-call steps. */
+  maxSteps?: number;
   /** Trusted host-supplied orchestration override for this turn only. */
   turnOrchestration?: TurnOrchestration;
   /** Trusted host-supplied tool protocol override for this run only. */

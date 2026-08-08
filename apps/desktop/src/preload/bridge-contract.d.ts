@@ -402,6 +402,7 @@ export interface MakaBridge {
       sessionId: string;
       ref: string;
     }): Promise<ShellRunPtySnapshot | null>;
+    detach(input: { sessionId: string; ref: string }): Promise<void>;
     start(sessionId: string): Promise<ShellRunUpdate>;
     write(input: {
       sessionId: string;
@@ -741,6 +742,8 @@ export interface MakaBridge {
       workspacePath: string;
       /** The OS home directory, for collapsing displayed paths to `~`. */
       homePath: string;
+      /** Exact operational-state database path resolved by main. */
+      operationalStateDatabasePath: string;
       projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };

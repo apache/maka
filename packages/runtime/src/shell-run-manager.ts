@@ -74,7 +74,9 @@ import { closeChildFdSources } from './child-fd-input.js';
 type LifecycleCause = 'timeout' | 'cancel' | 'shutdown';
 const PTY_RAW_REPLAY_CHARS = 16_000;
 const PTY_RAW_PUBLISH_INTERVAL_MS = 16;
-const PTY_RAW_PUBLISH_BYTES = 64 * 1024;
+const PTY_RAW_INPUT_CHUNK_CODE_POINTS = 4_096;
+const PTY_RAW_PUBLISH_TARGET_BYTES = 32 * 1024;
+const PTY_RAW_PUBLISH_MAX_BYTES = 40 * 1024;
 
 /**
  * Shown whenever a `ref` argument does not parse. Echoing the rejected string
@@ -949,14 +951,20 @@ export class ShellRunProcessManager
 
   private onPtyData(live: LivePtyShellRun, data: string): void {
     if (live.driverExit || live.finalizeOnce) return;
-    live.rawSequence += 1;
     live.rawBuffer = `${live.rawBuffer}${data}`.slice(-PTY_RAW_REPLAY_CHARS);
     live.collector.accept(data);
-    live.pendingRawData += data;
-    if (Buffer.byteLength(live.pendingRawData, 'utf8') >= PTY_RAW_PUBLISH_BYTES) {
-      this.publishPtyData(live);
-      return;
+    for (const chunk of splitPtyData(data)) {
+      const combined = `${live.pendingRawData}${chunk}`;
+      if (live.pendingRawData && encodedPtyDataBytes(combined) > PTY_RAW_PUBLISH_MAX_BYTES) {
+        this.publishPtyData(live);
+      }
+      live.rawSequence += 1;
+      live.pendingRawData += chunk;
+      if (encodedPtyDataBytes(live.pendingRawData) >= PTY_RAW_PUBLISH_TARGET_BYTES) {
+        this.publishPtyData(live);
+      }
     }
+    if (!live.pendingRawData) return;
     live.rawPublishTimer ??= setTimeout(() => {
       live.rawPublishTimer = undefined;
       this.publishPtyData(live);
@@ -2006,6 +2014,19 @@ function normalizeBackgroundTimeoutMs(value: number | undefined): number | undef
     throw new Error(`Background Bash timeout must be between 1 and ${MAX_SHELL_RUN_TIMEOUT_MS}ms`);
   }
   return value;
+}
+
+function splitPtyData(data: string): string[] {
+  const codePoints = Array.from(data);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < codePoints.length; offset += PTY_RAW_INPUT_CHUNK_CODE_POINTS) {
+    chunks.push(codePoints.slice(offset, offset + PTY_RAW_INPUT_CHUNK_CODE_POINTS).join(''));
+  }
+  return chunks;
+}
+
+function encodedPtyDataBytes(data: string): number {
+  return Buffer.byteLength(JSON.stringify(data), 'utf8');
 }
 
 function validateSourceToolCallId(value: string): void {

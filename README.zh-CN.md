@@ -8,7 +8,7 @@
 
 **一个为真实工作而生的本地优先 Agent 工作台。**
 
-Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息、工具调用和长程任务进度保存为可恢复的运行事实。你可以从桌面应用、终端 TUI、非交互 CLI 或 Headless runner 使用同一套 Runtime。
+Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息、工具调用和长程任务进度保存为可恢复的运行事实。桌面应用、终端 TUI 和非交互 CLI 共享每个工作区唯一的 Runtime Host；Headless 使用独立的任务 Runtime 承载持久评测和自动化工作负载。
 
 > [!IMPORTANT]
 > Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
@@ -135,13 +135,13 @@ CLI 读取 Desktop 写入的同一份模型连接和 workspace 配置。Headless
 Maka 后端可以用一条主线概括：
 
 ```text
-Desktop / TUI / Headless
-          ↓
-SessionManager → AgentRun → Model + Tool Runtime
-          ↓
-Runtime Event Log → Context / Session / UI projections
-          ↓
-Task Event Log → TaskRun → Self-check / AHE evidence
+Desktop / TUI / CLI → Runtime Host → SessionManager → AgentRun
+                                             ↓
+                         Model + Tool Runtime → Runtime Event Log
+                                             ↓
+                              Context / Session / UI projections
+
+Headless / Eval → Task Event Log → TaskRun → Self-check / AHE evidence
 ```
 
 从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及六篇中英双语深度文章。
@@ -241,6 +241,7 @@ npm --workspace @maka/desktop run smoke:real-window
 - [文档索引与权威来源说明](./docs/README.md)
 - [后端架构总览](./ARCHITECTURE.zh-CN.md)
 - [产品设计](./DESIGN.md)
+- [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [安全政策](./SECURITY.md)
 
 ## 开源协议

@@ -161,10 +161,8 @@ function AutomationResultPreview(props: { text: string }) {
  */
 export function ToolCallDetail({
   item,
-  onOpenLinkedSession,
 }: {
   item: ToolActivityItem;
-  onOpenLinkedSession?(sessionId: string): void;
 }) {
   const locale = useUiLocale();
   const cancelled = isCancelledToolResult(item.result);
@@ -229,7 +227,6 @@ export function ToolCallDetail({
             toolName={item.toolName}
             args={item.args}
             shellRunSource={item.shellRunSource}
-            onOpenLinkedSession={onOpenLinkedSession}
           />
         )
       )}
@@ -276,7 +273,6 @@ export function ToolCallDetail({
                 <ToolResultPreview
                   content={displayResult}
                   toolName={item.toolName}
-                  onOpenLinkedSession={onOpenLinkedSession}
                 />
               );
             }
@@ -307,7 +303,22 @@ export function ToolTrow({
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
-  const calls: ChatToolCallItem[] = items.map((item) => ({
+  const calls = items.flatMap((item) => linkedAgentCalls(item, locale, onOpenLinkedSession)
+    ?? [standardToolCall(item, locale)]);
+
+  // No defaultIsExpanded: opening a group is the reader's move. Seeding it open
+  // from in-flight status latches, since the prop is uncontrolled and the
+  // timeline key is stable (see timelineEntryKey). Cost: the collapsed header
+  // projects the last call, which can settle before a parallel sibling.
+  //
+  // A group's own +/- is the whole turn's, not the last call's: a run of five
+  // Edits collapses to one line, and "what did this turn change" is the
+  // question that line has to answer. Per-call counts stay on the rows inside.
+  return <ChatToolCalls calls={calls} {...diffStats(items.flatMap(itemDiffs))} />;
+}
+
+function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCallItem {
+  return {
     key: item.toolUseId,
     // The name is what a person reads to tell one call from the next, and for
     // Computer Use the display name is "Maka Computer" — a noun, identical on
@@ -322,20 +333,90 @@ export function ToolTrow({
     ...diffStats(itemDiffs(item)),
     resultDetail: (
       <ToolDetailReveal>
-        <ToolCallDetail item={item} onOpenLinkedSession={onOpenLinkedSession} />
+        <ToolCallDetail item={item} />
       </ToolDetailReveal>
     ),
-  }));
+  };
+}
 
-  // No defaultIsExpanded: opening a group is the reader's move. Seeding it open
-  // from in-flight status latches, since the prop is uncontrolled and the
-  // timeline key is stable (see timelineEntryKey). Cost: the collapsed header
-  // projects the last call, which can settle before a parallel sibling.
-  //
-  // A group's own +/- is the whole turn's, not the last call's: a run of five
-  // Edits collapses to one line, and "what did this turn change" is the
-  // question that line has to answer. Per-call counts stay on the rows inside.
-  return <ChatToolCalls calls={calls} {...diffStats(items.flatMap(itemDiffs))} />;
+function linkedAgentCalls(
+  item: ToolActivityItem,
+  locale: UiLocale,
+  onOpenLinkedSession: ((sessionId: string) => void) | undefined,
+): ChatToolCallItem[] | undefined {
+  const result = item.result;
+  if (result?.kind === 'subagent') {
+    const name = redactSecrets(result.agentName.trim()) || resolveToolDisplayName(item, locale);
+    const open = linkedSessionActivation(result.childSessionId, name, locale, onOpenLinkedSession);
+    return [{
+      key: item.toolUseId,
+      name,
+      status: subagentToolStatus(result.status),
+      target: item.intent
+        ? formatToolIntent(item.intent)
+        : boundedAgentSummary(result.summary),
+      duration: formatDuration(item.durationMs ?? result.durationMs) ?? undefined,
+      errorMessage: result.failureClass
+        ? redactSecrets(result.failureClass)
+        : toolCallErrorMessage(item, locale),
+      stats: subagentStats(result.status, result.permissionMode === 'explore', locale),
+      ...open,
+    }];
+  }
+  if (result?.kind !== 'agent_swarm') return undefined;
+  if (result.items.length === 0) return undefined;
+  return result.items.map((child) => {
+    const name = redactSecrets((child.agentName || child.itemId).trim()) || child.profile;
+    return {
+      key: `${item.toolUseId}:${child.itemId}`,
+      name,
+      status: child.status === 'completed' ? 'complete' : 'error',
+      target: boundedAgentSummary(child.summary),
+      duration: formatDuration(child.durationMs) ?? undefined,
+      errorMessage: child.failureClass ? redactSecrets(child.failureClass) : undefined,
+      stats: subagentStats(child.status, child.profile === 'local_read', locale),
+      ...linkedSessionActivation(child.childSessionId, name, locale, onOpenLinkedSession),
+    } satisfies ChatToolCallItem;
+  });
+}
+
+function subagentToolStatus(
+  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
+): NonNullable<ChatToolCallItem['status']> {
+  if (status === 'completed') return 'complete';
+  if (status === 'running') return 'running';
+  if (status === 'waiting_for_user') return 'pending';
+  return 'error';
+}
+
+function subagentStats(
+  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
+  readOnly: boolean,
+  locale: UiLocale,
+): string {
+  const copy = getToolActivityCopy(locale).agent;
+  return [copy.subagentStatus[status], readOnly ? copy.readOnly : undefined]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function linkedSessionActivation(
+  childSessionId: string | undefined,
+  name: string,
+  locale: UiLocale,
+  onOpenLinkedSession: ((sessionId: string) => void) | undefined,
+): Pick<ChatToolCallItem, 'onActivate' | 'activateLabel'> {
+  if (!childSessionId || !onOpenLinkedSession) return {};
+  return {
+    onActivate: () => onOpenLinkedSession(childSessionId),
+    activateLabel: getToolActivityCopy(locale).agent.openSessionAriaLabel(name),
+  };
+}
+
+function boundedAgentSummary(summary: string): string | undefined {
+  const normalized = redactSecrets(summary.trim());
+  if (!normalized) return undefined;
+  return normalized.length <= 280 ? normalized : `${normalized.slice(0, 279)}…`;
 }
 
 /**

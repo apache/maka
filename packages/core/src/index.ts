@@ -27,6 +27,7 @@ export * from './interaction.js';
 export * from './project.js';
 export * from './subagent-workspace.js';
 export * from './pet.js';
+export * from './skill-invocation.js';
 export * from './external-session.js';
 
 // events.ts
@@ -43,6 +44,8 @@ export type {
   ToolOutputStream,
   ToolProgressEvent,
   ToolResultEvent,
+  ToolResultPreviewEvent,
+  ToolResultPreviewContent,
   ToolResultContent,
   ShellRunSnapshotResult,
   ShellRunCompactResult,
@@ -111,6 +114,12 @@ export {
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
 } from './events.js';
+
+// tool-result-preview.ts — live-only open-facts for mid-flight tool UI
+export {
+  decodeToolResultPreviewContent,
+  materializeToolResultPreviewForActivity,
+} from './tool-result-preview.js';
 
 // tool-result-status.ts — tool activity status from a result, or from its absence
 export type {
@@ -1381,6 +1390,7 @@ export type {
 } from './llm-connections.js';
 export {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
+  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   PROVIDER_REGISTRY,
   PROVIDER_DEFAULTS,
   CATALOG_PROVIDER_TYPES,
@@ -1388,6 +1398,7 @@ export {
   READY_PROVIDER_TYPES,
   backendKindOf,
   connectionEnabledModelIds,
+  defaultEnabledModelIdsWhenOmitted,
   deriveConnectionSlug,
   isWiredOAuthProvider,
   reconcileConnectionAfterEnabledModelsChange,
@@ -1458,6 +1469,7 @@ export {
 // connection-error-copy.ts — shared not-ready-connection fix copy
 export {
   describeChatConfigurationReason,
+  NO_REAL_CONNECTION_CODE,
   parseNoRealConnectionError,
 } from './connection-error-copy.js';
 export type { ParsedNoRealConnectionError } from './connection-error-copy.js';
@@ -1502,21 +1514,6 @@ export {
   isOnboardingMilestone,
   sanitizeOnboardingMilestones,
 } from './onboarding.js';
-
-// bootstrap-connections.ts
-export type {
-  BootstrapConnectionSeed,
-  BootstrapEnv,
-} from './bootstrap-connections.js';
-export {
-  OPENCODE_FREE_BOOTSTRAP_VERSION,
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
-  OPENCODE_FREE_DEFAULT_MODEL,
-  OPENCODE_FREE_LEGACY_DEFAULT_MODEL,
-  defaultEnabledModelIdsWhenOmitted,
-  resolveBootstrapConnections,
-  resolveOpenCodeFreeBootstrapMigration,
-} from './bootstrap-connections.js';
 
 // model-catalog.ts
 export type {

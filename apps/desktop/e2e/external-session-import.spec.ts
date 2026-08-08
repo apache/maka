@@ -4,14 +4,8 @@ import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { e2eHomeDir, expect, test } from './fixtures';
 
-test('imports a Codex rollout with the embedded owner', async ({
+test('imports a Codex rollout through the Desktop Runtime Host', async ({
   externalSessionImportWindow: page,
-}) => {
-  await importCodexRollout(page);
-});
-
-test('imports a Codex rollout with the Runtime Host owner', async ({
-  runtimeHostExternalSessionImportWindow: page,
 }) => {
   const modelCatalog = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });

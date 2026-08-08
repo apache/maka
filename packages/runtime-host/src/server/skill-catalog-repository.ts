@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
@@ -10,6 +10,7 @@ import {
   encodeSkillRuntimePreferences,
   getSkillRuntimePreference,
   getBundledSkillSource,
+  gateSkillsByHostCapabilities,
   invalidSkillLockStatus,
   isPathInside,
   isSafeSkillId,
@@ -30,6 +31,7 @@ import {
   validateSkillMetadata,
   type BundledSkillSource,
   type ManagedSkillSourceRecord,
+  type HostCapabilities,
   type ScannedSkill,
   type SkillDiscoveryDiagnostic,
   type SkillGovernanceStatus,
@@ -53,6 +55,9 @@ import {
   isSkillCatalogProjectRootLexicallyAbsolute,
   type SkillCatalogBundledItem,
   type SkillCatalogGovernanceItem,
+  type SkillCatalogInvocableItem,
+  type SkillCatalogInvocableQueryInput,
+  type SkillCatalogInvocableQueryResult,
   type SkillCatalogLocalContext,
   type SkillCatalogManagedSourceItem,
   type SkillCatalogMutateInput,
@@ -142,13 +147,24 @@ interface RepositorySnapshot {
 interface PublicationNamespace {
   readonly status: 'available' | 'missing' | 'blocked_path' | 'read_failed';
   readonly occupiedIds: readonly string[];
-  readonly deletionFacts: ReadonlyMap<string, DeletionFact>;
+  readonly deletionFacts: ReadonlyMap<string, WorkspaceDeletionFact>;
 }
 
-interface DeletionFact {
+interface WorkspaceDeletionFact {
+  readonly kind: 'workspace';
   readonly skillId: string;
   readonly manifest: SkillDeletionManifest;
 }
+
+interface UserDeletionFact {
+  readonly kind: 'user';
+  readonly skillId: string;
+  readonly path: string;
+  readonly discoveryDirectory: string;
+  readonly containmentRoot: string;
+}
+
+type DeletionFact = WorkspaceDeletionFact | UserDeletionFact;
 
 interface InstalledFact {
   readonly skill: ScannedSkill;
@@ -220,6 +236,39 @@ export class SkillCatalogRepository {
       throw invalidRequest('Skill catalog cursor is invalid');
     }
     return createPage(snapshot.revision, input.view, items, offset);
+  }
+
+  async queryInvocable(
+    input: SkillCatalogInvocableQueryInput,
+    context: SkillCatalogLocalContext,
+    host: HostCapabilities,
+  ): Promise<SkillCatalogInvocableQueryResult> {
+    const snapshot = await this.#freshSnapshot(context);
+    const revision = invocableRevision(snapshot.revision, host);
+    if (input.kind === 'continue' && input.revision !== revision) {
+      return {
+        kind: 'revision_changed',
+        expectedRevision: input.revision,
+        actualRevision: revision,
+      };
+    }
+    const items = gateSkillsByHostCapabilities(
+      snapshot.model.inventory.filter((skill) => skill.enabled),
+      host,
+    ).flatMap((skill): SkillCatalogInvocableItem[] =>
+      skill.eligible
+        ? [{ ref: skill.ref, id: skill.id, name: skill.name, description: skill.description }]
+        : [],
+    );
+    const offset = input.kind === 'start' ? 0 : decodeInvocableCursor(input.cursor);
+    if (
+      offset === null ||
+      offset > items.length ||
+      (input.kind === 'continue' && offset === items.length)
+    ) {
+      throw invalidRequest('Invocable Skill catalog cursor is invalid');
+    }
+    return createInvocablePage(revision, items, offset);
   }
 
   async mutate(input: SkillCatalogMutateInput): Promise<SkillCatalogMutateResult> {
@@ -586,7 +635,12 @@ export class SkillCatalogRepository {
           item.scope === 'workspace' && item.source === 'legacy' ? 'blocked_path' : 'blocked_scope',
       };
     }
-    await this.#transactions.deleteWorkspaceSkill(deletion.skillId, deletion.manifest);
+    if (deletion.kind === 'workspace') {
+      await this.#transactions.deleteWorkspaceSkill(deletion.skillId, deletion.manifest);
+    } else {
+      const rejected = await deleteUserSkill(deletion);
+      if (rejected) return { ok: false, reason: rejected };
+    }
     return { ok: true, execution: { changed: true, ref: null } };
   }
 
@@ -649,6 +703,7 @@ async function buildSnapshot(input: {
     );
   }
   const managedById = new Map(managedSources.map((source) => [source.id, source]));
+  const deletionFacts = collectDeletionFacts(input.scan, input.publicationNamespace.deletionFacts);
   const diagnosticsByPath = new Map(input.scan.diagnostics.map((entry) => [entry.path, entry]));
   const installedFacts = new Map<string, InstalledFact>();
   const governance: SkillCatalogGovernanceItem[] = [];
@@ -725,13 +780,11 @@ async function buildSnapshot(input: {
           effectiveMigration === null
             ? false
             : isSkillPreferenceReviewPending(effectiveMigration, skill.id),
-        manageable: input.publicationNamespace.deletionFacts.has(skill.ref),
+        manageable: deletionFacts.has(skill.ref),
       }),
     );
   }
-  governance.push(
-    ...rejectedGovernance(input.scan, input.publicationNamespace.deletionFacts, effectiveMigration),
-  );
+  governance.push(...rejectedGovernance(input.scan, deletionFacts, effectiveMigration));
   const representedRefs = new Set(governance.map((item) => item.ref));
   for (const [ref, fact] of input.publicationNamespace.deletionFacts) {
     if (representedRefs.has(ref)) continue;
@@ -812,8 +865,75 @@ async function buildSnapshot(input: {
     installedFacts,
     managedSourceHashes: new Map(managedSources.map((source) => [source.id, source.contentSha256])),
     publicationNamespace: input.publicationNamespace,
-    deletionFacts: input.publicationNamespace.deletionFacts,
+    deletionFacts,
   });
+}
+
+function collectDeletionFacts(
+  scan: SkillScanResult,
+  workspaceFacts: ReadonlyMap<string, WorkspaceDeletionFact>,
+): ReadonlyMap<string, DeletionFact> {
+  const facts = new Map<string, DeletionFact>(workspaceFacts);
+  for (const skill of [...scan.inventory, ...scan.rejected]) {
+    const fact = userDeletionFact(skill);
+    if (fact) facts.set(skill.ref, fact);
+  }
+  return facts;
+}
+
+function userDeletionFact(
+  skill: Pick<ScannedSkill, 'discoveryRoot' | 'id' | 'path' | 'scope' | 'source'>,
+): UserDeletionFact | undefined {
+  if (
+    skill.scope !== 'user' ||
+    (skill.source !== 'maka' && skill.source !== 'agents') ||
+    !isSafeSkillId(skill.id)
+  ) {
+    return undefined;
+  }
+  const containmentRoot = resolve(skill.discoveryRoot);
+  const discoveryDirectory = join(containmentRoot, `.${skill.source}`, 'skills');
+  const path = join(discoveryDirectory, skill.id);
+  if (resolve(skill.path) !== path) return undefined;
+  return { kind: 'user', skillId: skill.id, path, discoveryDirectory, containmentRoot };
+}
+
+async function deleteUserSkill(
+  fact: UserDeletionFact,
+): Promise<'not_found' | 'blocked_path' | undefined> {
+  try {
+    const [directoryStat, skillStat] = await Promise.all([
+      lstat(fact.discoveryDirectory),
+      lstat(fact.path),
+    ]);
+    if (
+      !directoryStat.isDirectory() ||
+      directoryStat.isSymbolicLink() ||
+      !skillStat.isDirectory() ||
+      skillStat.isSymbolicLink()
+    ) {
+      return 'blocked_path';
+    }
+    const [rootReal, directoryReal, skillReal] = await Promise.all([
+      realpath(fact.containmentRoot),
+      realpath(fact.discoveryDirectory),
+      realpath(fact.path),
+    ]);
+    if (
+      !isPathInside(rootReal, directoryReal) ||
+      dirname(skillReal) !== directoryReal ||
+      skillReal !== join(directoryReal, fact.skillId)
+    ) {
+      return 'blocked_path';
+    }
+    await rm(fact.path, { recursive: true });
+    return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'not_found';
+    throw new SkillCatalogRepositoryError('persistence_failed', 'User Skill could not be deleted', {
+      cause: error,
+    });
+  }
 }
 
 function governanceContextStatus(
@@ -1294,6 +1414,86 @@ function decodeCursor(cursor: string, view: SkillCatalogView): number | null {
   }
 }
 
+function invocableRevision(
+  catalogRevision: SkillCatalogRevision,
+  host: HostCapabilities,
+): SkillCatalogRevision {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        catalogRevision,
+        toolNames: [...host.toolNames].sort(),
+        capabilities: [...(host.capabilities ?? [])].sort(),
+      }),
+    )
+    .digest('hex');
+  return `sha256:${digest}`;
+}
+
+function createInvocablePage(
+  revision: SkillCatalogRevision,
+  items: readonly SkillCatalogInvocableItem[],
+  offset: number,
+): SkillCatalogInvocableQueryResult {
+  const pageItems: SkillCatalogInvocableItem[] = [];
+  let cursor = offset;
+  while (cursor < items.length && pageItems.length < SKILL_CATALOG_PAGE_MAX_ITEMS) {
+    const candidate = [...pageItems, items[cursor]];
+    const hasMore = cursor + 1 < items.length;
+    const result = {
+      kind: 'page' as const,
+      revision,
+      items: candidate,
+      nextCursor: hasMore ? encodeInvocableCursor(cursor + 1) : null,
+    };
+    if (jsonBytes(result) > SKILL_CATALOG_PAGE_MAX_BYTES) {
+      if (pageItems.length === 0) {
+        throw new SkillCatalogRepositoryError(
+          'persistence_failed',
+          'An invocable Skill metadata item exceeds the page projection bound',
+        );
+      }
+      break;
+    }
+    pageItems.push(items[cursor]);
+    cursor += 1;
+  }
+  return {
+    kind: 'page',
+    revision,
+    items: Object.freeze(pageItems),
+    nextCursor: cursor < items.length ? encodeInvocableCursor(cursor) : null,
+  };
+}
+
+function encodeInvocableCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ v: 1, kind: 'invocable', offset }), 'utf8').toString(
+    'base64url',
+  );
+}
+
+function decodeInvocableCursor(cursor: string): number | null {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (
+      typeof decoded !== 'object' ||
+      decoded === null ||
+      !('v' in decoded) ||
+      decoded.v !== 1 ||
+      !('kind' in decoded) ||
+      decoded.kind !== 'invocable' ||
+      !('offset' in decoded) ||
+      !Number.isSafeInteger(decoded.offset) ||
+      (decoded.offset as number) < 0
+    ) {
+      return null;
+    }
+    return decoded.offset as number;
+  } catch {
+    return null;
+  }
+}
+
 async function canonicalProjectRoot(value: string): Promise<string> {
   if (!isSkillCatalogProjectRootLexicallyAbsolute(value)) {
     throw new Error('Project root must be absolute');
@@ -1336,12 +1536,13 @@ async function readPublicationNamespace(root: string): Promise<PublicationNamesp
   try {
     const entries = await readdir(skillsRoot, { withFileTypes: true });
     const occupiedIds = entries.map((entry) => publicationId(entry.name)).sort();
-    const deletionFacts = new Map<string, DeletionFact>();
+    const deletionFacts = new Map<string, WorkspaceDeletionFact>();
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !isSafeSkillId(entry.name)) continue;
       try {
         const manifest = await snapshotWorkspaceSkillTree(root, entry.name);
         deletionFacts.set(`workspace:legacy:${entry.name}`, {
+          kind: 'workspace',
           skillId: entry.name,
           manifest,
         });

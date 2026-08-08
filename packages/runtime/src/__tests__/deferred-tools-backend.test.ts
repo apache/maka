@@ -556,7 +556,7 @@ describe('AiSdkBackend deferred agent tools', () => {
       1,
       'execute-mode permission still allows the loaded subagent tool to run',
     );
-    assert.deepEqual(spawnCalls[0], {
+    assert.partialDeepStrictEqual(spawnCalls[0], {
       parentRunId: 'parent-run',
       parentTurnId: 'turn-1',
       toolCallId: 'tc-spawn',

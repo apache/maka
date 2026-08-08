@@ -1328,6 +1328,43 @@ describe('builtin Bash streaming output', () => {
     assert.equal((await parameters.validate({ ref: '   ' })).success, false);
   });
 
+  test('Read ignores provider defaults beside a non-empty runtime ref', async () => {
+    const read = buildBuiltinTools({
+      runtimeResources: {
+        readRuntimeResource: async () => ({ kind: 'text', text: 'unused' }),
+      },
+    }).find((tool) => tool.name === 'Read');
+    if (!read) throw new Error('Read tool missing');
+    const parameters = read.parameters as {
+      validate(value: unknown): PromiseLike<{
+        success: boolean;
+        value?: unknown;
+      }>;
+    };
+    const ref = 'maka://runtime/background-tasks/shell-run-1';
+
+    const normalized = await parameters.validate({
+      path: '',
+      offset: 0,
+      limit: 1,
+      ref,
+    });
+    assert.equal(normalized.success, true);
+    if (normalized.success) assert.deepEqual(normalized.value, { ref });
+
+    assert.equal(
+      (
+        await parameters.validate({
+          path: 'README.md',
+          offset: 0,
+          limit: 1,
+          ref,
+        })
+      ).success,
+      false,
+    );
+  });
+
   test('StopBackgroundTask stops a runtime ref in the current session', async () => {
     const calls: unknown[] = [];
     const backgroundTasks = {

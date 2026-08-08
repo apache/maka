@@ -25,8 +25,8 @@ export interface ConnectionChipStatus {
  *   connection but flags it). That is a "please log back in" signal, not a
  *   user-killed connection, so needs_reauth wins over the disabled check
  *   and must never read as "已禁用".
- * - !enabled + error: oauth-model-connections-main.ts failDiscovery()
- *   persists enabled:false + lastTestStatus:'error', so the failure signal
+ * - !enabled + error: a failed Runtime Host connection effect can persist
+ *   enabled:false + lastTestStatus:'error', so the failure signal
  *   must survive the disabled state — label carries both facts, tone stays
  *   destructive.
  * - !enabled (bare, or disabled+verified): neutral "暂不可用". A stale

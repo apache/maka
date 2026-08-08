@@ -6,14 +6,21 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
   GoalState,
+  ShellRunPtyDataEvent,
 } from '@maka/runtime';
 import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
+import {
+  registerRuntimeHostShellRunsIpc,
+  type RuntimeHostShellRunsClient,
+} from './runtime-host-shell-runs-ipc-main.js';
 
-type RuntimeHostSessionDomainClient = Pick<
-  DesktopRuntimeHostClient,
-  | 'clearGoal'
+type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
+  Pick<
+    DesktopRuntimeHostClient,
+    | 'clearGoal'
   | 'controlPlan'
   | 'getRuntimeResource'
   | 'getPlanState'
@@ -24,12 +31,13 @@ type RuntimeHostSessionDomainClient = Pick<
   | 'queryDeepResearch'
   | 'queryGoal'
   | 'startPlanTurn'
-  | 'stopAgentGraph'
->;
+    | 'stopAgentGraph'
+  >;
 
 export interface RuntimeHostSessionDomainsIpcDeps {
   client: RuntimeHostSessionDomainClient;
   emitModeChanged(sessionId: string): void;
+  sessionObserver: Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'>;
   sendToRenderer?(channel: string, payload: unknown): void;
   now?: () => number;
   newId?: () => string;
@@ -38,14 +46,15 @@ export interface RuntimeHostSessionDomainsIpcDeps {
 
 export interface RuntimeHostSessionDomainsIpcHandle {
   sessionDomainChanged(change: SessionDomainChange): void;
+  runtimeResourcePtyData(event: ShellRunPtyDataEvent): void;
   agentGraphChanged(event: AgentGraphClientChangedEvent): void;
+  close(): Promise<void>;
 }
 
 /**
- * Adapt Host-owned Session sidecars to the existing Desktop renderer facade.
- *
- * This remains an isolated M4 candidate. Production keeps registering the
- * embedded handlers until M5 switches the complete ownership path at once.
+ * Adapt Host-owned Session sidecars to the Desktop renderer IPC contract.
+ * Runtime Host remains the production authority; this module only projects
+ * its events and operations onto the client-owned presentation boundary.
  */
 export function registerRuntimeHostSessionDomainsIpc(
   deps: RuntimeHostSessionDomainsIpcDeps,
@@ -53,12 +62,13 @@ export function registerRuntimeHostSessionDomainsIpc(
 ): RuntimeHostSessionDomainsIpcHandle {
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? Date.now;
+  const shellRuns = registerRuntimeHostShellRunsIpc(
+    { client: deps.client, newId, sessionObserver: deps.sessionObserver },
+    ipcMain,
+  );
 
   ipcMain.handle('tasks:list', (_event, sessionId: unknown) =>
     deps.client.listTasks(requiredId(sessionId, 'Session')),
-  );
-  ipcMain.handle('shell-runs:list', (_event, sessionId: unknown) =>
-    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
   );
   ipcMain.handle('deepResearch:get', async (_event, sessionId: unknown) =>
     projectHostedDeepResearch(
@@ -215,9 +225,13 @@ export function registerRuntimeHostSessionDomainsIpc(
           break;
       }
     },
+    runtimeResourcePtyData(event) {
+      deps.sendToRenderer?.('shell-runs:pty-data', event);
+    },
     agentGraphChanged(event) {
       deps.sendToRenderer?.('graphs:changed', event);
     },
+    close: () => shellRuns.close(),
   };
 }
 

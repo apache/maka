@@ -246,6 +246,35 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.writeCount, 2);
   });
 
+  test('starts an interactive login shell inside the canonical Session workspace', async () => {
+    const harness = createHarness();
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'desktop-launch-1' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.equal(started.ok && started.result.resource.mode, 'pty');
+    assert.deepEqual(
+      harness.lastBackgroundInput && {
+        sessionId: harness.lastBackgroundInput.sessionId,
+        sourceTurnId: harness.lastBackgroundInput.sourceTurnId,
+        sourceToolCallId: harness.lastBackgroundInput.sourceToolCallId,
+        cwd: harness.lastBackgroundInput.cwd,
+        pty: harness.lastBackgroundInput.pty,
+      },
+      {
+        sessionId: SESSION_ID,
+        sourceTurnId: 'desktop-launch-1',
+        sourceToolCallId: 'desktop-launch-1',
+        cwd: '/workspace',
+        pty: true,
+      },
+    );
+    harness.finishBackground({ successful: true });
+    assert.equal(harness.activeResidencies, 0);
+  });
+
   test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
     const harness = createHarness();
     const firstConnection = connection('connection-1');
@@ -330,6 +359,39 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.terminateCount, 1);
   });
 
+  test('releases Session admission while a foreground process holds Host residency', async () => {
+    const harness = createHarness();
+    let announceStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      announceStart = resolve;
+    });
+    let finishForeground!: (result: ReturnType<typeof foregroundResult>) => void;
+    const completion = new Promise<ReturnType<typeof foregroundResult>>((resolve) => {
+      finishForeground = resolve;
+    });
+    harness.foregroundRun = () => {
+      announceStart();
+      return completion;
+    };
+
+    const foreground = harness.coordinator.runForegroundBash(backgroundInput());
+    await started;
+    assert.equal(harness.activeResidencies, 1);
+
+    let eventAdmitted = false;
+    const event = harness.sessionAdmission.run(SESSION_ID, () => {
+      eventAdmitted = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      assert.equal(eventAdmitted, true);
+    } finally {
+      finishForeground(foregroundResult());
+      await Promise.all([foreground, event]);
+    }
+    assert.equal(harness.activeResidencies, 0);
+  });
+
   test('reports archived and missing Sessions without touching a Runtime Resource', async () => {
     const harness = createHarness();
     harness.sessionState = 'archived';
@@ -365,18 +427,21 @@ function createHarness() {
     pointReadCount: 0,
     stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
+    lastBackgroundInput: undefined as ShellRunBashInput | undefined,
+    foregroundRun: undefined as
+      | HostRuntimeResourceCoordinatorInput['manager']['runForegroundBash']
+      | undefined,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
-    runForegroundBash: async () => ({
-      kind: 'terminal',
-      cwd: '/workspace',
-      cmd: 'true',
-      status: 'completed',
-      exitCode: 0,
-      output: pipeOutput(''),
-    }),
+    runForegroundBash: (input) =>
+      state.foregroundRun?.(input) ?? Promise.resolve(foregroundResult()),
     runBackgroundBash: async (input) => {
+      state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
+      if (input.pty) {
+        const { output: _output, ...snapshot } = currentSnapshot;
+        return snapshot;
+      }
       return compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
@@ -426,10 +491,18 @@ function createHarness() {
       };
     },
     inspectResource: async () => structuredClone(currentSnapshot),
+    getLivePtySnapshot: (sessionId, ref) => ({
+      sessionId,
+      ref,
+      sequence: 0,
+      buffer: '',
+      size: { cols: currentSnapshot.output.cols, rows: currentSnapshot.output.rows },
+    }),
     terminateAll: async () => {
       state.terminateCount += 1;
     },
   };
+  const sessionAdmission = new SessionAdmissionGate();
   const coordinator = new HostRuntimeResourceCoordinator({
     manager,
     sessions: {
@@ -448,12 +521,13 @@ function createHarness() {
       readHeader: async (sessionId) => {
         if (state.sessionState === 'missing') throw new SessionNotFoundError(sessionId);
         return {
+          cwd: '/workspace',
           status: state.sessionState === 'archived' ? 'archived' : 'idle',
           isArchived: state.sessionState === 'archived',
         };
       },
     },
-    sessionAdmission: new SessionAdmissionGate(),
+    sessionAdmission,
     acquireResidency: () => {
       state.activeResidencies += 1;
       let active = true;
@@ -471,8 +545,20 @@ function createHarness() {
   });
   return Object.assign(state, {
     coordinator,
+    sessionAdmission,
     finishBackground: (outcome: { successful: boolean }) => backgroundCompletion?.(outcome),
   });
+}
+
+function foregroundResult() {
+  return {
+    kind: 'terminal' as const,
+    cwd: '/workspace',
+    cmd: 'true',
+    status: 'completed' as const,
+    exitCode: 0,
+    output: pipeOutput(''),
+  };
 }
 
 function connection(connectionId: string): ConnectionContext {

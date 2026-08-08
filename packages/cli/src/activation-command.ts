@@ -5,25 +5,15 @@ import type { SessionEvent } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SessionSummary } from '@maka/core/session';
-import type {
-  InvocationResult,
-  RuntimeContinuation,
-  SafeBoundaryContinuationPlan,
-} from '@maka/runtime';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { redactSecrets } from '@maka/core/redaction';
-import { assertSessionBundleRootLayout, createSessionStore } from '@maka/storage';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
-import {
-  createMakaCliRuntimeContext,
-  type CreateMakaCliRuntimeContextInput,
-  type MakaCliRuntimeContext,
-} from './runtime-bootstrap.js';
-import {
-  invocationHasSandboxBoundaryFailure,
-  invocationRecoveredSandboxBoundaryFailure,
-  sessionEventSandboxBoundaryFailureReason,
-} from './sandbox-boundary-failure.js';
+import { assertSessionBundleRootLayout } from '@maka/storage';
+import { readRuntimeHostSessions } from '@maka/runtime-host/client';
+import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
+import { createRuntimeHostRunContext } from './runtime-host-run-command.js';
+import { runtimeHostSessionSummary } from './runtime-host-session-driver.js';
+import type { MakaRunOutcome } from './run-command-core.js';
+import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
 
 const PROTOCOL = 'maka.activation' as const;
 const SCHEMA_VERSION = 1 as const;
@@ -87,10 +77,7 @@ export interface MakaActivationContext {
 export interface MakaActivationRuntime {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
   listSessions?(): Promise<SessionSummary[]>;
-  planLatestAuthoritativeSafeBoundaryContinuation?(
-    sessionId: string,
-  ): Promise<SafeBoundaryContinuationPlan>;
-  resumeSafeBoundaryContinuation?(continuation: RuntimeContinuation): AsyncIterable<SessionEvent>;
+  resumeLatest?(sessionId: string): Promise<AsyncIterable<SessionEvent> | null>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
   respondToSandboxBoundary(
     sessionId: string,
@@ -100,8 +87,8 @@ export interface MakaActivationRuntime {
 }
 
 export interface MakaActivationDeps {
-  createContext(input: CreateMakaCliRuntimeContextInput): Promise<MakaActivationContext>;
-  listSessions(workspaceRoot: string): Promise<SessionSummary[]>;
+  createContext(input: MakaActivationContextInput): Promise<MakaActivationContext>;
+  listSessions(stateRoot: string, configRoot: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
   processCwd(): string;
   stdinIsTTY(): boolean;
@@ -114,6 +101,19 @@ export interface MakaActivationDeps {
   clearTimer(timer: unknown): void;
   newId(): string;
   canonicalDirectory?(path: string): Promise<string>;
+}
+
+export interface MakaActivationContextInput {
+  readonly surface: 'activation';
+  readonly workspaceRoot: string;
+  readonly stateRoot: string;
+  readonly configRoot: string;
+  readonly cwd: string;
+  readonly requestedConnectionSlug?: string;
+  readonly requestedModel?: string;
+  readonly sessionCwdOverride?: { readonly sessionId: string; readonly cwd: string };
+  readonly maxSteps?: number;
+  readonly runOutcomeObserver?: (outcome: MakaRunOutcome) => void | Promise<void>;
 }
 
 interface ActivationStartLine {
@@ -341,7 +341,7 @@ export async function runMakaActivationCli(
   let sessions: SessionSummary[] = [];
   let existing: SessionSummary | undefined;
   try {
-    sessions = await deps.listSessions(roots.stateRoot);
+    sessions = await deps.listSessions(roots.stateRoot, roots.configRoot);
     existing = request.makaSessionId
       ? sessions.find((session) => session.id === request.makaSessionId)
       : undefined;
@@ -392,9 +392,8 @@ export async function runMakaActivationCli(
 
   let context: MakaActivationContext | undefined;
   let session: SessionSummary | undefined = existing;
-  let invocation: InvocationResult | undefined;
+  let invocation: MakaRunOutcome | undefined;
   let streamBoundaryFailure = false;
-  const boundaryFailureInvocationIds = new Set<string>();
   let timedOut = false;
   let interrupted = false;
   let streamFailed = false;
@@ -442,18 +441,8 @@ export async function runMakaActivationCli(
         ? { sessionCwdOverride: { sessionId: existing.id, cwd: roots.workspaceRoot } }
         : {}),
       ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
-      runtimeSource: 'gateway',
-      safeBoundaryResumeEnabled: true,
-      runtimeInvocationObserver: (result) => {
-        if (invocationHasSandboxBoundaryFailure(result)) {
-          if (invocationRecoveredSandboxBoundaryFailure(result)) {
-            boundaryFailureInvocationIds.delete(result.invocationId);
-          } else {
-            boundaryFailureInvocationIds.add(result.invocationId);
-          }
-        }
+      runOutcomeObserver: (result) => {
         invocation = result;
-        for (const event of result.events) writeRuntimeEvent(event);
       },
     });
     if (!session) {
@@ -501,8 +490,8 @@ export async function runMakaActivationCli(
       const drain = (async () => {
         for await (const event of stream) {
           if (sessionEventSandboxBoundaryFailureReason(event)) streamBoundaryFailure = true;
+          writeRuntimeEvent(sessionEventToRuntimeEvent(event, session!.id));
           if (event.type === 'sandbox_boundary_request') {
-            writeRuntimeEvent(sessionEventToRuntimeEvent(event, session!.id));
             await context!.runtime.respondToSandboxBoundary(session!.id, {
               requestId: event.requestId,
               decision: 'deny',
@@ -569,9 +558,12 @@ export async function runMakaActivationCli(
   if (interrupted) return finish('retryable_failure', 'interrupted');
   if (timedOut) return finish('retryable_failure', 'timeout');
   if (streamFailed) return finish('retryable_failure', 'runtime_error');
+  if (invocation?.failure?.class === 'permission_denied') {
+    return finish('blocked', 'permission_denied', undefined, 'grant_permission');
+  }
   if (
-    (streamBoundaryFailure && !invocationRecoveredSandboxBoundaryFailure(invocation)) ||
-    boundaryFailureInvocationIds.size > 0
+    (streamBoundaryFailure && invocation?.sandboxBoundary !== 'recovered') ||
+    invocation?.sandboxBoundary === 'unresolved'
   ) {
     return finish('blocked', 'permission_required', undefined, 'grant_permission');
   }
@@ -730,13 +722,9 @@ async function activationStream(
   input: UserMessageInput,
   allowSafeBoundaryResume: boolean,
 ): Promise<AsyncIterable<SessionEvent>> {
-  const planLatest = runtime.planLatestAuthoritativeSafeBoundaryContinuation;
-  const resume = runtime.resumeSafeBoundaryContinuation;
-  if (allowSafeBoundaryResume && planLatest && resume) {
-    const plan = await planLatest.call(runtime, sessionId);
-    if (plan.disposition === 'continue' && plan.continuation) {
-      return resume.call(runtime, plan.continuation);
-    }
+  if (allowSafeBoundaryResume && runtime.resumeLatest) {
+    const resumed = await runtime.resumeLatest(sessionId);
+    if (resumed) return resumed;
   }
   return runtime.sendMessage(sessionId, input);
 }
@@ -795,8 +783,8 @@ function makaActivateHelpText(): string {
 
 function defaultMakaActivationDeps(): MakaActivationDeps {
   return {
-    createContext: createMakaCliRuntimeContext,
-    listSessions: (workspaceRoot) => createMakaCliRuntimeContextListSessions(workspaceRoot),
+    createContext: createRuntimeHostActivationContext,
+    listSessions: listRuntimeHostActivationSessions,
     workspaceRoot: () => resolve(process.cwd()),
     processCwd: () => process.cwd(),
     stdinIsTTY: () => process.stdin.isTTY === true,
@@ -818,11 +806,69 @@ function defaultMakaActivationDeps(): MakaActivationDeps {
   };
 }
 
-async function createMakaCliRuntimeContextListSessions(
-  workspaceRoot: string,
+async function createRuntimeHostActivationContext(
+  input: MakaActivationContextInput,
+): Promise<MakaActivationContext> {
+  const connected = await connectRuntimeHostCli({
+    rootPath: input.stateRoot,
+    surface: 'activation',
+    legacyConfigurationRoot: input.configRoot,
+  });
+  try {
+    const target = resolveRuntimeHostCliTarget(connected.catalog, {
+      ...(input.requestedConnectionSlug ? { connectionSlug: input.requestedConnectionSlug } : {}),
+      ...(input.requestedModel ? { model: input.requestedModel } : {}),
+    });
+    const runContext = createRuntimeHostRunContext(connected.connection, connected.catalog, {
+      surface: 'activation',
+      workspaceRoot: input.stateRoot,
+      cwd: input.cwd,
+      requestedConnectionSlug: target.connection.slug,
+      requestedModel: target.model,
+      ...(input.sessionCwdOverride ? { sessionCwdOverride: { ...input.sessionCwdOverride } } : {}),
+      ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+      ...(input.runOutcomeObserver ? { runOutcomeObserver: input.runOutcomeObserver } : {}),
+    });
+    return {
+      runtime: runContext.runtime,
+      target: {
+        connection: {
+          slug: target.connection.slug,
+          name: target.connection.name,
+          providerType: target.connection.providerType,
+          enabled: target.connection.enabled,
+          defaultModel: target.model,
+        },
+        model: target.model,
+      },
+      cwd: input.cwd,
+      close: async () => {
+        await runContext.close();
+        await connected.close();
+      },
+    };
+  } catch (error) {
+    await connected.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function listRuntimeHostActivationSessions(
+  stateRoot: string,
+  configRoot: string,
 ): Promise<SessionSummary[]> {
-  await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
-  return createSessionStore(workspaceRoot).list();
+  const connected = await connectRuntimeHostCli({
+    rootPath: stateRoot,
+    surface: 'activation',
+    legacyConfigurationRoot: configRoot,
+  });
+  try {
+    return (await readRuntimeHostSessions(connected.connection)).flatMap((session) =>
+      'kind' in session ? [] : [runtimeHostSessionSummary(session)],
+    );
+  } finally {
+    await connected.close();
+  }
 }
 
 async function readProcessStdin(): Promise<string> {

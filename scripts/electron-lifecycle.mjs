@@ -63,7 +63,21 @@ export async function closeElectronApplication(
   graceMs,
   terminateTree = terminateElectronProcessTree,
 ) {
-  const child = app.process();
+  let child;
+  try {
+    child = app.process();
+  } catch {
+    // Playwright invalidates the process channel after Electron exits. There
+    // is no live process tree left to terminate, so teardown is already done.
+    await settlesWithin(
+      app.close().then(
+        () => true,
+        () => true,
+      ),
+      graceMs,
+    );
+    return;
+  }
   const gracefulClose = app.close().then(
     () => true,
     () => false,

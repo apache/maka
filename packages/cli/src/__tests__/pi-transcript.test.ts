@@ -1808,6 +1808,55 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(expanded, /step two/);
   });
 
+  test('replaces live Bash output with the authoritative terminal snapshot', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-1',
+        toolName: 'Bash',
+        args: { command: 'printf "step one\\nstep two\\n"' },
+      }),
+    );
+    for (const [seq, chunk] of [
+      [1, 'step one\n'],
+      [2, 'step two\n'],
+    ] as const) {
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_output_delta',
+          toolUseId: 'tool-1',
+          seq,
+          stream: 'stdout',
+          chunk,
+          redacted: false,
+        }),
+      );
+    }
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-1',
+        isError: false,
+        content: shellRun({
+          status: 'completed',
+          stdout: 'step one\nstep two\n',
+          completedAt: 2_000,
+          exitCode: 0,
+        }),
+      }),
+    );
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    const expanded = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
+    const outputLines = expanded.split('\n').map((line) => line.trim());
+    assert.equal(outputLines.filter((line) => line === 'step one').length, 1);
+    assert.equal(outputLines.filter((line) => line === 'step two').length, 1);
+  });
+
   test('folds concurrent child lifecycles into their parent agent cards', () => {
     const state = createMakaPiTranscriptState();
     for (const [toolUseId, profile] of [

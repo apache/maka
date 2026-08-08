@@ -640,6 +640,7 @@ const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
   'multipleOf',
   'oneOf',
   'pattern',
+  'propertyNames',
   'properties',
   'required',
   'title',
@@ -725,6 +726,9 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
       typeof schema.additionalProperties !== 'boolean'
     ) {
       visit(schema.additionalProperties);
+    }
+    if (schema.propertyNames !== undefined) {
+      visit(schema.propertyNames);
     }
     if (schema.items !== undefined) {
       if (Array.isArray(schema.items)) {

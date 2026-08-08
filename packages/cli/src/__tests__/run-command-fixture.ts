@@ -1,18 +1,13 @@
 import type { SessionEvent } from '@maka/core/events';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type { SessionSummary } from '@maka/core/session';
-import type { InvocationResult } from '@maka/runtime';
 import {
-  runMakaTextCli,
+  runMakaTextCliCore,
   type MakaRunContext,
   type MakaRunContextInput,
+  type MakaRunOutcome,
   type MakaRunRuntime,
-} from '../run-command.js';
-import {
-  invocationHasSandboxBoundaryFailure,
-  invocationRecoveredSandboxBoundaryFailure,
-} from '../sandbox-boundary-failure.js';
-import type { ReadySessionTarget } from '../connection-target.js';
+} from '../run-command-core.js';
 
 const scenario = process.env.MAKA_RUN_FIXTURE_SCENARIO ?? 'completed';
 let observer: MakaRunContextInput['runOutcomeObserver'];
@@ -31,7 +26,7 @@ const target = {
   },
   apiKey: '',
   model: 'fixture-model',
-} as ReadySessionTarget;
+};
 
 const summary = {
   id: 'session-fixture',
@@ -59,6 +54,12 @@ const runtime: MakaRunRuntime = {
       input.permissionMode !== process.env.MAKA_RUN_EXPECT_PERMISSION_MODE
     ) {
       throw new Error(`unexpected permissionMode ${input.permissionMode}`);
+    }
+    if (
+      process.env.MAKA_RUN_EXPECT_SESSION_NAME &&
+      input.name !== process.env.MAKA_RUN_EXPECT_SESSION_NAME
+    ) {
+      throw new Error(`unexpected Session name ${JSON.stringify(input.name)}`);
     }
     return summary;
   },
@@ -181,15 +182,7 @@ const runtime: MakaRunRuntime = {
         isError: false,
         content: { kind: 'text', text: 'completed within the current boundary' },
       };
-      await notify({
-        ...completedResult('recovered safely'),
-        events: [
-          functionResponseEvent('tool-boundary', true, {
-            sandboxFailure: { reason: 'sandbox_boundary_required' },
-          }),
-          functionResponseEvent('tool-safe', false, 'completed within the current boundary'),
-        ],
-      });
+      await notify({ ...completedResult('recovered safely'), sandboxBoundary: 'recovered' });
       return;
     }
     if (scenario === 'slow') {
@@ -292,33 +285,8 @@ async function createContext(input: MakaRunContextInput): Promise<MakaRunContext
           if (process.env.MAKA_RUN_GRAPH_BOUNDARY_FAILURE === '1') {
             await notify({
               ...completedResult('child could not complete'),
-              invocationId: 'invocation-child',
-              runId: 'run-child',
-              sessionId: 'session-child',
-              events: [
-                {
-                  id: 'event-child-tool',
-                  invocationId: 'invocation-child',
-                  runId: 'run-child',
-                  sessionId: 'session-child',
-                  turnId: 'turn-child',
-                  ts: 1,
-                  partial: false,
-                  role: 'tool',
-                  author: 'tool',
-                  content: {
-                    kind: 'function_response',
-                    id: 'tool-child',
-                    name: 'Write',
-                    isError: true,
-                    result: {
-                      kind: 'text',
-                      text: 'boundary required',
-                      sandboxFailure: { reason: 'sandbox_boundary_required' },
-                    },
-                  },
-                },
-              ],
+              outcomeId: 'run-child',
+              sandboxBoundary: 'unresolved',
             });
           }
           await notify(completedResult('graph completed'));
@@ -336,74 +304,29 @@ async function listSessions(): Promise<SessionSummary[]> {
   return JSON.parse(process.env.MAKA_RUN_FIXTURE_SESSIONS ?? '[]') as SessionSummary[];
 }
 
-function completedResult(finalOutput: string): InvocationResult {
+function completedResult(finalOutput: string): MakaRunOutcome {
   return {
-    invocationId: 'invocation-fixture',
-    runId: 'run-fixture',
-    sessionId: summary.id,
-    turnId: 'turn-fixture',
+    outcomeId: 'run-fixture',
     status: 'completed',
     finalOutput,
-    events: [],
-    startedAt: 1,
-    finishedAt: 2,
+    sandboxBoundary: 'none',
   };
 }
 
-function failedResult(failureClass: string, message: string): InvocationResult {
+function failedResult(failureClass: string, message: string): MakaRunOutcome {
   return {
-    invocationId: 'invocation-fixture',
-    runId: 'run-fixture',
-    sessionId: summary.id,
-    turnId: 'turn-fixture',
+    outcomeId: 'run-fixture',
     status: 'failed',
-    events: [],
     failure: { class: failureClass, message },
-    startedAt: 1,
-    finishedAt: 2,
+    sandboxBoundary: 'none',
   };
 }
 
-function functionResponseEvent(
-  toolUseId: string,
-  isError: boolean,
-  result: unknown,
-): InvocationResult['events'][number] {
-  return {
-    id: `event-${toolUseId}`,
-    invocationId: 'invocation-fixture',
-    runId: 'run-fixture',
-    sessionId: summary.id,
-    turnId: 'turn-fixture',
-    ts: 1,
-    partial: false,
-    role: 'tool',
-    author: 'tool',
-    content: {
-      kind: 'function_response',
-      id: toolUseId,
-      name: 'Bash',
-      result,
-      isError,
-    },
-  };
+async function notify(result: MakaRunOutcome): Promise<void> {
+  await observer?.(result);
 }
 
-async function notify(result: InvocationResult): Promise<void> {
-  await observer?.({
-    outcomeId: result.invocationId,
-    status: result.status === 'completed' ? 'completed' : 'failed',
-    ...(result.finalOutput !== undefined ? { finalOutput: result.finalOutput } : {}),
-    ...(result.failure ? { failure: result.failure } : {}),
-    sandboxBoundary: invocationRecoveredSandboxBoundaryFailure(result)
-      ? 'recovered'
-      : invocationHasSandboxBoundaryFailure(result)
-        ? 'unresolved'
-        : 'none',
-  });
-}
-
-runMakaTextCli(process.argv.slice(2), { createContext, listSessions }).then(
+runMakaTextCliCore(process.argv.slice(2), { createContext, listSessions }).then(
   (code) => {
     process.exitCode = code;
   },

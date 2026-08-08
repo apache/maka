@@ -35,6 +35,15 @@ import { withScopedMakaBridge } from './maka-bridge';
 const SESSION_ID = 'session-workbar';
 const NOW = Date.UTC(2026, 6, 31, 10, 30, 0);
 
+// The record-file row reads `app:info`'s operationalStateDatabasePath (the
+// exact path main resolves). The short one is what a default workspace looks
+// like; the long one proves the row truncates the directory while the
+// filename stays (the path is hover/focus-copy reachable, the copy button is
+// not pushed out) even at the panel's 320px minimum width.
+const DEFAULT_RECORD_FILE_PATH = 'C:\\Users\\reviewer\\Maka\\workspaces\\default\\runtime.sqlite';
+const LONG_RECORD_FILE_PATH =
+  'C:\\Users\\reviewer\\Maka\\workspaces\\default\\projects\\trace-record-file-truncation-\\with-a-very-long-owner\\runtime.sqlite';
+
 // ---- ledgers -------------------------------------------------------------
 
 // Mirrors the `task-ledger` e2e fixture (apps/desktop/src/main/e2e-fixture/
@@ -388,6 +397,7 @@ function bridge(options: {
   tasksFail?: boolean;
   trace?: SessionTrace;
   traceFail?: boolean;
+  recordFilePath?: string;
 } = {}) {
   return withScopedMakaBridge({
     tasks: {
@@ -406,6 +416,12 @@ function bridge(options: {
       subscribeChanges: unsubscribe,
     },
     app: {
+      // The record-file row reads only operationalStateDatabasePath; the rest
+      // of AppInfo is real-IPC data no story needs, so the mock carries just
+      // the seam.
+      info: async () => ({
+        operationalStateDatabasePath: options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
+      }),
       openArtifactPath: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveArtifactAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
@@ -518,5 +534,14 @@ export const TraceEmpty: Story = {
 // unreadable or partially written run ledger); retry lives on the banner.
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: 会话工作栏 → 追踪 on a workspace whose path overflows the panel
+// — the record-file row keeps its label and copy button, and the path alone
+// truncates. (The default stories above already show the row with a short
+// path; this variant pins the truncation contract.)
+export const TraceRecordFile: Story = {
+  decorators: [bridge({ trace: populatedTrace, recordFilePath: LONG_RECORD_FILE_PATH })],
   render: () => <Workbar tab="inspector" />,
 };

@@ -3,11 +3,12 @@ import { join } from 'node:path';
 import type { UiLocale, E2eFixtureScenario, E2eFixtureState } from '@maka/core';
 import {
   backfillSessionProjects,
+  createFileCredentialStore,
   createProjectCatalog,
   createSessionStore,
 } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
-import type { CredentialStore } from './credential-store.js';
+import type { CredentialStore } from '@maka/storage';
 import {
   ARTIFACT_SESSION_ID,
   ERROR_SESSION_ID,
@@ -171,8 +172,8 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-control-branch-orphan',
   // PR-UI-RENDER-3a-smoke: registry-driven artifact preview fixtures.
   // Each shares the standard chat seed + same ARTIFACT_SESSION_ID but
-  // writes a different single artifact so the ArtifactPane default
-  // selection deterministically shows the artifact we want.
+  // writes a different single artifact so opening the only list row reaches
+  // the intended preview deterministically.
   'artifact-preview-image',
   'artifact-preview-unsupported',
   'artifact-preview-oversize',
@@ -462,8 +463,8 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
     case 'artifact-errors':
     // PR-UI-RENDER-3a-smoke: each preview scenario shares the same
     // chat session as `artifact-pane`; only the on-disk artifact
-    // varies. The ArtifactPane selects records[0] by default so the
-    // single seeded artifact is what gets rendered.
+    // varies. Each list contains exactly one row so the intended preview is
+    // deterministic after the normal list-to-preview interaction.
     case 'artifact-preview-image':
     case 'artifact-preview-unsupported':
     case 'artifact-preview-oversize':
@@ -698,18 +699,19 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
 export async function seedE2eFixture(input: {
   workspaceRoot: string;
   fixture: E2eFixture;
-  credentialStore: Pick<CredentialStore, 'setSecret'>;
+  credentialStore?: Pick<CredentialStore, 'setSecret'>;
   now?: number;
 }): Promise<void> {
   const now = input.now ?? E2E_FIXTURE_NOW;
   await rm(input.workspaceRoot, { recursive: true, force: true });
   await mkdir(input.workspaceRoot, { recursive: true });
   await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
+  const credentialStore = input.credentialStore ?? createFileCredentialStore(input.workspaceRoot);
   await writeSettings(input.workspaceRoot, input.fixture.scenario);
   if (input.fixture.scenario === 'first-run') return;
   await writeConnections(input.workspaceRoot, now, input.fixture.scenario);
   for (const slug of ['zai-live', 'relay-fallback', 'empty-fetched', 'needs-reauth', 'broken-provider']) {
-    await input.credentialStore.setSecret(slug, 'api_key', `fixture-key-${slug}`);
+    await credentialStore.setSecret(slug, 'api_key', `fixture-key-${slug}`);
   }
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
   if (input.fixture.scenario === 'deep-research-progress') {

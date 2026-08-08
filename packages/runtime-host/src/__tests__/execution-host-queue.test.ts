@@ -66,6 +66,7 @@ import {
   type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
+  type TurnStartResult,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
@@ -78,6 +79,7 @@ import {
   assertJsonLines,
   attachment,
   connectClient,
+  requireStartedTurn,
   operationError,
   quotedContent,
   sendStartWithoutReadingResponse,
@@ -111,11 +113,13 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     }
 
     const firstTurnId = randomUUID();
-    const started = await desktop.startTurn({
-      sessionId: fixture.sessionId,
-      turnId: firstTurnId,
-      content: { text: `continuity root ${'x'.repeat(540)}` },
-    });
+    const started = requireStartedTurn(
+      await desktop.startTurn({
+        sessionId: fixture.sessionId,
+        turnId: firstTurnId,
+        content: { text: `continuity root ${'x'.repeat(540)}` },
+      }),
+    );
     for (const probe of [desktopProbe, tuiProbe]) {
       const liveDelta = await probe.waitFor(
         (frame) =>
@@ -207,7 +211,8 @@ test('concurrent root admission for one Session has a single winner', async () =
       }),
     ]);
     const winners = outcomes.filter(
-      (outcome): outcome is PromiseFulfilledResult<TurnSnapshot> => outcome.status === 'fulfilled',
+      (outcome): outcome is PromiseFulfilledResult<TurnStartResult> =>
+        outcome.status === 'fulfilled',
     );
     const rejected = outcomes.filter(
       (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
@@ -217,8 +222,9 @@ test('concurrent root admission for one Session has a single winner', async () =
     assert.ok(rejected[0]?.reason instanceof RuntimeHostOperationError);
     assert.equal(rejected[0]?.reason.code, 'session_busy');
 
-    const winner = winners[0]?.value;
-    assert.ok(winner);
+    const winnerResult = winners[0]?.value;
+    assert.ok(winnerResult);
+    const winner = requireStartedTurn(winnerResult);
     await first.stopTurn({
       sessionId: fixture.sessionId,
       turnId: winner.turnId,
@@ -272,11 +278,13 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     });
     const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
-    const started = await first.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
+    const started = requireStartedTurn(
+      await first.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
     await firstProbe.waitFor(
       (frame) =>
         frame.kind === 'subscription.session_projection' &&
@@ -369,11 +377,13 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root, 'desktop');
     const turnId = randomUUID();
-    const started = await client.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-    });
+    const started = requireStartedTurn(
+      await client.startTurn({
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
 
     const exit = await fixture.stopHost(host);
     assert.deepEqual(exit, { code: 0, signal: null });

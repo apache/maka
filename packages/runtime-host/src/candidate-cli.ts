@@ -1,4 +1,5 @@
 import type { RuntimeHostCandidateOptions } from './server/candidate.js';
+import { isAbsolute } from 'node:path';
 
 export function parseRuntimeHostCandidateArguments(
   args: readonly string[],
@@ -8,6 +9,7 @@ export function parseRuntimeHostCandidateArguments(
     'expected-root-id',
     'idle-grace-ms',
     'handshake-timeout-ms',
+    'legacy-configuration-root',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -31,9 +33,21 @@ export function parseRuntimeHostCandidateArguments(
   return {
     rootPath,
     expectedRootId,
+    ...(values.has('legacy-configuration-root')
+      ? {
+          legacyConfigurationRoot: readOptionalAbsolutePath(values, 'legacy-configuration-root'),
+        }
+      : {}),
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
   };
+}
+
+function readOptionalAbsolutePath(values: Map<string, string>, key: string): string | undefined {
+  const value = values.get(key);
+  if (value === undefined) return undefined;
+  if (!isAbsolute(value)) throw new Error(`Invalid --${key}`);
+  return value;
 }
 
 function readOptionalInteger(values: Map<string, string>, key: string): number | undefined {

@@ -103,9 +103,8 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * Companion for the quote side panel. On the first question it FORKS the main
  * session (`branchFromTurn` from the latest SETTLED turn) into a child that
  * carries the whole main conversation as context and inherits its model / cwd.
- * The fork is pinned read-only (`explore`): it explains and explores the selected
- * context — writes / shell / destructive operations are hard-blocked, while web /
- * custom tools follow the normal permission path (surfaced here as a prompt).
+ * The fork inherits the source permission profile and exposes the normal
+ * permission control for later changes.
  * Follow-ups stream through the SAME live-turn reducer the main shell uses, and
  * hand off from the live projection only once the persisted message settles (the
  * shared `readSettledMessages` + `reconcileTerminalLiveTurn` rule) so a completed
@@ -129,8 +128,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
   const companionRef = useRef<SessionSummary | undefined>(undefined);
   const companionIdRef = useRef<string | null>(null);
-  // A created fork is hidden immediately, before its permission pin completes,
-  // but is not considered usable until onForkCommitted promotes it.
+  // A created fork is hidden immediately, but is not considered usable until
+  // onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
   const sourceSessionIdRef = useRef(sourceSession?.id);
   sourceSessionIdRef.current = sourceSession?.id;
@@ -252,6 +251,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const promise = ensureCompanionFork({
         api: window.maka.sessions,
         sourceSession,
+        panelId,
         name,
         isDisposed: () => !mountedRef.current,
         onForkCreated: (session) => {
@@ -286,7 +286,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       forkSetupPromiseRef.current = promise;
       return promise;
     },
-    [commitFork, mountedRef, sourceSession],
+    [commitFork, mountedRef, panelId, sourceSession],
   );
 
   useEffect(() => {
@@ -307,7 +307,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const sourceSessionId = sourceSessionIdRef.current;
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
-          void cleanupCompanionCopy(window.maka.sessions, sourceSessionId, id).then((cleaned) => {
+          void cleanupCompanionCopy(
+            window.maka.sessions,
+            sourceSessionId,
+            panelId,
+            id,
+          ).then((cleaned) => {
             if (cleaned) {
               onForkVisibilityChangeRef.current?.({
                 type: 'cleanup-succeeded',
@@ -316,7 +321,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             }
           });
         } else if (sourceSessionId) {
-          void abandonPendingCompanionCopy(window.maka.sessions, sourceSessionId);
+          void abandonPendingCompanionCopy(
+            window.maka.sessions,
+            sourceSessionId,
+            panelId,
+          );
         }
       });
     };
@@ -344,6 +353,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const result = await performCompanionTurn({
         api: window.maka.sessions,
         sourceSession,
+        panelId,
         name: `${copyRef.current.namePrefix}${label}`,
         isDisposed: () => !mountedRef.current,
         existingForkId: fork.session.id,

@@ -171,6 +171,36 @@ describe('HostExecutionInspectCoordinator', () => {
     });
   });
 
+  test('does not charge unrelated AgentRun diagnostics to the Session trace budget', async () => {
+    await withCoordinator(async ({ stores, coordinator }) => {
+      const session = await stores.sessionStore.create(sessionInput('Trace evidence'));
+      await stores.agentRunStore.createRun(runHeader(session.id, 'trace-run', 1));
+      await stores.agentRunStore.appendEvent(session.id, 'trace-run', {
+        type: 'run_started',
+        id: 'large-unrelated-event',
+        sessionId: session.id,
+        runId: 'trace-run',
+        turnId: 'turn-trace-run',
+        ts: 1,
+        data: { payload: 'x'.repeat(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES) },
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'trace-run',
+        runtimeEvent(session.id, 'trace-run', 2),
+      );
+
+      const result = await coordinator.handlers['execution.inspect.query'](
+        { kind: 'session_trace_start', sessionId: session.id },
+        connectionContext(),
+      );
+
+      assert.equal(result.ok, true);
+      if (!result.ok || result.result.kind !== 'session_trace_page') return;
+      assert.equal(result.result.turns.length, 1);
+    });
+  });
+
   test('accepts evidence that exactly consumes the shared byte budget before an empty ledger', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Exact evidence budget'));

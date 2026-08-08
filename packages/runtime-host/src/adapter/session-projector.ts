@@ -301,6 +301,14 @@ function projectToolEvent(
     };
   }
   if (event.type === 'tool_progress') return { type: event.type, ...base, chunk: event.chunk };
+  if (event.type === 'tool_result_preview') {
+    return {
+      type: 'tool_result_preview',
+      ...base,
+      isError: event.isError,
+      content: structuredClone(event.content),
+    };
+  }
   return {
     type: 'tool_result',
     ...base,

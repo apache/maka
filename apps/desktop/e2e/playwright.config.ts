@@ -5,25 +5,24 @@ import { defineConfig } from '@playwright/test';
  *
  * Each test launches a real Electron window backed by the deterministic fake
  * backend (MAKA_E2E=1) against its OWN throwaway userData dir (the fixture
- * mkdtemps one per test), so windows share no *state*. The wall clock is
- * dominated by Electron boot, which overlaps well: a past full-suite run
- * measured 1 worker ≈ 7min against 4 workers ≈ 2.4min. Deliberately no test
- * count here — the previous note carried a stale one that outlived two rounds
- * of pruning. `playwright test --list` is the only figure that cannot rot.
+ * mkdtemps one per test), so windows share no *state*. A Runtime Host-backed
+ * window owns both Electron and an execution candidate process. Keep the
+ * default at one worker: concurrent hidden windows throttle animation frames
+ * and share OS focus, invalidating geometry and focus contracts. Developers
+ * can still pass `--workers` explicitly for a subset that has neither concern.
+ * Deliberately no test count here — the previous note carried a stale one that
+ * outlived two rounds of pruning. `playwright test --list` is the only figure
+ * that cannot rot.
  *
- * What parallel windows DO share is OS focus. Specs that assert
- * `toBeFocused()` (e.g. plan-reminders) fail when another window steals
- * activation mid-assertion — Chromium blurs the document when its window
- * deactivates. Each CI shard therefore keeps one worker on an isolated X
- * display; local runs take the parallel win, and a local focus failure re-runs
- * alone to confirm.
+ * CI shards run on isolated X displays, so jobs still overlap without sharing
+ * focus or a compositor. Local parallelism is opt-in for the same reason.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */
 export default defineConfig({
   testDir: '.',
   fullyParallel: true,
-  workers: process.env.CI ? 1 : 4,
+  workers: 1,
   // CI publishes no Playwright report that consumes Git metadata. Disable its
   // best-effort shallow-history fetch, which otherwise waits on a fixed timeout.
   captureGitInfo: { commit: false, diff: false },

@@ -306,6 +306,7 @@ export interface SpawnChildSessionInput {
     runId: string;
     agentId: string;
     agentName: string;
+    permissionMode: SessionHeader['permissionMode'];
   }) => void | Promise<void>;
   /** Presentation-only observer for projecting child activity into a parent surface. */
   onEvent?: (event: SessionEvent) => void;
@@ -919,6 +920,7 @@ export class SessionManager {
         runStore: deps.runStore,
         runtimeEventStore: deps.runtimeEventStore,
         readMessages: (sessionId) => deps.store.readMessages(sessionId),
+        appendMessage: (sessionId, message) => deps.store.appendMessage(sessionId, message),
         appendTurnState: (sessionId, turnId, status, lineage, options) =>
           this.appendTurnState(sessionId, turnId, status, lineage, options),
         newId: deps.newId,
@@ -1402,6 +1404,13 @@ export class SessionManager {
     );
     const recovered = new Set<string>();
     for (const session of interrupted) {
+      if (this.runtimeLedgerRepair) {
+        await recoverOr(
+          policy,
+          () => this.runtimeLedgerRepair!.repairSteeringMessagesOnce(session.id),
+          0,
+        );
+      }
       if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
       // Fail-closed: a request whose live owner died can never be answered, so
       // it settles as `deny` with a durable `host_restarted` reason. The run
@@ -3169,6 +3178,7 @@ export class SessionManager {
         runId,
         agentId: snapshot.agentId,
         agentName: snapshot.agentName,
+        permissionMode: child.permissionMode,
       };
       let readyNotification: Promise<void> | undefined;
       const notifyReady = (): Promise<void> => {

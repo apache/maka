@@ -95,7 +95,7 @@ describe('staged attachment preview (approval source)', () => {
     assert.equal(read, 0);
   });
 
-  it('wires the shared IPC registration both execution modes reuse', async () => {
+  it('registers the client-owned attachment preview IPC boundary', async () => {
     const approvals = createAttachmentApprovalRegistry();
     const [issued] = approvals.issueApprovals(7, [
       { path: '/tmp/shot.png', name: 'shot.png', mimeType: 'image/png', size: PNG.byteLength },

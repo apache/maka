@@ -16,7 +16,6 @@ import type {
   ProxySettings,
   TestProxyInput,
 } from "@maka/core/settings/network-settings";
-import type { BotRegistry } from "@maka/runtime";
 import type { SettingsStore } from "@maka/storage";
 import {
   buildSettingsUpdateResult,
@@ -24,6 +23,16 @@ import {
   proxyTestFailure,
 } from "./settings-ipc-helpers.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+
+type RuntimeHostSettingsClient = Pick<
+  DesktopRuntimeHostClient,
+  | "deleteCredential"
+  | "queryCredential"
+  | "queryRuntimePolicy"
+  | "setCredential"
+  | "testNetworkProxy"
+  | "updateRuntimePolicy"
+>;
 
 const PROXY_CREDENTIAL: CredentialLocator = {
   scope: "network_proxy",
@@ -37,11 +46,9 @@ const WEB_SEARCH_CREDENTIAL: CredentialLocator = {
 
 export interface RuntimeHostSettingsIpcDeps {
   readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
-  readonly client: DesktopRuntimeHostClient;
+  readonly client: RuntimeHostSettingsClient;
   readonly settingsStore: SettingsStore;
-  readonly botRegistry: BotRegistry;
-  readonly applyKeepSystemAwake: (enabled: boolean) => Promise<void>;
-  readonly emitExternalChanged: () => void;
+  readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
 }
 
 export function registerRuntimeHostSettingsIpc(
@@ -115,11 +122,7 @@ export async function updateRuntimeHostSettings(
   const local = hasPatch(clientPatch)
     ? await deps.settingsStore.update(clientPatch)
     : await deps.settingsStore.get();
-  if (clientPatch.system) {
-    await deps.applyKeepSystemAwake(local.system.keepSystemAwake);
-  }
-  if (clientPatch.botChat) await deps.botRegistry.applySettings(local.botChat);
-  deps.emitExternalChanged();
+  await deps.applyClientSettings(local);
   return loadRuntimeHostSettings(deps);
 }
 
@@ -181,6 +184,7 @@ export async function loadRuntimeHostSettings(
         tavily: projectWebSearchCredential(local, webSearchCredential),
       },
     },
+    subagents: policy.subagents,
   };
 }
 
@@ -207,7 +211,7 @@ function projectWebSearchCredential(
 }
 
 async function applyHostPatch(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   patch: UpdateAppSettingsInput,
 ): Promise<void> {
   if (patch.network?.proxy) {
@@ -287,12 +291,18 @@ async function applyHostPatch(
       else await setCredential(client, WEB_SEARCH_CREDENTIAL, apiKey);
     }
   }
+  if (patch.subagents) {
+    await client.updateRuntimePolicy(() => ({
+      kind: "set_subagents",
+      value: patch.subagents!,
+    }));
+  }
 }
 
 async function mergePolicy<
   K extends "memory" | "workspaceInstructions" | "privacy" | "chatDefaults",
 >(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   key: K,
   patch: Partial<RuntimePolicy[K]>,
   kind:
@@ -310,7 +320,7 @@ async function mergePolicy<
 }
 
 async function setCredential(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   locator: CredentialLocator,
   secret: string,
 ): Promise<void> {
@@ -332,7 +342,7 @@ async function setCredential(
 }
 
 async function deleteCredential(
-  client: DesktopRuntimeHostClient,
+  client: RuntimeHostSettingsClient,
   locator: CredentialLocator,
 ): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -381,8 +391,8 @@ function toClientOwnedPatch(
     ...(patch.appearance ? { appearance: patch.appearance } : {}),
     ...(personalization ? { personalization } : {}),
     ...(patch.notifications ? { notifications: patch.notifications } : {}),
+    ...(patch.projects ? { projects: patch.projects } : {}),
     ...(patch.system ? { system: patch.system } : {}),
-    ...(patch.subagents ? { subagents: patch.subagents } : {}),
   };
 }
 

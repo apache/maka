@@ -8,6 +8,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
+    "./connection-store": "./dist/connection-store.js",
+    "./credential-store": "./dist/credential-store.js",
     "./artifact-stores": "./dist/artifact-stores.js",
     "./automation-authority": "./dist/automation-authority.js",
     "./daily-review-authority": "./dist/daily-review-authority.js",
@@ -24,6 +26,7 @@
     "./pet-pack-store": "./dist/pet-pack-store.js",
     "./root-authority": "./dist/root-authority.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
+    "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",
     "./task-ledger-authority": "./dist/task-ledger-authority.js",
     "./model-call-ledger": "./dist/model-call-ledger.js",

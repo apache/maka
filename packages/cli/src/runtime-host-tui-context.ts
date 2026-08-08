@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { SessionActivityRegistry, type InvocableSkillEntry } from '@maka/runtime';
-import { readRuntimeHostSkillCatalog, type RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  readRuntimeHostInvocableSkills,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import type {
-  MakaPiTuiGoalLifecycle,
+  MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -12,6 +15,10 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from './runtime-host-session-driver.js';
+import {
+  createRuntimeHostOnboardingSurface,
+  projectRuntimeHostModelChoices,
+} from './runtime-host-onboarding.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -23,9 +30,10 @@ export interface RuntimeHostTuiContext {
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
-  readonly goalLifecycle: MakaPiTuiGoalLifecycle;
+  readonly turnActivity: MakaPiTuiTurnActivitySurface;
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   readonly recap: SessionRecapGenerator;
+  readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
   close(): Promise<void>;
 }
 
@@ -48,7 +56,7 @@ export async function createRuntimeHostTuiContext(
     const target = input.resumeSessionId
       ? await resolveResumeTarget(connection, catalog, input.resumeSessionId)
       : resolveTarget(catalog);
-    const modelChoices = projectModelChoices(catalog);
+    const modelChoices = projectRuntimeHostModelChoices(catalog);
     const driverInput: RuntimeHostMakaSessionDriverInput = {
       connection,
       cwd: input.cwd,
@@ -68,9 +76,10 @@ export async function createRuntimeHostTuiContext(
       modelContextWindow: target.connection.models.find((model) => model.id === target.model)
         ?.contextWindow,
       modelChoices,
-      goalLifecycle: createHostOwnedGoalLifecycle(),
+      turnActivity: createHostOwnedTurnActivity(),
       listSkills: (cwd) => listStablePresentedSkills(connection, cwd),
       recap: createRuntimeHostRecapGenerator(connection),
+      onboarding: createRuntimeHostOnboardingSurface(connection),
       close: () => connected.close(),
     };
   } catch (error) {
@@ -102,15 +111,13 @@ async function listStablePresentedSkills(
   connection: RuntimeHostConnection,
   projectRoot: string,
 ): Promise<InvocableSkillEntry[]> {
-  const catalog = await readRuntimeHostSkillCatalog(connection, { projectRoot }, 'governance');
-  return catalog.items.flatMap((item) =>
-    item.kind === 'skill' &&
-    item.enabled &&
-    item.runtimeStatus === 'enabled' &&
-    (item.contextStatus === 'advertised' || item.contextStatus === 'unknown')
-      ? [{ ref: item.ref, id: item.id, name: item.name, description: item.description }]
-      : [],
-  );
+  return [
+    ...(await readRuntimeHostInvocableSkills(connection, {
+      kind: 'new_session',
+      context: { projectRoot },
+      collaborationMode: 'agent',
+    })),
+  ];
 }
 
 function resolveTarget(catalog: ConnectionCatalogSnapshot): {
@@ -136,35 +143,6 @@ async function resolveResumeTarget(
   return resolveTarget(catalog);
 }
 
-function projectModelChoices(catalog: ConnectionCatalogSnapshot): ModelChoice[] {
-  const choices: ModelChoice[] = [];
-  for (const connection of catalog.connections) {
-    if (!connection.enabled) continue;
-    const modelsById = new Map(connection.models.map((model) => [model.id, model]));
-    const ids = new Set(connection.enabledModelIds);
-    if (catalog.defaultTarget?.connectionId === connection.connectionId) {
-      ids.add(catalog.defaultTarget.modelId);
-    }
-    for (const model of ids) {
-      choices.push({
-        connectionSlug: connection.slug,
-        connectionName: connection.name,
-        providerType: connection.providerType,
-        model,
-        isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
-        contextWindow: modelsById.get(model)?.contextWindow,
-      });
-    }
-  }
-  return choices;
-}
-
-function createHostOwnedGoalLifecycle(): MakaPiTuiGoalLifecycle {
-  return {
-    activities: new SessionActivityRegistry(),
-    beginObservedTurn: () => ({ kind: 'registered', settle: async () => {} }),
-    // Goal continuation is a Runtime Host responsibility. Binding a local
-    // admission callback would create a second scheduler authority.
-    bindHost: () => () => {},
-  };
+function createHostOwnedTurnActivity(): MakaPiTuiTurnActivitySurface {
+  return { activities: new SessionActivityRegistry() };
 }

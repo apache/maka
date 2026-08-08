@@ -24,7 +24,7 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
   registerRuntimeHostSessionCatalogIpc(
     {
       client,
-      workspaceRoot: '/workspace',
+      resolveCreateProject: async () => ({ cwd: '/project', projectId: 'project-1' }),
       emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
       releaseSessionResources() {},
       sessionCopyCleanup: cleanupAuthority(),
@@ -44,7 +44,8 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
   assert.deepEqual(creates, [
     {
       sessionId: 'session-1',
-      cwd: '/workspace',
+      cwd: '/project',
+      projectId: 'project-1',
       name: DEFAULT_SESSION_NAME,
       modelTarget: { kind: 'default' },
       collaborationMode: 'agent',
@@ -52,7 +53,8 @@ test('leaves ordinary Session defaults to the Host while preserving product mode
     },
     {
       sessionId: 'session-2',
-      cwd: '/workspace',
+      cwd: '/project',
+      projectId: 'project-1',
       mode: 'deep_research',
       labels: ['customer-label'],
       modelTarget: { kind: 'default' },
@@ -81,7 +83,7 @@ test('filters linked subagents without exposing the filter to the Host protocol'
   registerRuntimeHostSessionCatalogIpc(
     {
       client,
-      workspaceRoot: '/workspace',
+      resolveCreateProject: defaultCreateProject,
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: cleanupAuthority(),
@@ -110,12 +112,14 @@ test('recovers and records Session copy cleanup through the Runtime Host catalog
   registerRuntimeHostSessionCatalogIpc(
     {
       client: catalogClient({ listSessions: async () => [] }),
-      workspaceRoot: '/workspace',
+      resolveCreateProject: defaultCreateProject,
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: {
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async (sessionId) => { cleanupCalls.push(`cleanup:${sessionId}`); },
         schedule: async (sessionId) => { cleanupCalls.push(`abandon:${sessionId}`); },
+        abandonOwner: async () => undefined,
         recover: async () => {
           recoveries += 1;
           return { removed: [], failed: [] };
@@ -140,12 +144,14 @@ test('keeps abandoned copies hidden while durable cleanup is still pending', asy
       client: catalogClient({
         listSessions: async () => [session('visible'), session('abandoned-copy')],
       }),
-      workspaceRoot: '/workspace',
+      resolveCreateProject: defaultCreateProject,
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: {
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async () => undefined,
         schedule: async () => undefined,
+        abandonOwner: async () => undefined,
         recover: async () => ({
           removed: [],
           failed: [{ sessionId: 'abandoned-copy', error: new Error('remove failed') }],
@@ -186,7 +192,7 @@ test('applies family metadata and retirement actions through Host-owned operatio
   registerRuntimeHostSessionCatalogIpc(
     {
       client,
-      workspaceRoot: '/workspace',
+      resolveCreateProject: defaultCreateProject,
       emitSessionsChanged() {},
       releaseSessionResources: async (sessionId) => {
         released.push(sessionId);
@@ -221,7 +227,7 @@ test('normalizes renderer configuration actions into Host patches', async () => 
   registerRuntimeHostSessionCatalogIpc(
     {
       client,
-      workspaceRoot: '/workspace',
+      resolveCreateProject: defaultCreateProject,
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: cleanupAuthority(),
@@ -257,11 +263,17 @@ type CatalogClient = RuntimeHostSessionCatalogIpcDeps['client'];
 
 function cleanupAuthority(): RuntimeHostSessionCatalogIpcDeps['sessionCopyCleanup'] {
   return {
+    ownCreation: (_creation, operation) => operation(),
     cleanup: async () => undefined,
     schedule: async () => undefined,
+    abandonOwner: async () => undefined,
     recover: async () => ({ removed: [], failed: [] }),
   };
 }
+
+const defaultCreateProject: RuntimeHostSessionCatalogIpcDeps['resolveCreateProject'] = async () => ({
+  cwd: '/workspace',
+});
 
 function catalogClient(overrides: Partial<CatalogClient>): CatalogClient {
   const unavailable = async (): Promise<never> => {

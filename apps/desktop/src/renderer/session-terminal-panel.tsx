@@ -56,6 +56,7 @@ export function SessionTerminalPanel(props: {
     const host = hostRef.current;
     if (!host || !props.terminalRef) return;
 
+    lastSizeRef.current = '';
     let disposed = false;
     let attached = false;
     let lastSequence = 0;
@@ -170,6 +171,9 @@ export function SessionTerminalPanel(props: {
       observer.disconnect();
       unsubscribe();
       inputSubscription.dispose();
+      void window.maka.shellRuns
+        .detach({ sessionId: props.sessionId, ref: props.terminalRef! })
+        .catch(() => {});
       fitRef.current = null;
       terminalRef.current = null;
       terminal.dispose();

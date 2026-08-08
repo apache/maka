@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
+import { dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
+  legacyConfigurationRoot?: string;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   executable?: string;
@@ -35,9 +37,11 @@ export function launchDetachedRuntimeHostCandidate(
   ];
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
+  appendArgument(args, '--legacy-configuration-root', input.legacyConfigurationRoot);
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {
+    cwd: dirname(isAbsolute(executable) ? executable : process.execPath),
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

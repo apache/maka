@@ -313,6 +313,25 @@ function mapBackendSessionEvent(
             : {}),
         },
       };
+    case 'tool_result_preview':
+      // Live-only mid-flight open-facts. Not function_response.
+      return {
+        ...base,
+        partial: true,
+        role: 'tool',
+        author: 'tool',
+        ...(event.origin !== undefined ? { origin: event.origin } : {}),
+        ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
+        refs: {
+          toolCallId: event.toolUseId,
+          ...(event.parentToolCallId !== undefined
+            ? { parentToolCallId: event.parentToolCallId }
+            : {}),
+          ...(event.parentOperationId !== undefined
+            ? { parentOperationId: event.parentOperationId }
+            : {}),
+        },
+      };
     case 'tool_result': {
       const name = memory.toolNameByUseId.get(event.toolUseId) ?? '';
       const ev: RuntimeEvent = {
@@ -723,6 +742,7 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
         turnId: ctx.turnId,
         ...(input.orchestration !== undefined ? { orchestration: input.orchestration } : {}),
         ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
+        ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
         // The persisted head anchor: mid-turn capacity compaction keeps this
         // event verbatim and needs its exact ledger identity for coverage.
         ...(ctx.request.initialRuntimeEvent !== undefined

@@ -210,10 +210,10 @@ async function withE2eWindow(
     e2eFixtureScenario,
     locale,
     platform,
+    showWindow,
     invocableSkills,
     gitReviewExtraFiles,
     extraConnectionCount,
-    desktopRuntimeOwner,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -221,10 +221,11 @@ async function withE2eWindow(
     locale?: 'zh' | 'en';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
+    /** Show fixtures whose contract depends on compositor-paced frames. */
+    showWindow?: boolean;
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
-    desktopRuntimeOwner?: 'embedded' | 'runtime-host';
   },
   use: (page: Page) => Promise<void>,
 ): Promise<void> {
@@ -253,10 +254,9 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
-        desktopRuntimeOwner,
-        // xvfb throttles a hidden window's compositor to ~1fps; only that
-        // isolated display gets a visible window.
-        showWindow: isCiLinuxDisplay(),
+        // xvfb throttles a hidden window's compositor to ~1fps. Geometry
+        // fixtures opt in locally; every fixture is visible on isolated CI X.
+        showWindow: showWindow || isCiLinuxDisplay(),
       }),
     });
     app.on('console', (message) => {
@@ -304,12 +304,12 @@ async function withE2eWindow(
 export const test = base.extend<{
   window: Page;
   externalSessionImportWindow: Page;
-  runtimeHostExternalSessionImportWindow: Page;
   firstRunWindow: Page;
   modelPickerLongWindow: Page;
   sandboxBoundaryWindow: Page;
   readOnlyBoundaryWindow: Page;
   sessionWorkbarWindow: Page;
+  artifactPaneWindow: Page;
   botSettingsWindow: Page;
   invocableSkillsWindow: Page;
   settingsProjectsWindow: Page;
@@ -320,25 +320,13 @@ export const test = base.extend<{
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
   },
-  // The product-default embedded owner. This is deliberately separate from
-  // the Runtime Host fixture so both IPC registrations stay covered.
+  // External Session import runs through the production Runtime Host owner.
   externalSessionImportWindow: async ({}, use) => {
     await withE2eWindow(
       {
         seed: true,
         readinessSelector: '.maka-session-panel',
         locale: 'zh',
-      },
-      use,
-    );
-  },
-  runtimeHostExternalSessionImportWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: '.maka-session-panel',
-        locale: 'zh',
-        desktopRuntimeOwner: 'runtime-host',
       },
       use,
     );
@@ -412,6 +400,17 @@ export const test = base.extend<{
         // would pin an implementation detail the design system owns.
         readinessSelector: '[data-maka-contract="session-workbar-right"]',
         e2eFixtureScenario: 'task-ledger',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  artifactPaneWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.maka-artifact-list',
+        e2eFixtureScenario: 'artifact-pane',
         locale: 'zh',
       },
       use,

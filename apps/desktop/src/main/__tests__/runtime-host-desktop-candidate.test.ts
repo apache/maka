@@ -295,8 +295,10 @@ test('does not release or report a Revision the Host retained during cleanup', a
     createSessionCopyCleanup: ({ removeSession }) => {
       removeSessionCopy = removeSession;
       return {
+        ownCreation: (_creation, operation) => operation(),
         cleanup: async () => undefined,
         schedule: async () => undefined,
+        abandonOwner: async () => undefined,
         recover: async () => ({ removed: [], failed: [] }),
       };
     },
@@ -353,12 +355,15 @@ function deps(
     nativeCapabilities,
     botRegistry: {} as BotRegistry,
     resolveBotCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveSessionCreateProject: async () => ({ cwd: '/workspace' }),
     emitSessionsChanged() {},
     emitModeChanged() {},
     completeComputerUseTurn() {},
     createSessionCopyCleanup: () => ({
+      ownCreation: (_creation, operation) => operation(),
       cleanup: async () => undefined,
       schedule: async () => undefined,
+      abandonOwner: async () => undefined,
       recover: async () => ({ removed: [], failed: [] }),
     }),
     newId: () => 'candidate-id',

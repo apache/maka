@@ -17,7 +17,15 @@ export interface SessionCopyAttempt {
   complete(): void;
 }
 
-type PersistedSessionCopyAttempt = Pick<SessionCopyAttempt, 'copyId' | 'sourceTurnId' | 'phase'>;
+export type PersistedSessionCopyAttempt = Pick<
+  SessionCopyAttempt,
+  'copyId' | 'sourceTurnId' | 'phase'
+>;
+
+export interface PersistedSessionCopyAttemptEntry {
+  key: SessionCopyAttemptKey;
+  attempt: PersistedSessionCopyAttempt;
+}
 
 const memoryAttempts = new Map<string, PersistedSessionCopyAttempt>();
 
@@ -100,6 +108,18 @@ export function readSessionCopyAttempt(
   return readAttempts(storage).get(encodeAttemptKey(key));
 }
 
+export function listSessionCopyAttempts(
+  scopePrefix: string,
+  storage: SessionStorageLike | undefined = rendererSessionStorage(),
+): PersistedSessionCopyAttemptEntry[] {
+  const entries: PersistedSessionCopyAttemptEntry[] = [];
+  for (const [encodedKey, attempt] of readAttempts(storage)) {
+    const key = decodeAttemptKey(encodedKey);
+    if (key?.scope.startsWith(scopePrefix)) entries.push({ key, attempt });
+  }
+  return entries;
+}
+
 export function completeSessionCopyAttempt(
   key: SessionCopyAttemptKey,
   copyId: string,
@@ -116,6 +136,28 @@ export function completeSessionCopyAttempt(
 
 function encodeAttemptKey(key: SessionCopyAttemptKey): string {
   return JSON.stringify([key.scope, key.kind, key.sourceSessionId]);
+}
+
+function decodeAttemptKey(encodedKey: string): SessionCopyAttemptKey | undefined {
+  try {
+    const value = JSON.parse(encodedKey) as unknown;
+    if (
+      !Array.isArray(value) ||
+      value.length !== 3 ||
+      typeof value[0] !== 'string' ||
+      value[0].length === 0 ||
+      value[0].length > 512 ||
+      (value[1] !== 'branch' && value[1] !== 'revision') ||
+      typeof value[2] !== 'string' ||
+      value[2].length === 0 ||
+      value[2].length > 128
+    ) {
+      return undefined;
+    }
+    return { scope: value[0], kind: value[1], sourceSessionId: value[2] };
+  } catch {
+    return undefined;
+  }
 }
 
 function readAttempts(
@@ -139,7 +181,7 @@ function readAttempts(
       }
     }
     for (const [key, attempt] of memoryAttempts) {
-      if (!attempts.has(key)) attempts.set(key, attempt);
+      attempts.set(key, attempt);
     }
     return attempts;
   } catch {
