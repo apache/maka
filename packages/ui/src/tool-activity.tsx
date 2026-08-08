@@ -359,7 +359,7 @@ function linkedAgentCalls(
       errorMessage: result.failureClass
         ? redactSecrets(result.failureClass)
         : toolCallErrorMessage(item, locale),
-      stats: getToolActivityCopy(locale).agent.subagentStatus[result.status],
+      stats: subagentStats(result.status, result.permissionMode === 'explore', locale),
       ...open,
     }];
   }
@@ -371,11 +371,10 @@ function linkedAgentCalls(
       key: `${item.toolUseId}:${child.itemId}`,
       name,
       status: child.status === 'completed' ? 'complete' : 'error',
-      node: redactSecrets(child.profile),
       target: boundedAgentSummary(child.summary),
       duration: formatDuration(child.durationMs) ?? undefined,
       errorMessage: child.failureClass ? redactSecrets(child.failureClass) : undefined,
-      stats: getToolActivityCopy(locale).agent.subagentStatus[child.status],
+      stats: subagentStats(child.status, child.profile === 'local_read', locale),
       ...linkedSessionActivation(child.childSessionId, name, locale, onOpenLinkedSession),
     } satisfies ChatToolCallItem;
   });
@@ -388,6 +387,17 @@ function subagentToolStatus(
   if (status === 'running') return 'running';
   if (status === 'waiting_for_user') return 'pending';
   return 'error';
+}
+
+function subagentStats(
+  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
+  readOnly: boolean,
+  locale: UiLocale,
+): string {
+  const copy = getToolActivityCopy(locale).agent;
+  return [copy.subagentStatus[status], readOnly ? copy.readOnly : undefined]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 function linkedSessionActivation(
