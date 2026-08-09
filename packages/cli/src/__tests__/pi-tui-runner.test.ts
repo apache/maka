@@ -53,6 +53,7 @@ import {
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
 import {
+  autocompleteSuggestionLines,
   assertBottomPickerPlacement,
   FakeTerminal,
   findInputSurfaceRows,
@@ -218,6 +219,80 @@ describe('Maka Pi TUI runner', () => {
     await run;
 
     assert.deepEqual(terminal.progressStates, []);
+  });
+
+  test('keeps slash autocomplete visible while a short terminal resizes', async () => {
+    const terminal = new FakeTerminal(40, 20);
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/');
+    await waitFor(() => {
+      const screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+      return autocompleteSuggestionLines(screen).some((line) => line.includes('→ /compact'));
+    });
+
+    let screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+    const initialInputRows = findInputSurfaceRows(screen);
+    assert.ok(initialInputRows);
+    let [topBorder, bottomBorder] = initialInputRows;
+    const firstCounter = /^\s*\((\d+)\/(\d+)\)\s*$/.exec(screen[topBorder - 1] ?? '');
+    assert.ok(firstCounter);
+    const totalCommands = Number(firstCounter[2]);
+    assert.ok(totalCommands > autocompleteSuggestionLines(screen).length);
+    assert.equal(bottomBorder, terminal.rows - 2);
+    assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /compact')));
+
+    terminal.input('\x1b[A');
+    await waitFor(() => {
+      const current = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+      const currentInputRows = findInputSurfaceRows(current);
+      if (!currentInputRows) return false;
+      const [currentTopBorder] = currentInputRows;
+      return current[currentTopBorder - 1]?.includes(`(${totalCommands}/${totalCommands})`) === true;
+    });
+    screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+    const selectedInputRows = findInputSurfaceRows(screen);
+    assert.ok(selectedInputRows);
+    [topBorder, bottomBorder] = selectedInputRows;
+    assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /')));
+    assert.equal(bottomBorder, terminal.rows - 2);
+
+    terminal.resize(80, 40);
+    await waitFor(() => {
+      const current = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+      return autocompleteSuggestionLines(current).length === totalCommands;
+    });
+    screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+    assert.equal(
+      screen.some((line) => /^\s*\(\d+\/\d+\)\s*$/.test(line)),
+      false,
+    );
+    assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /')));
+
+    terminal.resize(40, 20);
+    await waitFor(() => {
+      const current = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
+      const currentInputRows = findInputSurfaceRows(current);
+      if (!currentInputRows) return false;
+      const [currentTopBorder, currentBottomBorder] = currentInputRows;
+      return (
+        currentBottomBorder === terminal.rows - 2 &&
+        current[currentTopBorder - 1]?.includes(`(${totalCommands}/${totalCommands})`) === true
+      );
+    });
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('restores the terminal before exiting on SIGTERM', async () => {

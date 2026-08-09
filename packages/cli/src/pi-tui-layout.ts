@@ -12,6 +12,10 @@ import {
   type MakaPiTranscriptState,
 } from './pi-transcript.js';
 
+interface ViewportAwareEditor extends Component {
+  setViewportRows(rows: number): void;
+}
+
 export class MakaTranscriptComponent implements Component {
   constructor(
     private readonly state: MakaPiTranscriptState,
@@ -79,7 +83,7 @@ export class MakaPiLayoutComponent extends Container {
     private readonly transcript: MakaTranscriptComponent,
     private readonly activityStrip: MakaActivityStripComponent,
     private readonly pendingQueue: MakaPendingQueueComponent,
-    private readonly editor: Component,
+    private readonly editor: ViewportAwareEditor,
     private readonly statusLine: Component,
     private readonly terminal: Terminal,
   ) {
@@ -95,8 +99,11 @@ export class MakaPiLayoutComponent extends Container {
     const transcriptLines = this.transcript.render(width);
     const activityLines = this.activityStrip.render(width);
     const pendingLines = this.pendingQueue.render(width);
-    const editorLines = this.editor.render(width);
     const statusLines = this.statusLine.render(width);
+    this.editor.setViewportRows(
+      this.terminal.rows - activityLines.length - pendingLines.length - statusLines.length,
+    );
+    const editorLines = this.editor.render(width);
     // #1064: when the activity strip is showing (a turn is running), separate
     // it from the last transcript line with a blank row. Without this, a
     // thinking or tool row (the agent-work stack, which has no internal blank
