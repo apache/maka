@@ -41,17 +41,22 @@ const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']
 // than "any packages/core change".
 const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
 
+function isStorybookCatalogPath(path) {
+  if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
+    return true;
+  if (path === 'apps/desktop/stories' || path.startsWith('apps/desktop/stories/')) return true;
+  if (path === 'packages/ui/stories' || path.startsWith('packages/ui/stories/')) return true;
+  return false;
+}
+
 function isStorybookPath(path) {
   if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
   if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/'))
     return true;
-  if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
-    return true;
-  if (path === 'apps/desktop/stories' || path.startsWith('apps/desktop/stories/')) return true;
+  if (isStorybookCatalogPath(path)) return true;
   // packages/ui ships both the primitives mounted by product stories and its
   // own story tree (see .storybook/main.ts).
   if (path === 'packages/ui/src' || path.startsWith('packages/ui/src/')) return true;
-  if (path === 'packages/ui/stories' || path.startsWith('packages/ui/stories/')) return true;
   return false;
 }
 
@@ -189,6 +194,14 @@ export function planTests(changedFiles, options = {}) {
   let scriptMode = 'none';
   let unknownCode = false;
   for (const path of files) {
+    // Catalog/config changes are fully exercised by Storybook's build + render
+    // smoke. They do not change the shipped Electron app, so do not route them
+    // through workspace tests or real-window E2E merely because they live
+    // inside an application workspace.
+    if (isStorybookCatalogPath(path)) {
+      code = true;
+      continue;
+    }
     if (RELEASE_CONFIG_FILES.has(path)) {
       code = true;
       directWorkspaces.add('apps/desktop');
