@@ -71,7 +71,10 @@ import {
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
-import { registerWorkspaceBaselineAuthorityWriterInternal } from './workspace-version-authority-internal.js';
+import {
+  registerWorkspaceBaselineAuthorityWriterInternal,
+  WorkspaceStorageRootAdoptionRequiredError,
+} from './workspace-version-authority-internal.js';
 import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
@@ -1232,7 +1235,7 @@ export class SqliteRuntimeStore
         return;
       }
       if (this.#databaseHasLogicalStateBeforeRootBinding()) {
-        throw new Error('Unbound operational data require explicit storage-root adoption');
+        throw new WorkspaceStorageRootAdoptionRequiredError();
       }
       this.db
         .prepare(`
@@ -1261,10 +1264,11 @@ export class SqliteRuntimeStore
   }
 
   #databaseHasLogicalStateBeforeRootBinding(): boolean {
-    const metadataTables = new Set([
+    const schemaMetadataTables = new Set([
       'operational_schema_migrations',
       'runtime_capabilities',
       'runtime_storage_root_binding',
+      'session_metadata_schema',
     ]);
     const tables = this.db
       .prepare(`
@@ -1275,7 +1279,36 @@ export class SqliteRuntimeStore
       `)
       .all() as Array<{ name: string }>;
     for (const { name } of tables) {
-      if (metadataTables.has(name)) continue;
+      if (schemaMetadataTables.has(name)) continue;
+      // These authority rows are installed by schema bootstrap before the
+      // storage root is bound. Only their exact empty-state values are
+      // metadata; a non-zero revision/generation is already logical data and
+      // must require the explicit whole-root adoption flow.
+      if (name === 'automation_authority_state' || name === 'usage_pricing_authority') {
+        if (
+          !this.db
+            .prepare(`SELECT 1 FROM "${name}" WHERE singleton <> 1 OR revision <> 0 LIMIT 1`)
+            .get()
+        ) {
+          continue;
+        }
+        return true;
+      }
+      if (name === 'session_catalog_state') {
+        if (
+          !this.db
+            .prepare(`
+              SELECT 1
+              FROM session_catalog_state
+              WHERE scope <> 'catalog' OR generation <> 0 OR pending_writes <> 0
+              LIMIT 1
+            `)
+            .get()
+        ) {
+          continue;
+        }
+        return true;
+      }
       const quotedName = `"${name.replaceAll('"', '""')}"`;
       if (this.db.prepare(`SELECT 1 FROM ${quotedName} LIMIT 1`).get()) return true;
     }
