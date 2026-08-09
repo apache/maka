@@ -47,8 +47,8 @@
    official brand mark (provider-brand-marks.tsx), so the plate stays a
    quiet foreground wash in both light and dark — no per-provider tints. */
 .providerLogo {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   border-radius: var(--radius-plate);

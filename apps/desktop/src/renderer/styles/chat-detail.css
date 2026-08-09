@@ -918,15 +918,13 @@
 
 .maka-browser-toolbar {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
+  /* Layout owned by Astryx Toolbar (start/center/end); only band chrome here. */
   padding: var(--space-1-5) var(--space-2);
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
 .maka-browser-address-field {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
 }
 

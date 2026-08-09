@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 183 files — blocker 0, polish 4, aligned 179.
+**Totals:** 183 files — blocker 0, polish 0, aligned 183.
 
 ## Exclusions (explicit)
 
@@ -35,7 +35,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/artifact-pane.tsx` | shell-chrome-or-panel | Badge, Banner, Button, EmptyState | aligned — uses Astryx (Badge, Banner, Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/artifact-preview-registry-shell.tsx` | shell-chrome-or-panel | Banner, Button, Spinner | aligned — uses Astryx (Banner, Button, Spinner) | aligned |
 | `apps/desktop/src/renderer/artifact-preview.tsx` | shell-chrome-or-panel | Banner, Button, Spinner | aligned — uses Astryx (Banner, Button, Spinner) | aligned |
-| `apps/desktop/src/renderer/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, Tooltip | aligned — uses Astryx (EmptyState, IconButton, Tooltip) | aligned |
+| `apps/desktop/src/renderer/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, Toolbar, Tooltip | aligned — uses Astryx (EmptyState, IconButton, Toolbar, Tooltip) | aligned |
 | `apps/desktop/src/renderer/cascade-layers.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/chat-composer-region.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/chat-message-surface.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
@@ -44,7 +44,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
 | `apps/desktop/src/renderer/external-session-import-dialog.tsx` | dialog-overlay | Banner, Button, CheckboxInput, Dialog, DialogHeader, EmptyState, HStack, Item, Layout, LayoutContent, SegmentedControl, SegmentedControlItem, Spinner, Text, VStack | aligned — uses Astryx (Banner, Button, CheckboxInput, Dialog, DialogHeader, EmptyState, HStack, Item) | aligned |
-| `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Dialog, DialogHeader, Layout, LayoutContent) | aligned |
+| `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, DialogHeader, Heading, Layout, LayoutContent | aligned — uses Astryx (Dialog, DialogHeader, Heading, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/maka-tokens.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/mcp-brand-marks.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -104,7 +104,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/astryx-mount.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/base.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/chat-detail.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/chat-header.css` | shell-chrome-or-panel | n/a (css) | off-rhythm control height 40px (Design size) | polish |
+| `apps/desktop/src/renderer/styles/chat-header.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/chat-message.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/composer-mention.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/composer.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -133,19 +133,19 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/search-modal.css` | dialog-overlay | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/about.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/settings/bot.css` | settings-module | n/a (css) | off-rhythm control height 44px (Design size) | polish |
+| `apps/desktop/src/renderer/styles/settings/bot.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/connection.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/form.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/health.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/memory.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/settings/models.css` | settings-module | n/a (css) | off-rhythm control height 44px (Design size) | polish |
+| `apps/desktop/src/renderer/styles/settings/models.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/nav-sidebar.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/permission.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/provider-editor.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/route.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/rows.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/select.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/settings/theme-preview.css` | settings-module | n/a (css) | off-rhythm control height 34px (Design size) | polish |
+| `apps/desktop/src/renderer/styles/settings/theme-preview.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/usage.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/web-search.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/settings/wechat.css` | settings-module | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |

@@ -85,7 +85,8 @@
 
   overflow: hidden;
   border-radius: var(--radius-surface);
-  box-shadow: 0 2px 8px oklch(from var(--foreground) l c h / 0.08);
+  /* Single elevation token — no freehand oklch shadow. */
+  box-shadow: var(--elevation-raised);
 }
 
 .maka-session-workbar-panel[data-placement="right"]

@@ -6,8 +6,8 @@
   overflow: auto;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  box-shadow: 0 8px 24px oklch(from var(--foreground) l c h / 0.05);
+  /* In-flow reading plate: raised fill + line only (DESIGN.md One Means). */
+  background: var(--surface-raised);
   color: var(--foreground);
 }
 

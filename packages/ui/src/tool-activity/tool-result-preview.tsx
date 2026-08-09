@@ -7,7 +7,7 @@ import {
   type ShellOutput,
   type ToolResultContent,
 } from '@maka/core';
-import { Button as UiButton } from '@astryxdesign/core';
+import { Button as UiButton, Link } from '@astryxdesign/core';
 import { ICON_SIZE, AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
@@ -760,13 +760,9 @@ function WebSearchPreview(props: {
       <ul className="maka-web-result-list">
         {rows.map((row, idx) => (
           <li key={`${row.url}-${idx}`}>
-            <a
-              href={row.url}
-              target="_blank"
-              rel="noreferrer noopener"
-            >
+            <Link href={row.url} isExternalLink>
               {redactSecrets(row.title)}
-            </a>
+            </Link>
             <small>{redactSecrets(row.source)}</small>
             <p>{redactSecrets(row.snippet)}</p>
           </li>

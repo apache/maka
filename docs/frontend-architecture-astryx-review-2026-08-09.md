@@ -149,14 +149,28 @@ Severity: **blocker** = structural cost that blocks every feature; **high** = cl
 
 ## 3. Astryx style / component coverage gaps
 
-### 3.1 Inventory baseline (disk, 2026-08-09)
+### 3.1 Inventory baseline
+
+| Metric | Post-#2580 audit | After review-debt fix (this branch) |
+|--------|------------------|-------------------------------------|
+| Files | 183 | 183 |
+| blocker | **0** | **0** |
+| polish | **4** (exact rows below) | **0** |
+| aligned | 179 | 183 |
+
+**Post-#2580 polish rows (historical, for accuracy):**
+
+| Path | Flagged height | What it was |
+|------|----------------|-------------|
+| `styles/chat-header.css` | `min-height: 40px` | `.maka-session-context__inner` band |
+| `styles/settings/bot.css` | `height: 44px` | `.settingsBotLogo[data-large]` |
+| `styles/settings/models.css` | `height: 44px` | `.providerLogo` default plate |
+| `styles/settings/theme-preview.css` | `height: 34px` | `.settingsPaletteSwatch` |
+
+These were **not** invent-from-whole-cloth “logo false positives” in the abstract — they were the four inventory rows. They were **fixed to the 28/32/36 control rhythm** (36 band / 36 plates / 32 swatch) rather than allowlisted away.
 
 | Metric | Value |
 |--------|--------|
-| Files | 183 |
-| blocker | **0** |
-| polish | 4 (logo/swatch/session-context band heights — **decorative false positives**) |
-| aligned | 179 |
 | Raw `<button|input|select|textarea>` in product TSX | **none** (comment-stripped scan) |
 | `role="button"` fakes | **ChatReasoning eject only** (+ composer querySelector for Astryx collapsibles) |
 
@@ -164,14 +178,17 @@ Severity: **blocker** = structural cost that blocks every feature; **high** = cl
 
 #### Shell / transcript / plan / graph
 
-| Sev | Gap | Anchors | Astryx / system fix |
-|-----|-----|---------|---------------------|
-| **high (P1)** | Plan plates: fill + border + **raw multi-shadow** | `styles/plan-mode.css` `.plan-proposal-card`, execution plate | `--surface-raised` + border **or** single `var(--elevation-raised)` — not both + freehand shadow |
-| **high (P1)** | Agent graph plate same stack | `styles/agent-graph.css` `.maka-agent-graph-panel` | same |
-| **high (P1)** | Plan status washes hand-rolled `oklch(from var(--warning)…)` | `plan-mode.css` status markers | `--warning-wash` / `--success-wash` / `--info-wash` |
-| **high (P1)** | Quote companion composer raw shadow | `styles/quote-side-panel.css` | elevation token or flat |
-| **medium (P2)** | Browser toolbar ad-hoc div | `browser-panel.tsx` `.maka-browser-toolbar` | Astryx `Toolbar` |
-| **medium (P2)** | Workbar launcher `<kbd>` | `session-workbar.tsx` | Astryx `Kbd` |
+| Sev | Gap | Anchors | Status |
+|-----|-----|---------|--------|
+| **high (P1)** | Plan plates: fill + border + raw multi-shadow | `plan-mode.css` | **Fixed** → `--surface-raised` + border only |
+| **high (P1)** | Agent graph plate same stack | `agent-graph.css` | **Fixed** → `--surface-raised` + border only |
+| **high (P1)** | Plan status washes hand-rolled oklch | `plan-mode.css` | **Fixed** → `--info-wash` / `--warning-wash` / `--success-wash` |
+| **high (P1)** | Quote companion composer raw shadow | `quote-side-panel.css` | **Fixed** → `var(--elevation-raised)` |
+| **medium (P2)** | Browser toolbar ad-hoc div | `browser-panel.tsx` | **Fixed** → Astryx `Toolbar` |
+| **medium (P2)** | Workbar launcher raw `<kbd>` | `session-workbar.tsx` | **Fixed** → Astryx `Kbd` + token shortcuts |
+| **medium (P2)** | Keyboard help raw `<h3>` | `keyboard-help.tsx` | **Fixed** → `Heading level={3}` |
+| **medium (P2)** | Web tool result raw `<a>` | `tool-result-preview.tsx` | **Fixed** → Astryx `Link` |
+| **medium (P1/P2)** | Deep Research plate washes | `deep-research.css` | **Fixed** → wash tokens |
 | **medium (P2)** | Keyboard help raw `<h3>` | `keyboard-help.tsx` | `Heading` / `Text` |
 | **low (P3)** | Quote chip / remove / turn footer / lineage re-chrome Astryx Button | `packages/ui/src/styles.css`, `quote-ref-chip.tsx`, `chat-turn.tsx` | shrink overrides; prefer Badge/Token for lineage |
 | **low (P3)** | Workbar tab busy uses `Loader2` | `session-workbar.tsx` | `Spinner` if it means loading |
@@ -225,31 +242,33 @@ Empty/error largely share Astryx. **Loading** still has 6+ dialects:
 
 ### P1 — Astryx / DESIGN visual system
 
-| # | Item | Anchors |
-|---|------|---------|
-| P1.1 | Plan + agent-graph plates → ladder / single elevation | `plan-mode.css`, `agent-graph.css` |
-| P1.2 | Plan status washes → `--*-wash` | `plan-mode.css` |
-| P1.3 | Quote companion composer shadow → token or flat | `quote-side-panel.css` |
+| # | Item | Status |
+|---|------|--------|
+| P1.1 | Plan + agent-graph plates → ladder / One Means | **Done** (this branch) |
+| P1.2 | Plan status washes → `--*-wash` | **Done** |
+| P1.3 | Quote companion composer shadow → elevation token | **Done** |
+| P1.4 | Off-rhythm heights (chat-header 40, bot/models 44, swatch 34) | **Done** → 36/36/32 |
 
 ### P2 — Primitive consistency
 
-| # | Item |
-|---|------|
-| P2.1 | Browser / usage toolbars → `Toolbar` |
-| P2.2 | Workbar launcher → `Kbd` |
-| P2.3 | Keyboard help headings → `Heading`/`Text` |
-| P2.4 | Web tool links → `Link` (or document exception) |
-| P2.5 | Optional StatTile for daily-review metrics |
-| P2.6 | `SurfaceLoading` kit; retire ad-hoc fallbacks |
+| # | Item | Status |
+|---|------|--------|
+| P2.1 | Browser toolbar → `Toolbar` | **Done** |
+| P2.2 | Workbar launcher → `Kbd` | **Done** |
+| P2.3 | Keyboard help headings → `Heading` | **Done** |
+| P2.4 | Web tool links → `Link` | **Done** |
+| P2.5 | Optional StatTile for daily-review metrics | Open (polish) |
+| P2.6 | `SurfaceLoading` kit; retire ad-hoc fallbacks | Open (architecture follow-up) |
+| P2.7 | Usage settings toolbar → `Toolbar` | Open (polish) |
 
 ### P3 — CSS chrome debt & hygiene
 
-| # | Item |
-|---|------|
-| P3.1 | Shrink quote-chip / turn-footer / lineage Button overrides |
-| P3.2 | Inventory polish allowlist for logo/swatch/band heights |
-| P3.3 | Freeze new `agents-*` class names; migrate module root class soup |
-| P3.4 | Package/renderer CSS ownership rule (no new renderer selectors on tool cards) |
+| # | Item | Status |
+|---|------|--------|
+| P3.1 | Shrink quote-chip / turn-footer / lineage Button overrides | Open (gradual) |
+| P3.2 | ~~Allowlist decorative heights~~ | **Superseded** — real polish paths fixed to rhythm |
+| P3.3 | Freeze new `agents-*` class names; migrate module root class soup | Open (architecture) |
+| P3.4 | Package/renderer CSS ownership rule | Open (architecture) |
 
 ### Explicit non-goals (from this review)
 
@@ -267,18 +286,16 @@ Claims re-checked on disk at review time:
 | Claim | Path | Result |
 |-------|------|--------|
 | AppShell concentration | `app-shell.tsx` ~3099 lines | pass |
-| Plan fill+border+shadow stack | `plan-mode.css` `.plan-proposal-card` | pass |
-| Agent-graph plate stack | `agent-graph.css` | pass |
-| Browser ad-hoc toolbar | `browser-panel.tsx` `.maka-browser-toolbar` | pass |
-| ChatReasoning `role="button"` | `astryx-chat-reasoning.tsx` | pass |
-| Quote remove chrome still product CSS | `packages/ui/src/styles.css` `.maka-quote-chip-remove` | pass |
-| Settings kit exists | `settings-section.tsx` `SettingsPage` | pass |
-| Module kit on Astryx Layout | `primitives/module-page.tsx` | pass |
-| Workbar raw `<kbd>` | `session-workbar.tsx` | pass |
-| Inventory blockers 0 | regen 2026-08-09 | pass (`blocker=0 polish=4 aligned=179`) |
-| ChatLayout host identity seam | `patches/README.md` (conversation identity without remount) + `chat-surface-layout.tsx` | pass |
+| Plan plate uses surface-raised, no freehand shadow | `plan-mode.css` | fixed |
+| Agent-graph plate uses surface-raised | `agent-graph.css` | fixed |
+| Browser `Toolbar` | `browser-panel.tsx` | fixed |
+| Workbar `Kbd` | `session-workbar.tsx` | fixed |
+| ChatReasoning `role="button"` (intentional) | `astryx-chat-reasoning.tsx` | exception |
+| Settings kit | `settings-section.tsx` | pass |
+| Module kit | `primitives/module-page.tsx` | pass |
+| Inventory after debt fix | regen | `blocker=0 polish=0 aligned=183` |
 
-Inventory unit tests: `node --test scripts/check-astryx-surface-inventory.test.mjs scripts/check-astryx-alignment.test.mjs` → **5/5 pass** (evidence in scan log).
+Inventory unit tests: `node --test scripts/check-astryx-surface-inventory.test.mjs scripts/check-astryx-alignment.test.mjs` → **5/5 pass**.
 
 ---
 
@@ -287,9 +304,10 @@ Inventory unit tests: `node --test scripts/check-astryx-surface-inventory.test.m
 | Question | Answer |
 |----------|--------|
 | Are we still missing Astryx Buttons? | **No** — raw control blockers are zero. |
-| Is the product “Astryx-native”? | **Mostly** for controls and empty/error; **not yet** for elevation hygiene or chrome CSS overrides. |
-| Biggest architectural win? | **De-god AppShell** into Workbar + Session + Navigation controllers; treat settings as one route type. |
-| Biggest design-system win? | **One Means** on plan/graph plates + wash tokens; then Toolbar/Kbd consistency. |
-| What to leave alone? | ChatReasoning eject, tool preview content cards, providers multi-level IA, decorative logo/swatch sizes. |
+| Is the product “Astryx-native”? | **Controls + empty/error yes**; elevation/wash + several layout primitives **fixed in this follow-up**; quote/turn CSS chrome still product dialect. |
+| Biggest remaining architectural win? | **De-god AppShell** (P0) — multi-week; not done in this pass. |
+| What to leave alone? | ChatReasoning eject, tool preview content cards, providers multi-level IA, residual quote/turn Button geometry until a dedicated chrome pass. |
 
-This document is the analysis deliverable for the 2026-08-09 full frontend review goal. Implementation of P0–P3 is intentionally **out of scope** here.
+## 7. Implementation note (follow-up branch)
+
+P1 elevation/wash, off-rhythm heights, and P2 Toolbar/Kbd/Heading/Link were implemented on branch `fix/astryx-review-debt-2026-08-09` after the analysis-only review. Architecture P0 (AppShell controllers) remains backlog.

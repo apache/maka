@@ -108,8 +108,8 @@
    colors are hard-coded here (not pulled from --accent) so a non-
    active palette still previews its real color. */
 .settingsPaletteSwatch {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   border: var(--border-width-thick) solid var(--border);
   box-shadow: inset 0 0 0 2px oklch(1 0 0 / 0.25);

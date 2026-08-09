@@ -49,6 +49,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
 import { Item } from '@astryxdesign/core/Item';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
@@ -563,7 +564,8 @@ function WorkbarLauncher(props: {
       label: copy.sideChat,
       description: copy.launcher.sideChat,
       icon: <MessageCircleQuestion aria-hidden />,
-      shortcut: isMac ? '⌥⌘S' : 'Alt+Ctrl+S',
+      // Astryx Kbd tokens (+ separated); mod = Cmd on Mac / Ctrl elsewhere.
+      shortcut: isMac ? 'mod+alt+s' : 'ctrl+alt+s',
       disabled: !props.sideChatAvailable,
     },
     {
@@ -571,28 +573,28 @@ function WorkbarLauncher(props: {
       label: copy.review,
       description: copy.launcher.review,
       icon: <GitBranch aria-hidden />,
-      shortcut: '⌃⇧G',
+      shortcut: 'ctrl+shift+g',
     },
     {
       kind: 'terminal',
       label: copy.terminal,
       description: copy.launcher.terminal,
       icon: <Terminal aria-hidden />,
-      shortcut: isMac ? '⌃`' : 'Ctrl+`',
+      shortcut: 'ctrl+`',
     },
     {
       kind: 'browser',
       label: copy.browser,
       description: copy.launcher.browser,
       icon: <Globe aria-hidden />,
-      shortcut: isMac ? '⌘T' : 'Ctrl+T',
+      shortcut: 'mod+t',
     },
     {
       kind: 'files',
       label: copy.files,
       description: copy.launcher.files,
       icon: <FolderOpen aria-hidden />,
-      shortcut: isMac ? '⌘P' : 'Ctrl+P',
+      shortcut: 'mod+p',
     },
     {
       kind: 'tasks',
@@ -687,7 +689,7 @@ function WorkbarLauncher(props: {
             aria-description={action.description}
             endContent={
               action.shortcut ? (
-                <kbd className="maka-workbar-launcher-shortcut">{action.shortcut}</kbd>
+                <Kbd className="maka-workbar-launcher-shortcut" keys={action.shortcut} />
               ) : undefined
             }
             isDisabled={action.disabled}

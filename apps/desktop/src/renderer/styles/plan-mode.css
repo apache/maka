@@ -10,10 +10,8 @@
   padding: var(--space-4);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  box-shadow:
-    0 1px 2px oklch(from var(--foreground) l c h / 0.04),
-    0 8px 24px oklch(from var(--foreground) l c h / 0.05);
+  /* Reading plate on the chat canvas: raised fill + line only (One Means). */
+  background: var(--surface-raised);
 }
 
 .plan-proposal-heading,
@@ -114,9 +112,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: var(--border-width-hairline) solid oklch(from var(--status-running) l c h / 0.28);
+  border: var(--border-width-hairline) solid var(--info-wash-border);
   border-radius: var(--radius-pill);
-  background: oklch(from var(--status-running) l c h / 0.10);
+  background: var(--info-wash);
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
 }
@@ -147,7 +145,7 @@
   position: relative;
   padding: var(--space-1-5) var(--space-2) var(--space-1-5) var(--space-5);
   border-radius: var(--radius-control);
-  background: oklch(from var(--warning) l c h / 0.08);
+  background: var(--warning-wash);
 }
 
 .plan-proposal-risks li::before {
@@ -171,8 +169,7 @@
   padding: var(--space-2-5) var(--space-3);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  box-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.04);
+  background: var(--surface-raised);
 }
 
 .plan-execution-toggle {
@@ -255,7 +252,7 @@
 
 .plan-execution-steps li[data-status="in_progress"] {
   color: var(--foreground);
-  background: oklch(from var(--status-running) l c h / 0.06);
+  background: var(--info-wash);
 }
 
 .plan-execution-steps li[data-status="completed"],
@@ -276,14 +273,14 @@
 }
 
 .plan-execution-step-marker[data-status="in_progress"] {
-  border-color: oklch(from var(--status-running) l c h / 0.38);
-  background: oklch(from var(--status-running) l c h / 0.12);
-  color: var(--status-running);
+  border-color: var(--info-wash-border);
+  background: var(--info-wash);
+  color: var(--info-text);
 }
 
 .plan-execution-step-marker[data-status="completed"] {
-  border-color: oklch(from var(--success) l c h / 0.36);
-  background: oklch(from var(--success) l c h / 0.12);
+  border-color: var(--success-wash-border);
+  background: var(--success-wash);
   color: var(--success-text);
 }
 
