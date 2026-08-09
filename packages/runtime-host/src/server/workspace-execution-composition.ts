@@ -146,6 +146,7 @@ export function createRuntimeHostWorkspaceExecutionComposition(
         const opened = await input.managedOwner.openManagedWorkspaceBaselineFromExecutionStores(
           input.executionStores,
           baselineInput,
+          options.abortSignal ? { abortSignal: options.abortSignal } : undefined,
         );
         return createManagedWorkspaceExecutionProfile(opened.executionHandle, { provisioning });
       } finally {

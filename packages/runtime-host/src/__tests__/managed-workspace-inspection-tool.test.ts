@@ -62,7 +62,10 @@ test('opens an owner-bound dependency profile from the session cwd before inspec
   assert.match(opened.input.workspaceEpochId, /^epoch_[a-f0-9]{32}$/u);
   assert.match(opened.input.workspaceInstanceId, /^instance_[a-f0-9]{32}$/u);
   assert.equal(opened.input.sourceRoot, '/canonical/source');
-  assert.deepEqual(opened.options, { provisioning: 'dependency_environment_v1' });
+  assert.deepEqual(opened.options, {
+    provisioning: 'dependency_environment_v1',
+    abortSignal: abort.signal,
+  });
   assert.deepEqual(executions, [
     {
       profile,
