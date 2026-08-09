@@ -196,18 +196,13 @@ export class RuntimeHostConnectionSession {
 
     try {
       if (this.#closed) return;
+      this.#ensureClientCapabilities();
       const continuity =
         frame.operation === 'subscription.open' ||
         frame.operation === 'subscription.close' ||
         frame.operation === 'session.transcript.query'
           ? this.#ensureContinuity()
           : undefined;
-      if (
-        frame.operation === 'client.capability.replace' ||
-        frame.operation === 'client.capability.unregister'
-      ) {
-        this.#ensureClientCapabilities();
-      }
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         principal: this.#options.connection.authority.principalId,
@@ -268,15 +263,22 @@ export class RuntimeHostConnectionSession {
     }
     if (!this.#clientCapabilities) {
       this.#clientCapabilityService = service;
-      this.#clientCapabilities = service.attachConnection(this.#options.connection.connectionId, {
-        send: (frame) => {
-          try {
-            return this.#writer.enqueue(frame).flushed;
-          } catch (error) {
-            return Promise.reject(error);
-          }
+      this.#clientCapabilities = service.attachConnection(
+        {
+          connectionId: this.#options.connection.connectionId,
+          principalId: this.#options.connection.authority.principalId,
+          clientInstanceId: this.#options.connection.clientInstanceId,
         },
-      });
+        {
+          send: (frame) => {
+            try {
+              return this.#writer.enqueue(frame).flushed;
+            } catch (error) {
+              return Promise.reject(error);
+            }
+          },
+        },
+      );
     }
     return this.#clientCapabilities;
   }

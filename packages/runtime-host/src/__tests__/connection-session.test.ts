@@ -24,6 +24,10 @@ import {
 } from '../protocol/index.js';
 import { RuntimeHostKernel, type RuntimeHostComposition } from '../server/index.js';
 import { LOCAL_OWNER_CONNECTION_AUTHORITY } from '../server/connection-authority.js';
+import type {
+  ClientCapabilityConnectionIdentity,
+  ClientCapabilityService,
+} from '../server/client-capability-service.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
 import {
   createUnavailableAccessAuthorityOperationHandlers,
@@ -408,6 +412,82 @@ test('connection reset while operation admission is pending does not execute the
     pair.clientTransport.abort();
     await Promise.allSettled([run, pair.close()]);
   }
+});
+
+test('a ready composition attaches the authenticated Client identity once', async () => {
+  const pair = await openTransportPair();
+  const attached: ClientCapabilityConnectionIdentity[] = [];
+  let serviceAvailable = false;
+  let closeCalls = 0;
+  const service: ClientCapabilityService = {
+    attachConnection(identity) {
+      attached.push(identity);
+      return {
+        accept() {},
+        async close() {
+          closeCalls += 1;
+        },
+      };
+    },
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('stable-provider-connection'),
+    resolveHandlers: () => ({
+      'host.status': async () => ({
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 1,
+          activeResidencies: 0,
+        },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableDomainOperationHandlers(),
+    }),
+    resolveContinuity: () => undefined,
+    resolveClientCapabilities: () => (serviceAvailable ? service : undefined),
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'before-composition',
+      operation: 'host.status',
+      input: {},
+    });
+    await pair.clientTransport.read(1_000);
+    assert.deepEqual(attached, []);
+
+    serviceAvailable = true;
+    for (const requestId of ['after-composition', 'still-attached']) {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId,
+        operation: 'host.status',
+        input: {},
+      });
+      await pair.clientTransport.read(1_000);
+    }
+    assert.deepEqual(attached, [
+      {
+        connectionId: 'stable-provider-connection',
+        principalId: 'local_os_user',
+        clientInstanceId: 'test-client',
+      },
+    ]);
+  } finally {
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
+  }
+  assert.equal(closeCalls, 1);
 });
 
 test('an admitted operation settles without connection or residency leakage after disconnect', async () => {

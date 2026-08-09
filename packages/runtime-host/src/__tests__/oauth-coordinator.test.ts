@@ -26,6 +26,7 @@ import {
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -633,7 +634,7 @@ async function attachPresentation(
 ) {
   const serviceCalls = new Map<string, ClientCapabilityServiceCallFrame>();
   let connection!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
-  connection = coordinator.attachConnection(connectionId, {
+  connection = coordinator.attachConnection(clientCapabilityConnectionIdentity(connectionId), {
     send: async (frame) => {
       if (frame.kind === 'client.capability.service_call') {
         calls.push(connectionId);

@@ -19,6 +19,7 @@ import {
   buildMcpTools,
   type BotIncomingMessage,
 } from "@maka/runtime";
+import { loadOrCreateRuntimeHostClientInstanceId } from "@maka/runtime-host/client";
 import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
@@ -129,6 +130,9 @@ await resolveShellEnv();
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
+const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
+  join(userDataDir, "runtime-host-client.json"),
+);
 const e2eFixture = resolveDesktopE2eFixture();
 const useBotOnboardingFixture =
   e2eFixture?.scenario === "settings-bots" ||
@@ -367,6 +371,7 @@ const sessionCopyOwnerProcessId = randomUUID();
 owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
+    clientInstanceId: runtimeHostClientInstanceId,
     candidateEntrypoint: new URL(
       import.meta.resolve(
         isE2e
