@@ -891,8 +891,17 @@ function connectionHarness(
       if (operation === 'session.lifecycle.set') {
         return session((input as { sessionId: string }).sessionId);
       }
-      if (operation === 'turn.start') {
-        startTurnCalls += 1;
+      if (operation === 'session.configuration.update') {
+        return {
+          kind: 'committed',
+          session: {
+            ...session((input as { sessionId: string }).sessionId),
+            permissionMode: 'explore',
+          },
+        };
+      }
+      if (operation === 'turn.message.submit') {
+        submitMessageCalls += 1;
         resolveTurnStarted?.();
         return {};
       }

@@ -120,7 +120,7 @@ test('releases continuity through an exact Host operation id', async () => {
   });
 });
 
-test('submits the stable source message before collecting the Host-selected Turn', async () => {
+test('starts collecting before submitting the stable source message for the Host-selected Turn', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
   const replySnapshots: string[] = [];
@@ -139,6 +139,7 @@ test('submits the stable source message before collecting the Host-selected Turn
     client: botClient({
       openSession: async () => handle,
       submitMessage: async (input) => {
+        assert.equal(events.started, true);
         assert.deepEqual(input, {
           sessionId: 'session-1',
           messageId: 'bot_source_1',
@@ -289,6 +290,11 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
   #ended = false;
+  #started = false;
+
+  get started(): boolean {
+    return this.#started;
+  }
 
   push(frame: SubscriptionFrame): void {
     const waiter = this.#waiters.shift();
@@ -304,6 +310,7 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
     return {
       next: () => {
+        this.#started = true;
         const frame = this.#frames.shift();
         if (frame) return Promise.resolve({ value: frame, done: false });
         if (this.#ended) return Promise.resolve({ value: undefined, done: true });
