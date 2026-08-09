@@ -2,10 +2,10 @@
  * footer. Maka styles only product content rendered inside those slots. */
 
 .maka-palette-icon {
+  /* A glyph slot, not a plate: the chrome-sized glyph sizes itself — the
+     grid only centres it. */
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
   color: var(--muted-foreground);
 }
 

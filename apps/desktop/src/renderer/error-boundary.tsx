@@ -115,7 +115,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
             keeps only the icon/copy grid geometry. */}
         <Card variant="red" elevation="high" padding={0} className="maka-error-card">
           <span className="maka-error-icon" aria-hidden="true">
-            <AlertTriangle size={ICON_SIZE.plate} />
+            <AlertTriangle size={ICON_SIZE.empty} /> {/* 20 in the 32px plate — the ladder's fill convention */}
           </span>
           <div className="maka-error-copy">
             <h2>{copy.title}</h2>

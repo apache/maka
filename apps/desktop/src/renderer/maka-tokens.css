@@ -697,7 +697,12 @@
      different shapes). A percentage is scale-invariant, so one value
      is correct at every size, including sizes not yet added.
      27% restores the anchor ratio measured in PR-UI-13 (12px on the
-     44px plate) that the tier convergence silently reverted. */
+     44px plate) that the tier convergence silently reverted.
+
+     The plate ladder itself has five rungs — 28/32/36/44/48px boxes —
+     and its glyph sits at roughly 58-64% of the box (the fill
+     convention); a plate off the ladder or a glyph outside that band
+     is the thing to question in review. */
   --radius-plate: 27%;
 
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):

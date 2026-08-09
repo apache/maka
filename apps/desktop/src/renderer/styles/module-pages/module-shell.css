@@ -175,7 +175,8 @@
   height: 28px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-control);
+  /* A square icon plate is a proportional mark (DESIGN.md §6) — ratio radius. */
+  border-radius: var(--radius-plate);
   background: var(--muted);
   color: var(--foreground-secondary);
 }
