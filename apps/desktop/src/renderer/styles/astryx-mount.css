@@ -119,38 +119,3 @@
   max-height: 80vh;
 }
 
-/* =============================================================================
-   THE FLOATING RECIPE (DESIGN.md §5) — Visual System 2.0, T2.
-
-   Every portal surface is: `--surface-overlay` fill + `--border-soft` ring +
-   `--elevation-overlay` + `overflow: hidden` + container radius. No portal
-   invents its own mix.
-
-   Astryx already supplied two of the five on its shared layer surface — the
-   popover fill (remapped to --surface-overlay through makaTheme) and
-   `--radius-container` — and hardcoded the other three wrong: it reaches for
-   the LOW shadow, which is `--elevation-raised`, so every menu, popover and
-   dialog in the app floated with a plate's shadow instead of an overlay's, and
-   it left the surface without a ring and with `overflow: visible` (so content
-   corners escaped the surface's own radius).
-
-   The painted surface is an anonymous wrapper OUTSIDE `[role=menu]` and it
-   carries no themeProps label, so there was nothing here to select. A vendor
-   patch adds one class — `astryx-layer-surface`, a hook and nothing else — and
-   the recipe itself lives here, where it is reviewable and where DESIGN.md
-   says product compositions belong. The patch decides no values.
-
-   Tooltips are deliberately NOT in scope and do not need to be excluded by
-   hand: Astryx builds them from a different style object, so they never carry
-   this class. A tooltip is a transient label, not a surface that holds
-   content, and giving it an overlay shadow would overstate it.
-
-   Exit condition: when Astryx exposes themeProps (or any stable hook) on the
-   layer surface, drop the patch and re-point this selector. See
-   patches/@astryxdesign+core+0.3.0.patch.
-============================================================================= */
-.astryx-layer-surface {
-  border: var(--border-width-hairline) solid var(--border-soft);
-  box-shadow: var(--elevation-overlay);
-  overflow: hidden;
-}

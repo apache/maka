@@ -77,14 +77,14 @@ Depth is a ladder, not a decoration. Every background resolves to one of four se
 
 | Tier | Token | Role |
 |---|---|---|
-| sunken | `--surface-sunken` | sidebar rail, recessed chrome |
-| base | `--surface-base` | shell canvas behind plates |
+| sunken | `--surface-sunken` | recessed chrome inside a plate |
+| base | `--surface-base` | shell floor: sidebar + canvas behind plates |
 | raised | `--surface-raised` | cards, content plates, reading surfaces |
 | overlay | `--surface-overlay` | menus, popovers, dialogs, toasts |
 
 **The Height Rule.** Height maps monotonically to lightness in both modes, and reading surfaces always occupy the brightest tier of their mode. In light mode the ladder tops out at pure white, so `raised` and `overlay` share the fill and overlay separation hands off to the floating recipe (§5). Light mode "higher = darker" is permanently forbidden — it makes elevation shadows contradict the fill.
 
-**The Canvas Recedes Rule** (owner decision 2026-06-20). The canvas is gray; content surfaces are white. The sidebar sits on `sunken`, the shell on `base`, and content plates on `raised`. Contrast between canvas and plate — not hairlines — is the primary separator of the shell.
+**The Canvas Recedes Rule** (owner decision 2026-06-20). The canvas is gray; content surfaces are white. Shell floor is two colours: sidebar and canvas share `base`, content plates sit on `raised`. Contrast between canvas and plate is the primary separator.
 
 **Paper.** `--surface-paper` sits outside the ladder on purpose and has no dark override. It backs content whose contrast we neither author nor may invert: the sandboxed HTML-artifact iframe and the PDF embed, and QR codes, where dark-on-light is a scanning requirement rather than a preference. It is not a fifth tier and app chrome never uses it.
 

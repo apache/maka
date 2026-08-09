@@ -91,32 +91,6 @@ describe('ToolTrow stable structure', () => {
     assert.doesNotMatch(html, />-0</);
   });
 
-  // Guard for patches/@astryxdesign+core+0.3.0.patch — a contiguous run is one
-  // group, a group collapses by default, and the unpatched collapsed header
-  // projects the latest call's name and target alone. Several edits in one turn
-  // is the most common shape there is and it showed no counts at all.
-  it('sums the run when a collapsed group carries more than one diff', () => {
-    const edit = (id: string, path: string, diff: string): ToolActivityItem => ({
-      toolUseId: id,
-      toolName: 'Edit',
-      status: 'completed',
-      args: { path },
-      result: { kind: 'file_diff', paths: [path], diff },
-    });
-
-    const html = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [
-        edit('tool-1', 'a.ts', '--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more'),
-        edit('tool-2', 'b.ts', '--- a/b.ts\n+++ b/b.ts\n@@ -1,2 +1,2 @@\n keep\n-gone\n+here'),
-      ],
-    }));
-
-    // Collapsed: the rows inside are not what these counts come from.
-    assert.doesNotMatch(html, /aria-expanded="true"/);
-    assert.match(html, />\+3</);
-    assert.match(html, />-2</);
-  });
-
   it('leaves the collapsed group header alone when the run changed no file', () => {
     const html = renderToStaticMarkup(createElement(ToolTrow, {
       items: [runningTool('tool-1', 'Read'), runningTool('tool-2', 'Grep')],
@@ -133,16 +107,14 @@ describe('linked subagent tool rows', () => {
     onOpenLinkedSession?: (sessionId: string) => void,
   ) => renderToStaticMarkup(createElement(ToolTrow, { items: [item], onOpenLinkedSession }));
 
-  it('renders agent_spawn as one native row that opens the child session directly', () => {
+  it('renders agent_spawn with an Astryx open-session control when linked', () => {
     const html = renderTool(subagent('child-1'), () => undefined);
 
     assert.match(html, />Local Read</);
-    assert.match(html, />打开子代理会话「Local Read」</);
-    assert.doesNotMatch(html, /aria-label="打开子代理会话/);
-    assert.doesNotMatch(html, /aria-expanded=/);
+    assert.match(html, /打开子代理会话「Local Read」/);
 
-    assert.doesNotMatch(renderTool(subagent(), () => undefined), />打开子代理会话/);
-    assert.doesNotMatch(renderTool(subagent('child-1')), />打开子代理会话/);
+    assert.doesNotMatch(renderTool(subagent(), () => undefined), /打开子代理会话/);
+    assert.doesNotMatch(renderTool(subagent('child-1')), /打开子代理会话/);
   });
 
   it('uses the child result status instead of the settled transport status', () => {

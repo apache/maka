@@ -2685,14 +2685,10 @@ function AppShellContent({
                 />
               ) : null}
               <ChatSurfaceLayout
-                // #2205: Astryx ChatLayout owns the new-message indicator and
-                // the scroll lock, and neither is keyed to a conversation. A
-                // session switch must reset both without remounting the layout —
-                // a remount would drop an in-progress composer draft. Passing
-                // the active session id as conversationKey makes ChatLayout
-                // re-lock the scroll and clear the new-message baseline on every
-                // switch (undefined while no session is selected).
-                conversationKey={activeId}
+                // Session switch remounts the layout so scroll / new-message
+                // state cannot leak. Composer draft is keyed by session id
+                // outside ChatLayout, so remount does not drop it.
+                key={activeId ?? 'no-session'}
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>

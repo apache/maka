@@ -177,10 +177,7 @@ export function QuoteCompanionPanel(props: {
       data-preparing={companion.preparing || undefined}
     >
       <ChatSurfaceLayout
-        // #2205: keyed on the companion session so switching quote sources
-        // resets ChatLayout's new-message indicator and scroll lock without
-        // remounting the layout (a remount would drop the composer draft).
-        conversationKey={companion.companionSession?.id ?? props.sourceSession?.id}
+        key={companion.companionSession?.id ?? props.sourceSession?.id ?? 'companion'}
         composer={
           <>
             {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}
