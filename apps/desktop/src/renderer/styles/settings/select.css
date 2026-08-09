@@ -14,6 +14,6 @@
    trigger here sizes the whole control. */
 .settingsRows .settingsModelPickerTrigger,
 .settingsRows .permissionModeSelector {
-  width: 260px;
+  width: var(--settings-control-width);
   max-width: 100%;
 }
