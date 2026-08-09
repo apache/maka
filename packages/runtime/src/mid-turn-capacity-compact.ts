@@ -287,10 +287,7 @@ export async function planMidTurnCapacityCompaction(
     phase === 'mid_turn'
       ? boundary.ok && boundary.coveredCount > headAnchorIndex && boundary.coveredCount >= 2
       : boundary.ok && boundary.coveredCount > 0 && boundary.coveredCount <= headAnchorIndex;
-  if (
-    headAnchorIndex < 0 ||
-    !hasSafeCoverage
-  ) {
+  if (headAnchorIndex < 0 || !hasSafeCoverage) {
     return { decision: 'fail_open', reason: 'no_safe_completed_span' };
   }
 
@@ -341,9 +338,7 @@ export async function planMidTurnCapacityCompaction(
     sessionId: input.sessionId,
     coveredRuntimeEvents,
     summary,
-    ...(phase === 'mid_turn'
-      ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor }
-      : {}),
+    ...(phase === 'mid_turn' ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor } : {}),
     ...(input.highWaterName !== undefined ? { highWaterName: input.highWaterName } : {}),
     ...(input.highWaterSeq !== undefined ? { highWaterSeq: input.highWaterSeq } : {}),
     ...(previousCheckpoint ? { previousCheckpointId: previousCheckpoint.checkpointId } : {}),
