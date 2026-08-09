@@ -22,6 +22,7 @@ import {
   type HostActivitySnapshot,
   type HostLifecycleState,
   type HostRegistration,
+  type RuntimeHostCapability,
   type HostStatusResult,
   type RequestFrame,
 } from '../protocol/index.js';
@@ -121,6 +122,7 @@ interface RuntimeHostKernelCommonOptions {
   composition: RuntimeHostCompositionSource;
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
+  hostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
@@ -436,7 +438,11 @@ export class RuntimeHostKernel {
       selectedProtocol === undefined ||
       hello.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH ||
       hello.compositionId !== this.compositionDescriptor.id ||
-      generationMismatch
+      generationMismatch ||
+      !hasRequiredCapabilities(
+        this.#options.hostCapabilities ?? [],
+        hello.requiredHostCapabilities ?? [],
+      )
     ) {
       return {
         kind: 'incompatible',
@@ -452,9 +458,10 @@ export class RuntimeHostKernel {
           this.#lifecycle.kind === 'ephemeral' && this.#isTrueIdle()
             ? 'wait_for_idle_exit'
             : 'blocked_by_residency',
-        ...(generationMismatch && authority.principalKind === 'local_owner'
-          ? { activity: this.#activitySnapshot() }
-          : {}),
+      ...(generationMismatch && authority.principalKind === 'local_owner'
+        ? { activity: this.#activitySnapshot() }
+        : {}),
+      ...hostCapabilitiesField(this.#options.hostCapabilities),
       };
     }
     this.#hasAcceptedConnection = true;
@@ -472,6 +479,7 @@ export class RuntimeHostKernel {
       compositionId: this.compositionDescriptor.id,
       compositionRevision: this.compositionDescriptor.revision,
       state: admittedState,
+      ...hostCapabilitiesField(this.#options.hostCapabilities),
     };
   }
 
@@ -888,11 +896,25 @@ export class RuntimeHostKernel {
       state: this.#state,
       pid: process.pid,
       createdAt: this.#createdAt,
+      ...hostCapabilitiesField(this.#options.hostCapabilities),
     };
     return writeHostRegistration(this.#options.owner.controlDirectory, registration);
   }
 }
 
+function hasRequiredCapabilities(
+  available: readonly RuntimeHostCapability[],
+  required: readonly RuntimeHostCapability[],
+): boolean {
+  const set = new Set(available);
+  return required.every((capability) => set.has(capability));
+}
+
+function hostCapabilitiesField(capabilities: readonly RuntimeHostCapability[] | undefined): {
+  hostCapabilities?: readonly RuntimeHostCapability[];
+} {
+  return capabilities?.length ? { hostCapabilities: Object.freeze([...capabilities].sort()) } : {};
+}
 async function waitForTransportClose(
   transports: readonly RuntimeHostMessageTransport[],
   timeoutMs: number,

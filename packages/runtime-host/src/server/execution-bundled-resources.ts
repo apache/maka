@@ -2,8 +2,13 @@ export interface ExecutionBundledResourceProcessIdentity {
   readonly electronVersion?: string;
   readonly defaultApp?: boolean;
   readonly resourcesPath?: string;
-  /** Explicit authority forwarded by an app.isPackaged Desktop parent. */
-  readonly parentAuthorizedResourcesRoot?: string;
+  readonly parentPid?: number;
+}
+
+export interface ExecutionBundledResourceBootstrap {
+  readonly kind: 'maka_packaged_candidate_bootstrap_v1';
+  readonly parentPid: number;
+  readonly resourcesRoot: string;
 }
 
 /**
@@ -13,17 +18,15 @@ export interface ExecutionBundledResourceProcessIdentity {
  */
 export function resolveExecutionBundledResourcesRoot(
   identity: ExecutionBundledResourceProcessIdentity,
+  bootstrap?: ExecutionBundledResourceBootstrap,
 ): string | undefined {
-  if (
-    !identity.electronVersion ||
-    identity.defaultApp === true ||
-    !identity.parentAuthorizedResourcesRoot
-  ) {
+  if (!identity.electronVersion || identity.defaultApp === true || !bootstrap) {
     return undefined;
   }
   if (
     !identity.resourcesPath ||
-    identity.resourcesPath !== identity.parentAuthorizedResourcesRoot
+    identity.resourcesPath !== bootstrap.resourcesRoot ||
+    identity.parentPid !== bootstrap.parentPid
   ) {
     throw new Error('Packaged resource authority does not match the Electron resource root');
   }

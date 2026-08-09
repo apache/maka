@@ -95,6 +95,9 @@ export type ClientSurface =
   | 'inspect'
   | 'capability-provider';
 
+export const RUNTIME_HOST_CAPABILITIES = ['managed_workspace_inspection_v1'] as const;
+export type RuntimeHostCapability = (typeof RUNTIME_HOST_CAPABILITIES)[number];
+
 export interface ProtocolRange {
   min: number;
   max: number;
@@ -110,6 +113,7 @@ export interface ClientHello {
   compositionId: string;
   generation?: string;
   takeover?: { expectedHostEpoch: string };
+  requiredHostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 export interface HostAccepted {
@@ -122,6 +126,7 @@ export interface HostAccepted {
   compositionId: string;
   compositionRevision: string;
   state: Exclude<HostLifecycleState, 'draining'>;
+  hostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 export interface HostIncompatible {
@@ -136,6 +141,7 @@ export interface HostIncompatible {
   state: HostLifecycleState;
   replacement: 'blocked_by_residency' | 'wait_for_idle_exit';
   activity?: HostActivitySnapshot;
+  hostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 export interface HostDraining {
@@ -174,6 +180,7 @@ export interface HostRegistration {
   state: HostLifecycleState;
   pid: number;
   createdAt: string;
+  hostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 export function negotiateProtocol(client: ProtocolRange, host: ProtocolRange): number | undefined {
@@ -224,6 +231,7 @@ export function decodeClientFrame(value: unknown): ClientFrame {
       compositionId: decodeCompositionId(frame.compositionId),
       ...(generation === undefined ? {} : { generation }),
       ...(takeover === undefined ? {} : { takeover }),
+      ...decodeOptionalHostCapabilities(frame.requiredHostCapabilities, 'requiredHostCapabilities'),
     } satisfies ClientHello;
   }
   if (isClientCapabilityClientFrameKind(frame.kind)) {
@@ -245,6 +253,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
       compositionId: decodeCompositionId(frame.compositionId),
       compositionRevision: decodeCompositionRevision(frame.compositionRevision),
       state: requireAcceptedState(frame.state),
+      ...decodeOptionalHostCapabilities(frame.hostCapabilities, 'hostCapabilities'),
     } satisfies HostAccepted;
   }
   if (frame.kind === 'incompatible') {
@@ -267,6 +276,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
       ...(frame.activity === undefined
         ? {}
         : { activity: decodeHostActivitySnapshot(frame.activity) }),
+      ...decodeOptionalHostCapabilities(frame.hostCapabilities, 'hostCapabilities'),
     } satisfies HostIncompatible;
   }
   if (frame.kind === 'draining') {
@@ -325,6 +335,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     state: requireHostLifecycleState(registration.state),
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
+    ...decodeOptionalHostCapabilities(registration.hostCapabilities, 'hostCapabilities'),
   };
 }
 
@@ -423,4 +434,34 @@ function requireAcceptedState(value: unknown): Exclude<HostLifecycleState, 'drai
 function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
   throw invalidProtocolFrame('Invalid replacement disposition');
+}
+
+function decodeOptionalHostCapabilities(
+  value: unknown,
+  key: 'requiredHostCapabilities' | 'hostCapabilities',
+): Partial<Record<typeof key, readonly RuntimeHostCapability[]>> {
+  if (value === undefined) return {};
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > RUNTIME_HOST_CAPABILITIES.length
+  ) {
+    throw invalidProtocolFrame(`Invalid ${key}`);
+  }
+  const capabilities = value.map((candidate) => {
+    if (!(RUNTIME_HOST_CAPABILITIES as readonly unknown[]).includes(candidate)) {
+      throw invalidProtocolFrame(`Invalid ${key}`);
+    }
+    return candidate as RuntimeHostCapability;
+  });
+  if (new Set(capabilities).size !== capabilities.length) {
+    throw invalidProtocolFrame(`Invalid ${key}`);
+  }
+  const canonical = [...capabilities].sort();
+  if (canonical.some((capability, index) => capability !== capabilities[index])) {
+    throw invalidProtocolFrame(`Invalid ${key}`);
+  }
+  return { [key]: Object.freeze(canonical) } as Partial<
+    Record<typeof key, readonly RuntimeHostCapability[]>
+  >;
 }

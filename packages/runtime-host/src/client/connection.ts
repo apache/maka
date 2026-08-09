@@ -71,6 +71,7 @@ import {
   type TurnSnapshot,
   type TurnStartInput,
   type TurnStartResult,
+  type RuntimeHostCapability,
   type TurnStopInput,
   requireClientInstanceId,
   requireHostCompositionId,
@@ -107,6 +108,7 @@ export interface ConnectRuntimeHostInput {
   clientInstanceId?: string;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
+  requiredHostCapabilities?: readonly RuntimeHostCapability[];
   /**
    * Interval between liveness probes while a domain request is outstanding.
    * Injectable so tests exercise requests that outlive a probe cycle without
@@ -1313,6 +1315,9 @@ export async function connectResolvedRuntimeHost(
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      ...(input.requiredHostCapabilities?.length
+        ? { requiredHostCapabilities: input.requiredHostCapabilities }
+        : {}),
     });
     if (result.kind === 'connected') {
       if (
@@ -1389,6 +1394,7 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly requiredHostCapabilities?: readonly RuntimeHostCapability[];
 }
 
 async function exchangeRuntimeHostHandshake(
@@ -1411,6 +1417,9 @@ async function exchangeRuntimeHostHandshake(
     ...(input.takeoverHostEpoch === undefined
       ? {}
       : { takeover: { expectedHostEpoch: input.takeoverHostEpoch } }),
+    ...(input.requiredHostCapabilities?.length
+      ? { requiredHostCapabilities: input.requiredHostCapabilities }
+      : {}),
   });
   const handshake = decodeHostFrame(await input.transport.read(0));
   if (!('kind' in handshake)) {

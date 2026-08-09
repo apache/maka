@@ -90,6 +90,10 @@ export {
   configureHostedExecutionTarget,
   type HostedExecutionTargetInput,
 } from './hosted-execution-target.js';
+export {
+  issueDesktopPackagedCandidateAuthority,
+  type DesktopPackagedCandidateAuthority,
+} from './packaged-candidate-authority.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   startRuntimeHostCapabilityProviderService,

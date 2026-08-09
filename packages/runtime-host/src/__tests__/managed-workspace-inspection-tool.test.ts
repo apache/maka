@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { MakaToolContext } from '@maka/runtime';
+import { selectCollaborationTools, type MakaToolContext } from '@maka/runtime';
 import {
   createManagedWorkspaceInspectionTool,
   type ManagedWorkspaceInspectionToolResult,
@@ -9,6 +9,17 @@ import type {
   RuntimeHostWorkspaceExecutionComposition,
   RuntimeHostWorkspaceExecutionProfile,
 } from '../server/workspace-execution-composition.js';
+
+test('does not expose dependency provisioning as a Plan Mode read', () => {
+  const tool = createManagedWorkspaceInspectionTool({} as never);
+  const selected = selectCollaborationTools({
+    mode: 'plan',
+    tools: [tool],
+    hasActiveExecution: false,
+  });
+
+  assert.deepEqual(selected, []);
+});
 
 test('opens an owner-bound dependency profile from the session cwd before inspecting', async () => {
   const opens: unknown[] = [];

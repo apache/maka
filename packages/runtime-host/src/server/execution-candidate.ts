@@ -27,5 +27,13 @@ export async function startExecutionRuntimeHostCandidate(
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
-  return startInteractiveRuntimeHostCandidate(options, composition);
+  return startInteractiveRuntimeHostCandidate(
+    {
+      ...options,
+      ...(options.bundledNpmResourcesRoot
+        ? { hostCapabilities: ['managed_workspace_inspection_v1'] as const }
+        : {}),
+    },
+    composition,
+  );
 }

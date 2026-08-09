@@ -78,10 +78,11 @@ export function createManagedWorkspaceInspectionTool(
     displayName: 'Inspect isolated workspace',
     description:
       'Read or search the project in a Maka-owned isolated Git workspace with its verified dependency environment. ' +
+      'The first use may provision a durable dependency cache and requires normal execution approval. ' +
       'Use this for dependency-aware inspection that must not read from or modify the current checkout. ' +
       'This tool is read-only and supports only Read, Glob, and Grep operations.',
     parameters: managedWorkspaceInspectionInputSchema,
-    categoryHint: 'read',
+    categoryHint: 'custom_tool',
     recoveryMode: 'replay_safe',
     executionSemantics: 'exclusive_step',
     impl: async (input, context) => {

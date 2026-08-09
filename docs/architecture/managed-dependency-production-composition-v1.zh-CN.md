@@ -1,6 +1,6 @@
 ---
 document_status: implementation-contract
-status: implemented-stacked-pr4
+status: implemented-stacked-pr5
 date: 2026-08-09
 milestone: M1.3
 stack_base: bundled-npm-runtime-attestation-v1
@@ -21,7 +21,9 @@ stack_base: bundled-npm-runtime-attestation-v1
 
 本切片不启用 Desktop UI 的默认 managed mode，不改变普通 attached checkout，不提供 Shell/Build、Write/Edit、secret projection 或 scratch capability，也不把依赖环境当作 workspace checkpoint。
 
-首个生产消费者是模型可见的 `ManagedWorkspaceInspect` 专用只读任务工具。它不是 session execution mode，也不会替换普通 Read/Glob/Grep：只有模型显式调用该工具时，当前 session cwd 才会作为 source 进入 managed admission。工具参数只能表达一个有界的 Read、Glob 或 Grep 操作，不能提供 source root、workspace identity、raw cwd 或 execution profile。
+首个生产消费者是模型可见的 `ManagedWorkspaceInspect` 专用任务工具。它不是 session execution mode，也不会替换普通 Read/Glob/Grep：只有模型显式调用该工具时，当前 session cwd 才会作为 source 进入 managed admission。工具参数只能表达一个有界的 Read、Glob 或 Grep 操作，不能提供 source root、workspace identity、raw cwd 或 execution profile。
+
+虽然最终 worker operation 是只读的，首次 admission 仍会创建 Git worktree、SQLite baseline、receipt/cache，并可能执行 npm 网络下载与写入大型 dependency artifact。因此它的权限类别是 `custom_tool`，不属于 Plan Mode 可调用的 `read` 集合；工具说明必须向用户披露 provisioning 副作用。将来如果需要在 Plan Mode 中读取 managed workspace，必须先由独立、明确授权且已经完成的 Host admission 产生 scope，再暴露一个真正无 provisioning 的只读工具，不能把副作用伪装成 read。
 
 ## 2. Owner 与能力边界
 
@@ -39,7 +41,9 @@ packaged Electron process identity
   -> sandboxed filesystem worker
 ```
 
-只有 Desktop 父进程在 `app.isPackaged === true` 时显式传入的 resource root，才能成为 detached Runtime Host 的 release authority。子进程还必须证明自身 Electron identity、`defaultApp !== true`，并且观测到的 `process.resourcesPath` 与父进程授权值完全一致。`ELECTRON_RUN_AS_NODE=1` 下的开发态 Electron 即使拥有 Electron version 和 resources path，也不能从 ambient directory 自认证 bundled runtime。Node/CLI 同样不自动发现 bundled runtime。测试可以显式注入 verified Git input，但生产 npm producer 只能从 attested bundled resources 创建。
+只有真实 Desktop main process 在 `app.isPackaged === true` 时才能签发 process-local、不可由 pathname 构造的 packaged candidate capability。公开 candidate CLI 不接受 `--packaged-resources-root` 或等价参数。launcher 消费该 capability 后，通过仅由父子进程继承的有界 bootstrap channel 传递 canonical resource root 与父进程 PID；detached candidate 必须同时验证 bootstrap parent PID、自身 Electron identity、`defaultApp !== true`，以及自身 `process.resourcesPath` 与授权值完全一致。`ELECTRON_RUN_AS_NODE=1` 下的开发态 Electron 即使拥有 Electron version 和 resources path，也不能签发 capability 或从 ambient directory 自认证 bundled runtime。Node/CLI 同样不能发现或声明 bundled runtime。测试可以显式注入 verified Git input，但生产 npm producer 只能从 attested bundled resources 创建。
+
+packaged capability 还决定 Host 的精确生产 profile。拥有 bundled Git/npm composition 的 candidate 在 durable registration 与握手中声明 `managed_workspace_inspection_v1`；packaged Desktop 在每次连接（包括连接既有 Host）时要求该 capability。若 CLI 先占有同一 storage root、既有 Host 不具备 managed profile，握手必须显式返回 incompatible：Host 有 resident client 时拒绝替换，true-idle 时按既有选举协议退出并允许受权 candidate 竞争。不得因启动顺序静默接受缺少 managed capability 的 Host，也不得在连接后 fallback 到 attached dependency 状态。
 
 `ManagedWorkspaceOwner` 是跨 Git baseline、dependency lease 与 worker scope 的组合 owner。它负责：
 
@@ -111,7 +115,7 @@ producer failure、timeout、abort、process-tree drain failure、runtime revali
 
 调用者取消从 Runtime Host composition 贯穿 baseline admission、Git invocation、`ManagedWorkspaceOwner`、dependency authority 到 producer。可取消的 artifact writer admission 使用有界轮询获取 OS lock，取消后不会留下仍在等待锁的后台 owner。等价 environment 的并发 acquisition 共用一次 publication，但共享 producer 不受任意单个 waiter 支配：只有最后一个 waiter 放弃且 publication 尚未结束时，authority 才终止 producer。若新 caller 在被撤销 publication 的清理窗口进入，它必须等待旧 owner 收敛后重新观察 canonical slot，不能继承旧 caller 的 abort。Host drain 等待 admission、acquisition 和 producer 清理结束后才能关闭 receipt authority。
 
-`ManagedWorkspaceInspect` 从 ToolRuntime context 取得 canonical session cwd 与 AbortSignal。Host 以 canonical source root 和 session identity 域分离地产生稳定的 repository/workspace/epoch/instance identity；模型无法自认证这些 ID。同一 session/source 的多次只读任务复用同一 accepted baseline，source 后续漂移时 fail closed，不在工具内部创建隐式 rebaseline。工具使用 `replay_safe`：它只消费同一 managed baseline 的只读结果，崩溃后重复 admission 不产生 workspace mutation；provider-facing 结果另有 64 KiB 上限，超限要求缩小读取或搜索范围。
+`ManagedWorkspaceInspect` 从 ToolRuntime context 取得 canonical session cwd 与 AbortSignal。Host 以 canonical source root 和 session identity 域分离地产生稳定的 repository/workspace/epoch/instance identity；模型无法自认证这些 ID。同一 session/source 的多次只读任务复用同一 accepted baseline，source 后续漂移时 fail closed，不在工具内部创建隐式 rebaseline。工具使用 `replay_safe`：它只消费同一 managed baseline 的只读结果，崩溃后重复 admission 不产生 workspace mutation；provider-facing 结果另有 64 KiB 上限，超限要求缩小读取或搜索范围。这里的 `replay_safe` 只描述 durable tool replay，不会把首次 provisioning 重新分类成 Plan Mode read。
 
 ## 6. 稳定失败与回滚
 
@@ -162,6 +166,9 @@ observed bytes/entries 是 soft postcondition，不是 OS quota；不能宣称�
 8. drain/close 能在 lease释放后完成；
 9. producer missing、manifest mismatch、path traversal、forged scope、unbound logical state均 fail closed。
 10. 真实 Host 子进程在 dependency receipt durable 后退出；同一 source/session/task 重开后只存在一份 canonical baseline、dependency artifact 与 receipt，staging 为空，并返回相同只读结果。
+11. Plan Mode 工具选择不包含 `ManagedWorkspaceInspect`；首次 provisioning 只能经过 `custom_tool` 权限路径。
+12. 开发态 Electron 与公开 candidate CLI 都不能签发或声明 packaged resource authority。
+13. packaged Desktop 连接既有 standard Host 时，capability mismatch 必须在握手阶段 fail closed；只有声明相同 managed profile 的 Host 才能被接受。
 
 当前切片通过 `ManagedWorkspaceInspect` 形成 M1.3 的生产闭环：普通 session 保持 attached；显式工具调用才进入 managed baseline、dependency lease 与 read-only worker，工具完成后 scope 与 lease 均释放。production-shaped 测试使用真实 Git source、execution stores、root owner、attested npm child process 和 managed owner，并通过该生产工具读取 Maka-owned `node_modules`，不再直接把内部 composition API 当作消费者。
 

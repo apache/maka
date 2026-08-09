@@ -11,7 +11,6 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'handshake-timeout-ms',
     'generation',
     'legacy-configuration-root',
-    'packaged-resources-root',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -36,11 +35,6 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     rootPath,
     expectedRootId,
     initialConnectionTimeoutMs: readOptionalInteger(values, 'initial-connection-timeout-ms'),
-    ...(values.has('packaged-resources-root')
-      ? {
-          packagedResourcesRoot: readOptionalAbsolutePath(values, 'packaged-resources-root'),
-        }
-      : {}),
     ...(values.has('legacy-configuration-root')
       ? {
           legacyConfigurationRoot: readOptionalAbsolutePath(values, 'legacy-configuration-root'),

@@ -566,6 +566,95 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeHostFrame(JSON.parse(encoded.toString('utf8'))), canonical);
   });
 
+  test('accepts protocol v0 in handshakes and Host registration while rejecting negatives', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        kind: 'hello',
+        clientInstanceId: 'activation-client',
+        surface: 'activation',
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        requiredHostCapabilities: ['managed_workspace_inspection_v1'],
+      }),
+      {
+        kind: 'hello',
+        clientInstanceId: 'activation-client',
+        surface: 'activation',
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        requiredHostCapabilities: ['managed_workspace_inspection_v1'],
+      },
+    );
+    const accepted = {
+      kind: 'accepted' as const,
+      rootId: 'a'.repeat(64),
+      hostEpoch: 'epoch-1',
+      connectionId: 'connection-1',
+      selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      state: 'ready' as const,
+      hostCapabilities: ['managed_workspace_inspection_v1'] as const,
+    };
+    assert.deepEqual(decodeHostFrame(accepted), accepted);
+
+    const registration = {
+      kind: 'maka-runtime-host' as const,
+      schemaVersion: 1 as const,
+      rootId: 'a'.repeat(64),
+      hostEpoch: 'epoch-1',
+      endpoint: '/tmp/maka-runtime-host.sock',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      state: 'ready' as const,
+      pid: 42,
+      createdAt: '2026-07-23T00:00:00.000Z',
+      hostCapabilities: ['managed_workspace_inspection_v1'] as const,
+    };
+    assert.deepEqual(decodeHostRegistration(registration), registration);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          kind: 'hello',
+          clientInstanceId: 'client-1',
+          surface: 'tui',
+          protocolMin: -1,
+          protocolMax: 0,
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(() => decodeHostFrame({ ...accepted, selectedProtocol: -1 }), isInvalidFrame);
+    assert.throws(() => decodeHostFrame({ ...accepted, rootId: 'not-a-root' }), isInvalidFrame);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          kind: 'hello',
+          clientInstanceId: 'client-1',
+          surface: 'tui',
+          protocolMin: 0,
+          protocolMax: 0,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+          requiredHostCapabilities: ['unknown_capability'],
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => decodeHostRegistration({ ...registration, protocolMin: -1 }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () => decodeHostRegistration({ ...registration, protocolMax: Number.MAX_SAFE_INTEGER + 1 }),
+      isInvalidFrame,
+    );
+  });
   test('keeps the operation registry closed at request and response boundaries', () => {
     assert.throws(
       () => decodeClientFrame({ requestId: 'request-1', operation: 'store.read', input: {} }),

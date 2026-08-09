@@ -12,6 +12,7 @@ import {
   type ClientSurface,
   type HostIncompatible,
   type ProtocolRange,
+  type RuntimeHostCapability,
 } from '../protocol/index.js';
 import {
   connectResolvedRuntimeHost,
@@ -29,6 +30,7 @@ import {
   type CandidateStartupFailure,
 } from '../candidate-startup-failure.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
+import type { DesktopPackagedCandidateAuthority } from './packaged-candidate-authority.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
@@ -47,7 +49,8 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
-  packagedResourcesRoot?: string;
+  requiredHostCapabilities?: readonly RuntimeHostCapability[];
+  packagedCandidateAuthority?: DesktopPackagedCandidateAuthority;
   legacyConfigurationRoot?: string;
   signal?: AbortSignal;
 }
@@ -200,6 +203,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       clientInstanceId,
       connectTimeoutMs: input.connectTimeoutMs,
       handshakeTimeoutMs: input.handshakeTimeoutMs,
+      requiredHostCapabilities: input.requiredHostCapabilities,
       electionDeadline: deadline,
     });
     if (result.kind === 'election_deadline_elapsed') {
@@ -254,9 +258,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             ...(input.legacyConfigurationRoot === undefined
             ? {}
             : { legacyConfigurationRoot: input.legacyConfigurationRoot }),
-          ...(input.packagedResourcesRoot === undefined
-            ? {}
-               : { packagedResourcesRoot: input.packagedResourcesRoot }),
+            ...(input.packagedCandidateAuthority === undefined
+              ? {}
+              : { packagedCandidateAuthority: input.packagedCandidateAuthority }),
           });
         const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
         if (attempt.startupFailure) {

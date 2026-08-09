@@ -12,12 +12,19 @@ const require = createRequire(import.meta.url);
 
 test('admits bundled resources only from packaged Electron identity', () => {
   assert.equal(
-    resolveExecutionBundledResourcesRoot({
-      electronVersion: '43.2.0',
-      defaultApp: false,
-      resourcesPath: '/Applications/Maka.app/Contents/Resources',
-      parentAuthorizedResourcesRoot: '/Applications/Maka.app/Contents/Resources',
-    }),
+    resolveExecutionBundledResourcesRoot(
+      {
+        electronVersion: '43.2.0',
+        defaultApp: false,
+        resourcesPath: '/Applications/Maka.app/Contents/Resources',
+        parentPid: 42,
+      },
+      {
+        kind: 'maka_packaged_candidate_bootstrap_v1',
+        parentPid: 42,
+        resourcesRoot: '/Applications/Maka.app/Contents/Resources',
+      },
+    ),
     '/Applications/Maka.app/Contents/Resources',
   );
   assert.equal(
@@ -30,11 +37,18 @@ test('admits bundled resources only from packaged Electron identity', () => {
   );
   assert.throws(
     () =>
-      resolveExecutionBundledResourcesRoot({
-        electronVersion: '43.2.0',
-        resourcesPath: '/Applications/Maka.app/Contents/Resources',
-        parentAuthorizedResourcesRoot: '/tmp/forged-resources',
-      }),
+      resolveExecutionBundledResourcesRoot(
+        {
+          electronVersion: '43.2.0',
+          resourcesPath: '/Applications/Maka.app/Contents/Resources',
+          parentPid: 42,
+        },
+        {
+          kind: 'maka_packaged_candidate_bootstrap_v1',
+          parentPid: 42,
+          resourcesRoot: '/tmp/forged-resources',
+        },
+      ),
     /does not match the Electron resource root/u,
   );
   assert.equal(
@@ -57,10 +71,12 @@ test('development Electron Node mode cannot self-authorize bundled resources', a
   const observed = JSON.parse(stdout) as {
     defaultApp: boolean | null;
     resourcesPath: string | null;
+    authorityIssued: boolean;
     resolved: string | null;
   };
   assert.equal(observed.defaultApp, null);
   assert.ok(observed.resourcesPath);
+  assert.equal(observed.authorityIssued, false);
   assert.equal(observed.resolved, null);
 });
 
