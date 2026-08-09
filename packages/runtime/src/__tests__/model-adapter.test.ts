@@ -2,10 +2,26 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
 
-import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
+import { lowerModelTools, ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('lowers apply_patch to the client-executed OpenAI provider tool', () => {
+    const tools = lowerModelTools({
+      apply_patch: { kind: 'provider', providerTool: { kind: 'openai-apply-patch' } },
+    });
+
+    assert.deepEqual(
+      {
+        type: (tools.apply_patch as { type?: unknown }).type,
+        id: (tools.apply_patch as { id?: unknown }).id,
+        isProviderExecuted: (tools.apply_patch as { isProviderExecuted?: unknown })
+          .isProviderExecuted,
+      },
+      { type: 'provider', id: 'openai.apply_patch', isProviderExecuted: false },
+    );
+  });
+
   test('resolves optional-key LocalAI without fabricating a credential', () => {
     const model = {};
     let observedApiKey: string | undefined;

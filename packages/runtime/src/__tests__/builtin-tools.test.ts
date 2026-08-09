@@ -56,6 +56,7 @@ describe('builtin tool activity kinds', () => {
     expect(kinds).toEqual({
       Bash: 'command',
       Read: 'read',
+      apply_patch: 'edit',
       Write: 'edit',
       Edit: 'edit',
       FormatJson: 'edit',
@@ -98,6 +99,19 @@ describe('builtin tool activity kinds', () => {
       false,
     );
     assert.ok(tools.some((tool) => tool.name === 'Write'));
+  });
+
+  test('includes apply_patch when a custom workspace exposes the capability', () => {
+    const tools = buildBuiltinTools({
+      executor: fakeExecutor({
+        applyPatch: async ({ path }) => ({ ok: true, path }),
+      }),
+    });
+
+    assert.equal(
+      tools.some((tool) => tool.name === 'apply_patch'),
+      true,
+    );
   });
 });
 

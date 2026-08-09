@@ -22,17 +22,20 @@ import type {
 } from './filesystem-worker/client.js';
 import type { ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
+import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import type {
   WorkspaceEditExecutor,
+  WorkspaceApplyPatchExecutor,
   WorkspacePathScope,
   WorkspaceSearchExecutor,
   WorkspaceWriteExecutor,
 } from './workspace-executor.js';
 
 /** A file operation, named the same way on every backend. `cwd` is supplied per call. */
-export type FilesystemOperation = FilesystemWorkerClientOperation;
+type FilesystemBackendOperation = FilesystemWorkerClientOperation;
+export type FilesystemOperation = Exclude<FilesystemBackendOperation, { kind: 'apply_patch' }>;
 
 /**
  * The result shape every backend answers with.
@@ -55,6 +58,23 @@ export interface FilesystemExecuteInput {
   abortSignal?: AbortSignal;
 }
 
+type FilesystemBackendExecuteInput = Omit<FilesystemExecuteInput, 'operation'> & {
+  operation: FilesystemBackendOperation;
+};
+
+export type ApplyPatchOperation =
+  | { type: 'create_file'; path: string; diff: string }
+  | { type: 'delete_file'; path: string }
+  | { type: 'update_file'; path: string; diff: string };
+
+export interface FilesystemApplyPatchInput extends Omit<FilesystemExecuteInput, 'operation'> {
+  operation: ApplyPatchOperation;
+}
+
+export interface ApplyPatchResult {
+  status: 'completed';
+}
+
 export interface FilesystemExecutor {
   /**
    * Run one operation under the authority of the boundary it carries. A mutating
@@ -62,11 +82,13 @@ export interface FilesystemExecutor {
    * no caller has to know that a lock exists or how its key is spelled.
    */
   execute(input: FilesystemExecuteInput): Promise<FilesystemResult>;
+  applyPatch(input: FilesystemApplyPatchInput): Promise<ApplyPatchResult>;
 }
 
 /** The workspace primitives the host-local backend drives. */
 export type FilesystemWorkspaceExecutor = WorkspaceWriteExecutor &
   WorkspaceEditExecutor &
+  Partial<WorkspaceApplyPatchExecutor> &
   WorkspaceSearchExecutor;
 
 export interface BoundaryFilesystemExecutorInput {
@@ -126,7 +148,7 @@ export function createBoundaryFilesystemExecutor(
         'Managed filesystem execution is unavailable because the sandboxed worker cannot be enforced.',
     });
   };
-  async function run(call: FilesystemExecuteInput): Promise<FilesystemResult> {
+  async function run(call: FilesystemBackendExecuteInput): Promise<FilesystemResult> {
     const worker = workerFor(call.executionBoundary);
     if (!worker) return await local.execute(call, pathScopeForBoundary(call.executionBoundary));
     const result = await worker.execute({
@@ -151,6 +173,32 @@ export function createBoundaryFilesystemExecutor(
     }
     return result;
   }
+  async function writeLockTarget(
+    call: Omit<FilesystemExecuteInput, 'operation'>,
+    path: string,
+    semantics: 'target' | 'entry' = 'target',
+  ): Promise<string> {
+    const worker = workerFor(call.executionBoundary);
+    if (!worker)
+      return (
+        await input.workspace.writeLockKey({
+          cwd: call.cwd,
+          path,
+          semantics,
+        })
+      ).key;
+    if (semantics === 'entry') {
+      return (await resolveCanonicalDirectoryEntryTarget(call.cwd, path)).path;
+    }
+    return (
+      await normalizeSandboxBoundaryPath({
+        path,
+        access: 'write',
+        scope: 'exact',
+        cwd: await canonicalExistingPath(call.cwd),
+      })
+    ).enforcementPath;
+  }
   return {
     async execute(call) {
       if (!mutates(call.operation)) return await run(call);
@@ -158,24 +206,38 @@ export function createBoundaryFilesystemExecutor(
       // goes on to reject still takes the same lock as its other spellings. The
       // key is derived from the same canonicalisation the backend will resolve
       // with, or the lock-key space and the resolved-path space drift apart.
-      const worker = workerFor(call.executionBoundary);
-      const key = worker
-        ? (
-            await normalizeSandboxBoundaryPath({
-              path: call.operation.path,
-              access: 'write',
-              scope: 'exact',
-              cwd: await canonicalExistingPath(call.cwd),
-            })
-          ).enforcementPath
-        : (await input.workspace.writeLockKey({ cwd: call.cwd, path: call.operation.path })).key;
+      const key = await writeLockTarget(call, call.operation.path);
       return await withFileWriteLock(key, () => run(call));
+    },
+    async applyPatch(call) {
+      const { operation, ...common } = call;
+      const semantics = operation.type === 'update_file' ? 'target' : 'entry';
+      const key = await writeLockTarget(common, operation.path, semantics);
+      return await withFileWriteLock(key, async () => {
+        const backendOperation: FilesystemWorkerClientOperation =
+          operation.type === 'delete_file'
+            ? { kind: 'apply_patch', path: operation.path, action: 'delete' }
+            : {
+                kind: 'apply_patch',
+                path: operation.path,
+                action: operation.type === 'create_file' ? 'create' : 'update',
+                diff: operation.diff,
+              };
+        const result = await run({ ...common, operation: backendOperation });
+        if (result.kind !== 'apply_patch') {
+          throw new Error(`ApplyPatch backend returned ${JSON.stringify(result.kind)}.`);
+        }
+        return { status: 'completed' };
+      });
     },
   };
 }
 
 interface WorkspaceFilesystemBackend {
-  execute(input: FilesystemExecuteInput, scope: WorkspacePathScope): Promise<FilesystemResult>;
+  execute(
+    input: FilesystemBackendExecuteInput,
+    scope: WorkspacePathScope,
+  ): Promise<FilesystemResult>;
 }
 
 /**
@@ -243,6 +305,16 @@ function createWorkspaceFilesystemExecutor(
             bytes: written.bytes,
             ...(diff !== undefined ? { diff } : {}),
           };
+        }
+        case 'apply_patch': {
+          if (!workspace.applyPatch) throw new Error('Workspace does not support ApplyPatch');
+          const common = { cwd, path: operation.path, label: 'ApplyPatch', scope };
+          const patched = await workspace.applyPatch(
+            operation.action === 'delete'
+              ? { ...common, action: 'delete' }
+              : { ...common, action: operation.action, diff: operation.diff },
+          );
+          return { kind: 'apply_patch', ok: true, path: patched.path };
         }
         case 'edit': {
           const { path } = await workspace.resolveExistingPath({

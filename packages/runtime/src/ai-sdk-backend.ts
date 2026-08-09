@@ -208,6 +208,7 @@ import {
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
 import { modelUsesNativeOpenAiResponses } from './model-runtime.js';
+import { openAiModelSupportsApplyPatch } from './openai-apply-patch.js';
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
@@ -822,6 +823,25 @@ function toolResultText(text: string): ToolResultOutput {
   return { type: 'content', value: [{ type: 'text', text }] };
 }
 
+function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutput {
+  const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+  const message =
+    output.type === 'text' || output.type === 'error-text'
+      ? output.value
+      : typeof record?.output === 'string'
+        ? record.output
+        : typeof record?.text === 'string'
+          ? record.text
+          : typeof record?.error === 'string'
+            ? record.error
+            : undefined;
+  return {
+    type: 'json',
+    value: { status: 'failed', ...(message ? { output: message } : {}) },
+  };
+}
+
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
@@ -1038,10 +1058,15 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
+    const modelTools =
+      modelUsesNativeOpenAiResponses(input.connection, input.modelId) &&
+      openAiModelSupportsApplyPatch(input.modelId)
+        ? input.tools
+        : input.tools.filter((tool) => tool.providerTool?.kind !== 'openai-apply-patch');
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
       // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...input.tools, ...memoryTools], input.toolResultArchive),
+      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
@@ -3606,14 +3631,22 @@ export class AiSdkBackend implements AgentBackend {
     // back — the plan flags them as `unmatched_tool_result` (a non-blocking
     // diagnostic precisely so this drop path is reachable; see
     // hasBlockingReplayDiagnostics).
-    const materializeReplayToolResult = async (result: ToolResultItem): Promise<ToolResultOutput> =>
-      settledModelOutputs?.get(result.toolCallId) ??
-      (await this.materializeToolResultOutput(
-        budget,
-        result.output,
-        result.isError,
-        `runtime-event:${result.eventId}:tool-result`,
-      ));
+    const materializeReplayToolResult = async (
+      result: ToolResultItem,
+      toolName: string,
+    ): Promise<ToolResultOutput> => {
+      const output =
+        settledModelOutputs?.get(result.toolCallId) ??
+        (await this.materializeToolResultOutput(
+          budget,
+          result.output,
+          result.isError,
+          `runtime-event:${result.eventId}:tool-result`,
+        ));
+      return toolName === 'apply_patch' && result.isError
+        ? nativeApplyPatchFailureOutput(output)
+        : output;
+    };
     const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {
       for (const call of calls) {
         const result = results.get(call.toolCallId);
@@ -3627,7 +3660,7 @@ export class AiSdkBackend implements AgentBackend {
                 type: 'tool-result',
                 toolCallId: result.toolCallId,
                 toolName: result.toolName,
-                output: await materializeReplayToolResult(result),
+                output: await materializeReplayToolResult(result, call.toolName),
               },
             ],
           },
@@ -3676,7 +3709,7 @@ export class AiSdkBackend implements AgentBackend {
           type: 'tool-result',
           toolCallId: result.toolCallId,
           toolName: result.toolName,
-          output: await materializeReplayToolResult(result),
+          output: await materializeReplayToolResult(result, call.toolName),
         });
       }
       if (text && text.content.length > 0) {

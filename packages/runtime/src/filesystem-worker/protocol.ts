@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core';
 
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 4 as const;
+// v5 adds the provider-native single-file ApplyPatch operation.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 5 as const;
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
@@ -40,11 +41,11 @@ export const FilesystemWorkerTargetSchema = z
     enforcementPath: path,
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
-    targetType: z.enum(['file', 'directory', 'other', 'missing']),
+    targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
   })
   .strict();
 
-export const FilesystemWorkerOperationSchema = z.discriminatedUnion('kind', [
+export const FilesystemWorkerOperationSchema = z.union([
   z
     .object({
       kind: z.literal('read'),
@@ -55,6 +56,16 @@ export const FilesystemWorkerOperationSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('write'), cwd, path, content: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal('apply_patch'),
+      cwd,
+      path,
+      action: z.enum(['create', 'update']),
+      diff: z.string(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('apply_patch'), cwd, path, action: z.literal('delete') }).strict(),
   z
     .object({
       kind: z.literal('edit'),
@@ -123,6 +134,7 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
       diff: z.string().optional(),
     })
     .strict(),
+  z.object({ kind: z.literal('apply_patch'), ok: z.literal(true), path: z.string() }).strict(),
   z
     .object({
       kind: z.literal('edit'),
@@ -190,6 +202,13 @@ export const FilesystemWorkerResponseSchema = z.discriminatedUnion('ok', [
 ]);
 
 export type FilesystemWorkerOperation = z.infer<typeof FilesystemWorkerOperationSchema>;
+
+export function operationUsesDirectoryEntry(operation: FilesystemWorkerOperation): boolean {
+  return (
+    operation.kind === 'apply_patch' &&
+    (operation.action === 'create' || operation.action === 'delete')
+  );
+}
 export type FilesystemWorkerTarget = z.infer<typeof FilesystemWorkerTargetSchema>;
 export type FilesystemWorkerRequest = z.infer<typeof FilesystemWorkerRequestSchema>;
 export type FilesystemWorkerResult = z.infer<typeof FilesystemWorkerResultSchema>;

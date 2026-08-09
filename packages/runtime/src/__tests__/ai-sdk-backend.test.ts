@@ -86,6 +86,105 @@ import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 
+describe('AiSdkBackend native ApplyPatch routing', () => {
+  test('advertises apply_patch only to supported native OpenAI models', async () => {
+    for (const [providerType, modelId, expected] of [
+      ['openai', 'gpt-5.4', true],
+      ['openai', 'gpt-5', false],
+      ['anthropic', connection().defaultModel, false],
+    ] as const) {
+      const model = completionModel();
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection:
+          providerType === 'openai'
+            ? { ...connection(), slug: 'openai', providerType }
+            : connection(),
+        apiKey: 'sk-test',
+        modelId,
+        modelFactory: () => model,
+        tools: [nativeApplyPatchTool()],
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+      await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+      assert.equal(modelToolNames(model).includes('apply_patch'), expected);
+    }
+  });
+
+  test('replays a durable apply_patch failure as native provider JSON', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch it',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'call-1',
+              name: 'apply_patch',
+              args: {
+                callId: 'call-1',
+                operation: { type: 'update_file', path: 'file.txt', diff: '@@' },
+              },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: { status: 'failed', output: 'diff rejected' },
+              isError: true,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'tool')
+      ?.content.find((part) => part.type === 'tool-result');
+    assert.deepEqual(toolResult?.output, {
+      type: 'json',
+      value: { status: 'failed', output: 'diff rejected' },
+    });
+  });
+});
+
 describe('AiSdkBackend Memory Extraction triggers', () => {
   test('exposes explicitly unsupported Memory triggers on the native OpenAI Responses lane', async () => {
     const model = completionModel();
@@ -15680,6 +15779,16 @@ function testTool(name: string, parameters: unknown): MakaTool {
     description: `${name} description`,
     parameters,
     impl: async () => ({ ok: true }),
+  };
+}
+
+function nativeApplyPatchTool(): MakaTool {
+  return {
+    name: 'apply_patch',
+    description: 'Apply one patch operation',
+    parameters: z.object({}),
+    providerTool: { kind: 'openai-apply-patch' },
+    impl: async () => ({ status: 'completed' }),
   };
 }
 
