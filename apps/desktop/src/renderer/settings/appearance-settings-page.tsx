@@ -166,7 +166,7 @@ export function AppearanceSettingsPage(props: {
             >
               <VStack gap={2}>
                 <ThemePreviewMock variant={value} />
-                <VStack gap={0}>
+                <VStack gap={0.5}>
                   <Text type="label" size="sm">{option.label}</Text>
                   <Text type="supporting" size="sm" color="secondary">{option.help}</Text>
                 </VStack>
@@ -217,7 +217,7 @@ export function AppearanceSettingsPage(props: {
                       className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`}
                       aria-hidden="true"
                     />
-                    <VStack gap={0}>
+                    <VStack gap={0.5}>
                       <Text type="label" size="sm">{copy.paletteLabels[palette]}</Text>
                       <Text type="supporting" size="sm" color="secondary">{copy.paletteHelp[palette]}</Text>
                     </VStack>

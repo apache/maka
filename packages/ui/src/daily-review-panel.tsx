@@ -441,7 +441,7 @@ function DailyReviewReport(props: {
           {sections.map((section, index) => (
             <VStack key={section.key} gap={2}>
               {index > 0 ? <Divider /> : null}
-              <Heading level={4}>{copy.archive.section[section.key]}</Heading>
+              <Heading level={3}>{copy.archive.section[section.key]}</Heading>
               <div className="maka-daily-review-report-prose">
                 <Markdown text={section.content} />
               </div>

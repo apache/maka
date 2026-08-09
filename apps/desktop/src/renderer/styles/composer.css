@@ -79,7 +79,8 @@
   padding: 3px 8px;
   border-radius: var(--radius-control);
   /* Astryx's fixed tooltip pair (same as Thumbnail's remove scrim): legible
-     in both themes without borrowing surface tokens for text. */
+     in both themes without borrowing surface tokens for text. 11px matches
+     Astryx's own tooltip type — a lockstep exception, not the product scale. */
   background-color: var(--color-overlay);
   color: var(--color-on-dark);
   font-size: 11px;

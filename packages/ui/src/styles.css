@@ -11,19 +11,6 @@
 .maka-page-header-content { min-width: 0; }
 .maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
-.maka-section-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
-.maka-section-header-content { min-width: 0; }
-.maka-section-header-title {
-  font: var(--maka-text-heading-4);
- display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--foreground); }
-.maka-section-header-title-accent::before { display: inline-block; width: 3px; height: 12px; border-radius: var(--radius-pill); background: oklch(from var(--status-running) l c h / 0.85); content: ""; }
-.maka-section-header-count {
-  font: var(--maka-text-supporting);
- color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-.maka-section-header-subtitle {
-  font: var(--maka-text-supporting);
- display: block; margin-top: 2px; color: var(--foreground-secondary); }
-.maka-section-header-action { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 
 .maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
 /* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
@@ -137,7 +124,7 @@
 /* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
    fade out, then a text change, then a fade in, and the JS timer is what waits
    out this transition before rewriting the word. */
-.maka-turn-working-phrase { font-weight: 500; transition: opacity var(--duration-large) var(--ease-out-strong); }
+.maka-turn-working-phrase { font-weight: var(--font-weight-medium); transition: opacity var(--duration-large) var(--ease-out-strong); }
 .maka-turn-working-phrase[data-fading="true"] { opacity: 0; }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
@@ -738,7 +725,7 @@
    Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
- height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: 0.04em; }
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
 .maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
 .maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
 .maka-tool-terminal-empty {
@@ -774,7 +761,7 @@
 .maka-agent-preview-section small,
 .maka-agent-preview-meta dt {
   font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: 0.04em; text-transform: uppercase; }
+ color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .maka-agent-preview-summary-line,
 .maka-agent-preview-section-head { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .maka-agent-preview-summary-line small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -812,7 +799,7 @@
 .maka-web-search-preview > header small,
 .maka-web-search-preview li small {
   font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: 0.04em; text-transform: uppercase; }
+ color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
 .maka-web-search-preview ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .maka-web-search-preview li { display: grid; gap: var(--space-0-5); padding-block: var(--space-2); border-top: 1px solid var(--foreground-5); }
 .maka-web-search-preview li:first-child { padding-top: 0; border-top: 0; }

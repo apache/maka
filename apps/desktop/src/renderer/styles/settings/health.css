@@ -71,8 +71,12 @@
   font: var(--maka-text-supporting);
  color: var(--foreground-secondary); white-space: nowrap; }
 .settingsHealthSignalLabel {
-  font: var(--maka-text-heading-4);
- color: var(--foreground); }
+  /* A row label, not a heading — the role table's label weight carries it
+     (detail audit: heading-4 here was the only heading-as-row-label in
+     settings). */
+  font: var(--maka-text-label);
+  color: var(--foreground);
+}
 .settingsHealthSignalScope {
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }

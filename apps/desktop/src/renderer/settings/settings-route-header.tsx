@@ -38,7 +38,7 @@ export function SettingsRouteHeader(props: {
             onClick={props.onBack}
           />
           {props.logo}
-          <VStack gap={0}>
+          <VStack gap={0.5}>
             <HStack gap={2} vAlign="center">
               <Heading level={3} id={props.titleId}>{props.title}</Heading>
               {props.badge}

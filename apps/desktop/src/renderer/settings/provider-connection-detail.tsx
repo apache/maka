@@ -557,7 +557,7 @@ function DetailSection(props: { title: string; description: string; children: Re
        row gap there reads as a hole between a heading and the thing it
        labels. */
     <Grid columns={{ minWidth: 320 }} columnGap={10} rowGap={4} role="region" aria-label={props.title}>
-      <VStack gap={1}>
+      <VStack gap={0.5}>
         <Heading level={3}>{props.title}</Heading>
         <Text type="supporting" color="secondary">{props.description}</Text>
       </VStack>

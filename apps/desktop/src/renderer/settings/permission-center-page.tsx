@@ -398,7 +398,7 @@ function CapabilityRow(props: {
             </span>
           </HStack>
           <VStack gap={0.5} align="start">
-            <Text type="code" size="xsm" color="secondary">{prettyCapabilityId(capability.id)}</Text>
+            <Text type="code" size="sm" color="secondary">{prettyCapabilityId(capability.id)}</Text>
             <Text type="supporting" size="sm" color="secondary">{readinessCopy.detail}</Text>
           </VStack>
         </VStack>
@@ -428,7 +428,7 @@ function CapabilityRow(props: {
                 <VStack gap={0.5}>
                   <Text type="body" size="sm">{layer.value}</Text>
                   {layer.reason ? (
-                    <Text type="supporting" size="xsm" color="secondary">{layer.reason}</Text>
+                    <Text type="supporting" size="sm" color="secondary">{layer.reason}</Text>
                   ) : null}
                 </VStack>
               </MetadataListItem>
@@ -481,13 +481,13 @@ function CapabilityRow(props: {
           <VStack gap={1}>
             <Text type="label" size="sm">{copy.auditSection}</Text>
             {capability.auditEvents.length === 0 ? (
-              <Text type="supporting" size="xsm" color="secondary">{copy.noAudit}</Text>
+              <Text type="supporting" size="sm" color="secondary">{copy.noAudit}</Text>
             ) : (
               <List aria-label={copy.auditAria(capabilityLabel)} density="compact">
                 {capability.auditEvents.slice(-3).map((event, index) => (
                   <ListItem
                     key={`${capability.id}-audit-${index}`}
-                    label={<Text type="supporting" size="xsm" color="secondary">{event}</Text>}
+                    label={<Text type="supporting" size="sm" color="secondary">{event}</Text>}
                   />
                 ))}
               </List>
@@ -607,12 +607,12 @@ function OsPermissionRow(props: {
         <VStack gap={0.5}>
           <Text type="supporting" size="sm" color="secondary">{purpose}</Text>
           {impact ? (
-            <Text type="supporting" size="xsm" color="secondary">
+            <Text type="supporting" size="sm" color="secondary">
               {props.copy.impact} {impact}
             </Text>
           ) : null}
           {reason ? (
-            <Text type="supporting" size="xsm" color="secondary">{reason}</Text>
+            <Text type="supporting" size="sm" color="secondary">{reason}</Text>
           ) : null}
           {actionCount > 1 ? <div className="settingsRowActionsUnder">{actionCluster}</div> : null}
         </VStack>

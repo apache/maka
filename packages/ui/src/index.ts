@@ -67,7 +67,6 @@ export { MarkdownBody } from './markdown-body.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { formatTurnDuration } from './chat-display-helpers.js';
 export * from './primitives/stat-tile.js';
-export * from './primitives/section-header.js';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9
 // collapsed the legacy ui.tsx Badge onto this one. #1565 PR 3: the recipe is
 // the Astryx Badge now (label prop, status + palette variants); same barrel
