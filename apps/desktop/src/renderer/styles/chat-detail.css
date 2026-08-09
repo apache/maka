@@ -332,13 +332,6 @@
   height: var(--icon-chrome);
 }
 
-.maka-workbar-launcher-label {
-  overflow: hidden;
-  font: var(--maka-text-supporting);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .maka-workbar-launcher-shortcut {
   padding: 2px var(--space-2);
   border: 0;
@@ -1241,11 +1234,6 @@
   color: var(--foreground-secondary);
 }
 
-.maka-artifact-preview-unsupported-title {
-  font: var(--maka-text-heading-4);
-  color: var(--foreground);
-}
-
 .maka-artifact-preview-unsupported-body {
   font: var(--maka-text-body);
   margin: 0;
@@ -1329,15 +1317,6 @@
   background: oklch(from var(--info) l c h / 0.08);
   border-color: oklch(from var(--info) l c h / 0.22);
   color: var(--info-text);
-}
-
-.maka-artifact-preview-fail-title {
-  font: var(--maka-text-heading-4);
-}
-
-.maka-artifact-preview-fail-body {
-  font: var(--maka-text-supporting);
-  margin: 0;
 }
 
 /* Narrow windows place the single workbar below the conversation. */

@@ -15,36 +15,6 @@
   gap: var(--space-1);
 }
 
-.maka-external-session-import-source-button {
-  min-height: var(--h-control-lg);
-  padding-inline: var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-raised);
-  color: var(--foreground-secondary);
-  font: inherit;
-  transition:
-    background var(--duration-quick) var(--ease-out-strong),
-    border-color var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-external-session-import-source-button:hover {
-  background: var(--state-hover-bg);
-}
-
-.maka-external-session-import-source-button:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: 1px;
-}
-
-.maka-external-session-import-source-button[aria-pressed="true"] {
-  /* Selection chrome follows the interaction accent — same idiom as the
-     chat-detail artifact rows. */
-  border-color: oklch(from var(--accent) l c h / 0.24);
-  background: var(--state-selected-bg);
-  color: var(--foreground);
-}
-
 .maka-external-session-import-loading {
   min-height: 120px;
   display: flex;
@@ -93,43 +63,4 @@
 .maka-external-session-import-row[aria-current="true"] {
   background: var(--state-selected-bg);
   box-shadow: inset var(--border-width-accent) 0 0 var(--accent);
-}
-
-.maka-external-session-import-row-heading,
-.maka-external-session-import-row-meta {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.maka-external-session-import-row-name,
-.maka-external-session-import-row-cwd {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-external-session-import-row-name {
-  font: var(--maka-text-label);
-}
-
-.maka-external-session-import-row-meta {
-  color: var(--foreground-secondary);
-  font: var(--maka-text-supporting);
-}
-
-.maka-external-session-import-row-meta time {
-  flex: none;
-}
-
-.maka-external-session-import-row-badge {
-  flex: none;
-  padding: 1px var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--surface-base);
-  color: var(--foreground-secondary);
-  font: var(--maka-text-supporting);
 }
