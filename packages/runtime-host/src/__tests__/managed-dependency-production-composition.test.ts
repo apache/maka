@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -56,23 +56,21 @@ test('production composition acquires, reads, and drains an attested dependency 
     });
     const tool = createManagedWorkspaceInspectionTool(composition);
 
-    assert.deepEqual(
-      await tool.impl(
-        { kind: 'read', path: 'node_modules/fixture-package/index.js' },
-        {
-          sessionId: 'session_11111111111111111111111111111111',
-          turnId: 'turn_22222222222222222222222222222222',
-          toolCallId: 'call_33333333333333333333333333333333',
-          cwd: sourceRoot,
-          abortSignal: new AbortController().signal,
-          emitOutput() {},
-        },
-      ),
+    const result = await tool.impl(
+      { kind: 'read', path: 'node_modules/semver/package.json' },
       {
-        kind: 'managed_workspace_inspection_v1',
-        result: { kind: 'read', content: 'module.exports = "maka-owned";\n' },
+        sessionId: 'session_11111111111111111111111111111111',
+        turnId: 'turn_22222222222222222222222222222222',
+        toolCallId: 'call_33333333333333333333333333333333',
+        cwd: sourceRoot,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
       },
     );
+    assert.equal(result.kind, 'managed_workspace_inspection_v1');
+    assert.equal(result.result.kind, 'read');
+    if (result.result.kind !== 'read') throw new Error('Expected managed Read result');
+    assert.equal(JSON.parse(result.result.content).version, '7.7.3');
     composition.beginDrain();
     await composition.close();
     assert.equal(composition.state, 'closed');
@@ -132,7 +130,7 @@ test('replays one managed inspection after a real Host crash at durable dependen
       executionStores: stores,
     });
     const result = await createManagedWorkspaceInspectionTool(composition).impl(
-      { kind: 'read', path: 'node_modules/fixture-package/index.js' },
+      { kind: 'read', path: 'node_modules/semver/package.json' },
       {
         sessionId: 'session_11111111111111111111111111111111',
         turnId: 'turn_22222222222222222222222222222222',
@@ -143,10 +141,10 @@ test('replays one managed inspection after a real Host crash at durable dependen
       },
     );
 
-    assert.deepEqual(result, {
-      kind: 'managed_workspace_inspection_v1',
-      result: { kind: 'read', content: 'module.exports = "maka-owned";\n' },
-    });
+    assert.equal(result.kind, 'managed_workspace_inspection_v1');
+    assert.equal(result.result.kind, 'read');
+    if (result.result.kind !== 'read') throw new Error('Expected managed Read result');
+    assert.equal(JSON.parse(result.result.content).version, '7.7.3');
     const dependencyRoot = join(storageRoot, 'managed-workspaces', 'dependency-environments');
     assert.deepEqual(await readdir(join(dependencyRoot, '.staging')), []);
     assert.equal(
@@ -159,6 +157,13 @@ test('replays one managed inspection after a real Host crash at durable dependen
     assert.equal(
       await countFilesNamed(join(storageRoot, 'managed-workspaces'), 'baseline-receipt.json'),
       1,
+    );
+    const binNames = await findDirectoryEntriesNamed(dependencyRoot, '.bin');
+    assert.equal(binNames.length, 1);
+    assert.ok(
+      (await readdir(binNames[0])).some((name) =>
+        process.platform === 'win32' ? name === 'semver.cmd' : name === 'semver',
+      ),
     );
   } finally {
     composition?.beginDrain();
@@ -179,17 +184,53 @@ async function countFilesNamed(root: string, expectedName: string): Promise<numb
   return count;
 }
 
+async function findDirectoryEntriesNamed(root: string, expectedName: string): Promise<string[]> {
+  const matches: string[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (!entry.isDirectory()) continue;
+    if (entry.name === expectedName) matches.push(path);
+    else matches.push(...(await findDirectoryEntriesNamed(path, expectedName)));
+  }
+  return matches;
+}
+
 async function createSource(sourceRoot: string): Promise<string> {
   await mkdir(sourceRoot, { recursive: true });
   await git(sourceRoot, 'init', '--quiet');
   await Promise.all([
     writeFile(
       join(sourceRoot, 'package.json'),
-      '{"name":"fixture","version":"1.0.0","packageManager":"npm@12.0.2"}\n',
+      `${JSON.stringify({
+        name: 'fixture',
+        version: '1.0.0',
+        private: true,
+        packageManager: 'npm@12.0.2',
+        dependencies: { semver: '7.7.3' },
+      })}\n`,
     ),
     writeFile(
       join(sourceRoot, 'package-lock.json'),
-      '{"name":"fixture","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}\n',
+      `${JSON.stringify({
+        name: 'fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          '': {
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { semver: '7.7.3' },
+          },
+          'node_modules/semver': {
+            version: '7.7.3',
+            resolved: 'https://registry.npmjs.org/semver/-/semver-7.7.3.tgz',
+            integrity:
+              'sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==',
+            bin: { semver: 'bin/semver.js' },
+          },
+        },
+      })}\n`,
     ),
     writeFile(join(sourceRoot, '.gitignore'), 'node_modules/\n.maka-workspace.json\n'),
   ]);
@@ -205,50 +246,43 @@ async function createSource(sourceRoot: string): Promise<string> {
     '-m',
     'dependency baseline',
   );
-  const attached = join(sourceRoot, 'node_modules', 'fixture-package');
+  const attached = join(sourceRoot, 'node_modules', 'semver');
   await mkdir(attached, { recursive: true });
-  await writeFile(join(attached, 'index.js'), 'module.exports = "attached";\n');
+  await writeFile(join(attached, 'package.json'), '{"name":"semver","version":"0.0.0-attached"}\n');
   return await realpath(sourceRoot);
 }
 
 async function createNpmFixture(resourcesRoot: string): Promise<string> {
-  const npmRoot = join(resourcesRoot, 'npm');
-  const cli = Buffer.from(
-    "const fs=require('node:fs');fs.mkdirSync('node_modules/fixture-package',{recursive:true});fs.writeFileSync('node_modules/fixture-package/index.js','module.exports = \\\"maka-owned\\\";\\n');\n",
-  );
-  const packageJson = Buffer.from('{"name":"npm","version":"12.0.2","license":"Artistic-2.0"}\n');
-  const license = Buffer.from('Artistic License fixture\n');
-  await mkdir(join(npmRoot, 'bin'), { recursive: true });
-  await Promise.all([
-    writeFile(join(npmRoot, 'bin', 'npm-cli.js'), cli),
-    writeFile(join(npmRoot, 'package.json'), packageJson),
-    writeFile(join(npmRoot, 'LICENSE'), license),
-  ]);
-  await writeFile(
-    join(resourcesRoot, 'bundled-npm.json'),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      protocol: 'maka_bundled_npm_runtime_v1',
-      provider: 'desktop/npm-cli',
-      npmVersion: '12.0.2',
+  const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+  const patchedPackagesRoot = join(resourcesRoot, '.patched-inputs');
+  await mkdir(patchedPackagesRoot, { recursive: true });
+  for (const packageName of ['tar', 'brace-expansion', 'ip-address', 'undici']) {
+    await cp(
+      await realpath(join(repositoryRoot, 'node_modules', packageName)),
+      join(patchedPackagesRoot, packageName),
+      { recursive: true },
+    );
+  }
+  const preparationModule = (await import(
+    pathToFileURL(join(repositoryRoot, 'scripts', 'prepare-bundled-npm.mjs')).href
+  )) as {
+    prepareBundledNpm(input: Record<string, unknown>): Promise<unknown>;
+  };
+  try {
+    await preparationModule.prepareBundledNpm({
+      sourceNpmRoot: await realpath(join(repositoryRoot, 'node_modules', 'npm')),
+      patchedPackagesRoot,
+      runtimeOutputRoot: join(resourcesRoot, 'npm'),
+      outputPath: join(resourcesRoot, 'bundled-npm.json'),
+      auditRoot: join(resourcesRoot, 'audit'),
+      sourceLockPath: join(repositoryRoot, 'package-lock.json'),
       platform: process.platform,
       arch: process.arch,
-      runtimeRootRelativePath: 'npm',
-      cliRelativePath: 'npm/bin/npm-cli.js',
-      securityPatches: approvedSecurityPatches,
-      files: [
-        manifestFile('LICENSE', license),
-        manifestFile('bin/npm-cli.js', cli),
-        manifestFile('package.json', packageJson),
-      ],
-      distributionReady: true,
-    })}\n`,
-  );
+    });
+  } finally {
+    await rm(patchedPackagesRoot, { recursive: true, force: true });
+  }
   return resourcesRoot;
-}
-
-function manifestFile(path: string, bytes: Buffer) {
-  return { path, bytes: bytes.byteLength, sha256: sha256(bytes) };
 }
 
 async function findGitExecutable(): Promise<string> {
@@ -269,37 +303,6 @@ async function sha256File(path: string): Promise<`sha256:${string}`> {
   return `sha256:${hash.digest('hex')}`;
 }
 
-function sha256(value: Uint8Array): `sha256:${string}` {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
-}
-
 async function git(cwd: string, ...args: string[]): Promise<void> {
   await execFileAsync('git', args, { cwd, maxBuffer: 8 * 1024 * 1024 });
 }
-
-const approvedSecurityPatches = [
-  {
-    packageName: 'tar',
-    fromVersion: '7.5.19',
-    toVersion: '7.5.22',
-    advisories: ['GHSA-r292-9mhp-454m'],
-  },
-  {
-    packageName: 'brace-expansion',
-    fromVersion: '5.0.7',
-    toVersion: '5.0.9',
-    advisories: ['GHSA-mh99-v99m-4gvg', 'GHSA-rgw5-rvv9-x895'],
-  },
-  {
-    packageName: 'ip-address',
-    fromVersion: '10.2.0',
-    toVersion: '10.4.0',
-    advisories: ['GHSA-mwp4-54f8-5fhr', 'GHSA-4xrf-jv44-h6hh', 'GHSA-22jq-vg5j-6vgg'],
-  },
-  {
-    packageName: 'undici',
-    fromVersion: '6.27.0',
-    toVersion: '6.28.0',
-    advisories: ['GHSA-8xcm-r25x-g524', 'GHSA-m8rv-5g2x-5cg5', 'GHSA-v3r7-h72x-cjcm'],
-  },
-] as const;

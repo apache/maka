@@ -10,7 +10,7 @@ import { startExecutionRuntimeHostCandidate } from '../server/execution-candidat
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 
-test('admits bundled resources only from packaged Electron identity', () => {
+test('admits bundled resources only from a paired packaged Electron bootstrap', () => {
   assert.equal(
     resolveExecutionBundledResourcesRoot(
       {
@@ -57,7 +57,7 @@ test('admits bundled resources only from packaged Electron identity', () => {
   );
 });
 
-test('development Electron Node mode cannot self-authorize bundled resources', async () => {
+test('the public Desktop issuer refuses development Electron Node mode', async () => {
   const electronPath = require('electron') as string;
   const { stdout } = await execFileAsync(
     electronPath,

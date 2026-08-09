@@ -12,9 +12,11 @@ export interface ExecutionBundledResourceBootstrap {
 }
 
 /**
- * Only a packaged Electron executable owns the release resource directory.
- * Node/CLI and development Electron candidates must not reinterpret ambient
- * directories as signed bundled-runtime authority.
+ * Consumes a resource root delegated by the direct Desktop parent. The outer
+ * signed application/update chain is the provenance trust root; PID, fd and
+ * path equality only bind this candidate to that parent and are not a defense
+ * against a malicious same-user process that launches its own Electron tree.
+ * Node/CLI callers cannot reinterpret an ambient pathname as this delegation.
  */
 export function resolveExecutionBundledResourcesRoot(
   identity: ExecutionBundledResourceProcessIdentity,

@@ -49,7 +49,7 @@ const composition = createRuntimeHostWorkspaceExecutionComposition({
 });
 const tool = createManagedWorkspaceInspectionTool(composition);
 await tool.impl(
-  { kind: 'read', path: 'node_modules/fixture-package/index.js' },
+  { kind: 'read', path: 'node_modules/semver/package.json' },
   {
     sessionId: 'session_11111111111111111111111111111111',
     turnId: 'turn_22222222222222222222222222222222',

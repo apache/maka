@@ -9,6 +9,14 @@ export interface PackagedCandidateBootstrap {
   readonly resourcesRoot: string;
 }
 
+/**
+ * Parent-child transport binding, not a platform release-signature proof.
+ * The packaged Desktop process must already own trusted release resources;
+ * this channel only keeps ambient paths and public CLI input out of admission.
+ * A malicious same-user parent that can launch arbitrary Electron processes
+ * and manufacture inherited file descriptors is outside the v1 threat model.
+ */
+
 export function encodePackagedCandidateBootstrap(resourcesRoot: string, parentPid: number): string {
   return `${JSON.stringify({
     kind: 'maka_packaged_candidate_bootstrap_v1',

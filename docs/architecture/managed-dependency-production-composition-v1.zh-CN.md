@@ -41,7 +41,9 @@ packaged Electron process identity
   -> sandboxed filesystem worker
 ```
 
-只有真实 Desktop main process 在 `app.isPackaged === true` 时才能签发 process-local、不可由 pathname 构造的 packaged candidate capability。公开 candidate CLI 不接受 `--packaged-resources-root` 或等价参数。launcher 消费该 capability 后，通过仅由父子进程继承的有界 bootstrap channel 传递 canonical resource root 与父进程 PID；detached candidate 必须同时验证 bootstrap parent PID、自身 Electron identity、`defaultApp !== true`，以及自身 `process.resourcesPath` 与授权值完全一致。`ELECTRON_RUN_AS_NODE=1` 下的开发态 Electron 即使拥有 Electron version 和 resources path，也不能签发 capability 或从 ambient directory 自认证 bundled runtime。Node/CLI 同样不能发现或声明 bundled runtime。测试可以显式注入 verified Git input，但生产 npm producer 只能从 attested bundled resources 创建。
+正常产品链路中，只有 Desktop main process 在 `app.isPackaged === true` 时才签发 process-local、不可由 pathname 构造的 packaged candidate capability。公开 candidate CLI 不接受 `--packaged-resources-root` 或等价参数。launcher 消费该 capability 后，通过仅由直接父子进程继承的有界 bootstrap channel 传递 canonical resource root 与父进程 PID；detached candidate 验证 bootstrap parent PID、自身 Electron identity、`defaultApp !== true`，以及自身 `process.resourcesPath` 与授权值完全一致。开发态 Electron 不能调用公开 issuer 从 ambient directory 自认证 bundled runtime，Node/CLI 也不能用普通参数声明 bundled runtime。
+
+这条 fd3/PID/path 协议是 **application parent delegation**，不是平台身份或密码学签名验证。真正的 provenance trust root 是外层 macOS app signing/Gatekeeper、Windows Authenticode 安装/更新链，以及 Linux 官方发布链；manifest 只证明受权资源目录的运行时完整性。能够以同一用户身份启动任意 Electron 父进程、制造 fd3 bootstrap、同时替换 app resource 与 manifest 的恶意本机进程不在 v1 威胁模型内。若以后要覆盖该攻击者，必须新增平台签名验证 owner，不能把更多 PID/path/token 字段包装成“不可伪造 authority”。
 
 packaged capability 还决定 Host 的精确生产 profile。拥有 bundled Git/npm composition 的 candidate 在 durable registration 与握手中声明 `managed_workspace_inspection_v1`；packaged Desktop 在每次连接（包括连接既有 Host）时要求该 capability。若 CLI 先占有同一 storage root、既有 Host 不具备 managed profile，握手必须显式返回 incompatible：Host 有 resident client 时拒绝替换，true-idle 时按既有选举协议退出并允许受权 candidate 竞争。不得因启动顺序静默接受缺少 managed capability 的 Host，也不得在连接后 fallback 到 attached dependency 状态。
 
@@ -169,6 +171,7 @@ observed bytes/entries 是 soft postcondition，不是 OS quota；不能宣称�
 11. Plan Mode 工具选择不包含 `ManagedWorkspaceInspect`；首次 provisioning 只能经过 `custom_tool` 权限路径。
 12. 开发态 Electron 与公开 candidate CLI 都不能签发或声明 packaged resource authority。
 13. packaged Desktop 连接既有 standard Host 时，capability mismatch 必须在握手阶段 fail closed；只有声明相同 managed profile 的 Host 才能被接受。
+14. 真实 bundled npm 必须安装带 `bin` 声明的固定依赖，生成平台对应的 `.bin` 入口；在 dependency receipt durable 后杀死 Host，再次执行同一任务时复用唯一 artifact/receipt 并返回相同依赖内容。
 
 当前切片通过 `ManagedWorkspaceInspect` 形成 M1.3 的生产闭环：普通 session 保持 attached；显式工具调用才进入 managed baseline、dependency lease 与 read-only worker，工具完成后 scope 与 lease 均释放。production-shaped 测试使用真实 Git source、execution stores、root owner、attested npm child process 和 managed owner，并通过该生产工具读取 Maka-owned `node_modules`，不再直接把内部 composition API 当作消费者。
 
