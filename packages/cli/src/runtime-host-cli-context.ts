@@ -9,7 +9,11 @@ import {
   waitForRuntimeHostReady,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { RUNTIME_HOST_PROTOCOL_VERSION, type ClientSurface } from '@maka/runtime-host/protocol';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientSurface,
+} from '@maka/runtime-host/protocol';
 
 export interface RuntimeHostCliConnectionContext {
   readonly connection: RuntimeHostConnection;
@@ -50,6 +54,7 @@ export async function connectRuntimeHostCli(
     surface: input.surface,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
     clientInstanceId,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: deps.executionCandidateEntrypoint,
     ...(input.legacyConfigurationRoot
       ? { legacyConfigurationRoot: input.legacyConfigurationRoot }

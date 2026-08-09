@@ -1,5 +1,6 @@
 import {
   HOST_OPERATION_SPECS,
+  operationUsesHostPaths,
   type AccessCredentialPrincipalKind,
   type ClientCapabilityClientFrame,
   type OperationKey,
@@ -70,7 +71,7 @@ export function authorizeRuntimeHostOperation(
   ) {
     return false;
   }
-  return authority.canUseHostPaths || !operationUsesHostPath(frame);
+  return authority.canUseHostPaths || !operationUsesHostPaths(frame);
 }
 
 export function hasRuntimeHostOperationGrant(
@@ -85,25 +86,4 @@ export function authorizeClientCapabilityFrame(
   _frame: ClientCapabilityClientFrame,
 ): boolean {
   return authority.canPublishClientCapabilities;
-}
-
-function operationUsesHostPath(frame: RequestFrame): boolean {
-  switch (frame.operation) {
-    case 'session.create':
-    case 'session.cwd.relocate':
-    case 'skill.catalog.query':
-    case 'skill.catalog.mutate':
-    case 'skill.catalog.preview-update':
-    case 'project.catalog.query':
-    case 'project.catalog.mutate':
-      return true;
-    case 'client.capability.replace':
-      return frame.input.offers.some((offer) => offer.hostPathAccess === 'cwd');
-    case 'skill.catalog.invocable.query':
-      return frame.input.target.kind === 'new_session';
-    case 'external-session.catalog.query':
-      return frame.input.cwd !== undefined;
-    default:
-      return false;
-  }
 }

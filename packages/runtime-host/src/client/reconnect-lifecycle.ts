@@ -75,6 +75,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   #closed = false;
   #terminalError: Error | undefined;
   #reconnectTask: Promise<void> | undefined;
+  #discardTask: Promise<void> = Promise.resolve();
   #closeTask: Promise<void> | undefined;
   #resolveClosed!: () => void;
 
@@ -161,12 +162,13 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     this.#setCurrent(undefined);
     await current?.close().catch(() => undefined);
     await this.#reconnectTask?.catch(() => undefined);
+    await this.#discardTask;
     this.#resolveClosed();
   }
 
   #install(resource: T): void {
     if (this.#closed || this.#terminalError) {
-      void resource.close().catch(() => undefined);
+      this.#discard(resource);
       return;
     }
     this.#installedAt = this.#now();
@@ -175,6 +177,10 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
       () => this.#disconnected(resource),
       () => this.#disconnected(resource),
     );
+  }
+
+  #discard(resource: T): void {
+    this.#discardTask = this.#discardTask.then(() => resource.close()).catch(() => undefined);
   }
 
   #disconnected(resource: T): void {

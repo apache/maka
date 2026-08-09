@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { agentRunMatchesHostedRootExecution, type AgentRunHeader } from '@maka/core/agent-run';
 import type {
-  AutomationClientCapabilityRequirement,
   AutomationDefinition,
   AutomationPendingFire,
   AutomationWaitingState,
@@ -15,7 +14,6 @@ import {
   HEARTBEAT_IDLE_STATUSES,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
-  type RuntimeHostedRootAuthority,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -25,8 +23,11 @@ import {
 } from '@maka/storage/execution-stores';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { AutomationAuthorityInvariantError } from './automation-errors.js';
+import type { AutomationClientCapabilityAuthority } from './client-capability-service.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
+import type { HostedExecutionAuthority, HostedExecutionRef } from './hosted-execution-authority.js';
+import { waitForHostedExecutionTerminal } from './hosted-execution-wait.js';
 
 type AutomationSessions = Pick<
   ExecutionSessionWriter,
@@ -34,7 +35,7 @@ type AutomationSessions = Pick<
 >;
 type AutomationRuns = Pick<ExecutionAgentRunWriter, 'readRun'>;
 type AutomationRuntime = Pick<SessionManager, 'sendMessage'>;
-type AutomationRoot = Pick<RuntimeHostedRootAuthority, 'executeRoot'>;
+type AutomationRoot = Pick<HostedExecutionAuthority, 'admit' | 'reconcile' | 'subscribe'>;
 
 export interface AutomationFireStateAuthority {
   listPendingFires(): Promise<readonly AutomationPendingFire[]>;
@@ -63,16 +64,6 @@ export interface AutomationFireStateAuthority {
   markFireRunning(fire: AutomationPendingFire): Promise<void>;
   settleFire(fire: AutomationPendingFire, run: AgentRunHeader): Promise<void>;
   residencyState(): { readonly pending: boolean; readonly scheduled: boolean };
-}
-
-export interface AutomationClientCapabilityAuthority {
-  checkAutomationRequirements(
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
-  bindAutomationSession(
-    sessionId: string,
-    requirements: readonly AutomationClientCapabilityRequirement[],
-  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
 }
 
 export interface HostAutomationFireCoordinatorInput {
@@ -334,7 +325,10 @@ export class HostAutomationFireCoordinator {
     if (skip) {
       this.#deferredFires.delete(automation.id);
     } else if (!deferred) {
-      this.#deferredFires.set(automation.id, { firstDeferredAt: now, count: 1 });
+      this.#deferredFires.set(automation.id, {
+        firstDeferredAt: now,
+        count: 1,
+      });
     } else {
       deferred.count += 1;
     }
@@ -363,6 +357,7 @@ export class HostAutomationFireCoordinator {
     try {
       await this.#ensureFireTarget(fire);
       const existingRun = await this.#readRun(fire);
+      const execution = fireExecutionRef(fire);
       if (existingRun) {
         assertFireRunIdentity(fire, existingRun);
         if (isTerminalRun(existingRun)) {
@@ -370,52 +365,64 @@ export class HostAutomationFireCoordinator {
           established.resolve();
           return;
         }
-        established.resolve();
       }
       await this.#assertFireCapabilityRequirements(fire);
-      await this.#root.executeRoot({
-        sessionId: fire.targetSessionId,
-        turnId: fire.turnId,
-        runId: fire.runId,
-        userMessageId: fire.userMessageId,
-        execution: { kind: 'automation', automationId: fire.automationId },
-        content: fireContent(fire),
-        admitExecution: async () => {
-          await this.#assertFireCanEnterRuntime(fire);
-          return 'executing';
-        },
-        start: ({ runId, userMessageId, onRunStarted }) => {
-          if (runId !== fire.runId || userMessageId !== fire.userMessageId) {
-            throw new AutomationAuthorityInvariantError(
-              'Runtime Host changed the pending Automation fire identity',
-            );
-          }
-          return this.#runtime.sendMessage(
-            fire.targetSessionId,
-            {
-              turnId: fire.turnId,
-              ...fireContent(fire),
-              origin: { kind: 'automation', automationId: fire.automationId },
-            },
-            {
-              runId: fire.runId,
-              userMessageId: fire.userMessageId,
-              durability: 'required',
-              onRunStarted: async (startedRunId) => {
-                if (startedRunId !== fire.runId) {
-                  throw new AutomationAuthorityInvariantError(
-                    'Runtime started a different Automation Run identity',
-                  );
-                }
-                await this.#state.markFireRunning(fire);
-                await onRunStarted();
+      if (existingRun) {
+        established.resolve();
+        await waitForHostedExecutionTerminal(
+          this.#root,
+          execution,
+          await this.#root.reconcile(execution),
+        );
+      } else {
+        const admitted = await this.#root.admit({
+          sessionId: fire.targetSessionId,
+          turnId: fire.turnId,
+          runId: fire.runId,
+          userMessageId: fire.userMessageId,
+          execution: { kind: 'automation', automationId: fire.automationId },
+          content: fireContent(fire),
+          admitExecution: async () => {
+            await this.#assertFireCanEnterRuntime(fire);
+            return 'executing';
+          },
+          start: ({ runId, userMessageId, onRunStarted }) => {
+            if (runId !== fire.runId || userMessageId !== fire.userMessageId) {
+              throw new AutomationAuthorityInvariantError(
+                'Runtime Host changed the pending Automation fire identity',
+              );
+            }
+            return this.#runtime.sendMessage(
+              fire.targetSessionId,
+              {
+                turnId: fire.turnId,
+                ...fireContent(fire),
+                origin: { kind: 'automation', automationId: fire.automationId },
               },
-            },
-          );
-        },
-        onReady: () => established.resolve(),
-      });
-      established.resolve();
+              {
+                runId: fire.runId,
+                userMessageId: fire.userMessageId,
+                durability: 'required',
+                onRunStarted: async (startedRunId) => {
+                  if (startedRunId !== fire.runId) {
+                    throw new AutomationAuthorityInvariantError(
+                      'Runtime started a different Automation Run identity',
+                    );
+                  }
+                  await this.#state.markFireRunning(fire);
+                  await onRunStarted();
+                },
+              },
+            );
+          },
+          onReady: () => established.resolve(),
+        });
+        established.resolve();
+        await waitForHostedExecutionTerminal(this.#root, execution, admitted.snapshot, {
+          completion: admitted.completion,
+        });
+        await admitted.settled;
+      }
       const run = await this.#readRun(fire);
       if (!run || !isTerminalRun(run)) {
         throw new AutomationAuthorityInvariantError(
@@ -566,6 +573,14 @@ function capabilityWaiting(message: string, since: number): AutomationWaitingSta
     reason: 'client_capability_provider_unavailable',
     since,
     message,
+  };
+}
+
+function fireExecutionRef(fire: AutomationPendingFire): HostedExecutionRef {
+  return {
+    sessionId: fire.targetSessionId,
+    turnId: fire.turnId,
+    runId: fire.runId,
   };
 }
 

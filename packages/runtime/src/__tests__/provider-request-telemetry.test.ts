@@ -59,7 +59,12 @@ describe('strict provider-request usage', () => {
 
   test('marks OpenAI cache miss as derived and leaves unsupported cache-write missing', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 30, cacheRead: 70, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 30,
+        cacheRead: 70,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 15, reasoning: 5 },
       raw: {
         prompt_tokens: 100,
@@ -105,7 +110,12 @@ describe('strict provider-request usage', () => {
 
   test('preserves Google usage and derives cache miss from raw usage metadata', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 60, cacheRead: 40, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 60,
+        cacheRead: 40,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 15, reasoning: 5 },
       raw: {
         promptTokenCount: 100,
@@ -128,7 +138,12 @@ describe('strict provider-request usage', () => {
 
   test('does not inherit Google adapter zeroes for omitted raw cache and reasoning fields', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 100,
+        cacheRead: 0,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 20, reasoning: 0 },
       raw: {
         promptTokenCount: 100,
@@ -141,7 +156,12 @@ describe('strict provider-request usage', () => {
 
   test('does not turn omitted provider cache details into zero-valued evidence', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: undefined },
+      inputTokens: {
+        total: 100,
+        noCache: 100,
+        cacheRead: 0,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 20, text: 20, reasoning: 0 },
       raw: { prompt_tokens: 100, completion_tokens: 20 },
     });
@@ -151,7 +171,12 @@ describe('strict provider-request usage', () => {
 
   test('does not inherit normalized zero totals when the raw provider fields are missing', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 0, noCache: 0, cacheRead: 10, cacheWrite: undefined },
+      inputTokens: {
+        total: 0,
+        noCache: 0,
+        cacheRead: 10,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 0, text: 0, reasoning: 0 },
       raw: { prompt_tokens_details: { cached_tokens: 10 } },
     });
@@ -164,7 +189,12 @@ describe('strict provider-request usage', () => {
 
   test('keeps normalized totals when no raw provider payload is available', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 8, noCache: 8, cacheRead: undefined, cacheWrite: undefined },
+      inputTokens: {
+        total: 8,
+        noCache: 8,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 3, text: 3, reasoning: undefined },
     });
 
@@ -173,7 +203,12 @@ describe('strict provider-request usage', () => {
 
   test('does not derive cache miss from inconsistent provider components', () => {
     const usage = telemetry.strictProviderRequestUsage({
-      inputTokens: { total: 10, noCache: 0, cacheRead: 20, cacheWrite: undefined },
+      inputTokens: {
+        total: 10,
+        noCache: 0,
+        cacheRead: 20,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 0, text: 0, reasoning: 0 },
       raw: {
         prompt_tokens: 10,
@@ -321,8 +356,12 @@ describe('provider request tracker', () => {
       requestHash: string;
       serializedRequest: string;
     }> = [];
-    const attempts: Array<{ step: number; attempt: number; status: string; captureId: string }> =
-      [];
+    const attempts: Array<{
+      step: number;
+      attempt: number;
+      status: string;
+      captureId: string;
+    }> = [];
     const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as
       | (new (
           input: Record<string, unknown>,
@@ -380,7 +419,12 @@ describe('provider request tracker', () => {
             type: 'finish',
             finishReason: { unified: 'stop', raw: 'stop' },
             usage: {
-              inputTokens: { total: 10, noCache: 6, cacheRead: 4, cacheWrite: undefined },
+              inputTokens: {
+                total: 10,
+                noCache: 6,
+                cacheRead: 4,
+                cacheWrite: undefined,
+              },
               outputTokens: { total: 2, text: 2, reasoning: 0 },
               raw: {
                 prompt_tokens: 10,
@@ -404,8 +448,18 @@ describe('provider request tracker', () => {
         captureId,
       })),
       [
-        { step: 2, attempt: 1, status: 'failed', captureId: captures[0]!.captureId },
-        { step: 2, attempt: 2, status: 'completed', captureId: captures[0]!.captureId },
+        {
+          step: 2,
+          attempt: 1,
+          status: 'failed',
+          captureId: captures[0]!.captureId,
+        },
+        {
+          step: 2,
+          attempt: 2,
+          status: 'completed',
+          captureId: captures[0]!.captureId,
+        },
       ],
     );
     assert.equal((attempts[1] as Record<string, unknown>).cacheReadInputSource, 'provider');
@@ -472,6 +526,41 @@ describe('provider request tracker', () => {
         },
       ],
     );
+  });
+
+  test('awaits the durable dispatch gate before a non-streaming provider call', async () => {
+    let captured = false;
+    let dispatched = false;
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'gated-history-trace',
+      turnId: 'gated-history-turn',
+      now: () => 1_000,
+      newId: () => 'gated-history-id',
+      beforeDispatch: async () => {
+        throw new Error('Run Composition store unavailable');
+      },
+      persistCapture: async () => {
+        captured = true;
+        return { artifactId: 'unreachable-artifact' };
+      },
+      recordAttempt: () => {},
+    });
+
+    await assert.rejects(
+      () =>
+        tracker.trackGenerate({
+          providerId: 'openai',
+          modelId: 'gpt-history',
+          params: preparedParams('history summary'),
+          doGenerate: async () => {
+            dispatched = true;
+            return { text: 'unreachable' };
+          },
+        }),
+      /Run Composition store unavailable/u,
+    );
+    assert.equal(captured, false);
+    assert.equal(dispatched, false);
   });
 
   test('captures a changed logical body separately and blocks provider calls on capture failure', async () => {
@@ -677,7 +766,12 @@ function finishPart(): Record<string, unknown> {
     type: 'finish',
     finishReason: { unified: 'stop', raw: 'stop' },
     usage: {
-      inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+      inputTokens: {
+        total: 1,
+        noCache: 1,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+      },
       outputTokens: { total: 1, text: 1, reasoning: undefined },
       raw: { input_tokens: 1, output_tokens: 1 },
     },
@@ -699,7 +793,11 @@ function interruptedStream(): ReadableStream<unknown> {
     pull(controller) {
       pulls += 1;
       if (pulls === 1) {
-        controller.enqueue({ type: 'text-delta', id: 'text', delta: 'partial' });
+        controller.enqueue({
+          type: 'text-delta',
+          id: 'text',
+          delta: 'partial',
+        });
       } else {
         controller.error(new Error('stream broke'));
       }

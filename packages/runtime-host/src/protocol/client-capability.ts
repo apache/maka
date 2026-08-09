@@ -7,7 +7,7 @@ import {
   requireString,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
 export interface ClientCapabilityToolAnnotations {
   readonly title?: string;
@@ -209,17 +209,20 @@ export type ClientCapabilityClientFrame =
   | ClientCapabilityResultChunkFrame;
 
 export const CLIENT_CAPABILITY_OPERATION_SPECS = {
-  'client.capability.replace': defineOperation<
+  'client.capability.replace': defineHostPathOperation<
     ClientCapabilityReplaceInput,
     ClientCapabilityReplaceResult,
     (typeof CLIENT_CAPABILITY_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: CLIENT_CAPABILITY_ERRORS,
-    decodeInput: decodeClientCapabilityReplaceInput,
-    decodeOutput: decodeClientCapabilityReplaceResult,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: CLIENT_CAPABILITY_ERRORS,
+      decodeInput: decodeClientCapabilityReplaceInput,
+      decodeOutput: decodeClientCapabilityReplaceResult,
+    },
+    (input) => input.offers.some((offer) => offer.hostPathAccess === 'cwd'),
+  ),
   'client.capability.unregister': defineOperation<
     ClientCapabilityUnregisterInput,
     ClientCapabilityUnregisterResult,

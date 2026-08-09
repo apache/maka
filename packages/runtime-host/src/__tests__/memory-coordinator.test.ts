@@ -95,7 +95,10 @@ describe('Host Memory coordinator', () => {
         context,
       );
 
-      const promptA = await coordinator.readPromptProjection('session-a');
+      const promptA = await coordinator.readPromptProjection(
+        'session-a',
+        await policyStores.runtimePolicy.getSnapshot(),
+      );
       assert.match(promptA.body ?? '', /Workspace preference/);
       assert.match(promptA.body ?? '', /Session A preference/);
       assert.doesNotMatch(promptA.body ?? '', /Session B preference/);

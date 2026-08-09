@@ -31,7 +31,8 @@ class SqliteConversationOperationalStateStore implements ConversationOperational
     this.#lease.transaction('write', () => {
       const database = this.#lease.database;
       database
-        .prepare(`
+        .prepare(
+          `
           DELETE FROM tool_journal_events
           WHERE runtime_event_id IN (
             SELECT event_id FROM runtime_events WHERE session_id = ?
@@ -43,15 +44,18 @@ class SqliteConversationOperationalStateStore implements ConversationOperational
               OR dispatch_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
               OR result_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
           )
-        `)
+        `,
+        )
         .run(sessionId, sessionId, sessionId, sessionId);
       database
-        .prepare(`
+        .prepare(
+          `
           DELETE FROM tool_operations
           WHERE call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
             OR dispatch_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
             OR result_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-        `)
+        `,
+        )
         .run(sessionId, sessionId, sessionId);
       database.prepare('DELETE FROM runtime_partial_snapshots WHERE session_id = ?').run(sessionId);
       database.prepare('DELETE FROM runtime_events WHERE session_id = ?').run(sessionId);
@@ -63,6 +67,7 @@ class SqliteConversationOperationalStateStore implements ConversationOperational
         .prepare('DELETE FROM core_root_turn_start_rejections WHERE session_id = ?')
         .run(sessionId);
       database.prepare('DELETE FROM core_agent_runs WHERE session_id = ?').run(sessionId);
+      database.prepare('DELETE FROM workflow_goal_authority WHERE session_id = ?').run(sessionId);
     });
   }
 

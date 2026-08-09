@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime';
+import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '@maka/runtime-host/protocol';
 import type {
   DesktopRuntimeHostCandidate,
   DesktopRuntimeHostCandidateStartInput,
@@ -107,6 +108,8 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
             handshake: {
               kind: 'incompatible',
               hostEpoch: 'replacement-host',
+              compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+              compositionRevision: '2',
               protocolMin: 1,
               protocolMax: 1,
               compatibilityEpoch: 1,

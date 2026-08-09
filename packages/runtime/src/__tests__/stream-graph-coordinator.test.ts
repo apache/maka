@@ -328,7 +328,7 @@ describe('host-managed agent graph coordinator', () => {
       let childStopEntered = false;
       await assert.rejects(
         coordinator.stopExecution(childSessions[0]!.id, {
-          stopRoot: async () => {
+          stopSupervisor: async () => {
             childStopEntered = true;
           },
           withSupervisorWakesSuppressed: async (operation) => {
@@ -444,15 +444,15 @@ describe('host-managed agent graph coordinator', () => {
       );
       await gate.started;
       try {
-        const rootStopFailure = new Error('root stop failed');
+        const supervisorStopFailure = new Error('supervisor stop failed');
         await assert.rejects(
           recovered.stopExecution(rootSession.id, {
-            stopRoot: async () => {
-              throw rootStopFailure;
+            stopSupervisor: async () => {
+              throw supervisorStopFailure;
             },
             withSupervisorWakesSuppressed: (operation) => operation(),
           }),
-          (error: unknown) => error === rootStopFailure,
+          (error: unknown) => error === supervisorStopFailure,
         );
       } finally {
         gate.release();

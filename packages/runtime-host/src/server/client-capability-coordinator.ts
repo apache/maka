@@ -26,6 +26,9 @@ import type {
 } from './operation-dispatcher.js';
 import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import type {
+  AutomationClientCapabilityAuthority,
+  AutomationClientCapabilityAvailability,
+  AutomationClientCapabilityRequirements,
   ClientCapabilityConnectionIdentity,
   ClientCapabilityConnection,
   ClientCapabilityConnectionSender,
@@ -50,7 +53,7 @@ interface ClientProviderState {
   readonly providerId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
-  readonly unattended: boolean;
+  readonly trustedProvider: boolean;
   activeConnectionId?: string;
   current?: CapabilityRegistration;
   readonly registrations: Map<string, CapabilityRegistration>;
@@ -67,7 +70,7 @@ interface CapabilityRegistration {
   readonly providerId: string;
   readonly connectionId: string;
   readonly registrationId: string;
-  readonly unattended: boolean;
+  readonly trustedProvider: boolean;
   readonly offersByContract: ReadonlyMap<string, FrozenOfferBinding>;
   readonly servicesByContract: ReadonlyMap<string, ClientCapabilityServiceOffer>;
   snapshotRefs: number;
@@ -145,22 +148,13 @@ export interface ClientCapabilityServiceInvocationInput {
   readonly timeoutMs?: number;
 }
 
-export type AutomationClientCapabilityAvailability =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly message: string };
-
-export type AutomationClientCapabilityRequirements =
-  | {
-      readonly ok: true;
-      readonly requirements: readonly AutomationClientCapabilityRequirement[];
-    }
-  | { readonly ok: false; readonly message: string };
-
 /**
  * Host-owned registry, selection authority, and reverse-call lifecycle for
  * open-world Client Capability providers.
  */
-export class HostClientCapabilityCoordinator implements ClientCapabilityService {
+export class HostClientCapabilityCoordinator
+  implements ClientCapabilityService, AutomationClientCapabilityAuthority
+{
   readonly handlers: ClientCapabilityOperationHandlerMap = {
     'client.capability.replace': (input, context) => this.#replace(input, context),
     'client.capability.unregister': (input, context) => this.#unregister(input, context),
@@ -568,8 +562,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       rememberOfferProxyNames(offer, proxyNames);
     }
     if (selected.length === 0) return;
-    const unattended = selected.filter((binding) => binding.registration?.unattended === true);
-    const interactive = selected.filter((binding) => binding.registration?.unattended !== true);
+    const trusted = selected.filter((binding) => binding.registration?.trustedProvider === true);
+    const interactive = selected.filter(
+      (binding) => binding.registration?.trustedProvider !== true,
+    );
     assertUniqueSnapshotToolIdentities(selected);
     const tools = [
       ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, interactive), {
@@ -577,7 +573,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         categoryHint: 'client_capability',
         recoveryMode: 'outcome_unknown',
       }),
-      ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, unattended), {
+      ...buildMcpTools(this.#snapshotProvider(state?.initiatingProviderId, trusted), {
         callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
         categoryHint: 'custom_tool',
         recoveryMode: 'outcome_unknown',
@@ -772,7 +768,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       let registration: CapabilityRegistration;
       try {
         if (
-          provider.unattended &&
+          provider.trustedProvider &&
           (input.services?.length ||
             input.offers.some(
               (offer) => offer.affinity !== 'session' || offer.hostPathAccess !== 'none',
@@ -786,7 +782,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           provider.providerId,
           context.connectionId,
           input,
-          provider.unattended,
+          provider.trustedProvider,
         );
       } catch (error) {
         return {
@@ -940,17 +936,18 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
   #provider(identity: ClientCapabilityConnectionIdentity): ClientProviderState {
     const providerId = clientProviderId(identity.principalId, identity.clientInstanceId);
+    const trustedProvider = identity.principalKind === 'capability_provider';
     let provider = this.#providers.get(providerId);
     if (!provider) {
       provider = {
         providerId,
         principalId: identity.principalId,
         clientInstanceId: identity.clientInstanceId,
-        unattended: identity.unattended,
+        trustedProvider,
         registrations: new Map(),
       };
       this.#providers.set(providerId, provider);
-    } else if (provider.unattended !== identity.unattended) {
+    } else if (provider.trustedProvider !== trustedProvider) {
       throw new Error('Client Capability provider authority changed across connections');
     }
     return provider;
@@ -1186,7 +1183,7 @@ function freezeRegistration(
   providerId: string,
   connectionId: string,
   input: ClientCapabilityReplaceInput,
-  unattended: boolean,
+  trustedProvider: boolean,
 ): CapabilityRegistration {
   const offers = input.offers.map((offer) =>
     Object.freeze({
@@ -1241,7 +1238,7 @@ function freezeRegistration(
     providerId,
     connectionId,
     registrationId: input.registrationId,
-    unattended,
+    trustedProvider,
     offersByContract,
     servicesByContract,
     snapshotRefs: 0,

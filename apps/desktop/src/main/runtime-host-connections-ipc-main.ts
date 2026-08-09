@@ -1,4 +1,3 @@
-import type { IpcMain } from 'electron';
 import type {
   ConnectionTestResult,
   CreateConnectionInput,
@@ -21,6 +20,10 @@ import type {
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import {
   normalizeConnectionBaseUrlForIpc,
   normalizeConnectionPatchSecretsForIpc,
@@ -45,7 +48,7 @@ type HostConnectionsClient = Pick<
 >;
 
 export interface RuntimeHostConnectionsIpcDeps {
-  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: HostConnectionsClient;
   readonly emitConnectionListChanged: () => void;
 }
@@ -56,12 +59,12 @@ export function registerRuntimeHostConnectionsIpc(
   const snapshot = () => deps.client.loadConnectionCatalog();
   const projected = async () => projectHostConnections(await snapshot());
 
-  deps.ipcMain.handle('connections:list', projected);
-  deps.ipcMain.handle('connections:getDefault', async () => {
+  handleReconnectableRead(deps.ipcMain, 'connections:list', projected);
+  handleReconnectableRead(deps.ipcMain, 'connections:getDefault', async () => {
     const catalog = await snapshot();
     return defaultConnection(catalog)?.slug ?? null;
   });
-  deps.ipcMain.handle('connections:hasSecret', async (_event, slug: unknown) => {
+  handleReconnectableRead(deps.ipcMain, 'connections:hasSecret', async (_event, slug: unknown) => {
     const catalog = await snapshot();
     const connection = requireConnection(catalog, slug);
     if (!providerAuthRequiresSecret(connection.providerType)) return true;
@@ -70,12 +73,16 @@ export function registerRuntimeHostConnectionsIpc(
         ?.configured === true
     );
   });
-  deps.ipcMain.handle('connections:getRequestHeaders', async (_event, slug: unknown) => {
-    const connection = requireConnection(await snapshot(), slug);
-    const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
-    if (result.kind !== 'found') throw new Error('Connection no longer exists');
-    return { names: result.names } satisfies SavedRequestHeaders;
-  });
+  handleReconnectableRead(
+    deps.ipcMain,
+    'connections:getRequestHeaders',
+    async (_event, slug: unknown) => {
+      const connection = requireConnection(await snapshot(), slug);
+      const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
+      if (result.kind !== 'found') throw new Error('Connection no longer exists');
+      return { names: result.names } satisfies SavedRequestHeaders;
+    },
+  );
   deps.ipcMain.handle(
     'connections:setRequestHeaders',
     async (_event, slug: unknown, rawUpdates: unknown) => {

@@ -17,6 +17,7 @@ import {
   CLIENT_CAPABILITY_MAX_TOOLS,
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
   decodeClientCapabilityReplaceInput,
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientCapabilityCallResult,
   type ClientCapabilityOffer,
@@ -31,7 +32,7 @@ const MCP_RECONNECT_INTERVAL_MS = 5_000;
 export interface RuntimeHostCapabilityProviderCliOptions {
   readonly url: string;
   readonly mcpConfigPath: string;
-  readonly expectedRootId?: string;
+  readonly expectedRootId: string;
   readonly credentialEnv?: string;
   readonly clientIdentityPath?: string;
 }
@@ -83,7 +84,7 @@ export async function runRuntimeHostCapabilityProviderCli(
           credential,
           clientInstanceId,
           signal,
-          ...(options.expectedRootId ? { expectedRootId: options.expectedRootId } : {}),
+          expectedRootId: options.expectedRootId,
         }),
       createProvider: () => createMcpCapabilityProvider(manager),
       onReconnectError: (error) => {
@@ -125,7 +126,7 @@ async function connectRemoteCapabilityProvider(input: {
   readonly url: string;
   readonly credential: string;
   readonly clientInstanceId: string;
-  readonly expectedRootId?: string;
+  readonly expectedRootId: string;
   readonly signal: AbortSignal;
 }): Promise<RuntimeHostConnection> {
   input.signal.throwIfAborted();
@@ -134,8 +135,9 @@ async function connectRemoteCapabilityProvider(input: {
     credential: input.credential,
     surface: 'capability-provider',
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     clientInstanceId: input.clientInstanceId,
-    ...(input.expectedRootId ? { expectedRootId: input.expectedRootId } : {}),
+    expectedRootId: input.expectedRootId,
   });
   if (input.signal.aborted) {
     if (connected.kind === 'connected') await connected.connection.close();

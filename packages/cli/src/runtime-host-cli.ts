@@ -27,7 +27,7 @@ export type RuntimeHostCliCommand =
       kind: 'runtime-host-capability-provider-serve';
       url: string;
       mcpConfigPath: string;
-      expectedRootId?: string;
+      expectedRootId: string;
       credentialEnv?: string;
       clientIdentityPath?: string;
     }
@@ -82,11 +82,12 @@ function parseCapabilityProviderCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (!url) return error('--url is required');
   if (!mcpConfigPath) return error('--mcp-config is required');
+  if (!expectedRootId) return error('--expected-root is required');
   return {
     kind: 'runtime-host-capability-provider-serve',
     url,
     mcpConfigPath,
-    ...(expectedRootId ? { expectedRootId } : {}),
+    expectedRootId,
     ...(credentialEnv ? { credentialEnv } : {}),
     ...(clientIdentityPath ? { clientIdentityPath } : {}),
   };

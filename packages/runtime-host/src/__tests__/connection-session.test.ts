@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { connect, createServer, type Server, type Socket } from 'node:net';
@@ -288,7 +289,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
   const hostTask = RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async () => {
+    composition: defineInteractiveRuntimeHostComposition(async () => {
       factoryEntered.resolve();
       await releaseFactory.promise;
       return {
@@ -300,7 +301,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
         async recover() {},
         async close() {},
       };
-    },
+    }),
   });
   let transport: FramedTransport | undefined;
   let host: RuntimeHostKernel | undefined;
@@ -359,6 +360,8 @@ test('connection reset while operation admission is pending does not execute the
       ok: true,
       result: {
         hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
         state: 'ready',
         connections: 1,
         activeOperations: 1,
@@ -423,6 +426,8 @@ test('a ready composition attaches the authenticated Client identity once', asyn
   const attached: ClientCapabilityConnectionIdentity[] = [];
   let serviceAvailable = false;
   let closeCalls = 0;
+  const closeStarted = deferred();
+  const releaseClose = deferred();
   const service: ClientCapabilityService = {
     attachConnection(identity) {
       attached.push(identity);
@@ -430,6 +435,8 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         accept() {},
         async close() {
           closeCalls += 1;
+          closeStarted.resolve();
+          await releaseClose.promise;
         },
       };
     },
@@ -442,6 +449,8 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 1,
@@ -462,6 +471,10 @@ test('a ready composition attaches the authenticated Client identity once', asyn
     onTeardown() {},
   });
   const run = session.run();
+  let runSettled = false;
+  void run.then(() => {
+    runSettled = true;
+  });
   try {
     await writeProtocolFrame(pair.clientTransport, {
       requestId: 'before-composition',
@@ -485,13 +498,18 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         connectionId: 'stable-provider-connection',
         principalId: 'local_os_user',
         clientInstanceId: 'test-client',
-        unattended: false,
+        principalKind: 'local_owner',
       },
     ]);
   } finally {
     pair.clientTransport.abort();
+    await closeStarted.promise;
+    await Promise.resolve();
+    assert.equal(runSettled, false);
+    releaseClose.resolve();
     await Promise.allSettled([run, pair.close()]);
   }
+  assert.equal(runSettled, true);
   assert.equal(closeCalls, 1);
 });
 
@@ -728,6 +746,8 @@ test('an in-flight status does not consume the final domain request slot', async
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 65,
@@ -825,6 +845,8 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       ok: true,
       result: {
         hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
         state: 'ready',
         connections: 1,
         activeOperations: 1,
@@ -947,12 +969,12 @@ async function withRuntimeHost(
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async () => ({
+    composition: defineInteractiveRuntimeHostComposition(async () => ({
       handlers: { ...createHandlers(queryTurn), ...handlerOverrides },
       beginDrain() {},
       async recover() {},
       async close() {},
-    }),
+    })),
   });
   try {
     await run({
@@ -996,6 +1018,7 @@ async function openAcceptedTransport(
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
   });
   const handshake = decodeHostFrame(await transport.read(1_000));
   assert.ok('kind' in handshake);
@@ -1060,6 +1083,8 @@ async function openHalfClosedDispatchedSession(
         ok: true,
         result: {
           hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
           state: 'ready',
           connections: 1,
           activeOperations: 1,
@@ -1202,6 +1227,8 @@ function statusResponse(requestId: string): ResponseFrame {
     ok: true,
     result: {
       hostEpoch: 'host-epoch',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready',
       connections: 1,
       activeOperations: 0,

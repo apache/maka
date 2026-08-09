@@ -13,7 +13,6 @@ import {
   settleAutomationAttempt,
   type AutomationToolAuthority,
   type MakaTool,
-  type RuntimeHostedRootAuthority,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -39,7 +38,7 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { AutomationOperationHandlerMap } from './operation-dispatcher.js';
-import type { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
+import type { AutomationClientCapabilityAuthority } from './client-capability-service.js';
 import { AutomationAuthorityInvariantError } from './automation-errors.js';
 import {
   assertFireRunIdentity,
@@ -48,6 +47,7 @@ import {
   HostAutomationFireCoordinator,
 } from './automation-fire-coordinator.js';
 import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
+import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 
 type AutomationSessions = Pick<
@@ -56,7 +56,7 @@ type AutomationSessions = Pick<
 >;
 type AutomationRuns = Pick<ExecutionAgentRunWriter, 'readRun'>;
 type AutomationRuntime = Pick<SessionManager, 'sendMessage'>;
-type AutomationRoot = Pick<RuntimeHostedRootAuthority, 'executeRoot'>;
+type AutomationRoot = Pick<HostedExecutionAuthority, 'admit' | 'reconcile' | 'subscribe'>;
 
 export interface HostAutomationCoordinatorInput {
   readonly store: InteractiveAutomationAuthorityWriter;
@@ -65,10 +65,7 @@ export interface HostAutomationCoordinatorInput {
   readonly runtime: AutomationRuntime;
   readonly root: AutomationRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
-  readonly clientCapabilities: Pick<
-    HostClientCapabilityCoordinator,
-    'requirementsForAutomation' | 'checkAutomationRequirements' | 'bindAutomationSession'
-  >;
+  readonly clientCapabilities: AutomationClientCapabilityAuthority;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;

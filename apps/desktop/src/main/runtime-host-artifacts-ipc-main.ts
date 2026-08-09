@@ -2,14 +2,17 @@ import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ipcMain as electronIpcMain } from "electron";
 import { MAX_ATTACHMENT_BYTES, type ArtifactSaveResult } from "@maka/core";
 import { sanitizeArtifactName } from "@maka/storage/artifact-stores";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
 interface RuntimeHostArtifactsIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
@@ -24,7 +27,8 @@ export function registerRuntimeHostArtifactsIpc(
     deps.presentationRoot ??
     join(tmpdir(), "maka-runtime-host-artifacts", deps.client.hostEpoch);
 
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "artifacts:list",
     async (
       _event,
@@ -37,17 +41,20 @@ export function registerRuntimeHostArtifactsIpc(
         : artifacts.filter(({ status }) => status !== "deleted");
     },
   );
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "artifacts:get",
     (_event, sessionId: string, artifactId: string) =>
       deps.client.getArtifact(sessionId, artifactId),
   );
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "artifacts:readText",
     (_event, sessionId: string, artifactId: string) =>
       deps.client.readArtifactText(sessionId, artifactId),
   );
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "artifacts:readBinary",
     (_event, sessionId: string, artifactId: string) =>
       deps.client.readArtifactBinary(sessionId, artifactId),
@@ -65,7 +72,8 @@ export function registerRuntimeHostArtifactsIpc(
       return result;
     },
   );
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "attachments:readBytes",
     async (_event, sessionId: string, artifactId: string) => {
       const artifact = await deps.client.getArtifact(sessionId, artifactId);

@@ -3,7 +3,9 @@ import test from 'node:test';
 import {
   createRuntimeHostReconnectingConnection,
   RuntimeHostOperationError,
+  RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
+  startRuntimeHostReconnectLifecycle,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
 } from '../client/index.js';
@@ -134,11 +136,75 @@ test('a Session observation reopens safely after its first connection starts dra
   await connection.close();
 });
 
+test('a reconnecting Client rejects a different Host composition permanently', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined, undefined, {
+    id: 'maka.interactive',
+    revision: '2',
+  });
+  let fatalError: Error | undefined;
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => replacement.connection,
+    onFatalError: (error) => {
+      fatalError = error;
+    },
+  });
+
+  first.disconnect();
+  await connection.closed;
+
+  assert.ok(fatalError instanceof RuntimeHostPermanentReconnectError);
+  assert.match(fatalError.message, /composition changed/u);
+  await connection.close();
+});
+
+test('reconnect lifecycle close waits for a resource returned after cancellation', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const connectStarted = deferred();
+  const lateResource = deferredValue<RuntimeHostConnection>();
+  const lateCloseStarted = deferred();
+  const releaseLateClose = deferred();
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      connectStarted.resolve();
+      return lateResource.promise;
+    },
+  });
+  first.disconnect();
+  await connectStarted.promise;
+
+  let closeSettled = false;
+  const closeTask = lifecycle.close().then(() => {
+    closeSettled = true;
+  });
+  const late = connectionHarness('late', () => undefined).connection;
+  lateResource.resolve({
+    ...late,
+    close: async () => {
+      lateCloseStarted.resolve();
+      await releaseLateClose.promise;
+    },
+  });
+  await lateCloseStarted.promise;
+  await Promise.resolve();
+  assert.equal(closeSettled, false);
+
+  releaseLateClose.resolve();
+  await closeTask;
+  assert.equal(closeSettled, true);
+});
+
 function connectionHarness(
   id: string,
   request: (operation: DirectRequestOperationKey, input: unknown) => unknown,
   openSubscription: () => Promise<unknown> = async () => {
     throw new Error('subscription is not available in this fixture');
+  },
+  composition: { readonly id: string; readonly revision: string } = {
+    id: 'maka.interactive',
+    revision: '1',
   },
 ) {
   let resolveClosed!: () => void;
@@ -152,6 +218,8 @@ function connectionHarness(
     hostEpoch: `host-${id}`,
     connectionId: id,
     selectedProtocol: 0,
+    compositionId: composition.id,
+    compositionRevision: composition.revision,
     closed,
     request: async (operation: DirectRequestOperationKey, input: unknown) => {
       operations.push(operation);
@@ -187,6 +255,14 @@ function interrupted(
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
     resolve = settle;
   });
   return { promise, resolve };

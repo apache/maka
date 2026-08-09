@@ -425,6 +425,17 @@ export {
   isSessionInlineRun,
 } from './agent-run.js';
 
+export type {
+  RunCompositionSnapshot,
+  RunCompositionSnapshotInput,
+  RunCompositionSourceRevision,
+} from './run-composition.js';
+export {
+  createRunCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+  RUN_COMPOSITION_SCHEMA_VERSION,
+} from './run-composition.js';
+
 // model-call-attempt.ts
 export type {
   ModelCallAttempt,

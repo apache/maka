@@ -9,9 +9,24 @@ export {
   type RuntimeHostResidency,
 } from './host-kernel.js';
 export {
-  startRuntimeHostCandidate,
-  type RuntimeHostCandidateOptions,
-  type RuntimeHostCandidateResult,
+  beginRuntimeHostDomainModuleDrain,
+  closeRuntimeHostDomainModules,
+  composeRuntimeHostDomainHandlers,
+  defineInteractiveRuntimeHostComposition,
+  defineRuntimeHostComposition,
+  HOST_RECOVERY_PHASES,
+  INTERACTIVE_HOST_COMPOSITION_DESCRIPTOR,
+  normalizeHostCompositionDescriptor,
+  recoverRuntimeHostDomainModules,
+  type HostCompositionDescriptor,
+  type HostRecoveryPhase,
+  type RuntimeHostDomainModule,
+  type RuntimeHostCompositionSource,
+} from './host-composition.js';
+export {
+  startInteractiveRuntimeHostCandidate,
+  type InteractiveRuntimeHostCandidateOptions,
+  type InteractiveRuntimeHostCandidateResult,
 } from './candidate.js';
 export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
 export {

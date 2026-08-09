@@ -748,7 +748,12 @@ function parseDailyReviewModelKey(
 
 export async function resolveExecutionTarget(
   header: Pick<BackendFactoryContext['header'], 'llmConnectionSlug' | 'model' | 'thinkingLevel'>,
-  runtimePolicy: RuntimePolicyStoresWriter,
+  runtimePolicy: {
+    readonly operations: Pick<
+      RuntimePolicyStoresWriter['operations'],
+      'resolveExecutionConnection'
+    >;
+  },
   oauthCredentials: HostOAuthExecutionAuthority,
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {

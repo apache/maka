@@ -111,7 +111,7 @@ export interface AgentGraphCoordinatorInput {
 }
 
 export interface AgentGraphExecutionStopInput {
-  stopRoot(): Promise<void>;
+  stopSupervisor(): Promise<void>;
   withSupervisorWakesSuppressed(operation: () => Promise<void>): Promise<void>;
 }
 
@@ -516,7 +516,7 @@ export class AgentGraphCoordinator {
     await input.withSupervisorWakesSuppressed(async () => {
       const failures: unknown[] = [];
       try {
-        await input.stopRoot();
+        await input.stopSupervisor();
       } catch (error) {
         failures.push(error);
       }

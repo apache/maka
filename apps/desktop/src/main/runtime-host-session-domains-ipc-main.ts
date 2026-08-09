@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
 import type {
   AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
@@ -12,6 +11,10 @@ import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/pro
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import {
   registerRuntimeHostShellRunsIpc,
   type RuntimeHostShellRunsClient,
@@ -58,7 +61,7 @@ export interface RuntimeHostSessionDomainsIpcHandle {
  */
 export function registerRuntimeHostSessionDomainsIpc(
   deps: RuntimeHostSessionDomainsIpcDeps,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: ReconnectableReadIpcMain,
 ): RuntimeHostSessionDomainsIpcHandle {
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? Date.now;
@@ -67,16 +70,16 @@ export function registerRuntimeHostSessionDomainsIpc(
     ipcMain,
   );
 
-  ipcMain.handle('tasks:list', (_event, sessionId: unknown) =>
+  handleReconnectableRead(ipcMain, 'tasks:list', (_event, sessionId: unknown) =>
     deps.client.listTasks(requiredId(sessionId, 'Session')),
   );
-  ipcMain.handle('deepResearch:get', async (_event, sessionId: unknown) =>
+  handleReconnectableRead(ipcMain, 'deepResearch:get', async (_event, sessionId: unknown) =>
     projectHostedDeepResearch(
       await deps.client.queryDeepResearch(requiredId(sessionId, 'Session')),
     ),
   );
 
-  ipcMain.handle('goal:get', async (_event, sessionId: unknown) => {
+  handleReconnectableRead(ipcMain, 'goal:get', async (_event, sessionId: unknown) => {
     const result = await deps.client.queryGoal(requiredId(sessionId, 'Session'));
     return result.goal === null ? null : toDesktopGoal(result.goal);
   });
@@ -84,7 +87,7 @@ export function registerRuntimeHostSessionDomainsIpc(
     await deps.client.clearGoal(requiredId(sessionId, 'Session'));
   });
 
-  ipcMain.handle('plan-mode:getState', (_event, sessionId: unknown) =>
+  handleReconnectableRead(ipcMain, 'plan-mode:getState', (_event, sessionId: unknown) =>
     deps.client.getPlanState(requiredId(sessionId, 'Session')),
   );
   ipcMain.handle(
@@ -171,7 +174,8 @@ export function registerRuntimeHostSessionDomainsIpc(
       return deps.client.getPlanState(normalizedSessionId);
     },
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     'graphs:getSnapshot',
     async (_event, rootSessionId: unknown, options?: unknown): Promise<AgentGraphClientSnapshot> =>
       mutableGraphSnapshot(
@@ -181,7 +185,8 @@ export function registerRuntimeHostSessionDomainsIpc(
         }),
       ),
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     'graphs:inspectOperator',
     async (
       _event,

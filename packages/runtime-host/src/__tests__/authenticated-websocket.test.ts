@@ -11,7 +11,10 @@ import {
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+} from '../protocol/index.js';
 import {
   openRuntimeHostAccessAuthority,
   startExecutionRuntimeHostService,
@@ -63,6 +66,8 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       connectRemoteRuntimeHost({
         url: `${url}?route=forbidden`,
         credential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
         surface: 'tui',
         protocol: PROTOCOL,
       }),
@@ -73,15 +78,39 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       url,
       credential,
       expectedRootId: 'f'.repeat(64),
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.deepEqual(wrongRoot, { kind: 'unavailable', reason: 'root_mismatch' });
 
+    const wrongComposition = await connectRemoteRuntimeHost({
+      url,
+      credential,
+      expectedRootId: capability.rootId,
+      compositionId: 'test.other',
+      surface: 'tui',
+      protocol: PROTOCOL,
+    });
+    assert.equal(wrongComposition.kind, 'incompatible');
+    if (wrongComposition.kind === 'incompatible') {
+      assert.equal(wrongComposition.handshake.hostEpoch, host.hostEpoch);
+      assert.equal(
+        wrongComposition.handshake.compositionId,
+        INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      );
+      assert.equal(
+        wrongComposition.handshake.compositionRevision,
+        host.compositionDescriptor.revision,
+      );
+      assert.equal(wrongComposition.handshake.replacement, 'blocked_by_residency');
+    }
+
     const connected = await connectRemoteRuntimeHost({
       url,
       credential,
       expectedRootId: capability.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       surface: 'tui',
       protocol: PROTOCOL,
     });
@@ -193,6 +222,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       expectedRootId: capability.rootId,
       surface: 'capability-provider',
       protocol: PROTOCOL,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       clientInstanceId: 'remote-provider-instance',
     });
     assert.equal(providerConnected.kind, 'connected');
@@ -262,6 +292,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         url,
         credential,
         expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
         surface: 'tui',
         protocol: PROTOCOL,
       }),

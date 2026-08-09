@@ -5,12 +5,16 @@ import {
 import { connectOrSpawnRuntimeHostWithDependencies } from '../../client/connect-or-spawn.js';
 import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
 import { readHostRegistration } from '../../control/registration.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION } from '../../protocol/index.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+} from '../../protocol/index.js';
 
 const [rootPath, mode] = process.argv.slice(2);
 if (!rootPath) throw new Error('usage: electron-connect-parent <root>');
 if (!process.versions.electron)
   throw new Error('electron-connect-parent requires Electron Node mode');
+const candidateEntrypoint = new URL('./kernel-candidate.js', import.meta.url);
 
 const result = await connectOrSpawnRuntimeHostWithDependencies(
   {
@@ -20,6 +24,8 @@ const result = await connectOrSpawnRuntimeHostWithDependencies(
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
     },
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    candidateEntrypoint,
     electionDeadlineMs: 5_000,
   },
   {

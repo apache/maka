@@ -1,11 +1,14 @@
-import type { IpcMain } from "electron";
 import {
   DAILY_REVIEW_RANGES,
   normalizeDailyReviewConfig,
   type DailyReviewConfig,
   type DailyReviewRange,
 } from "@maka/core/daily-review";
-import { tryResult } from "@maka/core/result";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+  tryReconnectableReadResult,
+} from "./ipc-reconnect-policy.js";
 import { saveMarkdownViaDialog } from "./markdown-save-main.js";
 import type { createMainWindowController } from "./main-window.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
@@ -13,32 +16,35 @@ import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
 export function registerRuntimeHostDailyReviewIpc(deps: {
-  ipcMain: Pick<IpcMain, "handle">;
+  ipcMain: ReconnectableReadIpcMain;
   client: Pick<
     DesktopRuntimeHostClient,
     "queryDailyReview" | "mutateDailyReview"
   >;
   mainWindowController: MainWindowController;
 }): void {
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "daily-review:day",
     (
       _event,
       payload: { offsetDays?: number; daySpan?: number } | undefined,
     ) =>
-      tryResult(async () => {
+      tryReconnectableReadResult(async () => {
         const result = await deps.client.queryDailyReview({
           kind: "summary",
           offsetDays: integer(payload?.offsetDays, 0),
           daySpan: boundedDaySpan(payload?.daySpan),
         });
         if (result.kind !== "summary") {
-          throw new Error("Runtime Host returned an invalid Daily Review summary");
+          throw new Error(
+            "Runtime Host returned an invalid Daily Review summary",
+          );
         }
         return result.summary;
       }, "DAILY_REVIEW_DAY_FAILED"),
   );
-  deps.ipcMain.handle("daily-review:getConfig", async () => {
+  handleReconnectableRead(deps.ipcMain, "daily-review:getConfig", async () => {
     const result = await deps.client.queryDailyReview({ kind: "config" });
     if (result.kind !== "config") {
       throw new Error("Runtime Host returned an invalid Daily Review config");
@@ -74,17 +80,25 @@ export function registerRuntimeHostDailyReviewIpc(deps: {
       return { archiveId: result.archive.id };
     },
   );
-  deps.ipcMain.handle("daily-review:list", () => listArchives(deps.client));
-  deps.ipcMain.handle("daily-review:get", async (_event, archiveId: string) => {
-    const result = await deps.client.queryDailyReview({
-      kind: "archive",
-      archiveId,
-    });
-    if (result.kind !== "archive") {
-      throw new Error("Runtime Host returned an invalid Daily Review archive");
-    }
-    return result.archive;
-  });
+  handleReconnectableRead(deps.ipcMain, "daily-review:list", () =>
+    listArchives(deps.client),
+  );
+  handleReconnectableRead(
+    deps.ipcMain,
+    "daily-review:get",
+    async (_event, archiveId: string) => {
+      const result = await deps.client.queryDailyReview({
+        kind: "archive",
+        archiveId,
+      });
+      if (result.kind !== "archive") {
+        throw new Error(
+          "Runtime Host returned an invalid Daily Review archive",
+        );
+      }
+      return result.archive;
+    },
+  );
   deps.ipcMain.handle(
     "daily-review:saveMarkdownToFile",
     (_event, input) =>

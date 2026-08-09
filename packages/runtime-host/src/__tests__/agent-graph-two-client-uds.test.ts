@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -47,7 +48,7 @@ test('two Clients query and control one Agent graph through Session invalidation
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async (context) => {
+    composition: defineInteractiveRuntimeHostComposition(async (context) => {
       const continuity = new SessionContinuityCoordinator(
         context.hostEpoch,
         async (sessionId) => (sessionId === ROOT_SESSION_ID ? canonical(context.hostEpoch) : null),
@@ -73,7 +74,7 @@ test('two Clients query and control one Agent graph through Session invalidation
           continuity.close();
         },
       };
-    },
+    }),
   });
   // Two probe round-trips observed while the stop request is pending resolve
   // the fake's stopGate. The observer is wired only onto the final TUI

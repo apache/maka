@@ -39,6 +39,25 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('commits one immutable Run Composition snapshot', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      try {
+        await store.createRun(runHeader());
+        const composition = runComposition('1');
+        await store.updateRun('session-1', 'run-1', { runComposition: composition });
+        await store.updateRun('session-1', 'run-1', { runComposition: composition });
+        assert.deepEqual((await store.readRun('session-1', 'run-1')).runComposition, composition);
+        await assert.rejects(
+          store.updateRun('session-1', 'run-1', { runComposition: runComposition('2') }),
+          /AgentRun Run Composition is immutable/u,
+        );
+      } finally {
+        store.close?.();
+      }
+    });
+  });
+
   test('reads an AgentRun event type this build does not write', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
@@ -187,6 +206,28 @@ function runEvent(): EmittedAgentRunEvent {
     turnId: 'turn-1',
     ts: 2,
   };
+}
+
+function runComposition(seed: string): NonNullable<AgentRunHeader['runComposition']> {
+  return {
+    schemaVersion: 1,
+    composerId: 'maka.interactive',
+    composerRevision: '1',
+    sourceRevisions: [
+      { id: 'runtime-policy', revision: '1' },
+      { id: 'skill-catalog', revision: 'skills-1' },
+    ],
+    baseSystemPromptHash: hash(seed),
+    toolCatalogHash: hash(seed),
+    toolAvailabilityHash: hash(seed),
+    baseProviderOptionsHash: hash(seed),
+    toolNames: ['Read'],
+    contextWindow: 128_000,
+  };
+}
+
+function hash(seed: string): `sha256:${string}` {
+  return `sha256:${seed.repeat(64)}`;
 }
 
 function shellRun(): ShellRunRecord {

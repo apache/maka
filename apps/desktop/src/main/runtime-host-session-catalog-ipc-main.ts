@@ -66,9 +66,13 @@ export function registerRuntimeHostSessionCatalogIpc(
   ipcMain: ReconnectableReadIpcMain,
 ): void {
   const newId = deps.newId ?? randomUUID;
+  const pendingCleanup = new Set<string>();
+  const recoveryTask = deps.sessionCopyCleanup.recover().then((recovery) => {
+    for (const { sessionId } of recovery.failed) pendingCleanup.add(sessionId);
+  });
+  void recoveryTask.catch(() => undefined);
   const listSessions = async (filter?: SessionListFilter): Promise<DesktopHostSessionSummary[]> => {
-    const recovery = await deps.sessionCopyCleanup.recover();
-    const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
+    await recoveryTask;
     const parentSessionId = normalizeParentSessionFilter(filter?.subagentParentSessionId);
     const sessions = await deps.client.listSessions(toHostCatalogFilter(filter));
     return sessions
@@ -86,9 +90,11 @@ export function registerRuntimeHostSessionCatalogIpc(
   );
   ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.cleanup(sessionId);
+    pendingCleanup.delete(sessionId);
   });
   ipcMain.handle('sessions:abandonSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.schedule(sessionId);
+    pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
     if (input?.backend !== undefined && input.backend !== 'ai-sdk') {

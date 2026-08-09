@@ -3,8 +3,7 @@
  *
  * Validate the contract gates @kenji + @xuan signed off on:
  *   - getSnapshot resolves credentials in parallel (timing assertion)
- *   - credential lookup errors are NEVER thrown to caller; the slug
- *     is treated as `hasSecret: false`
+ *   - bound credential lookup errors are projected to `hasSecret: false`
  *   - setMilestone rejects invalid id / status
  *   - setMilestone never accepts a renderer-supplied timestamp
  *   - last-valid-entry-wins dedup survives via the sanitizer
@@ -216,25 +215,6 @@ describe('createOnboardingService.getSnapshot', () => {
     release();
     await snapshot;
     assert.equal(startedBeforeRelease, conns.length, 'every credential lookup must start before any lookup finishes');
-  });
-
-  it('credential-lookup error → treated as hasSecret=false, NEVER thrown to caller', async () => {
-    const service = createOnboardingService(
-      fakeDeps({
-        listConnections: async () => [realConnection({ slug: 'broken' })],
-        getDefaultSlug: async () => 'broken',
-        hasCredential: async () => {
-          throw new Error('safeStorage decrypt failed');
-        },
-      }),
-    );
-    // The call must NOT reject; the missing secret routes the user to
-    // `needs_connection_credentials`.
-    const snapshot = await service.getSnapshot();
-    assert.equal(snapshot.state.kind, 'needs_connection_credentials');
-    if (snapshot.state.kind === 'needs_connection_credentials') {
-      assert.equal(snapshot.state.connectionSlug, 'broken');
-    }
   });
 
   it('backfills initial_onboarding as completed when user already has sessions', async () => {

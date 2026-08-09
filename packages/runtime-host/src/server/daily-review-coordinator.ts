@@ -82,6 +82,8 @@ export class HostDailyReviewCoordinator {
   readonly #abortControllers = new Set<AbortController>();
 
   #prepared = false;
+  #started = false;
+  #schedulerEnabled = false;
   #draining = false;
   #timer: unknown;
   #residency: RuntimeHostResidency | undefined;
@@ -103,10 +105,22 @@ export class HostDailyReviewCoordinator {
   }
 
   async recover(): Promise<void> {
+    await this.prepareRecovery();
+    await this.start();
+  }
+
+  async prepareRecovery(): Promise<void> {
     if (this.#prepared) return;
     const snapshot = await this.#store.readConfig();
+    this.#schedulerEnabled = snapshot.config.enabled;
     this.#prepared = true;
-    this.#reconcileScheduler(snapshot.config.enabled);
+  }
+
+  async start(): Promise<void> {
+    if (!this.#prepared) throw new Error('Daily Review recovery was not prepared');
+    if (this.#started) return;
+    this.#started = true;
+    this.#reconcileScheduler(this.#schedulerEnabled);
     try {
       await this.#tickScheduler();
     } catch (error) {

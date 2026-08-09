@@ -7,7 +7,7 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation } from './operation-spec.js';
 
 export const PROJECT_CATALOG_PAGE_MAX_ITEMS = 64;
 export const PROJECT_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
@@ -118,7 +118,7 @@ export type ProjectCatalogMutateResult =
     };
 
 export const PROJECT_CATALOG_OPERATION_SPECS = {
-  'project.catalog.query': defineOperation<
+  'project.catalog.query': defineHostPathOperation<
     ProjectCatalogQueryInput,
     ProjectCatalogQueryResult,
     (typeof QUERY_ERRORS)[number]
@@ -129,7 +129,7 @@ export const PROJECT_CATALOG_OPERATION_SPECS = {
     decodeInput: decodeProjectCatalogQueryInput,
     decodeOutput: decodeProjectCatalogQueryResult,
   }),
-  'project.catalog.mutate': defineOperation<
+  'project.catalog.mutate': defineHostPathOperation<
     ProjectCatalogMutateInput,
     ProjectCatalogMutateResult,
     (typeof MUTATE_ERRORS)[number]

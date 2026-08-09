@@ -2793,6 +2793,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'recordProviderRequestCapture'
     | 'recordProviderRequestAttempt'
     | 'recordModelCallAttempt'
+    | 'recordRunComposition'
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadTurnRuntimeEvents'
@@ -2825,6 +2826,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
             recordModelCallAttempt: (attempt) => {
               const run = resolveActive()?.activeRuns.get(attempt.runId);
               return run?.recordModelCallAttempt(attempt) ?? Promise.resolve();
+            },
+            recordRunComposition: (runId, snapshot) => {
+              const run = resolveActive()?.activeRuns.get(runId);
+              if (!run) {
+                return Promise.reject(new Error('No active AgentRun for Run Composition'));
+              }
+              return run.recordRunComposition(snapshot);
             },
             loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
             recordHistoryCompactCheckpoint: (

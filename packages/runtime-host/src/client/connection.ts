@@ -36,6 +36,7 @@ import {
   type HostRegistration,
   type HostStatusResult,
   HOST_OPERATION_SPECS,
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
@@ -70,6 +71,8 @@ import {
   type TurnStartResult,
   type TurnStopInput,
   requireClientInstanceId,
+  requireHostCompositionId,
+  requireHostRootId,
   validateProtocolRange,
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
@@ -95,6 +98,7 @@ export interface ConnectRuntimeHostInput {
   rootPath: string;
   surface: ClientSurface;
   protocol: ProtocolRange;
+  compositionId?: string;
   clientInstanceId?: string;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
@@ -118,6 +122,7 @@ export type RuntimeHostUnavailableReason =
   | 'not_registered'
   | 'invalid_registration'
   | 'root_mismatch'
+  | 'composition_mismatch'
   | 'connect_failed'
   | 'handshake_failed'
   | 'epoch_mismatch';
@@ -143,7 +148,8 @@ export type ConnectRuntimeHostResult =
 export interface ConnectRemoteRuntimeHostInput {
   readonly url: string;
   readonly credential: string;
-  readonly expectedRootId?: string;
+  readonly expectedRootId: string;
+  readonly compositionId: string;
   readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly clientInstanceId?: string;
@@ -159,7 +165,7 @@ export type ConnectRemoteRuntimeHostResult =
   | { kind: 'draining' }
   | {
       kind: 'unavailable';
-      reason: 'connect_failed' | 'handshake_failed' | 'root_mismatch';
+      reason: 'connect_failed' | 'handshake_failed' | 'root_mismatch' | 'composition_mismatch';
     };
 
 type ConnectResolvedRuntimeHostResult =
@@ -189,6 +195,8 @@ export interface RuntimeHostConnection {
   readonly hostEpoch: string;
   readonly connectionId: string;
   readonly selectedProtocol: number;
+  readonly compositionId: string;
+  readonly compositionRevision: string;
   readonly closed: Promise<void>;
   request<K extends DirectRequestOperationKey>(
     operation: K,
@@ -318,6 +326,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly hostEpoch: string;
   readonly connectionId: string;
   readonly selectedProtocol: number;
+  readonly compositionId: string;
+  readonly compositionRevision: string;
   readonly closed: Promise<void>;
   readonly #transport: RuntimeHostMessageTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
@@ -343,6 +353,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       hostEpoch: string;
       connectionId: string;
       selectedProtocol: number;
+      compositionId: string;
+      compositionRevision: string;
     },
     // livenessIntervalMs is validated by connectResolvedRuntimeHost alongside
     // the other connect timeouts, before any transport work happens.
@@ -355,6 +367,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.hostEpoch = accepted.hostEpoch;
     this.connectionId = accepted.connectionId;
     this.selectedProtocol = accepted.selectedProtocol;
+    this.compositionId = accepted.compositionId;
+    this.compositionRevision = accepted.compositionRevision;
     this.closed = this.#transport.closed;
     this.#clientCapabilities = new ClientCapabilityChannel({
       write: (frame) => writeClientFrame(this.#transport, frame),
@@ -490,8 +504,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   async status(timeoutMs?: number): Promise<HostStatusResult> {
     const status = await this.request('host.status', {}, timeoutMs);
-    if (status.hostEpoch !== this.hostEpoch) {
-      const error = new Error('Runtime Host returned status for a different Host Epoch');
+    if (
+      status.hostEpoch !== this.hostEpoch ||
+      status.compositionId !== this.compositionId ||
+      status.compositionRevision !== this.compositionRevision
+    ) {
+      const error = new Error('Runtime Host returned status for a different Host identity');
       this.#fail(error);
       throw error;
     }
@@ -1003,6 +1021,8 @@ export async function connectRemoteRuntimeHost(
   input: ConnectRemoteRuntimeHostInput,
 ): Promise<ConnectRemoteRuntimeHostResult> {
   const normalized = normalizeConnectRuntimeHostInput(input);
+  const compositionId = requireHostCompositionId(input.compositionId);
+  const expectedRootId = requireHostRootId(input.expectedRootId);
   const url = requireRemoteWebSocketUrl(input.url);
   let transport: WebSocketTransport;
   try {
@@ -1019,7 +1039,8 @@ export async function connectRemoteRuntimeHost(
       surface: input.surface,
       protocol: input.protocol,
       clientInstanceId: normalized.clientInstanceId,
-      expectedRootId: input.expectedRootId,
+      compositionId,
+      expectedRootId,
       livenessIntervalMs: normalized.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
     });
@@ -1030,6 +1051,9 @@ export async function connectRemoteRuntimeHost(
     transport.abort();
     if (error instanceof RuntimeHostRootMismatchError) {
       return { kind: 'unavailable', reason: 'root_mismatch' };
+    }
+    if (error instanceof RuntimeHostCompositionMismatchError) {
+      return { kind: 'unavailable', reason: 'composition_mismatch' };
     }
     return { kind: 'unavailable', reason: 'handshake_failed' };
   } finally {
@@ -1099,6 +1123,9 @@ export async function connectResolvedRuntimeHost(
     input.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS,
     'livenessIntervalMs',
   );
+  const compositionId = requireHostCompositionId(
+    input.compositionId ?? INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  );
   let registration: HostRegistration | undefined;
   try {
     registration = await readRegistrationBeforeDeadline(
@@ -1118,7 +1145,6 @@ export async function connectResolvedRuntimeHost(
   if (registration.rootId !== input.capability.rootId) {
     return { kind: 'unavailable', reason: 'root_mismatch', registration };
   }
-
   const connectDeadline = phaseDeadline(connectTimeoutMs, input.electionDeadline);
   const connectBudget = remainingTimeout(connectDeadline.at);
   if (connectBudget === undefined) {
@@ -1170,8 +1196,12 @@ export async function connectResolvedRuntimeHost(
       protocol: input.protocol,
       helloProtocol,
       clientInstanceId: input.clientInstanceId,
+      compositionId,
       expectedHostEpoch: registration.hostEpoch,
       expectedRootId: registration.rootId,
+      expectedCompositionRevision: staleCompatibility
+        ? undefined
+        : registration.compositionRevision,
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
@@ -1192,6 +1222,9 @@ export async function connectResolvedRuntimeHost(
     if (failure instanceof RuntimeHostRootMismatchError) {
       return { kind: 'unavailable', reason: 'root_mismatch', registration };
     }
+    if (failure instanceof RuntimeHostCompositionMismatchError) {
+      return { kind: 'unavailable', reason: 'composition_mismatch', registration };
+    }
     if (failure instanceof ElectionDeadlineElapsedError) {
       return { kind: 'election_deadline_elapsed', endpointConnected: true };
     }
@@ -1208,8 +1241,10 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly helloProtocol?: ProtocolRange;
   readonly hostProtocol?: ProtocolRange;
   readonly clientInstanceId: string;
+  readonly compositionId: string;
   readonly expectedHostEpoch?: string;
   readonly expectedRootId?: string;
+  readonly expectedCompositionRevision?: string;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
 }
@@ -1229,6 +1264,7 @@ async function exchangeRuntimeHostHandshake(
     protocolMin: helloProtocol.min,
     protocolMax: helloProtocol.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: input.compositionId,
   });
   const handshake = decodeHostFrame(await input.transport.read(0));
   if (!('kind' in handshake)) {
@@ -1245,6 +1281,13 @@ async function exchangeRuntimeHostHandshake(
     throw new RuntimeHostEpochMismatchError();
   }
   if (handshake.kind === 'incompatible') return { kind: 'incompatible', handshake };
+  if (
+    handshake.compositionId !== input.compositionId ||
+    (input.expectedCompositionRevision !== undefined &&
+      handshake.compositionRevision !== input.expectedCompositionRevision)
+  ) {
+    throw new RuntimeHostCompositionMismatchError();
+  }
   if (handshake.kind === 'draining') return { kind: 'draining' };
   if (input.expectedRootId && handshake.rootId !== input.expectedRootId) {
     throw new RuntimeHostRootMismatchError();
@@ -1272,6 +1315,7 @@ async function exchangeRuntimeHostHandshake(
 
 class RuntimeHostEpochMismatchError extends Error {}
 class RuntimeHostRootMismatchError extends Error {}
+class RuntimeHostCompositionMismatchError extends Error {}
 
 function requireRemoteWebSocketUrl(value: string): URL {
   const url = new URL(value);

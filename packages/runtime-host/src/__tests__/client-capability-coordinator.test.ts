@@ -135,7 +135,12 @@ describe('Host Client Capability coordinator', () => {
     let observedCall: unknown;
     let connection!: ClientCapabilityConnection;
     connection = coordinator.attachConnection(
-      clientCapabilityConnectionIdentity('connection-a', 'connection-a', 'test-principal', true),
+      clientCapabilityConnectionIdentity(
+        'connection-a',
+        'connection-a',
+        'test-principal',
+        'capability_provider',
+      ),
       {
         send: async (frame) => {
           if (frame.kind !== 'client.capability.call') return;

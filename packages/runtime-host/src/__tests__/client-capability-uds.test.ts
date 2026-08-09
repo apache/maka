@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -44,7 +45,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 60_000,
-      compositionFactory: async () => {
+      composition: defineInteractiveRuntimeHostComposition(async () => {
         coordinator = new HostClientCapabilityCoordinator({
           activation: new RuntimePolicyActivationGate(),
           onModelToolsChanged: () => undefined,
@@ -62,7 +63,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
           recover: async () => undefined,
           close: async () => coordinator?.close(),
         };
-      },
+      }),
     });
 
     const connected = await connectRuntimeHost({

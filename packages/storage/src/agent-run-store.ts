@@ -305,6 +305,17 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(runId, 'Invalid run id');
     return this.#lease.transaction('write', () => {
       const current = readSqliteAgentRun(this.#lease.database, sessionId, runId);
+      if (Object.hasOwn(patch, 'runComposition')) {
+        if (!patch.runComposition) {
+          throw new Error('AgentRun Run Composition cannot be cleared');
+        }
+        if (
+          current.runComposition &&
+          !isDeepStrictEqual(current.runComposition, patch.runComposition)
+        ) {
+          throw new Error('AgentRun Run Composition is immutable');
+        }
+      }
       const next = normalizeAgentRunHeader(
         { ...current, ...patch, sessionId, runId },
         sessionId,
@@ -1026,6 +1037,7 @@ const MUTABLE_AGENT_RUN_HEADER_FIELDS = new Set<keyof AgentRunHeader>([
   'status',
   'updatedAt',
   'completedAt',
+  'runComposition',
   'failureClass',
   'failureMessage',
   'abortSource',

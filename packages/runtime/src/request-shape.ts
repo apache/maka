@@ -452,8 +452,16 @@ function preparedSegment(
   };
 }
 
-export function stableHash(value: unknown): string {
+export function stableHash(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(stableStringify(value)).digest('hex')}`;
+}
+
+export function toolCatalogHash(tools: readonly MakaTool[]): `sha256:${string}` {
+  return stableHash(
+    [...tools]
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      .map(toolShapeForDiagnostics),
+  );
 }
 
 export function stableStringify(value: unknown): string {

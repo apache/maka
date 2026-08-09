@@ -103,7 +103,7 @@ function helpText(): string {
     '  maka runtime-host access issue --principal <id> --grant <operation>',
     '  maka runtime-host access issue --kind capability-provider --principal <id>',
     '  maka runtime-host access revoke --credential <id>',
-    '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path>',
+    '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
     '',
     'Options:',
     '  -h, --help        Show help',
@@ -194,7 +194,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       return runRuntimeHostCapabilityProviderCli({
         url: command.url,
         mcpConfigPath: command.mcpConfigPath,
-        ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+        expectedRootId: command.expectedRootId,
         ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
         ...(command.clientIdentityPath ? { clientIdentityPath: command.clientIdentityPath } : {}),
       });

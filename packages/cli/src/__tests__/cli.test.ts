@@ -35,12 +35,27 @@ describe('Maka CLI args', () => {
           'ws://127.0.0.1:43120',
           '--mcp-config',
           '/srv/maka/mcp.json',
+          '--expected-root',
+          'root-1',
         ],
         {
           kind: 'runtime-host-capability-provider-serve',
           url: 'ws://127.0.0.1:43120',
           mcpConfigPath: '/srv/maka/mcp.json',
+          expectedRootId: 'root-1',
         },
+      ],
+      [
+        [
+          'runtime-host',
+          'capability-provider',
+          'serve',
+          '--url',
+          'ws://127.0.0.1:43120',
+          '--mcp-config',
+          '/srv/maka/mcp.json',
+        ],
+        { kind: 'error', message: '--expected-root is required', exitCode: 2 },
       ],
       [
         ['runtime-host', 'serve', '--root'],

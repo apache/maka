@@ -29,7 +29,7 @@ import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { buildGoalTools, GOAL_SET_TOOL_NAME, GOAL_STATUS_TOOL_NAME } from '../goal-tools.js';
 import type { GoalControlDecline } from '../goal-continuation.js';
-import { GoalContinuationCoordinator } from '../goal-continuation.js';
+import { GoalContinuationCoordinator, volatileGoalDurability } from '../goal-continuation.js';
 import { GoalManager } from '../goal-state.js';
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
@@ -363,35 +363,38 @@ describe('E2b — the goal refusals that a real coordinator produces are read to
       goalManager,
       evaluator: { evaluate: async () => '{}', close: async () => {} },
       getRecentContext: async () => 'recent context',
+      durability: volatileGoalDurability,
       admitTurn: () => ({ kind: 'unavailable', reason: 'not in this test' }),
       scheduler: { setTimeout: () => 0, clearTimeout: () => {} },
     } as never);
     const tools = buildGoalTools({ goalManager, goalContinuation: coordinator, now: () => 1000 });
     return {
       coordinator,
-      call: (name: string, turnId: string, args: Record<string, unknown> = {}) =>
+      call: async (name: string, turnId: string, args: Record<string, unknown> = {}) =>
         String(
-          tools.find((candidate) => candidate.name === name)!.impl(args as never, ctx({ turnId })),
+          await tools
+            .find((candidate) => candidate.name === name)!
+            .impl(args as never, ctx({ turnId })),
         ),
     };
   }
 
-  test('goal_changed does not invite a GoalSet that declines forever', () => {
+  test('goal_changed does not invite a GoalSet that declines forever', async () => {
     const { coordinator, call } = realGoalTools();
     // One turn registers before any goal exists; a second arms one and clears
     // it. The lease has moved on, nothing is active, and the first turn is now
     // past the "unfinished goal is active" guard and into the gate.
     coordinator.beginObservedTurn('session-1', 'turn-a');
     coordinator.beginObservedTurn('session-1', 'turn-b');
-    call(GOAL_SET_TOOL_NAME, 'turn-b', { condition: 'someone else' });
-    call('GoalClear', 'turn-b');
+    await call(GOAL_SET_TOOL_NAME, 'turn-b', { condition: 'someone else' });
+    await call('GoalClear', 'turn-b');
     assert.equal(
       (coordinator.activationStanding('session-1', 'turn-a') as { reason?: string }).reason,
       'goal_changed',
       'the scenario must really produce goal_changed',
     );
 
-    const first = call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' });
+    const first = await call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' });
     assertNoHostInternals(first);
     // Reading is still worth doing, and is still offered.
     assert.ok(first.includes(GOAL_STATUS_TOOL_NAME), first);
@@ -404,16 +407,16 @@ describe('E2b — the goal refusals that a real coordinator produces are read to
       /do not call GoalSet again in this turn/.test(first),
       `goal_changed is permanent within the turn and must say so: ${first}`,
     );
-    assert.equal(call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' }), first);
-    call('GoalClear', 'turn-a');
+    assert.equal(await call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' }), first);
+    await call('GoalClear', 'turn-a');
     assert.equal(
-      call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' }),
+      await call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' }),
       first,
       'no call available to this turn can change the refusal',
     );
   });
 
-  test('the GoalSet arm of goal_already_armed does not invite a retry either', () => {
+  test('the GoalSet arm of goal_already_armed does not invite a retry either', async () => {
     const { coordinator, call } = realGoalTools();
     // Reachable from GoalSet only once the armed goal has left `active` —
     // otherwise the "unfinished goal is active" guard answers first. A later
@@ -421,23 +424,23 @@ describe('E2b — the goal refusals that a real coordinator produces are read to
     // release: releasing it needs a mutation, and the moved lease declines
     // every mutation this turn makes.
     coordinator.beginObservedTurn('session-1', 'turn-a');
-    call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' });
+    await call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'mine' });
     coordinator.beginObservedTurn('session-1', 'turn-c');
-    call('GoalClear', 'turn-c');
+    await call('GoalClear', 'turn-c');
     assert.equal(
       (coordinator.activationStanding('session-1', 'turn-a') as { reason?: string }).reason,
       'goal_already_armed',
     );
 
-    const first = call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'again' });
+    const first = await call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'again' });
     assertNoHostInternals(first);
     assert.ok(/already bound to a goal/.test(first), first);
     assert.ok(
       /do not call GoalSet again in this turn/.test(first),
       `goal_already_armed is permanent within the turn and must say so: ${first}`,
     );
-    call('GoalClear', 'turn-a');
-    assert.equal(call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'again' }), first);
+    await call('GoalClear', 'turn-a');
+    assert.equal(await call(GOAL_SET_TOOL_NAME, 'turn-a', { condition: 'again' }), first);
   });
 });
 

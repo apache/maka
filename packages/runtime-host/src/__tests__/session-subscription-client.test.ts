@@ -460,6 +460,8 @@ test('forces a same-v0 pre-epoch Host through its incompatible replacement path'
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: 0,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready',
       pid: process.pid,
       createdAt: new Date().toISOString(),
@@ -474,6 +476,8 @@ test('forces a same-v0 pre-epoch Host through its incompatible replacement path'
     if (result.kind === 'incompatible') {
       assert.equal(result.registration.compatibilityEpoch, 0);
       assert.equal(result.handshake.compatibilityEpoch, 0);
+      assert.equal(result.handshake.compositionId, 'maka.interactive');
+      assert.equal(result.handshake.compositionRevision, 'legacy');
       assert.equal(result.handshake.replacement, 'wait_for_idle_exit');
     }
     await serverTask.promise;
@@ -519,6 +523,8 @@ async function withProtocolPeer(
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready',
       pid: process.pid,
       createdAt: new Date().toISOString(),
@@ -558,6 +564,8 @@ async function acceptConnectionAndReadOpen(
     connectionId: 'connection-1',
     selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
+    compositionRevision: '1',
     state: 'ready',
   });
   const request = decodeClientFrame(await transport.read(1_000));
@@ -594,6 +602,8 @@ async function answerStatus(transport: FramedTransport, hostEpoch: string): Prom
     ok: true,
     result: {
       hostEpoch,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready',
       connections: 1,
       activeOperations: 1,

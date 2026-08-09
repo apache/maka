@@ -18,6 +18,7 @@ import {
 } from './record-schema.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
+import { decodeRunCompositionSnapshot, type RunCompositionSnapshot } from './run-composition.js';
 
 export const AGENT_RUN_STATUSES = [
   'created',
@@ -144,6 +145,8 @@ export interface AgentRunHeader {
   agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
   /** Effective tool protocol for this run. Optional on legacy runs. */
   toolMode?: ToolMode;
+  /** Immutable composer-owned prompt and tool-surface snapshot committed before provider dispatch. */
+  runComposition?: RunCompositionSnapshot;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -457,6 +460,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'orchestrationSource',
     'agentSwarmAuthorization',
     'toolMode',
+    'runComposition',
   ],
 );
 
@@ -490,6 +494,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.rootExecutionKind === undefined || value.rootExecutionKind === 'context_compact') &&
     !(value.automationId !== undefined && value.goalId !== undefined) &&
     (value.toolMode === undefined || isToolMode(value.toolMode)) &&
+    (value.runComposition === undefined || isRunCompositionSnapshot(value.runComposition)) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&
@@ -520,6 +525,15 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   if (!valid) throw new Error('Invalid AgentRun header schema');
   if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
   return value as unknown as AgentRunHeader;
+}
+
+function isRunCompositionSnapshot(value: unknown): value is RunCompositionSnapshot {
+  try {
+    decodeRunCompositionSnapshot(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isAgentRunContinuationSource(value: unknown): value is AgentRunContinuationSource {

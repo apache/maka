@@ -10,6 +10,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   createUnavailableDomainOperationHandlers,
+  defineInteractiveRuntimeHostComposition,
   RuntimeHostKernel,
   type RuntimeHostComposition,
 } from '@maka/runtime-host/server';
@@ -38,7 +39,7 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 10_000,
-      compositionFactory: async () => ({
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
           'pricing.query': async (input) => {
             if (input.kind === 'continue' && input.revision !== revision) {
@@ -91,7 +92,7 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
         beginDrain() {},
         async recover() {},
         async close() {},
-      }),
+      })),
     });
     const connected = await connectRuntimeHost({
       rootPath: base,

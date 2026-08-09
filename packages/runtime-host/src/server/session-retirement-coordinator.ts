@@ -426,7 +426,7 @@ export class HostSessionRetirementCoordinator {
 
     const automation = await this.#automation.beginSessionRetirement(family.sessionIds);
     try {
-      const goal = this.#goals.beginSessionRetirement(family.sessionIds, kind);
+      const goal = await this.#goals.beginSessionRetirement(family.sessionIds, kind);
       return { goal, automation };
     } catch (error) {
       automation.rollback();
@@ -465,7 +465,7 @@ export class HostSessionRetirementCoordinator {
   }
 
   async #drainCleanup(): Promise<void> {
-    while (!this.#closing && this.#cleanupQueue.size > 0) {
+    while (this.#cleanupQueue.size > 0) {
       const batch = [...this.#cleanupQueue];
       this.#cleanupQueue.clear();
       await Promise.allSettled(batch.map((sessionId) => this.#cleanupRetiredSession(sessionId)));

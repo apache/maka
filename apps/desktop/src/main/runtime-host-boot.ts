@@ -49,6 +49,10 @@ import {
   seedE2eFixture,
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
+import {
+  readWithFallback,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
 import { mainProcessLogBuffer } from "./main-process-diagnostics.js";
 import {
@@ -61,6 +65,7 @@ import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
   createDesktopTaskSubmissionReadinessService,
   registerTaskSubmissionReadinessIpc,
+  type DesktopModelTargetResolution,
 } from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerPlanReminderIpc } from "./plan-reminders-ipc-main.js";
@@ -509,7 +514,7 @@ wireLifecycle();
 
 function registerHostClientIpc(
   client: DesktopRuntimeHostClient,
-  scopedIpc: Pick<typeof ipcMain, "handle">,
+  scopedIpc: ReconnectableReadIpcMain,
   controls: DesktopRuntimeHostCandidateControls,
 ): () => Promise<void> {
   const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
@@ -708,51 +713,51 @@ function registerHostClientIpc(
     upsertMilestone: (id, status) =>
       settingsStore.upsertOnboardingMilestone(id, status),
     clearMilestone: (id) => settingsStore.clearOnboardingMilestone(id),
-    hasCredential: async (connection) => {
-      if (!providerAuthRequiresSecret(connection.providerType)) return true;
-      const catalog = await client.loadConnectionCatalog();
-      const entry = catalog.connections.find(
-        ({ slug }) => slug === connection.slug,
-      );
-      if (!entry) return false;
-      const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
-      const status = await client.queryCredential({
-        scope: "connection",
-        connectionId: entry.connectionId,
-        kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
-      });
-      return status?.configured === true;
-    },
+    hasCredential: (connection) =>
+      readWithFallback(async () => {
+        if (!providerAuthRequiresSecret(connection.providerType)) return true;
+        const catalog = await client.loadConnectionCatalog();
+        const entry = catalog.connections.find(
+          ({ slug }) => slug === connection.slug,
+        );
+        if (!entry) return false;
+        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const status = await client.queryCredential({
+          scope: "connection",
+          connectionId: entry.connectionId,
+          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+        });
+        return status?.configured === true;
+      }, false),
   });
   const taskSubmissionReadinessService = createDesktopTaskSubmissionReadinessService({
     workspaceRoot,
     runtimeState: () => ({ state: client.lifecycleState, checkedAt: Date.now() }),
-    resolveModelTarget: async (requestedSlug) => {
-      const catalog = await client.loadConnectionCatalog();
-      const connections = projectHostConnections(catalog);
-      const connectionSlug = requestedSlug ?? (catalog.defaultTarget === null
-        ? undefined
-        : catalog.connections.find(
-            ({ connectionId }) => connectionId === catalog.defaultTarget?.connectionId,
-          )?.slug);
-      if (!connectionSlug) return { kind: "missing_default" };
-      const connection = connections.find(({ slug }) => slug === connectionSlug);
-      if (!connection) return { kind: "connection_missing", connectionSlug };
-      if (!providerAuthRequiresSecret(connection.providerType)) {
-        return { kind: "resolved", connection, hasSecret: true };
-      }
-      const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
-      if (!entry) return { kind: "connection_missing", connectionSlug };
-      const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
-      const hasSecret = await client.queryCredential({
+    resolveModelTarget: (requestedSlug) =>
+      readWithFallback<DesktopModelTargetResolution>(async () => {
+        const catalog = await client.loadConnectionCatalog();
+        const connections = projectHostConnections(catalog);
+        const connectionSlug = requestedSlug ?? (catalog.defaultTarget === null
+          ? undefined
+          : catalog.connections.find(
+              ({ connectionId }) => connectionId === catalog.defaultTarget?.connectionId,
+            )?.slug);
+        if (!connectionSlug) return { kind: "missing_default" } as const;
+        const connection = connections.find(({ slug }) => slug === connectionSlug);
+        if (!connection) return { kind: "connection_missing", connectionSlug } as const;
+        if (!providerAuthRequiresSecret(connection.providerType)) {
+          return { kind: "resolved", connection, hasSecret: true } as const;
+        }
+        const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
+        if (!entry) return { kind: "connection_missing", connectionSlug } as const;
+        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const hasSecret = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
           kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
-        })
-        .then((status) => status?.configured === true)
-        .catch(() => undefined);
-      return { kind: "resolved", connection, hasSecret };
-    },
+        }).then((status) => status?.configured === true);
+        return { kind: "resolved", connection, hasSecret } as const;
+      }, { kind: "unknown" }),
   });
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);

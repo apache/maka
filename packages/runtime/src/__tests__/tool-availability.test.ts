@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   ToolAvailabilityRuntime,
   LOAD_TOOLS_NAME,
+  toolAvailabilityHash,
   type RuntimeEventLike,
   type StepLike,
 } from '../tool-availability.js';
@@ -29,6 +30,21 @@ const ctx = {
   abortSignal: new AbortController().signal,
   emitOutput: () => {},
 };
+
+test('tool availability hash captures policy while canonicalizing group members', () => {
+  const full = toolAvailabilityHash({ economy: false });
+  const economy = toolAvailabilityHash({
+    economy: true,
+    groups: [{ id: 'docs', toolNames: ['docs_read', 'docs_edit', 'docs_read'] }],
+  });
+  const reordered = toolAvailabilityHash({
+    economy: true,
+    groups: [{ id: 'docs', toolNames: ['docs_edit', 'docs_read'] }],
+  });
+
+  assert.notEqual(full, economy);
+  assert.equal(economy, reordered);
+});
 
 // rive/docs grouped; Read/Write ungrouped (always visible).
 function runtime(economy: boolean) {
