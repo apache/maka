@@ -297,8 +297,4 @@
   justify-content: flex-end;
 }
 
-.plan-mode-error {
-  font: var(--maka-text-supporting);
-  margin: var(--space-1-5) 0 0;
-  color: var(--destructive-text);
-}
+

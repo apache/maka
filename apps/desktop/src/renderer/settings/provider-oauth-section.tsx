@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { HStack, Text, VStack } from '@astryxdesign/core';
+import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
 import { type ProviderType } from '@maka/core';
 import {
   Badge,
@@ -222,7 +222,7 @@ function SubscriptionLoginPanel(props: {
         </Text>
       )}
       {flow.errorMessage && (
-        <Text type="supporting" color="secondary">{flow.errorMessage}</Text>
+        <Banner status="error" role="alert" title={flow.errorMessage} />
       )}
       <HStack gap={2} hAlign="end">
         {!flow.isLoggedIn ? (

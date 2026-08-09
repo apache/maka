@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
+import { Banner } from '@astryxdesign/core/Banner';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   ChatView,
   ChatSurfaceLayout,
@@ -10,7 +12,6 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import { ICON_SIZE, Loader2 } from '@maka/ui/icons';
 import type { SessionSummary } from '@maka/core';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
@@ -180,7 +181,9 @@ export function QuoteCompanionPanel(props: {
         conversationKey={companion.companionSession?.id ?? props.sourceSession?.id}
         composer={
           <>
-            {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}
+            {companion.error && (
+              <Banner status="error" role="alert" title={companion.error} />
+            )}
             {(companion.activeSandboxBoundary || companion.activeQuestion) && (
               <div className="maka-composer-interaction-slot">
                 {companion.activeSandboxBoundary && (
@@ -275,18 +278,8 @@ export function QuoteCompanionPanel(props: {
           }}
           emptyOverride={
             companion.preparing ? (
-              <div
-                className="maka-quote-companion-preparing maka-turn-processing"
-                role="status"
-                aria-busy="true"
-                aria-live="polite"
-              >
-                <Loader2
-                  size={ICON_SIZE.control}
-                  aria-hidden="true"
-                  className="maka-turn-processing-spinner"
-                />
-                <span className="maka-turn-indicator-text">{copy.preparing}</span>
+              <div className="maka-quote-companion-preparing maka-turn-processing">
+                <Spinner size="sm" shade="subtle" label={copy.preparing} />
               </div>
             ) : (
               <div className="maka-quote-companion-empty" aria-hidden="true" />

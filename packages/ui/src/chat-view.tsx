@@ -16,7 +16,7 @@ import type {
   StoredMessage,
 } from '@maka/core';
 import { isDeepResearchSession } from '@maka/core';
-import { Button, ButtonGroup, ChatMessageList, EmptyState } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
@@ -533,9 +533,15 @@ export function ChatView(props: {
 
   const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
   const conversationItems = props.conversationItems ?? [];
-  const showEmptyState = chat.length === 0 && !streamingActive && conversationItems.length === 0;
+  const showEmptyState =
+    (chat.length === 0 && !streamingActive && conversationItems.length === 0)
+    || Boolean(props.messageLoading && chat.length === 0 && conversationItems.length === 0);
   const emptyContent = props.messageLoading
-    ? undefined
+    ? (
+        <div className="maka-chat-message-loading">
+          <Spinner size="md" shade="subtle" label={copy.loading} />
+        </div>
+      )
     : props.messageLoadError
       ? (
           <EmptyState

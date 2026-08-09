@@ -23,6 +23,13 @@
   width: 100%;
 }
 
+.maka-chat-message-loading {
+  display: grid;
+  place-items: center;
+  min-height: min(240px, 40vh);
+  padding: var(--space-6);
+}
+
 /* Astryx's ChatMessageList renders a `flex: 1` spacer before its rows so a
    short conversation sits on the composer instead of hanging from the top.
    That spacer is unconditional, so on the empty surface it splits the column

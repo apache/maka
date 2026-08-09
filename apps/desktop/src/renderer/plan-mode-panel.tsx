@@ -6,6 +6,7 @@ import type {
   SessionEvent,
   SessionSummary,
 } from '@maka/core';
+import { Banner } from '@astryxdesign/core/Banner';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Badge, type BadgeVariant, Button as UiButton, useToast } from '@maka/ui';
 
@@ -222,7 +223,7 @@ export function PlanProposalCard(props: {
           </div>
         )}
         {planMode.error && reviewable && (
-          <p className="plan-mode-error" role="alert">{planMode.error}</p>
+          <Banner status="error" role="alert" title={planMode.error} />
         )}
       </div>
     </section>
@@ -312,7 +313,7 @@ export function PlanExecutionPanel(props: {
           )}
         </div>
       </Collapsible>
-      {planMode.error && <p className="plan-mode-error" role="alert">{planMode.error}</p>}
+      {planMode.error && <Banner status="error" role="alert" title={planMode.error} />}
     </section>
   );
 }

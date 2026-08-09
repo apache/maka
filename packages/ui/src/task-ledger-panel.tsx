@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
-import { Collapsible, EmptyState, IconButton, Spinner } from '@astryxdesign/core';
+import { Banner, Collapsible, EmptyState, IconButton, Spinner } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
   ICON_SIZE,
@@ -59,9 +59,12 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
   return (
     <section className="maka-task-ledger-panel" aria-label={copy.ariaLabel}>
       {props.error ? (
-        <div className="maka-task-ledger-message" role="alert">
-          <span>{props.error}</span>
-          {props.onRetry && (
+        <Banner
+          status="error"
+          role="alert"
+          className="maka-task-ledger-message"
+          title={props.error}
+          endContent={props.onRetry ? (
             <IconButton
               variant="ghost"
               size="sm"
@@ -71,8 +74,8 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               tooltip={copy.retry}
               icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
             />
-          )}
-        </div>
+          ) : undefined}
+        />
       ) : props.loading && props.tasks.length === 0 ? (
         <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-task-ledger-message" />
       ) : (

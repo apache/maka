@@ -44,6 +44,7 @@ import {
   syntaxLanguageForPath,
   useUiLocale,
 } from '@maka/ui';
+import { Banner } from '@astryxdesign/core/Banner';
 import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
@@ -342,10 +343,14 @@ function FailureCard(props: {
   description: string;
 }) {
   return (
-    <div className="maka-artifact-preview-fail" data-tone={props.tone} role="status">
-      <div className="maka-artifact-preview-fail-title">{props.title}</div>
-      <p className="maka-artifact-preview-fail-body">{props.description}</p>
-    </div>
+    <Banner
+      className="maka-artifact-preview-fail"
+      data-tone={props.tone}
+      status={props.tone === 'destructive' ? 'error' : 'info'}
+      role="status"
+      title={props.title}
+      description={props.description}
+    />
   );
 }
 

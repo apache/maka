@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Link } from '@astryxdesign/core';
+import { Banner, EmptyState, Link } from '@astryxdesign/core';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
 import { Button, Selector, StatusDot, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
@@ -388,9 +388,7 @@ export function WebSearchSettingsPage(props: {
       )}
 
       {liveQueryError && (
-        <div className="settingsConnectionMeta" role="alert">
-          <span>{copy.queryFailed(liveQueryError)}</span>
-        </div>
+        <Banner status="error" role="alert" title={copy.queryFailed(liveQueryError)} />
       )}
       {(() => {
         // PR-SETTINGS-WEB-SEARCH-URL-HARDEN-0: match the chat-side
@@ -420,7 +418,7 @@ export function WebSearchSettingsPage(props: {
                 )
             : null;
         if (safeRows && safeRows.length === 0 && !liveQueryError) {
-          return <div className="settingsConnectionMeta">{copy.noResults}</div>;
+          return <EmptyState isCompact title={copy.noResults} />;
         }
         if (safeRows && safeRows.length > 0) {
           return (

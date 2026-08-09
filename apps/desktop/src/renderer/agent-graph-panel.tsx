@@ -5,7 +5,7 @@ import type {
   AgentGraphClientSnapshot,
 } from '@maka/runtime';
 import { IconButton } from '@maka/ui';
-import { ICON_SIZE, ChevronDown, Network } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronDown } from '@maka/ui/icons';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
@@ -289,7 +289,6 @@ export function AgentGraphPanel(props: {
                 <EmptyState
                   isCompact
                   className="maka-agent-graph-empty"
-                  icon={<Network size={ICON_SIZE.empty} aria-hidden="true" />}
                   title={copy.noOperators}
                 />
               ) : (

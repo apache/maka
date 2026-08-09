@@ -27,6 +27,7 @@
 import { useEffect, useState } from 'react';
 import type { ArtifactDescriptor } from '@maka/core';
 import { Button, useUiLocale } from '@maka/ui';
+import { Banner } from '@astryxdesign/core/Banner';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   type ArtifactPreviewInput,
@@ -106,39 +107,22 @@ export function UnsupportedArtifactPreview(props: {
   const catalog = getArtifactCopy(locale);
   const copy = describeUnsupportedReason(props.reason, catalog);
   return (
-    <div className="maka-artifact-preview-unsupported" data-reason={props.reason} role="status">
-      <div className="maka-artifact-preview-unsupported-title">{copy.title}</div>
-      <p className="maka-artifact-preview-unsupported-body">{copy.description}</p>
-      <dl className="maka-artifact-preview-unsupported-meta">
-        <div>
-          <dt>{catalog.registry.name}</dt>
-          <dd>{props.input.name || catalog.registry.unnamed}</dd>
-        </div>
-        {props.input.mimeType && (
-          <div>
-            <dt>{catalog.registry.type}</dt>
-            <dd>{props.input.mimeType}</dd>
-          </div>
-        )}
-        <div>
-          <dt>{catalog.registry.size}</dt>
-          <dd>{formatPreviewSize(props.input.sizeBytes, locale)}</dd>
-        </div>
-      </dl>
-      {/* @kenji review @msg 9cf1ca7a — only render the button when a
-          real handler is provided. We deliberately do NOT render a
-          disabled button here: a disabled button suggests the action
-          is available "eventually", which is misleading for surfaces
-          that have no path-open IPC. */}
-      {props.onShowInFolder && (
+    <Banner
+      className="maka-artifact-preview-unsupported"
+      data-reason={props.reason}
+      status="info"
+      role="status"
+      title={copy.title}
+      description={copy.description}
+      endContent={props.onShowInFolder ? (
         <Button
           variant="secondary"
           className="maka-artifact-preview-unsupported-cta"
           onClick={props.onShowInFolder}
           label={catalog.registry.openInFinder}
         />
-      )}
-    </div>
+      ) : undefined}
+    />
   );
 }
 
