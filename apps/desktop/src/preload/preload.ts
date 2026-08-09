@@ -17,6 +17,10 @@ import type {
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type {
+  DesktopDiagnosticCopyResult,
+  DesktopErrorDiagnosticInput,
+} from './diagnostics-contract.js';
+import type {
   ConnectionEvent,
   ConnectionTestResult,
   CreateConnectionInput,
@@ -1171,6 +1175,11 @@ const makaBridge = {
     },
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult> {
       return ipcRenderer.invoke('app:saveArtifactAs', sessionId, artifactId);
+    },
+  },
+  diagnostics: {
+    copyErrorReport(input: DesktopErrorDiagnosticInput): Promise<DesktopDiagnosticCopyResult> {
+      return ipcRenderer.invoke('diagnostics:copyErrorReport', input);
     },
   },
   workspace: {

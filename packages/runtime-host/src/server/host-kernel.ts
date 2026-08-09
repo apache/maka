@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
+import { arch as osArch, release as osRelease } from 'node:os';
 import {
   assertInteractiveRootOwner,
   authenticateInteractiveRootOwner,
@@ -19,6 +20,7 @@ import {
   type HostHandshakeResult,
   type HostLifecycleState,
   type HostRegistration,
+  type HostStatusResult,
   type RequestFrame,
 } from '../protocol/index.js';
 import { FramedTransport } from '../transport/framed-transport.js';
@@ -36,6 +38,7 @@ import {
 import type { SessionContinuityService } from './session-continuity-service.js';
 import type { ClientCapabilityService } from './client-capability-service.js';
 import type { HostConfigurationChangeService } from './configuration-change-service.js';
+import { runtimeHostLogBuffer } from '../process-diagnostics.js';
 import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
@@ -463,17 +466,36 @@ export class RuntimeHostKernel {
       {
         'host.status': async () => ({
           ok: true,
+          result: this.#statusSnapshot(),
+        }),
+        'host.diagnostics.query': async () => ({
+          ok: true,
           result: {
-            hostEpoch: this.hostEpoch,
-            state: this.#state,
-            connections: this.#acceptedTransports.size,
-            activeOperations: this.#activeOperations,
-            activeResidencies: this.#activeResidencies,
+            ...this.#statusSnapshot(),
+            protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
+            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+            pid: process.pid,
+            processUptimeSeconds: Math.max(0, Math.floor(process.uptime())),
+            nodeVersion: process.versions.node,
+            platform: process.platform,
+            arch: osArch(),
+            osRelease: osRelease(),
+            logs: runtimeHostLogBuffer.snapshot(),
           },
         }),
       },
       domainHandlers,
     );
+  }
+
+  #statusSnapshot(): HostStatusResult {
+    return {
+      hostEpoch: this.hostEpoch,
+      state: this.#state,
+      connections: this.#acceptedTransports.size,
+      activeOperations: this.#activeOperations,
+      activeResidencies: this.#activeResidencies,
+    };
   }
 
   #beginCompositionDrain(): void {

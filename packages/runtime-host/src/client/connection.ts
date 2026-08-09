@@ -27,6 +27,7 @@ import {
   type DailyReviewMutateResult,
   type DailyReviewQueryInput,
   type DailyReviewQueryResult,
+  type HostDiagnosticsResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -162,6 +163,7 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
+  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult>;
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
@@ -382,6 +384,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       throw error;
     }
     return status;
+  }
+
+  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult> {
+    return this.request('host.diagnostics.query', {}, timeoutMs);
   }
 
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {

@@ -42,6 +42,11 @@ export interface ToastAction {
   onClick(): void;
 }
 
+export interface ToastErrorAction {
+  label: string;
+  onClick(input: Pick<ToastInput, 'title' | 'description'>): void;
+}
+
 export interface ToastInput {
   title: string;
   description?: string;
@@ -83,15 +88,15 @@ interface ActiveConfirm {
 const DEFAULT_DURATION = 4000;
 const ToastContext = createContext<ToastApi | null>(null);
 
-export function ToastProvider(props: { children: ReactNode }) {
+export function ToastProvider(props: { children: ReactNode; errorAction?: ToastErrorAction }) {
   return (
     <LayerProvider toast={{ position: 'bottomEnd' }}>
-      <ToastController>{props.children}</ToastController>
+      <ToastController errorAction={props.errorAction}>{props.children}</ToastController>
     </LayerProvider>
   );
 }
 
-function ToastController(props: { children: ReactNode }) {
+function ToastController(props: { children: ReactNode; errorAction?: ToastErrorAction }) {
   const showToast = useAstryxToast();
   const [confirmState, setConfirmState] = useState<ActiveConfirm | null>(null);
   const activeConfirmRef = useRef<PendingConfirm | null>(null);
@@ -104,22 +109,37 @@ function ToastController(props: { children: ReactNode }) {
       const id = `t${++idSeed.current}`;
       let dismissCurrent: ToastDismissFn | undefined;
       const duration = input.duration ?? DEFAULT_DURATION;
+      const errorAction = props.errorAction;
+      const actions = [
+        input.action,
+        input.variant === 'error' && errorAction
+          ? {
+              label: errorAction.label,
+              onClick: () => errorAction.onClick(input),
+            }
+          : undefined,
+      ].filter((action): action is ToastAction => action !== undefined);
       dismissCurrent = showToast({
         uniqueID: id,
         body: <ToastBody input={input} />,
         type: input.variant === 'error' ? 'error' : 'info',
         isAutoHide: duration > 0,
         autoHideDuration: duration > 0 ? duration : DEFAULT_DURATION,
-        endContent: input.action ? (
-          <AstryxButton
-            variant="ghost"
-            size="sm"
-            label={input.action.label}
-            onClick={() => {
-              input.action?.onClick();
-              dismissCurrent?.();
-            }}
-          />
+        endContent: actions.length > 0 ? (
+          <HStack gap={1}>
+            {actions.map((action, index) => (
+              <AstryxButton
+                key={`${index}:${action.label}`}
+                variant="ghost"
+                size="sm"
+                label={action.label}
+                onClick={() => {
+                  action.onClick();
+                  dismissCurrent?.();
+                }}
+              />
+            ))}
+          </HStack>
         ) : undefined,
         onHide: () => {
           dismissByIdRef.current.delete(id);
@@ -128,7 +148,7 @@ function ToastController(props: { children: ReactNode }) {
       dismissByIdRef.current.set(id, dismissCurrent);
       return id;
     },
-    [showToast],
+    [props.errorAction, showToast],
   );
 
   const dismiss = useCallback((id: string) => {

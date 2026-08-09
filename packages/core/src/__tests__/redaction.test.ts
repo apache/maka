@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { formatWithOptions } from 'node:util';
 import { describe, test } from 'node:test';
 import {
   generalizedErrorMessage,
@@ -11,12 +12,28 @@ describe('redactSecrets', () => {
     const text = redactSecrets(
       'Authorization: Bearer sk-live-secret-token-value Proxy-Authorization: Basic opaque-proxy-value and ghp_abcdefghijklmnopqrstuvwxyz',
     );
+    const inspected = redactSecrets(
+      formatWithOptions(
+        { colors: false },
+        {
+          authorization: 'Bearer inspected-secret-value',
+          'Proxy-Authorization': 'Basic inspected-proxy-secret',
+          proxyAuthorization: 'Token inspected-camel-secret',
+        },
+      ),
+    );
 
     assert.equal(text.includes('sk-live-secret-token-value'), false);
     assert.equal(text.includes('opaque-proxy-value'), false);
     assert.equal(text.includes('ghp_abcdefghijklmnopqrstuvwxyz'), false);
     assert.match(text, /Authorization: Bearer \[redacted\]/);
     assert.match(text, /Proxy-Authorization: Basic \[redacted\]/);
+    assert.equal(inspected.includes('inspected-secret-value'), false);
+    assert.equal(inspected.includes('inspected-proxy-secret'), false);
+    assert.equal(inspected.includes('inspected-camel-secret'), false);
+    assert.match(inspected, /authorization: 'Bearer \[redacted\]'/);
+    assert.match(inspected, /'Proxy-Authorization': 'Basic \[redacted\]'/);
+    assert.match(inspected, /proxyAuthorization: 'Token \[redacted\]'/);
   });
 
   test('applies bounded text patterns to top-level JSON number primitives', () => {

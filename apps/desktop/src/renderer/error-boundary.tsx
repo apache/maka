@@ -23,14 +23,8 @@ export function formatRendererErrorReport(error: Error, info?: ErrorInfo | null)
     'Maka renderer error report',
     `Captured at: ${new Date().toISOString()}`,
     '',
-    `${error.name}: ${error.message}`,
+    formatRendererErrorDetails(error, info),
   ];
-  if (error.stack) {
-    lines.push('', 'Stack:', error.stack);
-  }
-  if (info?.componentStack) {
-    lines.push('', 'React component stack:', info.componentStack.trim());
-  }
   if (typeof navigator !== 'undefined' && navigator.userAgent) {
     lines.push('', `User agent: ${navigator.userAgent}`);
   }
@@ -86,7 +80,19 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
     const copyRequestId = ++this.copyRequestSeq;
     this.setState({ copyState: 'pending' });
     try {
-      await navigator.clipboard.writeText(formatRendererErrorReport(error, errorInfo));
+      const diagnostics = window.maka?.diagnostics;
+      if (diagnostics) {
+        const result = await diagnostics.copyErrorReport({
+          surface: 'renderer_crash',
+          title: `${error.name}: ${error.message}`,
+          details: formatRendererErrorDetails(error, errorInfo),
+          rendererUserAgent: navigator.userAgent,
+          rendererLocale: navigator.language,
+        });
+        if (!result.ok) throw new Error('Desktop diagnostic clipboard write failed');
+      } else {
+        await navigator.clipboard.writeText(formatRendererErrorReport(error, errorInfo));
+      }
       if (this.isCurrentCopyRequest(copyRequestId, error)) this.setState({ copyState: 'copied' });
     } catch {
       if (this.isCurrentCopyRequest(copyRequestId, error)) this.setState({ copyState: 'failed' });
@@ -156,4 +162,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
       </div>
     );
   }
+}
+
+function formatRendererErrorDetails(error: Error, info?: ErrorInfo | null): string {
+  const lines = [`${error.name}: ${error.message}`];
+  if (error.stack) lines.push('', 'Stack:', error.stack);
+  if (info?.componentStack) {
+    lines.push('', 'React component stack:', info.componentStack.trim());
+  }
+  return redactSecrets(lines.join('\n'));
 }

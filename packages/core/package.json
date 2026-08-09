@@ -99,6 +99,8 @@
     "./text-file-import": "./dist/text-file-import.js",
     "./redaction": "./dist/redaction.js",
     "./display-redaction": "./dist/display-redaction.js",
+    "./diagnostic-log": "./dist/diagnostic-log.js",
+    "./node-diagnostic-log": "./dist/node-diagnostic-log.js",
     "./result": "./dist/result.js",
     "./settings": "./dist/settings.js",
     "./mcp": "./dist/mcp.js",

@@ -12,3 +12,4 @@ export {
   type RuntimeHostCandidateOptions,
   type RuntimeHostCandidateResult,
 } from './candidate.js';
+export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';

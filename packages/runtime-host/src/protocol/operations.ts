@@ -11,7 +11,7 @@ import { EXECUTION_INSPECT_OPERATION_SPECS } from './execution-inspect.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
-import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
+import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
@@ -40,6 +40,8 @@ import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
 
 export type {
+  HostDiagnosticsInput,
+  HostDiagnosticsResult,
   HostLifecycleState,
   HostStatusInput,
   HostStatusResult,
@@ -139,7 +141,7 @@ export * from './usage-pricing.js';
 export * from './web-search.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
-  HOST_STATUS_OPERATION_SPECS,
+  HOST_BOOTSTRAP_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,

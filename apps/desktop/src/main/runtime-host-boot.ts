@@ -1,5 +1,6 @@
-import { app, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
+import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
+import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import {
   type ConnectionEvent,
@@ -37,6 +38,7 @@ import { releaseBrowserSession } from "./browser/session.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
+import { registerDesktopDiagnosticsIpc } from "./desktop-diagnostics-ipc-main.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
@@ -48,6 +50,7 @@ import {
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
 import { createMainWindowController } from "./main-window.js";
+import { mainProcessLogBuffer } from "./main-process-diagnostics.js";
 import {
   resolveDesktopSessionSelection,
   resolveNewSessionProjectInput,
@@ -764,6 +767,30 @@ function registerHostClientIpc(
 }
 
 function registerPersistentClientIpc(): void {
+  registerDesktopDiagnosticsIpc({
+    ipcMain,
+    environment: () => ({
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      electronVersion: process.versions.electron ?? "",
+      nodeVersion: process.versions.node,
+      chromeVersion: process.versions.chrome ?? "",
+      platform: process.platform,
+      arch: osArch(),
+      osRelease: osRelease(),
+      locale: app.getLocale(),
+      workspacePath: workspaceRoot,
+      homePath: homedir(),
+      processUptimeSeconds: process.uptime(),
+    }),
+    mainLogs: () => mainProcessLogBuffer.snapshot(),
+    getRuntimeHostDiagnostics: async () => {
+      if (!runtimePolicyClient) throw new Error("Runtime Host is unavailable");
+      return runtimePolicyClient.queryHostDiagnostics();
+    },
+    writeClipboard: (report) => clipboard.writeText(report),
+  });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",

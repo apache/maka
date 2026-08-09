@@ -7,12 +7,11 @@ import type { IpcMain } from 'electron';
 import type { BotRegistry, ComputerUseToolSet, MakaTool } from '@maka/runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
 import {
-  HOST_OPERATION_SPECS,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type OperationKey,
   type SessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
 import {
+  createUnavailableDomainOperationHandlers,
   RuntimeHostKernel,
   type RuntimeHostComposition,
 } from '@maka/runtime-host/server';
@@ -465,21 +464,10 @@ test('drives bounded Session domain projections through real UDS framing', async
 type TestHandlers = Partial<RuntimeHostComposition['handlers']>;
 
 function handlers(overrides: TestHandlers): RuntimeHostComposition['handlers'] {
-  const unavailable = Object.fromEntries(
-    (Object.keys(HOST_OPERATION_SPECS) as OperationKey[])
-      .filter((operation) => operation !== 'host.status')
-      .map((operation) => [
-        operation,
-        async () => ({
-          ok: false,
-          error: {
-            code: 'operation_unavailable',
-            message: `${operation} is unavailable in the Desktop adapter fixture`,
-          },
-        }),
-      ]),
-  );
-  return { ...unavailable, ...overrides } as RuntimeHostComposition['handlers'];
+  return {
+    ...createUnavailableDomainOperationHandlers(),
+    ...overrides,
+  } as RuntimeHostComposition['handlers'];
 }
 
 function catalogRevision(seed: string): `sha256:${string}` {

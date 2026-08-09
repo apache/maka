@@ -301,6 +301,7 @@ test('connection reset while operation admission is pending does not execute the
         activeResidencies: 0,
       },
     }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
     ...createHandlers(async (input) => {
       handlerCalls += 1;
       return {
@@ -548,6 +549,7 @@ test('an in-flight status does not consume the final domain request slot', async
         },
       };
     },
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
     ...createHandlers(async (input) => {
       const index = Number(input.turnId.slice('turn-'.length));
       domainEntered[index]?.resolve();
@@ -647,6 +649,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
         activeResidencies: 0,
       },
     }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -889,6 +892,7 @@ async function openHalfClosedDispatchedSession(
           activeResidencies: 0,
         },
       }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
       ...createHandlers(async (input) => {
         handlerEntered.resolve();
         await releaseHandler.promise;
@@ -1030,6 +1034,13 @@ function statusResponse(requestId: string): ResponseFrame {
     },
   };
 }
+
+const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<OperationHandlerMap, 'host.diagnostics.query'> = {
+  'host.diagnostics.query': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+};
 
 function largeFailureResponse(requestId: string): ResponseFrame {
   return {

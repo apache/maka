@@ -27,8 +27,9 @@ import {
   RUNTIME_POLICY_OPERATION_SPECS,
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
-import { HOST_STATUS_OPERATION_SPECS } from '../protocol/host-status.js';
+import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { composeOperationSpecMaps } from '../protocol/operation-spec.js';
+import { runtimeHostLogBuffer } from '../process-diagnostics.js';
 import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
@@ -47,7 +48,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 8);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 9);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'agent.graph.operator.query',
       'agent.graph.query',
@@ -84,6 +85,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'external-session.source.query',
       'goal.control',
       'goal.query',
+      'host.diagnostics.query',
       'host.status',
       'interaction.answer',
       'interaction.query',
@@ -1450,12 +1452,40 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('rejects duplicate operation keys while composing domain registries', () => {
     const composeUnchecked = composeOperationSpecMaps as (
-      left: typeof HOST_STATUS_OPERATION_SPECS,
-      right: typeof HOST_STATUS_OPERATION_SPECS,
+      left: typeof HOST_BOOTSTRAP_OPERATION_SPECS,
+      right: typeof HOST_BOOTSTRAP_OPERATION_SPECS,
     ) => unknown;
     assert.throws(
-      () => composeUnchecked(HOST_STATUS_OPERATION_SPECS, HOST_STATUS_OPERATION_SPECS),
+      () => composeUnchecked(HOST_BOOTSTRAP_OPERATION_SPECS, HOST_BOOTSTRAP_OPERATION_SPECS),
       /Duplicate Runtime Host operation key: host\.status/,
+    );
+  });
+
+  test('keeps Runtime Host logs within the diagnostics operation contract', () => {
+    for (let index = 0; index < 257; index += 1) {
+      runtimeHostLogBuffer.append('info', `entry ${index}`);
+    }
+    runtimeHostLogBuffer.append('error', '🚀'.repeat(3_000));
+    const logs = runtimeHostLogBuffer.snapshot();
+
+    assert.equal(logs.length, 256);
+    assert.doesNotThrow(() =>
+      HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'].decodeOutput({
+        hostEpoch: 'epoch-1',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 0,
+        activeResidencies: 0,
+        protocolVersion: 0,
+        compatibilityEpoch: 9,
+        pid: 42,
+        processUptimeSeconds: 1,
+        nodeVersion: '22.0.0',
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.6.0',
+        logs,
+      }),
     );
   });
 

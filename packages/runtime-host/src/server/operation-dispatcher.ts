@@ -11,6 +11,7 @@ import {
   type ResponseFrame,
   type ResponseFrameFor,
 } from '../protocol/index.js';
+import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 
 export interface ConnectionContext {
   hostEpoch: string;
@@ -33,7 +34,7 @@ export type OperationHandlerMap = {
   [K in OperationKey]: OperationHandler<K>;
 };
 
-export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
+export type DomainOperationKey = Exclude<OperationKey, keyof typeof HOST_BOOTSTRAP_OPERATION_SPECS>;
 export type TurnOperationKey = Extract<
   OperationKey,
   | 'turn.start'
@@ -187,7 +188,7 @@ export function composeOperationHandlers(
 export function createUnavailableDomainOperationHandlers(): DomainOperationHandlerMap {
   const handlers: Partial<DomainOperationHandlerMap> = {};
   for (const operation of Object.keys(HOST_OPERATION_SPECS) as OperationKey[]) {
-    if (operation === 'host.status') continue;
+    if (Object.hasOwn(HOST_BOOTSTRAP_OPERATION_SPECS, operation)) continue;
     const errors = HOST_OPERATION_SPECS[operation].errors as readonly HostOperationErrorCode[];
     if (!errors.includes('operation_unavailable')) {
       throw new Error(`${operation} does not declare operation_unavailable`);

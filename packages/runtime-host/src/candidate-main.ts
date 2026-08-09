@@ -2,6 +2,9 @@
 import { startRuntimeHostCandidate } from './server/candidate.js';
 import { runRuntimeHostProcessLifecycle } from './server/process-lifecycle.js';
 import { parseRuntimeHostCandidateArguments } from './candidate-cli.js';
+import { installRuntimeHostLogCapture } from './process-diagnostics.js';
+
+installRuntimeHostLogCapture();
 
 const options = parseRuntimeHostCandidateArguments(process.argv.slice(2));
 const result = await startRuntimeHostCandidate(options);

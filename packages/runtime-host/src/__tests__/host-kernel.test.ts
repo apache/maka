@@ -73,7 +73,7 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
-  test('elects one owner, serves status, and releases ownership after true-idle shutdown', async () => {
+  test('elects one owner, serves status and diagnostics, and releases ownership after true-idle shutdown', async () => {
     await withHostPaths(async (paths) => {
       const winner = await startTestRuntimeHostCandidate(paths, {
         rootPath: paths.root,
@@ -104,6 +104,14 @@ describe('non-serving Runtime Host kernel', () => {
         assert.equal(status.state, 'ready');
         assert.equal(status.connections, 1);
       }
+      const diagnostics = await connected.connection.queryHostDiagnostics();
+      assert.equal(diagnostics.hostEpoch, winner.host.hostEpoch);
+      assert.equal(diagnostics.state, 'ready');
+      assert.equal(diagnostics.pid, process.pid);
+      assert.equal(diagnostics.platform, process.platform);
+      assert.equal(diagnostics.protocolVersion, RUNTIME_HOST_PROTOCOL_VERSION);
+      assert.equal(diagnostics.compatibilityEpoch, RUNTIME_HOST_COMPATIBILITY_EPOCH);
+      assert.ok(Array.isArray(diagnostics.logs));
       await connected.connection.close();
       await winner.host.closed;
 

@@ -915,6 +915,10 @@ export class DesktopRuntimeHostClient {
     return this.#request("turn.query", input);
   }
 
+  queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
+    return this.connection.queryHostDiagnostics(2_000);
+  }
+
   stopTurn(
     input: OperationInput<"turn.stop">,
   ): Promise<OperationOutput<"turn.stop">> {

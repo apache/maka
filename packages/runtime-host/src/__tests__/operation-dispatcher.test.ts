@@ -162,6 +162,7 @@ function validHandlers(): OperationHandlerMap {
     }) as OperationOutcome<K>;
   return {
     'host.status': unavailable,
+    'host.diagnostics.query': unavailable,
     ...createUnavailableDomainOperationHandlers(),
   };
 }

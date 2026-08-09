@@ -82,6 +82,10 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import type {
+  DesktopDiagnosticCopyResult,
+  DesktopErrorDiagnosticInput,
+} from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core';
 import type {
@@ -804,6 +808,9 @@ export interface MakaBridge {
         }
     >;
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
+  };
+  diagnostics: {
+    copyErrorReport(input: DesktopErrorDiagnosticInput): Promise<DesktopDiagnosticCopyResult>;
   };
   workspace: {
     searchFiles(

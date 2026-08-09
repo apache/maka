@@ -36,6 +36,7 @@ import {
   LocaleProvider,
   ModuleHubSelector,
   ToastProvider,
+  type ToastErrorAction,
   type NavSelection,
   SessionListPanel,
   SkillsPage,
@@ -236,6 +237,22 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
   const uiLocale = resolveUiLocale(uiLocalePreference, systemUiLocale, uiLocaleOverride);
+  const errorToastAction = useMemo<ToastErrorAction>(
+    () => ({
+      label: getShellCopy(uiLocale).errorBoundary.copyReport,
+      onClick: (input) => {
+        void window.maka.diagnostics.copyErrorReport({
+            surface: 'toast',
+            title: input.title,
+            ...(input.description ? { description: input.description } : {}),
+            rendererUserAgent: navigator.userAgent,
+            rendererLocale: navigator.language,
+          })
+          .catch(() => undefined);
+      },
+    }),
+    [uiLocale],
+  );
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
@@ -244,7 +261,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
           `useUiLocale()` throws before anything renders. Still above every
           Astryx subtree. */}
       <AstryxLocaleProvider>
-        <ToastProvider>
+        <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
             <AppShellContent
               initialOnboardingSnapshot={initialOnboardingSnapshot}
