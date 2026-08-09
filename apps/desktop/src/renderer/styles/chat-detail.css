@@ -369,16 +369,16 @@
   border-radius: var(--radius-surface);
 }
 
-.maka-session-review-file > .astryx-collapsible-trigger {
+.maka-session-review-file > button {
   padding-inline: var(--space-3);
 }
 
-.maka-session-review-file > .astryx-collapsible-trigger > :first-child {
+.maka-session-review-file > button > :first-child {
   min-width: 0;
   flex: 1;
 }
 
-.maka-session-review-file > .astryx-collapsible-content {
+.maka-session-review-file > div {
   padding: 0 var(--space-3) var(--space-3);
 }
 
