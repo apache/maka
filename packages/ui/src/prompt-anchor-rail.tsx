@@ -18,6 +18,39 @@ const SCROLL_END_EPSILON_PX = 2;
  */
 const HOVER_FALLOFF_TICKS = 3;
 
+interface PromptRailResizeObserver {
+  observe(target: Element): void;
+  disconnect(): void;
+}
+
+type PromptRailResizeObserverFactory = (
+  onResize: () => void,
+) => PromptRailResizeObserver;
+
+const createPromptRailResizeObserver: PromptRailResizeObserverFactory = (onResize) =>
+  new ResizeObserver(onResize);
+
+/** Keep the active tick reachable without scrolling the transcript ancestor. */
+export function keepActivePromptRailTickVisible(rail: HTMLElement): void {
+  const tick = rail.querySelector<HTMLElement>('.maka-prompt-rail-tick[data-active="true"]');
+  if (!tick) return;
+  const railBox = rail.getBoundingClientRect();
+  const tickBox = tick.getBoundingClientRect();
+  if (tickBox.top < railBox.top) rail.scrollTop -= railBox.top - tickBox.top;
+  else if (tickBox.bottom > railBox.bottom)
+    rail.scrollTop += tickBox.bottom - railBox.bottom;
+}
+
+export function observeActivePromptRailVisibility(
+  rail: HTMLElement,
+  createObserver: PromptRailResizeObserverFactory = createPromptRailResizeObserver,
+): () => void {
+  const observer = createObserver(() => keepActivePromptRailTickVisible(rail));
+  observer.observe(rail);
+  keepActivePromptRailTickVisible(rail);
+  return () => observer.disconnect();
+}
+
 export interface PromptAnchorRailTurn {
   turnId: string;
   /** The user prompt text for this turn; used as the hover preview + a11y label. */
@@ -182,13 +215,8 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   useEffect(() => {
     const rail = railRef.current;
     if (!rail || activeTurnId === null) return;
-    const tick = rail.querySelector<HTMLElement>('.maka-prompt-rail-tick[data-active="true"]');
-    if (!tick) return;
-    const railBox = rail.getBoundingClientRect();
-    const tickBox = tick.getBoundingClientRect();
-    if (tickBox.top < railBox.top) rail.scrollTop -= railBox.top - tickBox.top;
-    else if (tickBox.bottom > railBox.bottom) rail.scrollTop += tickBox.bottom - railBox.bottom;
-  }, [activeTurnId]);
+    return observeActivePromptRailVisibility(rail);
+  }, [activeTurnId, turns]);
 
   function jumpTo(turnId: string): void {
     const el = scrollRef.current?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
