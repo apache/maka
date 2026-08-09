@@ -19,6 +19,7 @@ type RuntimeHostBotSessionClient = Pick<
   DesktopRuntimeHostClient,
   | 'reconcileExternalConversation'
   | 'openSession'
+  | 'queryTurn'
   | 'submitMessage'
   | 'updateSessionConfiguration'
 >;
@@ -146,6 +147,21 @@ export function createRuntimeHostBotSessionAdapter(
         }
         turnId.resolve(submitted.turnId);
         deps.emitSessionsChanged('status-change', sessionId, { turnId: submitted.turnId });
+        let canonicalTurn;
+        try {
+          canonicalTurn = await deps.client.queryTurn({
+            sessionId,
+            turnId: submitted.turnId,
+          });
+        } catch (error) {
+          await session.close().catch(() => undefined);
+          await completion.catch(() => undefined);
+          throwUnavailable(error, sessionId);
+          throw error;
+        }
+        if (canonicalTurn.status === 'waiting_for_user' || isTerminal(canonicalTurn.status)) {
+          return projectTerminalBotTurn(canonicalTurn, await session.transcript, submitted.turnId);
+        }
         return await completion;
       } finally {
         await session.close().catch(() => undefined);

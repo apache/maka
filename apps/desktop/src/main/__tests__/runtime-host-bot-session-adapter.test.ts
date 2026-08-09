@@ -138,6 +138,10 @@ test('starts collecting before submitting the stable source message for the Host
   const adapter = createRuntimeHostBotSessionAdapter({
     client: botClient({
       openSession: async () => handle,
+      queryTurn: async (input) => {
+        assert.deepEqual(input, { sessionId: 'session-1', turnId: 'host-turn-1' });
+        return runningTurn('session-1', 'host-turn-1');
+      },
       submitMessage: async (input) => {
         assert.equal(events.started, true);
         assert.deepEqual(input, {
@@ -180,6 +184,64 @@ test('starts collecting before submitting the stable source message for the Host
   ]);
 });
 
+test('recovers an older completed Turn from the canonical query and transcript', async () => {
+  const events = new AsyncFrameQueue();
+  const handle: DesktopRuntimeHostSession = {
+    snapshot: continuitySnapshot({
+      ...runningTurn('session-1', 'newer-turn'),
+      status: 'completed',
+      terminalEventId: 'terminal-newer',
+    }),
+    transcript: Promise.resolve([
+      {
+        type: 'assistant',
+        id: 'assistant-old',
+        turnId: 'historical-turn',
+        ts: 2,
+        text: 'Historical reply',
+        modelId: 'test-model',
+      },
+      {
+        type: 'assistant',
+        id: 'assistant-newer',
+        turnId: 'newer-turn',
+        ts: 3,
+        text: 'Newer reply',
+        modelId: 'test-model',
+      },
+    ]),
+    async close() {
+      events.end();
+    },
+    events,
+  };
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      openSession: async () => handle,
+      submitMessage: async () => ({
+        disposition: 'turn_started',
+        turnId: 'historical-turn',
+      }),
+      queryTurn: async () => ({
+        ...runningTurn('session-1', 'historical-turn'),
+        status: 'completed',
+        terminalEventId: 'terminal-old',
+      }),
+    }),
+    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    emitSessionsChanged() {},
+  });
+
+  assert.deepEqual(
+    await adapter.runTurn({
+      sessionId: 'session-1',
+      messageId: 'bot_source_old',
+      text: 'old message',
+    }),
+    { kind: 'completed', text: 'Historical reply' },
+  );
+});
+
 function botClient(overrides: Partial<BotClient>): BotClient {
   const unexpected = (): never => {
     throw new Error('Unexpected Runtime Host Bot client call');
@@ -187,6 +249,7 @@ function botClient(overrides: Partial<BotClient>): BotClient {
   return {
     reconcileExternalConversation: unexpected,
     openSession: unexpected,
+    queryTurn: unexpected,
     submitMessage: unexpected,
     updateSessionConfiguration: unexpected,
     ...overrides,

@@ -900,6 +900,15 @@ function connectionHarness(
           },
         };
       }
+      if (operation === 'turn.query') {
+        const turnInput = input as { sessionId: string; turnId: string };
+        return {
+          sessionId: turnInput.sessionId,
+          turnId: turnInput.turnId,
+          runId: `run-${label}`,
+          status: 'running',
+        };
+      }
       if (operation === 'turn.message.submit') {
         submitMessageCalls += 1;
         resolveTurnStarted?.();
