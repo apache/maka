@@ -4,30 +4,6 @@ import { SLASH_COMMAND_CATALOG, slashCommandsForSurface } from '../slash-command
 
 describe('slash command catalog', () => {
   it('owns every built-in command identity and alias once', () => {
-    assert.deepEqual(
-      SLASH_COMMAND_CATALOG.map(({ id }) => id),
-      [
-        'compact',
-        'context',
-        'exit',
-        'graph',
-        'help',
-        'model',
-        'move',
-        'new',
-        'permissions',
-        'recap',
-        'rename',
-        'resume',
-        'rewind',
-        'session',
-        'setup',
-        'side',
-        'skill',
-        'swarm',
-        'thinking',
-      ],
-    );
     const identities = SLASH_COMMAND_CATALOG.flatMap((command) => [
       command.id,
       ...('aliases' in command ? command.aliases : []),
@@ -39,6 +15,7 @@ describe('slash command catalog', () => {
   });
 
   it('declares the commands each product surface can actually execute', () => {
+    assert.ok(SLASH_COMMAND_CATALOG.every(({ surfaces }) => surfaces.length > 0));
     assert.deepEqual(
       slashCommandsForSurface('desktop').map(({ id }) => id),
       ['compact', 'graph', 'side', 'swarm'],

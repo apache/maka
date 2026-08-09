@@ -103,8 +103,13 @@ export function skillMentionQuery(query: string): string {
 }
 
 /** Return the searchable command query only when `/` starts the draft's first token. */
-export function slashCommandQuery(textBeforeCaret: string, rawQuery: string): string | null {
+export function slashCommandQuery(
+  textBeforeCaret: string,
+  textAfterCaret: string,
+  rawQuery: string,
+): string | null {
   if (rawQuery.toLowerCase().startsWith('skill:')) return null;
+  if (/^\S/.test(textAfterCaret)) return null;
   const triggerIndex = textBeforeCaret.length - rawQuery.length - 1;
   if (triggerIndex < 0 || textBeforeCaret[triggerIndex] !== '/') return null;
   return textBeforeCaret.slice(0, triggerIndex).trim() === '' ? rawQuery : null;

@@ -12,8 +12,6 @@ test('shows only slash commands executable in the current session state', async 
   await expect(freshCommands.getByRole('option')).toHaveCount(2);
   await expect(freshCommands.getByRole('option', { name: /使用 Graph.*\/graph/ })).toBeVisible();
   await expect(freshCommands.getByRole('option', { name: /使用 Swarm.*\/swarm/ })).toBeVisible();
-  await expect(freshCommands.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
-  await expect(freshCommands.getByRole('option', { name: /\/side/ })).toHaveCount(0);
 
   await composer.press('Escape');
   await composer.fill('seed session');
@@ -32,7 +30,7 @@ test('shows only slash commands executable in the current session state', async 
   await expect(groups.nth(0).getByRole('option')).toHaveCount(4);
 });
 
-test('stages a slash command without performing its action', async ({
+test('dispatches Compact without sending it as a prompt', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -44,14 +42,19 @@ test('stages a slash command without performing its action', async ({
   await composer.pressSequentially('/');
 
   const menu = page.getByRole('listbox', { name: '命令和技能' });
-  const side = menu.getByRole('group', { name: '命令' }).getByRole('option', {
-    name: /打开侧聊.*\/side/,
+  const compact = menu.getByRole('group', { name: '命令' }).getByRole('option', {
+    name: /压缩上下文.*\/compact/,
   });
-  await side.click();
+  await compact.click();
 
-  await expect.poll(() => composer.textContent()).toBe('/side ');
-  await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(0);
+  await expect.poll(() => composer.textContent()).toBe('/compact ');
   await expect(menu).not.toBeVisible();
+  await composer.press('Enter');
+
+  await composer.fill('after compact');
+  await composer.press('Enter');
+  await expect(page.getByText('Fake backend received: after compact')).toBeVisible();
+  await expect(page.getByText('Fake backend received: /compact')).toHaveCount(0);
 });
 
 test('offers commands only for the first token and keeps explicit Skill queries separate', async ({
@@ -69,6 +72,11 @@ test('offers commands only for the first token and keeps explicit Skill queries 
 
   await composer.fill('/skill:compact');
   await expect(inlineMenu.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
+
+  await composer.fill('/side');
+  await composer.press('Home');
+  await composer.press('ArrowRight');
+  await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
 });
 
 test('dispatches a staged slash command instead of steering it into a running turn', async ({
@@ -79,10 +87,22 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await composer.press('Enter');
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
-  await composer.fill('/side discuss separately');
+  await composer.fill('/compact explain');
   await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
   await composer.press('Enter');
 
+  await composer.fill('/');
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+  const commands = menu.getByRole('group', { name: '命令' });
+  await expect(commands.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
+  const side = commands.getByRole('option', { name: /打开侧聊.*\/side/ });
+  await side.click();
+  await expect.poll(() => composer.textContent()).toBe('/side ');
+  await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(0);
+
+  await composer.fill('/side discuss separately');
+  await composer.press('Enter');
+
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
-  await expect(page.getByText(/Acknowledged steering: \/side discuss separately/)).toHaveCount(0);
+  await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
 });

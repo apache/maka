@@ -217,8 +217,8 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
-    /** Insert a text-only instruction into the active turn at its next step boundary. */
-    onSteer?(
+    /** Submit while a turn is active; the host owns control-command versus steering semantics. */
+    onStreamingSubmit?(
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
@@ -713,6 +713,7 @@ export const Composer = forwardRef<
       const editable = editableNode();
       const selection = document.getSelection();
       let textBeforeCaret = textPort.getValue();
+      let textAfterCaret = '';
       if (
         editable &&
         selection?.focusNode &&
@@ -722,8 +723,11 @@ export const Composer = forwardRef<
         range.selectNodeContents(editable);
         range.setEnd(selection.focusNode, selection.focusOffset);
         textBeforeCaret = range.toString();
+        range.selectNodeContents(editable);
+        range.setStart(selection.focusNode, selection.focusOffset);
+        textAfterCaret = range.toString();
       }
-      const commandQuery = slashCommandQuery(textBeforeCaret, rawQuery);
+      const commandQuery = slashCommandQuery(textBeforeCaret, textAfterCaret, rawQuery);
       const query = skillMentionQuery(rawQuery);
       const commandItems = commandQuery === null
         ? []
@@ -918,7 +922,7 @@ export const Composer = forwardRef<
     const editable = editableNode();
     if (editable?.getAttribute('aria-expanded') !== 'true') return;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }, [props.mentionSkills, props.slashCommands]);
+  }, [locale, props.mentionSkills, props.slashCommands]);
 
   /**
    * An open menu must follow the caret, not just the text. `useTriggerMenu`
@@ -1034,12 +1038,8 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      const commandToken = text.trimStart().split(/\s+/, 1)[0];
-      const isSlashCommand = props.slashCommands?.some(
-        (command) => commandToken === `/${command.id}`,
-      );
-      const submit = !isSlashCommand && props.streaming && props.onSteer
-        ? props.onSteer
+      const submit = props.streaming && props.onStreamingSubmit
+        ? props.onStreamingSubmit
         : props.onSend;
       sent = await submit(
         text,
@@ -1766,7 +1766,7 @@ export const Composer = forwardRef<
           sendActions={(
             <div className="maka-composer-right-controls" />
           )}
-          sendButton={props.streaming && props.onSteer ? (
+          sendButton={props.streaming && props.onStreamingSubmit ? (
             <div className="maka-composer-running-actions">
               <IconButton
                 variant="ghost"
