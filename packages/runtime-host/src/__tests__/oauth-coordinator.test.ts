@@ -302,7 +302,9 @@ test('concurrent OAuth starts serialize and never dual-open active logins', asyn
     ]);
     // First is superseded while polling or still completing; second should authenticate.
     assert.ok(phases.some((phase) => phase.phase === 'authenticated'));
-    assert.ok(phases.every((phase) => phase.phase === 'authenticated' || phase.phase === 'cancelled'));
+    assert.ok(
+      phases.every((phase) => phase.phase === 'authenticated' || phase.phase === 'cancelled'),
+    );
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     client.close();
@@ -311,7 +313,11 @@ test('concurrent OAuth starts serialize and never dual-open active logins', asyn
 
 test('supersede waits for an admitted token poll instead of dropping the granted token', async () => {
   await withFixture('xai-oauth', async (fixture) => {
-    const client = await attachPresentation(fixture.capabilities, 'client-xai-deferred-supersede', []);
+    const client = await attachPresentation(
+      fixture.capabilities,
+      'client-xai-deferred-supersede',
+      [],
+    );
     let markPollAdmitted!: () => void;
     const pollAdmitted = new Promise<void>((resolve) => {
       markPollAdmitted = resolve;
@@ -377,7 +383,10 @@ test('supersede waits for an admitted token poll instead of dropping the granted
     );
     const second = await secondPromise;
     assert.equal(second.ok, true);
-    assert.equal((await waitForTerminal(coordinator, 'attempt-deferred-second')).phase, 'authenticated');
+    assert.equal(
+      (await waitForTerminal(coordinator, 'attempt-deferred-second')).phase,
+      'authenticated',
+    );
     assert.equal(starts, 2);
     assert.equal(fixture.invalidations, 2);
     assert.equal(fixture.activeResidencies, 0);
