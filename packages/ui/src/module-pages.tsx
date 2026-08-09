@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react';
 import type { PlanReminder } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import { ICON_SIZE, CalendarDays } from './icons.js';
-import { EmptyState } from '@astryxdesign/core';
+import { EmptyState, Spinner } from '@astryxdesign/core';
 import { ModulePage } from './primitives/module-page.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -33,8 +33,8 @@ function ModulePageFallback(props: { label: string; message: string }) {
 
 function ModulePanelFallback(props: { message: string }) {
   return (
-    <div className="maka-lazy-fallback" data-surface="module" role="status" aria-busy="true">
-      {props.message}
+    <div className="maka-lazy-fallback" data-surface="module">
+      <Spinner size="sm" shade="subtle" label={props.message} />
     </div>
   );
 }

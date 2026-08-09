@@ -50,6 +50,7 @@ import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
 import { Item } from '@astryxdesign/core/Item';
 import { Section } from '@astryxdesign/core/Section';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { SessionSummary } from '@maka/core';
@@ -97,17 +98,8 @@ const SessionTerminalPanel = lazy(() =>
 
 function WorkbarPanelLoading(props: { label: string }) {
   return (
-    <div
-      className="maka-workbar-panel-loading"
-      role="status"
-      aria-label={props.label}
-      aria-busy="true"
-    >
-      <Loader2
-        size={ICON_SIZE.chrome}
-        aria-hidden="true"
-        className="maka-workbar-tab-spinner"
-      />
+    <div className="maka-workbar-panel-loading">
+      <Spinner size="sm" shade="subtle" label={props.label} />
     </div>
   );
 }
@@ -680,8 +672,6 @@ function WorkbarLauncher(props: {
             tabIndex={index === firstEnabledActionIndex ? 0 : -1}
             startContent={<span className="maka-workbar-launcher-icon">{action.icon}</span>}
             label={action.label}
-            // Keep description out of visible secondary text — pre-change only
-            // exposed it to AT via aria-description.
             aria-description={action.description}
             endContent={
               action.shortcut ? (

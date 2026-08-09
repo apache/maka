@@ -5,8 +5,11 @@ import type {
   AgentGraphClientSnapshot,
 } from '@maka/runtime';
 import { IconButton } from '@maka/ui';
-import { ICON_SIZE, ChevronDown } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronDown, Network } from '@maka/ui/icons';
+import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Spinner } from '@astryxdesign/core/Spinner';
 
 type GraphPanelCopy = {
   title: string;
@@ -257,29 +260,38 @@ export function AgentGraphPanel(props: {
       {!collapsed ? (
         <div className="maka-agent-graph-content" id={contentId}>
           {stopError ? (
-            <p className="maka-agent-graph-error" role="alert">
-              {copy.stopFailed}
-            </p>
+            <Banner status="error" role="alert" title={copy.stopFailed} />
           ) : null}
 
-          {loading && !snapshot ? <p className="maka-agent-graph-empty">{copy.loading}</p> : null}
+          {loading && !snapshot ? (
+            <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-agent-graph-empty" />
+          ) : null}
           {error ? (
-            <p className="maka-agent-graph-error" role="alert">
-              <span>{copy.loadFailed}</span>{' '}
-              <Button
-                variant="secondary"
-                size="sm"
-                label={copy.retry}
-                onClick={() => refreshRef.current()}
-              />
-            </p>
+            <Banner
+              status="error"
+              role="alert"
+              title={copy.loadFailed}
+              endContent={(
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  label={copy.retry}
+                  onClick={() => refreshRef.current()}
+                />
+              )}
+            />
           ) : null}
 
           {snapshot ? (
             <>
               <div className="maka-agent-graph-section-label">{copy.operators}</div>
               {snapshot.operators.length === 0 ? (
-                <p className="maka-agent-graph-empty">{copy.noOperators}</p>
+                <EmptyState
+                  isCompact
+                  className="maka-agent-graph-empty"
+                  icon={<Network size={ICON_SIZE.empty} aria-hidden="true" />}
+                  title={copy.noOperators}
+                />
               ) : (
                 <ul className="maka-agent-graph-operators">
                   {snapshot.operators.map((operator) => {

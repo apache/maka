@@ -53,16 +53,14 @@
 
 .maka-agent-graph-progress,
 .maka-agent-graph-empty,
-.maka-agent-graph-error,
 .maka-agent-graph-omitted,
 .maka-agent-graph-results {
   font: var(--maka-text-supporting);
   color: var(--muted-foreground);
 }
 
-.maka-agent-graph-error {
+.maka-agent-graph-empty {
   margin: var(--space-2) 0 0;
-  color: var(--destructive-text);
 }
 
 /* Not in the muted-text group above: it names its own role, and a rule that

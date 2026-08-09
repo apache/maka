@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
-import { Collapsible, IconButton } from '@astryxdesign/core';
+import { Collapsible, EmptyState, IconButton, Spinner } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
   ICON_SIZE,
@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   CircleGauge,
   Clock,
+  ListTodo,
   RefreshCcw,
   X,
 } from './icons.js';
@@ -73,7 +74,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
           )}
         </div>
       ) : props.loading && props.tasks.length === 0 ? (
-        <div className="maka-task-ledger-message" role="status">{copy.loading}</div>
+        <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-task-ledger-message" />
       ) : (
         <>
           {model.activeCount > 0 ? (
@@ -81,7 +82,12 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <p className="maka-task-ledger-empty">{copy.empty}</p>
+            <EmptyState
+              isCompact
+              className="maka-task-ledger-empty"
+              icon={<ListTodo size={ICON_SIZE.empty} aria-hidden="true" />}
+              title={copy.empty}
+            />
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible

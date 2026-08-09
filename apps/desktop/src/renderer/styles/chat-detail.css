@@ -315,7 +315,6 @@
   border-radius: 0 0 var(--radius-element) var(--radius-element);
 }
 
-/* Astryx Item + role=menuitem sets aria-disabled, not the native disabled attr. */
 .maka-workbar-launcher-row[aria-disabled="true"] {
   cursor: default;
   opacity: 0.45;

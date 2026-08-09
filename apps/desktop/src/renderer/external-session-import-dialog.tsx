@@ -277,7 +277,6 @@ export function ExternalSessionImportDialog(props: {
               )}
 
               {noSource && (
-                /* Section-local absence (DESIGN.md §10 tier 1): title only. */
                 <EmptyState isCompact title={copy.unavailableTitle} />
               )}
 
@@ -316,7 +315,6 @@ export function ExternalSessionImportDialog(props: {
               )}
 
               {catalogEmpty && (
-                /* Section-local absence (DESIGN.md §10 tier 1): title only. */
                 <EmptyState isCompact title={copy.emptyTitle} />
               )}
 
@@ -337,9 +335,6 @@ export function ExternalSessionImportDialog(props: {
                     return (
                       <Item
                         key={session.id}
-                        // No parent role: Item renders a real <button> for
-                        // onClick, so every row is keyboard-reachable even
-                        // when selectedId is still null after catalog load.
                         className="maka-external-session-import-row"
                         label={session.name}
                         description={meta}

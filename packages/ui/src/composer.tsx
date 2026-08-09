@@ -1307,8 +1307,6 @@ export const Composer = forwardRef<
 
   return (
     <>
-      {/* U3: no-model dead-end guidance. Outside the form so it never grows
-          the composer's constant footprint (#740). */}
       {!props.hidden && noModelConnection && (
         <div className="maka-composer-no-model-hint" role="status">
           <span>{copy.noModelHint}</span>

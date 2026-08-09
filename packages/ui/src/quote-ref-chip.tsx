@@ -7,42 +7,12 @@ import type { QuoteRef } from '@maka/core';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
-/**
- * Inline quoted-excerpt chip, shown inside the composer (removable) and inside
- * a sent user message (read-only). A single-line pill rather than a card: a
- * quote is a *reference*, so it should read as one token beside the message
- * instead of competing with it for vertical space.
- *
- * An excerpt too long for the pill stays clipped until the user asks for it —
- * clicking expands the chip in place to the full text. The model receives the
- * excerpt verbatim either way (formatTextWithInlineRefs); this is presentation
- * only. Expandability is measured, not guessed from a character count, so it
- * holds for CJK and latin alike.
- *
- * Keeping the chip on the sent message is deliberate — a quote the user can
- * see before sending but not afterwards makes the turn unauditable.
- */
-
-/**
- * Strip a leading ATX heading marker from a quoted excerpt for display
- * (#2213).
- *
- * A quote can carry markdown source verbatim (selection capture keeps the raw
- * text), so a heading line such as `### Description` would render in the chip
- * as cramped literal hashes. The selection capture normalizes whitespace into
- * a single line, so an ATX marker can survive at the start of the excerpt
- * (other line prefixes like `- `, `> `, `1. ` survive too but are out of
- * scope); mid-text `#` runs are treated as content and left alone.
- *
- * Presentation only — the model still receives `quote.text` verbatim via
- * formatTextWithInlineRefs. CommonMark allows up to six `#` and requires a
- * space (or end of line) after the marker; `###Description` (no space) is not
- * a heading and is preserved.
- */
+/** Display-only: strip a leading ATX heading marker (`### Title`) from chip text. */
 export function stripQuoteHeadingMarkers(text: string): string {
   return text.replace(/^#{1,6}[ \t]+/, '');
 }
 
+/** Inline quote chip for the composer (removable) and sent user messages (read-only). */
 export function QuoteRefChip(props: {
   quote: QuoteRef;
   onRemove?: () => void;

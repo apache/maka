@@ -447,7 +447,6 @@ dialog:modal {
    drawn with `box-shadow`, which paints outside layout. The bottom border it
    used to carry was 1px the crumb did not have, so the trail lost a pixel of
    height the moment the field appeared. */
-/* className lands on Astryx TextInput's wrapper; style the inner field. */
 .maka-titlebar-identity__rename-input {
   min-width: 2rem;
   max-width: min(20rem, 100%);

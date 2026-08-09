@@ -220,14 +220,17 @@
     font: var(--maka-text-label);
   }
 
-.settingsMemoryEntryRow p,
-  .settingsMemoryEntryEmpty {
+.settingsMemoryEntryRow p {
     margin: 0;
     color: var(--foreground-secondary);
     font: var(--maka-text-body);
     white-space: pre-wrap;
     word-break: break-word;
   }
+
+.settingsMemoryEntryEmpty {
+  margin: var(--space-2) 0 0;
+}
 
 .settingsMemoryEntryActions {
   display: flex;
