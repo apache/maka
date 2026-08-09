@@ -43,10 +43,71 @@ export const EXCLUDE_BASENAME = [
   { re: /^use-.*\.ts$/, reason: 'hook implementation (UI is in consumer tsx)' },
 ];
 
-const ASTRYX_IMPORT_RE =
-  /from\s+['"]@astryxdesign\/core(?:\/[^'"]+)?['"]|from\s+['"]@astryxdesign\/core['"]/g;
-const ASTRYX_NAMED_RE =
-  /\b(Button|IconButton|TextInput|Selector|List|ListItem|Item|EmptyState|Spinner|Banner|Dialog|Layout|LayoutContent|LayoutHeader|LayoutPanel|Card|Section|Collapsible|ToggleButton|SegmentedControl|Heading|Text|HStack|VStack|Toolbar|Badge|Tooltip|CheckboxInput|Switch|Breadcrumbs|SideNav|AppShell|Token|Lightbox|ChatComposer|ChatLayout|ChatToolCalls|Divider|MetadataList|TabList|Tab)\b/g;
+/** Canonical Astryx component names we care about for inventory. */
+const ASTRYX_COMPONENTS = new Set([
+  'Button',
+  'IconButton',
+  'TextInput',
+  'Selector',
+  'List',
+  'ListItem',
+  'Item',
+  'EmptyState',
+  'Spinner',
+  'Banner',
+  'Dialog',
+  'DialogHeader',
+  'Layout',
+  'LayoutContent',
+  'LayoutHeader',
+  'LayoutPanel',
+  'Card',
+  'Section',
+  'Collapsible',
+  'ToggleButton',
+  'SegmentedControl',
+  'SegmentedControlItem',
+  'Heading',
+  'Text',
+  'HStack',
+  'VStack',
+  'Toolbar',
+  'Badge',
+  'Tooltip',
+  'CheckboxInput',
+  'Switch',
+  'Breadcrumbs',
+  'BreadcrumbItem',
+  'SideNav',
+  'AppShell',
+  'Token',
+  'Lightbox',
+  'ChatComposer',
+  'ChatLayout',
+  'ChatToolCalls',
+  'Divider',
+  'MetadataList',
+  'MetadataListItem',
+  'TabList',
+  'Tab',
+  'ContextMenu',
+  'ResizeHandle',
+]);
+
+/**
+ * @maka/ui barrel names that re-export Astryx (not lucide icons, not product-only).
+ * Keep narrow — icons.tsx is lucide-only and must stay astryx=none.
+ */
+const MAKA_UI_ASTRYX_REEXPORTS = new Set([
+  'Badge',
+  'Card',
+  'Button',
+  'IconButton',
+  'Spinner',
+  'EmptyState',
+  'Tooltip',
+  'Banner',
+]);
 const RAW_BUTTON_RE = /<\s*button\b/;
 const RAW_INPUT_RE = /<\s*input\b/;
 const RAW_SELECT_RE = /<\s*select\b/;
@@ -130,18 +191,87 @@ function roleFor(rel) {
 
 function stripComments(src) {
   return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '');
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/**
+ * Collect Astryx component names from real imports + JSX only (never comments).
+ * - import { Button as UiButton } from '@astryxdesign/core' → Button (canonical)
+ * - import { Badge } from '@maka/ui' when Badge is a known Astryx re-export
+ * - <Button / <UiButton only counts if bound from those imports
+ */
+function collectAstryxUsage(code) {
+  const localToCanonical = new Map(); // local binding → canonical name
+  const used = new Set();
+
+  // import { A, B as C } from '@astryxdesign/core...'  (and /subdir)
+  const importBlockRe =
+    /import\s*\{([^}]+)\}\s*from\s*['"](@astryxdesign\/core(?:\/[^'"]+)?|@maka\/ui(?:\/[^'"]+)?)['"]/g;
+  let im;
+  while ((im = importBlockRe.exec(code)) !== null) {
+    const spec = im[1];
+    const from = im[2];
+    const isAstryxPkg = from.startsWith('@astryxdesign/core');
+    const isMakaUiRoot = from === '@maka/ui';
+    for (const part of spec.split(',')) {
+      const bit = part.trim();
+      if (!bit) continue;
+      // type imports: type Foo
+      const cleaned = bit.replace(/^type\s+/, '').trim();
+      if (!cleaned || cleaned === 'type') continue;
+      const asMatch = cleaned.match(/^(\w+)\s+as\s+(\w+)$/);
+      let original;
+      let local;
+      if (asMatch) {
+        original = asMatch[1];
+        local = asMatch[2];
+      } else {
+        original = cleaned.split(/\s+/)[0];
+        local = original;
+      }
+      if (isAstryxPkg && ASTRYX_COMPONENTS.has(original)) {
+        localToCanonical.set(local, original);
+        used.add(original); // imported = available; count as used if also JSX or always?
+        // Import alone is enough to claim the primitive is in the dependency set;
+        // prefer also requiring JSX below for "uses".
+      } else if (isMakaUiRoot && MAKA_UI_ASTRYX_REEXPORTS.has(original)) {
+        localToCanonical.set(local, original);
+      }
+    }
+  }
+
+  // default/namespace imports: import X from '@astryxdesign/core/Button'
+  const defaultRe =
+    /import\s+(\w+)\s+from\s*['"]@astryxdesign\/core(?:\/([^'"]+))?['"]/g;
+  let dm;
+  while ((dm = defaultRe.exec(code)) !== null) {
+    const local = dm[1];
+    const sub = (dm[2] || '').split('/')[0];
+    if (sub && ASTRYX_COMPONENTS.has(sub)) {
+      localToCanonical.set(local, sub);
+    }
+  }
+
+  // JSX: <LocalName or <LocalName.
+  const jsxUsed = new Set();
+  const jsxRe = /<([A-Z][A-Za-z0-9]*)\b/g;
+  let jx;
+  while ((jx = jsxRe.exec(code)) !== null) {
+    const local = jx[1];
+    if (localToCanonical.has(local)) {
+      jsxUsed.add(localToCanonical.get(local));
+    }
+  }
+
+  // "Uses" = appeared in JSX with a binding from Astryx (or maka re-export).
+  // Import-only without JSX does not count (avoids unused import noise).
+  return jsxUsed;
 }
 
 function analyzeTsx(rel, text) {
   const code = stripComments(text);
-  const astryxImports = [...text.matchAll(ASTRYX_IMPORT_RE)].length > 0;
-  const named = new Set();
-  let m;
-  const re = new RegExp(ASTRYX_NAMED_RE.source, 'g');
-  while ((m = re.exec(text)) !== null) named.add(m[1]);
-  // Only count names that appear near astryx usage roughly — keep simple: all matches in file
+  const named = collectAstryxUsage(code);
   const rawButton = RAW_BUTTON_RE.test(code);
   const rawInput = RAW_INPUT_RE.test(code);
   const rawSelect = RAW_SELECT_RE.test(code);
@@ -151,24 +281,21 @@ function analyzeTsx(rel, text) {
   if (rawInput) gaps.push('raw `<input` (API Use-the-System)');
   if (rawSelect) gaps.push('raw `<select` (API Use-the-System)');
   if (rawTextarea) gaps.push('raw `<textarea` (API Use-the-System)');
-  if (!astryxImports && named.size === 0 && (rawButton || rawInput || rawSelect)) {
-    gaps.push('no Astryx import with raw controls (API Use-the-System)');
+  if (named.size === 0 && (rawButton || rawInput || rawSelect)) {
+    gaps.push('no Astryx import/JSX with raw controls (API Use-the-System)');
   }
   let severity = 'aligned';
   if (rawButton || rawInput || rawSelect) severity = 'blocker';
   else if (rawTextarea) severity = 'polish';
-  else if (!astryxImports && roleFor(rel) !== 'other') {
-    // pure composition without astryx may still be ok (wrappers)
-    severity = 'aligned';
-  }
+
   const note =
     gaps.length > 0
       ? gaps.join('; ')
-      : astryxImports || named.size
-        ? `aligned — uses Astryx (${[...named].slice(0, 8).join(', ') || 'import'})`
-        : 'aligned — no raw controls; no Astryx import required or pure layout/helper UI';
+      : named.size > 0
+        ? `aligned — uses Astryx (${[...named].sort().slice(0, 8).join(', ')})`
+        : 'aligned — no raw controls; no Astryx JSX usage';
   return {
-    astryx: astryxImports || named.size > 0 ? [...named].sort().join(', ') || 'import' : 'none',
+    astryx: named.size > 0 ? [...named].sort().join(', ') : 'none',
     gaps: note,
     severity,
   };

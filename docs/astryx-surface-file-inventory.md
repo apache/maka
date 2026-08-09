@@ -26,79 +26,79 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 
 | Path | Role | Astryx used | Gap / note | Severity |
 |------|------|-------------|------------|----------|
-| `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Button, IconButton | aligned — uses Astryx (IconButton, Button) | aligned |
-| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | IconButton, SideNav, Tooltip | aligned — uses Astryx (IconButton, Tooltip, SideNav) | aligned |
-| `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell, ChatLayout, Layout, SideNav | aligned — uses Astryx (AppShell, SideNav, Layout, ChatLayout) | aligned |
-| `apps/desktop/src/renderer/app.tsx` | other | AppShell | aligned — uses Astryx (AppShell) | aligned |
-| `apps/desktop/src/renderer/artifact-pane.tsx` | shell-chrome-or-panel | Badge, Banner, Button, EmptyState, Layout | aligned — uses Astryx (Layout, Badge, Banner, Button, EmptyState) | aligned |
+| `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
+| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | IconButton, Tooltip | aligned — uses Astryx (IconButton, Tooltip) | aligned |
+| `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell | aligned — uses Astryx (AppShell) | aligned |
+| `apps/desktop/src/renderer/app.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/artifact-pane.tsx` | shell-chrome-or-panel | Badge, Banner, Button, EmptyState | aligned — uses Astryx (Badge, Banner, Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/artifact-preview-registry-shell.tsx` | shell-chrome-or-panel | Button, Spinner | aligned — uses Astryx (Button, Spinner) | aligned |
 | `apps/desktop/src/renderer/artifact-preview.tsx` | shell-chrome-or-panel | Button, Spinner | aligned — uses Astryx (Button, Spinner) | aligned |
-| `apps/desktop/src/renderer/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, TextInput, Tooltip | aligned — uses Astryx (IconButton, TextInput, EmptyState, Tooltip) | aligned |
+| `apps/desktop/src/renderer/browser-panel.tsx` | shell-chrome-or-panel | EmptyState, IconButton, Tooltip | aligned — uses Astryx (EmptyState, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/cascade-layers.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/chat-composer-region.tsx` | shell-chrome-or-panel | AppShell, Banner, Button | aligned — uses Astryx (Button, Banner, AppShell) | aligned |
-| `apps/desktop/src/renderer/chat-message-surface.tsx` | shell-chrome-or-panel | AppShell, Banner, Button | aligned — uses Astryx (Banner, Button, AppShell) | aligned |
-| `apps/desktop/src/renderer/chat-workbar.tsx` | shell-chrome-or-panel | Card | aligned — uses Astryx (Card) | aligned |
+| `apps/desktop/src/renderer/chat-composer-region.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
+| `apps/desktop/src/renderer/chat-message-surface.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
+| `apps/desktop/src/renderer/chat-workbar.tsx` | shell-chrome-or-panel | Card, ResizeHandle | aligned — uses Astryx (Card, ResizeHandle) | aligned |
 | `apps/desktop/src/renderer/command-palette.tsx` | dialog-overlay | EmptyState | aligned — uses Astryx (EmptyState) | aligned |
-| `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
+| `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
-| `apps/desktop/src/renderer/external-session-import-dialog.tsx` | dialog-overlay | Banner, Button, CheckboxInput, Dialog, EmptyState, HStack, Item, Layout, LayoutContent, Section, SegmentedControl, Spinner, Text, VStack | aligned — uses Astryx (Banner, Button, CheckboxInput, Dialog, EmptyState, Item, Layout, LayoutContent) | aligned |
-| `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, Layout, LayoutContent | aligned — uses Astryx (Dialog, Layout, LayoutContent) | aligned |
-| `apps/desktop/src/renderer/live-turn-reconciler.tsx` | other | AppShell | aligned — uses Astryx (AppShell) | aligned |
+| `apps/desktop/src/renderer/external-session-import-dialog.tsx` | dialog-overlay | Banner, Button, CheckboxInput, Dialog, DialogHeader, EmptyState, HStack, Item, Layout, LayoutContent, SegmentedControl, SegmentedControlItem, Spinner, Text, VStack | aligned — uses Astryx (Banner, Button, CheckboxInput, Dialog, DialogHeader, EmptyState, HStack, Item) | aligned |
+| `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Dialog, DialogHeader, Layout, LayoutContent) | aligned |
+| `apps/desktop/src/renderer/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/maka-tokens.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/mcp-brand-marks.tsx` | other | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/mcp-page.tsx` | module-hub | Badge, Banner, Button, Dialog, Divider, EmptyState, HStack, Heading, IconButton, Layout, LayoutContent, List, ListItem, MetadataList, SegmentedControl, Selector, Switch, Text, TextInput, Toolbar, VStack | aligned — uses Astryx (Layout, SegmentedControl, List, Banner, Button, Divider, EmptyState, Heading) | aligned |
-| `apps/desktop/src/renderer/onboarding-hero.tsx` | dialog-overlay | Banner, Button, Card, HStack, Heading, List, ListItem, Text, VStack | aligned — uses Astryx (Button, Banner, Card, Heading, HStack, List, ListItem, Text) | aligned |
-| `apps/desktop/src/renderer/plan-mode-panel.tsx` | shell-chrome-or-panel | Badge, Button, Collapsible | aligned — uses Astryx (Collapsible, Badge, Button) | aligned |
-| `apps/desktop/src/renderer/quote-companion-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
+| `apps/desktop/src/renderer/mcp-brand-marks.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/mcp-page.tsx` | module-hub | Banner, Button, Dialog, DialogHeader, Divider, EmptyState, HStack, Heading, IconButton, Layout, LayoutContent, List, ListItem, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Switch, Text, TextInput, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Divider, EmptyState, HStack, Heading) | aligned |
+| `apps/desktop/src/renderer/onboarding-hero.tsx` | dialog-overlay | Banner, Button, Card, HStack, Heading, List, ListItem, Text, VStack | aligned — uses Astryx (Banner, Button, Card, HStack, Heading, List, ListItem, Text) | aligned |
+| `apps/desktop/src/renderer/plan-mode-panel.tsx` | shell-chrome-or-panel | Badge, Button, Collapsible | aligned — uses Astryx (Badge, Button, Collapsible) | aligned |
+| `apps/desktop/src/renderer/quote-companion-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/reference-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/session-inspector-panel.tsx` | shell-chrome-or-panel | Badge, Banner, Button, EmptyState, HStack, Heading, Layout, Section, Switch, Tab, Text, TextInput, ToggleButton, Token, Tooltip, VStack | aligned — uses Astryx (Banner, Button, EmptyState, Heading, HStack, VStack, Layout, Section) | aligned |
-| `apps/desktop/src/renderer/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Section, SegmentedControl, Toolbar | aligned — uses Astryx (Banner, Button, EmptyState, SegmentedControl, Section, Toolbar) | aligned |
+| `apps/desktop/src/renderer/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput, ToggleButton, Tooltip, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput) | aligned |
+| `apps/desktop/src/renderer/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Section, SegmentedControl, SegmentedControlItem, Toolbar | aligned — uses Astryx (Banner, Button, EmptyState, Section, SegmentedControl, SegmentedControlItem, Toolbar) | aligned |
 | `apps/desktop/src/renderer/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |
-| `apps/desktop/src/renderer/session-workbar.tsx` | shell-chrome-or-panel | Badge, Card, IconButton, Item, Section, Toolbar, Tooltip | raw `<button` (API Use-the-System) | blocker |
-| `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, List, ListItem | aligned — uses Astryx (Badge, List, ListItem, Banner, Button) | aligned |
+| `apps/desktop/src/renderer/session-workbar.tsx` | shell-chrome-or-panel | Badge, Card, ContextMenu, IconButton, Item, Section, Toolbar, Tooltip | raw `<button` (API Use-the-System) | blocker |
+| `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | HStack, Text, VStack | aligned — uses Astryx (HStack, Text, VStack) | aligned |
-| `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Badge, Banner, Button, Card, MetadataList, SegmentedControl, Selector, Switch, Text, TextInput, Token, VStack | aligned — uses Astryx (Card, MetadataList, SegmentedControl, Text, VStack, Button, TextInput, Selector) | aligned |
-| `apps/desktop/src/renderer/settings/bot-chat-overview.tsx` | settings-module | Badge, Banner, Button, EmptyState, Item, Section | aligned — uses Astryx (EmptyState, Item, Button, Banner, Badge, Section) | aligned |
-| `apps/desktop/src/renderer/settings/bot-chat-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/settings/bot-chat-shared.tsx` | settings-module | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx` | settings-page | Button, Dialog, Layout, LayoutContent, Spinner | aligned — uses Astryx (Spinner, Button, Dialog, Layout, LayoutContent) | aligned |
-| `apps/desktop/src/renderer/settings/bot-wechat-login.tsx` | settings-module | Banner, Button, Collapsible, Dialog, EmptyState, Layout, LayoutContent, Spinner, TextInput, Token | aligned — uses Astryx (Button, EmptyState, Spinner, TextInput, Banner, Collapsible, Dialog, Layout) | aligned |
-| `apps/desktop/src/renderer/settings/claude-subscription-card.tsx` | settings-module | Banner, Button, Card, Divider, HStack, Text, VStack | aligned — uses Astryx (Banner, Button, Divider, HStack, Text, VStack, Card) | aligned |
+| `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Text, VStack | aligned — uses Astryx (Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Text) | aligned |
+| `apps/desktop/src/renderer/settings/bot-chat-overview.tsx` | settings-module | Banner, Button, EmptyState, Item | aligned — uses Astryx (Banner, Button, EmptyState, Item) | aligned |
+| `apps/desktop/src/renderer/settings/bot-chat-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/bot-chat-shared.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx` | settings-page | Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner) | aligned |
+| `apps/desktop/src/renderer/settings/bot-wechat-login.tsx` | settings-module | Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, Layout, LayoutContent, Spinner | aligned — uses Astryx (Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, Layout, LayoutContent) | aligned |
+| `apps/desktop/src/renderer/settings/claude-subscription-card.tsx` | settings-module | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/settings/custom-pet-settings-section.tsx` | settings-module | Badge, Button | aligned — uses Astryx (Badge, Button) | aligned |
-| `apps/desktop/src/renderer/settings/daily-review-settings-page.tsx` | settings-page | Banner, Selector, Switch, TextInput | aligned — uses Astryx (Banner, Selector, Switch, TextInput) | aligned |
-| `apps/desktop/src/renderer/settings/data-settings-page.tsx` | settings-page | Banner, Button, Selector, Switch | aligned — uses Astryx (Button, Selector, Switch, Banner) | aligned |
-| `apps/desktop/src/renderer/settings/general-settings-page.tsx` | settings-page | Banner, Button, Selector, Switch, TextInput | aligned — uses Astryx (Button, TextInput, Selector, Switch, Banner) | aligned |
-| `apps/desktop/src/renderer/settings/health-center-page.tsx` | settings-page | Banner, Button, Text, VStack | aligned — uses Astryx (Text, VStack, Button, Banner) | aligned |
+| `apps/desktop/src/renderer/settings/daily-review-settings-page.tsx` | settings-page | Banner | aligned — uses Astryx (Banner) | aligned |
+| `apps/desktop/src/renderer/settings/data-settings-page.tsx` | settings-page | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
+| `apps/desktop/src/renderer/settings/general-settings-page.tsx` | settings-page | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
+| `apps/desktop/src/renderer/settings/health-center-page.tsx` | settings-page | Banner, Button, Text, VStack | aligned — uses Astryx (Banner, Button, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/memory-entry-list.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |
-| `apps/desktop/src/renderer/settings/memory-settings-page.tsx` | settings-page | Button, EmptyState, Switch, TextInput | aligned — uses Astryx (Button, EmptyState, Switch, TextInput) | aligned |
+| `apps/desktop/src/renderer/settings/memory-settings-page.tsx` | settings-page | Button, EmptyState | aligned — uses Astryx (Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/settings/memory-settings-sections.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |
-| `apps/desktop/src/renderer/settings/password-input.tsx` | settings-module | IconButton, TextInput | aligned — uses Astryx (IconButton, TextInput) | aligned |
-| `apps/desktop/src/renderer/settings/permission-center-page.tsx` | settings-page | Banner, Button, Collapsible, HStack, List, ListItem, MetadataList, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, HStack, List, ListItem, MetadataList, Text) | aligned |
-| `apps/desktop/src/renderer/settings/personalization-settings-section.tsx` | settings-module | SegmentedControl, TextInput | aligned — uses Astryx (SegmentedControl, TextInput) | aligned |
-| `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Button, EmptyState, HStack, List, ListItem, TextInput | aligned — uses Astryx (Badge, Button, EmptyState, TextInput, HStack, List, ListItem) | aligned |
-| `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, Collapsible, HStack, TextInput, VStack | aligned — uses Astryx (Banner, HStack, VStack, Collapsible, Button, TextInput) | aligned |
-| `apps/desktop/src/renderer/settings/provider-brand-marks.tsx` | settings-module | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, Dialog, EmptyState, HStack, Item, List, ListItem, Section, Selector, TabList, TextInput, VStack | aligned — uses Astryx (Banner, EmptyState, HStack, List, ListItem, Section, Selector, VStack) | aligned |
-| `apps/desktop/src/renderer/settings/provider-connection-detail.tsx` | settings-module | Banner, Button, Divider, HStack, Heading, Selector, Text, TextInput, VStack | aligned — uses Astryx (Banner, Divider, Heading, HStack, Text, VStack, Button, Selector) | aligned |
-| `apps/desktop/src/renderer/settings/provider-display.tsx` | settings-module | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx` | settings-module | import | aligned — uses Astryx (import) | aligned |
-| `apps/desktop/src/renderer/settings/provider-oauth-section.tsx` | settings-module | Badge, Banner, Button, Dialog, HStack, Text, VStack | aligned — uses Astryx (HStack, Text, VStack, Badge, Button, Dialog, Banner) | aligned |
-| `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, Dialog, EmptyState, HStack, Heading, Item, List, ListItem, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, Heading, HStack, List, ListItem) | aligned |
-| `apps/desktop/src/renderer/settings/request-customization-editor.tsx` | settings-module | Button, HStack, IconButton, Text, TextInput, VStack | aligned — uses Astryx (HStack, Text, VStack, Button, IconButton, TextInput) | aligned |
-| `apps/desktop/src/renderer/settings/settings-expandable-row.tsx` | settings-module | Badge, Button, HStack, Item, Text | aligned — uses Astryx (Button, HStack, Text, Item, Badge) | aligned |
-| `apps/desktop/src/renderer/settings/settings-metric-card.tsx` | settings-module | Badge | aligned — uses Astryx (Badge) | aligned |
-| `apps/desktop/src/renderer/settings/settings-modal.tsx` | settings-page | AppShell | aligned — uses Astryx (AppShell) | aligned |
-| `apps/desktop/src/renderer/settings/settings-route-header.tsx` | settings-module | HStack, Heading, IconButton, Text, Toolbar, VStack | aligned — uses Astryx (Toolbar, Heading, HStack, IconButton, Text, VStack) | aligned |
-| `apps/desktop/src/renderer/settings/settings-rows.tsx` | settings-module | Layout | aligned — uses Astryx (Layout) | aligned |
-| `apps/desktop/src/renderer/settings/settings-section.tsx` | settings-module | Card, Divider, HStack, Heading, Item, SegmentedControl, Text, TextInput, VStack | aligned — uses Astryx (Card, Divider, Heading, HStack, Item, Text, VStack, SegmentedControl) | aligned |
-| `apps/desktop/src/renderer/settings/settings-skeleton.tsx` | settings-module | import | aligned — uses Astryx (import) | aligned |
-| `apps/desktop/src/renderer/settings/settings-surface.tsx` | settings-module | AppShell, Badge, Button, Card, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, SideNav | aligned — uses Astryx (Badge, Button, Card, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
-| `apps/desktop/src/renderer/settings/subagent-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, IconButton, Selector, Switch, TextInput, VStack | aligned — uses Astryx (Banner, HStack, VStack, Badge, Button, EmptyState, IconButton, Selector) | aligned |
-| `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | Banner, Button, Card, EmptyState, IconButton, SegmentedControl, Selector, Switch, Tab, TabList, TextInput | aligned — uses Astryx (Card, EmptyState, SegmentedControl, Tab, TabList, Button, TextInput, Selector) | aligned |
-| `apps/desktop/src/renderer/settings/web-search-settings-page.tsx` | settings-page | Button, Selector, Switch, TextInput | aligned — uses Astryx (Button, Selector, TextInput, Switch) | aligned |
-| `apps/desktop/src/renderer/side-chat-close-confirmation.tsx` | shell-chrome-or-panel | Button, CheckboxInput, Dialog, HStack, Layout, LayoutContent, Text, VStack | aligned — uses Astryx (Button, CheckboxInput, Dialog, Layout, LayoutContent, HStack, VStack, Text) | aligned |
+| `apps/desktop/src/renderer/settings/password-input.tsx` | settings-module | IconButton | aligned — uses Astryx (IconButton) | aligned |
+| `apps/desktop/src/renderer/settings/permission-center-page.tsx` | settings-page | Banner, Button, Collapsible, HStack, List, ListItem, MetadataList, MetadataListItem, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, HStack, List, ListItem, MetadataList, MetadataListItem) | aligned |
+| `apps/desktop/src/renderer/settings/personalization-settings-section.tsx` | settings-module | SegmentedControl, SegmentedControlItem | aligned — uses Astryx (SegmentedControl, SegmentedControlItem) | aligned |
+| `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Button, EmptyState, HStack, List, ListItem | aligned — uses Astryx (Badge, Button, EmptyState, HStack, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, Collapsible, HStack, VStack | aligned — uses Astryx (Banner, Button, Collapsible, HStack, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/provider-brand-marks.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector) | aligned |
+| `apps/desktop/src/renderer/settings/provider-connection-detail.tsx` | settings-module | Banner, Button, Divider, HStack, Heading, Text, VStack | aligned — uses Astryx (Banner, Button, Divider, HStack, Heading, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/provider-display.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/provider-oauth-section.tsx` | settings-module | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/settings/request-customization-editor.tsx` | settings-module | Button, HStack, IconButton, Text, VStack | aligned — uses Astryx (Button, HStack, IconButton, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/settings-expandable-row.tsx` | settings-module | Button, HStack, Text | aligned — uses Astryx (Button, HStack, Text) | aligned |
+| `apps/desktop/src/renderer/settings/settings-metric-card.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/settings-modal.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/settings-route-header.tsx` | settings-module | HStack, Heading, IconButton, Text, Toolbar, VStack | aligned — uses Astryx (HStack, Heading, IconButton, Text, Toolbar, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/settings-rows.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/settings-section.tsx` | settings-module | Divider, HStack, Heading, Item, Text, VStack | aligned — uses Astryx (Divider, HStack, Heading, Item, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/settings-skeleton.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/settings-surface.tsx` | settings-module | Badge, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, SideNav | aligned — uses Astryx (Badge, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, SideNav) | aligned |
+| `apps/desktop/src/renderer/settings/subagent-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, IconButton, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, IconButton, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | Banner, Button, Card, EmptyState, SegmentedControl, SegmentedControlItem, Tab, TabList | aligned — uses Astryx (Banner, Button, Card, EmptyState, SegmentedControl, SegmentedControlItem, Tab, TabList) | aligned |
+| `apps/desktop/src/renderer/settings/web-search-settings-page.tsx` | settings-page | Button | aligned — uses Astryx (Button) | aligned |
+| `apps/desktop/src/renderer/side-chat-close-confirmation.tsx` | shell-chrome-or-panel | Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text, VStack | aligned — uses Astryx (Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text) | aligned |
 | `apps/desktop/src/renderer/styles.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/agent-graph.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/astryx-mount.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -153,62 +153,62 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/sidebar.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/task-ledger.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/theme-glass.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `packages/ui/src/astryx-chat-reasoning.tsx` | shell-chrome-or-panel | ChatToolCalls | aligned — uses Astryx (ChatToolCalls) | aligned |
-| `packages/ui/src/astryx-i18n.tsx` | ui-composition | AppShell, ChatLayout, Lightbox | aligned — uses Astryx (AppShell, ChatLayout, Lightbox) | aligned |
-| `packages/ui/src/attachment-kinds.tsx` | ui-composition | import | aligned — uses Astryx (import) | aligned |
-| `packages/ui/src/bot-brand-logo.tsx` | ui-composition | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
+| `packages/ui/src/astryx-chat-reasoning.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/astryx-i18n.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/attachment-kinds.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/bot-brand-logo.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/capability-audit-strip.tsx` | ui-composition | Banner | aligned — uses Astryx (Banner) | aligned |
 | `packages/ui/src/chat-empty-hero.tsx` | shell-chrome-or-panel | Item | aligned — uses Astryx (Item) | aligned |
-| `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | AppShell, Button, Selector | aligned — uses Astryx (Button, Selector, AppShell) | aligned |
+| `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/chat-surface-layout.tsx` | shell-chrome-or-panel | ChatLayout | aligned — uses Astryx (ChatLayout) | aligned |
 | `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Button, HStack, IconButton, Token, Tooltip | aligned — uses Astryx (Badge, Button, HStack, IconButton, Token, Tooltip) | aligned |
 | `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, EmptyState | aligned — uses Astryx (Button, EmptyState) | aligned |
-| `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, IconButton, Lightbox, Tab, Text, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, IconButton, Lightbox, Token, Tooltip, Text, Tab) | aligned |
-| `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, Section, SegmentedControl, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, Heading, HStack, List, ListItem) | aligned |
-| `packages/ui/src/icons.tsx` | ui-composition | Button, EmptyState, IconButton | aligned — uses Astryx (Button, IconButton, EmptyState) | aligned |
-| `packages/ui/src/inline-reference.tsx` | ui-composition | import | aligned — uses Astryx (import) | aligned |
-| `packages/ui/src/inline-rename-input.tsx` | ui-composition | none | raw `<input` (API Use-the-System); no Astryx import with raw controls (API Use-the-System) | blocker |
-| `packages/ui/src/locale-context.tsx` | ui-composition | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `packages/ui/src/maka-wordmark.tsx` | ui-composition | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `packages/ui/src/markdown-body.tsx` | ui-composition | import | aligned — uses Astryx (import) | aligned |
-| `packages/ui/src/markdown.tsx` | ui-composition | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, IconButton, Collapsible, Dialog, Toolbar) | aligned |
+| `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, IconButton, Lightbox, Token, Tooltip) | aligned |
+| `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
+| `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/inline-reference.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/inline-rename-input.tsx` | ui-composition | none | raw `<input` (API Use-the-System); no Astryx import/JSX with raw controls (API Use-the-System) | blocker |
+| `packages/ui/src/locale-context.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/maka-wordmark.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/markdown-body.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/markdown.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, Collapsible, Dialog, IconButton, Toolbar) | aligned |
 | `packages/ui/src/model-picker.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
-| `packages/ui/src/module-hub-selector.tsx` | ui-composition | Selector, Tab, TabList | aligned — uses Astryx (Tab, TabList, Selector) | aligned |
+| `packages/ui/src/module-hub-selector.tsx` | ui-composition | Tab, TabList | aligned — uses Astryx (Tab, TabList) | aligned |
 | `packages/ui/src/module-pages.tsx` | ui-composition | EmptyState | aligned — uses Astryx (EmptyState) | aligned |
 | `packages/ui/src/permission-mode-menu.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
-| `packages/ui/src/plan-reminder-form-dialog.tsx` | module-hub | Button, Dialog, HStack, Layout, LayoutContent, Selector, Text, TextInput | aligned — uses Astryx (Button, HStack, Selector, Text, TextInput, Dialog, Layout, LayoutContent) | aligned |
-| `packages/ui/src/plan-reminder-inspector.tsx` | module-hub | Button, Divider, EmptyState, HStack, Heading, List, ListItem, MetadataList, Switch, Text, VStack | aligned — uses Astryx (MetadataList, List, Button, Divider, Heading, HStack, ListItem, Switch) | aligned |
-| `packages/ui/src/plan-reminder-panel.tsx` | module-hub | Button, Dialog, Divider, EmptyState, List, ListItem, SegmentedControl, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Button, EmptyState, List, ListItem, SegmentedControl, Selector, Text, TextInput) | aligned |
-| `packages/ui/src/primitives/chat.tsx` | primitive | Button | aligned — uses Astryx (Button) | aligned |
-| `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, Text, VStack | aligned — uses Astryx (Layout, Dialog, HStack, Heading, Text, VStack, LayoutContent, LayoutHeader) | aligned |
-| `packages/ui/src/primitives/page-header.tsx` | primitive | Button, Layout | aligned — uses Astryx (Button, Layout) | aligned |
-| `packages/ui/src/primitives/stat-tile.tsx` | primitive | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
-| `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | ChatLayout, Tooltip | raw `<button` (API Use-the-System) | blocker |
-| `packages/ui/src/quote-ref-chip.tsx` | ui-composition | none | raw `<button` (API Use-the-System); no Astryx import with raw controls (API Use-the-System) | blocker |
-| `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx import required or pure layout/helper UI | aligned |
+| `packages/ui/src/plan-reminder-form-dialog.tsx` | module-hub | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Selector, Text, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Selector, Text) | aligned |
+| `packages/ui/src/plan-reminder-inspector.tsx` | module-hub | Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem, Switch, Text, VStack | aligned — uses Astryx (Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem) | aligned |
+| `packages/ui/src/plan-reminder-panel.tsx` | module-hub | Button, Divider, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Button, Divider, EmptyState, List, ListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |
+| `packages/ui/src/primitives/chat.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, ResizeHandle, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
+| `packages/ui/src/primitives/page-header.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/primitives/stat-tile.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | none | raw `<button` (API Use-the-System); no Astryx import/JSX with raw controls (API Use-the-System) | blocker |
+| `packages/ui/src/quote-ref-chip.tsx` | ui-composition | none | raw `<button` (API Use-the-System); no Astryx import/JSX with raw controls (API Use-the-System) | blocker |
+| `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/sandbox-boundary-prompt.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
-| `packages/ui/src/search-modal.tsx` | dialog-overlay | import | aligned — uses Astryx (import) | aligned |
-| `packages/ui/src/session-context-layer.tsx` | shell-chrome-or-panel | Breadcrumbs, IconButton, LayoutHeader, Text, Token | aligned — uses Astryx (Breadcrumbs, IconButton, LayoutHeader, Text, Token) | aligned |
-| `packages/ui/src/session-history-list.tsx` | shell-chrome-or-panel | AppShell, Badge, Collapsible, Dialog, IconButton, SideNav, Tab, Tooltip, VStack | aligned — uses Astryx (Badge, Tooltip, IconButton, SideNav, VStack, Dialog, Tab, AppShell) | aligned |
-| `packages/ui/src/session-list-panel.tsx` | shell-chrome-or-panel | AppShell, SegmentedControl, SideNav | aligned — uses Astryx (SegmentedControl, SideNav, AppShell) | aligned |
-| `packages/ui/src/session-rename-dialog.tsx` | dialog-overlay | Button, Dialog, HStack, Layout, LayoutContent, TextInput | aligned — uses Astryx (Button, HStack, TextInput, Dialog, Layout, LayoutContent) | aligned |
-| `packages/ui/src/session-sidebar-nav.tsx` | shell-chrome-or-panel | IconButton, SideNav, Tooltip | aligned — uses Astryx (IconButton, SideNav, Tooltip) | aligned |
-| `packages/ui/src/skill-inspector.tsx` | shell-chrome-or-panel | Button, Divider, HStack, Heading, List, MetadataList, Switch, Text, VStack | aligned — uses Astryx (MetadataList, List, Button, Divider, Heading, HStack, Switch, Text) | aligned |
-| `packages/ui/src/skills-panel.tsx` | module-hub | Button, EmptyState, IconButton, Layout, List, ListItem, SegmentedControl, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Layout, SegmentedControl, List, Button, EmptyState, IconButton, ListItem, Selector) | aligned |
+| `packages/ui/src/search-modal.tsx` | dialog-overlay | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/session-context-layer.tsx` | shell-chrome-or-panel | BreadcrumbItem, Breadcrumbs, IconButton, LayoutHeader, Text, Token | aligned — uses Astryx (BreadcrumbItem, Breadcrumbs, IconButton, LayoutHeader, Text, Token) | aligned |
+| `packages/ui/src/session-history-list.tsx` | shell-chrome-or-panel | Badge, IconButton, Tooltip, VStack | aligned — uses Astryx (Badge, IconButton, Tooltip, VStack) | aligned |
+| `packages/ui/src/session-list-panel.tsx` | shell-chrome-or-panel | SegmentedControl, SegmentedControlItem, SideNav | aligned — uses Astryx (SegmentedControl, SegmentedControlItem, SideNav) | aligned |
+| `packages/ui/src/session-rename-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, TextInput) | aligned |
+| `packages/ui/src/session-sidebar-nav.tsx` | shell-chrome-or-panel | IconButton, Tooltip | aligned — uses Astryx (IconButton, Tooltip) | aligned |
+| `packages/ui/src/skill-inspector.tsx` | shell-chrome-or-panel | Button, Divider, HStack, Heading, MetadataList, MetadataListItem, Switch, Text, VStack | aligned — uses Astryx (Button, Divider, HStack, Heading, MetadataList, MetadataListItem, Switch, Text) | aligned |
+| `packages/ui/src/skills-panel.tsx` | module-hub | Button, EmptyState, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Button, EmptyState, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |
 | `packages/ui/src/styles.css` | ui-composition | n/a (css) | off-rhythm control height 40px (Design size) | polish |
 | `packages/ui/src/task-ledger-panel.tsx` | shell-chrome-or-panel | Collapsible, IconButton | aligned — uses Astryx (Collapsible, IconButton) | aligned |
-| `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | Breadcrumbs, Tab | aligned — uses Astryx (Breadcrumbs, Tab) | aligned |
-| `packages/ui/src/toast.tsx` | ui-composition | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, VStack, Text) | aligned |
-| `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls | aligned — uses Astryx (Button, Banner, ChatToolCalls) | aligned |
+| `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | BreadcrumbItem, Breadcrumbs | aligned — uses Astryx (BreadcrumbItem, Breadcrumbs) | aligned |
+| `packages/ui/src/toast.tsx` | ui-composition | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
+| `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls | aligned — uses Astryx (Banner, Button, ChatToolCalls) | aligned |
 | `packages/ui/src/tool-activity/agent-preview.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
-| `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | import | aligned — uses Astryx (import) | aligned |
-| `packages/ui/src/tool-activity/tool-code-block.tsx` | ui-composition | import | aligned — uses Astryx (import) | aligned |
+| `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/tool-activity/tool-code-block.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-result-preview.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
-| `packages/ui/src/ui.tsx` | ui-composition | import | aligned — uses Astryx (import) | aligned |
+| `packages/ui/src/ui.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/user-question-prompt.tsx` | ui-composition | Button, TextInput | aligned — uses Astryx (Button, TextInput) | aligned |
-| `packages/ui/src/workspace-picker.tsx` | ui-composition | Button, Selector | aligned — uses Astryx (Button, Selector) | aligned |
+| `packages/ui/src/workspace-picker.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 
 ## Severity legend
 

@@ -53,5 +53,28 @@ describe('astryx surface file inventory coverage', () => {
     const rowCount = [...filesSection.matchAll(/^\| `[^`]+` \|/gm)].length;
     assert.equal(rowCount, paths.length, `md rows ${rowCount} vs paths ${paths.length}`);
   });
+
+  it('does not claim Astryx usage from comment-only name matches', () => {
+    const md = readFileSync(join(root, 'docs/astryx-surface-file-inventory.md'), 'utf8');
+    // These files historically false-positive'd when the analyzer scanned comments.
+    const commentOnly = [
+      'packages/ui/src/icons.tsx',
+      'apps/desktop/src/renderer/live-turn-reconciler.tsx',
+      'apps/desktop/src/renderer/settings/settings-rows.tsx',
+      'packages/ui/src/primitives/chat.tsx',
+      'packages/ui/src/primitives/page-header.tsx',
+      'apps/desktop/src/renderer/settings/settings-metric-card.tsx',
+    ];
+    for (const path of commentOnly) {
+      const line = md.split('\n').find((l) => l.includes(`\`${path}\``));
+      assert.ok(line, `missing inventory row for ${path}`);
+      // Table columns: Path | Role | Astryx used | Gap | Severity
+      const cols = line.split('|').map((c) => c.trim());
+      // cols[0] empty, [1]=path, [2]=role, [3]=astryx, [4]=gap, [5]=severity
+      assert.equal(cols[3], 'none', `${path} Astryx used must be none, got: ${cols[3]}`);
+      assert.doesNotMatch(cols[4] ?? '', /uses Astryx/);
+    }
+  });
 });
+
 
