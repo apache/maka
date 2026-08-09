@@ -315,6 +315,11 @@ export function createAppShellRevisionActions(deps: {
         await rollbackPreparedRevision(startedDraft, newSession.id, text);
         return false;
       }
+      // The session switch and the Composer's draft-key effect settle on
+      // separate React commits. Re-apply the prepared text to the visible
+      // editor so a fast blocked send cannot leave the child draft looking
+      // empty even though its persisted draft is intact.
+      composerRef.current?.setText(text);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
       await refreshSessions();

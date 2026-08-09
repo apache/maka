@@ -179,7 +179,13 @@ describe('app shell revision actions', () => {
       assert.equal(harness.revisionDraftRef.current?.draftSessionId, 'revision');
       assert.deepEqual(
         harness.composerCalls,
-        ['Human-facing prompt', '<focus>', '<draft:revision:Edited prompt>', '<focus>'],
+        [
+          'Human-facing prompt',
+          '<focus>',
+          '<draft:revision:Edited prompt>',
+          'Edited prompt',
+          '<focus>',
+        ],
       );
     } finally {
       harness.restoreWindow();
