@@ -672,7 +672,10 @@ function hasCompleteTokenSummary(
   event: FixedPromptTaskWalEvent,
 ): event is FixedPromptTaskWalEvent & { tokenSummary: HarborCellTokenSummary } {
   if (!hasTokenSummary(event)) return false;
-  return event.type !== 'task_budget_exhausted' || event.tokenSummarySource === 'final';
+  if (event.type === 'task_budget_exhausted') return event.tokenSummarySource === 'final';
+  if (event.type !== 'task_completed') return false;
+  if (event.tokenSummarySource !== undefined) return event.tokenSummarySource === 'final';
+  return event.status === 'completed';
 }
 
 function hasTokenSummary(

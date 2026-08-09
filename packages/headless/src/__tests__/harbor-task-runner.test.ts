@@ -1212,6 +1212,7 @@ describe('createHarborTaskRunner', () => {
           costUsd: 0,
           pricingSource: 'runtime',
         });
+        assert.equal(output.cell.tokenSummarySource, 'final');
       } finally {
         await new Promise<void>((resolve, reject) =>
           upstream.close((error) => (error ? reject(error) : resolve())),
@@ -1880,6 +1881,7 @@ describe('createHarborTaskRunner', () => {
 
       const output = await runner(runInput());
       assert.deepEqual(output.cell.tokenSummary, usageCheckpoint);
+      assert.equal(output.cell.tokenSummarySource, 'checkpoint');
     });
   });
 
@@ -2335,6 +2337,7 @@ describe('createHarborTaskRunner', () => {
         assert.ok(error instanceof FixedPromptBudgetExhaustedError);
         assert.deepEqual(error.artifactRefs?.tokenSummary, usageCheckpoint);
         assert.deepEqual(error.artifactRefs?.cellOutput?.tokenSummary, usageCheckpoint);
+        assert.equal(error.artifactRefs?.cellOutput?.tokenSummarySource, 'checkpoint');
         return true;
       });
     });

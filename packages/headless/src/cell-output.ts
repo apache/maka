@@ -202,6 +202,7 @@ export interface HarborCellOutput {
   executionIdentity?: HarborCellExecutionIdentity;
   deadlineSettlement?: HarborCellDeadlineSettlement;
   tokenSummary?: HarborCellTokenSummary;
+  tokenSummarySource?: 'final' | 'checkpoint';
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
   continuationSummary?: HarborCellContinuationSummary;
@@ -235,7 +236,13 @@ export function buildHarborCellOutput(input: {
     ...(promptHash ? { promptHash } : {}),
     ...(input.executionIdentity ? { executionIdentity: input.executionIdentity } : {}),
     ...(input.deadlineSettlement ? { deadlineSettlement: input.deadlineSettlement } : {}),
-    ...(tokenSummary ? { tokenSummary } : {}),
+    ...(tokenSummary
+      ? {
+          tokenSummary,
+          tokenSummarySource:
+            invocation.status === 'completed' ? ('final' as const) : ('checkpoint' as const),
+        }
+      : {}),
     ...(input.contextBudgetPolicy ? { contextBudgetPolicy: input.contextBudgetPolicy } : {}),
     ...contextBudgetSummaryField(invocation.events),
     ...(input.continuationSummary ? { continuationSummary: input.continuationSummary } : {}),
@@ -323,6 +330,11 @@ export function validateHarborCellOutput(value: unknown): HarborCellOutput {
       : undefined;
   const tokenSummary =
     'tokenSummary' in value ? validateHarborCellTokenSummary(value.tokenSummary) : undefined;
+  const tokenSummarySource = requireOptionalStringUnion(
+    value.tokenSummarySource,
+    'tokenSummarySource',
+    ['final', 'checkpoint'] as const,
+  );
   const contextBudgetPolicy =
     'contextBudgetPolicy' in value
       ? validateContextBudgetPolicySnapshot(value.contextBudgetPolicy)
@@ -352,6 +364,7 @@ export function validateHarborCellOutput(value: unknown): HarborCellOutput {
     ...(executionIdentity !== undefined ? { executionIdentity } : {}),
     ...(deadlineSettlement !== undefined ? { deadlineSettlement } : {}),
     ...(tokenSummary ? { tokenSummary } : {}),
+    ...(tokenSummarySource ? { tokenSummarySource } : {}),
     ...(contextBudgetPolicy !== undefined ? { contextBudgetPolicy } : {}),
     ...(contextBudgetSummary !== undefined ? { contextBudgetSummary } : {}),
     ...(continuationSummary !== undefined ? { continuationSummary } : {}),

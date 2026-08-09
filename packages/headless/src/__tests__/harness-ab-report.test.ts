@@ -460,6 +460,46 @@ describe('harness A/B report', () => {
     assert.equal(report.coverage.missingFinalUsageCells, 1);
   });
 
+  test('keeps completed-cell checkpoints out of final metering', () => {
+    const checkpointOnlyCompletion = {
+      ...usage('a', true, 100, 40, 20, 0.1),
+      tokenSummarySource: 'checkpoint' as const,
+    };
+    const summary = summarizeAbComparison({
+      runId: 'glm-harness-ab',
+      roundId: 'ab-summary',
+      baselineArmId: 'maka',
+      candidateArmId: 'opencode',
+      evaluationTaskIds: ['a'],
+      baselineRuns: [[checkpointOnlyCompletion]],
+      candidateRuns: [[usage('a', true, 120, 50, 30, 0.2)]],
+    });
+
+    assert.equal(summary.pairedAttempts.fullyMeteredPairs, 0);
+    assert.deepEqual(summary.pairedAttempts.missingUsagePairIds, ['a#r0']);
+    assert.equal(summary.baseline.missingFinalUsage, 1);
+  });
+
+  test('keeps failed legacy cell usage out of final metering', () => {
+    const legacyFailure = {
+      ...usage('a', true, 100, 40, 20, 0.1),
+      status: 'failed' as const,
+    };
+    const summary = summarizeAbComparison({
+      runId: 'glm-harness-ab',
+      roundId: 'ab-summary',
+      baselineArmId: 'maka',
+      candidateArmId: 'opencode',
+      evaluationTaskIds: ['a'],
+      baselineRuns: [[legacyFailure]],
+      candidateRuns: [[usage('a', true, 120, 50, 30, 0.2)]],
+    });
+
+    assert.equal(summary.pairedAttempts.fullyMeteredPairs, 0);
+    assert.deepEqual(summary.pairedAttempts.missingUsagePairIds, ['a#r0']);
+    assert.equal(summary.baseline.missingFinalUsage, 1);
+  });
+
   test('preserves an early stop and rejects completion', () => {
     const summary = summarizeAbComparison({
       runId: 'glm-harness-ab',

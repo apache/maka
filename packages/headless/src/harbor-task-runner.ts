@@ -616,7 +616,7 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
       const selectedUsage = selectHarborCellTokenSummary(rawCell.tokenSummary, usageCheckpoint);
       const checkpointedCell =
         selectedUsage && selectedUsage !== rawCell.tokenSummary
-          ? { ...rawCell, tokenSummary: selectedUsage }
+          ? { ...rawCell, tokenSummary: selectedUsage, tokenSummarySource: 'checkpoint' as const }
           : rawCell;
       const usageCell =
         checkpointedCell.tokenSummary || !providerUsage || !runnerOptions.pricing
@@ -624,6 +624,7 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
           : {
               ...checkpointedCell,
               tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
+              tokenSummarySource: 'final' as const,
             };
       const cell = completeTimedOutTrial
         ? {
@@ -944,7 +945,7 @@ export async function readTimedOutTrialArtifacts(
     const selectedUsage = selectHarborCellTokenSummary(cell.tokenSummary, usageCheckpoint);
     const recoveredCell =
       selectedUsage && selectedUsage !== cell.tokenSummary
-        ? { ...cell, tokenSummary: selectedUsage }
+        ? { ...cell, tokenSummary: selectedUsage, tokenSummarySource: 'checkpoint' as const }
         : cell;
     return cellArtifactRefs(
       recoveredCell,

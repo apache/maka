@@ -732,6 +732,9 @@ function taskCompletedEvent(input: {
       ? { deadlineSettlement: output.cell.deadlineSettlement }
       : {}),
     ...(output.cell.tokenSummary ? { tokenSummary: output.cell.tokenSummary } : {}),
+    ...(output.cell.tokenSummarySource
+      ? { tokenSummarySource: output.cell.tokenSummarySource }
+      : {}),
     ...(output.cell.contextBudgetPolicy
       ? { contextBudgetPolicy: output.cell.contextBudgetPolicy }
       : {}),
@@ -1093,7 +1096,8 @@ function taskBudgetExhaustedEvent(input: {
   const tokenSummary = artifactRefs.cellOutput?.tokenSummary ?? artifactRefs.tokenSummary;
   const tokenSummarySource = tokenSummary
     ? artifactRefs.cellOutput
-      ? 'final'
+      ? (artifactRefs.cellOutput.tokenSummarySource ??
+        (artifactRefs.cellOutput.status === 'completed' ? 'final' : 'checkpoint'))
       : 'checkpoint'
     : undefined;
   const executionIdentity =

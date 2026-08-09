@@ -171,6 +171,7 @@ describe('Harbor cell output contract', () => {
         costUsd: 0.00523,
         pricingSource: 'runtime',
       },
+      tokenSummarySource: 'final',
       toolSummary: {
         providerVisibleToolCount: 6,
         actualToolCalls: 2,
@@ -407,6 +408,7 @@ describe('Harbor cell output contract', () => {
     });
 
     assert.equal(output.steps, 2);
+    assert.equal(output.tokenSummarySource, 'checkpoint');
   });
 
   test('summarizes context budget diagnostics from token usage events', () => {

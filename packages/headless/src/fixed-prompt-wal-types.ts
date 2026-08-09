@@ -55,6 +55,7 @@ export interface FixedPromptTaskCompletedEvent {
   runtimeRefs?: HarborCellRuntimeRefs;
   deadlineSettlement?: HarborCellDeadlineSettlement;
   tokenSummary?: HarborCellTokenSummary;
+  tokenSummarySource?: 'final' | 'checkpoint';
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
   continuationSummary?: HarborCellContinuationSummary;

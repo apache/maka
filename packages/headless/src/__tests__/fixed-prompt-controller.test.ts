@@ -46,12 +46,15 @@ describe('fixed prompt controller', () => {
         systemPromptPath,
         resultsJsonlPath: join(dir, 'results.jsonl'),
         tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () => harborOutput({ taskId: 'task-a', verifier }),
+        taskRunner: async () =>
+          harborOutput({ taskId: 'task-a', verifier, tokenSummarySource: 'final' }),
       });
 
-      assert.equal(result.events[0]?.type, 'task_completed');
-      if (result.events[0]?.type === 'task_completed')
-        assert.deepEqual(result.events[0].harbor.verifier, verifier);
+      const event = result.events[0];
+      assert.equal(event?.type, 'task_completed');
+      if (event?.type !== 'task_completed') assert.fail('expected completed event');
+      assert.deepEqual(event.harbor.verifier, verifier);
+      assert.equal(event.tokenSummarySource, 'final');
     });
   });
 
@@ -1300,6 +1303,7 @@ describe('fixed prompt controller', () => {
         taskId: 'task-a',
         status: 'failed',
         errorClass: 'auth',
+        tokenSummarySource: 'checkpoint',
         executionIdentity: {
           llmConnectionSlug: 'fake',
           model: 'fake-model',
@@ -1331,6 +1335,7 @@ describe('fixed prompt controller', () => {
       if (event?.type !== 'task_budget_exhausted') assert.fail('expected budget exhaustion event');
       assert.equal(event.eligible, false);
       assert.equal(event.evidenceErrorClass, 'auth');
+      assert.equal(event.tokenSummarySource, 'checkpoint');
       assert.equal(result.stopReason, 'systemic_provider_failure');
     });
   });
@@ -3593,6 +3598,7 @@ function harborOutput(input: {
   promptHash?: string;
   omitPromptHash?: boolean;
   tokenSummary?: TaskRunOutput['cell']['tokenSummary'];
+  tokenSummarySource?: 'final' | 'checkpoint';
   omitTokenSummary?: boolean;
   contextBudgetPolicy?: TaskRunOutput['cell']['contextBudgetPolicy'];
   contextBudgetSummary?: TaskRunOutput['cell']['contextBudgetSummary'];
@@ -3636,6 +3642,7 @@ function harborOutput(input: {
             tokenSummary:
               input.tokenSummary ??
               tokenSummary({ input: 1, output: 2, reasoning: 0, total: 3, costUsd: 0.02 }),
+            ...(input.tokenSummarySource ? { tokenSummarySource: input.tokenSummarySource } : {}),
           }),
       ...(input.contextBudgetPolicy ? { contextBudgetPolicy: input.contextBudgetPolicy } : {}),
       ...(input.contextBudgetSummary ? { contextBudgetSummary: input.contextBudgetSummary } : {}),
