@@ -42,37 +42,20 @@
 }
 
 /* The snapshot slot blocks the ordinary empty-chat hero while main resolves
-   onboarding state. Its shape previews the single card that will replace it. */
+   onboarding state. The frame keeps the ready card's geometry; the bars inside
+   are Astryx Skeletons (DESIGN.md §10) rather than hand-drawn statics. */
 .maka-onboarding-loading {
-  position: relative;
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
   width: min(460px, calc(100% - 32px));
   min-height: 196px;
   margin: auto;
+  padding: var(--space-8) var(--space-6);
   overflow: hidden;
   border: var(--border-width-hairline) solid var(--border-strong);
   border-radius: var(--radius-modal);
   background: var(--foreground-5);
-}
-
-.maka-onboarding-loading::before,
-.maka-onboarding-loading::after {
-  content: "";
-  position: absolute;
-  left: 24px;
-  border-radius: var(--radius-pill);
-  background: var(--foreground-8);
-}
-
-.maka-onboarding-loading::before {
-  top: 32px;
-  width: min(240px, calc(100% - 48px));
-  height: 16px;
-}
-
-.maka-onboarding-loading::after {
-  top: 64px;
-  width: min(360px, calc(100% - 48px));
-  height: 12px;
 }
 
 .maka-onboarding-surface {

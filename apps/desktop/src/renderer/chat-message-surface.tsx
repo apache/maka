@@ -6,6 +6,7 @@ import {
   type ProviderType,
   type SettingsSection,
 } from '@maka/core';
+import { Skeleton } from '@astryxdesign/core';
 import { Banner, Button, ChatView, useUiLocale } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
@@ -126,16 +127,19 @@ export function ChatMessageSurface({
         />
       </div>
     ) : isOnboardingLoading ? (
-      // @kenji review: render a no-op skeleton while the
-      // first snapshot resolves so EmptyChatHero doesn't
-      // flash. Use an aria-busy live region so screen
-      // readers know something is loading.
+      // Blocks EmptyChatHero from flashing while the first snapshot resolves.
+      // Astryx Skeleton bars (DESIGN.md §10) in the ready card's own frame —
+      // the hand-drawn static ::before/::after bars this replaces never pulsed,
+      // so the first screen a new user saw read as frozen.
       (<div
         className="maka-onboarding-loading"
         role="status"
         aria-busy="true"
         aria-label={copy.loading}
-      />)
+      >
+        <Skeleton width="52%" height={16} radius="rounded" index={0} />
+        <Skeleton width="78%" height={12} radius="rounded" index={1} />
+      </div>)
     ) : undefined;
 
   return (
