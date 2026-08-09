@@ -516,8 +516,27 @@ async function createManagedDependencyEnvironmentAuthorityForOwner(
         pendingCounts.set(digest, (pendingCounts.get(digest) ?? 0) + 1);
         let artifact: PublishedManagedDependencyEnvironment;
         try {
-          let publication = inflight.get(digest);
-          if (!publication) {
+          let publication: InflightManagedDependencyPublication;
+          for (;;) {
+            const current = inflight.get(digest);
+            if (current?.controller.signal.aborted) {
+              // The last waiter revoked this publication, but its producer may
+              // still be draining. A later caller must not inherit that abort.
+              // Wait for owner cleanup, then re-observe the canonical slot.
+              await waitForPublication(
+                current.task.then(
+                  () => undefined,
+                  () => undefined,
+                ),
+                source.abortSignal,
+              );
+              source.abortSignal?.throwIfAborted();
+              continue;
+            }
+            if (current) {
+              publication = current;
+              break;
+            }
             const controller = new AbortController();
             let pending!: InflightManagedDependencyPublication;
             const task = openOrPublishEnvironment({
@@ -540,6 +559,7 @@ async function createManagedDependencyEnvironmentAuthorityForOwner(
             };
             publication = pending;
             inflight.set(digest, publication);
+            break;
           }
           publication.waiters += 1;
           try {
