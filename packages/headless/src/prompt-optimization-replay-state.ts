@@ -3,14 +3,14 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { hashSystemPrompt } from './fixed-prompt-controller.js';
-import type {
-  FixedPromptTaskWalEvent,
-  FixedPromptWalEvent,
-  PromptCandidateCommittedEvent,
-  PromptCandidateDecisionEvent,
+import {
+  heldInTaskSetHash,
+  type FixedPromptTaskWalEvent,
+  type FixedPromptWalEvent,
+  type PromptCandidateCommittedEvent,
+  type PromptCandidateDecisionEvent,
 } from './fixed-prompt-wal-types.js';
 import { hashCandidateRationale } from './prompt-candidate-loop.js';
-import { heldInTaskSetHash } from './rsi-round-analysis.js';
 
 const execFileAsync = promisify(execFile);
 

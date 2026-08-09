@@ -3373,6 +3373,46 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('leaves a tampered heldInTaskSetHash untouched on read', async () => {
+    // A committed event whose hash matches neither codepoint nor localeCompare
+    // is corrupt/tampered. The conditional projection must pass it through
+    // unchanged so the downstream self-consistency check can still catch it,
+    // rather than silently normalizing the bad hash away.
+    await withDir(async (dir) => {
+      const resultsJsonlPath = join(dir, 'results.jsonl');
+      const heldInTaskIds = ['apple', 'Banana', 'cherry', 'Date'];
+      await appendFile(
+        resultsJsonlPath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          type: 'prompt_candidate_committed',
+          id: 'tampered-commit',
+          ts: 100,
+          runId: 'run-1',
+          roundId: 'round-1',
+          commitSha: 'tampered-sha',
+          summary: 'tampered candidate',
+          promptHash: 'sha256:prompt',
+          heldInTaskSetHash: 'sha256:definitely-not-a-real-hash',
+          heldInTaskIds: [...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)),
+          candidateRationaleHash: 'sha256:rationale',
+          candidateRationale: {
+            failurePattern: 'held_in_within_noise',
+            summary: 'tampered',
+            evidenceRefs: [],
+            predictedFixes: [],
+            riskTasks: [],
+          },
+        })}\n`,
+        'utf8',
+      );
+
+      const [event] = await readFixedPromptWal(resultsJsonlPath);
+      assert.equal(event?.type, 'prompt_candidate_committed');
+      assert.equal(event.heldInTaskSetHash, 'sha256:definitely-not-a-real-hash');
+    });
+  });
+
   test('projects a stored structured verifier failure without resampling Harbor', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');

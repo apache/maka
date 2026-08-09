@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, truncate, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
@@ -12,6 +12,7 @@ import type { Config } from './contracts.js';
 import {
   FIXED_PROMPT_WAL_SCHEMA_VERSION,
   heldInTaskSetHash,
+  sortedUnique,
   type FixedPromptTaskAttemptStartedEvent,
   type FixedPromptTaskBudgetExhaustedEvent,
   type FixedPromptTaskCompletedEvent,
@@ -1258,27 +1259,43 @@ function projectStructuredVerifierOutcome(event: FixedPromptWalEvent): FixedProm
 }
 
 /**
- * Re-derives `heldInTaskSetHash` on legacy `prompt_candidate_committed` records
- * using the canonical codepoint order. WALs written before the codepoint
+ * Conditionally re-derives `heldInTaskSetHash` on legacy
+ * `prompt_candidate_committed` records. WALs written before the codepoint
  * unification sorted task ids with localeCompare; replay self-consistency
  * checks (prompt-optimization-replay-state.ts) re-hash with codepoint, so
  * without this projection a resume after upgrade hard-fails for id sets where
- * the two orders differ (mixed case, e.g. apple/Banana). Re-computing here is
- * idempotent for records already on codepoint order.
+ * the two orders differ (mixed case, e.g. apple/Banana).
  *
- * Tamper semantics: because the hash is re-derived on every read, a hash-only
- * edit to a committed event is silently normalized away before the
- * self-consistency check runs — only tampering with `heldInTaskIds` (which
- * shifts the re-derived hash out of sync with other events) is still caught.
- * This is the intended trade-off for legacy-WAL resume compatibility.
+ * Only records whose persisted hash matches the legacy localeCompare order are
+ * rewritten (both hash and ids normalized to codepoint). Records already on
+ * codepoint order are left untouched, and records whose hash matches neither
+ * order — i.e. tampered or corrupt — are passed through unchanged so the
+ * downstream self-consistency check still catches them. This preserves the
+ * tamper-detection that an unconditional re-derive would silently weaken.
  */
 function projectLegacyHeldInTaskSetHash(event: FixedPromptWalEvent): FixedPromptWalEvent {
   if (event.type !== 'prompt_candidate_committed') return event;
-  if (!Array.isArray(event.heldInTaskIds)) return event;
+  const ids = event.heldInTaskIds;
+  if (!Array.isArray(ids)) return event;
+  const codepointHash = heldInTaskSetHash(ids);
+  if (event.heldInTaskSetHash === codepointHash) return event;
+  if (event.heldInTaskSetHash !== legacyHeldInTaskSetHash(ids)) return event;
+  const normalizedIds = sortedUnique(ids);
   return {
     ...event,
-    heldInTaskSetHash: heldInTaskSetHash(event.heldInTaskIds),
+    heldInTaskSetHash: heldInTaskSetHash(normalizedIds),
+    heldInTaskIds: normalizedIds,
   };
+}
+
+/**
+ * The pre-unification hash (localeCompare sort order), used only to recognize
+ * legacy WAL records so the projection above can rewrite them selectively.
+ */
+function legacyHeldInTaskSetHash(taskIds: readonly string[]): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify([...new Set(taskIds)].sort((a, b) => a.localeCompare(b))))
+    .digest('hex')}`;
 }
 
 /**
