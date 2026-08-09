@@ -131,7 +131,7 @@ describe('ShellRunProcessManager', () => {
     if (result.output.mode !== 'pipes') throw new Error('expected pipes output');
     assert.match(result.output.stdout, /\$OutputEncoding = \$__makaUtf8/u);
     assert.match(result.output.stdout, /\$__makaCommand = \[ScriptBlock\]::Create/u);
-    assert.ok(result.output.stdout.includes('exit $LASTEXITCODE'));
+    assert.doesNotMatch(result.output.stdout, /wired-marker/u);
   });
 
   test('runs explicit argv and supplies inherited fd payloads on the pipe path', async () => {

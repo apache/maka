@@ -78,7 +78,7 @@ describe('buildShellSpawnPlan', () => {
     const script = spawnPlan.args[4] ?? '';
     assert.match(script, /\[Console\]::OutputEncoding = \$__makaUtf8/u);
     assert.equal(spawnPlan.env?.INHERITED, 'kept');
-    assert.equal(spawnPlan.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND, command);
+    assert.ok(spawnPlan.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND?.startsWith(`${command}\n`));
     assert.equal(spawnPlan.env?.__maka_runtime_powershell_command, undefined);
     assert.match(script, /SetEnvironmentVariable\('__MAKA_RUNTIME_POWERSHELL_COMMAND', \$null\)/u);
     assert.doesNotMatch(
@@ -98,6 +98,12 @@ describe('buildShellSpawnPlan', () => {
       'npm test',
     );
     assert.equal(
+      spawnPlan.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND,
+      'npm test\n' +
+        '$__makaOk = $?\n' +
+        'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }',
+    );
+    assert.equal(
       spawnPlan.args[4],
       '$__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n' +
         '[Console]::OutputEncoding = $__makaUtf8\n' +
@@ -105,9 +111,7 @@ describe('buildShellSpawnPlan', () => {
         "$__makaCommandText = [Environment]::GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')\n" +
         "[Environment]::SetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND', $null)\n" +
         '$__makaCommand = [ScriptBlock]::Create($__makaCommandText)\n' +
-        '. $__makaCommand\n' +
-        '$__makaOk = $?\n' +
-        'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }',
+        '. $__makaCommand',
     );
   });
 
@@ -154,6 +158,8 @@ describe('buildPtyShellSpawnPlan', () => {
       /\$OutputEncoding = \$__makaUtf8\n\$__makaCommandText = \[Environment\]::GetEnvironmentVariable/u,
     );
     assert.equal(powershell.env?.INHERITED, 'kept');
-    assert.equal(powershell.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND, 'Write-Output ready');
+    assert.ok(
+      powershell.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND?.startsWith('Write-Output ready\n'),
+    );
   });
 });

@@ -246,10 +246,7 @@ describe('runShellWithBoundedTail', () => {
       `flags then PowerShell wrapper, got: ${r.stdout}`,
     );
     assert.ok(r.stdout.includes("GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')"));
-    assert.ok(
-      r.stdout.includes('exit $LASTEXITCODE'),
-      'exit-code wrapper is part of the command argument',
-    );
+    assert.doesNotMatch(r.stdout, /wired-marker/u, 'user syntax stays outside argv');
   });
 
   test('a native command exit code survives the PowerShell -Command path (requires pwsh)', async (t) => {

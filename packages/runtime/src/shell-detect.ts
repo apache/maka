@@ -129,8 +129,11 @@ function buildPowerShellCommand(
     Object.entries(env).filter(([key]) => key.toUpperCase() !== POWERSHELL_COMMAND_ENV),
   );
   return {
-    script: `${POWERSHELL_UTF8_BOOTSTRAP}\n${invokeCommand}\n${POWERSHELL_EXIT_CODE_TAIL}`,
-    env: { ...inheritedEnv, [POWERSHELL_COMMAND_ENV]: command },
+    script: `${POWERSHELL_UTF8_BOOTSTRAP}\n${invokeCommand}`,
+    env: {
+      ...inheritedEnv,
+      [POWERSHELL_COMMAND_ENV]: `${command}\n${POWERSHELL_EXIT_CODE_TAIL}`,
+    },
   };
 }
 
