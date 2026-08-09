@@ -1,3 +1,5 @@
+> **Superseded for file-level coverage:** see [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) (one row per product surface file). This document remains the family-level wiki map and fix log from the first alignment pass.
+
 # Astryx alignment inventory
 
 Maps [Astryx wiki](https://github.com/facebook/astryx/wiki) conventions onto
