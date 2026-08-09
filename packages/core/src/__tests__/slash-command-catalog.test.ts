@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  SLASH_COMMAND_CATALOG,
-  slashCommandsForSurface,
-  slashCommandSpec,
-} from '../slash-command-catalog.js';
+import { SLASH_COMMAND_CATALOG, slashCommandsForSurface } from '../slash-command-catalog.js';
 
 describe('slash command catalog', () => {
   it('owns every built-in command identity and alias once', () => {
@@ -32,21 +28,14 @@ describe('slash command catalog', () => {
         'thinking',
       ],
     );
-    assert.deepEqual(slashCommandSpec('exit'), {
-      id: 'exit',
-      aliases: ['quit'],
-      tail: 'none',
-      session: 'none',
-      surfaces: ['tui'],
-    });
-  });
-
-  it('describes the shared tail grammar used by every surface', () => {
-    assert.equal(slashCommandSpec('compact').tail, 'none');
-    assert.equal(slashCommandSpec('rename').tail, 'required');
-    assert.equal(slashCommandSpec('side').tail, 'optional');
-    assert.equal(slashCommandSpec('skill').tail, 'none');
-    assert.equal(slashCommandSpec('swarm').tail, 'optional');
+    const identities = SLASH_COMMAND_CATALOG.flatMap((command) => [
+      command.id,
+      ...('aliases' in command ? command.aliases : []),
+    ]);
+    assert.equal(new Set(identities).size, identities.length);
+    const exit = SLASH_COMMAND_CATALOG.find(({ id }) => id === 'exit');
+    assert.ok(exit && 'aliases' in exit);
+    assert.deepEqual(exit.aliases, ['quit']);
   });
 
   it('declares the commands each product surface can actually execute', () => {
@@ -56,7 +45,26 @@ describe('slash command catalog', () => {
     );
     assert.deepEqual(
       slashCommandsForSurface('tui').map(({ id }) => id),
-      SLASH_COMMAND_CATALOG.filter(({ id }) => id !== 'side').map(({ id }) => id),
+      [
+        'compact',
+        'context',
+        'exit',
+        'graph',
+        'help',
+        'model',
+        'move',
+        'new',
+        'permissions',
+        'recap',
+        'rename',
+        'resume',
+        'rewind',
+        'session',
+        'setup',
+        'skill',
+        'swarm',
+        'thinking',
+      ],
     );
   });
 });

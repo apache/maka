@@ -28,7 +28,7 @@ import {
   type QueueEnqueueOutcome,
   type SessionSummary,
   type ShellRunUpdate,
-  type SlashCommandId,
+  type SlashCommandIdForSurface,
 } from '@maka/core';
 import {
   buildForeignSessionHandoffMessage,
@@ -2307,7 +2307,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  type TuiSlashCommandId = Exclude<SlashCommandId, 'side'>;
+  type TuiSlashCommandId = SlashCommandIdForSurface<'tui'>;
   type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
 
   const slashCommandHandlers = {
@@ -2576,16 +2576,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
   } satisfies Record<TuiSlashCommandId, TuiSlashCommandHandler>;
 
-  const slashCommands: MakaSlashCommand[] = slashCommandsForSurface('tui').flatMap((spec) => {
-    if (spec.id === 'side') return [];
-    return [
-      {
-        name: spec.id,
-        ...('aliases' in spec ? { aliases: spec.aliases } : {}),
-        ...slashCommandHandlers[spec.id],
-      },
-    ];
-  });
+  const slashCommands: MakaSlashCommand[] = slashCommandsForSurface('tui').map((spec) => ({
+    name: spec.id,
+    ...('aliases' in spec ? { aliases: spec.aliases } : {}),
+    ...slashCommandHandlers[spec.id],
+  }));
 
   const handleSlashCommand = (prompt: string, idleMs: number): boolean => {
     const trimmed = prompt.trim();

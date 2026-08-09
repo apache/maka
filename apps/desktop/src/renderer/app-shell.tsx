@@ -13,7 +13,7 @@ import type {
   PlanReminder,
   QuoteRef,
   SessionSummary,
-  SlashCommandId,
+  SlashCommandIdForSurface,
   UiLocale,
   UiLocalePreference,
 } from '@maka/core';
@@ -1378,8 +1378,9 @@ function AppShellContent({
       const availableCommands = slashCommandsForSurface('desktop').filter(
         ({ session }) => session === 'none' || Boolean(activeId),
       );
-      const presentation: Partial<
-        Record<SlashCommandId, Omit<ComposerSlashCommandOption, 'id'>>
+      const presentation: Record<
+        SlashCommandIdForSurface<'desktop'>,
+        Omit<ComposerSlashCommandOption, 'id'>
       > = {
         compact: {
           ...shellCopy.slashCommands.compact,
@@ -1402,11 +1403,7 @@ function AppShellContent({
           Icon: GitBranch,
         },
       };
-      return availableCommands.map(({ id }) => {
-        const option = presentation[id];
-        if (!option) throw new Error(`Missing Desktop slash command presentation: /${id}`);
-        return { id, ...option };
-      });
+      return availableCommands.map(({ id }) => ({ id, ...presentation[id] }));
     },
     [activeId, shellCopy.slashCommands],
   );

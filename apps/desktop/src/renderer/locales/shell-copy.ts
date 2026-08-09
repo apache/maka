@@ -6,6 +6,7 @@ import {
   type PermissionMode,
   type ChatDefaultPermissionMode,
   type SettingsSection,
+  type SlashCommandIdForSurface,
   type ThinkingLevel,
 } from '@maka/core';
 
@@ -372,7 +373,7 @@ type ShellCopy = {
     newConversation: string;
     compactErrorTitle: string;
     compactErrorFallback: string;
-    slashCommands: Record<'compact' | 'graph' | 'side' | 'swarm', {
+    slashCommands: Record<SlashCommandIdForSurface<'desktop'>, {
       name: string;
       description: string;
     }>;

@@ -1,9 +1,21 @@
 import { expect, test, COMPOSER_INPUT } from './fixtures';
 
-test('groups commands before Skills and stages a command without running it', async ({
+test('shows only slash commands executable in the current session state', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
+  await composer.click();
+  await composer.pressSequentially('/');
+
+  const freshMenu = page.getByRole('listbox', { name: '命令和技能' });
+  const freshCommands = freshMenu.getByRole('group', { name: '命令' });
+  await expect(freshCommands.getByRole('option')).toHaveCount(2);
+  await expect(freshCommands.getByRole('option', { name: /使用 Graph.*\/graph/ })).toBeVisible();
+  await expect(freshCommands.getByRole('option', { name: /使用 Swarm.*\/swarm/ })).toBeVisible();
+  await expect(freshCommands.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
+  await expect(freshCommands.getByRole('option', { name: /\/side/ })).toHaveCount(0);
+
+  await composer.press('Escape');
   await composer.fill('seed session');
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
@@ -17,10 +29,60 @@ test('groups commands before Skills and stages a command without running it', as
   await expect(groups.nth(0)).toHaveAttribute('aria-label', '命令');
   await expect(groups.nth(1)).toHaveAttribute('aria-label', 'Skills');
 
-  const compact = groups.nth(0).getByRole('option', { name: /压缩上下文.*\/compact/ });
-  await expect(compact).toBeVisible();
-  await compact.click();
+  await expect(groups.nth(0).getByRole('option')).toHaveCount(4);
+});
 
-  await expect.poll(() => composer.textContent()).toBe('/compact ');
+test('stages a slash command without performing its action', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('seed session');
+  await composer.press('Enter');
+  await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
+
+  await composer.click();
+  await composer.pressSequentially('/');
+
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+  const side = menu.getByRole('group', { name: '命令' }).getByRole('option', {
+    name: /打开侧聊.*\/side/,
+  });
+  await side.click();
+
+  await expect.poll(() => composer.textContent()).toBe('/side ');
+  await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(0);
   await expect(menu).not.toBeVisible();
+});
+
+test('offers commands only for the first token and keeps explicit Skill queries separate', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('seed session');
+  await composer.press('Enter');
+  await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
+
+  await composer.fill('explain /');
+  const inlineMenu = page.getByRole('listbox', { name: '命令和技能' });
+  await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
+  await expect(inlineMenu.getByRole('group', { name: 'Skills' })).toBeVisible();
+
+  await composer.fill('/skill:compact');
+  await expect(inlineMenu.getByRole('option', { name: /\/compact/ })).toHaveCount(0);
+});
+
+test('dispatches a staged slash command instead of steering it into a running turn', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('keep streaming '.repeat(80));
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
+
+  await composer.fill('/side discuss separately');
+  await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
+  await composer.press('Enter');
+
+  await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
+  await expect(page.getByText(/Acknowledged steering: \/side discuss separately/)).toHaveCount(0);
 });

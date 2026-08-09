@@ -47,6 +47,7 @@ import {
   fileTransferContainsFiles,
   isChatInputComposing,
   mentionQueryMatches,
+  slashCommandQuery,
   skillMentionQuery,
   type ChatInputActionOwner,
   type ComposerTextPort,
@@ -683,14 +684,16 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    commandsGroup: mentionCopy.commandsGroup,
+    skillsGroup: mentionCopy.skillsGroup,
   });
-  useEffect(() => {
-    mentionSourceRef.current = {
-      mentionSkills: props.mentionSkills,
-      slashCommands: props.slashCommands,
-      onSearchMentionFiles: props.onSearchMentionFiles,
-    };
-  });
+  mentionSourceRef.current = {
+    mentionSkills: props.mentionSkills,
+    slashCommands: props.slashCommands,
+    onSearchMentionFiles: props.onSearchMentionFiles,
+    commandsGroup: mentionCopy.commandsGroup,
+    skillsGroup: mentionCopy.skillsGroup,
+  };
 
   const searchSourcesRef = useRef<{ files: SearchSource; skills: SearchSource }>(null);
   if (!searchSourcesRef.current) {
@@ -705,25 +708,41 @@ export const Composer = forwardRef<
     };
     const files = createTriggerSearchSource<SearchableItem>(runFileSearch);
     const listSlashSuggestions = (rawQuery: string): SearchableItem[] => {
-      const skills = mentionSourceRef.current.mentionSkills ?? [];
-      const commands = mentionSourceRef.current.slashCommands ?? [];
+      const source = mentionSourceRef.current;
+      const skills = source.mentionSkills ?? [];
+      const editable = editableNode();
+      const selection = document.getSelection();
+      let textBeforeCaret = textPort.getValue();
+      if (
+        editable &&
+        selection?.focusNode &&
+        editable.contains(selection.focusNode)
+      ) {
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        range.setEnd(selection.focusNode, selection.focusOffset);
+        textBeforeCaret = range.toString();
+      }
+      const commandQuery = slashCommandQuery(textBeforeCaret, rawQuery);
       const query = skillMentionQuery(rawQuery);
-      const commandItems = commands
-        .filter((command) =>
-          mentionQueryMatches(
-            query,
-            `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
-          ),
-        )
-        .map((command) => ({
-          id: `command:${command.id}`,
-          label: command.name,
-          auxiliaryData: {
-            kind: 'command',
-            command,
-            group: mentionCopy.commandsGroup,
-          } satisfies ComposerSlashSuggestion,
-        }));
+      const commandItems = commandQuery === null
+        ? []
+        : (source.slashCommands ?? [])
+            .filter((command) =>
+              mentionQueryMatches(
+                commandQuery,
+                `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
+              ),
+            )
+            .map((command) => ({
+              id: `command:${command.id}`,
+              label: command.name,
+              auxiliaryData: {
+                kind: 'command',
+                command,
+                group: source.commandsGroup,
+              } satisfies ComposerSlashSuggestion,
+            }));
       const skillItems = skills
         .filter((skill) =>
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
@@ -734,7 +753,7 @@ export const Composer = forwardRef<
           auxiliaryData: {
             kind: 'skill',
             skill,
-            group: mentionCopy.skillsGroup,
+            group: source.skillsGroup,
           } satisfies ComposerSlashSuggestion,
         }));
       return [...commandItems, ...skillItems].slice(0, 50);
@@ -1015,7 +1034,13 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      const submit = props.streaming && props.onSteer ? props.onSteer : props.onSend;
+      const commandToken = text.trimStart().split(/\s+/, 1)[0];
+      const isSlashCommand = props.slashCommands?.some(
+        (command) => commandToken === `/${command.id}`,
+      );
+      const submit = !isSlashCommand && props.streaming && props.onSteer
+        ? props.onSteer
+        : props.onSend;
       sent = await submit(
         text,
         workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
