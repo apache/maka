@@ -18,7 +18,9 @@ const genUrl = pathToFileURL(join(root, 'scripts/generate-astryx-surface-invento
 
 async function main() {
   if (!existsSync(pathsFile) || !existsSync(mdFile)) {
-    console.error('missing inventory artifacts — run: node scripts/generate-astryx-surface-inventory.mjs');
+    console.error(
+      'missing inventory artifacts — run: node scripts/generate-astryx-surface-inventory.mjs',
+    );
     process.exit(1);
   }
 
@@ -63,23 +65,36 @@ async function main() {
   const requiredMissing = required.filter((f) => !listSet.has(f) || !md.includes(`\`${f}\``));
 
   // No family-batch claim without per-file rows: inventory must not use old batch prose
-  if (/General, Appearance, Data, Providers/.test(md) && !md.includes('general-settings-page.tsx')) {
+  if (
+    /General, Appearance, Data, Providers/.test(md) &&
+    !md.includes('general-settings-page.tsx')
+  ) {
     console.error('inventory still uses family-batch claims without per-file rows');
     process.exit(1);
   }
 
   const failures = [];
-  if (missing.length) failures.push(`on disk but not in .paths (${missing.length}):\n  ${missing.slice(0, 20).join('\n  ')}`);
-  if (extra.length) failures.push(`in .paths but not on disk (${extra.length}):\n  ${extra.slice(0, 20).join('\n  ')}`);
+  if (missing.length)
+    failures.push(
+      `on disk but not in .paths (${missing.length}):\n  ${missing.slice(0, 20).join('\n  ')}`,
+    );
+  if (extra.length)
+    failures.push(
+      `in .paths but not on disk (${extra.length}):\n  ${extra.slice(0, 20).join('\n  ')}`,
+    );
   if (mdMissing.length) {
-    failures.push(`on disk but not a markdown row (${mdMissing.length}):\n  ${mdMissing.slice(0, 20).join('\n  ')}`);
+    failures.push(
+      `on disk but not a markdown row (${mdMissing.length}):\n  ${mdMissing.slice(0, 20).join('\n  ')}`,
+    );
   }
   if (requiredMissing.length) {
     failures.push(`required surfaces missing:\n  ${requiredMissing.join('\n  ')}`);
   }
 
   if (failures.length) {
-    console.error(`astryx surface inventory coverage failed:\n${failures.map((f) => `- ${f}`).join('\n')}`);
+    console.error(
+      `astryx surface inventory coverage failed:\n${failures.map((f) => `- ${f}`).join('\n')}`,
+    );
     process.exit(1);
   }
 

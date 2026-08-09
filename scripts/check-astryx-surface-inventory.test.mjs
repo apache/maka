@@ -37,10 +37,7 @@ describe('astryx surface file inventory coverage', () => {
       assert.match(md, new RegExp(`\`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\``));
     }
     // No family-batch collapse of settings pages
-    assert.doesNotMatch(
-      md,
-      /General, Appearance, Data, Providers, Bot, Memory.*already aligned/,
-    );
+    assert.doesNotMatch(md, /General, Appearance, Data, Providers, Bot, Memory.*already aligned/);
   });
 
   it('paths file line count matches markdown file rows for inventoried files', () => {
@@ -76,5 +73,3 @@ describe('astryx surface file inventory coverage', () => {
     }
   });
 });
-
-

@@ -42,15 +42,23 @@ for (const rel of BUTTON_GUARD_FILES) {
     if (ALLOW_COMMENT_RE.test(window)) return;
     // Workbar tab strip is intentional custom chrome (dnd-kit + role=tab).
     if (rel.endsWith('session-workbar.tsx') && /role=["']tab["']/.test(window)) return;
-    failures.push(`${rel}:${i + 1}: raw <button> — use Astryx Button/Item/ToggleButton/Collapsible`);
+    failures.push(
+      `${rel}:${i + 1}: raw <button> — use Astryx Button/Item/ToggleButton/Collapsible`,
+    );
   });
 }
 
 const controlBlocks = [
   [/\.maka-task-ledger-row\b[\s\S]{0,220}?min-height:\s*(\d+)px/, 'task-ledger-row'],
-  [/\.maka-task-ledger-terminal-trigger\b[\s\S]{0,220}?min-height:\s*(\d+)px/, 'task-ledger-terminal'],
+  [
+    /\.maka-task-ledger-terminal-trigger\b[\s\S]{0,220}?min-height:\s*(\d+)px/,
+    'task-ledger-terminal',
+  ],
   [/\.maka-task-ledger-message\b[\s\S]{0,220}?min-height:\s*(\d+)px/, 'task-ledger-message'],
-  [/\.maka-module-list-skeleton-row\b[\s\S]{0,220}?min-height:\s*(\d+)px/, 'module-list-skeleton-row'],
+  [
+    /\.maka-module-list-skeleton-row\b[\s\S]{0,220}?min-height:\s*(\d+)px/,
+    'module-list-skeleton-row',
+  ],
   [/\.maka-workbar-launcher-row\b[\s\S]{0,220}?min-height:\s*(\d+)px/, 'workbar-launcher-row'],
 ];
 
@@ -108,7 +116,9 @@ if (/(?<![\w-])description=\{action\.description\}/.test(workbar)) {
   );
 }
 if (!/aria-description=\{action\.description\}/.test(workbar)) {
-  failures.push('session-workbar.tsx: launcher Item should keep AT description via aria-description');
+  failures.push(
+    'session-workbar.tsx: launcher Item should keep AT description via aria-description',
+  );
 }
 
 const launcherCss = readFileSync(
@@ -132,9 +142,7 @@ const importTsx = readFileSync(
 // Parent-role paths (listitem/option/menuitem) put onClick on the root and
 // suppress Item's native button — easy to ship a -1-only tabIndex trap.
 if (/role=["']listitem["']/.test(importTsx)) {
-  failures.push(
-    'external-session-import-dialog.tsx: Item role=listitem drops keyboard button',
-  );
+  failures.push('external-session-import-dialog.tsx: Item role=listitem drops keyboard button');
 }
 if (/role=["']option["']/.test(importTsx) || /role=["']listbox["']/.test(importTsx)) {
   failures.push(
@@ -142,14 +150,18 @@ if (/role=["']option["']/.test(importTsx) || /role=["']listbox["']/.test(importT
   );
 }
 // Every session Item must use onClick (button path) and must not pin tabIndex=-1.
-const sessionItemBlocks = [...importTsx.matchAll(/className="maka-external-session-import-row"[\s\S]{0,400}?\/>/g)];
+const sessionItemBlocks = [
+  ...importTsx.matchAll(/className="maka-external-session-import-row"[\s\S]{0,400}?\/>/g),
+];
 if (sessionItemBlocks.length === 0) {
   failures.push('external-session-import-dialog.tsx: missing session Item rows');
 }
 for (const block of sessionItemBlocks) {
   const body = block[0];
   if (!/onClick=/.test(body)) {
-    failures.push('external-session-import-dialog.tsx: session Item missing onClick (no button path)');
+    failures.push(
+      'external-session-import-dialog.tsx: session Item missing onClick (no button path)',
+    );
   }
   if (/tabIndex=\{-1\}|tabIndex=\{selectedId/.test(body)) {
     failures.push(
