@@ -2,7 +2,17 @@ import type { ComponentProps } from 'react';
 import { ChatLayout } from '@astryxdesign/core/Chat';
 import { cn } from './utils.js';
 
-export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout>;
+/**
+ * Stock ChatLayoutProps plus the patch-package conversationKey seam
+ * (`patches/@astryxdesign+core+0.3.0.patch`): resets scroll / unread state when
+ * the host switches conversations in place without remounting the composer.
+ *
+ * Intersection is explicit because some TS resolutions only see the published
+ * Astryx destructure list (which omits conversationKey) via ComponentProps.
+ */
+export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
+  conversationKey?: string | number;
+};
 
 /**
  * Maka's product seam for the Astryx chat page shell.
@@ -22,10 +32,16 @@ export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout>;
  * rather than dropped entirely so an upstream default change cannot silently
  * retune the composer's gutters; `chat-surface-layout.test.tsx` holds the value.
  */
-export function ChatSurfaceLayout({ className, density = 'balanced', ...props }: ChatSurfaceLayoutProps) {
+export function ChatSurfaceLayout({
+  className,
+  density = 'balanced',
+  conversationKey,
+  ...props
+}: ChatSurfaceLayoutProps) {
   return (
     <ChatLayout
       {...props}
+      conversationKey={conversationKey}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"
