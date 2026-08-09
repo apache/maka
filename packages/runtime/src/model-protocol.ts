@@ -430,8 +430,16 @@ export type ModelStreamEvent =
   | { kind: 'text-start' }
   | { kind: 'text'; text: string }
   | { kind: 'text-metadata'; providerOptions: ProviderOptions }
-  | { kind: 'thinking'; text: string; providerOptions?: ProviderOptions }
+  | {
+      kind: 'thinking';
+      text: string;
+      providerOptions?: ProviderOptions;
+      /** Maka-authored replay hint; absent provider metadata stays fail-closed. */
+      providerOptionsOrigin?: 'maka_transport';
+    }
   | { kind: 'thinking-signature'; signature: string }
+  /** Provider-side tool execution has begun, but no replayable call exists yet. */
+  | { kind: 'provider-tool-input' }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
   | {
       kind: 'provider-tool-result';

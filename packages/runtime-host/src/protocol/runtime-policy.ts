@@ -11,6 +11,7 @@ import {
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  decodeRuntimePolicyEntityId,
   decodeCredentialLocator,
   decodeCredentialStatus,
   decodeCredentialVersionBasis,
@@ -18,10 +19,14 @@ import {
   normalizeCreateCatalogConnectionInput,
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
+  normalizeOptionalRequestBodyOverlay,
+  normalizeRequestHeaderUpdates,
   normalizeRuntimePolicyMutation,
   normalizeSetCredentialInput,
   normalizeSetDefaultConnectionTargetInput,
   normalizeUpdateCatalogConnectionInput,
+  REQUEST_HEADERS_MAX_BYTES,
+  RequestCustomizationValidationError,
   RuntimePolicyDomainDecodeError,
   type ConnectionCatalogEntry,
   type ConnectionModel,
@@ -34,6 +39,7 @@ import {
   type DeleteCredentialInput,
   type MutateRuntimePolicyInput,
   type RemoveCatalogConnectionInput,
+  type RequestHeaderUpdate,
   type RevisionConflict,
   type RuntimePolicySnapshot,
   type SetCredentialInput,
@@ -194,6 +200,23 @@ export type DeleteCredentialResult =
 export type CredentialVaultSetInput = SetCredentialInput;
 export type CredentialVaultDeleteInput = DeleteCredentialInput;
 
+export interface ConnectionRequestHeadersQueryInput {
+  readonly connectionId: string;
+}
+
+export type ConnectionRequestHeadersQueryResult =
+  | { readonly kind: 'found'; readonly names: readonly string[] }
+  | { readonly kind: 'connection_not_found' };
+
+export interface ConnectionRequestHeadersReplaceInput {
+  readonly connectionId: string;
+  readonly headers: readonly RequestHeaderUpdate[];
+}
+
+export type ConnectionRequestHeadersReplaceResult =
+  | { readonly kind: 'committed' | 'unchanged'; readonly names: readonly string[] }
+  | { readonly kind: 'connection_not_found' };
+
 interface CredentialCommitted {
   readonly kind: 'committed';
   readonly vaultRevision: number;
@@ -316,6 +339,28 @@ export const RUNTIME_POLICY_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeDeleteCredentialInput,
     decodeOutput: decodeDeleteCredentialResult,
+  }),
+  'connection.request-headers.query': defineOperation<
+    ConnectionRequestHeadersQueryInput,
+    ConnectionRequestHeadersQueryResult,
+    (typeof CREDENTIAL_QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: CREDENTIAL_QUERY_ERRORS,
+    decodeInput: decodeConnectionRequestHeadersQueryInput,
+    decodeOutput: decodeConnectionRequestHeadersQueryResult,
+  }),
+  'connection.request-headers.replace': defineOperation<
+    ConnectionRequestHeadersReplaceInput,
+    ConnectionRequestHeadersReplaceResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeConnectionRequestHeadersReplaceInput,
+    decodeOutput: decodeConnectionRequestHeadersReplaceResult,
   }),
 } as const;
 
@@ -549,6 +594,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'modelSource',
       'modelsFetchedAt',
       'lastTest',
+      'requestBodyOverlay',
       'enabledModelIdCount',
       'modelCount',
     ],
@@ -588,6 +634,10 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       revision: header.revision,
     }),
   );
+  const requestBodyOverlay =
+    header.requestBodyOverlay === undefined
+      ? undefined
+      : decodeDomain(() => normalizeOptionalRequestBodyOverlay(header.requestBodyOverlay));
   return {
     kind: 'connection',
     connectionIndex: integer(
@@ -617,6 +667,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     ...(header.lastTest === undefined
       ? {}
       : { lastTest: decodeDomain(() => decodeConnectionTestSummary(header.lastTest)) }),
+    ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
     enabledModelIdCount: integer(
       header.enabledModelIdCount,
       'enabled model id count',
@@ -744,7 +795,11 @@ function decodeCredentialQueryResult(value: unknown): CredentialVaultQueryResult
 
 function decodeSetCredentialInput(value: unknown): SetCredentialInput {
   const input = decodeDomain(() => normalizeSetCredentialInput(value));
-  if (Buffer.byteLength(input.secret, 'utf8') > CREDENTIAL_SECRET_MAX_BYTES) {
+  const maxBytes =
+    input.locator.scope === 'connection' && input.locator.kind === 'request_headers'
+      ? REQUEST_HEADERS_MAX_BYTES
+      : CREDENTIAL_SECRET_MAX_BYTES;
+  if (Buffer.byteLength(input.secret, 'utf8') > maxBytes) {
     throw invalidProtocolFrame('Invalid credential secret');
   }
   return input;
@@ -772,6 +827,82 @@ function decodeDeleteCredentialResult(value: unknown): DeleteCredentialResult {
     return { kind: 'connection_not_found' };
   }
   return credentialStale(item);
+}
+
+function decodeConnectionRequestHeadersQueryInput(
+  value: unknown,
+): ConnectionRequestHeadersQueryInput {
+  const input = requireExactRecord(value, 'connection request headers query input', [
+    'connectionId',
+  ]);
+  return {
+    connectionId: decodeDomain(() => decodeRuntimePolicyEntityId(input.connectionId)),
+  };
+}
+
+function decodeConnectionRequestHeadersQueryResult(
+  value: unknown,
+): ConnectionRequestHeadersQueryResult {
+  const result = requireRecord(value, 'connection request headers query result');
+  if (result.kind === 'connection_not_found') {
+    requireExactRecord(result, 'connection request headers connection not found result', ['kind']);
+    return { kind: 'connection_not_found' };
+  }
+  const found = requireExactRecord(result, 'connection request headers found result', [
+    'kind',
+    'names',
+  ]);
+  if (found.kind !== 'found') {
+    throw invalidProtocolFrame('Invalid connection request headers query result');
+  }
+  return { kind: 'found', names: decodeRequestHeaderNames(found.names) };
+}
+
+function decodeConnectionRequestHeadersReplaceInput(
+  value: unknown,
+): ConnectionRequestHeadersReplaceInput {
+  const input = requireExactRecord(value, 'connection request headers replace input', [
+    'connectionId',
+    'headers',
+  ]);
+  return {
+    connectionId: decodeDomain(() => decodeRuntimePolicyEntityId(input.connectionId)),
+    headers: decodeRequestHeaderUpdates(input.headers),
+  };
+}
+
+function decodeConnectionRequestHeadersReplaceResult(
+  value: unknown,
+): ConnectionRequestHeadersReplaceResult {
+  const result = requireRecord(value, 'connection request headers replace result');
+  if (result.kind === 'connection_not_found') {
+    requireExactRecord(result, 'connection request headers connection not found result', ['kind']);
+    return { kind: 'connection_not_found' };
+  }
+  const saved = requireExactRecord(result, 'connection request headers saved result', [
+    'kind',
+    'names',
+  ]);
+  if (saved.kind !== 'committed' && saved.kind !== 'unchanged') {
+    throw invalidProtocolFrame('Invalid connection request headers replace result');
+  }
+  return { kind: saved.kind, names: decodeRequestHeaderNames(saved.names) };
+}
+
+function decodeRequestHeaderNames(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) throw invalidProtocolFrame('Invalid request header names');
+  return decodeRequestHeaderUpdates(value.map((name) => ({ name }))).map(({ name }) => name);
+}
+
+function decodeRequestHeaderUpdates(value: unknown): readonly RequestHeaderUpdate[] {
+  try {
+    return normalizeRequestHeaderUpdates(value);
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) {
+      throw invalidProtocolFrame(error.message);
+    }
+    throw error;
+  }
 }
 
 function validateCatalogPageStructure(

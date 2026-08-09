@@ -42,52 +42,11 @@
   overflow: hidden;
 }
 
-/* WAWQAQ msg `9f313715` (2026-08-03): the content column is a rounded floating
-   plate flush to the sidebar — its edge is the ONE boundary on that seam. The
-   theme's full-height sidenav hairline (`.astryx-app-shell-sidenav.elevated`
-   in the built maka.css) ran on the same seam, so beside the plate's top-left
-   corner radius both lines showed and read as a doubled border. Drop it in both
-   collapse states — column separation is tonal (the plate's fill against the
-   canvas), per DESIGN.md's One Working Plane rule. Override lives here because
-   maka.css is a generated artifact (`npm run astryx:theme`), not a hand-edited
-   file.
-
-   Continuous Collapse used to repaint the collapsed rail with
-   --color-background-surface here as well, so the traffic lights would sit on
-   one surface instead of straddling a column edge narrower than they are. That
-   was written while AppShell's own surface was still the content column's
-   material; `.astryx-layout-content` below now paints --agents-layout-bg
-   (== --surface-canvas == --color-background-body), so the two columns already
-   share one material and the repaint was the only thing breaking the band. In
-   light mode --color-background-surface happens to equal the floating plate's
-   fill, which hid it; in dark mode the plate lifts 0.035L off --background and
-   the rail became a THIRD tone (measured L 0.205 against the canvas's 0.18),
-   painting a 49px slab that ran to the window top past the plate's 4px gutter
-   and under the light cluster. The rail now wears its column's material in both
-   states, which is what "one surface" meant in the first place.
-
-   The width goes with the color. Transparent alone left the border occupying
-   its 1px of layout, so the content column started 1px right of where the
-   sidebar column ended — invisible on its own, but it put a seam between the
-   two that nothing could align to. The titlebar's breadcrumb opens at that
-   edge, which is what made the phantom pixel measurable.
-
-   Visual System 2.0 (T2): the fill is now the ladder's `sunken` tier rather
-   than the column material Astryx paints (`--color-background-body`, which is
-   the shell CANVAS == `--surface-base`). DESIGN.md §2 names this element: the
-   sidebar sits on sunken, the shell on base, content plates on raised. Before
-   this the sidebar and the canvas resolved to the SAME value (measured 247 in
-   light, 17 in dark), so the rail had no edge of its own — with the theme
-   hairline dropped above, the column boundary was not expressed by anything at
-   all. The step is what the dropped line was traded for, and until now only
-   half that trade had been paid.
-
-   Scoped to this element instead of remapping `--color-background-body`,
-   because that token is AppShell's body wash — the same atom paints the shell
-   root and the content area's wash variant, so moving it would drag the canvas
-   down with the rail and destroy the very step being created. */
+/* Sidebar and canvas share one floor colour; the content plate is the only
+   step. Drop the theme sidenav hairline (generated maka.css) so the plate edge
+   is the single seam. Width 0: a transparent 1px border still reserved layout. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
-  background: var(--surface-sunken);
+  background: var(--agents-layout-bg);
   border-inline-end-color: transparent;
   border-inline-end-width: 0;
 }

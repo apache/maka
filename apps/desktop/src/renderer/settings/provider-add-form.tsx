@@ -15,6 +15,7 @@ import {
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { Banner, HStack, VStack } from '@astryxdesign/core';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
   FormLayout,
@@ -33,6 +34,12 @@ import {
   type ConnectionsBridge,
 } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import {
+  newRequestHeaders,
+  parseRequestBodyOverlay,
+  RequestCustomizationEditor,
+  type RequestHeaderDraft,
+} from './request-customization-editor';
 
 type ProviderFormField =
   | 'slug'
@@ -40,6 +47,7 @@ type ProviderFormField =
   | 'accountId'
   | 'baseUrl'
   | 'defaultModel'
+  | 'advancedRequest'
   | 'form';
 
 type ProviderFormError = {
@@ -67,6 +75,9 @@ export function AddProviderForm(props: {
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);
+  const [requestHeaders, setRequestHeaders] = useState<RequestHeaderDraft[]>([]);
+  const [requestBodyText, setRequestBodyText] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [error, setError] = useState<ProviderFormError | null>(null);
   const [busy, setBusy] = useState(false);
   const submitGuard = useActionGuard<'submit'>();
@@ -135,6 +146,15 @@ export function AddProviderForm(props: {
         message: isWiredOAuth ? copy.wiredLogin : copy.unwiredLogin,
       });
     }
+    let normalizedRequestHeaders: Readonly<Record<string, string>>;
+    let requestBodyOverlay: ReturnType<typeof parseRequestBodyOverlay>;
+    try {
+      normalizedRequestHeaders = newRequestHeaders(requestHeaders);
+      requestBodyOverlay = parseRequestBodyOverlay(requestBodyText);
+    } catch {
+      setAdvancedOpen(true);
+      return setError({ field: 'advancedRequest', message: copy.requestCustomizationInvalid });
+    }
     submitGuard.begin('submit');
     setBusy(true);
     try {
@@ -155,6 +175,10 @@ export function AddProviderForm(props: {
           ? { enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS] }
           : {}),
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+        ...(Object.keys(normalizedRequestHeaders).length > 0
+          ? { requestHeaders: normalizedRequestHeaders }
+          : {}),
+        ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
       });
       if (!addProviderMountedRef.current) return;
       let modelDiscoveryError: unknown;
@@ -185,6 +209,44 @@ export function AddProviderForm(props: {
     void submit();
   }
 
+  const advancedRequestEditor = (
+    <Collapsible
+      trigger={advancedOpen ? copy.collapseAdvancedRequest : copy.expandAdvancedRequest}
+      isOpen={advancedOpen}
+      onOpenChange={setAdvancedOpen}
+    >
+      <VStack gap={3}>
+        <RequestCustomizationEditor
+          headers={requestHeaders}
+          onHeadersChange={(headers) => {
+            setRequestHeaders(headers);
+            clearFieldError('advancedRequest');
+          }}
+          bodyText={requestBodyText}
+          onBodyTextChange={(value) => {
+            setRequestBodyText(value);
+            clearFieldError('advancedRequest');
+          }}
+          disabled={busy}
+          copy={{
+            headers: copy.requestHeaders,
+            headerName: copy.headerName,
+            headerValue: copy.headerValue,
+            retainedValue: copy.retainedHeaderValue,
+            addHeader: copy.addHeader,
+            removeHeader: copy.removeHeader,
+            noHeaders: copy.noRequestHeaders,
+            body: copy.extraRequestBody,
+            bodyHelp: copy.extraRequestBodyHelp,
+          }}
+        />
+        {error?.field === 'advancedRequest' && (
+          <Banner status="error" title={error.message} />
+        )}
+      </VStack>
+    </Collapsible>
+  );
+
   if (usesApiKeyDialog) {
     return (
       <VStack as="form" gap={3} onSubmit={submitApiKey}>
@@ -206,6 +268,7 @@ export function AddProviderForm(props: {
           isDisabled={busy}
           hasAutoFocus
         />
+        {advancedRequestEditor}
         {error?.field === 'form' && (
           <Banner status="error" title={error.message} />
         )}
@@ -323,6 +386,7 @@ export function AddProviderForm(props: {
             }
           />
         )}
+        {advancedRequestEditor}
       </FormLayout>
       {error?.field === 'form' && (
         <Banner status="error" title={error.message} />

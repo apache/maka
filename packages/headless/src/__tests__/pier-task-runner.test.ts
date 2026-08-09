@@ -6,6 +6,7 @@ import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { tokenSummary } from './helpers/cell-output-fixtures.js';
 import type { HarborCellOutput } from '../cell-output.js';
 import {
   FixedPromptBudgetExhaustedError,
@@ -1852,7 +1853,7 @@ test('createPierTaskRunner requires the OpenCode toolchain mount for the OpenCod
 
 test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is incomplete', async () => {
   await withDirs(async ({ jobsDir, repo }) => {
-    const makeRunner = (outcome: ProviderRequestTelemetry['outcome']) =>
+    const makeRunner = (outcome: ProviderRequestTelemetry['outcome'], cell?: HarborCellOutput) =>
       createPierTaskRunner(
         baseOptions({
           jobsDir,
@@ -1865,12 +1866,13 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
           reasoningEffort: 'max',
           opencodeToolchainPath: repo,
           apiKeyFile: '/secrets/deepseek.key',
+          pricing: { inputUsdPer1M: 1, outputUsdPer1M: 2 },
           providerProxyHub: {
             baseUrl: 'http://host.docker.internal:443',
             issue: () => ({
               baseUrl: 'http://host.docker.internal:443',
               token: 'ephemeral-token',
-              usage: () => null,
+              usage: () => ({ input: 10, cacheRead: 0, cacheWrite: 0, output: 5 }),
               telemetry: () => [
                 {
                   requestId: 1,
@@ -1882,13 +1884,14 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
                   bodyChunks: 1,
                   responseBytes: 64,
                   terminalEvent: outcome === 'completed',
+                  usage: { input: 10, cacheRead: 0, cacheWrite: 0, output: 5 },
                 },
               ],
               close: async () => {},
             }),
             close: async () => {},
           },
-          runPier: fakePier({ reward: 0 }),
+          runPier: fakePier({ reward: 0, ...(cell ? { cell } : {}) }),
         }),
       );
 
@@ -1904,9 +1907,26 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
     // A completed terminal request takes the normal reward path.
     const output = await makeRunner('completed')(runInput());
     assert.equal(output.harbor.reward, 0);
+    assert.equal(output.cell.tokenSummarySource, 'final');
     // So does a tail the agent tore down itself on its way out: the trial
     // raised nothing and the verifier graded it, so the cell is evidence.
-    assert.equal((await makeRunner('aborted')(runInput())).harbor.reward, 0);
+    const aborted = await makeRunner('aborted')(runInput());
+    assert.equal(aborted.harbor.reward, 0);
+    assert.equal(aborted.cell.tokenSummarySource, 'checkpoint');
+    const nativeAborted = await makeRunner(
+      'aborted',
+      cellOutput({
+        tokenSummary: tokenSummary({
+          input: 10,
+          output: 5,
+          reasoning: 0,
+          total: 15,
+          costUsd: 0.00002,
+        }),
+        tokenSummarySource: 'final',
+      }),
+    )(runInput());
+    assert.equal(nativeAborted.cell.tokenSummarySource, 'checkpoint');
   });
 });
 

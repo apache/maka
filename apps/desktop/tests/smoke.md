@@ -46,7 +46,7 @@ npm --workspace @maka/desktop run smoke:programmatic-window
 
 ## Storybook baseline and visual contracts
 
-The product's visual baseline is Storybook, not a screenshot harness. Page-level stories (e.g. `apps/desktop/stories/settings/settings-pages.stories.tsx`) render each surface with mocked IPC via `withScopedMakaBridge`; add a story variant for any state the page does not already cover. Style and layout invariants are locked by computed-style or text contract tests (pattern: `apps/desktop/e2e/settings.spec.ts`), not by fixed screenshots. Run Storybook with:
+Storybook is the production-backed design catalog, not a screenshot or desktop E2E harness. Page-level stories (e.g. `apps/desktop/stories/settings/settings-pages.stories.tsx`) render each surface with mocked IPC via `withScopedMakaBridge`; add a story variant for any state the page does not already cover. CI only builds the catalog and mounts every story once without running `play`. Style, layout and interaction invariants belong in focused component contracts or the real Electron E2E harness. Run Storybook with:
 
 ```bash
 npm --workspace @maka/desktop run storybook

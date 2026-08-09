@@ -710,6 +710,7 @@ class MakaAgent(BaseInstalledAgent):
                 checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
                 if isinstance(checkpoint, dict):
                     output["tokenSummary"] = checkpoint
+                    output["tokenSummarySource"] = "checkpoint"
                     output_path.write_text(f"{json.dumps(output, indent=2)}\n", encoding="utf-8")
             except (OSError, json.JSONDecodeError) as exc:
                 self.logger.debug("Could not hydrate Maka deadline usage from %s: %s", checkpoint_path, exc)

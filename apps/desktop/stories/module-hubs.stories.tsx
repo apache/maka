@@ -1,12 +1,9 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
   AutomationsPage,
   DailyReviewPage,
-  formatDailyReviewArchiveTitle,
-  getDailyReviewCopy,
   getSharedUiCopy,
   ModuleHubSelector,
   SkillsPage,
@@ -742,29 +739,9 @@ export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
 };
 
-// Real path: sidebar → 扩展 → 技能, with several installed Skills. The play
-// also locks the search contract: filtering, the match-count summary and the
-// clear affordance.
+// Real path: sidebar → 扩展 → 技能, with several installed Skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
-  play: async ({ canvasElement }) => {
-    const search = await waitForStorySelector<HTMLInputElement>(
-      canvasElement,
-      'input[placeholder="搜索技能"]',
-    );
-    await userEvent.type(search, 'git');
-    await waitForStoryText(canvasElement, '1 个匹配');
-    await waitForStoryText(canvasElement, 'git-flow');
-    await expect(canvasElement.textContent).not.toContain('docs-screenshot');
-
-    const clear = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '清空搜索',
-    );
-    clear.click();
-    await waitForStoryText(canvasElement, 'docs-screenshot');
-    await expect(canvasElement.textContent).toContain('release-notes');
-  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
@@ -775,23 +752,12 @@ export const ExtensionsSkillsBundled: Story = {
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
 // The review flow lives in the inspector now: select the row, then 查看更新.
 export const ExtensionsSkillsUpdateAvailable: Story = {
-  render: function Render() {
-    const [updateInput, setUpdateInput] = useState<unknown>(null);
-    return (
-      <>
-        <ExtensionsSkillsSurface
-          skills={UPDATE_AVAILABLE_SKILLS}
-          onUpdateManagedSkill={async (skillId, options) => {
-            setUpdateInput({ skillId, options });
-            return true;
-          }}
-        />
-        <output data-testid="skills-update-input" hidden>
-          {updateInput ? JSON.stringify(updateInput) : ''}
-        </output>
-      </>
-    );
-  },
+  render: () => (
+    <ExtensionsSkillsSurface
+      skills={UPDATE_AVAILABLE_SKILLS}
+      onUpdateManagedSkill={async () => true}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(
       canvasElement,
@@ -805,32 +771,7 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
     );
     viewUpdate.click();
 
-    const review = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '[aria-label="Skill 更新审查"]',
-    );
-    await expect(review.textContent).toContain(UPDATE_AVAILABLE_PREVIEW.currentContent);
-    await expect(review.textContent).toContain(UPDATE_AVAILABLE_PREVIEW.sourceContent);
-
-    const applyUpdate = await waitForStoryButton(
-      review,
-      (candidate) => candidate.textContent?.trim() === '更新到来源版本',
-    );
-    applyUpdate.click();
-
-    const output = await waitForStorySelector<HTMLOutputElement>(
-      canvasElement,
-      '[data-testid="skills-update-input"]',
-    );
-    await waitForStoryText(output, UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256);
-    const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
-    await expect(input).toEqual({
-      skillId: UPDATE_AVAILABLE_PREVIEW.skill.id,
-      options: {
-        expectedCurrentSha256: UPDATE_AVAILABLE_PREVIEW.expectedCurrentSha256,
-        expectedSourceSha256: UPDATE_AVAILABLE_PREVIEW.expectedSourceSha256,
-      },
-    });
+    await waitForStorySelector<HTMLElement>(canvasElement, '[aria-label="Skill 更新审查"]');
   },
 };
 
@@ -838,20 +779,7 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
 // inspector where every per-skill control now lives. Wide only: below 1024px
 // the page trades the panel for a dialog.
 export const ExtensionsSkillsInspector: Story = {
-  render: function Render() {
-    const [enabledInput, setEnabledInput] = useState<unknown>(null);
-    return (
-      <>
-        <ExtensionsSkillsSurface
-          skills={INSTALLED_SKILLS}
-          onSetSkillEnabled={(skillId, enabled) => setEnabledInput({ skillId, enabled })}
-        />
-        <output data-testid="skills-enabled-input" hidden>
-          {enabledInput ? JSON.stringify(enabledInput) : ''}
-        </output>
-      </>
-    );
-  },
+  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(
       canvasElement,
@@ -859,74 +787,12 @@ export const ExtensionsSkillsInspector: Story = {
     );
     row.click();
     await waitForStoryText(canvasElement, '固定到技能上下文');
-    await waitForStoryText(canvasElement, '声明工具');
-
-    // The enable toggle must address the skill by its scope-qualified ref —
-    // the same addressing pin/open/delete use — because an id can name more
-    // than one skill across user/project/workspace scopes.
-    const enableSwitch = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '[role="switch"]',
-    );
-    enableSwitch.click();
-    const enabledOutput = await waitForStorySelector<HTMLOutputElement>(
-      canvasElement,
-      '[data-testid="skills-enabled-input"]',
-    );
-    await waitForStoryText(enabledOutput, 'workspace:maka:skill-git-flow');
-    await expect(JSON.parse(enabledOutput.textContent ?? '')).toEqual({
-      skillId: 'workspace:maka:skill-git-flow',
-      enabled: false,
-    });
-
-    // The inspector's resize handle carries an absolutely positioned hit
-    // strip; a vendor translate bug once shifted it half its height upward,
-    // over the toolbar, swallowing the view switch's clicks. The strip must
-    // stay inside the content row — below the toolbar. Same selector as the
-    // CSS fix: the strip is the handle child that is not the pill, regardless
-    // of the order the vendor renders its children in.
-    const hitStrip = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '.maka-module-page .astryx-resize-handle > :not(.astryx-resize-handle-pill)',
-    );
-    const toolbar = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '.maka-module-page-bar',
-    );
-    await expect(hitStrip.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-      toolbar.getBoundingClientRect().bottom - 1,
-    );
   },
 };
 
-// Real path: sidebar → 扩展 → 技能, scrolling a long installed list.
-// Regression contract for #2236: the view switch rides the fixed header, so
-// scrolling the list must not move it. Rows scroll; the switch stays put.
+// Real path: sidebar → 扩展 → 技能, with a long installed list.
 export const ExtensionsSkillsScrollContainment: Story = {
   render: () => <ExtensionsSkillsSurface skills={LONG_LIST_SKILLS} />,
-  play: async ({ canvasElement }) => {
-    const viewSwitch = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '[aria-label="技能视图"]',
-    );
-    const rows = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '[aria-label="技能列表"]',
-    );
-    // The scroller is whichever ancestor of the rows actually overflows —
-    // asserting through the DOM, not through a class name the layout could
-    // rename.
-    let scroller: HTMLElement | null = rows;
-    while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
-      scroller = scroller.parentElement;
-    }
-    if (!scroller) throw new Error('Skills list never overflows any ancestor');
-    const before = viewSwitch.getBoundingClientRect().top;
-    scroller.scrollTop = 600;
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
-    await expect(scroller.scrollTop).toBeGreaterThan(0);
-    await expect(viewSwitch.getBoundingClientRect().top).toBe(before);
-  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with an installed Skill disabled.
@@ -968,9 +834,7 @@ export const ExtensionsMcpMarketplace: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP, with connected and disabled servers. The
-// play also locks the search contract: a discovered tool name keeps the
-// server that offers it, and the clear affordance restores the list.
+// Real path: sidebar → 扩展 → MCP, with connected and disabled servers.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
@@ -981,22 +845,6 @@ export const ExtensionsMcpConfigured: Story = {
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
-
-    const search = await waitForStorySelector<HTMLInputElement>(
-      canvasElement,
-      'input[placeholder="搜索 MCP…"]',
-    );
-    await userEvent.type(search, 'read_file');
-    await waitForStoryText(canvasElement, '1 个匹配');
-    await expect(canvasElement.textContent).toContain('filesystem');
-    await expect(canvasElement.textContent).not.toContain('linear-remote');
-
-    const clear = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '清空搜索',
-    );
-    clear.click();
-    await waitForStoryText(canvasElement, 'linear-remote');
   },
 };
 
@@ -1072,9 +920,8 @@ export const ScheduledPlanReminders: Story = {
 // delivery-blocked reminders in one list.
 //
 // 保持系统唤醒 has no story: it is persisted page state the page itself never
-// renders, so a story for it would smoke pixels identical to this one at every
-// viewport. The state lives on the settings menu item, and
-// plan-reminder-panel.test.tsx asserts its aria-checked in both directions.
+// renders, so a story for it would show pixels identical to this one. The state
+// lives on the settings menu item rather than this page.
 export const ScheduledPlanRemindersConfigured: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
 };
@@ -1111,25 +958,6 @@ export const ScheduledDailyReview: Story = {
       }}
     />
   ),
-  play: async ({ canvasElement }) => {
-    const overview = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '[aria-label="今天概览"]',
-    );
-    await expect(overview.textContent).not.toContain('错误');
-
-    const week = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
-    );
-    week.click();
-    const earlier = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.getAttribute('aria-label') === '查看更早一天',
-    );
-    earlier.click();
-    await waitForStoryText(canvasElement, '最近 7 天（往前 1 天）');
-  },
 };
 
 // Real path: sidebar → scheduled tasks → Daily Review after the initial activity request fails.
@@ -1146,11 +974,6 @@ export const ScheduledDailyReviewInitialLoadFailed: Story = {
       }}
     />
   ),
-  play: async ({ canvasElement }) => {
-    await waitForStoryText(canvasElement, '每日回顾刷新失败');
-    await expect(canvasElement.querySelector('[aria-busy="true"]')).toBeNull();
-    await expect(canvasElement.querySelector('.astryx-skeleton')).toBeNull();
-  },
 };
 
 // Real path: sidebar → scheduled tasks → Daily Review while a new range loads.
@@ -1174,13 +997,7 @@ export const ScheduledDailyReviewRefreshing: Story = {
       (candidate) => candidate.textContent?.includes('最近 7 天') === true,
     );
     button.click();
-    const content = await waitForStorySelector<HTMLElement>(
-      canvasElement,
-      '.maka-daily-review-content',
-    );
-    await expect(button.getAttribute('aria-checked')).toBe('true');
-    await expect(content.getAttribute('aria-busy')).toBe('true');
-    await expect(canvasElement.querySelector('.astryx-skeleton')).toBeNull();
+    await waitForStorySelector<HTMLElement>(canvasElement, '.maka-daily-review-content');
   },
 };
 
@@ -1188,7 +1005,6 @@ export const ScheduledDailyReviewRefreshing: Story = {
 // Real path: sidebar → scheduled tasks → Daily Review → view analysis.
 export const ScheduledDailyReviewReport: Story = {
   render: function Render() {
-    const [savedInput, setSavedInput] = useState<unknown>(null);
     const staleSummary = {
       ...DAILY_REVIEW_SUMMARY,
       day: {
@@ -1198,31 +1014,25 @@ export const ScheduledDailyReviewReport: Story = {
       totals: { ...DAILY_REVIEW_SUMMARY.totals, requestCount: 999 },
     };
     return (
-      <>
-        <ScheduledDailyReviewSurface
-          bridge={{
-            fetchDay: async (_offsetDays, range) => range === 1 ? DAILY_REVIEW_SUMMARY : staleSummary,
-            listArchives: async () => [{
-              id: DAILY_REVIEW_ARCHIVE.id,
-              day: DAILY_REVIEW_ARCHIVE.day,
-              range: DAILY_REVIEW_ARCHIVE.range,
-              status: DAILY_REVIEW_ARCHIVE.status,
-              generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
-              trigger: DAILY_REVIEW_ARCHIVE.trigger,
-              modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
-              totals: DAILY_REVIEW_ARCHIVE.totals,
-            }],
-            getArchive: async () => {
-              await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
-              return DAILY_REVIEW_ARCHIVE;
-            },
-          }}
-          onSaveMarkdown={(input) => setSavedInput(input)}
-        />
-        <output data-testid="daily-review-saved-input" hidden>
-          {savedInput ? JSON.stringify(savedInput) : ''}
-        </output>
-      </>
+      <ScheduledDailyReviewSurface
+        bridge={{
+          fetchDay: async (_offsetDays, range) => range === 1 ? DAILY_REVIEW_SUMMARY : staleSummary,
+          listArchives: async () => [{
+            id: DAILY_REVIEW_ARCHIVE.id,
+            day: DAILY_REVIEW_ARCHIVE.day,
+            range: DAILY_REVIEW_ARCHIVE.range,
+            status: DAILY_REVIEW_ARCHIVE.status,
+            generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
+            trigger: DAILY_REVIEW_ARCHIVE.trigger,
+            modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
+            totals: DAILY_REVIEW_ARCHIVE.totals,
+          }],
+          getArchive: async () => {
+            await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+            return DAILY_REVIEW_ARCHIVE;
+          },
+        }}
+      />
     );
   },
   play: async ({ canvasElement }) => {
@@ -1231,35 +1041,6 @@ export const ScheduledDailyReviewReport: Story = {
       (candidate) => candidate.textContent?.includes('查看分析') === true,
     );
     view.click();
-    const recent7Days = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
-    );
-    recent7Days.click();
     await waitForStoryText(canvasElement, '返回活动');
-    const save = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '保存',
-    );
-    save.click();
-    const output = await waitForStorySelector<HTMLOutputElement>(
-      canvasElement,
-      '[data-testid="daily-review-saved-input"]',
-    );
-    await waitForStoryText(output, 'markdown');
-    const input = JSON.parse(output.textContent ?? '') as Record<string, unknown>;
-    await expect(input.day).toEqual(DAILY_REVIEW_ARCHIVE.day);
-    await expect(input.range).toBe(DAILY_REVIEW_ARCHIVE.range);
-    await expect(input.totals).toEqual(DAILY_REVIEW_ARCHIVE.totals);
-    const archiveCopy = getDailyReviewCopy('zh');
-    const expectedMarkdown = [
-      `# ${formatDailyReviewArchiveTitle(DAILY_REVIEW_ARCHIVE, 'zh')}`,
-      ...(['summary', 'gaps', 'usage', 'code'] as const).flatMap((key) => [
-        '',
-        `## ${archiveCopy.archive.section[key]}`,
-        DAILY_REVIEW_ARCHIVE.sections[key],
-      ]),
-    ].join('\n');
-    await expect(input.markdown).toBe(expectedMarkdown);
   },
 };

@@ -517,6 +517,44 @@ function displayMetadataOnly(
   ) as Record<string, ModelMetadata>;
 }
 
+/**
+ * Anthropic ids the subscription catalog now lists under a different name.
+ *
+ * This is renaming, not retirement: Anthropic publishes a pinned dated id and a
+ * shorter "latest" alias for one model, so a catalog listing the alias still
+ * offers a selection stored as the dated id. Reconciliation compares ids
+ * literally, so without this a stored `claude-haiku-4-5-20251001` reads as a
+ * model the catalog dropped and repair falls through to the first live id —
+ * moving a Haiku user onto Opus, across model family and price tier, silently.
+ *
+ * Membership rule: only ids that name the *same* model as their target. A model
+ * that was genuinely withdrawn does NOT belong here — repairing that one onto a
+ * different model is correct, because the original is gone.
+ *
+ * Lives beside CURATED_CATALOG_FALLBACK_MODELS because every target has to be an
+ * id that list offers; a rename pointing at nothing sends reconciliation back to
+ * the fallback this table exists to prevent.
+ */
+export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, string>> = {
+  'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
+};
+
+/**
+ * The rename table that applies to one provider's inventory, or undefined when
+ * its ids carry no such guarantee.
+ *
+ * Reconciliation is shared by every provider that commits a fetched inventory,
+ * so the table has to be selected by provider rather than assumed: a relay may
+ * serve `claude-*` ids as opaque identifiers of its own, where the same string
+ * is a different model — the rule connection storage states where it prunes
+ * relay profiles across endpoints.
+ */
+export function modelIdAliasesForProvider(
+  providerType: ProviderType,
+): Readonly<Record<string, string>> | undefined {
+  return providerType === 'claude-subscription' ? CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES : undefined;
+}
+
 const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly string[]>> = {
   anthropic: [
     'claude-sonnet-4-6',

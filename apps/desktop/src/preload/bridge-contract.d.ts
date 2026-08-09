@@ -458,6 +458,11 @@ export interface MakaBridge {
     test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
     fetchModels(slug: string): Promise<ModelDiscoveryResult>;
     hasSecret(slug: string): Promise<boolean>;
+    getRequestHeaders(slug: string): Promise<import('@maka/core').SavedRequestHeaders>;
+    setRequestHeaders(
+      slug: string,
+      headers: readonly import('@maka/core').RequestHeaderUpdate[],
+    ): Promise<import('@maka/core').SavedRequestHeaders>;
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void;
   };
   mcp: {

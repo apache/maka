@@ -55,6 +55,7 @@ export interface FixedPromptTaskCompletedEvent {
   runtimeRefs?: HarborCellRuntimeRefs;
   deadlineSettlement?: HarborCellDeadlineSettlement;
   tokenSummary?: HarborCellTokenSummary;
+  tokenSummarySource?: 'final' | 'checkpoint';
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
   continuationSummary?: HarborCellContinuationSummary;
@@ -178,6 +179,7 @@ export interface FixedPromptTaskPlumbingFailedEvent {
   expectedPromptHash?: string;
   runtimeRefs?: HarborCellRuntimeRefs;
   tokenSummary?: HarborCellTokenSummary;
+  tokenSummarySource?: 'final' | 'checkpoint';
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
   continuationSummary?: HarborCellContinuationSummary;

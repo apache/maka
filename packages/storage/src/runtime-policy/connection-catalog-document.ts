@@ -31,6 +31,7 @@ import {
   PROVIDER_DEFAULTS,
   reconcileConnectionAfterModelFetch,
 } from '@maka/core/llm-connections';
+import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
@@ -177,7 +178,9 @@ export class ConnectionCatalogDocumentOwner {
     const testBasisChanged =
       endpointChanged ||
       previous.enabled !== changes.enabled ||
-      !sameStringArray(previous.enabledModelIds, changes.enabledModelIds);
+      !sameStringArray(previous.enabledModelIds, changes.enabledModelIds) ||
+      (changes.requestBodyOverlay !== undefined &&
+        !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined));
     const connections = [...current.connections];
     connections[index] = {
       connectionId: previous.connectionId,
@@ -213,6 +216,13 @@ export class ConnectionCatalogDocumentOwner {
         : changes.relayModelProfiles === null
           ? {}
           : { relayModelProfiles: changes.relayModelProfiles }),
+      ...(changes.requestBodyOverlay === undefined
+        ? previous.requestBodyOverlay === undefined
+          ? {}
+          : { requestBodyOverlay: previous.requestBodyOverlay }
+        : changes.requestBodyOverlay === null
+          ? {}
+          : { requestBodyOverlay: changes.requestBodyOverlay }),
       models: endpointChanged ? [] : previous.models,
       ...(endpointChanged || previous.modelSource === undefined
         ? {}
@@ -309,6 +319,7 @@ export class ConnectionCatalogDocumentOwner {
               hasModelInventory: previous.models.length > 0,
             },
             result.models,
+            { aliases: modelIdAliasesForProvider(previous.providerType) },
           )
         : {
             defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',

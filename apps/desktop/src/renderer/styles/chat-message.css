@@ -93,8 +93,7 @@
 }
 
 .maka-turn .maka-activity-card-header[aria-expanded="true"],
-.maka-turn .maka-tool-activity-card > [role="button"][aria-expanded="true"],
-.maka-turn .maka-tool-activity-card [data-slot="chat-tool-call-row"][aria-expanded="true"] {
+.maka-turn .maka-tool-activity-card [role="button"][aria-expanded="true"] {
   position: sticky;
   top: var(--maka-activity-sticky-top);
   z-index: var(--z-sticky);
@@ -105,12 +104,13 @@
 
 /* A call detail inside an expanded tool group forms a second, bounded sticky
    tier. The group remains available to collapse the whole run; the lower row
-   collapses only the detail currently being read. */
+   collapses only the detail currently being read.
+   Stock ChatToolCalls uses role=button on call rows (no data-slot patch). */
 .maka-turn
   .maka-tool-activity-card
   > [role="button"][aria-expanded="true"]
   ~ div
-  [data-slot="chat-tool-call-row"][aria-expanded="true"] {
+  [role="button"][aria-expanded="true"] {
   top: calc(var(--maka-activity-sticky-top) + var(--maka-activity-header-height));
 }
 
@@ -124,7 +124,7 @@
 /* Cursor for tool/reasoning disclosure triggers is owned by
    styles/native-cursor.css (role=button + default !important). */
 
-.maka-turn .astryx-chat-tool-calls :is([role="button"], [data-slot="chat-tool-call-row"]) > span:nth-child(2) {
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
   font: var(--maka-text-label);
 }
 
@@ -151,7 +151,7 @@
    the rule enlarged the leading icon wrapper and left the reasoning text at
    supporting size — the one row the retune was for. */
 .maka-turn .astryx-chat-reasoning [role="button"],
-.maka-turn .astryx-chat-tool-calls :is([role="button"], [data-slot="chat-tool-call-row"]) {
+.maka-turn .astryx-chat-tool-calls [role="button"] {
   --text-supporting-size: var(--text-body-size);
   --text-supporting-leading: var(--maka-line-body);
 }

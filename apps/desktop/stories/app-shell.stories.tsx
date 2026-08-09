@@ -736,10 +736,10 @@ const multiStepConversation: StoredMessage[] = [
 // Migrated here from the deleted chat-surface catalog (#1853): the marker is a
 // transcript detail, and rendering an eighth shell around it would be the
 // duplication this PR removes. That story carried a `play` assertion on the
-// marker's line height; play functions never execute in this Storybook (no test
-// addon is configured — a deliberately throwing `play` still ships green), so
-// the assertion was inert. The provenance contract now lives where it runs, in
-// packages/ui/src/__tests__/host-origin-presentation.test.tsx.
+// marker's line height, but product contracts do not belong in catalog
+// interactions. The provenance contract now lives where it runs, in
+// packages/ui/src/__tests__/host-origin-presentation.test.tsx; CI mounts this
+// story without autoplay.
 const automationTurn: StoredMessage[] = [
   {
     ...user('msg-user-automation', 'turn-automation', 6, '生成今日项目回顾'),

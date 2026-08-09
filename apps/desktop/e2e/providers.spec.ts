@@ -34,7 +34,10 @@ async function openModelsPage(page: Page) {
  * Selector rather than a row of tabs — so reaching a provider is three named
  * moves instead of a tab click plus a search.
  */
-async function openCatalog(page: Page, options: { category: string; search: string }) {
+async function openCatalog(
+  page: Page,
+  options: { category: string; search: string; expectDefaultAll?: boolean },
+) {
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
   const catalog = page.locator('[data-maka-contract="provider-catalog"]');
   await expect(catalog).toBeVisible();
@@ -44,6 +47,12 @@ async function openCatalog(page: Page, options: { category: string; search: stri
   const search = catalog.getByPlaceholder('搜索服务商');
   const category = catalog.getByRole('combobox', { name: '分类', exact: true });
   await expect(search).toBeFocused();
+  if (options.expectDefaultAll) {
+    await expect(category).toHaveText('全部');
+    await search.fill('OpenRouter');
+    await expect(catalog.locator('.providerCatalogRow[data-provider="openrouter"]')).toBeVisible();
+    await search.fill('');
+  }
   // These are independent filters, not one composite toolbar: ordinary Tab
   // order must move between them in both directions.
   await page.keyboard.press('Tab');
@@ -88,7 +97,11 @@ test('provider connections: the canonical API-key journey and two-field rows', a
   await test.step('the catalog reaches Cerebras and renders its color brand asset untouched', async () => {
     await openModelsPage(page);
     await expect(page.getByLabel('设置内容')).toBeVisible();
-    const catalog = await openCatalog(page, { category: 'API', search: 'Cerebras' });
+    const catalog = await openCatalog(page, {
+      category: 'API',
+      search: 'Cerebras',
+      expectDefaultAll: true,
+    });
 
     // A color brand asset renders as an untouched <img>: no currentColor mask,
     // no CSS paint, no color filter — and stays invariant across the theme flip.

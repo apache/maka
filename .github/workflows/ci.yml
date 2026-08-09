@@ -304,9 +304,9 @@ jobs:
             exit 1
           fi
 
-  # Storybook build + render smoke. Independent of Electron e2e: the smoke
-  # launches Playwright Chromium, not `_electron.launch`, so it does not
-  # need xvfb or the desktop cold-start suite. See stories/FIDELITY.md.
+  # Storybook build + initial render smoke. Embedded mode disables every play
+  # function, so this lane never duplicates desktop interaction or layout E2E.
+  # It launches Chromium only to catch catalog runtime errors. See FIDELITY.md.
   storybook:
     needs: changes
     if: needs.changes.outputs.storybook == 'true'

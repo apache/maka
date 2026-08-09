@@ -23,6 +23,7 @@ import {
   HarborInfraError,
   incompleteTerminalProviderRequest,
   trialGradeSurvivingProviderOutage,
+  reconcileProviderTokenSummary,
   MAKA_SETTLEMENT_GRACE_SEC,
   type HarborProcessRunner,
   type HarborRunRequest,
@@ -928,7 +929,13 @@ describe('createHarborTaskRunner', () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       const upstream = createServer((_request, response) => {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+        response.write(
+          [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":70,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":1}}}',
+            '',
+          ].join('\n'),
+        );
       });
       await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
       const address = upstream.address();
@@ -937,14 +944,15 @@ describe('createHarborTaskRunner', () => {
         const runner = createHarborTaskRunner({
           makaRepoPath: repo,
           jobsDir,
-          agent: 'codex',
-          codexToolchainPath: '/toolchain',
-          agentVersion: '0.146.0',
+          agent: 'claude-code',
+          claudeCodeToolchainPath: '/toolchain',
+          agentVersion: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
           model: 'deepseek/deepseek-v4-flash',
           provider: 'deepseek',
           reasoningEffort: 'max',
           apiKeyFile: keyFile,
           agentEnv: { MAKA_BASE_URL: `http://127.0.0.1:${address.port}` },
+          pricing: { inputUsdPer1M: 1, outputUsdPer1M: 2 },
           runHarbor: async (request) => {
             const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
               'host.docker.internal',
@@ -953,9 +961,9 @@ describe('createHarborTaskRunner', () => {
             const proxyToken = request.env?.MAKA_PROVIDER_PROXY_TOKEN;
             assert.ok(proxyUrl && proxyToken);
             const abort = new AbortController();
-            const pending = fetch(`${proxyUrl}/chat/completions`, {
+            const pending = fetch(`${proxyUrl}/messages`, {
               method: 'POST',
-              headers: { authorization: `Bearer ${proxyToken}` },
+              headers: { 'x-api-key': proxyToken },
               body: '{}',
               signal: abort.signal,
             });
@@ -963,13 +971,18 @@ describe('createHarborTaskRunner', () => {
             assert.equal(response.status, 200);
             abort.abort();
             await response.body?.cancel().catch(() => {});
-            return fakeRunner({ reward: '1\n' })(request);
+            return fakeRunner({
+              reward: '1\n',
+              cell: cellOutput({ tokenSummarySource: 'final' }),
+            })(request);
           },
         });
 
         const output = await runner(runInput());
 
         assert.equal(output.harbor.reward, 1);
+        assert.equal(output.cell.tokenSummary?.total, 150);
+        assert.equal(output.cell.tokenSummarySource, 'checkpoint');
         const telemetry = JSON.parse(
           await readFile(output.cell.providerTelemetryPath!, 'utf8'),
         ) as { requests: Array<{ outcome: string }> };
@@ -980,6 +993,46 @@ describe('createHarborTaskRunner', () => {
         );
       }
     });
+  });
+
+  test('keeps provider usage provisional when an earlier request cannot prove final usage', () => {
+    const usage = { input: 10, cacheRead: 0, cacheWrite: 0, output: 5 };
+    const request = (overrides: Partial<ProviderRequestTelemetry>): ProviderRequestTelemetry => ({
+      requestId: 1,
+      method: 'POST',
+      path: '/v1/messages',
+      protocol: 'anthropic-sse',
+      status: 200,
+      outcome: 'completed',
+      durationMs: 5,
+      bodyChunks: 1,
+      responseBytes: 64,
+      usageStream: true,
+      terminalEvent: true,
+      ...overrides,
+    });
+
+    for (const incomplete of [
+      request({ outcome: 'aborted', terminalEvent: false }),
+      request({
+        outcome: 'aborted',
+        status: undefined,
+        bodyChunks: 0,
+        responseBytes: 0,
+        usageStream: undefined,
+        terminalEvent: false,
+        upstreamStartMs: 1,
+      }),
+    ]) {
+      const output = reconcileProviderTokenSummary(
+        cellOutput({ tokenSummary: undefined }),
+        usage,
+        [incomplete, request({ requestId: 2, usage })],
+        { inputUsdPer1M: 1, outputUsdPer1M: 2 },
+      );
+
+      assert.equal(output.tokenSummarySource, 'checkpoint');
+    }
   });
 
   test('gives Codex an ephemeral OpenAI proxy without exposing the provider key file', async () => {
@@ -1212,6 +1265,7 @@ describe('createHarborTaskRunner', () => {
           costUsd: 0,
           pricingSource: 'runtime',
         });
+        assert.equal(output.cell.tokenSummarySource, 'final');
       } finally {
         await new Promise<void>((resolve, reject) =>
           upstream.close((error) => (error ? reject(error) : resolve())),
@@ -1880,6 +1934,7 @@ describe('createHarborTaskRunner', () => {
 
       const output = await runner(runInput());
       assert.deepEqual(output.cell.tokenSummary, usageCheckpoint);
+      assert.equal(output.cell.tokenSummarySource, 'checkpoint');
     });
   });
 
@@ -2335,6 +2390,7 @@ describe('createHarborTaskRunner', () => {
         assert.ok(error instanceof FixedPromptBudgetExhaustedError);
         assert.deepEqual(error.artifactRefs?.tokenSummary, usageCheckpoint);
         assert.deepEqual(error.artifactRefs?.cellOutput?.tokenSummary, usageCheckpoint);
+        assert.equal(error.artifactRefs?.cellOutput?.tokenSummarySource, 'checkpoint');
         return true;
       });
     });

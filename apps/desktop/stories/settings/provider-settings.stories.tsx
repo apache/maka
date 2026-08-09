@@ -166,6 +166,10 @@ function createBridge(input: {
           patch.relayModelProfiles === undefined
             ? current.relayModelProfiles
             : (patch.relayModelProfiles ?? undefined),
+        requestBodyOverlay:
+          patch.requestBodyOverlay === undefined
+            ? current.requestBodyOverlay
+            : (patch.requestBodyOverlay ?? undefined),
         updatedAt: NOW,
       };
       connections = connections.map((connection) => connection.slug === slug ? updated : connection);
@@ -198,6 +202,12 @@ function createBridge(input: {
     },
     async hasSecret() {
       return true;
+    },
+    async getRequestHeaders() {
+      return { names: [] };
+    },
+    async setRequestHeaders(_slug, headers) {
+      return { names: headers.map(({ name }) => name) };
     },
     subscribeEvents() {
       return () => undefined;

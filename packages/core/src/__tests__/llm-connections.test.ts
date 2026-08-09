@@ -1,6 +1,12 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+  CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
+  lookupModelMetadata,
+  modelIdAliasesForProvider,
+} from '../model-metadata.js';
+import { curatedCatalogFallbackModelsForProvider } from '../model-metadata.js';
+import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_DEFAULTS,
   PROVIDER_REGISTRY,
@@ -219,4 +225,60 @@ test('model reconciliation never invents a default the user cleared', () => {
     ),
     { defaultModel: '', enabledModelIds: ['picked'] },
   );
+});
+
+test('a renamed id follows its model, and only for a caller that supplies the table', () => {
+  const curated = [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }];
+  const stored = {
+    defaultModel: 'claude-haiku-4-5-20251001',
+    enabledModelIds: ['claude-haiku-4-5-20251001'],
+    hasModelInventory: true,
+  };
+  // `claude-opus-5` leads the inventory, so without the table this falls through
+  // to the first live id — the two behaviours differ and the assertion can fail.
+  assert.deepEqual(reconcileConnectionAfterModelFetch(stored, curated), {
+    defaultModel: 'claude-opus-5',
+    enabledModelIds: ['claude-opus-5'],
+  });
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(stored, curated, {
+      aliases: CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
+    }),
+    { defaultModel: 'claude-haiku-4-5', enabledModelIds: ['claude-haiku-4-5'] },
+  );
+  // Both forms enabled collapse onto one entry rather than duplicating, on the
+  // path that returns its list without the dedupe the others inherit.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: '',
+        enabledModelIds: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+        hasModelInventory: true,
+      },
+      curated,
+      { aliases: CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES },
+    ),
+    { defaultModel: '', enabledModelIds: ['claude-haiku-4-5'] },
+  );
+});
+
+test('the alias table is selected by provider and names only renames', () => {
+  assert.equal(
+    modelIdAliasesForProvider('claude-subscription'),
+    CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
+  );
+  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
+    if (providerType === 'claude-subscription') continue;
+    assert.equal(
+      modelIdAliasesForProvider(providerType),
+      undefined,
+      `${providerType} must keep its model ids opaque`,
+    );
+  }
+  const offered = curatedCatalogFallbackModelsForProvider('claude-subscription') ?? [];
+  for (const [renamed, target] of Object.entries(CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES)) {
+    assert.ok(offered.includes(target), `${target} is not offered by the curated inventory`);
+    // A withdrawn model must be repaired against the live list, never rewritten.
+    assert.notEqual(lookupModelMetadata('anthropic', renamed).lifecycle, 'deprecated');
+  }
 });

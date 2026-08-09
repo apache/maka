@@ -1416,6 +1416,8 @@ export type {
   ProviderRuntimeAdapter,
   ProviderType,
   RuntimeExecutionConnection,
+  RequestHeaderUpdate,
+  SavedRequestHeaders,
   UpdateConnectionInput,
 } from './llm-connections.js';
 export {

@@ -3,6 +3,7 @@ import type {
   ConnectionTestResult,
   CreateConnectionInput,
   LlmConnection,
+  SavedRequestHeaders,
   UpdateConnectionInput,
 } from '@maka/core';
 import {
@@ -17,6 +18,7 @@ import type {
   ConnectionCatalogSnapshot,
   CredentialLocator,
 } from '@maka/core/runtime-policy';
+import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
@@ -31,9 +33,11 @@ type HostConnectionsClient = Pick<
   | 'createConnection'
   | 'deleteCredential'
   | 'fetchConnectionModels'
+  | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
   | 'removeConnection'
+  | 'replaceConnectionRequestHeaders'
   | 'setCredential'
   | 'setDefaultConnectionTarget'
   | 'testConnection'
@@ -66,6 +70,25 @@ export function registerRuntimeHostConnectionsIpc(
         ?.configured === true
     );
   });
+  deps.ipcMain.handle('connections:getRequestHeaders', async (_event, slug: unknown) => {
+    const connection = requireConnection(await snapshot(), slug);
+    const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
+    if (result.kind !== 'found') throw new Error('Connection no longer exists');
+    return { names: result.names } satisfies SavedRequestHeaders;
+  });
+  deps.ipcMain.handle(
+    'connections:setRequestHeaders',
+    async (_event, slug: unknown, rawUpdates: unknown) => {
+      const connection = requireConnection(await snapshot(), slug);
+      const result = await deps.client.replaceConnectionRequestHeaders(
+        connection.connectionId,
+        normalizeRequestHeaderUpdates(rawUpdates),
+      );
+      if (result.kind === 'connection_not_found') throw new Error('Connection no longer exists');
+      if (result.kind === 'committed') deps.emitConnectionListChanged();
+      return { names: result.names } satisfies SavedRequestHeaders;
+    },
+  );
   deps.ipcMain.handle('connections:setDefault', async (_event, slug: unknown) => {
     const catalog = await snapshot();
     const target = slug === null
@@ -103,21 +126,37 @@ export function registerRuntimeHostConnectionsIpc(
         enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
       }),
       ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(input.requestBodyOverlay === undefined
+        ? {}
+        : { requestBodyOverlay: input.requestBodyOverlay }),
     });
     if (created.kind !== 'committed') {
       throw new Error(`Unable to create Connection: ${created.kind}`);
     }
-    if (input.apiKey) {
+    try {
       const entry = requireConnection(await snapshot(), input.slug);
-      const credential = await deps.client.setCredential({
-        locator: connectionCredential(entry),
-        expected: null,
-        secret: input.apiKey,
-      });
-      if (credential.kind !== 'committed') {
-        await deps.client.removeConnection(created.connection).catch(() => undefined);
-        throw new Error(`Unable to save Connection credential: ${credential.kind}`);
+      if (input.apiKey) {
+        const credential = await deps.client.setCredential({
+          locator: connectionCredential(entry),
+          expected: null,
+          secret: input.apiKey,
+        });
+        if (credential.kind !== 'committed') {
+          throw new Error(`Unable to save Connection credential: ${credential.kind}`);
+        }
       }
+      if (input.requestHeaders && Object.keys(input.requestHeaders).length > 0) {
+        const requestHeaders = await deps.client.replaceConnectionRequestHeaders(
+          entry.connectionId,
+          Object.entries(input.requestHeaders).map(([name, value]) => ({ name, value })),
+        );
+        if (requestHeaders.kind !== 'committed') {
+          throw new Error(`Unable to save custom request headers: ${requestHeaders.kind}`);
+        }
+      }
+    } catch (error) {
+      await deps.client.removeConnection(created.connection).catch(() => undefined);
+      throw error;
     }
     deps.emitConnectionListChanged();
     return requireProjectedConnection(await snapshot(), input.slug);
@@ -145,6 +184,9 @@ export function registerRuntimeHostConnectionsIpc(
         ...(patch.relayModelProfiles === undefined
           ? {}
           : { relayModelProfiles: normalizeRelayModelProfiles(patch.relayModelProfiles) ?? null }),
+        ...(patch.requestBodyOverlay === undefined
+          ? {}
+          : { requestBodyOverlay: patch.requestBodyOverlay }),
       },
     );
     if (updated.kind !== 'committed') {
@@ -248,6 +290,9 @@ export function projectHostConnections(catalog: ConnectionCatalogSnapshot): LlmC
       ...(connection.relayModelProfiles === undefined
         ? {}
         : { relayModelProfiles: connection.relayModelProfiles }),
+      ...(connection.requestBodyOverlay === undefined
+        ? {}
+        : { requestBodyOverlay: connection.requestBodyOverlay }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
       ...(connection.modelsFetchedAt === undefined
         ? {}

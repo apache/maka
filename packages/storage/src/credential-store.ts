@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 type StoredCredentialKind =
   | 'apiKey'
   | 'oauthToken'
+  | 'requestHeaders'
   | 'botToken'
   | 'botAppSecret'
   | 'proxyPassword'
@@ -34,6 +35,7 @@ type StoredCredentialKind =
 export type CredentialKind =
   | 'api_key'
   | 'oauth_token'
+  | 'request_headers'
   | 'bot_token'
   | 'app_secret'
   | 'proxy_password'
@@ -328,6 +330,7 @@ export async function withCredentialFileLock<T>(
 const STORED_CREDENTIAL_KINDS = [
   'apiKey',
   'oauthToken',
+  'requestHeaders',
   'botToken',
   'botAppSecret',
   'proxyPassword',
@@ -340,6 +343,8 @@ function toStoredKind(kind: CredentialKind): StoredCredentialKind {
       return 'apiKey';
     case 'oauth_token':
       return 'oauthToken';
+    case 'request_headers':
+      return 'requestHeaders';
     case 'bot_token':
       return 'botToken';
     case 'app_secret':

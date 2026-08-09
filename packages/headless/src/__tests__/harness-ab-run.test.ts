@@ -488,7 +488,11 @@ describe('runHarnessAbComparison', () => {
       const meteredRunner = maka.harborRunner;
       maka.harborRunner = async (input) => {
         const output = await meteredRunner(input);
-        const { tokenSummary: _tokenSummary, ...cell } = output.cell;
+        const {
+          tokenSummary: _tokenSummary,
+          tokenSummarySource: _tokenSummarySource,
+          ...cell
+        } = output.cell;
         return { ...output, cell };
       };
 
@@ -654,7 +658,11 @@ describe('runHarnessArmCohort', () => {
       const meteredRunner = codex.harborRunner;
       codex.harborRunner = async (input) => {
         const output = await meteredRunner(input);
-        const { tokenSummary: _tokenSummary, ...cell } = output.cell;
+        const {
+          tokenSummary: _tokenSummary,
+          tokenSummarySource: _tokenSummarySource,
+          ...cell
+        } = output.cell;
         return { ...output, cell };
       };
 
@@ -711,6 +719,7 @@ function harnessArm(id: HarnessAbArmId, calls: string[], beforeRun?: () => Promi
         total: 110,
         costUsd: 0.000184,
       }),
+      tokenSummarySource: 'final',
       toolSummary: {
         providerVisibleToolCount: 1,
         actualToolCalls: 1,

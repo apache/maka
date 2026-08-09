@@ -299,6 +299,19 @@ export class DesktopRuntimeHostClient {
     return this.#request("credential.vault.delete", input);
   }
 
+  getConnectionRequestHeaders(
+    connectionId: string,
+  ): Promise<OperationOutput<"connection.request-headers.query">> {
+    return this.#request("connection.request-headers.query", { connectionId });
+  }
+
+  replaceConnectionRequestHeaders(
+    connectionId: string,
+    headers: OperationInput<"connection.request-headers.replace">["headers"],
+  ): Promise<OperationOutput<"connection.request-headers.replace">> {
+    return this.#request("connection.request-headers.replace", { connectionId, headers });
+  }
+
   fetchConnectionModels(
     connectionId: string,
   ): Promise<OperationOutput<"connection.models.fetch">> {

@@ -14,6 +14,7 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
+import { normalizeOptionalRequestBodyOverlay } from '@maka/core/runtime-policy';
 import { relayProfilesForStorage } from './relay-profile-store.js';
 
 export interface ConnectionStore {
@@ -120,6 +121,10 @@ class FileConnectionStore implements ConnectionStore {
         input.relayModelProfiles,
         enabledModelIds,
       );
+      const requestBodyOverlay =
+        input.requestBodyOverlay === undefined
+          ? undefined
+          : normalizeOptionalRequestBodyOverlay(input.requestBodyOverlay);
       const next: LlmConnection = {
         slug: input.slug,
         name: input.name || defaults.label,
@@ -132,6 +137,7 @@ class FileConnectionStore implements ConnectionStore {
         updatedAt: now,
         ...(input.extras ? { extras: input.extras } : {}),
         ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+        ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
       };
       file.connections.push(next);
       claimVacantWorkspaceDefault(file, next);
@@ -181,7 +187,8 @@ class FileConnectionStore implements ConnectionStore {
         (patch.apiKey !== undefined ||
           patch.baseUrl !== undefined ||
           patch.defaultModel !== undefined ||
-          patch.models !== undefined);
+          patch.models !== undefined ||
+          patch.requestBodyOverlay !== undefined);
       const models = updatesModelCache ? patch.models : current.models;
       // A patch carrying `enabledModelIds` is the user stating a selection, so
       // it is written as stated — including empty. Anything else re-asserts a
@@ -230,8 +237,18 @@ class FileConnectionStore implements ConnectionStore {
           ? persistedBaseUrl(current.providerType, patch.baseUrl)
           : current.baseUrl;
       const endpointChanged = nextBaseUrl !== current.baseUrl;
+      const requestBodyOverlay =
+        patch.requestBodyOverlay === undefined
+          ? current.requestBodyOverlay
+          : patch.requestBodyOverlay === null
+            ? undefined
+            : normalizeOptionalRequestBodyOverlay(patch.requestBodyOverlay);
+      const {
+        requestBodyOverlay: _currentRequestBodyOverlay,
+        ...currentWithoutRequestBodyOverlay
+      } = current;
       const next: LlmConnection = {
-        ...current,
+        ...currentWithoutRequestBodyOverlay,
         name: patch.name ?? current.name,
         baseUrl: nextBaseUrl,
         defaultModel,
@@ -256,6 +273,7 @@ class FileConnectionStore implements ConnectionStore {
             ? undefined
             : current.lastTestMessage,
         extras: patch.extras ?? current.extras,
+        ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
         // Profiles only ever describe enabled models of THIS endpoint on a
         // relay connection: an explicit table passes the same gate+prune
         // every write shape applies (a new table in a moving update declares
@@ -322,19 +340,29 @@ class FileConnectionStore implements ConnectionStore {
       // gate+prune as create/update — snapshot semantics must not bypass
       // either profile invariant.
       const baseUrl = persistedBaseUrl(connection.providerType, connection.baseUrl);
-      const { baseUrl: _omit, relayModelProfiles: _rawProfiles, ...rest } = connection;
+      const {
+        baseUrl: _omit,
+        relayModelProfiles: _rawProfiles,
+        requestBodyOverlay: _rawRequestBodyOverlay,
+        ...rest
+      } = connection;
       const enabledModelIds = connectionEnabledModelIds(connection);
       const relayModelProfiles = relayProfilesForStorage(
         connection.providerType,
         connection.relayModelProfiles,
         enabledModelIds,
       );
+      const requestBodyOverlay =
+        connection.requestBodyOverlay === undefined
+          ? undefined
+          : normalizeOptionalRequestBodyOverlay(connection.requestBodyOverlay);
       const next: LlmConnection = {
         ...rest,
         ...(baseUrl ? { baseUrl } : {}),
         enabled: connection.enabled ?? true,
         enabledModelIds,
         ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+        ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
         createdAt: connection.createdAt ?? now,
         updatedAt: connection.updatedAt ?? now,
       };

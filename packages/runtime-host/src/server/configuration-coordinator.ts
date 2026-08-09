@@ -15,15 +15,14 @@ export class HostConfigurationCoordinator {
     input: ConfigurationCredentialExportInput,
   ): Promise<OperationOutcome<'configuration.credentials.export'>> {
     try {
-      const credentials = (
-        await Promise.all(
-          input.locators.map(async (locator) => {
-            const material = await this.policy.exportCredentialMaterial(locator);
-            return material ? { locator: material.locator, secret: material.secret } : null;
-          }),
-        )
-      ).filter((entry) => entry !== null);
-      return { ok: true, result: { credentials } };
+      const material = await this.policy.exportCredentialMaterial(input.locator);
+      const credential = material
+        ? {
+            locator: material.locator,
+            secretBase64: Buffer.from(material.secret, 'utf8').toString('base64'),
+          }
+        : null;
+      return { ok: true, result: { credential } };
     } catch {
       return {
         ok: false,

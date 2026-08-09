@@ -1,0 +1,82 @@
+import {
+  normalizeRequestBodyOverlay,
+  normalizeRequestHeaders,
+  type JsonObject,
+} from '@maka/core/runtime-policy';
+
+export interface RequestCustomization {
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly bodyOverlay?: JsonObject;
+}
+
+export function createRequestCustomizationFetch(
+  upstream: typeof globalThis.fetch,
+  customization: RequestCustomization,
+): typeof globalThis.fetch {
+  const headers = normalizeRequestHeaders(customization.headers ?? {});
+  const bodyOverlay = normalizeRequestBodyOverlay(customization.bodyOverlay ?? {});
+  if (Object.keys(headers).length === 0 && Object.keys(bodyOverlay).length === 0) return upstream;
+
+  return async (input, init) => {
+    const request = new Request(input, init);
+    const nextHeaders = new Headers(request.headers);
+    for (const [name, value] of Object.entries(headers)) {
+      const current = nextHeaders.get(name);
+      if (current !== null && current !== value) {
+        throw new Error(`Custom request header conflicts with a generated header: ${name}`);
+      }
+      nextHeaders.set(name, value);
+    }
+
+    let body: BodyInit | null = request.body === null ? null : await request.clone().arrayBuffer();
+    if (Object.keys(bodyOverlay).length > 0 && requestHasJsonBody(request)) {
+      const generatedBody = await parseRequestBody(request);
+      for (const key of Object.keys(bodyOverlay)) {
+        if (Object.hasOwn(generatedBody, key)) {
+          throw new Error(`Extra request body conflicts with a generated field: ${key}`);
+        }
+      }
+      body = JSON.stringify({ ...generatedBody, ...bodyOverlay });
+      nextHeaders.delete('content-length');
+    }
+    return upstream(request.url, requestInit(request, nextHeaders, body));
+  };
+}
+
+function requestInit(request: Request, headers: Headers, body: BodyInit | null): RequestInit {
+  return {
+    method: request.method,
+    headers: [...headers.entries()],
+    ...(body === null ? {} : { body, duplex: 'half' }),
+    signal: request.signal,
+    cache: request.cache,
+    credentials: request.credentials,
+    integrity: request.integrity,
+    keepalive: request.keepalive,
+    mode: request.mode,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+  } as RequestInit;
+}
+
+function requestHasJsonBody(request: Request): boolean {
+  if (request.method === 'GET' || request.method === 'HEAD' || request.body === null) return false;
+  const contentType = request.headers.get('content-type');
+  return (
+    contentType === null || /(^|\s|;)application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(contentType)
+  );
+}
+
+async function parseRequestBody(request: Request): Promise<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await request.clone().text());
+  } catch {
+    throw new Error('Extra request body can only be applied to a JSON object request');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Extra request body can only be applied to a JSON object request');
+  }
+  return parsed as Record<string, unknown>;
+}

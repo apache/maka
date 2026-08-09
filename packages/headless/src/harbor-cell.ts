@@ -671,7 +671,7 @@ export async function writeHarborCellArtifacts(
   const tokenSummary = selectHarborCellTokenSummary(rawOutput.tokenSummary, usageCheckpoint);
   const output =
     tokenSummary && tokenSummary !== rawOutput.tokenSummary
-      ? { ...rawOutput, tokenSummary }
+      ? { ...rawOutput, tokenSummary, tokenSummarySource: 'checkpoint' as const }
       : rawOutput;
   await writeHarborCellArtifact(outputPath, `${JSON.stringify(output, null, 2)}\n`);
   return { output, outputPath, runtimeEventsPath };
