@@ -1115,6 +1115,17 @@ async function waitForPricingAlertDialog(): Promise<HTMLElement> {
   return dialog!;
 }
 
+async function waitForPricingDialogText(
+  dialog: HTMLElement,
+  text: string,
+  errorMessage: string,
+): Promise<void> {
+  await waitForStoryCondition(
+    () => dialog.textContent?.includes(text) === true,
+    errorMessage,
+  );
+}
+
 async function clickPricingDialogButton(dialog: HTMLElement, label: string): Promise<void> {
   const button = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(
     (candidate) => candidate.textContent?.trim() === label,
@@ -1341,12 +1352,16 @@ export const PricingDeleteConfirmation: Story = {
     );
     await userEvent.click(deleteButton);
     const dialog = await waitForPricingAlertDialog();
-    if (!dialog.textContent?.includes('之后新激活的模型工作会变为未定价，而不是 $0')) {
-      throw new Error('Pricing delete consequence did not render');
-    }
-    if (!dialog.textContent.includes('删除')) {
-      throw new Error('Pricing delete confirmation action did not render');
-    }
+    await waitForPricingDialogText(
+      dialog,
+      '之后新激活的模型工作会变为未定价，而不是 $0',
+      'Pricing delete consequence did not render',
+    );
+    await waitForPricingDialogText(
+      dialog,
+      '删除',
+      'Pricing delete confirmation action did not render',
+    );
   },
 };
 
@@ -1371,9 +1386,11 @@ export const PricingDeleteReviewConfirmation: Story = {
       );
       await userEvent.click(resetButton);
       const initial = await waitForPricingAlertDialog();
-      if (!initial.textContent?.includes('恢复内置价格')) {
-        throw new Error('Pricing reset consequence did not render');
-      }
+      await waitForPricingDialogText(
+        initial,
+        '恢复内置价格',
+        'Pricing reset consequence did not render',
+      );
       await clickPricingDialogButton(initial, '恢复');
       const reviewButton = await waitForStoryButton(
         canvasElement,
@@ -1381,12 +1398,16 @@ export const PricingDeleteReviewConfirmation: Story = {
       );
       await userEvent.click(reviewButton);
       const review = await waitForPricingAlertDialog();
-      if (!review.textContent?.includes('当前权威状态已经变化')) {
-        throw new Error('Pricing delete authority review did not render');
-      }
-      if (!review.textContent.includes('再次确认')) {
-        throw new Error('Pricing delete second confirmation did not render');
-      }
+      await waitForPricingDialogText(
+        review,
+        '当前权威状态已经变化',
+        'Pricing delete authority review did not render',
+      );
+      await waitForPricingDialogText(
+        review,
+        '再次确认',
+        'Pricing delete second confirmation did not render',
+      );
       return review;
     };
 
