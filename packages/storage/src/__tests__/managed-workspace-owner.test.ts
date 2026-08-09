@@ -21,6 +21,7 @@ import {
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 import { createManagedDependencyEnvironmentProducerCapability } from '../managed-dependency-environment.js';
+import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
@@ -394,6 +395,136 @@ test('cancels dependency provisioning before issuing an execution scope', async 
     abort.abort(new DOMException('User cancelled managed execution', 'AbortError'));
 
     await assert.rejects(execution, { name: 'AbortError' });
+    assert.equal(callbackEntered, false);
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('cancels dependency baseline reads while artifact admission is blocked', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleDependencySource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let releaseLock!: () => void;
+  const lockMayRelease = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  let lockAcquired!: () => void;
+  const lockIsHeld = new Promise<void>((resolve) => {
+    lockAcquired = resolve;
+  });
+  let lockTask: Promise<void> | undefined;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      dependencyEnvironmentProducer: {
+        capability: createManagedDependencyEnvironmentProducerCapability(
+          `sha256:${'9'.repeat(64)}`,
+        ),
+        packageManagerName: 'npm',
+        packageManagerVersion: '12.0.2',
+        nodeRuntime: {
+          version: process.versions.node,
+          abi: process.versions.modules ?? 'unknown',
+          platform: process.platform,
+          arch: process.arch,
+        },
+        async provision() {
+          throw new Error('Provisioning must not start after cancellation');
+        },
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+    lockTask = withArtifactWriterLock(storageRoot, async () => {
+      lockAcquired();
+      await lockMayRelease;
+    });
+    await lockIsHeld;
+
+    const abort = new AbortController();
+    let callbackEntered = false;
+    const execution = owner.withManagedWorkspaceExecution(
+      accepted.executionHandle,
+      async () => {
+        callbackEntered = true;
+      },
+      { provisioning: 'dependency_environment_v1', abortSignal: abort.signal },
+    );
+    await delay(25);
+    abort.abort(new DOMException('User cancelled baseline admission', 'AbortError'));
+
+    await assert.rejects(
+      Promise.race([
+        execution,
+        delay(2_000).then(() => {
+          throw new Error('Cancellation did not interrupt dependency baseline admission');
+        }),
+      ]),
+      { name: 'AbortError' },
+    );
+    assert.equal(callbackEntered, false);
+    releaseLock();
+    await lockTask;
+    await owner.close();
+  } finally {
+    releaseLock();
+    await lockTask?.catch(() => undefined);
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('rechecks cancellation immediately before issuing an execution scope', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  const abort = new AbortController();
+  let callbackEntered = false;
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      failpoint(point) {
+        if (point === 'before_execution_scope_issue') {
+          abort.abort(new DOMException('User cancelled before scope issue', 'AbortError'));
+        }
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(
+        accepted.executionHandle,
+        async () => {
+          callbackEntered = true;
+        },
+        { abortSignal: abort.signal },
+      ),
+      { name: 'AbortError' },
+    );
     assert.equal(callbackEntered, false);
     await owner.close();
   } finally {
