@@ -157,7 +157,7 @@ export function createManagedWorkspaceWorkerBridgeInternal(
         executionBoundary: createManagedExecutionBoundary(profile, 0),
         ...(abortSignal ? { abortSignal } : {}),
       });
-      return remapDependencyResult(result, state.dependencyRoot);
+      return remapDependencyResult(result, state.dependencyRoot, routedOperation);
     },
   };
   return Object.freeze(bridge);
@@ -229,6 +229,7 @@ function isNodeModulesSegment(segment: string | undefined): boolean {
 function remapDependencyResult(
   result: ManagedWorkspaceReadOnlyResult,
   dependencyRoot: string | undefined,
+  routedOperation: ManagedWorkspaceReadOnlyOperation,
 ): ManagedWorkspaceReadOnlyResult {
   if (!dependencyRoot) return result;
   if (result.kind === 'grep') {
@@ -240,10 +241,30 @@ function remapDependencyResult(
   if (result.kind === 'glob') {
     return Object.freeze({
       kind: 'glob',
-      files: result.files.map((path) => remapDependencyPath(path, dependencyRoot)),
+      files: result.files.map((path) =>
+        remapDependencyGlobPath(path, dependencyRoot, routedOperation),
+      ),
     });
   }
   return result;
+}
+
+function remapDependencyGlobPath(
+  path: string,
+  dependencyRoot: string,
+  routedOperation: ManagedWorkspaceReadOnlyOperation,
+): string {
+  const absolute = remapDependencyPath(path, dependencyRoot);
+  if (absolute !== path || isAbsolute(path) || routedOperation.kind !== 'glob') return absolute;
+  if (!isPathWithin(routedOperation.path, dependencyRoot)) return path;
+
+  const relativeOperationRoot = relative(dependencyRoot, routedOperation.path);
+  const operationSegments =
+    relativeOperationRoot === '' ? [] : relativeOperationRoot.split(/[\\/]/u);
+  const resultSegments = path.replaceAll('\\', '/').split('/');
+  assertCanonicalSegments(operationSegments, { allowEmpty: true });
+  assertCanonicalSegments(resultSegments);
+  return ['node_modules', ...operationSegments, ...resultSegments].join('/');
 }
 
 function remapDependencyPath(path: string, dependencyRoot: string): string {

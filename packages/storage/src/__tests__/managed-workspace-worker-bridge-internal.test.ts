@@ -144,7 +144,7 @@ test('routes logical node_modules reads through the leased dependency root', asy
     async execute(input) {
       calls.push({ operation: input.operation, cwd: input.cwd });
       return input.operation.kind === 'glob'
-        ? { kind: 'glob', files: [join(dependencyRoot, 'fixture-package', 'index.js')] }
+        ? { kind: 'glob', files: [join('fixture-package', 'index.js')] }
         : { kind: 'read', content: 'maka-owned' };
     },
   });

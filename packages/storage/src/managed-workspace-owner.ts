@@ -116,7 +116,8 @@ export type ManagedWorkspaceOwnerFailpoint =
   | 'after_initial_store_root_validation'
   | 'after_baseline_authority_commit'
   | 'after_post_commit_artifact_verification'
-  | 'after_execution_artifact_verification';
+  | 'after_execution_artifact_verification'
+  | 'before_execution_scope_issue';
 
 export type OpenManagedWorkspaceBaselineInput = CreateManagedWorkspaceFromSourceInput;
 
@@ -403,7 +404,11 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       // can stop after a real, completed artifact verification. The ordinary
       // production path performs only the final proof below.
       if (this.failpoint) {
-        await this.#verifyExecutionArtifactOrQuarantine(accepted.binding, accepted.receipt);
+        await this.#verifyExecutionArtifactOrQuarantine(
+          accepted.binding,
+          accepted.receipt,
+          options.abortSignal,
+        );
         await this.failpoint('after_execution_artifact_verification');
       }
 
@@ -420,7 +425,11 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         // head are revalidated only after provisioning and immediately before
         // the scoped capability is issued.
         await this.#assertCurrentRootIdentity();
-        await this.#verifyExecutionArtifactOrQuarantine(accepted.binding, accepted.receipt);
+        await this.#verifyExecutionArtifactOrQuarantine(
+          accepted.binding,
+          accepted.receipt,
+          options.abortSignal,
+        );
         const currentHead = await readWorkspaceHeadInternal(
           accepted.store,
           accepted.binding.workspaceId,
@@ -441,6 +450,8 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
           );
         }
         assertExecutionCrossPlaneIdentity(accepted.binding, accepted.receipt, currentHead);
+        await this.failpoint?.('before_execution_scope_issue');
+        options.abortSignal?.throwIfAborted();
         const scope = issueManagedWorkspaceExecutionScopeInternal(this.#executionOwnerToken, {
           provisioning,
           workspaceEffect: 'none',
@@ -569,9 +580,10 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
   async #verifyExecutionArtifactOrQuarantine(
     binding: ManagedWorkspaceBinding,
     receipt: ManagedWorkspaceBaselineReceiptV1,
+    abortSignal?: AbortSignal,
   ): Promise<void> {
     try {
-      await this.receiptAuthority.verify(receipt);
+      await this.receiptAuthority.verify(receipt, abortSignal);
     } catch (error) {
       if (
         !(error instanceof GitWorkspaceServiceError) ||
@@ -602,15 +614,23 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       );
     }
     try {
-      if (await this.service.hasManagedWorkspaceBaselinePath(binding, 'node_modules')) {
+      if (
+        await this.service.hasManagedWorkspaceBaselinePath(binding, 'node_modules', {
+          ...(abortSignal ? { abortSignal } : {}),
+        })
+      ) {
         throw new ManagedWorkspaceOwnerError(
           'managed_dependency_manifest_unsupported',
           'Managed dependency provisioning requires node_modules to be absent from the canonical tree',
         );
       }
       const [manifestBytes, lockfileBytes] = await Promise.all([
-        this.service.readManagedWorkspaceBaselineFile(binding, 'package.json'),
-        this.service.readManagedWorkspaceBaselineFile(binding, 'package-lock.json'),
+        this.service.readManagedWorkspaceBaselineFile(binding, 'package.json', {
+          ...(abortSignal ? { abortSignal } : {}),
+        }),
+        this.service.readManagedWorkspaceBaselineFile(binding, 'package-lock.json', {
+          ...(abortSignal ? { abortSignal } : {}),
+        }),
       ]);
       const packageManager = readExactPackageManager(manifestBytes);
       if (

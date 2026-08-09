@@ -291,8 +291,16 @@ export interface GitWorkspaceService {
     binding: ManagedWorkspaceBinding,
     options?: GitWorkspaceOperationOptions,
   ): Promise<ManagedWorkspaceInspection>;
-  hasManagedWorkspaceBaselinePath(binding: ManagedWorkspaceBinding, path: string): Promise<boolean>;
-  readManagedWorkspaceBaselineFile(binding: ManagedWorkspaceBinding, path: string): Promise<Buffer>;
+  hasManagedWorkspaceBaselinePath(
+    binding: ManagedWorkspaceBinding,
+    path: string,
+    options?: GitWorkspaceOperationOptions,
+  ): Promise<boolean>;
+  readManagedWorkspaceBaselineFile(
+    binding: ManagedWorkspaceBinding,
+    path: string,
+    options?: GitWorkspaceOperationOptions,
+  ): Promise<Buffer>;
   quarantineManagedWorkspace(
     binding: ManagedWorkspaceBinding,
     reason: string,
@@ -633,91 +641,111 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
   async readManagedWorkspaceBaselineFile(
     binding: ManagedWorkspaceBinding,
     path: string,
+    options: GitWorkspaceOperationOptions = {},
   ): Promise<Buffer> {
+    options.abortSignal?.throwIfAborted();
     const runtime = await this.runtime.verify();
+    options.abortSignal?.throwIfAborted();
     assertBindingShape(binding);
     assertOpenIdentity(binding);
     const trackedPath = assertManagedTrackedPath(path);
-    return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
-      const layout = workspaceLayout(canonicalStorageRoot, binding);
-      await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
-      assertBindingPaths(binding, layout);
-      const quarantined = await this.resumePendingQuarantine(binding, layout, runtime.digest);
-      if (quarantined) {
-        throw new GitWorkspaceServiceError(
-          'managed_workspace_unavailable',
-          `Managed workspace instance was quarantined: ${binding.workspaceInstanceId}`,
-        );
-      }
-      const stored = await readBinding(layout.bindingPath);
-      if (!stored || !sameBinding(stored, binding)) {
-        throw new GitWorkspaceServiceError(
-          'managed_workspace_unavailable',
-          `Managed workspace binding is unavailable: ${binding.workspaceInstanceId}`,
-        );
-      }
-      const repository = await this.requireRepository(binding, layout);
-      assertBindingRepository(binding, repository);
-      await this.assertRepositoryArtifact(repository);
-      const epoch = await this.requireEpochArtifact(binding, repository, layout);
-      assertBindingEpoch(binding, epoch);
-      return await this.runtime.runBuffer(
-        [
-          '--git-dir',
-          binding.repositoryPath,
-          'show',
-          `${binding.baselineCommitOid}:${trackedPath}`,
-        ],
-        layout.homePath,
-      );
-    });
+    return this.runtime.runWithAbortSignal(options.abortSignal, () =>
+      withArtifactWriterLock(
+        this.input.storageRoot,
+        async (canonicalStorageRoot) => {
+          const layout = workspaceLayout(canonicalStorageRoot, binding);
+          await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
+          assertBindingPaths(binding, layout);
+          const quarantined = await this.resumePendingQuarantine(binding, layout, runtime.digest);
+          if (quarantined) {
+            throw new GitWorkspaceServiceError(
+              'managed_workspace_unavailable',
+              `Managed workspace instance was quarantined: ${binding.workspaceInstanceId}`,
+            );
+          }
+          const stored = await readBinding(layout.bindingPath);
+          if (!stored || !sameBinding(stored, binding)) {
+            throw new GitWorkspaceServiceError(
+              'managed_workspace_unavailable',
+              `Managed workspace binding is unavailable: ${binding.workspaceInstanceId}`,
+            );
+          }
+          const repository = await this.requireRepository(binding, layout);
+          assertBindingRepository(binding, repository);
+          await this.assertRepositoryArtifact(repository);
+          const epoch = await this.requireEpochArtifact(binding, repository, layout);
+          assertBindingEpoch(binding, epoch);
+          options.abortSignal?.throwIfAborted();
+          return await this.runtime.runBuffer(
+            [
+              '--git-dir',
+              binding.repositoryPath,
+              'show',
+              `${binding.baselineCommitOid}:${trackedPath}`,
+            ],
+            layout.homePath,
+          );
+        },
+        options.abortSignal,
+      ),
+    );
   }
 
   async hasManagedWorkspaceBaselinePath(
     binding: ManagedWorkspaceBinding,
     path: string,
+    options: GitWorkspaceOperationOptions = {},
   ): Promise<boolean> {
+    options.abortSignal?.throwIfAborted();
     const runtime = await this.runtime.verify();
+    options.abortSignal?.throwIfAborted();
     assertBindingShape(binding);
     assertOpenIdentity(binding);
     const trackedPath = assertManagedTrackedPath(path);
-    return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
-      const layout = workspaceLayout(canonicalStorageRoot, binding);
-      await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
-      assertBindingPaths(binding, layout);
-      const quarantined = await this.resumePendingQuarantine(binding, layout, runtime.digest);
-      if (quarantined) {
-        throw new GitWorkspaceServiceError(
-          'managed_workspace_unavailable',
-          `Managed workspace instance was quarantined: ${binding.workspaceInstanceId}`,
-        );
-      }
-      const stored = await readBinding(layout.bindingPath);
-      if (!stored || !sameBinding(stored, binding)) {
-        throw new GitWorkspaceServiceError(
-          'managed_workspace_unavailable',
-          `Managed workspace binding is unavailable: ${binding.workspaceInstanceId}`,
-        );
-      }
-      const repository = await this.requireRepository(binding, layout);
-      assertBindingRepository(binding, repository);
-      await this.assertRepositoryArtifact(repository);
-      const epoch = await this.requireEpochArtifact(binding, repository, layout);
-      assertBindingEpoch(binding, epoch);
-      const output = await this.runtime.runBuffer(
-        [
-          '--git-dir',
-          binding.repositoryPath,
-          'ls-tree',
-          '-z',
-          binding.baselineCommitOid,
-          '--',
-          trackedPath,
-        ],
-        layout.homePath,
-      );
-      return output.byteLength > 0;
-    });
+    return this.runtime.runWithAbortSignal(options.abortSignal, () =>
+      withArtifactWriterLock(
+        this.input.storageRoot,
+        async (canonicalStorageRoot) => {
+          const layout = workspaceLayout(canonicalStorageRoot, binding);
+          await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
+          assertBindingPaths(binding, layout);
+          const quarantined = await this.resumePendingQuarantine(binding, layout, runtime.digest);
+          if (quarantined) {
+            throw new GitWorkspaceServiceError(
+              'managed_workspace_unavailable',
+              `Managed workspace instance was quarantined: ${binding.workspaceInstanceId}`,
+            );
+          }
+          const stored = await readBinding(layout.bindingPath);
+          if (!stored || !sameBinding(stored, binding)) {
+            throw new GitWorkspaceServiceError(
+              'managed_workspace_unavailable',
+              `Managed workspace binding is unavailable: ${binding.workspaceInstanceId}`,
+            );
+          }
+          const repository = await this.requireRepository(binding, layout);
+          assertBindingRepository(binding, repository);
+          await this.assertRepositoryArtifact(repository);
+          const epoch = await this.requireEpochArtifact(binding, repository, layout);
+          assertBindingEpoch(binding, epoch);
+          options.abortSignal?.throwIfAborted();
+          const output = await this.runtime.runBuffer(
+            [
+              '--git-dir',
+              binding.repositoryPath,
+              'ls-tree',
+              '-z',
+              binding.baselineCommitOid,
+              '--',
+              trackedPath,
+            ],
+            layout.homePath,
+          );
+          return output.byteLength > 0;
+        },
+        options.abortSignal,
+      ),
+    );
   }
 
   async #requireManagedWorkspaceBaselineReceipt(
