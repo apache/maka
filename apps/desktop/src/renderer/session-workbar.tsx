@@ -676,7 +676,9 @@ function WorkbarLauncher(props: {
             tabIndex={index === firstEnabledActionIndex ? 0 : -1}
             startContent={<span className="maka-workbar-launcher-icon">{action.icon}</span>}
             label={action.label}
-            description={action.description}
+            // Keep description out of visible secondary text — pre-change only
+            // exposed it to AT via aria-description.
+            aria-description={action.description}
             endContent={
               action.shortcut ? (
                 <kbd className="maka-workbar-launcher-shortcut">{action.shortcut}</kbd>

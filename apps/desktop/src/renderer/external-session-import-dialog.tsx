@@ -323,7 +323,7 @@ export function ExternalSessionImportDialog(props: {
               {catalog.sessions.length > 0 && (
                 <div
                   className="maka-external-session-import-list"
-                  role="list"
+                  role="listbox"
                   aria-label={copy.title}
                   aria-busy={loadingMore || undefined}
                 >
@@ -338,7 +338,11 @@ export function ExternalSessionImportDialog(props: {
                       <Item
                         key={session.id}
                         as="div"
-                        role="listitem"
+                        // option + isSelected → aria-selected; Item with a
+                        // parent-role still puts onClick on the root and is
+                        // keyboard-focusable via tabIndex from the listbox pattern.
+                        role="option"
+                        tabIndex={selectedId === session.id ? 0 : -1}
                         className="maka-external-session-import-row"
                         label={session.name}
                         description={meta}
@@ -346,6 +350,13 @@ export function ExternalSessionImportDialog(props: {
                         onClick={() => {
                           setSelectedId(session.id);
                           setImportError(null);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            setSelectedId(session.id);
+                            setImportError(null);
+                          }
                         }}
                       />
                     );

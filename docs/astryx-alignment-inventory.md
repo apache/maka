@@ -36,7 +36,7 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 |---------|------|--------|
 | `ModulePage` (Layout/Header/Content/Panel) | Vendor layout | already aligned |
 | Skills / MCP / Plan reminders / Daily review | EmptyState + List + Toolbar | already aligned |
-| Module shell toolbar CSS | `min-height: 42px` off rhythm | **fixed → 36** |
+| Module list skeleton rows | `min-height: 42px` off rhythm (not page-bar) | **fixed → 36** |
 
 ### Shell / chat chrome
 | Surface | Gaps | Status |
@@ -62,7 +62,7 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 | Quote / prompt rail chips | Raw expand/remove | polish (chip hit geometry) |
 
 ## Fixed in this pass
-- Control-height rhythm: task ledger, module page bar, chat-detail control strips.
+- Control-height rhythm: task ledger rows/triggers, module list skeleton rows, workbar launcher rows.
 - Composer no-model / revision cancel → Astryx `Button`.
 - Inspector failed-only filter → Astryx `ToggleButton`.
 - External import source + session pick → `SegmentedControl` / `Item`.

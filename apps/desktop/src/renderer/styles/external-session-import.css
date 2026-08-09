@@ -89,7 +89,10 @@
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
-.maka-external-session-import-row[aria-pressed="true"] {
+/* Item + role=option uses aria-selected; also match aria-current for any
+   residual non-selectable role path. */
+.maka-external-session-import-row[aria-selected="true"],
+.maka-external-session-import-row[aria-current="true"] {
   background: var(--state-selected-bg);
   box-shadow: inset var(--border-width-accent) 0 0 var(--accent);
 }
