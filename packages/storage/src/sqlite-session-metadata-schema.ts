@@ -1062,6 +1062,13 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
         committed_at DESC,
         operation_id DESC
       );
+
+    CREATE INDEX external_conversation_release_receipts_by_age
+      ON external_conversation_release_receipts(
+        committed_at,
+        conversation_digest,
+        operation_id
+      );
   `,
   ],
 ]);

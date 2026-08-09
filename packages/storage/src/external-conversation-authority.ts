@@ -12,6 +12,8 @@ import {
 
 export const EXTERNAL_CONVERSATION_BINDING_LIMIT = 500;
 export const EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT = 64;
+export const EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT =
+  EXTERNAL_CONVERSATION_BINDING_LIMIT * EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT;
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const writerBrand: unique symbol = Symbol('InteractiveExternalConversationAuthorityWriter');
@@ -235,6 +237,30 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
             )
         `)
         .run(conversationDigest, conversationDigest, EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT);
+      const receiptCount = this.#lease.database
+        .prepare('SELECT COUNT(*) AS count FROM external_conversation_release_receipts')
+        .get() as { count?: unknown };
+      if (
+        typeof receiptCount.count !== 'number' ||
+        !Number.isSafeInteger(receiptCount.count) ||
+        receiptCount.count < 0
+      ) {
+        throw new Error('Invalid external-conversation release receipt count');
+      }
+      const excess = receiptCount.count - EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT;
+      if (excess > 0) {
+        this.#lease.database
+          .prepare(`
+            DELETE FROM external_conversation_release_receipts
+            WHERE rowid IN (
+              SELECT rowid
+              FROM external_conversation_release_receipts
+              ORDER BY committed_at ASC, conversation_digest ASC, operation_id ASC
+              LIMIT ?
+            )
+          `)
+          .run(excess);
+      }
       return Object.freeze({ hadBinding });
     });
   }
