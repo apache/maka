@@ -7,6 +7,7 @@ import { describe, test } from 'node:test';
 import {
   authenticateInteractiveExternalConversationAuthorityWriter,
   EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT,
+  EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT,
   openInteractiveExternalConversationAuthorityForWrite,
 } from '../external-conversation-authority.js';
 import {
@@ -119,6 +120,63 @@ describe('interactive external-conversation authority', () => {
           error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
       );
       writer.close();
+    });
+  });
+
+  test('bounds release receipts across unrelated conversations', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const writer = await openInteractiveExternalConversationAuthorityForWrite(owner.lease);
+      try {
+        const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+        try {
+          database
+            .prepare(`
+              WITH RECURSIVE sequence(value) AS (
+                SELECT 0
+                UNION ALL
+                SELECT value + 1 FROM sequence WHERE value < ?
+              )
+              INSERT INTO external_conversation_release_receipts(
+                conversation_digest, operation_id, had_binding, committed_at
+              )
+              SELECT
+                'sha256:' || printf('%064x', value),
+                'seed',
+                0,
+                value
+              FROM sequence
+            `)
+            .run(EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT - 1);
+        } finally {
+          database.close();
+        }
+
+        await writer.release('telegram:new-conversation', 'new-release');
+        const inspection = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+        try {
+          const count = inspection
+            .prepare('SELECT COUNT(*) AS count FROM external_conversation_release_receipts')
+            .get() as { count: number };
+          assert.equal(count.count, EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT);
+          const newest = inspection
+            .prepare(`
+              SELECT operation_id AS operationId
+              FROM external_conversation_release_receipts
+              ORDER BY committed_at DESC, conversation_digest DESC, operation_id DESC
+              LIMIT 1
+            `)
+            .get() as { operationId: string };
+          assert.equal(newest.operationId, 'new-release');
+        } finally {
+          inspection.close();
+        }
+      } finally {
+        writer.close();
+        await owner.close();
+      }
     });
   });
 });
