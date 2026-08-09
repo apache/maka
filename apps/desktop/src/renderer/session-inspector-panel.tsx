@@ -11,7 +11,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
 import type { TraceTotals } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
-import { Activity, AlertTriangle, Copy } from '@maka/ui/icons';
+import { ICON_SIZE, Activity, AlertTriangle, Copy } from '@maka/ui/icons';
 import {
   getDesktopConversationCopy,
   type InspectorCopy,
@@ -170,7 +170,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             <Button
               variant="ghost"
               size="sm"
-              icon={<Copy size={14} aria-hidden="true" />}
+              icon={<Copy size={ICON_SIZE.control} aria-hidden="true" />}
               label={copy.copyPath}
               onClick={() => {
                 void copyRecordFile();
@@ -206,7 +206,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             <EmptyState
               title={copy.empty}
               description={copy.emptyHelp}
-              icon={<Activity size={20} aria-hidden="true" />}
+              icon={<Activity size={ICON_SIZE.empty} aria-hidden="true" />}
             />
           )}
         </div>
@@ -283,7 +283,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   className="maka-inspector-coverage-note"
                   data-maka-contract="session-inspector-coverage"
                 >
-                  <AlertTriangle size={14} aria-hidden="true" />
+                  <AlertTriangle size={ICON_SIZE.control} aria-hidden="true" />
                   <span>
                     {(model.coverage.kind === 'absent'
                       ? copy.coverageAbsent

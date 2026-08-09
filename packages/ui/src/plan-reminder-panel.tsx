@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { useToast } from './toast.js';
-import { Clock, MoreHorizontal, Plus, RefreshCcw } from './icons.js';
+import { ICON_SIZE, Clock, MoreHorizontal, Plus, RefreshCcw } from './icons.js';
 import type { PlanReminder, PlanReminderStatus } from '@maka/core';
 import {
   generalizedErrorMessage,
@@ -356,13 +356,13 @@ export function PlanReminderPanel(props: {
             <UiButton
               variant="primary"
               onClick={() => openReminderDialog(createPlanReminderFormSeed())}
-              icon={<Plus size={15} aria-hidden="true" />}
+              icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
               label={copy.page.create}
             />
             <DropdownMenu
               button={{
                 label: copy.page.pageSettings,
-                icon: <MoreHorizontal size={16} aria-hidden="true" />,
+                icon: <MoreHorizontal size={ICON_SIZE.chrome} aria-hidden="true" />,
                 isIconOnly: true,
                 variant: 'ghost',
               }}
@@ -371,7 +371,7 @@ export function PlanReminderPanel(props: {
               <DropdownMenuItem
                 onClick={() => void refreshFromPanel()}
                 isDisabled={!props.onRefresh || refreshPending}
-                icon={<RefreshCcw size={14} aria-hidden="true" />}
+                icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
                 label={refreshPending ? copy.page.refreshing : copy.page.refresh}
               />
               {keepSystemAwakeSupported && (
@@ -441,7 +441,7 @@ export function PlanReminderPanel(props: {
             )}
             {props.reminders.length === 0 ? (
               <EmptyState
-                icon={<Clock />}
+                icon={<Clock size={ICON_SIZE.empty} />}
                 title={copy.page.emptyTitle}
                 description={copy.page.emptyBody}
                 actions={(
@@ -456,7 +456,7 @@ export function PlanReminderPanel(props: {
               /* Filter empty (DESIGN.md §10): the clear action resets both
                  dimensions the reader may have narrowed — query and state. */
               <EmptyState
-                icon={<Clock />}
+                icon={<Clock size={ICON_SIZE.empty} />}
                 title={normalizedListQuery ? copy.page.noSearchTitle : copy.page.noFilterTitle}
                 description={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
                 actions={<UiButton variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => { setListQuery(''); setListFilter('all'); }} />}
@@ -538,7 +538,7 @@ export function PlanReminderPanel(props: {
               /* A narrowed range that matches nothing carries the widen action
                  (DESIGN.md §10) — the reader caused this state and must exit. */
               <EmptyState
-                icon={<Clock />}
+                icon={<Clock size={ICON_SIZE.empty} />}
                 title={copy.page.noRunsTitle}
                 description={copy.page.noRunsBody}
                 actions={runRange !== 'all' ? (

@@ -28,6 +28,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
+  ICON_SIZE,
   AlertTriangle,
   ArrowLeft,
   FileCode,
@@ -405,7 +406,7 @@ export function ArtifactPane(props: {
         <Banner
           status="error"
           className="maka-artifact-list-error"
-          icon={<AlertTriangle size={14} aria-hidden="true" />}
+          icon={<AlertTriangle size={ICON_SIZE.control} aria-hidden="true" />}
           title={copy.pane.listLoadFailed}
           description={activeListError}
           endContent={(
@@ -414,7 +415,7 @@ export function ArtifactPane(props: {
               size="sm"
               onClick={() => void retryArtifactListRefresh()}
               isLoading={pendingArtifactListRetry}
-              icon={<RefreshCcw size={13} aria-hidden="true" />}
+              icon={<RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />}
               label={copy.pane.retry}
             />
           )}
@@ -471,7 +472,7 @@ export function ArtifactPane(props: {
         ) : (
           <AstryxEmptyState
             className="maka-artifact-list-empty"
-            icon={<FileText aria-hidden="true" />}
+            icon={<FileText size={ICON_SIZE.empty} aria-hidden="true" />}
             {...emptyStateCopy}
           />
         )
@@ -482,7 +483,7 @@ export function ArtifactPane(props: {
               variant="ghost"
               size="sm"
               isIconOnly
-              icon={<ArrowLeft size={16} aria-hidden="true" />}
+              icon={<ArrowLeft size={ICON_SIZE.chrome} aria-hidden="true" />}
               label={copy.pane.back}
               onClick={returnToList}
             />
@@ -502,18 +503,18 @@ export function ArtifactPane(props: {
               items={[
                 {
                   label: copy.pane.openInFinder,
-                  icon: <FolderOpen size={14} aria-hidden="true" />,
+                  icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
                 },
                 {
                   label: copy.pane.saveAs,
-                  icon: <Save size={14} aria-hidden="true" />,
+                  icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(`${previewRecord.id}:save`, () => saveAs(previewRecord.id)),
                 },
                 ...(isTextKind(previewRecord.kind)
                   ? [{
                       label: copy.pane.copy,
-                      icon: <Copy size={14} aria-hidden="true" />,
+                      icon: <Copy size={ICON_SIZE.control} aria-hidden="true" />,
                       onClick: () => void runArtifactAction(`${previewRecord.id}:copy`, () => copyText(previewRecord.id)),
                     }]
                   : []),
@@ -524,7 +525,7 @@ export function ArtifactPane(props: {
                     previewRecord.source === 'tool_result_archive'
                       ? copy.pane.deleteReadOnly
                       : copy.pane.delete,
-                  icon: <Trash2 size={14} aria-hidden="true" />,
+                  icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
                   isDisabled:
                     previewRecord.source === 'deep_research' ||
                     previewRecord.source === 'tool_result_archive',
@@ -592,15 +593,15 @@ function artifactActionErrorMessage(error: unknown, locale: UiLocale, copy: Arti
 function KindIcon(props: { kind: ArtifactKind }) {
   switch (props.kind) {
     case 'file':
-      return <FileText size={14} />;
+      return <FileText size={ICON_SIZE.control} />;
     case 'diff':
-      return <GitMerge size={14} />;
+      return <GitMerge size={ICON_SIZE.control} />;
     case 'html':
-      return <FileCode size={14} />;
+      return <FileCode size={ICON_SIZE.control} />;
     case 'image':
-      return <FileImage size={14} />;
+      return <FileImage size={ICON_SIZE.control} />;
     case 'pdf':
-      return <FileType size={14} />;
+      return <FileType size={ICON_SIZE.control} />;
   }
 }
 

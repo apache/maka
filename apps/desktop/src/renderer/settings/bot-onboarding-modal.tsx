@@ -15,7 +15,7 @@ import {
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
-import { AlertCircle, Check } from '@maka/ui/icons';
+import { ICON_SIZE, AlertCircle, Check } from '@maka/ui/icons';
 import { BotBrandLogo } from './bot-chat-shared';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
@@ -173,16 +173,16 @@ export function BotOnboardingModal(props: {
             ) : snapshot?.state === 'connected' ? (
               snapshot.warning ? (
                 <span className="settingsBotOnboardingEmpty" aria-hidden="true">
-                  <AlertCircle size={28} />
+                  <AlertCircle size={ICON_SIZE.plate} />
                 </span>
               ) : (
                 <span className="settingsBotOnboardingSuccess" aria-hidden="true">
-                  <Check size={28} />
+                  <Check size={ICON_SIZE.plate} />
                 </span>
               )
             ) : (
               <span className="settingsBotOnboardingEmpty" aria-hidden="true">
-                <AlertCircle size={28} />
+                <AlertCircle size={ICON_SIZE.plate} />
               </span>
             )}
           </div>

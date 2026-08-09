@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Tab, TabList } from '@astryxdesign/core';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
-import { Blocks, CalendarCheck, Plug, Sun } from './icons.js';
+import { ICON_SIZE, Blocks, CalendarCheck, Plug, Sun } from './icons.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ModuleHubHeader = {
@@ -49,8 +49,8 @@ export function ModuleHubSelector(props: ModuleHubSelectorProps) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs;
   if (props.hub === 'extensions') {
     const options = [
-      ['skills', copy.extensions.skills, <Blocks key="skills" size={16} aria-hidden="true" />],
-      ['mcp', copy.extensions.mcp, <Plug key="mcp" size={16} aria-hidden="true" />],
+      ['skills', copy.extensions.skills, <Blocks key="skills" size={ICON_SIZE.chrome} aria-hidden="true" />],
+      ['mcp', copy.extensions.mcp, <Plug key="mcp" size={ICON_SIZE.chrome} aria-hidden="true" />],
     ] as const;
     const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.extensions.skills;
     return (
@@ -64,8 +64,8 @@ export function ModuleHubSelector(props: ModuleHubSelectorProps) {
   }
 
   const options = [
-    ['plan-reminders', copy.automations.planReminders, <CalendarCheck key="plan-reminders" size={16} aria-hidden="true" />],
-    ['daily-review', copy.automations.dailyReview, <Sun key="daily-review" size={16} aria-hidden="true" />],
+    ['plan-reminders', copy.automations.planReminders, <CalendarCheck key="plan-reminders" size={ICON_SIZE.chrome} aria-hidden="true" />],
+    ['daily-review', copy.automations.dailyReview, <Sun key="daily-review" size={ICON_SIZE.chrome} aria-hidden="true" />],
   ] as const;
   const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.automations.planReminders;
   return (

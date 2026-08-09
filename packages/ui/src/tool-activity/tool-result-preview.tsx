@@ -8,7 +8,7 @@ import {
   type ToolResultContent,
 } from '@maka/core';
 import { Button as UiButton } from '@astryxdesign/core';
-import { AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
+import { ICON_SIZE, AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
@@ -114,8 +114,8 @@ export function ToolOutputSurface(props: {
               isDisabled={phase === 'pending'}
               onClick={() => void feedback.copy(copyKey, copyPayload)}
               icon={phase === 'copied'
-                ? <Check size={14} aria-hidden="true" />
-                : <Copy size={14} aria-hidden="true" />}
+                ? <Check size={ICON_SIZE.control} aria-hidden="true" />
+                : <Copy size={ICON_SIZE.control} aria-hidden="true" />}
             />
           </div>
         </div>
@@ -527,26 +527,26 @@ function ShellRunStatus(props: {
 }) {
   const activityCopy = getToolActivityCopy(useUiLocale());
   const copy = activityCopy.result;
-  if (props.source === 'owned') return <><GitBranch size={15} aria-hidden="true" />{copy.managedBySource}</>;
-  if (props.source === 'unavailable') return <><GitBranch size={15} aria-hidden="true" />{copy.sourceUnavailable}</>;
+  if (props.source === 'owned') return <><GitBranch size={ICON_SIZE.control} aria-hidden="true" />{copy.managedBySource}</>;
+  if (props.source === 'unavailable') return <><GitBranch size={ICON_SIZE.control} aria-hidden="true" />{copy.sourceUnavailable}</>;
   const suffix = props.exitCode !== undefined && props.exitCode !== 0 ? ` · ${copy.exitCode(props.exitCode)}` : '';
   if (props.sandboxBlocked) {
-    return <><ShieldAlert size={15} aria-hidden="true" />{activityCopy.status.sandboxBlocked}{suffix}</>;
+    return <><ShieldAlert size={ICON_SIZE.control} aria-hidden="true" />{activityCopy.status.sandboxBlocked}{suffix}</>;
   }
   switch (props.status) {
     case 'starting':
     case 'running':
-      return <><Loader2 size={15} aria-hidden="true" className="maka-spin" />{copy.running}</>;
+      return <><Loader2 size={ICON_SIZE.control} aria-hidden="true" className="maka-spin" />{copy.running}</>;
     case 'completed':
-      return <><Check size={15} aria-hidden="true" />{copy.success}</>;
+      return <><Check size={ICON_SIZE.control} aria-hidden="true" />{copy.success}</>;
     case 'failed':
-      return <><AlertCircle size={15} aria-hidden="true" />{copy.failed}{suffix}</>;
+      return <><AlertCircle size={ICON_SIZE.control} aria-hidden="true" />{copy.failed}{suffix}</>;
     case 'timed_out':
-      return <><Clock size={15} aria-hidden="true" />{copy.timedOut}{suffix}</>;
+      return <><Clock size={ICON_SIZE.control} aria-hidden="true" />{copy.timedOut}{suffix}</>;
     case 'cancelled':
-      return <><Ban size={15} aria-hidden="true" />{copy.cancelled}{suffix}</>;
+      return <><Ban size={ICON_SIZE.control} aria-hidden="true" />{copy.cancelled}{suffix}</>;
     case 'orphaned':
-      return <><Plug size={15} aria-hidden="true" />{copy.disconnected}</>;
+      return <><Plug size={ICON_SIZE.control} aria-hidden="true" />{copy.disconnected}</>;
   }
 }
 

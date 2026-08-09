@@ -6,7 +6,7 @@ import {
   generalizedErrorMessageChinese,
 } from '@maka/core';
 import { useUiLocale } from '@maka/ui';
-import { Terminal as TerminalIcon } from '@maka/ui/icons';
+import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
@@ -191,7 +191,7 @@ export function SessionTerminalPanel(props: {
       /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
          carries icon and description, not the compact form. */
       <EmptyState
-        icon={<TerminalIcon size={20} aria-hidden />}
+        icon={<TerminalIcon size={ICON_SIZE.empty} aria-hidden />}
         title={copy.empty}
         description={copy.emptyHelp}
       />

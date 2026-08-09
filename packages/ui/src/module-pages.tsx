@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import type { PlanReminder } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
-import { CalendarDays } from './icons.js';
+import { ICON_SIZE, CalendarDays } from './icons.js';
 import { EmptyState } from '@astryxdesign/core';
 import { ModulePage } from './primitives/module-page.js';
 import { useUiLocale } from './locale-context.js';
@@ -127,7 +127,7 @@ export function DailyReviewPage(props: {
           toolbar={props.hubHeader?.badge ? <div className="maka-module-page-bar">{props.hubHeader.badge}</div> : undefined}
         >
           <div className="maka-module-page-panel">
-            <EmptyState icon={<CalendarDays />} title={copy.dailyReviewDisconnectedTitle} description={copy.dailyReviewDisconnectedBody} />
+            <EmptyState icon={<CalendarDays size={ICON_SIZE.empty} />} title={copy.dailyReviewDisconnectedTitle} description={copy.dailyReviewDisconnectedBody} />
           </div>
         </ModulePage>
       )}

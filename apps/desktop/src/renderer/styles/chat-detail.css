@@ -188,8 +188,8 @@
 }
 
 .maka-workbar-tab-icon {
-  width: 14px;
-  height: 14px;
+  width: var(--icon-control);
+  height: var(--icon-control);
   flex: 0 0 auto;
 }
 
@@ -324,8 +324,8 @@
 }
 
 .maka-workbar-launcher-icon > svg {
-  width: 16px;
-  height: 16px;
+  width: var(--icon-chrome);
+  height: var(--icon-chrome);
 }
 
 .maka-workbar-launcher-label {

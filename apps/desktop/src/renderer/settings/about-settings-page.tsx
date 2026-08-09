@@ -132,7 +132,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         as_wrapper="div"
         className="settingsAboutHero"
         as="h2"
-        icon={<Sparkles size={26} />}
+        icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
         iconClassName="settingsAboutLogo"
         headingRowClassName="settingsAboutHeading"
         title="Maka"

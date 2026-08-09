@@ -25,7 +25,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
+import { ICON_SIZE, ArrowLeft, CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
 import {
   dailyReviewPanelErrorMessage,
   dailyReviewScopeKey,
@@ -275,7 +275,7 @@ export function DailyReviewPanel(props: {
                   variant="ghost"
                   size="sm"
                   isIconOnly
-                  icon={<ChevronLeft />}
+                  icon={<ChevronLeft size={ICON_SIZE.chrome} />}
                   label={copy.date.earlier(copy.date.unit.day)}
                   onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, -1))}
                 />
@@ -284,7 +284,7 @@ export function DailyReviewPanel(props: {
                   variant="ghost"
                   size="sm"
                   isIconOnly
-                  icon={<ChevronRight />}
+                  icon={<ChevronRight size={ICON_SIZE.chrome} />}
                   label={copy.date.later(copy.date.unit.day)}
                   isDisabled={offsetDays >= 0}
                   onClick={() => selectScope(shiftDailyReviewScope({ range, offsetDays }, 1))}
@@ -412,7 +412,7 @@ function DailyReviewReport(props: {
   return (
     <VStack className="maka-daily-review-report" gap={5}>
       <HStack gap={2} vAlign="center" wrap="wrap">
-        <Button variant="ghost" size="sm" icon={<ArrowLeft />} label={copy.page.backToActivity} onClick={props.onBack} />
+        <Button variant="ghost" size="sm" icon={<ArrowLeft size={ICON_SIZE.chrome} />} label={copy.page.backToActivity} onClick={props.onBack} />
         <StackItem size="fill" />
         {props.onCopyMarkdown ? (
           <Button variant="secondary" size="sm" label={pendingAction === 'copy' ? copy.export.copying : copy.export.copy} isDisabled={pendingAction !== null} onClick={() => void runAction('copy', () => props.onCopyMarkdown?.(actionInput))} />
@@ -452,7 +452,7 @@ function DailyReviewReport(props: {
         /* Panel empty (DESIGN.md §10 tier 2): the whole report body is empty,
            so it carries icon and description. */
         <EmptyState
-          icon={<CalendarDays />}
+          icon={<CalendarDays size={ICON_SIZE.empty} />}
           title={copy.archive.noContent}
           description={copy.archive.noContentHelp}
         />

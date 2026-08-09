@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  ICON_SIZE,
   AlertTriangle,
   ArrowRight,
 } from './icons.js';
@@ -540,7 +541,7 @@ export function ChatView(props: {
           <EmptyState
             role="alert"
             aria-busy={props.messageLoadRetryPending ? 'true' : undefined}
-            icon={<AlertTriangle />}
+            icon={<AlertTriangle size={ICON_SIZE.empty} />}
             title={copy.loadFailed}
             description={props.messageLoadError}
             actions={props.onRetryMessages ? (
@@ -784,7 +785,7 @@ export function DeepResearchProgressPanel({
             <Button
               type="button"
               label={copy.handoffAction}
-              endContent={<ArrowRight size={12} aria-hidden="true" />}
+              endContent={<ArrowRight size={ICON_SIZE.meta} aria-hidden="true" />}
               variant="secondary"
               size="sm"
               className="maka-deep-research-handoff-button"

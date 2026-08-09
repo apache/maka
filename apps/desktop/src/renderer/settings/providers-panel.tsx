@@ -13,7 +13,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { ChevronRight, Cpu } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type LlmConnection,
   type ProviderType,
@@ -380,7 +380,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             />
           ) : connections.length === 0 ? (
             <EmptyState
-              icon={<Cpu />}
+              icon={<Cpu size={ICON_SIZE.empty} />}
               title={copy.empty}
               description={copy.emptyHelp}
               actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
@@ -413,7 +413,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                             <span>{status.label}</span>
                           </span>
                         )}
-                        <ChevronRight size={16} aria-hidden="true" />
+                        <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
                       </HStack>
                     )}
                     onClick={() => openDetail(connection.slug)}

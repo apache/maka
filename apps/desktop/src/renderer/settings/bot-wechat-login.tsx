@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
 import { Button, EmptyState, FormLayout, Spinner, TextInput, useUiLocale, Banner } from '@maka/ui';
-import { MessageSquare } from '@maka/ui/icons';
+import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Dialog,
@@ -185,7 +185,7 @@ export function WechatQrLoginModal(props: {
                derived from the dialog outline — DialogHeader owns the title level. */
             <EmptyState
               headingLevel={4}
-              icon={<MessageSquare />}
+              icon={<MessageSquare size={ICON_SIZE.empty} />}
               title={copy.expired}
               description={copy.expiredHint}
               actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />}
@@ -201,7 +201,7 @@ export function WechatQrLoginModal(props: {
             <div role="alert">
               <EmptyState
                 headingLevel={4}
-                icon={<MessageSquare />}
+                icon={<MessageSquare size={ICON_SIZE.empty} />}
                 title={error.error}
                 description={error.hint}
                 actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />}
@@ -210,7 +210,7 @@ export function WechatQrLoginModal(props: {
           ) : (
             <EmptyState
               headingLevel={4}
-              icon={<MessageSquare />}
+              icon={<MessageSquare size={ICON_SIZE.empty} />}
               title={copy.bridgeGenerating}
               description={copy.bridgeGeneratingHint}
               actions={<Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.fetching : copy.fetchAgain} />}

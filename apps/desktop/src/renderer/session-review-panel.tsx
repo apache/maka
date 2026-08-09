@@ -20,6 +20,7 @@ import {
 } from '@maka/core';
 import { ToolResultPreview, useToast, useUiLocale } from '@maka/ui';
 import {
+  ICON_SIZE,
   Check,
   GitBranch,
   Minus,
@@ -275,7 +276,7 @@ export function SessionReviewPanel(props: {
             size="sm"
             isIconOnly
             label={copy.refresh}
-            icon={<RotateCw size={14} aria-hidden />}
+            icon={<RotateCw size={ICON_SIZE.control} aria-hidden />}
             isLoading={loading}
             onClick={() => void load()}
           />
@@ -297,7 +298,7 @@ export function SessionReviewPanel(props: {
               label: branch,
               icon:
                 branch === gitSnapshot.baseBranch ? (
-                  <Check size={14} aria-hidden />
+                  <Check size={ICON_SIZE.control} aria-hidden />
                 ) : undefined,
               onClick: () => setBaseBranch(branch),
             }))}
@@ -325,7 +326,7 @@ export function SessionReviewPanel(props: {
         /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
            carries icon and description, not the compact form. */
         <EmptyState
-          icon={<GitBranch size={20} aria-hidden />}
+          icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
           title={copy.empty}
           description={copy.emptyHelp}
         />
@@ -356,8 +357,8 @@ export function SessionReviewPanel(props: {
                       }
                       icon={
                         mutationAction === 'stage'
-                          ? <Plus size={14} aria-hidden />
-                          : <Minus size={14} aria-hidden />
+                          ? <Plus size={ICON_SIZE.control} aria-hidden />
+                          : <Minus size={ICON_SIZE.control} aria-hidden />
                       }
                       isLoading={pendingPath === file.path}
                       isDisabled={pendingPath !== null}
@@ -369,7 +370,7 @@ export function SessionReviewPanel(props: {
                         size="sm"
                         isIconOnly
                         label={copy.revertFile}
-                        icon={<RotateCcw size={14} aria-hidden />}
+                        icon={<RotateCcw size={ICON_SIZE.control} aria-hidden />}
                         isDisabled={pendingPath !== null}
                         onClick={() => void revertFile(file.path)}
                       />

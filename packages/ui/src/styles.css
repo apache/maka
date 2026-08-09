@@ -73,7 +73,7 @@
 .maka-composer-running-actions { display: inline-flex; align-items: center; gap: var(--space-1); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
-.maka-quote-chip-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted-foreground); }
+.maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
 .maka-quote-chip-text {
   font: var(--maka-text-supporting);
@@ -82,7 +82,7 @@
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
 .maka-quote-chip-remove { width: 16px; height: 16px; border-radius: 50%; }
-.maka-quote-chip-remove > svg { width: 12px; height: 12px; }
+.maka-quote-chip-remove > svg { width: var(--icon-meta); height: var(--icon-meta); }
 
 .maka-task-ledger-empty {
   font: var(--maka-text-body);

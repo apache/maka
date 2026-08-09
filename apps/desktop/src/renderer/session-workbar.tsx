@@ -32,6 +32,7 @@ import {
   type Composer,
 } from '@maka/ui';
 import {
+  ICON_SIZE,
   Activity,
   FolderOpen,
   GitBranch,
@@ -101,7 +102,7 @@ function WorkbarPanelLoading(props: { label: string }) {
       aria-busy="true"
     >
       <Loader2
-        size={16}
+        size={ICON_SIZE.chrome}
         aria-hidden="true"
         className="maka-workbar-tab-spinner"
       />
@@ -190,7 +191,7 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
   if (active) {
     return (
       <Loader2
-        size={14}
+        size={ICON_SIZE.control}
         aria-hidden="true"
         className="maka-workbar-tab-icon maka-workbar-tab-spinner"
       />
@@ -210,7 +211,7 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
               : tab.kind === 'inspector'
                 ? Activity
                 : MessageCircleQuestion;
-  return <Icon size={14} aria-hidden="true" className="maka-workbar-tab-icon" />;
+  return <Icon size={ICON_SIZE.control} aria-hidden="true" className="maka-workbar-tab-icon" />;
 }
 
 function WorkbarTabStrip(props: {
@@ -366,7 +367,7 @@ function WorkbarTabStrip(props: {
       <Tooltip content={copy.openTab}>
         <IconButton
           label={copy.openTab}
-          icon={<Plus size={15} aria-hidden />}
+          icon={<Plus size={ICON_SIZE.control} aria-hidden />}
           variant="ghost"
           size="sm"
           className="maka-workbar-new-tab"
@@ -525,7 +526,7 @@ function SortableWorkbarTab(props: {
           <Tooltip content={copy.closeTab(label)}>
             <IconButton
               label={copy.closeTab(label)}
-              icon={<X size={13} aria-hidden />}
+              icon={<X size={ICON_SIZE.meta} aria-hidden />}
               variant="ghost"
               size="sm"
               className="maka-workbar-tab-close"

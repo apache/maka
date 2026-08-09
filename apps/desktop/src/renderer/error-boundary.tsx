@@ -8,7 +8,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import type { UiLocale } from '@maka/core';
-import { AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
+import { ICON_SIZE, AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
 import { Button as UiButton, Card, redactSecrets } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 
@@ -115,7 +115,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
             keeps only the icon/copy grid geometry. */}
         <Card variant="red" elevation="high" padding={0} className="maka-error-card">
           <span className="maka-error-icon" aria-hidden="true">
-            <AlertTriangle size={28} />
+            <AlertTriangle size={ICON_SIZE.plate} />
           </span>
           <div className="maka-error-copy">
             <h2>{copy.title}</h2>
@@ -139,13 +139,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
                 isDisabled={copyPending}
                 aria-busy={copyPending ? 'true' : undefined}
                 onClick={this.handleCopyReport}
-                icon={<CopyIcon size={14} aria-hidden="true" />}
+                icon={<CopyIcon size={ICON_SIZE.control} aria-hidden="true" />}
                 label={copyLabel}
               />
               <UiButton
                 variant="secondary"
                 onClick={this.handleReset}
-                icon={<RotateCw size={14} aria-hidden="true" />}
+                icon={<RotateCw size={ICON_SIZE.control} aria-hidden="true" />}
                 label={copy.retry}
               />
               <UiButton variant="primary" onClick={this.handleReload} label={copy.reload} />

@@ -226,8 +226,8 @@
 }
 
 .plan-execution-summary svg {
-  width: var(--icon-size);
-  height: var(--icon-size);
+  width: var(--icon-chrome);
+  height: var(--icon-chrome);
   transition: transform var(--duration-quick) var(--ease-out-strong);
 }
 

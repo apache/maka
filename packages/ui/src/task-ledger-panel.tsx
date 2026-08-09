@@ -2,6 +2,7 @@ import { useMemo, type CSSProperties, type ReactNode } from 'react';
 import { Collapsible, IconButton } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
+  ICON_SIZE,
   AlertCircle,
   Ban,
   CheckCircle2,
@@ -67,7 +68,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               onClick={props.onRetry}
               label={copy.retry}
               tooltip={copy.retry}
-              icon={<RefreshCcw size={14} aria-hidden="true" />}
+              icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
             />
           )}
         </div>
@@ -159,7 +160,7 @@ function TaskLedgerRow({ task, copy, level, position, setSize, children }: {
       data-status={task.status}
       style={{ '--task-depth': Math.min(depth, 6) } as CSSProperties}
     >
-      <StatusIcon size={14} aria-hidden="true" />
+      <StatusIcon size={ICON_SIZE.control} aria-hidden="true" />
       <code className="maka-task-ledger-key">{task.key}</code>
       <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
       <span className="maka-task-ledger-meta">

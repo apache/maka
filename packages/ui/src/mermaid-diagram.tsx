@@ -5,7 +5,7 @@ import { Dialog } from '@astryxdesign/core/Dialog';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { useEffect, useRef, useState } from 'react';
 import type { MermaidConfig } from 'mermaid';
-import { Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
+import { ICON_SIZE, Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -352,7 +352,7 @@ export function MermaidDiagram(props: {
                   tooltip={copy.mermaidZoomOut}
                   isDisabled={zoom <= MIN_MERMAID_ZOOM}
                   onClick={() => updateZoom(zoom - MERMAID_ZOOM_STEP)}
-                  icon={<ZoomOut aria-hidden="true" />}
+                  icon={<ZoomOut size={ICON_SIZE.chrome} aria-hidden="true" />}
                 />
                 <output
                   className="maka-mermaid-zoom-level"
@@ -366,14 +366,14 @@ export function MermaidDiagram(props: {
                   tooltip={copy.mermaidZoomIn}
                   isDisabled={zoom >= MAX_MERMAID_ZOOM}
                   onClick={() => updateZoom(zoom + MERMAID_ZOOM_STEP)}
-                  icon={<ZoomIn aria-hidden="true" />}
+                  icon={<ZoomIn size={ICON_SIZE.chrome} aria-hidden="true" />}
                 />
                 <IconButton
                   variant="ghost"
                   label={copy.mermaidResetView}
                   tooltip={copy.mermaidResetView}
                   onClick={resetViewport}
-                  icon={<Scan aria-hidden="true" />}
+                  icon={<Scan size={ICON_SIZE.chrome} aria-hidden="true" />}
                 />
               </div>
               <IconButton
@@ -384,8 +384,8 @@ export function MermaidDiagram(props: {
                 data-autofocus={isExpanded ? true : undefined}
                 onClick={() => setExpanded(!isExpanded)}
                 icon={isExpanded
-                  ? <Minimize2 aria-hidden="true" />
-                  : <Maximize2 aria-hidden="true" />}
+                  ? <Minimize2 size={ICON_SIZE.chrome} aria-hidden="true" />
+                  : <Maximize2 size={ICON_SIZE.chrome} aria-hidden="true" />}
               />
             </div>
           )}

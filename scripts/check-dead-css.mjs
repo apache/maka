@@ -191,6 +191,13 @@ const DYNAMIC_STYLE_HOOKS = new Set([
  * unused, with no series around it, does not belong here; delete it instead.
  */
 const RESERVED_SCALE_TOKENS = new Set([
+  // Five-rung icon scale meta/control/chrome/empty/plate (Chapter C). The CSS
+  // tokens mirror ICON_SIZE in @maka/ui's icons.tsx for the CSS-clamped
+  // sites; a rung with no clamp today (empty, plate) still names its gap.
+  // --icon-size is the deprecated alias, kept one release.
+  '--icon-empty',
+  '--icon-plate',
+  '--icon-size',
   // Ink tint band --foreground-alpha-10/-16 (visual system 2.0). The 10 rung
   // lost its last consumer when quote-chip hover converged onto
   // --state-hover-bg (T5-B); the band only reads as a band with both rungs,

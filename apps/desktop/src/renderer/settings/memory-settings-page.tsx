@@ -13,7 +13,7 @@ import {
   TextInput,
   useUiLocale,
 } from '@maka/ui';
-import { Brain, Search } from '@maka/ui/icons';
+import { ICON_SIZE, Brain, Search } from '@maka/ui/icons';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { SettingsActions, SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
@@ -250,7 +250,7 @@ export function MemorySettingsPage(props: {
                     the clear action — the user is in a state they caused and must
                     be able to exit. */}
                 <EmptyState
-                  icon={<Search />}
+                  icon={<Search size={ICON_SIZE.empty} />}
                   title={copy.text.filterEmpty}
                   description={copy.text.filterEmptyHelp}
                   actions={(
@@ -301,7 +301,7 @@ export function MemorySettingsPage(props: {
                 existing add flows; a duplicate action button here would be a
                 second path to the same affordance. */}
             <EmptyState
-              icon={<Brain />}
+              icon={<Brain size={ICON_SIZE.empty} />}
               title={copy.text.waitingEntry}
               description={copy.text.waitingEntryHelp}
             />

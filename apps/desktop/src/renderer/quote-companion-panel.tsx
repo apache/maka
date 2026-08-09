@@ -10,7 +10,7 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import { Loader2 } from '@maka/ui/icons';
+import { ICON_SIZE, Loader2 } from '@maka/ui/icons';
 import type { SessionSummary } from '@maka/core';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useAppShellComposerAttachments } from './use-app-shell-composer-attachments';
@@ -285,7 +285,7 @@ export function QuoteCompanionPanel(props: {
                 aria-live="polite"
               >
                 <Loader2
-                  size={15}
+                  size={ICON_SIZE.control}
                   aria-hidden="true"
                   className="maka-turn-processing-spinner"
                 />

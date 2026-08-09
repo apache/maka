@@ -14,7 +14,7 @@
  * ordinary chat reserves no space.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core';
 import {
   IconButton,
@@ -149,7 +149,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         <Tooltip content={copy.back}>
           <IconButton
             label={copy.backAria}
-            icon={<ChevronLeft size={16} aria-hidden />}
+            icon={<ChevronLeft size={ICON_SIZE.chrome} aria-hidden />}
             variant="ghost"
             size="sm"
             isDisabled={!state.canGoBack}
@@ -159,7 +159,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         <Tooltip content={copy.forward}>
           <IconButton
             label={copy.forwardAria}
-            icon={<ChevronRight size={16} aria-hidden />}
+            icon={<ChevronRight size={ICON_SIZE.chrome} aria-hidden />}
             variant="ghost"
             size="sm"
             isDisabled={!state.canGoForward}
@@ -169,7 +169,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         <Tooltip content={state.loading ? copy.stop : copy.refresh}>
           <IconButton
             label={state.loading ? copy.stopAria : copy.refreshAria}
-            icon={state.loading ? <X size={16} aria-hidden /> : <RotateCw size={16} aria-hidden />}
+            icon={state.loading ? <X size={ICON_SIZE.chrome} aria-hidden /> : <RotateCw size={ICON_SIZE.chrome} aria-hidden />}
             variant="ghost"
             size="sm"
             isDisabled={!state.hasPage && !state.loading}
@@ -205,7 +205,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         <Tooltip content={copy.close}>
           <IconButton
             label={copy.closeAria}
-            icon={<X size={16} aria-hidden />}
+            icon={<X size={ICON_SIZE.chrome} aria-hidden />}
             variant="ghost"
             size="sm"
             onClick={() => void window.maka.browser.close(sessionId)}
@@ -216,7 +216,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         {!state.hasPage && (
           <EmptyState
             className="maka-browser-empty"
-            icon={<Globe aria-hidden="true" />}
+            icon={<Globe size={ICON_SIZE.empty} aria-hidden="true" />}
             title={copy.title}
             description={copy.description}
           />

@@ -1,7 +1,7 @@
 import type { InlineReference } from '@maka/core';
 import { ChatTokenizedText, type ChatComposerToken } from '@astryxdesign/core';
 import type { ReactNode } from 'react';
-import { Sparkles } from './icons.js';
+import { ICON_SIZE, Sparkles } from './icons.js';
 
 type InlineReferenceVisual = Pick<InlineReference, 'kind' | 'value' | 'label'>;
 
@@ -65,7 +65,7 @@ export function inlineReferenceToken(reference: InlineReferenceVisual): ChatComp
     value: reference.value,
     label: reference.label,
     ...(reference.kind === 'skill'
-      ? { icon: <Sparkles size={12} aria-hidden="true" /> }
+      ? { icon: <Sparkles size={ICON_SIZE.meta} aria-hidden="true" /> }
       : {}),
   };
 }

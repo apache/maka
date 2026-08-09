@@ -1,6 +1,7 @@
 import type { StatusSemantic } from '@maka/ui';
 import { useEffect, useState, type ComponentType } from 'react';
 import {
+  ICON_SIZE,
   Accessibility as AccessibilityIcon,
   Bell,
   Monitor,
@@ -590,7 +591,7 @@ function OsPermissionRow(props: {
          layout, and Astryx's startContent slot has no equivalent. */
       startContent={Icon ? (
         <span className="settingsOsPermissionIcon" aria-hidden="true">
-          <Icon size={18} />
+          <Icon size={ICON_SIZE.empty} /> {/* 20 in the 36px plate — the ladder's fill convention */}
         </span>
       ) : undefined}
       label={(

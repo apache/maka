@@ -12,6 +12,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
 import { formatCompactTimestamp } from '@maka/core';
 import {
+  ICON_SIZE,
   AlertTriangle,
   Archive,
   ArchiveRestore,
@@ -321,7 +322,7 @@ function SessionListGroups(props: {
         variant="ghost"
         size="sm"
         label={newTaskCopy}
-        icon={<Plus size={14} aria-hidden="true" />}
+        icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
         onClick={() => void props.onNewTask?.()}
       />
     </Tooltip>
@@ -550,7 +551,7 @@ function ProjectItemEndContent(props: {
   return (
     <EndContentHitTarget className="maka-session-row-end maka-project-item-end" ref={endRef}>
       {project && !project.available && (
-        <AlertTriangle size={12} aria-label={copy.projectUnavailable} />
+        <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
       )}
       <Badge variant="neutral" label={props.sessionCount} />
       {menuItems.length > 0 && (
@@ -655,7 +656,7 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
       )}
       {props.worktree && (
         <FolderGit2
-          size={12}
+          size={ICON_SIZE.meta}
           aria-label={copy.worktreeAriaLabel}
           className="maka-session-worktree-icon"
         />

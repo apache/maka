@@ -28,7 +28,7 @@ import {
   useUiLocale,
   Banner,
 } from '@maka/ui';
-import { Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
+import { ICON_SIZE, Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
 import {
   getUsageSettingsCopy,
   type UsageSettingsCopy,
@@ -144,7 +144,7 @@ export function UsageSettingsPage(props: {
             label={copy.refreshAria}
             tooltip={copy.refreshAria}
             onClick={() => void refresh()}
-            icon={<RefreshCcw size={15} aria-hidden="true" />}
+            icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
           />
         </div>
 

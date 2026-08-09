@@ -31,7 +31,7 @@ import {
   useToast as useAstryxToast,
   type ToastDismissFn,
 } from '@astryxdesign/core/Toast';
-import { AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
+import { ICON_SIZE, AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -244,10 +244,10 @@ export function useToast(): ToastApi {
 }
 
 const VARIANT_ICON: Record<ToastVariant, ReactNode> = {
-  info: <Info size={16} aria-hidden="true" />,
-  success: <CheckCircle2 size={16} aria-hidden="true" />,
-  warning: <AlertTriangle size={16} aria-hidden="true" />,
-  error: <AlertCircle size={16} aria-hidden="true" />,
+  info: <Info size={ICON_SIZE.chrome} aria-hidden="true" />,
+  success: <CheckCircle2 size={ICON_SIZE.chrome} aria-hidden="true" />,
+  warning: <AlertTriangle size={ICON_SIZE.chrome} aria-hidden="true" />,
+  error: <AlertCircle size={ICON_SIZE.chrome} aria-hidden="true" />,
 };
 
 function ToastBody({ input }: { input: ToastInput }) {

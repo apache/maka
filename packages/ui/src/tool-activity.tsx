@@ -6,6 +6,7 @@ import {
   type UiLocale,
 } from '@maka/core';
 import {
+  ICON_SIZE,
   Check,
   Clock,
   Copy,
@@ -100,7 +101,7 @@ function AutomationResultPreview(props: { text: string }) {
     return (
       <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_create">
         <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Icon size={14} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+          <Icon size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
           {copy.created(redactSecrets(created[1] ?? ''))}
         </p>
         {schedule && <p className={previewVariants({ part: 'load-tool-count' })}>{redactSecrets(schedule)}</p>}
@@ -117,7 +118,7 @@ function AutomationResultPreview(props: { text: string }) {
     return (
       <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_delete">
         <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Check size={14} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+          <Check size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
           {ok ? copy.deleted : copy.notFound}
         </p>
       </div>
@@ -131,7 +132,7 @@ function AutomationResultPreview(props: { text: string }) {
     return (
       <div className={previewVariants({ part: 'load-tool' })} data-kind="automation_list">
         <p className={previewVariants({ part: 'load-tool-title' })}>
-          <Clock size={14} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+          <Clock size={ICON_SIZE.control} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
           {copy.list(blocks.length)}
         </p>
         {blocks.length === 0 && <p className={previewVariants({ part: 'load-tool-count' })}>{copy.empty}</p>}
@@ -140,7 +141,7 @@ function AutomationResultPreview(props: { text: string }) {
           const BlockIcon = automationScheduleIcon(block);
           return (
             <p key={i} className={previewVariants({ part: 'load-tool-tools' })}>
-              <BlockIcon size={12} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
+              <BlockIcon size={ICON_SIZE.meta} aria-hidden="true" className={AUTOMATION_RESULT_ICON_CLASS} />
               {redactSecrets(head)}
             </p>
           );
@@ -555,7 +556,7 @@ function SandboxBlockedBanner(props: {
     <Banner
       status="warning"
       className="maka-sandbox-blocked-banner"
-      icon={<ShieldAlert size={16} aria-hidden="true" />}
+      icon={<ShieldAlert size={ICON_SIZE.chrome} aria-hidden="true" />}
       title={bannerCopy.title}
       description={(
         <span className="maka-sandbox-blocked-description">
@@ -578,7 +579,7 @@ function SandboxBlockedBanner(props: {
           aria-busy={copyPending ? 'true' : undefined}
           isDisabled={copyPending}
           onClick={() => void copy()}
-          icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          icon={copyPhase === 'copied' ? <Check size={ICON_SIZE.control} aria-hidden="true" /> : <Copy size={ICON_SIZE.control} aria-hidden="true" />}
           label={copyLabel}
         />
       ) : undefined}

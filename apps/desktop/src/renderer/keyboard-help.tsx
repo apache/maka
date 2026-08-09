@@ -6,7 +6,7 @@
 // Esc, and focus restoration.
 
 import { useState } from 'react';
-import { Keyboard } from '@maka/ui/icons';
+import { ICON_SIZE, Keyboard } from '@maka/ui/icons';
 import { useUiLocale } from '@maka/ui';
 import { Kbd } from '@astryxdesign/core/Kbd';
 import { useHotkeys } from '@astryxdesign/core/hooks';
@@ -82,7 +82,7 @@ export function KeyboardHelpModal(props: {
       <Layout
         header={
           <DialogHeader
-            startContent={<Keyboard aria-hidden="true" />}
+            startContent={<Keyboard size={ICON_SIZE.chrome} aria-hidden="true" />}
             title={copy.title}
             onOpenChange={props.onOpenChange}
           />

@@ -5,7 +5,7 @@ import type {
   AgentGraphClientSnapshot,
 } from '@maka/runtime';
 import { IconButton } from '@maka/ui';
-import { ChevronDown } from '@maka/ui/icons';
+import { ICON_SIZE, ChevronDown } from '@maka/ui/icons';
 import { Button } from '@astryxdesign/core/Button';
 
 type GraphPanelCopy = {
@@ -247,7 +247,7 @@ export function AgentGraphPanel(props: {
             className="maka-agent-graph-collapse-toggle"
             label={collapsed ? copy.expand : copy.collapse}
             tooltip={collapsed ? copy.expand : copy.collapse}
-            icon={<ChevronDown size={16} aria-hidden="true" />}
+            icon={<ChevronDown size={ICON_SIZE.chrome} aria-hidden="true" />}
             aria-expanded={!collapsed}
             aria-controls={contentId}
             onClick={() => setCollapsed((current) => !current)}

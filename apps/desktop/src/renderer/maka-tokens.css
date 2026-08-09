@@ -731,8 +731,15 @@
   --space-12: calc(var(--spacing) * 12);     /* 48px */
   --space-16: calc(var(--spacing) * 16);     /* 64px */
 
-  --icon-size: 16px;           /* chrome glyph size (nav + button icons); dense
-                                  meta (12-14) and hero (20+) stay call-site */
+  /* Five-rung icon scale, mirroring ICON_SIZE in @maka/ui's icons.tsx —
+     these tokens exist for the CSS-clamped sites; pick by the role the
+     glyph plays, not by eye. */
+  --icon-meta: 13px;
+  --icon-control: 14px;
+  --icon-chrome: 16px;
+  --icon-empty: 20px;
+  --icon-plate: 28px;
+  --icon-size: var(--icon-chrome); /* deprecated alias, one release */
 
   /* === motion ===
      Custom easing curves per emil-design-eng — the built-in CSS easings

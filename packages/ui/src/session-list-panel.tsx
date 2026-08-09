@@ -12,7 +12,7 @@ import {
   type SessionRowActions,
 } from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
-import { Clock, FolderOpen } from './icons.js';
+import { ICON_SIZE, Clock, FolderOpen } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import type { Ref } from 'react';
@@ -83,13 +83,13 @@ export function SessionListPanel(props: {
       <SegmentedControlItem
         value="conversation"
         label={copy.groupByTime}
-        icon={<Clock size={14} aria-hidden="true" />}
+        icon={<Clock size={ICON_SIZE.control} aria-hidden="true" />}
         isLabelHidden
       />
       <SegmentedControlItem
         value="project"
         label={copy.groupByProject}
-        icon={<FolderOpen size={14} aria-hidden="true" />}
+        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
         isLabelHidden
       />
     </SegmentedControl>

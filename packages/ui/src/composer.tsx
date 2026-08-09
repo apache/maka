@@ -14,6 +14,7 @@ import {
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
+  ICON_SIZE,
   ArrowUp,
   FileText,
   ListTodo,
@@ -756,7 +757,7 @@ export const Composer = forwardRef<
         loadingText: mentionCopy.loading,
         renderItem: (item) => (
           <>
-            <FileText size={14} aria-hidden="true" className="maka-composer-mention-icon" />
+            <FileText size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
             <span className="maka-composer-mention-text">
               <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
               <span className="maka-composer-mention-secondary">{item.id}</span>
@@ -814,7 +815,7 @@ export const Composer = forwardRef<
               <>
                 {Icon ? (
                   <Icon
-                    size={14}
+                    size={ICON_SIZE.control}
                     aria-hidden="true"
                     className="maka-composer-mention-icon"
                   />
@@ -831,7 +832,7 @@ export const Composer = forwardRef<
           const { skill } = suggestion;
           return (
             <>
-              <Sparkles size={14} aria-hidden="true" className="maka-composer-mention-icon" />
+              <Sparkles size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
               <span className="maka-composer-mention-text">
                 <span className="maka-composer-mention-name">{skill.name}</span>
                 <span className="maka-composer-mention-secondary">{skill.description}</span>
@@ -1258,7 +1259,7 @@ export const Composer = forwardRef<
     {
       id: 'plan',
       active: props.planModeActive === true && props.onPlanModeChange !== undefined,
-      icon: <ListTodo size={15} aria-hidden="true" />,
+      icon: <ListTodo size={ICON_SIZE.control} aria-hidden="true" />,
       label: copy.planModeLabel,
       onTitle: copy.planModeOnTitle,
       isDisabled:
@@ -1271,7 +1272,7 @@ export const Composer = forwardRef<
     {
       id: 'swarm',
       active: props.swarmModeActive === true && props.onSwarmModeChange !== undefined,
-      icon: <Network size={15} aria-hidden="true" />,
+      icon: <Network size={ICON_SIZE.control} aria-hidden="true" />,
       label: copy.swarmModeLabel,
       onTitle: copy.swarmModeOnTitle,
       isDisabled:
@@ -1284,7 +1285,7 @@ export const Composer = forwardRef<
     {
       id: 'graph',
       active: props.graphModeActive === true && props.onGraphModeChange !== undefined,
-      icon: <Workflow size={15} aria-hidden="true" />,
+      icon: <Workflow size={ICON_SIZE.control} aria-hidden="true" />,
       label: copy.graphModeLabel,
       onTitle: copy.graphModeOnTitle,
       isDisabled:
@@ -1324,7 +1325,7 @@ export const Composer = forwardRef<
       )}
       {!props.hidden && props.revisionNotice && (
         <div className="maka-composer-revision-notice" role="status" data-revision-notice="true">
-          <Pencil size={13} aria-hidden="true" />
+          <Pencil size={ICON_SIZE.meta} aria-hidden="true" />
           <span className="maka-composer-revision-notice-text">
             {props.revisionNotice.title}
             {props.revisionNotice.detail ? <span className="maka-composer-revision-notice-detail">{props.revisionNotice.detail}</span> : null}
@@ -1524,7 +1525,7 @@ export const Composer = forwardRef<
                     className="maka-composer-quiet-menu"
                     button={{
                       label: copy.addContext,
-                      icon: <Plus size={15} aria-hidden="true" />,
+                      icon: <Plus size={ICON_SIZE.control} aria-hidden="true" />,
                       isIconOnly: true,
                       variant: 'ghost',
                       size: 'sm',
@@ -1535,7 +1536,7 @@ export const Composer = forwardRef<
                     {props.onPickAttachments ? (
                       <DropdownMenuItem
                         label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory}
-                        icon={<Upload size={15} aria-hidden="true" />}
+                        icon={<Upload size={ICON_SIZE.control} aria-hidden="true" />}
                         isDisabled={props.disabled || props.streaming === true || importActionBusy}
                         onClick={() => {
                           void runImportAction('pick', props.onPickAttachments);
@@ -1545,7 +1546,7 @@ export const Composer = forwardRef<
                     {props.mentionSkills ? (
                       <DropdownMenuItem
                         label={copy.chooseSkill}
-                        icon={<Sparkles size={15} aria-hidden="true" />}
+                        icon={<Sparkles size={ICON_SIZE.control} aria-hidden="true" />}
                         // Nothing to choose from means nothing to open. The
                         // entry types `/` into the draft, so an enabled item
                         // with an empty catalog spends the user's click writing
@@ -1562,7 +1563,7 @@ export const Composer = forwardRef<
                     {props.onPlanModeChange ? (
                       <DropdownMenuCheckboxItem
                         label={copy.planModeLabel}
-                        icon={<ListTodo size={15} aria-hidden="true" />}
+                        icon={<ListTodo size={ICON_SIZE.control} aria-hidden="true" />}
                         value={props.planModeActive === true}
                         isDisabled={
                           props.disabled
@@ -1579,7 +1580,7 @@ export const Composer = forwardRef<
                     {props.onSwarmModeChange ? (
                       <DropdownMenuCheckboxItem
                         label={copy.swarmModeLabel}
-                        icon={<Network size={15} aria-hidden="true" />}
+                        icon={<Network size={ICON_SIZE.control} aria-hidden="true" />}
                         value={props.swarmModeActive === true}
                         isDisabled={
                           props.disabled
@@ -1596,7 +1597,7 @@ export const Composer = forwardRef<
                     {props.onGraphModeChange ? (
                       <DropdownMenuCheckboxItem
                         label={copy.graphModeLabel}
-                        icon={<Workflow size={15} aria-hidden="true" />}
+                        icon={<Workflow size={ICON_SIZE.control} aria-hidden="true" />}
                         value={props.graphModeActive === true}
                         isDisabled={
                           props.disabled
@@ -1747,7 +1748,7 @@ export const Composer = forwardRef<
                   if (props.stopPending) return;
                   void props.onStop();
                 }}
-                icon={<Square size={14} aria-hidden="true" />}
+                icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
               />
               <IconButton
                 variant="primary"
@@ -1757,7 +1758,7 @@ export const Composer = forwardRef<
                 aria-busy={sendPending ? 'true' : undefined}
                 data-pending={sendPending ? 'true' : undefined}
                 tooltip={copy.steerLabel}
-                icon={<ArrowUp size={16} aria-hidden="true" />}
+                icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
               />
             </div>
           ) : props.streaming ? (
@@ -1781,7 +1782,7 @@ export const Composer = forwardRef<
               aria-busy={sendPending ? 'true' : undefined}
               data-pending={sendPending ? 'true' : undefined}
               tooltip={sendTitle}
-              icon={<ArrowUp size={16} aria-hidden="true" />}
+              icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
           )}
         />

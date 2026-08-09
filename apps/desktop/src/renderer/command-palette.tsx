@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ICON_SIZE,
   ChevronRight,
   CornerDownLeft,
 } from '@maka/ui/icons';
@@ -168,17 +169,17 @@ export function CommandPalette(props: {
           return (
             <>
               <span className="maka-palette-icon" aria-hidden="true">
-                <command.Icon size={15} />
+                <command.Icon size={ICON_SIZE.chrome} />
               </span>
               <span className="maka-palette-label">{command.label}</span>
               {command.hint ? (
                 <span className="maka-palette-hint">
                   {command.hint}
-                  <ChevronRight size={12} aria-hidden="true" />
+                  <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />
                 </span>
               ) : (
                 <span className="maka-palette-hint maka-palette-cursor" aria-hidden="true">
-                  <CornerDownLeft size={12} />
+                  <CornerDownLeft size={ICON_SIZE.meta} />
                 </span>
               )}
             </>

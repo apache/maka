@@ -47,7 +47,7 @@
 import type { ProjectRecord } from '@maka/core';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { useMemo } from 'react';
-import { AlertTriangle, Check, FolderOpen, Plus, X } from './icons.js';
+import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Plus, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -84,7 +84,7 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
       className="maka-composer-quiet-menu"
       button={{
         label: wp.label ?? copy.choose,
-        icon: <FolderOpen size={13} aria-hidden="true" />,
+        icon: <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />,
         variant: 'ghost',
         size: 'sm',
         isDisabled: locked,
@@ -110,9 +110,9 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
                 key={project.id}
                 icon={
                   missing ? (
-                    <AlertTriangle size={13} aria-hidden="true" />
+                    <AlertTriangle size={ICON_SIZE.meta} aria-hidden="true" />
                   ) : (
-                    <FolderOpen size={13} aria-hidden="true" />
+                    <FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />
                   )
                 }
                 label={project.name}
@@ -124,7 +124,7 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
                   missing ? (
                     <span className="maka-workspace-picker-status">{copy.relink}</span>
                   ) : project.id === wp.selectedProjectId ? (
-                    <Check size={14} aria-hidden="true" />
+                    <Check size={ICON_SIZE.control} aria-hidden="true" />
                   ) : undefined
                 }
                 isDisabled={locked}
@@ -144,7 +144,7 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
           project is a deliberate way to work, not a missing setting. */}
       <div role="group">
         <DropdownMenuItem
-          icon={<Plus size={13} aria-hidden="true" />}
+          icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
           label={copy.addProject}
           isDisabled={locked}
           onClick={() => {
@@ -152,9 +152,9 @@ export function WorkspacePicker(props: { workspacePicker: WorkspacePickerModel }
           }}
         />
         <DropdownMenuItem
-          icon={<X size={13} aria-hidden="true" />}
+          icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
           label={copy.noProject}
-          endContent={wp.selectedProjectId === null ? <Check size={14} aria-hidden="true" /> : undefined}
+          endContent={wp.selectedProjectId === null ? <Check size={ICON_SIZE.control} aria-hidden="true" /> : undefined}
           isDisabled={locked}
           onClick={() => {
             wp.onSelectNoProject();
