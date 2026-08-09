@@ -3,6 +3,7 @@ import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import {
   deriveTurnRecords,
   SIDE_CONVERSATION_SESSION_LABEL,
+  SKILL_INVOCATION_TOKEN_SOURCE,
   type ActiveInteractionRequestEvent,
   type AttachmentRef,
   type PermissionMode,
@@ -197,6 +198,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       // through `turn.start`.
       const messageContentCapable =
         command.text.trim().length > 0 &&
+        !new RegExp(SKILL_INVOCATION_TOKEN_SOURCE).test(command.text) &&
         (command.skillIds?.length ?? 0) === 0 &&
         command.turnOrchestration === undefined;
       if (messageContentCapable) {

@@ -378,6 +378,31 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           ownTurnIdsRef.current.add(turnId);
           setOwnTurnTick((tick) => tick + 1);
         },
+        onSendAccepted: (accepted) => {
+          if (accepted.disposition === 'turn_started') {
+            // `turn.message.submit` generates the Turn id on the Host. Replace
+            // the renderer's pre-send arm everywhere that gates event routing
+            // or hides inherited parent turns from this side transcript.
+            activeTurnIdRef.current = accepted.turnId;
+            ownTurnIdsRef.current.delete(turnId);
+            ownTurnIdsRef.current.add(accepted.turnId);
+            setLiveTurn((current) =>
+              current ? { ...current, turnId: accepted.turnId } : armLiveTurn(accepted.turnId),
+            );
+            setOwnTurnTick((tick) => tick + 1);
+            return;
+          }
+
+          // A cross-client race can make an otherwise idle companion send join
+          // a Turn that another client started. The message is accepted, but no
+          // new Turn id exists for this local optimistic arm.
+          activeTurnIdRef.current = null;
+          turnInFlightRef.current = false;
+          ownTurnIdsRef.current.delete(turnId);
+          setTurnInFlight(false);
+          setLiveTurn(undefined);
+          setOwnTurnTick((tick) => tick + 1);
+        },
         onQuotesConsumed: () => onQuotesConsumed(quoteSnapshot),
       });
       if (result.status === 'sent') {
@@ -413,6 +438,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         turnInFlightRef.current = false;
         setTurnInFlight(false);
         setLiveTurn(undefined);
+        ownTurnIdsRef.current.delete(turnId);
+        setOwnTurnTick((tick) => tick + 1);
       }
       // 'disposed' → the panel unmounted mid-create; nothing to update.
       turnInFlightRef.current = false;

@@ -26,9 +26,11 @@ import {
 } from './session-copy-attempt.js';
 import { sessionEventErrorMessage } from './model-connection-errors.js';
 
-/** `sessions.send` resolves (does not throw) with this shape when the run was
- *  not actually started — e.g. an unresolved `/skill:...` invocation. */
-type CompanionSendResult = { ok: true } | { ok: false; reason?: string };
+/** The send subset the companion consumes from the shared bridge contract. */
+type CompanionSendResult =
+  | { ok: true; disposition: 'turn_started'; turnId: string }
+  | { ok: true; disposition: 'steering' | 'followup' }
+  | { ok: false; reason?: string };
 
 /**
  * The subset of the sessions bridge the quote companion drives. Extracted so the
@@ -305,6 +307,10 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
   onBeforeSend: (forkId: string) => void;
+  /** Fired after the Host accepts the message, before staged input is consumed.
+   *  `turn_started` carries the Host-authoritative Turn identity; queued
+   *  dispositions carry no Turn id and must retire the optimistic local arm. */
+  onSendAccepted: (result: Extract<CompanionSendResult, { ok: true }>) => void;
   /** Fired ONLY after `send` is accepted, so a failed send keeps the staged
    *  quotes (and draft) in place for a retry. */
   onQuotesConsumed: () => void;
@@ -328,7 +334,7 @@ export async function performCompanionTurn(
   }
 
   deps.onBeforeSend(forkId);
-  let result: { ok: true } | { ok: false; reason?: string };
+  let result: CompanionSendResult;
   try {
     result = await deps.api.send(forkId, {
       type: 'send',
@@ -346,6 +352,7 @@ export async function performCompanionTurn(
   if (!result.ok) {
     return { status: 'error', code: 'send_rejected' };
   }
+  deps.onSendAccepted(result);
   deps.onQuotesConsumed();
   return { status: 'sent', forkId };
 }

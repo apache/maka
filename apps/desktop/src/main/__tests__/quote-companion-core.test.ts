@@ -52,7 +52,10 @@ interface FakeControl {
   cleanupThrows?: boolean;
   abandonThrows?: boolean;
   sendThrows?: boolean;
-  sendResult?: { ok: true } | { ok: false; reason?: string };
+  sendResult?:
+    | { ok: true; disposition: 'turn_started'; turnId: string }
+    | { ok: true; disposition: 'steering' | 'followup' }
+    | { ok: false; reason?: string };
   /** Runs right after the fork is created (e.g. to flip `disposed`). */
   afterCreate?: () => void;
 }
@@ -111,7 +114,11 @@ function makeApi(control: FakeControl = {}) {
     send: async (id, cmd) => {
       calls.sent.push({ id, cmd });
       if (control.sendThrows) throw new Error('send failed');
-      return control.sendResult ?? { ok: true };
+      return control.sendResult ?? {
+        ok: true,
+        disposition: 'turn_started',
+        turnId: 'host-turn-1',
+      };
     },
   };
   return { api, calls };
@@ -124,6 +131,7 @@ function recorder() {
     onForkCreated: (session: SessionSummary) => events.push(`created:${session.id}`),
     onForkCommitted: (session: SessionSummary) => events.push(`committed:${session.id}`),
     onBeforeSend: (forkId: string) => events.push(`beforeSend:${forkId}`),
+    onSendAccepted: () => {},
     onQuotesConsumed: () => events.push('consumed'),
   };
 }
@@ -307,6 +315,7 @@ describe('performCompanionTurn', () => {
       onForkCreated: (session) => events.push(`created:${session.id}`),
       onForkCommitted: (session) => events.push(`committed:${session.id}`),
       onBeforeSend: () => events.push('send-started'),
+      onSendAccepted: () => {},
       onQuotesConsumed: () => {},
     });
     assert.equal(result.status, 'sent');
@@ -332,6 +341,41 @@ describe('performCompanionTurn', () => {
     });
     assert.equal(result.status, 'sent');
     assert.deepEqual(calls.sent[0].cmd.attachmentItems, attachmentItems);
+  });
+
+  it('reports the Host-authoritative turn id before consuming staged input', async () => {
+    const { api } = makeApi({
+      sendResult: {
+        ok: true,
+        disposition: 'turn_started',
+        turnId: 'host-authoritative-turn',
+      },
+    });
+    const events: string[] = [];
+
+    const result = await performCompanionTurn({
+      api,
+      isDisposed: () => false,
+      ...base,
+      existingForkId: 'fork-existing',
+      onForkCreated: () => {},
+      onForkCommitted: () => {},
+      onBeforeSend: () => events.push('before-send'),
+      onSendAccepted: (accepted) =>
+        events.push(
+          accepted.disposition === 'turn_started'
+            ? `accepted:${accepted.turnId}`
+            : `accepted:${accepted.disposition}`,
+        ),
+      onQuotesConsumed: () => events.push('consumed'),
+    });
+
+    assert.deepEqual(result, { status: 'sent', forkId: 'fork-existing' });
+    assert.deepEqual(events, [
+      'before-send',
+      'accepted:host-authoritative-turn',
+      'consumed',
+    ]);
   });
 
   it('structures listTurns rejection and never creates or sends', async () => {

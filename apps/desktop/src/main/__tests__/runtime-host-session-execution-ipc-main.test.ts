@@ -533,6 +533,60 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
   });
 });
 
+test("routes a Skill token in composer text through Turn admission", async () => {
+  const starts: unknown[] = [];
+  const submits: unknown[] = [];
+  const skillInvocation = {
+    loaded: [],
+    failed: [{ request: "missing", reason: "not_found" as const }],
+    receipts: [],
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "turn_started", turnId: "wrong-path" };
+        },
+        startTurn: async (input) => {
+          starts.push(input);
+          return { kind: "blocked", skillInvocation };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "turn-skill-token",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "/skill:missing run it",
+  });
+
+  assert.deepEqual(submits, []);
+  assert.deepEqual(starts, [
+    {
+      sessionId: "session-1",
+      turnId: "turn-skill-token",
+      content: { text: "/skill:missing run it", inlineReferences: [] },
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: false,
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation,
+  });
+});
+
 test("routes a plain-text send through turn.message.submit and surfaces the Host's steering disposition", async () => {
   const submits: unknown[] = [];
   const changes: unknown[] = [];
