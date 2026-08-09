@@ -3,6 +3,7 @@ import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
 
 import {
   Button,
+  EmptyState,
   FormLayout,
   MoreMenu,
   RelativeTime,
@@ -12,6 +13,7 @@ import {
   TextInput,
   useUiLocale,
 } from '@maka/ui';
+import { Brain, Search } from '@maka/ui/icons';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { SettingsActions, SettingsField, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
@@ -244,10 +246,22 @@ export function MemorySettingsPage(props: {
             </SettingsField>
             {normalizedMemoryEntryQuery && filteredEntryCount === 0 ? (
               <SettingsField>
-                <div className="settingsMemoryFilterEmpty" role="status">
-                  <strong>{copy.text.filterEmpty}</strong>
-                  <small>{copy.text.filterEmptyHelp}</small>
-                </div>
+                {/* Filter empty (DESIGN.md §10): a filter no-match always carries
+                    the clear action — the user is in a state they caused and must
+                    be able to exit. */}
+                <EmptyState
+                  icon={<Search />}
+                  title={copy.text.filterEmpty}
+                  description={copy.text.filterEmptyHelp}
+                  actions={(
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      label={copy.text.clear}
+                      onClick={() => setMemoryEntryQuery('')}
+                    />
+                  )}
+                />
               </SettingsField>
             ) : (
               <SettingsField>
@@ -283,10 +297,14 @@ export function MemorySettingsPage(props: {
           </>
         ) : !memoryEntryPreviewBlockedReason ? (
           <SettingsField>
-            <div className="settingsMemoryListEmpty" role="status">
-              <strong>{copy.text.waitingEntry}</strong>
-              <small>{copy.text.waitingEntryHelp}</small>
-            </div>
+            {/* Panel empty (DESIGN.md §10 tier 2): the description points at the
+                existing add flows; a duplicate action button here would be a
+                second path to the same affordance. */}
+            <EmptyState
+              icon={<Brain />}
+              title={copy.text.waitingEntry}
+              description={copy.text.waitingEntryHelp}
+            />
           </SettingsField>
         ) : null}
       </SettingsSection>
