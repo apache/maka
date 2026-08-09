@@ -31,6 +31,7 @@ import {
   ListItem,
   SegmentedControl,
   SegmentedControlItem,
+  Skeleton,
   StackItem,
   StatusDot,
   Switch,
@@ -462,7 +463,22 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       </p>
       {searchSummary}
       {busy === 'load' ? (
-        <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
+        /* Loading (DESIGN.md §10): the installed list's structure is predictable,
+           so it loads as row-shaped skeletons in the rows' own geometry — three
+           rows, this surface's typical ready count. Skeleton's radius scale has
+           no 6px step, so the tile takes the nearest one (8px) to the real
+           tile's control radius. */
+        <div className="maka-module-list-skeleton" role="status" aria-busy="true" aria-label={copy.page.loading}>
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="maka-module-list-skeleton-row" aria-hidden="true">
+              <Skeleton width={28} height={28} radius={2} index={index} />
+              <div className="maka-module-list-skeleton-lines">
+                <Skeleton width="32%" height={12} radius="rounded" index={index} />
+                <Skeleton width="68%" height={10} radius="rounded" index={index} />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : entries.length === 0 ? (
         <EmptyState
           icon={<Plug />}

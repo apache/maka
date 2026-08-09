@@ -206,3 +206,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Module-list loading skeleton (DESIGN.md §10): rows in the ready rows' own
+   geometry — 28px tile column + title/secondary lines, 42px row height — so
+   the load → ready switch causes zero layout shift. Shared by both module
+   pages; the row metrics mirror the market/installed rows above. */
+.maka-module-list-skeleton {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-1-5);
+}
+
+.maka-module-list-skeleton-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 42px;
+  padding: var(--space-1-5) var(--space-2);
+}
+
+.maka-module-list-skeleton-lines {
+  display: grid;
+  gap: var(--space-1);
+}

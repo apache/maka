@@ -94,15 +94,6 @@
   white-space: pre-wrap;
 }
 
-.maka-mcp-loading {
-  min-height: 240px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  padding: var(--space-8);
-  color: var(--muted-foreground);
-  text-align: center;
-}
 
 .maka-mcp-editor-choice {
   padding: var(--space-3) var(--space-4);
