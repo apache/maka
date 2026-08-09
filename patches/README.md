@@ -18,10 +18,15 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.3.0`
 
-Blank UA-CH `navigator.userAgentData.platform` must not mean "not Apple".
+Three published component seams drop host-owned state or semantics:
+
+- `ChatLayout` needs a conversation identity that resets scroll/unread state
+  without remounting its composer slot and discarding the live draft.
+- `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
+- `List` must forward its published `aria-label` to the rendered list element.
+
+Blank UA-CH `navigator.userAgentData.platform` must also not mean "not Apple".
 Electron builds with a rewritten identity ship `platform: ''`, which made every
 `mod` hotkey listen for Ctrl and every `Kbd` draw Ctrl on macOS.
 
-Touches only `Kbd` and `useHotkeys` platform probes.
-
-Delete when Astryx treats a blank UA-CH platform as absent.
+Delete each hunk when the corresponding behavior ships in Astryx.

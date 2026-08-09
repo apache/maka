@@ -177,7 +177,7 @@ export function QuoteCompanionPanel(props: {
       data-preparing={companion.preparing || undefined}
     >
       <ChatSurfaceLayout
-        key={companion.companionSession?.id ?? props.sourceSession?.id ?? 'companion'}
+        conversationKey={companion.companionSession?.id ?? props.sourceSession?.id}
         composer={
           <>
             {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}

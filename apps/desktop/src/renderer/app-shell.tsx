@@ -2685,10 +2685,9 @@ function AppShellContent({
                 />
               ) : null}
               <ChatSurfaceLayout
-                // Stay mounted across session switches. Remounting would drop the
-                // Composer draft Map (drafts are not hosted outside this tree).
-                // Stock ChatLayout has no conversationKey; accept that scroll /
-                // new-message state is owned by content swaps, not a hard remount.
+                // Reset conversation-owned scroll state without remounting the
+                // composer: its contenteditable DOM carries the live draft.
+                conversationKey={activeId}
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>
