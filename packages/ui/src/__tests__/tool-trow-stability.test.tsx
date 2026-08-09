@@ -92,11 +92,14 @@ describe('linked subagent tool rows', () => {
     onOpenLinkedSession?: (sessionId: string) => void,
   ) => renderToStaticMarkup(createElement(ToolTrow, { items: [item], onOpenLinkedSession }));
 
-  it('renders agent_spawn with an Astryx open-session control when linked', () => {
+  it('renders a linked agent as one compact clickable list row', () => {
     const html = renderTool(subagent('child-1'), () => undefined);
 
     assert.match(html, />Local Read</);
-    assert.match(html, /打开子代理会话「Local Read」/);
+    assert.match(html, /class="astryx-list\b/);
+    assert.equal(html.match(/<button\b/g)?.length, 1);
+    assert.doesNotMatch(html, /data-variant="secondary"/);
+    assert.doesNotMatch(html, />打开子代理会话「Local Read」</);
 
     assert.doesNotMatch(renderTool(subagent(), () => undefined), /打开子代理会话/);
     assert.doesNotMatch(renderTool(subagent('child-1')), /打开子代理会话/);
@@ -132,7 +135,7 @@ describe('linked subagent tool rows', () => {
     assert.match(withArtifacts, />已取消 · 只读<\/span>/);
   });
 
-  it('renders each swarm child as a native row and activates only linked sessions', () => {
+  it('links only swarm children that have a session', () => {
     const html = renderTool({
       toolUseId: 'swarm-1',
       toolName: 'agent_swarm',
@@ -173,7 +176,10 @@ describe('linked subagent tool rows', () => {
 
     assert.match(html, />Reader</);
     assert.match(html, />Worker</);
-    assert.equal(html.match(/>打开子代理会话/g)?.length, 1);
+    assert.equal(html.match(/<li\b/g)?.length, 2);
+    assert.equal(html.match(/<button\b/g)?.length, 1);
+    assert.doesNotMatch(html, /data-variant="secondary"/);
+    assert.doesNotMatch(html, />打开子代理会话/);
     assert.match(html, /startup_failed/);
     assert.match(html, />失败</);
     assert.match(html, />已完成 · 只读<\/span>/);

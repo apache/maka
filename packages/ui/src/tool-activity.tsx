@@ -8,6 +8,7 @@ import {
 import {
   ICON_SIZE,
   Check,
+  ChevronRight,
   Clock,
   Copy,
   Repeat,
@@ -34,7 +35,12 @@ import {
   Button as UiButton,
   Banner,
   ChatToolCalls,
+  List,
+  ListItem,
+  StatusDot,
+  Text,
   type ChatToolCallItem,
+  VisuallyHidden,
 } from '@astryxdesign/core';
 import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
@@ -55,6 +61,7 @@ import {
   ToolResultPreview,
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
+import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
 /** Friendly card for a `load_tools` result; falls back to JSON on unexpected shapes. */
 function LoadToolResultPreview(props: { args: unknown; value: unknown }) {
@@ -304,20 +311,118 @@ export function ToolTrow({
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
-  const calls = items.flatMap((item) => linkedAgentCalls(item, locale)
-    ?? [standardToolCall(item, locale)]);
-  const openers = items.flatMap((item) => linkedSessionOpeners(item, locale, onOpenLinkedSession));
+  const segments = toolTrowSegments(items, locale);
 
-  // Stock ChatToolCalls only. Linked child sessions open via Astryx Button
-  // beside the row — no vendor onActivate patch.
+  // ChatToolCalls owns expandable tool evidence. Linked child sessions are
+  // navigation targets instead, so they render through Astryx's compact List:
+  // one native clickable row, with no parallel action button.
   return (
     <>
-      <ChatToolCalls
-        className="maka-tool-activity-card"
-        calls={calls}
-      />
-      {openers}
+      {segments.map((segment) => segment.kind === 'tools' ? (
+        <ChatToolCalls
+          key={segment.key}
+          className="maka-tool-activity-card"
+          calls={segment.calls}
+        />
+      ) : (
+        <LinkedAgentList
+          key={segment.key}
+          rows={segment.rows}
+          locale={locale}
+          onOpenLinkedSession={onOpenLinkedSession}
+        />
+      ))}
     </>
+  );
+}
+
+type LinkedAgentRow = {
+  key: string;
+  name: string;
+  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'];
+  readOnly: boolean;
+  target?: string;
+  duration?: string;
+  failureClass?: string;
+  childSessionId?: string;
+};
+
+type ToolTrowSegment =
+  | { kind: 'tools'; key: string; calls: ChatToolCallItem[] }
+  | { kind: 'agents'; key: string; rows: LinkedAgentRow[] };
+
+function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrowSegment[] {
+  const segments: ToolTrowSegment[] = [];
+  for (const item of items) {
+    const rows = linkedAgentRows(item, locale);
+    const previous = segments.at(-1);
+    if (rows) {
+      if (previous?.kind === 'agents') previous.rows.push(...rows);
+      else segments.push({ kind: 'agents', key: rows[0]!.key, rows });
+      continue;
+    }
+    const call = standardToolCall(item, locale);
+    if (previous?.kind === 'tools') previous.calls.push(call);
+    else segments.push({ kind: 'tools', key: item.toolUseId, calls: [call] });
+  }
+  return segments;
+}
+
+function LinkedAgentList(props: {
+  rows: LinkedAgentRow[];
+  locale: UiLocale;
+  onOpenLinkedSession?: (sessionId: string) => void;
+}) {
+  const copy = getToolActivityCopy(props.locale).agent;
+  return (
+    <List density="compact" className="maka-subagent-session-list">
+      {props.rows.map((row) => {
+        const childSessionId = row.childSessionId;
+        const open = childSessionId && props.onOpenLinkedSession
+          ? () => props.onOpenLinkedSession?.(childSessionId)
+          : undefined;
+        const status = copy.subagentStatus[row.status];
+        return (
+          <ListItem
+            key={row.key}
+            className="maka-subagent-session-row"
+            startContent={(
+              <StatusDot
+                variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
+                label={status}
+                isPulsing={row.status === 'running'}
+              />
+            )}
+            label={(
+              <span className="maka-subagent-session-label">
+                <Text type="label" maxLines={1} className="maka-subagent-session-name">
+                  {row.name}
+                </Text>
+                {row.target ? (
+                  <Text type="body" color="secondary" maxLines={1} className="maka-subagent-session-summary">
+                    {row.target}
+                  </Text>
+                ) : null}
+                {row.failureClass ? (
+                  <VisuallyHidden>Error: {row.failureClass}</VisuallyHidden>
+                ) : null}
+              </span>
+            )}
+            endContent={(
+              <span className="maka-subagent-session-end">
+                <Text type="supporting" color="secondary">
+                  {[subagentStats(row.status, row.readOnly, props.locale), row.duration]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
+                {open ? <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" /> : null}
+              </span>
+            )}
+            onClick={open}
+          />
+        );
+      })}
+    </List>
   );
 }
 
@@ -343,25 +448,24 @@ function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCal
   };
 }
 
-function linkedAgentCalls(
+function linkedAgentRows(
   item: ToolActivityItem,
   locale: UiLocale,
-): ChatToolCallItem[] | undefined {
+): LinkedAgentRow[] | undefined {
   const result = item.result;
   if (result?.kind === 'subagent') {
     const name = redactSecrets(result.agentName.trim()) || resolveToolDisplayName(item, locale);
     return [{
       key: item.toolUseId,
       name,
-      status: subagentToolStatus(result.status),
+      status: result.status,
+      readOnly: result.permissionMode === 'explore',
       target: item.intent
         ? formatToolIntent(item.intent)
         : boundedAgentSummary(result.summary),
       duration: formatDuration(item.durationMs ?? result.durationMs) ?? undefined,
-      errorMessage: result.failureClass
-        ? redactSecrets(result.failureClass)
-        : toolCallErrorMessage(item, locale),
-      stats: subagentStats(result.status, result.permissionMode === 'explore', locale),
+      failureClass: result.failureClass ? redactSecrets(result.failureClass) : undefined,
+      childSessionId: result.childSessionId,
     }];
   }
   if (result?.kind !== 'agent_swarm') return undefined;
@@ -371,22 +475,24 @@ function linkedAgentCalls(
     return {
       key: `${item.toolUseId}:${child.itemId}`,
       name,
-      status: child.status === 'completed' ? 'complete' : 'error',
+      status: child.status,
+      readOnly: child.profile === 'local_read',
       target: boundedAgentSummary(child.summary),
       duration: formatDuration(child.durationMs) ?? undefined,
-      errorMessage: child.failureClass ? redactSecrets(child.failureClass) : undefined,
-      stats: subagentStats(child.status, child.profile === 'local_read', locale),
-    } satisfies ChatToolCallItem;
+      failureClass: child.failureClass ? redactSecrets(child.failureClass) : undefined,
+      childSessionId: child.childSessionId,
+    } satisfies LinkedAgentRow;
   });
 }
 
-function subagentToolStatus(
+function linkedAgentStatusSemantic(
   status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
-): NonNullable<ChatToolCallItem['status']> {
-  if (status === 'completed') return 'complete';
-  if (status === 'running') return 'running';
-  if (status === 'waiting_for_user') return 'pending';
-  return 'error';
+): StatusSemantic {
+  if (status === 'completed') return 'success';
+  if (status === 'running') return 'active';
+  if (status === 'waiting_for_user') return 'attention';
+  if (status === 'failed') return 'error';
+  return 'neutral';
 }
 
 function subagentStats(
@@ -398,43 +504,6 @@ function subagentStats(
   return [copy.subagentStatus[status], readOnly ? copy.readOnly : undefined]
     .filter(Boolean)
     .join(' · ');
-}
-
-function linkedSessionOpeners(
-  item: ToolActivityItem,
-  locale: UiLocale,
-  onOpenLinkedSession: ((sessionId: string) => void) | undefined,
-) {
-  if (!onOpenLinkedSession) return [];
-  const result = item.result;
-  if (result?.kind === 'subagent') {
-    if (!result.childSessionId) return [];
-    const name = redactSecrets(result.agentName.trim()) || resolveToolDisplayName(item, locale);
-    return [linkedSessionButton(result.childSessionId, name, locale, onOpenLinkedSession)];
-  }
-  if (result?.kind !== 'agent_swarm') return [];
-  return result.items.flatMap((child) => {
-    if (!child.childSessionId) return [];
-    const name = redactSecrets((child.agentName || child.itemId).trim()) || child.profile;
-    return [linkedSessionButton(child.childSessionId, name, locale, onOpenLinkedSession)];
-  });
-}
-
-function linkedSessionButton(
-  childSessionId: string,
-  name: string,
-  locale: UiLocale,
-  onOpenLinkedSession: (sessionId: string) => void,
-) {
-  const label = getToolActivityCopy(locale).agent.openSessionAriaLabel(name);
-  return (
-    <UiButton
-      key={childSessionId}
-      variant="secondary"
-      label={label}
-      onClick={() => onOpenLinkedSession(childSessionId)}
-    />
-  );
 }
 
 function boundedAgentSummary(summary: string): string | undefined {
