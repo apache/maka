@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { ChevronRight, MessageSquare } from '@maka/ui/icons';
+import { ChevronRight } from '@maka/ui/icons';
 import type { BotChannelSettings, BotProvider } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { BOT_PROVIDERS } from '@maka/core/settings';
@@ -74,12 +74,9 @@ export function BotChatOverview(props: {
       )}
       <SettingsSection titleId="remote-access-active-heading" title={copy.active} description={copy.sortHint}>
           {activeChannels.length === 0 ? (
-            <EmptyState
-              isCompact
-              icon={<MessageSquare />}
-              title={copy.empty}
-              description={copy.emptyHelp}
-            />
+            // Section-local absence (DESIGN.md §10 tier 1): no icon, no
+            // description — the catalog below is the way forward.
+            <EmptyState isCompact title={copy.empty} />
           ) : activeChannels.map((entry) => (
             <Item
               key={entry.provider}

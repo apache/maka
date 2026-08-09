@@ -275,11 +275,8 @@ export function ExternalSessionImportDialog(props: {
               )}
 
               {noSource && (
-                <EmptyState
-                  isCompact
-                  title={copy.unavailableTitle}
-                  description={copy.unavailableDescription}
-                />
+                /* Section-local absence (DESIGN.md §10 tier 1): title only. */
+                <EmptyState isCompact title={copy.unavailableTitle} />
               )}
 
               {catalogError && (
@@ -317,11 +314,8 @@ export function ExternalSessionImportDialog(props: {
               )}
 
               {catalogEmpty && (
-                <EmptyState
-                  isCompact
-                  title={copy.emptyTitle}
-                  description={copy.emptyDescription}
-                />
+                /* Section-local absence (DESIGN.md §10 tier 1): title only. */
+                <EmptyState isCompact title={copy.emptyTitle} />
               )}
 
               {catalog.sessions.length > 0 && (

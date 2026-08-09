@@ -16,7 +16,7 @@ import {
   type ProviderType,
 } from '@maka/core/provider-registry';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
-import { TextInput, useUiLocale } from '@maka/ui';
+import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
@@ -109,7 +109,20 @@ export function ProviderCatalogPage(props: {
         />
       )}
       {isEmpty ? (
-        <EmptyState isCompact title={copy.noMatch} />
+        // Filter empty (DESIGN.md §10 tier 1): a filter no-match always carries
+        // the clear action, on any tier — the user must be able to exit.
+        <EmptyState
+          isCompact
+          title={copy.noMatch}
+          actions={(
+            <Button
+              variant="ghost"
+              size="sm"
+              label={copy.clearSearch}
+              onClick={() => props.onFilterChange({ query: '', category: 'recommended' })}
+            />
+          )}
+        />
       ) : (
         <List hasDividers>
           {showsOAuth && oauth.cards.map((card) => (

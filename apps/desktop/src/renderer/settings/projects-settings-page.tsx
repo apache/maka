@@ -116,7 +116,7 @@ export function ProjectsSettingsPage(props: {
         }
       >
         {listed.length === 0 ? (
-          <EmptyState title={copy.emptyTitle} description={copy.emptyBody} />
+          <EmptyState icon={<FolderOpen />} title={copy.emptyTitle} description={copy.emptyBody} />
         ) : (
           // A project is an entity, not a preference, so it belongs in the
           // entity-list carrier the MCP and skills pages already use — real

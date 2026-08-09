@@ -41,7 +41,7 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { ChevronRight } from '@maka/ui/icons';
+import { ChevronRight, Workflow } from '@maka/ui/icons';
 import { getSubagentSettingsCopy } from '../locales/settings-subagents-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { useSettingsRouteFocus } from './settings-route-focus.js';
@@ -230,6 +230,7 @@ export function SubagentSettingsPage(props: {
         {presets.length === 0 ? (
           // The empty state owns the only call to action on an empty page.
           <EmptyState
+            icon={<Workflow />}
             title={copy.section.emptyTitle}
             description={copy.section.emptyDescription}
             actions={(

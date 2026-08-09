@@ -14,6 +14,8 @@ export interface DailyReviewCopy {
     defaultModel: string;
     opening: string;
     noContent: string;
+    /** The panel-empty (tier 2) sentence under `noContent`. */
+    noContentHelp: string;
   };
   date: {
     today: string;
@@ -93,6 +95,7 @@ const DAILY_REVIEW_COPY = {
       defaultModel: '默认对话模型',
       opening: '正在打开这份报告…',
       noContent: '这份报告没有生成正文内容。',
+      noContentHelp: '这一天没有归档内容。',
     },
     date: {
       today: '今天', yesterday: '昨天', daysAgo: (count) => `${count} 天前`, recent7Days: '最近 7 天', recent30Days: '最近 30 天', shiftedRange: (range, days) => `${range}（往前 ${days} 天）`,
@@ -127,6 +130,7 @@ const DAILY_REVIEW_COPY = {
       defaultModel: 'Default conversation model',
       opening: 'Opening this report…',
       noContent: 'This report has no generated content.',
+      noContentHelp: 'Nothing archived for this day.',
     },
     date: {
       today: 'Today', yesterday: 'Yesterday', daysAgo: (count) => `${count} days ago`, recent7Days: 'Last 7 days', recent30Days: 'Last 30 days', shiftedRange: (range, days) => `${range} (${days} days earlier)`,

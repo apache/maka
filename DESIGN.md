@@ -203,6 +203,7 @@ Every empty state is Astryx `EmptyState`; the tiers are parameter combinations, 
 - **No illustrations.** The `icon` slot takes an icon glyph only — never an illustration, large graphic, or brand mark.
 - **Search/filter empties always carry a clear action** (`ghost` + `sm`), on any tier. This is usability, not decoration: the user is in a state they caused themselves and must be able to exit. The canonical example is the MCP market's no-match state. Ghost/small because clearing is an exit, not the page's main action.
 - **Titles are noun phrases without a period**; `description` holds the full sentence and may echo the user's query. `headingLevel` follows the document-outline ladder (§9-adjacent; ratified in the typography chapter's hierarchy), never a pinned number.
+- The chat first-run hero is the sanctioned exception: a prompt-suggestion hero exceeds tier 3's single action by design and owns its layout; nothing else does.
 
 ### Loading: reserve the ready geometry
 

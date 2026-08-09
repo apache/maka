@@ -201,9 +201,11 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           data-empty={model.empty || undefined}
         >
           {model.empty && !snapshot.loading && !snapshot.error && (
+            /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty,
+               so it carries icon and description, not the compact form. */
             <EmptyState
-              isCompact
               title={copy.empty}
+              description={copy.emptyHelp}
               icon={<Activity size={20} aria-hidden="true" />}
             />
           )}
@@ -252,9 +254,20 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   message changes as the reader types. */}
               <div role="status" aria-live="polite" className="maka-inspector-status">
                 {model.filtered && model.turns.length === 0 && (
+                  /* Filter empty (DESIGN.md §10 tier 1): a filter no-match
+                     always carries the clear action — the reader caused this
+                     state and must be able to exit it. */
                   <EmptyState
                     isCompact
                     title={copy.noMatches}
+                    actions={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        label={copy.clearFilter}
+                        onClick={() => setFilter({ ...filter, query: '', failedOnly: false })}
+                      />
+                    }
                     data-maka-contract="session-inspector-no-matches"
                   />
                 )}

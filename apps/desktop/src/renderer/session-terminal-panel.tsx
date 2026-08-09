@@ -188,10 +188,12 @@ export function SessionTerminalPanel(props: {
 
   if (!props.terminalRef) {
     return (
+      /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
+         carries icon and description, not the compact form. */
       <EmptyState
-        isCompact
         icon={<TerminalIcon size={20} aria-hidden />}
         title={copy.empty}
+        description={copy.emptyHelp}
       />
     );
   }

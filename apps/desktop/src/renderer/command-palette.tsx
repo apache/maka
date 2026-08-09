@@ -151,11 +151,12 @@ export function CommandPalette(props: {
           />
         )}
         emptySearchText={(
+          /* Filter empty (DESIGN.md §10 tier 1): no clear action here — the
+             palette input itself is the exit from a no-match search. */
           <EmptyState
             role="presentation"
             className="maka-palette-empty"
             title={copy.emptyTitle}
-            description={copy.emptyDescription}
             isCompact
           />
         )}

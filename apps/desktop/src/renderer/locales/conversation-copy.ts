@@ -97,6 +97,8 @@ export interface DesktopConversationCopy {
   reviewPanel: {
     ariaLabel: string;
     empty: string;
+    /** The panel-empty (tier 2) sentence under `empty`. */
+    emptyHelp: string;
     sourceLabel: string;
     branchSource: string;
     unstagedSource: string;
@@ -129,6 +131,8 @@ export interface DesktopConversationCopy {
   terminalPanel: {
     ariaLabel: string;
     empty: string;
+    /** The panel-empty (tier 2) sentence under `empty`. */
+    emptyHelp: string;
     loadFailed: string;
     retry: string;
     refresh: string;
@@ -157,6 +161,8 @@ export interface DesktopConversationCopy {
     loadFailed: string;
     retry: string;
     empty: string;
+    /** The panel-empty (tier 2) sentence under `empty`. */
+    emptyHelp: string;
     costUnavailable: string;
     /** Labels for the two headline figures the trace always states. */
     totals: {
@@ -199,6 +205,8 @@ export interface DesktopConversationCopy {
     /** The failure count that doubles as the "only failures" toggle. */
     filterFailedOnly: (count: number) => string;
     noMatches: string;
+    /** The filter no-match's clear action. */
+    clearFilter: string;
     hiddenByFilter: (count: number) => string;
     /** Display name of one turn in the raw record: 第 N 轮 / Turn N. */
     turnLabel: (index: number) => string;
@@ -399,6 +407,7 @@ const COPY = {
     reviewPanel: {
       ariaLabel: '会话审阅',
       empty: '当前会话还没有文件差异',
+      emptyHelp: '这个会话还没有可回顾的更改。',
       sourceLabel: '审阅来源',
       branchSource: '分支',
       unstagedSource: '未暂存',
@@ -433,6 +442,7 @@ const COPY = {
     terminalPanel: {
       ariaLabel: '会话终端',
       empty: '当前会话还没有终端运行',
+      emptyHelp: '会话启动终端后会显示在这里。',
       loadFailed: '无法读取终端运行',
       retry: '重试',
       refresh: '刷新终端',
@@ -457,6 +467,7 @@ const COPY = {
       loadFailed: '追踪读取失败',
       retry: '重试',
       empty: '这个会话还没有可追踪的活动',
+      emptyHelp: '会话尚无活动记录。',
       costUnavailable: '费用未知',
       totals: {
         duration: '总耗时',
@@ -477,6 +488,7 @@ const COPY = {
       filterPlaceholder: '按工具、模型或轮次筛选',
       filterFailedOnly: (count) => `${count} 轮失败`,
       noMatches: '没有匹配的记录',
+      clearFilter: '清除筛选',
       hiddenByFilter: (count) => `已隐藏 ${count} 项`,
       turnLabel: (index) => `第 ${index} 轮`,
       overview: {
@@ -592,6 +604,7 @@ const COPY = {
     reviewPanel: {
       ariaLabel: 'Conversation review',
       empty: 'No file diffs in this conversation yet',
+      emptyHelp: 'No changes to review for this session yet.',
       sourceLabel: 'Review source',
       branchSource: 'Branch',
       unstagedSource: 'Unstaged',
@@ -627,6 +640,7 @@ const COPY = {
     terminalPanel: {
       ariaLabel: 'Conversation terminal',
       empty: 'No terminal runs in this conversation yet',
+      emptyHelp: "The session's terminal appears here once it starts.",
       loadFailed: 'Could not read terminal runs',
       retry: 'Retry',
       refresh: 'Refresh terminal',
@@ -651,6 +665,7 @@ const COPY = {
       loadFailed: 'Could not read the trace',
       retry: 'Retry',
       empty: 'Nothing to trace in this session yet',
+      emptyHelp: 'No activity recorded for this session yet.',
       costUnavailable: 'cost unknown',
       totals: {
         duration: 'Duration',
@@ -673,6 +688,7 @@ const COPY = {
       filterPlaceholder: 'Filter by tool, model or turn',
       filterFailedOnly: (count) => `${count} failed turn${count === 1 ? '' : 's'}`,
       noMatches: 'Nothing matches this filter',
+      clearFilter: 'Clear filters',
       hiddenByFilter: (count) => `${count} hidden by the filter`,
       turnLabel: (index) => `Turn ${index}`,
       overview: {

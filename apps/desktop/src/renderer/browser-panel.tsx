@@ -219,7 +219,6 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
             icon={<Globe aria-hidden="true" />}
             title={copy.title}
             description={copy.description}
-            isCompact
           />
         )}
       </div>

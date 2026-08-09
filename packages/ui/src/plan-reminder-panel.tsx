@@ -453,11 +453,13 @@ export function PlanReminderPanel(props: {
                 )}
               />
             ) : sortedReminders.length === 0 ? (
+              /* Filter empty (DESIGN.md §10): the clear action resets both
+                 dimensions the reader may have narrowed — query and state. */
               <EmptyState
                 icon={<Clock />}
                 title={normalizedListQuery ? copy.page.noSearchTitle : copy.page.noFilterTitle}
                 description={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
-                actions={<UiButton variant="ghost" label={copy.page.clearSearch} onClick={() => setListQuery('')} isDisabled={!normalizedListQuery} />}
+                actions={<UiButton variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => { setListQuery(''); setListFilter('all'); }} />}
               />
             ) : (
               /* Selectable, otherwise inert rows: every control that used to
@@ -533,7 +535,16 @@ export function PlanReminderPanel(props: {
         ) : (
           <div className="maka-module-page-panel">
             {visibleRunEntries.length === 0 ? (
-              <EmptyState icon={<Clock />} title={copy.page.noRunsTitle} description={copy.page.noRunsBody} />
+              /* A narrowed range that matches nothing carries the widen action
+                 (DESIGN.md §10) — the reader caused this state and must exit. */
+              <EmptyState
+                icon={<Clock />}
+                title={copy.page.noRunsTitle}
+                description={copy.page.noRunsBody}
+                actions={runRange !== 'all' ? (
+                  <UiButton variant="ghost" size="sm" label={copy.page.showAllTime} onClick={() => setRunRange('all')} />
+                ) : undefined}
+              />
             ) : (
               <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.runsAriaLabel}>
                 {visibleRunEntries.map(({ reminder, run }) => (

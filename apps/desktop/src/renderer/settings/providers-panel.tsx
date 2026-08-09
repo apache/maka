@@ -13,7 +13,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { ChevronRight } from '@maka/ui/icons';
+import { ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type LlmConnection,
   type ProviderType,
@@ -380,6 +380,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             />
           ) : connections.length === 0 ? (
             <EmptyState
+              icon={<Cpu />}
               title={copy.empty}
               description={copy.emptyHelp}
               actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}

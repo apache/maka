@@ -349,10 +349,12 @@ export function DailyReviewPanel(props: {
                 ))}
               </List>
             ) : (
+              /* Section-local absence (DESIGN.md §10 tier 1): the range
+                 stepper above is a scope control, not a filter, so this stays
+                 compact and actionless. */
               <EmptyState
-                icon={<CalendarDays />}
+                isCompact
                 title={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayTitle : copy.emptyOverview.rangeTitle(displayedRangeLabel)}
-                description={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayBody : copy.emptyOverview.rangeBody(displayedRangeLabel)}
               />
             )}
           </VStack>
@@ -447,7 +449,13 @@ function DailyReviewReport(props: {
           ))}
         </VStack>
       ) : (
-        <EmptyState title={copy.archive.noContent} />
+        /* Panel empty (DESIGN.md §10 tier 2): the whole report body is empty,
+           so it carries icon and description. */
+        <EmptyState
+          icon={<CalendarDays />}
+          title={copy.archive.noContent}
+          description={copy.archive.noContentHelp}
+        />
       )}
     </VStack>
   );

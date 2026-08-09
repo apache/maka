@@ -354,10 +354,15 @@ export function SkillsModuleMain(props: {
     <div className="maka-module-page-panel">
       {searchSummary}
       {allManagedSources.length === 0 ? (
+        /* With a query in play this is a search empty, so it carries the clear
+           action (DESIGN.md §10); without one it stays a plain panel empty. */
         <EmptyState
           icon={<BookOpen />}
           title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
           description={normalizedSkillQuery ? copy.market.emptySearchBody : copy.market.emptyBody}
+          actions={normalizedSkillQuery ? (
+            <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />
+          ) : undefined}
         />
       ) : marketSources.length === 0 ? (
         <EmptyState
@@ -496,9 +501,13 @@ export function SkillsModuleMain(props: {
           title={normalizedSkillQuery ? copy.installed.emptySearchTitle : copy.installed.emptyTitle}
           description={normalizedSkillQuery ? copy.installed.emptySearchBody : installedEmptyBody}
           actions={(
-            props.onRefreshSkills
-              ? <UiButton variant="ghost" label={pendingSkillAction === 'refresh' ? copy.installed.refreshPending : copy.installed.refresh} onClick={() => void runSkillAction('refresh', refreshSkillData)} isDisabled={skillActionBusy} />
-              : undefined
+            // A search that matched nothing exits through clear (DESIGN.md
+            // §10); only the true first-run empty offers the refresh.
+            normalizedSkillQuery
+              ? <UiButton variant="ghost" size="sm" label={copy.market.clearSearch} onClick={() => setSkillSearchQuery('')} />
+              : props.onRefreshSkills
+                ? <UiButton variant="ghost" size="sm" label={pendingSkillAction === 'refresh' ? copy.installed.refreshPending : copy.installed.refresh} onClick={() => void runSkillAction('refresh', refreshSkillData)} isDisabled={skillActionBusy} />
+                : undefined
           )}
         />
       ) : filteredSkills.length === 0 ? (

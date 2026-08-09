@@ -315,21 +315,19 @@ export function SessionReviewPanel(props: {
           }
         />
       ) : null}
-      {sourceError ? (
-        <EmptyState
-          isCompact
-          icon={<GitBranch size={20} aria-hidden />}
-          title={sourceError}
-        />
-      ) : null}
+      {/* A source that cannot be read is a failure, not an absence — it takes
+          the same Banner the load error above does, not an EmptyState. */}
+      {sourceError ? <Banner status="error" title={sourceError} /> : null}
       {gitSnapshot?.truncated ? (
         <Banner status="info" title={copy.truncated} />
       ) : null}
       {empty ? (
+        /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
+           carries icon and description, not the compact form. */
         <EmptyState
-          isCompact
           icon={<GitBranch size={20} aria-hidden />}
           title={copy.empty}
+          description={copy.emptyHelp}
         />
       ) : null}
       {source === 'last-turn' && lastTurnDiffs.length > 0 ? (

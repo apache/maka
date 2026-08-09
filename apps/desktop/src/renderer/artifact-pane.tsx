@@ -471,7 +471,6 @@ export function ArtifactPane(props: {
         ) : (
           <AstryxEmptyState
             className="maka-artifact-list-empty"
-            isCompact
             icon={<FileText aria-hidden="true" />}
             {...emptyStateCopy}
           />
