@@ -59,6 +59,13 @@ test('reports invalid source as a parse error', async () => {
   if (!result.ok) assert.equal(result.error.kind, 'parse_error');
 });
 
+test('reports a runtime SyntaxError as an execution error', async () => {
+  const result = await execute(`return JSON.parse('not json');`);
+
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.kind, 'execution_error');
+});
+
 test('runs nested tools concurrently inside one cell', async () => {
   const calls: Array<{ name: string; input: unknown }> = [];
   let active = 0;
@@ -98,12 +105,11 @@ test('runs nested tools concurrently inside one cell', async () => {
 
 test('does not expose Node capabilities to cell code', async () => {
   const result = await execute(`
-    let functionConstructor;
+    let functionConstructorBlocked = false;
     try {
       Function('return 1')();
-      functionConstructor = 'allowed';
-    } catch (error) {
-      functionConstructor = error.message;
+    } catch {
+      functionConstructorBlocked = true;
     }
     return {
       process: typeof globalThis.process,
@@ -111,7 +117,7 @@ test('does not expose Node capabilities to cell code', async () => {
       fetch: typeof globalThis.fetch,
       webAssembly: typeof globalThis.WebAssembly,
       eval: typeof globalThis.eval,
-      functionConstructor,
+      functionConstructorBlocked,
     };
   `);
 
@@ -123,7 +129,7 @@ test('does not expose Node capabilities to cell code', async () => {
     fetch: 'undefined',
     webAssembly: 'undefined',
     eval: 'undefined',
-    functionConstructor: 'Function constructor is not allowed',
+    functionConstructorBlocked: true,
   });
 });
 
@@ -297,10 +303,12 @@ test('enforces byte and bridge limits', async (t) => {
   });
 
   await t.test('tool concurrency', async () => {
+    let started = 0;
     const result = await execute('return await Promise.all([tools.echo({}), tools.echo({})]);', {
       tools: [{ name: 'echo' }],
       limits: { maxToolConcurrency: 1, maxSandboxTimeMs: 500 },
       callTool: async (_name, _input, signal) => {
+        started += 1;
         await new Promise<void>((resolve) => {
           if (signal.aborted) resolve();
           else signal.addEventListener('abort', () => resolve(), { once: true });
@@ -309,7 +317,7 @@ test('enforces byte and bridge limits', async (t) => {
       },
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-    if (!result.ok) assert.match(result.error.message, /in-flight bridge request limit/i);
+    assert.equal(started, 1);
   });
 });
 
@@ -454,7 +462,7 @@ test('aborts and drains concurrent tools while preserving the first fatal failur
   }
 });
 
-test('serializes concurrent cells through one execution slot', async () => {
+test('bounds serial execution at one pending cell', async () => {
   const started: string[] = [];
   let firstStarted!: () => void;
   let releaseFirst!: () => void;
@@ -482,18 +490,29 @@ test('serializes concurrent cells through one execution slot', async () => {
   const first = run('first');
   await firstHasStarted;
   const second = run('second');
-  await new Promise((resolve) => setImmediate(resolve));
+  const third = run('third');
 
   try {
+    const excess = await Promise.race([
+      third,
+      new Promise<'still-pending'>((resolve) => setImmediate(() => resolve('still-pending'))),
+    ]);
+    assert.notEqual(excess, 'still-pending');
+    if (excess !== 'still-pending') {
+      assert.equal(excess.ok ? undefined : excess.error.kind, 'limit_exceeded');
+      assert.deepEqual(excess.toolCalls, []);
+    }
     assert.deepEqual(started, ['first']);
+    releaseFirst();
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(
+      results.map((result) => (result.ok ? result.value : undefined)),
+      ['first', 'second'],
+    );
   } finally {
     releaseFirst();
+    await Promise.allSettled([first, second, third]);
   }
-  const results = await Promise.all([first, second]);
-  assert.deepEqual(
-    results.map((result) => (result.ok ? result.value : undefined)),
-    ['first', 'second'],
-  );
 });
 
 test('aborts a queued cell without waiting for the active cell', async () => {

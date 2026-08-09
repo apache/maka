@@ -181,7 +181,6 @@ export type CodeModeDiagnosticKind =
 export interface CodeModeDiagnostic {
   kind: CodeModeDiagnosticKind;
   message: string;
-  location?: { line: number; column: number };
 }
 
 export interface CodeModeToolCall {
@@ -219,7 +218,7 @@ interface QueuedCodeCell {
   onAbort?: () => void;
 }
 
-const queuedCodeCells: QueuedCodeCell[] = [];
+let queuedCodeCell: QueuedCodeCell | undefined;
 let codeCellActive = false;
 
 export async function executeCodeCell(
@@ -229,15 +228,22 @@ export async function executeCodeCell(
   return new Promise<CodeModeExecutionResult>((resolve, reject) => {
     const entry: QueuedCodeCell = { input, resolve, reject };
     if (codeCellActive) {
+      if (queuedCodeCell) {
+        resolve({
+          ok: false,
+          error: { kind: 'limit_exceeded', message: 'Code Mode execution queue is full' },
+          toolCalls: [],
+        });
+        return;
+      }
       const onAbort = () => {
-        const index = queuedCodeCells.indexOf(entry);
-        if (index === -1) return;
-        queuedCodeCells.splice(index, 1);
+        if (queuedCodeCell !== entry) return;
+        queuedCodeCell = undefined;
         reject(input.signal?.reason ?? abortError());
       };
       entry.onAbort = onAbort;
       input.signal?.addEventListener('abort', onAbort, { once: true });
-      queuedCodeCells.push(entry);
+      queuedCodeCell = entry;
       return;
     }
     codeCellActive = true;
@@ -250,7 +256,8 @@ function runCodeCell(entry: QueuedCodeCell): void {
   void executeCodeCellImpl(entry.input)
     .then(entry.resolve, entry.reject)
     .finally(() => {
-      const next = queuedCodeCells.shift();
+      const next = queuedCodeCell;
+      queuedCodeCell = undefined;
       if (next) runCodeCell(next);
       else codeCellActive = false;
     });

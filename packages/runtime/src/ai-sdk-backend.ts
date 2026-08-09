@@ -1169,7 +1169,7 @@ export class AiSdkBackend implements AgentBackend {
         'The sandbox has no process, filesystem, network, timer, eval, import, or cross-cell state.',
         'Terminate by returning a JSON-serializable value. Failures return a structured diagnostic.',
       ].join(' '),
-      parameters: z.object({ code: z.string().max(DEFAULT_CODE_MODE_LIMITS.maxSourceBytes) }),
+      parameters: z.object({ code: z.string() }),
       executionSemantics: 'exclusive_step',
       nesting: 'direct_only',
       recoveryMode: 'never_auto_retry',

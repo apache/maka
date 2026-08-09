@@ -111,7 +111,7 @@ async function drainHostToolOperations(operations: ReadonlySet<Promise<unknown>>
 
 function normalizeQuickJsError(error: unknown): CodeModeDiagnostic {
   const message = error instanceof Error ? error.message : String(error);
-  if (error instanceof SyntaxError || (error instanceof Error && error.name === 'SyntaxError')) {
+  if (error instanceof SyntaxError) {
     return { kind: 'parse_error', message };
   }
   if (error instanceof CodeModeError) {
