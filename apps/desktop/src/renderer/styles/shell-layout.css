@@ -451,8 +451,11 @@ dialog:modal {
 }
 
 .maka-titlebar-identity__breadcrumbs button:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: 1px;
+  /* Inset, not outline: the breadcrumb item ancestor clips 3px of an
+     outward ring (measured by the T5 geometry probe) — a ring that cannot
+     fully paint is worse than none. Same idiom as the workbar launcher. */
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
 /* The session name carries the weight of the pair: it is what the window is
@@ -555,3 +558,12 @@ dialog:modal {
    `.maka-workspace-top-actions`, and each of those carves out a rect covering
    its children. A per-button rule (plus a `*` descendant rule for the icons)
    only duplicated that. */
+
+
+/* Focus rings inside the titlebar strip go inset (T5 geometry probe): the
+   strip sits 4px under the window edge and body's overflow clips the top
+   pixel of an outward 2px+offset ring. An inset ring paints whole. */
+.maka-window-titlebar :is(button, [role="button"]):focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}

@@ -834,3 +834,13 @@
 .maka-load-tool-footer {
   font: var(--maka-text-supporting);
  }
+
+/* Turn-footer action rings go inset (T5 geometry probe): the Astryx chat
+   layout's scrollport clips an outward ring on the first visible row's
+   actions. Same idiom as the titlebar strip and workbar launcher. The
+   layout's own scroll-to-bottom control has the same clip inside vendor
+   DOM — upstream item, not fixable from product CSS. */
+.maka-turn-footer-action:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
