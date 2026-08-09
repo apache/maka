@@ -7,10 +7,14 @@ const graph = loadWorkspaceGraph();
 test('impact planning distinguishes docs, UI, and backend changes', () => {
   const docs = planTests(['README.md', 'docs/testing.md'], { graph });
   assert.equal(docs.code, false);
+  assert.equal(docs.windows, false);
   assert.deepEqual(docs.workspaces, []);
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
+  assert.equal(ui.windows, true);
+  assert.equal(ui.windowsRuntime, false);
+  assert.equal(ui.windowsStorage, false);
   // Product UI is mounted by the catalog. Runtime export and render changes can
   // break Storybook even when its story files themselves are unchanged.
   assert.equal(ui.storybook, true);
@@ -73,10 +77,26 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   assert.equal(alignment.storybook, false);
 
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
+  assert.equal(backend.windowsRuntime, true);
+  assert.equal(backend.windowsStorage, true);
   assert.equal(backend.e2e, false);
   assert.equal(backend.storybook, false);
   for (const workspace of ['packages/storage', 'packages/runtime', 'apps/desktop']) {
     assert.ok(backend.workspaces.includes(workspace));
+  }
+});
+
+test('Windows planning runs its contract changes without selecting storage', () => {
+  for (const path of [
+    '.github/workflows/windows-baseline.yml',
+    'scripts/windows-baseline-workflow.test.mjs',
+    'scripts/windows-process-identity.ps1',
+    'scripts/windows-smoke.mjs',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.windows, true, path);
+    assert.equal(plan.windowsRuntime, false, path);
+    assert.equal(plan.windowsStorage, false, path);
   }
 });
 
@@ -192,6 +212,9 @@ test('heavy workspaces are projected onto dedicated CI lanes', () => {
   assert.ok(outputs.includes('runtime_host=true'));
   assert.ok(outputs.includes('headless=false'));
   assert.ok(outputs.includes('standard_workspaces=packages/cli,apps/desktop'));
+  assert.ok(outputs.includes('windows=true'));
+  assert.ok(outputs.includes('windows_runtime=false'));
+  assert.ok(outputs.includes('windows_storage=false'));
 });
 
 test('global and unknown production changes fail safe to the complete suite', () => {

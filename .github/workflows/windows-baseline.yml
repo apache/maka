@@ -15,7 +15,31 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.plan.outputs.windows }}
+      windows_runtime: ${{ steps.plan.outputs.windows_runtime }}
+      windows_storage: ${{ steps.plan.outputs.windows_storage }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: plan
+        name: Select affected Windows surfaces
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
+          else
+            node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
   windows_baseline:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     name: windows_baseline (non-blocking)
     runs-on: windows-latest
     timeout-minutes: 45
@@ -101,18 +125,18 @@ jobs:
 
       - id: smoke
         name: Run CLI and Electron startup smoke
-        if: always() && steps.install.outcome == 'success'
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
-          npm.cmd run smoke:windows *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          npm.cmd run smoke:windows:dist *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
           $exitCode = $LASTEXITCODE
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
           exit $exitCode
 
       - id: runtime_pty_input
         name: Run Runtime PTY input gates
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_runtime == 'true'
         continue-on-error: true
         timeout-minutes: 5
         shell: pwsh
@@ -129,7 +153,7 @@ jobs:
 
       - id: storage
         name: Capture storage test baseline
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -140,7 +164,7 @@ jobs:
 
       - id: managed_workspace_crash
         name: Run managed workspace crash recovery gates
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
         continue-on-error: true
         shell: pwsh
         run: |
