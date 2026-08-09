@@ -47,10 +47,7 @@ export interface ClientCapabilitySnapshot {
 
 interface ClientProviderState {
   readonly providerId: string;
-  readonly principalId: string;
-  readonly clientInstanceId: string;
   activeConnectionId?: string;
-  sender?: ClientCapabilityConnectionSender;
   current?: CapabilityRegistration;
   readonly registrations: Map<string, CapabilityRegistration>;
 }
@@ -59,6 +56,7 @@ interface ClientProviderConnection {
   readonly connectionId: string;
   readonly provider: ClientProviderState;
   readonly sender: ClientCapabilityConnectionSender;
+  superseded: boolean;
 }
 
 interface CapabilityRegistration {
@@ -67,7 +65,6 @@ interface CapabilityRegistration {
   readonly registrationId: string;
   readonly offersByContract: ReadonlyMap<string, FrozenOfferBinding>;
   readonly servicesByContract: ReadonlyMap<string, ClientCapabilityServiceOffer>;
-  current: boolean;
   snapshotRefs: number;
 }
 
@@ -165,7 +162,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     this.#invocations = new ClientCapabilityInvocationBroker({
       senderFor: (connectionId) => {
         const connection = this.#connections.get(connectionId);
-        return connection?.provider.activeConnectionId === connectionId
+        return connection && this.#activeConnection(connection.provider) === connection
           ? connection.sender
           : undefined;
       },
@@ -186,6 +183,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       connectionId: identity.connectionId,
       provider,
       sender,
+      superseded: false,
     });
     let closeTask: Promise<void> | undefined;
     return {
@@ -422,7 +420,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       const provider = this.#providers.get(binding.providerId);
       const registration = provider?.current;
       const offer = registration?.offersByContract.get(contractId);
-      if (!provider?.sender || !registration || !offer) {
+      if (!provider || !this.#activeConnection(provider) || !registration || !offer) {
         throw new ClientCapabilityInvocationError(
           'capability_lost',
           'A Session-bound Client Capability provider is unavailable',
@@ -439,7 +437,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       const registration = provider?.current;
       const offer = registration?.offersByContract.get(contractId);
       if (
-        !provider?.sender ||
+        !provider ||
+        !this.#activeConnection(provider) ||
         !registration ||
         !offer ||
         offerConflictsWithProxyNames(offer, proxyNames)
@@ -505,14 +504,16 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   async callService(
     input: ClientCapabilityServiceInvocationInput,
   ): Promise<Record<string, unknown>> {
-    const provider = this.#connections.get(input.connectionId)?.provider;
+    const connection = this.#connections.get(input.connectionId);
+    const provider = connection?.provider;
     const registration = provider?.current;
     const service = registration?.servicesByContract.get(
       serviceContract(input.serviceId, input.version),
     );
     if (
-      provider?.activeConnectionId !== input.connectionId ||
-      !provider.sender ||
+      !connection ||
+      !provider ||
+      this.#activeConnection(provider) !== connection ||
       !registration ||
       !service
     ) {
@@ -545,16 +546,19 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   }
 
   hasService(connectionId: string, serviceId: string, version: string): boolean {
-    const provider = this.#connections.get(connectionId)?.provider;
+    const connection = this.#connections.get(connectionId);
+    const provider = connection?.provider;
     return Boolean(
-      provider?.activeConnectionId === connectionId &&
-        provider.sender &&
+      connection &&
+        provider &&
+        this.#activeConnection(provider) === connection &&
         provider.current?.servicesByContract.has(serviceContract(serviceId, version)),
     );
   }
 
   retireSessions(sessionIds: readonly string[]): void {
     for (const sessionId of new Set(sessionIds)) this.#sessions.delete(sessionId);
+    for (const provider of this.#providers.values()) this.#deleteProviderIfUnused(provider);
   }
 
   releaseConnection(connectionId: string): Promise<void> {
@@ -579,10 +583,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       return;
     }
     provider.activeConnectionId = undefined;
-    provider.sender = undefined;
     if (provider.current) {
       const registration = provider.current;
-      registration.current = false;
       provider.current = undefined;
       this.#markBindingsLost(provider.providerId);
       this.#removeTurnBindings(provider.providerId);
@@ -635,6 +637,15 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         };
       }
       const { provider } = connection;
+      if (connection.superseded) {
+        return {
+          ok: false,
+          error: {
+            code: 'invalid_request',
+            message: 'Client Capability connection has been superseded',
+          },
+        };
+      }
       if (provider.registrations.has(input.registrationId)) {
         return {
           ok: false,
@@ -659,11 +670,11 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       const previous = provider.current;
       const previousConnectionId = provider.activeConnectionId;
       if (previousConnectionId && previousConnectionId !== context.connectionId) {
+        const previousConnection = this.#connections.get(previousConnectionId);
+        if (previousConnection) previousConnection.superseded = true;
         this.#invocations.releaseConnection(previousConnectionId);
       }
-      if (previous) previous.current = false;
       provider.activeConnectionId = context.connectionId;
-      provider.sender = connection.sender;
       provider.current = registration;
       const currentContracts = new Set(registration.offersByContract.keys());
       if (previous) {
@@ -722,7 +733,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         };
       }
       const registration = provider.current;
-      registration.current = false;
       provider.current = undefined;
       this.#retireBindings(provider.providerId, new Set(registration.offersByContract.keys()));
       this.#removeTurnBindings(provider.providerId, new Set(registration.offersByContract.keys()));
@@ -804,8 +814,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     if (!provider) {
       provider = {
         providerId,
-        principalId: identity.principalId,
-        clientInstanceId: identity.clientInstanceId,
         registrations: new Map(),
       };
       this.#providers.set(providerId, provider);
@@ -817,7 +825,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     const eligible = new Map<string, SelectedOfferBinding[]>();
     for (const provider of this.#providers.values()) {
       const registration = provider.current;
-      if (!provider.sender || !registration) continue;
+      if (!this.#activeConnection(provider) || !registration) continue;
       for (const offer of registration.offersByContract.values()) {
         const candidates = eligible.get(offer.contractId) ?? [];
         candidates.push({ registration, offer });
@@ -961,14 +969,14 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   }
 
   #releaseRegistrationIfUnused(registration: CapabilityRegistration): void {
+    const provider = this.#providers.get(registration.providerId);
     if (
-      registration.current ||
+      provider?.current === registration ||
       registration.snapshotRefs !== 0 ||
       this.#invocations.holdsRegistration(registration)
     ) {
       return;
     }
-    const provider = this.#providers.get(registration.providerId);
     if (!provider?.registrations.delete(registration.registrationId)) return;
     void this.#connections
       .get(registration.connectionId)
@@ -978,6 +986,13 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       })
       .catch(() => {});
     this.#deleteProviderIfUnused(provider);
+  }
+
+  #activeConnection(provider: ClientProviderState): ClientProviderConnection | undefined {
+    const connection = provider.activeConnectionId
+      ? this.#connections.get(provider.activeConnectionId)
+      : undefined;
+    return connection?.provider === provider && !connection.superseded ? connection : undefined;
   }
 
   #deleteProviderIfUnused(provider: ClientProviderState): void {
@@ -1062,7 +1077,6 @@ function freezeRegistration(
     registrationId: input.registrationId,
     offersByContract,
     servicesByContract,
-    current: true,
     snapshotRefs: 0,
   };
 }

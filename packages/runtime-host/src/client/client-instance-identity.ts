@@ -24,13 +24,12 @@ export async function loadOrCreateRuntimeHostClientInstanceId(path: string): Pro
   const temporaryPath = join(directory, `.runtime-host-client-${randomUUID()}.tmp`);
   const handle = await open(temporaryPath, 'wx', 0o600);
   try {
-    await handle.writeFile(`${JSON.stringify(document)}\n`, 'utf8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-
-  try {
+    try {
+      await handle.writeFile(`${JSON.stringify(document)}\n`, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await link(temporaryPath, path);
     await syncDirectory(directory);
     return document.clientInstanceId;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type { McpCallResult } from '@maka/core/mcp';
+import type { ClientCapabilityReplaceInput } from '../protocol/index.js';
 import {
   ClientCapabilityInvocationError,
   HostClientCapabilityCoordinator,
@@ -334,6 +335,19 @@ describe('Host Client Capability coordinator', () => {
       { send: async () => {} },
     );
     await replace(coordinator, 'connection-b', 'registration-b', 'inspect');
+    assert.deepEqual(
+      await coordinator.handlers['client.capability.replace'](
+        replacementInput('registration-a-late', 'inspect'),
+        connectionContext('connection-a'),
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'Client Capability connection has been superseded',
+        },
+      },
+    );
     assert.deepEqual(
       await coordinator.handlers['client.capability.unregister'](
         { registrationId: 'registration-a' },
@@ -958,31 +972,41 @@ async function replace(
   affinity: 'call' | 'turn' | 'session' = 'session',
 ): Promise<void> {
   const outcome = await coordinator.handlers['client.capability.replace'](
-    {
-      registrationId,
-      offers: [
-        {
-          offerId,
-          version,
-          affinity,
-          label: 'Opaque capability',
-          description: 'Known only to the provider.',
-          tools: [
-            {
-              serverId: offerId,
-              name: toolName,
-              description: 'An open-world fixture tool.',
-              inputSchema: { type: 'object', additionalProperties: false },
-            },
-          ],
-        },
-      ],
-    },
+    replacementInput(registrationId, toolName, version, offerId, affinity),
     {
       ...connectionContext(connectionId),
     },
   );
   assert.equal(outcome.ok, true);
+}
+
+function replacementInput(
+  registrationId: string,
+  toolName: string,
+  version = '0',
+  offerId = 'opaque_offer',
+  affinity: 'call' | 'turn' | 'session' = 'session',
+): ClientCapabilityReplaceInput {
+  return {
+    registrationId,
+    offers: [
+      {
+        offerId,
+        version,
+        affinity,
+        label: 'Opaque capability',
+        description: 'Known only to the provider.',
+        tools: [
+          {
+            serverId: offerId,
+            name: toolName,
+            description: 'An open-world fixture tool.',
+            inputSchema: { type: 'object', additionalProperties: false },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 function connectionContext(connectionId: string) {
