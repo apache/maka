@@ -23,7 +23,7 @@ test('drains clean half-open input before reporting typed read EOF', async () =>
     const reply = encodeProtocolMessage({ kind: 'draining', hostEpoch: 'host-1' });
     const received = readSocket(peer, reply.byteLength + 1);
     await transport.write(reply);
-    assert.deepEqual(await received, frameLocalIpcProtocolMessage(reply));
+    assert.deepEqual(await received, Buffer.concat([reply, Buffer.from('\n')]));
     await ended;
 
     const failure = new Error('forced transport failure');
@@ -84,17 +84,6 @@ test('fails closed on an oversized unterminated frame over a real socket', async
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );
     await transport.closed;
-  });
-});
-
-test('adds Local IPC framing to an encoded protocol message', async () => {
-  await withSocketPair(async (transport, peer) => {
-    const message = encodeProtocolMessage({ kind: 'draining', hostEpoch: 'host-1' });
-    const received = readSocket(peer, message.byteLength + 1);
-
-    await transport.write(message);
-
-    assert.deepEqual(await received, frameLocalIpcProtocolMessage(message));
   });
 });
 

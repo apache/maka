@@ -5,8 +5,6 @@ import {
   type EncodedProtocolMessage,
 } from '../protocol/index.js';
 
-export const LOCAL_IPC_MAX_FRAME_BYTES = RUNTIME_HOST_MAX_MESSAGE_BYTES + 1;
-
 export function frameLocalIpcProtocolMessage(message: EncodedProtocolMessage): Buffer {
   return Buffer.concat([message, Buffer.from('\n')]);
 }
