@@ -1527,9 +1527,12 @@ export function withProviderTokenSummary(
   pricing: HarborTaskPricing | undefined,
 ): HarborCellOutput {
   if (cell.tokenSummary || !usage || !pricing) return cell;
-  const measuredRequests = telemetry.filter((request) => request.usage !== undefined);
+  const usageRequests = telemetry.filter(
+    (request) => request.usageStream === true || request.usage !== undefined,
+  );
   const tokenSummarySource =
-    measuredRequests.length > 0 && measuredRequests.every((request) => request.terminalEvent)
+    usageRequests.length > 0 &&
+    usageRequests.every((request) => request.usage !== undefined && request.terminalEvent)
       ? ('final' as const)
       : ('checkpoint' as const);
   return {

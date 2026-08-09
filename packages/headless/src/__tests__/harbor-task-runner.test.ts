@@ -23,6 +23,7 @@ import {
   HarborInfraError,
   incompleteTerminalProviderRequest,
   trialGradeSurvivingProviderOutage,
+  withProviderTokenSummary,
   MAKA_SETTLEMENT_GRACE_SEC,
   type HarborProcessRunner,
   type HarborRunRequest,
@@ -992,6 +993,33 @@ describe('createHarborTaskRunner', () => {
         );
       }
     });
+  });
+
+  test('keeps provider usage provisional when an earlier generation request has no usage', () => {
+    const usage = { input: 10, cacheRead: 0, cacheWrite: 0, output: 5 };
+    const request = (overrides: Partial<ProviderRequestTelemetry>): ProviderRequestTelemetry => ({
+      requestId: 1,
+      method: 'POST',
+      path: '/v1/messages',
+      protocol: 'anthropic-sse',
+      status: 200,
+      outcome: 'completed',
+      durationMs: 5,
+      bodyChunks: 1,
+      responseBytes: 64,
+      usageStream: true,
+      terminalEvent: true,
+      ...overrides,
+    });
+
+    const output = withProviderTokenSummary(
+      cellOutput({ tokenSummary: undefined }),
+      usage,
+      [request({ outcome: 'aborted', terminalEvent: false }), request({ requestId: 2, usage })],
+      { inputUsdPer1M: 1, outputUsdPer1M: 2 },
+    );
+
+    assert.equal(output.tokenSummarySource, 'checkpoint');
   });
 
   test('gives Codex an ephemeral OpenAI proxy without exposing the provider key file', async () => {

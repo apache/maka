@@ -1984,7 +1984,10 @@ with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "maka-cell-usage-checkpoint.json").write_text(json.dumps(deadline_usage), encoding="utf-8")
     hydrated_deadline_output = agent._read_cell_output(required=True)
     assert hydrated_deadline_output["tokenSummary"] == deadline_usage, hydrated_deadline_output
-    assert json.loads(deadline_output_path.read_text(encoding="utf-8"))["tokenSummary"] == deadline_usage
+    assert hydrated_deadline_output["tokenSummarySource"] == "checkpoint", hydrated_deadline_output
+    persisted_deadline_output = json.loads(deadline_output_path.read_text(encoding="utf-8"))
+    assert persisted_deadline_output["tokenSummary"] == deadline_usage, persisted_deadline_output
+    assert persisted_deadline_output["tokenSummarySource"] == "checkpoint", persisted_deadline_output
 
     class DownloadEnvironment:
         def __init__(self):
