@@ -76,6 +76,61 @@ test('production composition owns the long-term memory database lifecycle', asyn
   });
 });
 
+test('production composition owns external conversation binding and Session creation', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      const reconcile = composition.handlers['external-conversation.reconcile'];
+      const conversationId = 'slack:channel:C1:thread:10.1';
+      const client = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'bot-client',
+        surface: 'desktop' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      assert.deepEqual(await reconcile({ kind: 'resolve', conversationId }, client), {
+        ok: true,
+        result: { kind: 'create_required' },
+      });
+
+      const created = await reconcile(
+        {
+          kind: 'resolve',
+          conversationId,
+          session: {
+            cwd: root,
+            name: 'Slack conversation',
+            labels: ['bot', 'slack'],
+            modelTarget: { kind: 'default' },
+          },
+        },
+        client,
+      );
+      assert.equal(created.ok, true, JSON.stringify(created));
+      if (!created.ok || created.result.kind !== 'resolved') return;
+      assert.equal(created.result.disposition, 'created');
+
+      const repeated = await reconcile({ kind: 'resolve', conversationId }, client);
+      assert.equal(repeated.ok, true);
+      if (!repeated.ok || repeated.result.kind !== 'resolved') return;
+      assert.equal(repeated.result.disposition, 'existing');
+      assert.equal(repeated.result.session.id, created.result.session.id);
+
+      assert.deepEqual(
+        await reconcile({ kind: 'release', conversationId, operationId: 'reset_1' }, client),
+        { ok: true, result: { kind: 'released', hadBinding: true } },
+      );
+      assert.deepEqual(await reconcile({ kind: 'resolve', conversationId }, client), {
+        ok: true,
+        result: { kind: 'create_required' },
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('production composition closes long-term memory after a later startup failure', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);

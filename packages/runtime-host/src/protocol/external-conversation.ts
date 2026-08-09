@@ -4,7 +4,13 @@ import {
   type SessionCatalogItem,
   type SessionCreateInput,
 } from './session-catalog.js';
-import { requireEntityId, requireExactRecord, requireRecord, requireUtf8String } from './codec.js';
+import {
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireShapedRecord,
+  requireUtf8String,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -28,7 +34,7 @@ export type ExternalConversationReconcileInput =
   | {
       readonly kind: 'resolve';
       readonly conversationId: string;
-      readonly session: ExternalConversationSessionCreate;
+      readonly session?: ExternalConversationSessionCreate;
     }
   | {
       readonly kind: 'release';
@@ -37,7 +43,12 @@ export type ExternalConversationReconcileInput =
     };
 
 export type ExternalConversationReconcileResult =
-  | { readonly kind: 'resolved'; readonly session: SessionCatalogItem }
+  | { readonly kind: 'create_required' }
+  | {
+      readonly kind: 'resolved';
+      readonly disposition: 'existing' | 'created';
+      readonly session: SessionCatalogItem;
+    }
   | { readonly kind: 'released'; readonly hadBinding: boolean };
 
 export const EXTERNAL_CONVERSATION_OPERATION_SPECS = {
@@ -59,15 +70,16 @@ export function decodeExternalConversationReconcileInput(
 ): ExternalConversationReconcileInput {
   const input = requireRecord(value, 'external-conversation reconcile input');
   if (input.kind === 'resolve') {
-    const exact = requireExactRecord(input, 'external-conversation resolve input', [
-      'kind',
-      'conversationId',
-      'session',
-    ]);
+    const exact = requireShapedRecord(
+      input,
+      'external-conversation resolve input',
+      ['kind', 'conversationId'],
+      ['session'],
+    );
     return {
       kind: 'resolve',
       conversationId: conversationId(exact.conversationId),
-      session: decodeSessionCreate(exact.session),
+      ...(exact.session === undefined ? {} : { session: decodeSessionCreate(exact.session) }),
     };
   }
   if (input.kind === 'release') {
@@ -89,12 +101,24 @@ export function decodeExternalConversationReconcileResult(
   value: unknown,
 ): ExternalConversationReconcileResult {
   const result = requireRecord(value, 'external-conversation reconcile result');
+  if (result.kind === 'create_required') {
+    requireExactRecord(result, 'external-conversation create-required result', ['kind']);
+    return { kind: 'create_required' };
+  }
   if (result.kind === 'resolved') {
     const exact = requireExactRecord(result, 'external-conversation resolved result', [
       'kind',
+      'disposition',
       'session',
     ]);
-    return { kind: 'resolved', session: decodeSessionCatalogItem(exact.session) };
+    if (exact.disposition !== 'existing' && exact.disposition !== 'created') {
+      throw invalidProtocolFrame('Invalid external-conversation resolution disposition');
+    }
+    return {
+      kind: 'resolved',
+      disposition: exact.disposition,
+      session: decodeSessionCatalogItem(exact.session),
+    };
   }
   if (result.kind === 'released') {
     const exact = requireExactRecord(result, 'external-conversation released result', [

@@ -26,7 +26,25 @@ describe('HostExternalConversationCoordinator', () => {
     assert.equal(resolved.ok, true);
     if (!resolved.ok || resolved.result.kind !== 'resolved') return;
     assert.equal(resolved.result.session.id, 'session-1');
+    assert.equal(resolved.result.disposition, 'created');
     assert.deepEqual(sessions.createdIds, ['session-1']);
+  });
+
+  test('keeps a crash-window claim until create defaults arrive', async () => {
+    const authority = new MemoryAuthority();
+    const sessions = new MemorySessions();
+    authority.bindings.set('telegram:chat-1', 'session-claimed');
+    const host = coordinator(authority, sessions, ['unused', 'unused-again']);
+
+    assert.deepEqual(await host.reconcile({ kind: 'resolve', conversationId: 'telegram:chat-1' }), {
+      ok: true,
+      result: { kind: 'create_required' },
+    });
+    const outcome = await host.reconcile(resolveInput());
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'resolved') return;
+    assert.equal(outcome.result.session.id, 'session-claimed');
+    assert.deepEqual(sessions.createdIds, ['session-claimed']);
   });
 
   test('retires an archived binding and creates one successor Session', async () => {
@@ -44,6 +62,46 @@ describe('HostExternalConversationCoordinator', () => {
     assert.deepEqual(sessions.createdIds, ['session-new']);
   });
 
+  test('reads an existing binding without requiring Session create defaults', async () => {
+    const authority = new MemoryAuthority();
+    const sessions = new MemorySessions();
+    authority.bindings.set('telegram:chat-1', 'session-1');
+    sessions.records.set('session-1', session('session-1', false));
+    const host = coordinator(authority, sessions, []);
+
+    const outcome = await host.reconcile({
+      kind: 'resolve',
+      conversationId: 'telegram:chat-1',
+    });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || outcome.result.kind !== 'resolved') return;
+    assert.equal(outcome.result.disposition, 'existing');
+    assert.equal(outcome.result.session.id, 'session-1');
+  });
+
+  test('asks for create defaults only when no live binding exists', async () => {
+    const authority = new MemoryAuthority();
+    const host = coordinator(authority, new MemorySessions(), []);
+    assert.deepEqual(await host.reconcile({ kind: 'resolve', conversationId: 'telegram:chat-1' }), {
+      ok: true,
+      result: { kind: 'create_required' },
+    });
+  });
+
+  test('drops a binding only after Session storage confirms removal', async () => {
+    const authority = new MemoryAuthority();
+    const sessions = new MemorySessions();
+    authority.bindings.set('telegram:chat-1', 'session-removed');
+    sessions.removedIds.add('session-removed');
+    const host = coordinator(authority, sessions, []);
+
+    assert.deepEqual(await host.reconcile({ kind: 'resolve', conversationId: 'telegram:chat-1' }), {
+      ok: true,
+      result: { kind: 'create_required' },
+    });
+    assert.equal(authority.bindings.has('telegram:chat-1'), false);
+  });
+
   test('serializes concurrent resolution through one binding and one Session create', async () => {
     const authority = new MemoryAuthority();
     const sessions = new MemorySessions();
@@ -53,7 +111,18 @@ describe('HostExternalConversationCoordinator', () => {
       host.reconcile(resolveInput()),
     ]);
     assert.equal(left.ok, true);
-    assert.deepEqual(right, left);
+    assert.equal(right.ok, true);
+    if (
+      !left.ok ||
+      !right.ok ||
+      left.result.kind !== 'resolved' ||
+      right.result.kind !== 'resolved'
+    ) {
+      return;
+    }
+    assert.equal(left.result.disposition, 'created');
+    assert.equal(right.result.disposition, 'existing');
+    assert.equal(right.result.session.id, left.result.session.id);
     assert.deepEqual(sessions.createdIds, ['session-1']);
   });
 
@@ -84,6 +153,11 @@ class MemoryAuthority implements ExternalConversationAuthority {
   readonly bindings = new Map<string, string>();
   readonly releases = new Map<string, boolean>();
   failAfterClaim = false;
+
+  async lookup(conversationId: string) {
+    const sessionId = this.bindings.get(conversationId);
+    return sessionId ? { sessionId, updatedAt: 1 } : undefined;
+  }
 
   async resolve(
     conversationId: string,
@@ -129,9 +203,14 @@ class MemoryAuthority implements ExternalConversationAuthority {
 class MemorySessions {
   readonly records = new Map<string, SessionCatalogProjection>();
   readonly createdIds: string[] = [];
+  readonly removedIds = new Set<string>();
 
-  async get(sessionId: string): Promise<SessionCatalogProjection | null> {
-    return this.records.get(sessionId) ?? null;
+  async probe(sessionId: string) {
+    const record = this.records.get(sessionId);
+    if (record) return { kind: 'present' as const, session: record };
+    return this.removedIds.has(sessionId)
+      ? { kind: 'removed' as const }
+      : { kind: 'absent' as const };
   }
 
   async create(input: SessionCreateInput) {

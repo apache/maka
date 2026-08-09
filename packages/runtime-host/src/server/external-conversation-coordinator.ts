@@ -13,7 +13,12 @@ import type { ExternalConversationOperationHandlerMap } from './operation-dispat
 const RESOLUTION_ATTEMPTS = 4;
 
 type SessionPort = {
-  get(sessionId: string): Promise<SessionCatalogItem | null>;
+  probe(
+    sessionId: string,
+  ): Promise<
+    | { readonly kind: 'present'; readonly session: SessionCatalogItem }
+    | { readonly kind: 'absent' | 'removed' }
+  >;
   create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>>;
 };
 
@@ -65,6 +70,33 @@ export class HostExternalConversationCoordinator {
   async #resolve(
     input: Extract<ExternalConversationReconcileInput, { readonly kind: 'resolve' }>,
   ): Promise<OperationOutcome<'external-conversation.reconcile'>> {
+    if (input.session === undefined) {
+      let existingBinding;
+      try {
+        existingBinding = await this.#authority.lookup(input.conversationId);
+      } catch {
+        return failure('persistence_failed', 'External conversation binding is unavailable');
+      }
+      if (!existingBinding) return { ok: true, result: { kind: 'create_required' } };
+      let sessionProbe: Awaited<ReturnType<SessionPort['probe']>>;
+      try {
+        sessionProbe = await this.#sessions.probe(existingBinding.sessionId);
+      } catch {
+        return failure('persistence_failed', 'Bound Session state is unavailable');
+      }
+      if (sessionProbe.kind === 'present' && !isRetired(sessionProbe.session)) {
+        return resolved(sessionProbe.session, 'existing');
+      }
+      if (sessionProbe.kind !== 'absent') {
+        try {
+          await this.#authority.remove(input.conversationId, existingBinding.sessionId);
+        } catch {
+          return failure('persistence_failed', 'Retired external conversation binding remains');
+        }
+      }
+      return { ok: true, result: { kind: 'create_required' } };
+    }
+
     for (let attempt = 0; attempt < RESOLUTION_ATTEMPTS; attempt += 1) {
       let binding: ExternalConversationResolveResult;
       try {
@@ -76,14 +108,16 @@ export class HostExternalConversationCoordinator {
         return failure('operation_conflict', 'External conversation binding capacity is full');
       }
       const sessionId = binding.binding.sessionId;
-      let existing: SessionCatalogItem | null;
+      let sessionProbe: Awaited<ReturnType<SessionPort['probe']>>;
       try {
-        existing = await this.#sessions.get(sessionId);
+        sessionProbe = await this.#sessions.probe(sessionId);
       } catch {
         return failure('persistence_failed', 'Bound Session state is unavailable');
       }
-      if (existing && !isRetired(existing)) return resolved(existing);
-      if (existing) {
+      if (sessionProbe.kind === 'present' && !isRetired(sessionProbe.session)) {
+        return resolved(sessionProbe.session, 'existing');
+      }
+      if (sessionProbe.kind !== 'absent') {
         try {
           await this.#authority.remove(input.conversationId, sessionId);
         } catch {
@@ -97,7 +131,7 @@ export class HostExternalConversationCoordinator {
         if (created.error.code === 'commit_outcome_unknown') this.#requestDrain();
         return { ok: false, error: created.error };
       }
-      return resolved(created.result);
+      return resolved(created.result, 'created');
     }
     return failure(
       'operation_conflict',
@@ -129,8 +163,9 @@ function isRetired(session: SessionCatalogItem): boolean {
 
 function resolved(
   session: SessionCatalogItem,
+  disposition: 'existing' | 'created',
 ): OperationOutcome<'external-conversation.reconcile'> {
-  return { ok: true, result: { kind: 'resolved', session } };
+  return { ok: true, result: { kind: 'resolved', disposition, session } };
 }
 
 function failure(

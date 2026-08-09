@@ -71,6 +71,7 @@ type SessionCatalogStores = Pick<
   | 'createStableSession'
   | 'listCatalogPage'
   | 'markSessionReadThroughMessage'
+  | 'probeSessionRemoval'
   | 'probeStableSessionCreate'
   | 'readCatalogRecord'
   | 'readExecutionBoundary'
@@ -182,6 +183,21 @@ export class HostSessionCatalogCoordinator {
       throw new Error('Session catalog lookup returned a non-Session result');
     }
     return outcome.result.session;
+  }
+
+  async probeSession(
+    sessionId: string,
+  ): Promise<
+    | { readonly kind: 'present'; readonly session: SessionCatalogItem }
+    | { readonly kind: 'absent' | 'removed' }
+  > {
+    const probe = await this.#stores.probeSessionRemoval(sessionId);
+    return probe.kind === 'present'
+      ? {
+          kind: 'present',
+          session: projectSessionCatalogRecord(await this.#stores.readCatalogRecord(sessionId)),
+        }
+      : probe;
   }
 
   createSession(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {

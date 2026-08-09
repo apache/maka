@@ -1268,7 +1268,7 @@ export async function createExecutionRuntimeHostComposition(
     const externalConversations = new HostExternalConversationCoordinator({
       authority: openedExternalConversationAuthority,
       sessions: {
-        get: (sessionId) => sessionCatalog.getSession(sessionId),
+        probe: (sessionId) => sessionCatalog.probeSession(sessionId),
         create: (input) => sessionCatalog.createSession(input),
       },
       newId: randomUUID,
