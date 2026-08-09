@@ -1,8 +1,8 @@
-import type { ProviderType } from '@maka/core/llm-connections';
+import type { ApplyPatchProtocol } from '@maka/core/llm-connections';
 import { z } from 'zod';
-import type { ModelRuntimeWire } from './model-runtime.js';
 import { parseCodexV4aPatch, serializeCodexV4aOperation } from './codex-v4a-patch.js';
 import type { ApplyPatchOperation } from './filesystem-executor.js';
+import type { ModelRuntimeWire } from './model-runtime.js';
 import { openAiModelSupportsApplyPatch } from './openai-apply-patch.js';
 import type { MakaTool } from './tool-runtime.js';
 
@@ -11,19 +11,8 @@ export type ApplyPatchProfile =
   | { readonly kind: 'codex-v4a-freeform' };
 
 export interface ApplyPatchProfileRuntime {
-  readonly providerType: ProviderType;
   readonly wire: ModelRuntimeWire;
-  /** Resolved endpoint. Omitted only by catalog-only callers that assume the provider default. */
-  readonly baseUrl?: string;
-}
-
-function usesOfficialEndpoint(baseUrl: string | undefined, hostname: string): boolean {
-  if (baseUrl === undefined) return true;
-  try {
-    return new URL(baseUrl).hostname.toLowerCase() === hostname;
-  } catch {
-    return false;
-  }
+  readonly applyPatchProtocol?: ApplyPatchProtocol;
 }
 
 /** Resolve the exact provider/model/wire contract; unknown combinations fail closed. */
@@ -31,20 +20,12 @@ export function resolveApplyPatchProfile(
   runtime: ApplyPatchProfileRuntime,
   modelId: string,
 ): ApplyPatchProfile | null {
-  if (runtime.wire !== 'openai-responses') return null;
+  if (runtime.wire !== 'openai-responses' || !runtime.applyPatchProtocol) return null;
   const id = modelId.trim().toLowerCase();
-  if (
-    runtime.providerType === 'openai' &&
-    usesOfficialEndpoint(runtime.baseUrl, 'api.openai.com') &&
-    openAiModelSupportsApplyPatch(id)
-  ) {
+  if (runtime.applyPatchProtocol === 'openai-structured' && openAiModelSupportsApplyPatch(id)) {
     return { kind: 'openai-structured' };
   }
-  if (
-    runtime.providerType === 'deepseek' &&
-    usesOfficialEndpoint(runtime.baseUrl, 'api.deepseek.com') &&
-    id === 'deepseek-v4-flash'
-  ) {
+  if (runtime.applyPatchProtocol === 'codex-v4a-freeform' && id === 'deepseek-v4-flash') {
     return { kind: 'codex-v4a-freeform' };
   }
   return null;

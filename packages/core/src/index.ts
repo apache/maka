@@ -1410,6 +1410,7 @@ export type {
   ModelDiscoveryResult,
   ModelDiscoverySource,
   ModelInfo,
+  ApplyPatchProtocol,
   ProviderCategory,
   ProviderCatalogGroup,
   ProviderDefaults,

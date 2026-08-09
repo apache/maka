@@ -122,7 +122,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     }
   });
 
-  test('replaces Write and Edit with freeform apply_patch for official DeepSeek V4 Flash', async () => {
+  test('replaces Write and Edit with freeform apply_patch for declared DeepSeek V4 Flash', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',

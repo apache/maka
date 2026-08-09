@@ -4,74 +4,74 @@ import {
   normalizeApplyPatchReplayInput,
   resolveApplyPatchProfile,
 } from '../apply-patch-profile.js';
+import { resolveModelRuntime } from '../model-runtime.js';
 
 describe('ApplyPatch profile routing', () => {
-  test('selects Codex V4A freeform only for official DeepSeek V4 Flash Responses', () => {
+  test('derives the effective profile from the provider adapter contract', () => {
+    assert.deepEqual(
+      resolveModelRuntime(
+        {
+          providerType: 'deepseek',
+          baseUrl: 'https://gateway.example/v1',
+        },
+        'deepseek-v4-flash',
+      ).applyPatchProfile,
+      { kind: 'codex-v4a-freeform' },
+    );
+    assert.equal(
+      resolveModelRuntime({ providerType: 'xai' }, 'deepseek-v4-flash').applyPatchProfile,
+      null,
+    );
+  });
+
+  test('selects Codex V4A freeform only for declared V4 Flash Responses', () => {
     assert.deepEqual(
       resolveApplyPatchProfile(
-        { providerType: 'deepseek', wire: 'openai-responses' },
+        { wire: 'openai-responses', applyPatchProtocol: 'codex-v4a-freeform' },
         'deepseek-v4-flash',
       ),
       { kind: 'codex-v4a-freeform' },
     );
     assert.equal(
       resolveApplyPatchProfile(
-        { providerType: 'deepseek', wire: 'openai-chat' },
+        { wire: 'openai-chat', applyPatchProtocol: 'codex-v4a-freeform' },
         'deepseek-v4-flash',
       ),
       null,
     );
     assert.equal(
       resolveApplyPatchProfile(
-        { providerType: 'deepseek', wire: 'openai-responses' },
+        { wire: 'openai-responses', applyPatchProtocol: 'codex-v4a-freeform' },
         'deepseek-v4-pro',
       ),
       null,
     );
-    assert.equal(
-      resolveApplyPatchProfile(
-        { providerType: 'openrouter', wire: 'openai-responses' },
-        'deepseek/deepseek-v4-flash',
-      ),
-      null,
-    );
-    assert.equal(
-      resolveApplyPatchProfile(
-        {
-          providerType: 'deepseek',
-          wire: 'openai-responses',
-          baseUrl: 'https://gateway.example/v1',
-        },
-        'deepseek-v4-flash',
-      ),
-      null,
-    );
+    assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'deepseek-v4-flash'), null);
   });
 
   test('preserves structured routing for documented native OpenAI models', () => {
     assert.deepEqual(
-      resolveApplyPatchProfile({ providerType: 'openai', wire: 'openai-responses' }, 'gpt-5.6'),
+      resolveApplyPatchProfile(
+        { wire: 'openai-responses', applyPatchProtocol: 'openai-structured' },
+        'gpt-5.6',
+      ),
       { kind: 'openai-structured' },
     );
     assert.equal(
-      resolveApplyPatchProfile({ providerType: 'openai', wire: 'openai-chat' }, 'gpt-5.6'),
-      null,
-    );
-    assert.equal(
-      resolveApplyPatchProfile({ providerType: 'openai', wire: 'openai-responses' }, 'gpt-5.5-pro'),
-      null,
-    );
-    assert.equal(
       resolveApplyPatchProfile(
-        {
-          providerType: 'openai',
-          wire: 'openai-responses',
-          baseUrl: 'https://gateway.example/v1',
-        },
+        { wire: 'openai-chat', applyPatchProtocol: 'openai-structured' },
         'gpt-5.6',
       ),
       null,
     );
+    assert.equal(
+      resolveApplyPatchProfile(
+        { wire: 'openai-responses', applyPatchProtocol: 'openai-structured' },
+        'gpt-5.5-pro',
+      ),
+      null,
+    );
+    assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'gpt-5.6'), null);
   });
 
   test('normalizes portable history and drops an unrepresentable multi-file call', () => {

@@ -212,7 +212,6 @@ import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-run
 import {
   freeformApplyPatchResultText,
   normalizeApplyPatchReplayInput,
-  resolveApplyPatchProfile,
   routeApplyPatchTools,
   type ApplyPatchProfile,
 } from './apply-patch-profile.js';
@@ -1092,14 +1091,7 @@ export class AiSdkBackend implements AgentBackend {
         })
       : [];
     const runtime = resolveModelRuntime(input.connection, input.modelId);
-    this.applyPatchProfile = resolveApplyPatchProfile(
-      {
-        providerType: input.connection.providerType,
-        wire: runtime.wire,
-        baseUrl: runtime.baseUrl,
-      },
-      input.modelId,
-    );
+    this.applyPatchProfile = runtime.applyPatchProfile;
     const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
