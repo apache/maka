@@ -85,8 +85,7 @@
 
   overflow: hidden;
   border-radius: var(--radius-surface);
-  /* Single elevation token — no freehand oklch shadow. */
-  box-shadow: var(--elevation-raised);
+  /* Leave elevation to ChatComposer; product shadow overrode hover/focus lift. */
 }
 
 .maka-session-workbar-panel[data-placement="right"]

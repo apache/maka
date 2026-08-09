@@ -689,7 +689,9 @@ function WorkbarLauncher(props: {
             aria-description={action.description}
             endContent={
               action.shortcut ? (
-                <Kbd className="maka-workbar-launcher-shortcut" keys={action.shortcut} />
+                <span className="maka-workbar-launcher-shortcut">
+                  <Kbd keys={action.shortcut} />
+                </span>
               ) : undefined
             }
             isDisabled={action.disabled}

@@ -151,7 +151,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         label={copy.panelAria}
         size="sm"
         startContent={(
-          <>
+          <div className="maka-browser-toolbar-start">
             <Tooltip content={copy.back}>
               <IconButton
                 label={copy.backAria}
@@ -184,32 +184,30 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 }
               />
             </Tooltip>
-          </>
-        )}
-        centerContent={(
-          <div className="maka-browser-address-field">
-            <TextInput
-              type="text"
-              label={copy.addressAria}
-              isLabelHidden
-              width="100%"
-              placeholder={copy.addressPlaceholder}
-              value={address}
-              onChange={setAddress}
-              onFocus={() => {
-                editingRef.current = true;
-              }}
-              onBlur={() => {
-                editingRef.current = false;
-                setAddress(state.url);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.currentTarget.blur();
-                  go();
-                }
-              }}
-            />
+            <div className="maka-browser-address-field">
+              <TextInput
+                type="text"
+                label={copy.addressAria}
+                isLabelHidden
+                width="100%"
+                placeholder={copy.addressPlaceholder}
+                value={address}
+                onChange={setAddress}
+                onFocus={() => {
+                  editingRef.current = true;
+                }}
+                onBlur={() => {
+                  editingRef.current = false;
+                  setAddress(state.url);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                    go();
+                  }
+                }}
+              />
+            </div>
           </div>
         )}
         endContent={(
