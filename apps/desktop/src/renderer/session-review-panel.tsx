@@ -3,6 +3,7 @@ import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
 import {
@@ -119,16 +120,29 @@ export function SessionReviewPanel(props: {
       aria-busy={loading || undefined}
     >
       {gitSnapshot ? (
-        <div className="maka-session-review-summary">
-          <Text type="supporting" color="secondary" hasTabularNumbers>
-            {copy.summary(
-              gitSnapshot.baseBranch,
-              stats.files,
-              stats.additions,
-              stats.deletions,
-            )}
-          </Text>
-        </div>
+        <VStack
+          gap={0}
+          align="start"
+          className="maka-session-review-summary"
+        >
+          <Text type="label">{copy.changedFiles(stats.files)}</Text>
+          <HStack gap={3} align="center">
+            <Text
+              type="supporting"
+              hasTabularNumbers
+              className="maka-session-review-additions"
+            >
+              {copy.addedLines(stats.additions)}
+            </Text>
+            <Text
+              type="supporting"
+              hasTabularNumbers
+              className="maka-session-review-deletions"
+            >
+              {copy.deletedLines(stats.deletions)}
+            </Text>
+          </HStack>
+        </VStack>
       ) : null}
       {error ? (
         <Banner
@@ -159,7 +173,6 @@ export function SessionReviewPanel(props: {
           <CollapsibleGroup
             key={gitSnapshot?.revision}
             type="single"
-            defaultValue={visibleGitFiles[0]?.path}
             hasDividers
             density="compact"
           >
@@ -170,7 +183,13 @@ export function SessionReviewPanel(props: {
                   key={`${gitSnapshot?.revision}:${file.path}`}
                   value={file.path}
                   trigger={
-                    <div className="maka-session-review-file-trigger">
+                    <HStack
+                      gap={2}
+                      align="center"
+                      justify="between"
+                      width="100%"
+                      className="maka-session-review-file-trigger"
+                    >
                       <Text
                         type="code"
                         maxLines={1}
@@ -178,20 +197,31 @@ export function SessionReviewPanel(props: {
                       >
                         {file.path}
                       </Text>
-                      <Text
-                        type="supporting"
-                        color="secondary"
-                        hasTabularNumbers
+                      <HStack
+                        gap={2}
+                        align="center"
                         className="maka-session-review-file-stats"
                       >
-                        <span className="maka-session-review-additions">
-                          +{file.additions}
-                        </span>{' '}
-                        <span className="maka-session-review-deletions">
-                          -{file.deletions}
-                        </span>
-                      </Text>
-                    </div>
+                        {file.additions > 0 ? (
+                          <Text
+                            type="supporting"
+                            hasTabularNumbers
+                            className="maka-session-review-additions"
+                          >
+                            {copy.added(file.additions)}
+                          </Text>
+                        ) : null}
+                        {file.deletions > 0 ? (
+                          <Text
+                            type="supporting"
+                            hasTabularNumbers
+                            className="maka-session-review-deletions"
+                          >
+                            {copy.deleted(file.deletions)}
+                          </Text>
+                        ) : null}
+                      </HStack>
+                    </HStack>
                   }
                 >
                   <DiffCodePreview

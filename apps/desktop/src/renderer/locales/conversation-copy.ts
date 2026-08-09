@@ -107,7 +107,11 @@ export interface DesktopConversationCopy {
     truncated: string;
     showMore(remaining: number): string;
     hiddenLines(count: number): string;
-    summary(base: string | null, files: number, additions: number, deletions: number): string;
+    changedFiles(count: number): string;
+    addedLines(count: number): string;
+    deletedLines(count: number): string;
+    added(count: number): string;
+    deleted(count: number): string;
     loadFailed: string;
     retry: string;
   };
@@ -399,8 +403,11 @@ const COPY = {
       truncated: '变化过多，仅显示前一部分文件',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
       hiddenLines: (count) => `另有 ${count} 行未显示`,
-      summary: (base, files, additions, deletions) =>
-        `${base ? `相对 ${base} · ` : ''}${files} 个文件 · +${additions} · -${deletions}`,
+      changedFiles: (count) => `${count} 个文件有变更`,
+      addedLines: (count) => `新增 ${count} 行`,
+      deletedLines: (count) => `删除 ${count} 行`,
+      added: (count) => `新增 ${count}`,
+      deleted: (count) => `删除 ${count}`,
       loadFailed: '无法读取 Git 变化',
       retry: '重试',
     },
@@ -580,8 +587,11 @@ const COPY = {
         `Show ${Math.min(20, remaining)} more file${Math.min(20, remaining) === 1 ? '' : 's'}`,
       hiddenLines: (count) =>
         `${count} more line${count === 1 ? '' : 's'} not shown`,
-      summary: (base, files, additions, deletions) =>
-        `${base ? `vs ${base} · ` : ''}${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
+      changedFiles: (count) => `${count} changed file${count === 1 ? '' : 's'}`,
+      addedLines: (count) => `${count} line${count === 1 ? '' : 's'} added`,
+      deletedLines: (count) => `${count} line${count === 1 ? '' : 's'} deleted`,
+      added: (count) => `${count} added`,
+      deleted: (count) => `${count} deleted`,
       loadFailed: 'Could not read Git changes',
       retry: 'Retry',
     },

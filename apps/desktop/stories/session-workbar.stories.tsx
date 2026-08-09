@@ -144,7 +144,7 @@ const gitReviewSnapshot: GitReviewSnapshot = {
   baseBranch: 'main',
   baseBranchOptions: ['main', 'release/0.1'],
   revision: 'storybook-git-review',
-  additions: 46,
+  additions: 63,
   deletions: 98,
   truncated: false,
   files: [

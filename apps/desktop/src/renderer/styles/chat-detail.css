@@ -358,15 +358,8 @@
 }
 
 .maka-session-review-summary {
-  position: sticky;
-  z-index: 1;
-  top: 0;
-  display: flex;
-  min-height: 32px;
-  align-items: center;
-  padding-inline: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
-  background: var(--agents-content-area-bg);
 }
 
 .maka-session-review-file-stats {
@@ -378,12 +371,8 @@
 }
 
 .maka-session-review-file-trigger {
-  display: flex;
   min-width: 0;
   flex: 1;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
 }
 
 .maka-session-review-file-path {
