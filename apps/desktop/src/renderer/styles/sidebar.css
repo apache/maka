@@ -190,6 +190,7 @@
 }
 
 .maka-session-row {
+  position: relative;
   min-width: 0;
   -webkit-app-region: no-drag;
 }
@@ -265,6 +266,22 @@
   flex: 0 0 auto;
   width: var(--h-control-sm, 24px);
   min-height: var(--h-control-sm, 24px);
+}
+
+/* SideNavItem owns the row button and only supports non-interactive
+ * endContent. The action menu occupies the reserved trailing slot visually,
+ * but remains its sibling in the DOM so neither control contains the other. */
+.maka-session-row-action {
+  position: absolute;
+  inset-block-start: calc(
+    (var(--size-element-md) - var(--size-element-sm)) / 2
+  );
+  inset-inline-end: var(--space-2);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-sm, 24px);
 }
 
 .maka-session-row-trailing-spacer {
