@@ -9,6 +9,7 @@ const {
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
   qqC2CMessageToEvent,
+  qqDirectMessageToEvent,
   pickQQSendRoute,
   pickQQTypingRoute,
 } = __TEST__;
@@ -113,6 +114,25 @@ describe('QQ message mapping', () => {
     assert.equal(c2c?.conversationId, 'c2c:uo-1');
     assert.equal(c2c?.isGroup, false);
     assert.equal(c2c?.userId, 'uo-1');
+
+    const direct = qqDirectMessageToEvent(
+      {
+        id: 'dm-1',
+        channel_id: 'dm-channel-1',
+        content: 'hello',
+        author: { id: 'u-1', username: 'Alice' },
+      },
+      1,
+    );
+    assert.equal(direct?.conversationId, 'dm:channel:dm-channel-1');
+    assert.deepEqual(direct?.replyTarget, {
+      chatId: 'channel:dm-channel-1',
+      replyToMessageId: 'dm-1',
+    });
+    assert.equal(
+      pickQQSendRoute(direct?.replyTarget.chatId ?? '', 'reply')?.path,
+      '/channels/dm-channel-1/messages',
+    );
   });
 
   it('drops bot echoes and messages without required identities', () => {

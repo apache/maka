@@ -217,6 +217,22 @@ export function qqC2CMessageToEvent(
   };
 }
 
+export function qqDirectMessageToEvent(
+  d: QQChannelMessagePayload,
+  receivedAt: number,
+): ReturnType<typeof qqChannelMessageToEvent> {
+  const channel = qqChannelMessageToEvent(d, receivedAt);
+  if (!channel) return null;
+  return {
+    ...channel,
+    conversationId: `dm:${channel.conversationId}`,
+    // QQ direct messages still use the channel REST route. Only continuity
+    // needs a DM-specific identity; transport must retain the real address.
+    replyTarget: channel.replyTarget,
+    isGroup: false,
+  };
+}
+
 /**
  * Pure helper: route a send to the right QQ REST endpoint based on the
  * chatId prefix that the receive-side helpers stamp.
@@ -505,6 +521,7 @@ export const __TEST__ = {
   qqChannelMessageToEvent,
   qqGroupMessageToEvent,
   qqC2CMessageToEvent,
+  qqDirectMessageToEvent,
   pickQQSendRoute,
   pickQQTypingRoute,
 };
