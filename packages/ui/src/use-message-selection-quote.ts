@@ -15,6 +15,59 @@ import {
  */
 const SELECTION_SETTLE_MS = 350;
 
+export interface SelectionQuoteGestureBoundary {
+  beginPointerSelection(pointerId: number): void;
+  selectionChanged(): void;
+  endPointerSelection(pointerId: number): void;
+  cancelPointerSelection(pointerId: number): void;
+  cancelActivePointerSelection(): void;
+}
+
+/**
+ * Turns pointer release into the commit boundary for drag selection without
+ * making unrelated pointer events another way to resurrect a dismissed quote.
+ */
+export function createSelectionQuoteGestureBoundary(actions: {
+  hideAndCancel(): void;
+  scheduleSettle(): void;
+}): SelectionQuoteGestureBoundary {
+  let activePointerId: number | undefined;
+  let changedDuringPointer = false;
+
+  return {
+    beginPointerSelection(pointerId) {
+      if (activePointerId !== undefined) return;
+      activePointerId = pointerId;
+      changedDuringPointer = false;
+      actions.hideAndCancel();
+    },
+    selectionChanged() {
+      actions.hideAndCancel();
+      if (activePointerId === undefined) actions.scheduleSettle();
+      else changedDuringPointer = true;
+    },
+    endPointerSelection(pointerId) {
+      if (pointerId !== activePointerId) return;
+      const shouldSettle = changedDuringPointer;
+      activePointerId = undefined;
+      changedDuringPointer = false;
+      if (shouldSettle) actions.scheduleSettle();
+    },
+    cancelPointerSelection(pointerId) {
+      if (pointerId !== activePointerId) return;
+      activePointerId = undefined;
+      changedDuringPointer = false;
+      actions.hideAndCancel();
+    },
+    cancelActivePointerSelection() {
+      if (activePointerId === undefined) return;
+      activePointerId = undefined;
+      changedDuringPointer = false;
+      actions.hideAndCancel();
+    },
+  };
+}
+
 /**
  * A live text selection inside the chat transcript, captured as a quotable
  * excerpt for the "quote this" affordance (Codex/Cursor-style). `anchor` is
@@ -60,10 +113,10 @@ function readSelection(root: HTMLElement): QuoteTarget | null {
  *
  * The selection is the single source of truth — the quote is derived from it
  * on every relevant event rather than snapshotted, so there is no stale state
- * to expire. `selectionchange` is the only trigger: it is the one event that
- * means the selection actually became something else. Watching key or pointer
- * events instead resurrects a dismissed layer on the next unrelated keystroke,
- * which is why Escape could not close this before.
+ * to expire. `selectionchange` remains the only event that says the selection
+ * became something else. Primary pointer events only gate that signal while a
+ * drag is active; they never capture a quote on their own, so an unrelated
+ * click cannot resurrect a dismissed layer.
  *
  * Listeners live on `document` and resolve `scrollRef.current` at event time —
  * binding them to the element instead would capture whatever the ref held on
@@ -100,14 +153,52 @@ export function useMessageSelectionQuote(
       setQuote(target && anchor ? { ...target, anchor } : null);
     }
 
-    function onSelectionChange(): void {
+    function hideAndCancel(): void {
       // Hide first, re-show only once the selection settles: a layer anchored
       // to the previous selection is wrong the moment that selection changes.
       // This listener is outside React's event system, so concurrent rendering
       // may otherwise leave the stale layer painted for another frame.
       flushSync(() => setQuote(null));
       window.clearTimeout(settleTimer);
+    }
+
+    function scheduleSettle(): void {
+      window.clearTimeout(settleTimer);
       settleTimer = window.setTimeout(settle, SELECTION_SETTLE_MS);
+    }
+
+    const gesture = createSelectionQuoteGestureBoundary({ hideAndCancel, scheduleSettle });
+
+    function onPointerDown(event: PointerEvent): void {
+      const root = scrollRef.current;
+      if (
+        !root ||
+        !event.isPrimary ||
+        event.button !== 0 ||
+        !(event.target instanceof Node) ||
+        !root.contains(event.target)
+      ) {
+        return;
+      }
+      gesture.beginPointerSelection(event.pointerId);
+    }
+
+    function onSelectionChange(): void {
+      gesture.selectionChanged();
+    }
+
+    function onPointerUp(event: PointerEvent): void {
+      gesture.endPointerSelection(event.pointerId);
+    }
+
+    function onPointerCancel(event: PointerEvent): void {
+      gesture.cancelPointerSelection(event.pointerId);
+    }
+
+    function onWindowBlur(): void {
+      // Releasing a mouse outside the window need not deliver pointerup back to
+      // the document. Do not leave later keyboard selections behind that drag.
+      gesture.cancelActivePointerSelection();
     }
 
     /**
@@ -132,11 +223,19 @@ export function useMessageSelectionQuote(
     }
 
     document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('pointerdown', onPointerDown, { capture: true });
+    document.addEventListener('pointerup', onPointerUp, { capture: true });
+    document.addEventListener('pointercancel', onPointerCancel, { capture: true });
+    window.addEventListener('blur', onWindowBlur);
     // Capture-phase: scroll does not bubble.
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     return () => {
       window.clearTimeout(settleTimer);
       document.removeEventListener('selectionchange', onSelectionChange);
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      document.removeEventListener('pointerup', onPointerUp, { capture: true });
+      document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
+      window.removeEventListener('blur', onWindowBlur);
       document.removeEventListener('scroll', onScroll, { capture: true });
     };
   }, [scrollRef, enabled]);
