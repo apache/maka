@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {
   ManagedWorkspaceExecutionHandle,
+  ManagedWorkspaceExecutionOptions,
   ManagedWorkspaceExecutionScope,
   ManagedWorkspaceOwner,
 } from '@maka/storage/managed-workspace-owner';
@@ -77,13 +78,20 @@ test('preserves explicit dependency provisioning through managed admission', asy
   const profile = createManagedWorkspaceExecutionProfile(handle, {
     provisioning: 'dependency_environment_v1',
   });
+  const abort = new AbortController();
 
-  await composition.executeReadOnly(profile, {
-    kind: 'read',
-    path: 'node_modules/fixture/index.js',
-  });
+  await composition.executeReadOnly(
+    profile,
+    {
+      kind: 'read',
+      path: 'node_modules/fixture/index.js',
+    },
+    abort.signal,
+  );
 
-  assert.deepEqual(admissionOptions, [{ provisioning: 'dependency_environment_v1' }]);
+  assert.deepEqual(admissionOptions, [
+    { provisioning: 'dependency_environment_v1', abortSignal: abort.signal },
+  ]);
   await composition.close();
 });
 
@@ -175,6 +183,65 @@ test('drains tool operations before closing the managed owner', async () => {
   await executing;
   await closing;
   assert.deepEqual(calls, ['managed:admit', 'managed:read', 'managed:close']);
+});
+
+test('caller cancellation releases a provisioning operation so drain can close', async () => {
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  let acknowledgeProvision!: () => void;
+  const provisionStarted = new Promise<void>((resolve) => {
+    acknowledgeProvision = resolve;
+  });
+  let closed = false;
+  const managedOwner: ManagedWorkspaceOwner = {
+    state: 'ready',
+    async openManagedWorkspaceBaseline() {
+      throw new Error('not used');
+    },
+    async openManagedWorkspaceBaselineFromExecutionStores() {
+      throw new Error('not used');
+    },
+    async withManagedWorkspaceExecution<T>(
+      _handle: ManagedWorkspaceExecutionHandle,
+      _operation: (scope: ManagedWorkspaceExecutionScope) => Promise<T>,
+      options?: ManagedWorkspaceExecutionOptions,
+    ): Promise<T> {
+      acknowledgeProvision();
+      return await new Promise<never>((_resolve, reject) => {
+        const abort = () =>
+          reject(
+            options?.abortSignal?.reason ??
+              new DOMException('Managed execution cancelled', 'AbortError'),
+          );
+        if (options?.abortSignal?.aborted) abort();
+        else options?.abortSignal?.addEventListener('abort', abort, { once: true });
+      });
+    },
+    async executeReadOnlyFilesystemOperation() {
+      throw new Error('worker must not run while provisioning is pending');
+    },
+    async close() {
+      closed = true;
+    },
+  };
+  const composition = createRuntimeHostWorkspaceExecutionComposition({ managedOwner });
+  const profile = createManagedWorkspaceExecutionProfile(handle, {
+    provisioning: 'dependency_environment_v1',
+  });
+  const abort = new AbortController();
+  const execution = composition.executeReadOnly(
+    profile,
+    { kind: 'read', path: 'node_modules/fixture/index.js' },
+    abort.signal,
+  );
+  await provisionStarted;
+
+  composition.beginDrain();
+  const closing = composition.close();
+  abort.abort(new DOMException('User cancelled managed execution', 'AbortError'));
+
+  await assert.rejects(execution, { name: 'AbortError' });
+  await closing;
+  assert.equal(closed, true);
 });
 
 function fakeManagedOwner(input: {

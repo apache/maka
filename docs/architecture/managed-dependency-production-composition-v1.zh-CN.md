@@ -1,6 +1,6 @@
 ---
 document_status: implementation-contract
-status: implemented-stacked-pr4
+status: draft-production-consumer-required
 date: 2026-08-09
 milestone: M1.3
 stack_base: bundled-npm-runtime-attestation-v1
@@ -86,6 +86,8 @@ worker permission profile只增加 exact dependency root 的 read-only subtree�
 - absolute escape 或 dependency root 外路径；
 - provisioning 与 dependency root 不成对的 forged scope。
 
+路由判断不直接消费原始首段。完整输入必须先按平台路径语义验证；任何包含 `.`、`..`、空 segment 或其他非 canonical 形状的路径都直接拒绝。Windows 的 `node_modules` 身份比较大小写不敏感，因此 `NODE_MODULES/**` 也必须进入 leased dependency root，不能落回 managed worktree。
+
 如果 scope 请求 `dependency_environment_v1` 但没有 exact lease root，必须拒绝整个 operation，不能把相同逻辑路径交给 attached cwd。
 
 ## 5. Producer 与运行时协议
@@ -104,6 +106,8 @@ node --permission
 环境不继承 host secrets、HOME、npm config 或 PATH package manager。HOME、cache 与 TEMP 都位于本次 staging。Node compile cache 显式禁用：producer 生命周期很短，没有可衡量收益；Node 26/Windows 在 Permission Model 与 `NODE_COMPILE_CACHE` 同时启用时可能卡在启动阶段，因此该组合不属于 v1 profile。
 
 producer failure、timeout、abort、process-tree drain failure、runtime revalidation failure 或 observed limit failure都回滚 staging，不发布 receipt，也不 fallback。
+
+调用者取消从 Runtime Host composition 贯穿 `ManagedWorkspaceOwner`、dependency authority 到 producer。等价 environment 的并发 acquisition 共用一次 publication，但共享 producer 不受任意单个 waiter 支配：只有最后一个 waiter 放弃且 publication 尚未结束时，authority 才终止 producer。Host drain 等待 acquisition 和 producer 清理结束后才能关闭 receipt authority。
 
 ## 6. 稳定失败与回滚
 
@@ -128,6 +132,7 @@ managed_workspace_operation_denied
 - provision 后 workspace head/drift 变化：释放 lease并拒绝 scope；
 - operation 完成/失败：先 revoke scope，再释放 lease；
 - host drain：等待 active operation，关闭 workspace composition/managed owner/dependency authority，最后释放 root owner。
+- caller abort：尚未签发 scope 时终止该 acquisition；若已没有其他 waiter，则回收 producer tree 与 staging；不得进入 filesystem worker。
 
 ## 7. 平台能力矩阵
 
@@ -152,4 +157,6 @@ observed bytes/entries 是 soft postcondition，不是 OS quota；不能宣称�
 7. drain/close 能在 lease释放后完成；
 8. producer missing、manifest mismatch、path traversal、forged scope、unbound logical state均 fail closed。
 
-M1.3 完成后的能力边界是“Runtime Host 具备可组合的 managed dependency read profile”。后续 session/task routing 仍需显式选择该 profile；在选择器进入 Desktop/CLI 前，不应宣称所有用户任务默认运行在 managed worktree。
+当前切片只建立了 Runtime Host 内部可组合的 managed dependency read profile；它还不是 M1.3 的可合并终态。仓库当前没有 session/task execution profile 的持久选择，也没有 handler、Desktop 或 CLI 把真实任务送入 `openManagedWorkspace`。在首个生产消费者与 production-shaped task test 落地前，本 PR 必须保持 Draft，并且不得仅靠启动时构造 owner、测试引用或伪 handler 满足“有消费者”的合并门槛。
+
+消费者接入必须显式决定任务的 workspace execution profile，并保证同一个任务的 Read/Glob/Grep 使用 owner-bound managed scope；普通 attached session 不得被静默切换。由于这个选择会改变用户任务语义，不能从 cwd、环境变量或临时内存状态猜测。若需要把选择跨重启保留，必须由后续消费者切片定义它的 durable owner、协议版本、失败状态和回滚方式。
