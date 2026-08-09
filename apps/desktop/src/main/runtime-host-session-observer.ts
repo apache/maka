@@ -50,6 +50,7 @@ export interface RuntimeHostSessionObserverDeps {
     sessionId: string,
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
+  onSubscriptionFailure?: (sessionId: string, error: unknown) => void;
   now?: () => number;
 }
 
@@ -72,6 +73,7 @@ interface ObservedSessionState {
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
   ready: boolean;
+  recovering: boolean;
   closing: boolean;
 }
 
@@ -103,6 +105,7 @@ export class RuntimeHostSessionObserver {
     sessionId: string,
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
+  readonly #onSubscriptionFailure: (sessionId: string, error: unknown) => void;
   readonly #now: () => number;
   #closed = false;
 
@@ -117,6 +120,8 @@ export class RuntimeHostSessionObserver {
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
       deps.onWatchedTurnFinished ?? (() => undefined);
+    this.#onSubscriptionFailure =
+      deps.onSubscriptionFailure ?? (() => undefined);
     this.#now = deps.now ?? Date.now;
   }
 
@@ -308,6 +313,7 @@ export class RuntimeHostSessionObserver {
       openTask: Promise.resolve(),
       transcriptConsumed: false,
       ready: false,
+      recovering: false,
       closing: false,
     };
     state.openTask = this.#open(state);
@@ -350,7 +356,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     try {
       for await (const frame of handle.events) {
-        if (state.closing) return;
+        if (state.closing || state.handle !== handle) return;
         if (!state.ready) {
           if (state.pendingFrames.length >= MAX_PENDING_FRAMES) {
             throw new Error(
@@ -361,8 +367,9 @@ export class RuntimeHostSessionObserver {
         } else {
           this.#acceptFrame(state, frame);
         }
+        if (frame.kind === "subscription.closed") return;
       }
-      if (!state.closing) {
+      if (!state.closing && state.handle === handle) {
         this.#publishSubscriptionFailure(
           state,
           new Error("Runtime Host Session subscription ended unexpectedly"),
@@ -489,27 +496,60 @@ export class RuntimeHostSessionObserver {
     state: ObservedSessionState,
     error: unknown,
   ): void {
-    const root = state.snapshot?.rootTurn;
-    if (root && !isTerminalTurn(root)) {
-      this.#broadcast(state.sessionId, {
-        type: "error",
-        id: `host-subscription-error:${root.runId}`,
-        turnId: root.turnId,
-        ts: this.#now(),
-        recoverable: true,
-        reason: "subscription_closed",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Runtime Host Session subscription closed",
-      });
+    if (state.closing || state.recovering) return;
+    try {
+      this.#onSubscriptionFailure(state.sessionId, error);
+    } catch {
+      // Diagnostics must never prevent the canonical subscription recovery.
     }
-    this.#emitSessionsChanged(
-      "status-change",
-      state.sessionId,
-      root ? { turnId: root.turnId } : undefined,
-    );
-    void this.#closeState(state);
+    state.recovering = true;
+    const recovery = this.#recoverSubscription(state);
+    state.openTask = recovery;
+    void recovery.catch(() => undefined);
+  }
+
+  async #recoverSubscription(state: ObservedSessionState): Promise<void> {
+    const previousHandle = state.handle;
+    state.handle = undefined;
+    state.ready = false;
+    state.pendingFrames.splice(0);
+    state.transcript = undefined;
+    state.transcriptConsumed = false;
+    state.snapshot = undefined;
+    state.projector = undefined;
+    for (const group of state.targets.values()) group.seeded = false;
+    await previousHandle?.close().catch(() => undefined);
+    if (state.closing) return;
+    try {
+      await this.#open(state);
+      if (state.closing) return;
+      // #open mutates the state asynchronously; the explicit widening keeps
+      // TypeScript from retaining the pre-await `undefined` narrowing above.
+      const snapshot = state.snapshot as SessionContinuitySnapshot | undefined;
+      const projector = state.projector as RuntimeHostSessionProjector | undefined;
+      const root = snapshot?.rootTurn;
+      if (root && isTerminalTurn(root)) {
+        for (const event of projector?.seedTerminal(root) ?? []) {
+          this.#broadcast(state.sessionId, event);
+        }
+        this.#finishWatchedTurn(state, root.turnId, "completed");
+        this.#emitSessionsChanged("turn-status-change", state.sessionId, {
+          turnId: root.turnId,
+        });
+        void this.#closeIfIdle(state);
+        return;
+      }
+      // The replacement subscription is an atomic snapshot plus transcript.
+      // Ask the renderer to replace its persisted projection so any messages
+      // committed while the live stream was disconnected become visible.
+      this.#emitSessionsChanged(
+        "message-appended",
+        state.sessionId,
+        root ? { turnId: root.turnId } : undefined,
+      );
+    } finally {
+      state.recovering = false;
+    }
   }
 
   async #loadCurrentTranscript(sessionId: string): Promise<StoredMessage[]> {

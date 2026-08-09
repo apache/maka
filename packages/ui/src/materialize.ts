@@ -325,6 +325,12 @@ export type TurnTimelineItem =
       complete?: boolean;
       truncated?: boolean;
     }
+  | {
+      kind: "steering";
+      messageId: string;
+      message: ChatItem;
+      live?: boolean;
+    }
   | { kind: "tools"; items: ToolActivityItem[] };
 
 /**
@@ -427,10 +433,7 @@ export function overlayLiveTurn(
     current.tools.map((tool) => [tool.toolUseId, tool]),
   );
   const liveToolIds = new Set<string>();
-  const liveContentKeys = new Set<string>();
   for (const step of liveTurn.steps) {
-    if (step.thinking) liveContentKeys.add(`thinking\0${step.stepId}`);
-    if (step.text) liveContentKeys.add(`text\0${step.stepId}`);
     for (const liveTool of step.tools) {
       liveToolIds.add(liveTool.toolUseId);
       const persisted = toolByUseId.get(liveTool.toolUseId);
@@ -442,19 +445,31 @@ export function overlayLiveTurn(
       );
     }
   }
-  const timeline: TurnTimelineItem[] = [];
-  for (const item of current.timeline) {
-    if (item.kind !== "tools") {
-      if (liveContentKeys.has(`${item.kind}\0${item.messageId}`)) continue;
-      timeline.push(item);
-      continue;
-    }
-    const settledItems = item.items.filter(
-      (tool) => !liveToolIds.has(tool.toolUseId),
-    );
-    if (settledItems.length > 0)
-      timeline.push({ kind: "tools", items: settledItems });
-  }
+  const liveTimeline: TurnTimelineItem[] = [];
+  // A persisted steering row carries the authoritative ledger position. The
+  // matching live echo can arrive after later assistant deltas over IPC; if we
+  // anchor that echo to whichever live step happened to arrive first, the row
+  // jumps below the response while streaming and moves back only on settle.
+  // Keep live placement solely for messages the storage refresh has not seen.
+  const persistedSteeringIds = new Set(
+    current.timeline.flatMap((item) => item.kind === "steering" ? [item.messageId] : []),
+  );
+  const liveOnlySteering = (liveTurn.steering ?? []).filter(
+    (message) => !persistedSteeringIds.has(message.id),
+  );
+  const projectLiveSteering = (
+    message: NonNullable<LiveTurnProjection["steering"]>[number],
+  ): TurnTimelineItem => ({
+      kind: "steering",
+      messageId: message.id,
+      message: {
+        id: message.id,
+        role: "user",
+        text: message.text,
+        ts: message.ts,
+      },
+      live: true,
+    });
   for (const step of liveTurn.steps) {
     const contentOrder = step.contentOrder ?? [
       ...(step.thinking ? ["thinking" as const] : []),
@@ -463,7 +478,7 @@ export function overlayLiveTurn(
     ];
     for (const kind of contentOrder) {
       if (kind === "thinking" && step.thinking?.text) {
-        timeline.push({
+        liveTimeline.push({
           kind: "thinking",
           text: step.thinking.text,
           messageId: step.stepId,
@@ -471,7 +486,7 @@ export function overlayLiveTurn(
           truncated: step.thinking.truncated,
         });
       } else if (kind === "text" && step.text?.text) {
-        timeline.push({
+        liveTimeline.push({
           kind: "text",
           text: step.text.text,
           messageId: step.stepId,
@@ -485,11 +500,79 @@ export function overlayLiveTurn(
           return projected ? [projected] : [];
         });
         if (stepTools.length > 0)
-          timeline.push({ kind: "tools", items: stepTools });
+          liveTimeline.push({ kind: "tools", items: stepTools });
       }
     }
   }
-  const mergedTimeline = mergeAdjacentTimeline(timeline);
+  const liveContentKeys = new Set(
+    liveTimeline.flatMap((item) => item.kind === "tools"
+      ? []
+      : [`${item.kind}\0${item.messageId}`]),
+  );
+  const liveItemMatches = (persisted: TurnTimelineItem, live: TurnTimelineItem): boolean => {
+    if (persisted.kind === "tools" && live.kind === "tools") {
+      const persistedIds = new Set(persisted.items.map((tool) => tool.toolUseId));
+      return live.items.some((tool) => persistedIds.has(tool.toolUseId));
+    }
+    return persisted.kind !== "tools"
+      && live.kind !== "tools"
+      && persisted.kind === live.kind
+      && persisted.messageId === live.messageId;
+  };
+  const timeline: TurnTimelineItem[] = [];
+  let liveCursor = 0;
+  for (const item of current.timeline) {
+    const liveIndex = liveTimeline.findIndex(
+      (candidate, index) => index >= liveCursor && liveItemMatches(item, candidate),
+    );
+    if (liveIndex >= 0) {
+      timeline.push(...liveTimeline.slice(liveCursor, liveIndex + 1));
+      liveCursor = liveIndex + 1;
+      if (item.kind === "tools") {
+        const persistedOnly = item.items.filter((tool) => !liveToolIds.has(tool.toolUseId));
+        if (persistedOnly.length > 0) timeline.push({ kind: "tools", items: persistedOnly });
+      }
+      continue;
+    }
+    if (item.kind === "tools") {
+      const items = item.items.filter((tool) => !liveToolIds.has(tool.toolUseId));
+      if (items.length > 0) timeline.push({ kind: "tools", items });
+      continue;
+    }
+    const key = `${item.kind}\0${item.messageId}`;
+    if (!liveContentKeys.has(key)) timeline.push(item);
+  }
+  // A live-only steering row has not entered the transcript yet, therefore
+  // every persisted item in `current.timeline` is an authoritative prefix
+  // that happened before it. Keep that entire prefix above the row even when
+  // the live step captured at steering arrival has already handed off to
+  // persistence. `beforeStepIds` then separates any remaining live-only
+  // prefix from the newly guided response.
+  const persistedTail = timeline.at(-1);
+  timeline.push(...liveTimeline.slice(liveCursor));
+  let previousLiveSteering: TurnTimelineItem | undefined;
+  for (const message of liveOnlySteering) {
+    let insertionIndex = persistedTail ? timeline.indexOf(persistedTail) + 1 : 0;
+    const beforeStepIds = new Set(message.beforeStepIds ?? []);
+    if (beforeStepIds.size > 0) {
+      for (let index = 0; index < timeline.length; index += 1) {
+        const item = timeline[index]!;
+        const belongsBefore = item.kind === "tools"
+          ? item.items.some((tool) => tool.stepId && beforeStepIds.has(tool.stepId))
+          : item.kind !== "steering" && beforeStepIds.has(item.messageId);
+        if (belongsBefore) insertionIndex = Math.max(insertionIndex, index + 1);
+      }
+    }
+    if (previousLiveSteering) {
+      insertionIndex = Math.max(
+        insertionIndex,
+        timeline.indexOf(previousLiveSteering) + 1,
+      );
+    }
+    const projected = projectLiveSteering(message);
+    timeline.splice(insertionIndex, 0, projected);
+    previousLiveSteering = projected;
+  }
   const persistedUserIds = new Set([
     ...(current.user ? [current.user.id] : []),
     ...(current.userInterjections ?? []).map((message) => message.id),
@@ -507,6 +590,7 @@ export function overlayLiveTurn(
           }],
     ),
   ];
+  const mergedTimeline = mergeAdjacentTimeline(timeline);
   const next = {
     ...current,
     ...(userInterjections.length > 0 ? { userInterjections } : {}),
@@ -924,11 +1008,35 @@ function buildTurnTimeline(
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
+  let sawInitialUser = false;
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
-    if (message.type === "tool_call") {
+    if (message.type === "user") {
+      if (!sawInitialUser) {
+        sawInitialUser = true;
+        continue;
+      }
+      flushTools(pending);
+      pending = [];
+      const projected: ChatItem = {
+        id: message.id,
+        role: "user",
+        text: message.displayText ?? message.text,
+        ts: message.ts,
+        ...(message.attachments && message.attachments.length > 0
+          ? { attachments: message.attachments }
+          : {}),
+        ...(message.quotes && message.quotes.length > 0
+          ? { quotes: message.quotes }
+          : {}),
+        ...(message.inlineReferences !== undefined
+          ? { inlineReferences: message.inlineReferences }
+          : {}),
+      };
+      raw.push({ kind: "steering", messageId: message.id, message: projected });
+    } else if (message.type === "tool_call") {
       const item = toolItemByUseId.get(message.id);
       if (item) pending.push(item);
     } else if (message.type === "assistant") {

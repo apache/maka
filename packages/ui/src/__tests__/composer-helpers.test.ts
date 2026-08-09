@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  isComposerResponseBusy,
   isReferenceSizedPaste,
   navigateComposerHistory,
   PASTE_AS_QUOTE_MIN_CHARS,
@@ -11,6 +12,15 @@ import {
   rememberComposerHistoryEntry,
   type ComposerHistoryState,
 } from '../composer-helpers.js';
+
+describe('isComposerResponseBusy', () => {
+  it('keeps the composer busy across non-streaming gaps in a running turn', () => {
+    assert.equal(isComposerResponseBusy(true, 'active'), true);
+    assert.equal(isComposerResponseBusy(false, 'running'), true);
+    assert.equal(isComposerResponseBusy(false, 'active'), false);
+    assert.equal(isComposerResponseBusy(false, undefined), false);
+  });
+});
 
 describe('reconcileHistorySync', () => {
   it('preserves in-memory state when storage cannot be read', () => {

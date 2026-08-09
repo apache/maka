@@ -618,7 +618,7 @@ test('side chat stages quotes and attachments in one isolated fork', async ({
     .toBe(1);
 });
 
-test('side chat persists steering and permission changes', async ({
+test('side chat separates queued follow-ups from steering and persists permission changes', async ({
   window: page,
 }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
@@ -643,21 +643,61 @@ test('side chat persists steering and permission changes', async ({
   await expect(sideUserMessages).toHaveCount(1);
   await expect(sideUserMessages.first()).toContainText('__e2e_wait_for_steering__');
   await expect(steerPanel.getByRole('button', { name: '停止' })).toBeVisible();
-  const steerButton = steerPanel.getByRole('button', { name: '插入消息' });
-  await expect(steerButton).toBeVisible();
-  await sideComposer.fill('only answer the side request');
-  await expect(steerButton).toBeEnabled();
-  await steerButton.click();
+  const queueInputButton = steerPanel.getByRole('button', { name: '加入队列' });
+  await expect(queueInputButton).toBeVisible();
+
+  // Enter only stages the input above the composer. It is not submitted to the
+  // Host and therefore cannot steer the current reply by itself.
+  for (const message of ['first queued request', 'second queued request', 'third queued request']) {
+    await sideComposer.fill(message);
+    await sideComposer.press('Enter');
+  }
   await expect(sideComposer).toHaveText('');
-  await expect(sideUserMessages).toHaveCount(2);
-  await expect(sideUserMessages.first()).toContainText('__e2e_wait_for_steering__');
-  await expect(sideUserMessages.nth(1)).toContainText('only answer the side request');
+  const pendingQueue = steerPanel.getByRole('list', { name: '待发送队列' });
+  await expect(pendingQueue.getByRole('listitem')).toHaveCount(3);
+  await expect(pendingQueue).toContainText('尚未发送给 Maka');
+  await expect(sideUserMessages).toHaveCount(1);
   await expect(
-    steerPanel.getByText(/Acknowledged steering: only answer the side request/),
-  ).toBeVisible();
-  await expect(sideUserMessages).toHaveCount(2);
+    steerPanel.getByText(/Acknowledged steering:/),
+  ).toHaveCount(0);
+
+  // Reorder, edit, and delete all stay local to the pending queue.
+  let thirdRow = pendingQueue.getByRole('listitem').filter({ hasText: 'third queued request' });
+  await thirdRow.getByRole('button', { name: '上移' }).click();
+  await thirdRow.getByRole('button', { name: '上移' }).click();
+  await expect(pendingQueue.getByRole('listitem').first()).toContainText('third queued request');
+  thirdRow = pendingQueue.getByRole('listitem').first();
+  await thirdRow.getByRole('button', { name: '编辑' }).click();
+  const queuedEditor = thirdRow.getByRole('textbox', { name: '编辑队列消息' });
+  await queuedEditor.fill('edited third request');
+  await thirdRow.getByRole('button', { name: '保存' }).click();
+  await expect(thirdRow).toContainText('edited third request');
+  const secondRow = pendingQueue.getByRole('listitem').filter({ hasText: 'second queued request' });
+  await secondRow.getByRole('button', { name: '删除' }).click();
+  await expect(pendingQueue.getByRole('listitem')).toHaveCount(2);
+  await expect(pendingQueue.getByRole('listitem').nth(1)).toContainText('first queued request');
+  await expect(sideUserMessages).toHaveCount(1);
+
+  // The queued row's explicit action is still the only commit point to the AI.
+  const queuedSteerButton = pendingQueue.getByRole('listitem').first().getByRole('button', { name: '引导' });
+  await expect(queuedSteerButton).toBeEnabled();
+  await queuedSteerButton.click();
+  await expect(pendingQueue.getByRole('listitem')).toHaveCount(1);
   await expect(sideUserMessages.first()).toContainText('__e2e_wait_for_steering__');
-  await expect(sideUserMessages.nth(1)).toContainText('only answer the side request');
+  const guidedMessage = steerPanel.getByLabel(/你发送的消息 · 已引导对话/)
+    .filter({ hasText: 'edited third request' });
+  await expect(guidedMessage).toBeVisible();
+  await expect(guidedMessage).toContainText('已引导对话');
+  await expect(
+    steerPanel.getByText(/Acknowledged steering: edited third request/),
+  ).toBeVisible();
+  // Once the steered answer settles, the remaining queue drains one ordinary
+  // follow-up turn at a time without another click.
+  await expect(sideUserMessages.filter({ hasText: 'first queued request' })).toBeVisible();
+  await expect(
+    steerPanel.getByText(/Fake backend received: first queued request/),
+  ).toBeVisible();
+  await expect(pendingQueue).toHaveCount(0);
 
   const steerCompanion = (
     await page.evaluate(() => window.maka.sessions.list())

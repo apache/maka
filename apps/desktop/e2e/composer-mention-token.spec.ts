@@ -45,8 +45,8 @@ test('the @ trigger: empty-menu sends, caret boundaries, trigger grammar, and th
   await composer.press('Enter');
   await expect(page.getByRole('log').getByText('Fake backend received: @zzzznomatchzzzz')).toBeVisible();
   await expect(page.getByLabel('你发送的消息')).toHaveCount(1);
-  // Settle before the next phase sends: an Enter during a streaming turn
-  // becomes steering instead of a new message.
+  // Settle before the next phase sends so this mention journey does not also
+  // exercise the running turn's ordinary follow-up queue.
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
 
   await composer.fill('看一下 @agent');

@@ -334,7 +334,7 @@ export interface MakaBridge {
         }
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+    steer(sessionId: string, text: string, messageId?: string): Promise<QueueEnqueueOutcome>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;

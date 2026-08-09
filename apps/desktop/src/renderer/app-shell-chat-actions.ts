@@ -66,6 +66,7 @@ import {
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
 import { readSettledMessages, type RefreshMessagesOptions } from './session-message-settlement.js';
+import { createMessageRefreshOrder } from './message-refresh-order.js';
 
 export type { RefreshMessagesOptions };
 
@@ -173,6 +174,7 @@ export function createAppShellChatActions(deps: {
   newChatOrchestrationMode: OrchestrationMode;
   newChatProjectId: string | null | undefined;
 }): AppShellChatActions {
+  const messageRefreshOrder = createMessageRefreshOrder();
   const {
     uiLocale,
     activeIdRef,
@@ -442,11 +444,10 @@ export function createAppShellChatActions(deps: {
         return false;
       }
       // #1954: main submitted this send through the Host's turn.message.submit
-      // and it was queued into the running/next turn instead of opening one
-      // (disposition steering|followup). Undo the new-turn bookkeeping we
-      // armed above (no second turn is starting) and refresh so the injected
-      // message (persisted as a user row / surfaced by the observer's
-      // steering_message event) appears in the transcript.
+      // and it was queued behind the running turn instead of opening one
+      // (disposition followup). Undo the new-turn bookkeeping we armed above;
+      // the Host will promote the queued message into the transcript when its
+      // turn starts.
       if (sendResult.disposition !== 'turn_started') {
         disarmTurnActive(sessionId, turnId);
         optimisticSessionId = undefined;
@@ -570,12 +571,18 @@ export function createAppShellChatActions(deps: {
   }
 
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
+    const refreshTicket = messageRefreshOrder.begin(sessionId);
     try {
       const result = await readSettledMessages(sessionId, options);
       const next = result.messages;
-      if (activeIdRef.current === sessionId) {
+      if (
+        messageRefreshOrder.acceptSuccessful(refreshTicket)
+        && activeIdRef.current === sessionId
+      ) {
         markSessionReadLocally(sessionId, next);
-        setMessages(next);
+        if (!options.preserveVisibleMessagesOnEmpty || next.length > 0) {
+          setMessages(next);
+        }
         setMessageLoadErrorBySession((current) => {
           if (!current[sessionId]) return current;
           const updated = { ...current };
@@ -616,10 +623,12 @@ export function createAppShellChatActions(deps: {
       // polling cycle itself.
       if (activeIdRef.current !== sessionId) return;
       try {
+        const refreshTicket = messageRefreshOrder.begin(sessionId);
         const next = await window.maka.sessions.readMessages(sessionId);
         if (activeIdRef.current !== sessionId) return;
         const hasSentUserTurn = next.some((message) => message.type === 'user' && message.turnId === turnId);
         if (hasSentUserTurn) {
+          if (!messageRefreshOrder.acceptSuccessful(refreshTicket)) return;
           markSessionReadLocally(sessionId, next);
           setMessages(next);
           return;

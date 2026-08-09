@@ -42,6 +42,17 @@ export interface ComposerHistoryState {
   savedDraft: string;
 }
 
+/**
+ * A response remains busy for the whole Runtime turn, including first-token
+ * waits and tool/step gaps where no live text is currently streaming.
+ */
+export function isComposerResponseBusy(
+  streaming: boolean,
+  sessionStatus: string | undefined,
+): boolean {
+  return streaming || sessionStatus === 'running';
+}
+
 export function appendPromptContextDraft(current: string, fragment: string): string {
   const base = current.trimEnd();
   const next = fragment.trim();

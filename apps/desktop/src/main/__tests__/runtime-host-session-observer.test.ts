@@ -337,6 +337,84 @@ test("abandons a watched Turn when the Session is removed", async () => {
   await observer.close();
 });
 
+test("reopens a slow-consumer subscription without reporting a Turn error", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const replacementEvents = new AsyncFrameQueue();
+  const sessionChanges: string[] = [];
+  const subscriptionFailures: Array<[string, string]> = [];
+  let openCount = 0;
+  let closeCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        const replacement = openCount > 1;
+        const events = replacement ? replacementEvents : firstEvents;
+        return {
+          snapshot: continuitySnapshot({ projectionRevision: openCount }),
+          transcript: Promise.resolve<StoredMessage[]>([
+            {
+              type: "assistant",
+              id: "message-1",
+              turnId: "turn-1",
+              ts: 10,
+              text: replacement ? "Before and after" : "Before",
+              modelId: "test-model",
+            },
+          ]),
+          events,
+          async close() {
+            closeCount += 1;
+            events.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged(reason) {
+      sessionChanges.push(reason);
+    },
+    onSubscriptionFailure(sessionId, error) {
+      subscriptionFailures.push([
+        sessionId,
+        error instanceof Error ? error.message : String(error),
+      ]);
+    },
+    now: () => 50,
+  });
+  const target = eventTarget(2);
+  await observer.observe("session-1", "observer-1", target);
+  assert.equal(openCount, 1);
+
+  firstEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    reason: "slow_consumer",
+  });
+
+  await waitFor(
+    () =>
+      openCount === 2 &&
+      sessionChanges.includes("message-appended") &&
+      target.events.some(
+        (event) => event.type === "text_delta" && event.text === "Before and after",
+      ),
+  );
+  assert.equal(
+    target.events.some((event) => event.type === "error"),
+    false,
+  );
+  assert.deepEqual(subscriptionFailures, [
+    ["session-1", "Runtime Host Session subscription closed for a slow consumer"],
+  ]);
+  assert.equal(closeCount, 1);
+
+  await observer.unobserve("observer-1");
+  assert.equal(closeCount, 2);
+  await observer.close();
+});
+
 test("shares one Host subscription and one delivery per renderer target", async () => {
   const events = new AsyncFrameQueue();
   let openCount = 0;

@@ -50,6 +50,7 @@ import {
   enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
+  isComposerResponseBusy,
   reconcileInteractions,
 } from '@maka/ui';
 import { MessageCircleQuestion } from '@maka/ui/icons';
@@ -103,7 +104,10 @@ import {
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
+import {
+  getDesktopConversationCopy,
+  getSteeringDeferredCopy,
+} from './locales/conversation-copy';
 import {
   SideChatCloseConfirmation,
   SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY,
@@ -118,6 +122,15 @@ import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project
 import { deriveSessionRail } from './session-rail';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
+import {
+  abandonPendingSteering,
+  abandonPendingSteeringSession,
+  admitPendingSteering,
+  completePendingSteeringTurn,
+  consumePendingSteering,
+  registerPendingSteering,
+  type PendingSteeringDispositionStore,
+} from './steering-disposition';
 import { deriveBranchBanner } from './branch-banner';
 import { readNavigationState, selectNavigation } from './nav-selection';
 import { sessionMatchesNavSelection } from './session-nav-filter';
@@ -317,6 +330,7 @@ function AppShellContent({
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const updateInstallInFlightRef = useRef(false);
+  const pendingSteeringDispositionRef = useRef<PendingSteeringDispositionStore>(new Map());
   const notifiedInstallErrorRef = useRef<string | null>(null);
   const {
     sessions,
@@ -2100,10 +2114,22 @@ function AppShellContent({
   async function steerWithText(text: string): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId || !text.trim()) return false;
+    const messageId = crypto.randomUUID();
+    const dispositions = pendingSteeringDispositionRef.current;
+    registerPendingSteering(dispositions, messageId, sessionId);
     try {
-      const outcome = await window.maka.sessions.steer(sessionId, text.trim());
+      const outcome = await window.maka.sessions.steer(sessionId, text.trim(), messageId);
+      if (outcome.kind !== 'queued') {
+        abandonPendingSteering(dispositions, messageId);
+        return false;
+      }
+      if (admitPendingSteering(dispositions, messageId)) {
+        const copy = getSteeringDeferredCopy(uiLocale);
+        toastApi.info(copy.title, copy.description);
+      }
       return outcome.kind === 'queued';
     } catch (error) {
+      abandonPendingSteering(dispositions, messageId);
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
         toastApi.error(
@@ -2135,6 +2161,17 @@ function AppShellContent({
     setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
+    onSteeringConsumed: (_sessionId, messageId) => {
+      consumePendingSteering(pendingSteeringDispositionRef.current, messageId);
+    },
+    onTurnCompleted: (sessionId) => {
+      if (!completePendingSteeringTurn(pendingSteeringDispositionRef.current, sessionId)) return;
+      const copy = getSteeringDeferredCopy(uiLocale);
+      toastApi.info(copy.title, copy.description);
+    },
+    onTurnInterrupted: (sessionId) => {
+      abandonPendingSteeringSession(pendingSteeringDispositionRef.current, sessionId);
+    },
     showModelSetupToast,
     toastApi,
     notifyRunEnded: ({ kind, sessionId, body }) => {
@@ -2263,16 +2300,12 @@ function AppShellContent({
     themePref,
   });
   useActiveSessionEvents({
-    uiLocale,
     activeId,
     activeIdRef,
     handleEvent,
-    markSessionReadLocally,
-    setMessageLoadErrorBySession,
+    refreshMessages,
     setMessageLoadPending,
-    setMessages,
     setSessionEventHealthBySession,
-    toastApi,
   });
   useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
   useSessionEventHealthPolling({
@@ -2739,7 +2772,10 @@ function AppShellContent({
                   // send), so neither witness can veto the other — see
                   // `deriveTurnActive`. `activeStreamingLive` is folded in
                   // defensively for the rare replay where the arm was over-cleared.
-                  streaming={turnActive || activeStreamingLive}
+                  streaming={isComposerResponseBusy(
+                    turnActive || activeStreamingLive,
+                    activeSessionForView?.status,
+                  )}
                   // #646: in the first-token wait (Stop up, nothing streams yet) the
                   // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
                   // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.

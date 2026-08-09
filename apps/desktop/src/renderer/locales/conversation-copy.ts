@@ -750,6 +750,22 @@ export function getDesktopConversationCopy(locale: UiLocale): DesktopConversatio
   return COPY[locale];
 }
 
+export function getSteeringDeferredCopy(locale: UiLocale): {
+  title: string;
+  description: string;
+} {
+  return locale === 'zh'
+    ? {
+        title: '最终回答正在生成',
+        description: '现在无法继续引导这轮对话。该消息已保留在队列中，将在回答完成后自动发送。',
+      }
+    : {
+        title: 'Final answer in progress',
+        description:
+          'This turn can no longer be guided. The message remains in the queue and will be sent automatically after the answer finishes.',
+      };
+}
+
 export type InspectorCopy = DesktopConversationCopy['inspector'];
 
 /**

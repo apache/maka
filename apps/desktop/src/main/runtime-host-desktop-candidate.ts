@@ -306,6 +306,18 @@ export async function createDesktopRuntimeHostCandidate(
         outcome === "completed"
           ? deps.completeComputerUseTurn(sessionId)
           : deps.nativeCapabilities.releaseComputerUseSession(sessionId),
+      ...(deps.onError
+        ? {
+            onSubscriptionFailure: (sessionId: string, error: unknown) =>
+              deps.onError?.(
+                new Error(
+                  `Session ${sessionId} subscription interrupted; reopening: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                ),
+              ),
+          }
+        : {}),
       ...(deps.now ? { now: deps.now } : {}),
     });
     observer = sessionObserver;

@@ -153,6 +153,7 @@ describe('single live-turn handoff', () => {
     const liveTurnBySessionRef = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const refreshes: Array<{ sessionId: string; required?: string }> = [];
+    const completedSessions: string[] = [];
     const setLiveTurnBySession = (updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) => {
       liveTurns.set(updater);
       liveTurnBySessionRef.current = liveTurns.get();
@@ -168,6 +169,7 @@ describe('single live-turn handoff', () => {
       refreshSessions: async () => [],
       setLiveTurnBySession,
       setInteractionBySession: interactions.set,
+      onTurnCompleted: (sessionId) => completedSessions.push(sessionId),
       showModelSetupToast: () => {},
       toastApi: { error: () => {} },
     });
@@ -190,6 +192,7 @@ describe('single live-turn handoff', () => {
     assert.deepEqual(terminal?.steps[0]?.thinking?.text, '思考');
     assert.equal(terminal?.steps[0]?.tools[0]?.toolUseId, 'tool-1');
     assert.equal(terminal?.steps[0]?.text?.text, '答案');
+    assert.deepEqual(completedSessions, ['session-1']);
 
     await handlers.settleAssistantStreaming('session-1', 'assistant-1');
     assert.equal(liveTurns.get()['session-1'], undefined);
@@ -446,6 +449,7 @@ describe('single live-turn handoff', () => {
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const refreshes: string[] = [];
+    const consumed: Array<{ sessionId: string; messageId: string }> = [];
     const handlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh',
       activeIdRef: { current: 'session-1' },
@@ -460,6 +464,7 @@ describe('single live-turn handoff', () => {
         ref.current = liveTurns.get();
       },
       setInteractionBySession: interactions.set,
+      onSteeringConsumed: (sessionId, messageId) => consumed.push({ sessionId, messageId }),
       showModelSetupToast: () => {},
       toastApi: { error: () => {} },
     });
@@ -478,5 +483,6 @@ describe('single live-turn handoff', () => {
     assert.equal(liveTurns.get()['session-1']?.steering?.[0]?.id, 'user-steer-1');
     // …and the transcript refresh fires for the owning session.
     assert.deepEqual(refreshes, ['session-1']);
+    assert.deepEqual(consumed, [{ sessionId: 'session-1', messageId: 'user-steer-1' }]);
   });
 });

@@ -282,8 +282,8 @@ const makaBridge = {
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
       return ipcRenderer.invoke('sessions:stop', sessionId, input);
     },
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
-      return ipcRenderer.invoke('sessions:steer', sessionId, text);
+    steer(sessionId: string, text: string, messageId?: string): Promise<QueueEnqueueOutcome> {
+      return ipcRenderer.invoke('sessions:steer', sessionId, text, messageId);
     },
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);

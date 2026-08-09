@@ -380,7 +380,7 @@ test("submits canonical MessageContent and uploads owned Attachment bytes throug
           },
         ],
       },
-      placement: "current_turn",
+      placement: "next_turn",
     },
   ]);
   assert.deepEqual(result, {
@@ -587,7 +587,7 @@ test("routes a Skill token in composer text through Turn admission", async () =>
   });
 });
 
-test("routes a plain-text send through turn.message.submit and surfaces the Host's steering disposition", async () => {
+test("routes a plain-text send through the Host's next-turn queue", async () => {
   const submits: unknown[] = [];
   const changes: unknown[] = [];
   const ipc = ipcHarness();
@@ -597,7 +597,7 @@ test("routes a plain-text send through turn.message.submit and surfaces the Host
         getSession: async () => session(),
         submitMessage: async (input) => {
           submits.push(input);
-          return { disposition: "steering", queueRevision: 2 };
+          return { disposition: "followup", queueRevision: 2 };
         },
       }),
       observer: unusedObserver(),
@@ -612,9 +612,9 @@ test("routes a plain-text send through turn.message.submit and surfaces the Host
     ipc,
   );
 
-  // #1954: while the Host's admission owns the session, a plain-text send must
-  // go through `turn.message.submit` so the Host atomically decides steering
-  // instead of Desktop opening (or failing to open) a parallel turn.
+  // While the Host's admission owns the session, ordinary composer submission
+  // queues a later conversation turn. Only the dedicated steer action may
+  // mutate the current turn.
   const result = await ipc.invoke("sessions:send", "session-1", {
     type: "send",
     text: "改成英文输出",
@@ -625,12 +625,12 @@ test("routes a plain-text send through turn.message.submit and surfaces the Host
       sessionId: "session-1",
       messageId: "msg-1",
       content: { text: "改成英文输出", inlineReferences: [] },
-      placement: "current_turn",
+      placement: "next_turn",
     },
   ]);
   assert.deepEqual(result, {
     ok: true,
-    disposition: "steering",
+    disposition: "followup",
   });
   // No turn started, so no status-change broadcast for a new turn id.
   assert.deepEqual(changes, []);
@@ -772,7 +772,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   );
 
   assert.deepEqual(
-    await ipc.invoke("sessions:steer", "session-1", "  Continue  "),
+    await ipc.invoke("sessions:steer", "session-1", "  Continue  ", "client-steer-1"),
     {
       kind: "queued",
     },
@@ -783,7 +783,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(submits, [
     {
       sessionId: "session-1",
-      messageId: "id-1",
+      messageId: "client-steer-1",
       content: { text: "Continue" },
       placement: "current_turn",
     },
@@ -791,7 +791,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(interrupts, [
     {
       sessionId: "session-1",
-      interruptId: "id-2",
+      interruptId: "id-1",
       turnId: "turn-1",
       runId: "run-1",
     },

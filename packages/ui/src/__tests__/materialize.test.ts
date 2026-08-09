@@ -31,13 +31,21 @@ describe("materializeChat attachments", () => {
   test("preserves the original prompt and projects same-turn steering separately", () => {
     const messages: StoredMessage[] = [
       { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
-      { type: "user", id: "steer-1", turnId: "t1", ts: 2, text: "inserted instruction" },
       {
         type: "assistant",
-        id: "answer",
+        id: "answer-before",
         turnId: "t1",
-        ts: 3,
-        text: "done",
+        ts: 2,
+        text: "working",
+        modelId: "fixture",
+      },
+      { type: "user", id: "steer-1", turnId: "t1", ts: 3, text: "inserted instruction", steeringEventId: "event-steer" },
+      {
+        type: "assistant",
+        id: "answer-after",
+        turnId: "t1",
+        ts: 4,
+        text: "guided answer",
         modelId: "fixture",
       },
     ];
@@ -47,6 +55,10 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(turn?.userInterjections?.map((message) => message.text), [
       "inserted instruction",
     ]);
+    assert.deepEqual(
+      turn?.timeline.map((item) => item.kind === "steering" ? item.message.text : item.kind === "text" ? item.text : item.kind),
+      ["working", "inserted instruction", "guided answer"],
+    );
   });
 
   test("overlays a steering message immediately and deduplicates its persisted row", () => {
@@ -75,6 +87,375 @@ describe("materializeChat attachments", () => {
     assert.deepEqual(deduplicated?.userInterjections?.map((message) => message.text), [
       "inserted instruction",
     ]);
+  });
+
+  test("keeps persisted steering between live assistant steps", () => {
+    const settled = materializeTurns([
+      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      {
+        type: "assistant",
+        id: "before",
+        turnId: "t1",
+        ts: 2,
+        text: "persisted before",
+        modelId: "fixture",
+      },
+      {
+        type: "user",
+        id: "steer-1",
+        turnId: "t1",
+        ts: 3,
+        text: "inserted instruction",
+        steeringEventId: "event-steer",
+      },
+    ]);
+    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_delta",
+      id: "before-delta",
+      turnId: "t1",
+      messageId: "before",
+      ts: 2,
+      text: "live before",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 3,
+      content: { text: "inserted instruction" },
+    })!;
+    live = applyLiveTurnEvent(live, {
+      type: "text_delta",
+      id: "after-delta",
+      turnId: "t1",
+      messageId: "after",
+      ts: 4,
+      text: "live after",
+    });
+
+    const [overlaid] = overlayLiveTurn(settled, live);
+    assert.deepEqual(
+      overlaid?.timeline.map((item) => item.kind === "steering"
+        ? item.message.text
+        : item.kind === "text"
+          ? item.text
+          : item.kind),
+      ["live before", "inserted instruction", "live after"],
+    );
+  });
+
+  test("keeps live-only steering at its arrival point between assistant steps", () => {
+    const settled = materializeTurns([
+      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+    ]);
+    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_delta",
+      id: "before-delta",
+      turnId: "t1",
+      messageId: "before",
+      ts: 2,
+      text: "live before",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 3,
+      content: { text: "inserted instruction" },
+    })!;
+    live = applyLiveTurnEvent(live, {
+      type: "text_delta",
+      id: "after-delta",
+      turnId: "t1",
+      messageId: "after",
+      ts: 4,
+      text: "live after",
+    });
+
+    const [overlaid] = overlayLiveTurn(settled, live);
+    assert.deepEqual(
+      overlaid?.timeline.map((item) => item.kind === "steering"
+        ? item.message.text
+        : item.kind === "text"
+          ? item.text
+          : item.kind),
+      ["live before", "inserted instruction", "live after"],
+    );
+  });
+
+  test("keeps the persisted prefix above live-only steering after older live steps hand off", () => {
+    const settled = materializeTurns([
+      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      {
+        type: "assistant",
+        id: "before-1",
+        turnId: "t1",
+        ts: 2,
+        text: "persisted before 1",
+        modelId: "fixture",
+      },
+      {
+        type: "tool_call",
+        id: "tool-1",
+        turnId: "t1",
+        stepId: "before-1",
+        ts: 3,
+        toolName: "Glob",
+        args: {},
+      },
+      {
+        type: "tool_result",
+        id: "result-1",
+        turnId: "t1",
+        ts: 4,
+        toolUseId: "tool-1",
+        isError: false,
+        content: { kind: "text", text: "done" },
+      },
+      {
+        type: "assistant",
+        id: "before-2",
+        turnId: "t1",
+        ts: 5,
+        text: "persisted before 2",
+        modelId: "fixture",
+      },
+      {
+        type: "tool_call",
+        id: "tool-2",
+        turnId: "t1",
+        stepId: "before-2",
+        ts: 6,
+        toolName: "Read",
+        args: {},
+      },
+      {
+        type: "tool_result",
+        id: "result-2",
+        turnId: "t1",
+        ts: 7,
+        toolUseId: "tool-2",
+        isError: false,
+        content: { kind: "text", text: "done" },
+      },
+    ]);
+    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_delta",
+      id: "before-delta",
+      turnId: "t1",
+      messageId: "before-1",
+      ts: 2,
+      text: "live before 1",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "tool_start",
+      id: "tool-start",
+      turnId: "t1",
+      stepId: "before-1",
+      toolUseId: "tool-1",
+      toolName: "Glob",
+      args: {},
+      ts: 3,
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 8,
+      content: { text: "inserted instruction" },
+    })!;
+    live = applyLiveTurnEvent(live, {
+      type: "text_delta",
+      id: "after-delta",
+      turnId: "t1",
+      messageId: "after",
+      ts: 9,
+      text: "live after",
+    });
+
+    const [overlaid] = overlayLiveTurn(settled, live);
+    assert.deepEqual(
+      overlaid?.timeline.map((item) => item.kind === "steering"
+        ? item.message.text
+        : item.kind === "text"
+          ? item.text
+          : item.kind === "tools"
+            ? item.items.map((tool) => tool.toolUseId).join(",")
+            : item.kind),
+      [
+        "live before 1",
+        "tool-1",
+        "persisted before 2",
+        "tool-2",
+        "inserted instruction",
+        "live after",
+      ],
+    );
+  });
+
+  test("uses persisted steering order when its live echo arrives after the guided response", () => {
+    const settled = materializeTurns([
+      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      {
+        type: "assistant",
+        id: "before",
+        turnId: "t1",
+        ts: 2,
+        text: "persisted before",
+        modelId: "fixture",
+      },
+      {
+        type: "user",
+        id: "steer-1",
+        turnId: "t1",
+        ts: 3,
+        text: "inserted instruction",
+        steeringEventId: "event-steer",
+      },
+    ]);
+    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_delta",
+      id: "before-delta",
+      turnId: "t1",
+      messageId: "before",
+      ts: 2,
+      text: "live before",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "text_delta",
+      id: "after-delta",
+      turnId: "t1",
+      messageId: "after",
+      ts: 4,
+      text: "live after",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 3,
+      content: { text: "inserted instruction" },
+    })!;
+
+    const [overlaid] = overlayLiveTurn(settled, live);
+    assert.deepEqual(
+      overlaid?.timeline.map((item) => item.kind === "steering"
+        ? item.message.text
+        : item.kind === "text"
+          ? item.text
+          : item.kind),
+      ["live before", "inserted instruction", "live after"],
+    );
+  });
+
+  test("uses persisted tool anchors when assistant rows lag behind the live stream", () => {
+    const settled = materializeTurns([
+      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      {
+        type: "tool_call",
+        id: "tool-before",
+        turnId: "t1",
+        stepId: "before",
+        ts: 2,
+        toolName: "Bash",
+        args: {},
+      },
+      {
+        type: "tool_result",
+        id: "result-before",
+        turnId: "t1",
+        ts: 3,
+        toolUseId: "tool-before",
+        isError: false,
+        content: { kind: "text", text: "before result" },
+      },
+      {
+        type: "user",
+        id: "steer-1",
+        turnId: "t1",
+        ts: 4,
+        text: "inserted instruction",
+        steeringEventId: "event-steer",
+      },
+      {
+        type: "tool_call",
+        id: "tool-after",
+        turnId: "t1",
+        stepId: "after",
+        ts: 5,
+        toolName: "Read",
+        args: {},
+      },
+      {
+        type: "tool_result",
+        id: "result-after",
+        turnId: "t1",
+        ts: 6,
+        toolUseId: "tool-after",
+        isError: false,
+        content: { kind: "text", text: "after result" },
+      },
+    ]);
+    let live = applyLiveTurnEvent(armLiveTurn("t1"), {
+      type: "text_delta",
+      id: "before-delta",
+      turnId: "t1",
+      messageId: "before",
+      ts: 2,
+      text: "live before",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "tool_start",
+      id: "before-tool-start",
+      turnId: "t1",
+      stepId: "before",
+      toolUseId: "tool-before",
+      toolName: "Bash",
+      args: {},
+      ts: 2,
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "steering_message",
+      id: "steer-event",
+      messageId: "steer-1",
+      turnId: "t1",
+      ts: 4,
+      content: { text: "inserted instruction" },
+    })!;
+    live = applyLiveTurnEvent(live, {
+      type: "text_delta",
+      id: "after-delta",
+      turnId: "t1",
+      messageId: "after",
+      ts: 5,
+      text: "live after",
+    });
+    live = applyLiveTurnEvent(live, {
+      type: "tool_start",
+      id: "after-tool-start",
+      turnId: "t1",
+      stepId: "after",
+      toolUseId: "tool-after",
+      toolName: "Read",
+      args: {},
+      ts: 5,
+    });
+
+    const [overlaid] = overlayLiveTurn(settled, live);
+    assert.deepEqual(
+      overlaid?.timeline.map((item) => item.kind === "steering"
+        ? item.message.text
+        : item.kind === "text"
+          ? item.text
+          : item.kind === "tools"
+            ? item.items.map((tool) => tool.toolUseId).join(",")
+            : item.kind),
+      ["live before", "tool-before", "inserted instruction", "live after", "tool-after"],
+    );
   });
 
   test("projects frozen inline references onto chat and turn user messages", () => {

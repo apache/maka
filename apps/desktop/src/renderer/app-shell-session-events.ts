@@ -43,6 +43,12 @@ export function createAppShellSessionEventHandlers(options: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
+  /** Runtime consumed this exact queued input at a same-turn step boundary. */
+  onSteeringConsumed?: (sessionId: string, messageId: string) => void;
+  /** The turn completed; any admitted steering not consumed is next-turn input. */
+  onTurnCompleted?: (sessionId: string) => void;
+  /** Error/abort has different queue semantics; discard local disposition tracking. */
+  onTurnInterrupted?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
@@ -57,6 +63,9 @@ export function createAppShellSessionEventHandlers(options: {
     setInteractionBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
+    onSteeringConsumed,
+    onTurnCompleted,
+    onTurnInterrupted,
     showModelSetupToast,
     toastApi,
     notifyRunEnded,
@@ -152,6 +161,7 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId);
         break;
       case 'steering_message':
+        onSteeringConsumed?.(sessionId, event.messageId);
         // #1954: the runtime persisted a mid-turn steering message as a user
         // RuntimeEvent; re-read so the injected text appears in the transcript
         // (previously fell into the default branch and stayed invisible until
@@ -159,6 +169,7 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId);
         break;
       case 'error':
+        onTurnInterrupted?.(sessionId);
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (activeIdRef.current === sessionId) {
@@ -175,12 +186,14 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'abort':
+        onTurnInterrupted?.(sessionId);
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
+        onTurnCompleted?.(sessionId);
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {

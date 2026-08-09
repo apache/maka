@@ -15,6 +15,7 @@ import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
+  ArrowDown,
   ArrowUp,
   FileText,
   ListTodo,
@@ -25,6 +26,7 @@ import {
   Sparkles,
   Upload,
   Workflow,
+  Trash2,
 } from './icons.js';
 import {
   ChatModelSwitcher,
@@ -55,12 +57,15 @@ import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import {
   Button as UiButton,
+  ButtonGroup,
+  Card,
   ChatComposer as AstryxChatComposer,
   ChatComposerDrawer,
   ChatComposerInput,
   IconButton,
   Lightbox,
   Token,
+  TextArea,
   Tooltip,
   useChatPasteAsToken,
   type ChatComposerInputHandle,
@@ -175,6 +180,12 @@ export interface ComposerHandle {
 
 export interface ComposerSendMetadata {
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+}
+
+interface QueuedComposerInput {
+  id: number;
+  text: string;
+  metadata?: ComposerSendMetadata;
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -366,6 +377,14 @@ export const Composer = forwardRef<
   }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
+  const [queuedInputsByDraftKey, setQueuedInputsByDraftKey] = useState<
+    Record<string, readonly QueuedComposerInput[]>
+  >({});
+  const [editingQueuedInputId, setEditingQueuedInputId] = useState<number | null>(null);
+  const [queuedInputEditText, setQueuedInputEditText] = useState('');
+  const queuedInputSequenceRef = useRef(0);
+  const autoDrainReadyDraftKeysRef = useRef(new Set<string>());
+  const previousQueueStreamingRef = useRef<{ draftKey: string; streaming: boolean } | null>(null);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -606,6 +625,13 @@ export const Composer = forwardRef<
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).composer;
   const mentionCopy = getConversationCopy(locale).mentions;
+  const queuedInputDraftKey = props.draftKey ?? '__new_task__';
+  const queuedInputs = queuedInputsByDraftKey[queuedInputDraftKey] ?? [];
+
+  useEffect(() => {
+    setEditingQueuedInputId(null);
+    setQueuedInputEditText('');
+  }, [queuedInputDraftKey]);
 
   useEffect(() => {
     return () => {
@@ -987,6 +1013,153 @@ export const Composer = forwardRef<
     [],
   );
 
+  function currentInput(): { text: string; metadata?: ComposerSendMetadata } | null {
+    const text = composerWireText(textPort.getValue());
+    if (!text) return null;
+    const editable = editableNode();
+    const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
+    return {
+      text,
+      ...(workspaceFileReferences.length > 0
+        ? { metadata: { workspaceFileReferences } }
+        : {}),
+    };
+  }
+
+  function queueCurrentInput(): boolean {
+    const input = currentInput();
+    if (!input) return false;
+    const submittedDraftKey = activeDraftKey();
+    const entry: QueuedComposerInput = {
+      id: ++queuedInputSequenceRef.current,
+      ...input,
+    };
+    setQueuedInputsByDraftKey((current) => ({
+      ...current,
+      [queuedInputDraftKey]: [...(current[queuedInputDraftKey] ?? []), entry],
+    }));
+    if (activeDraftKey() === submittedDraftKey) {
+      clearDraft(submittedDraftKey);
+      textPort.setValue('');
+      saveCurrentDraft('');
+    }
+    return true;
+  }
+
+  function removeQueuedInput(id: number) {
+    setQueuedInputsByDraftKey((current) => ({
+      ...current,
+      [queuedInputDraftKey]: (current[queuedInputDraftKey] ?? []).filter(
+        (entry) => entry.id !== id,
+      ),
+    }));
+    if (editingQueuedInputId === id) {
+      setEditingQueuedInputId(null);
+      setQueuedInputEditText('');
+    }
+  }
+
+  function moveQueuedInput(id: number, offset: -1 | 1) {
+    setQueuedInputsByDraftKey((current) => {
+      const entries = current[queuedInputDraftKey] ?? [];
+      const fromIndex = entries.findIndex((entry) => entry.id === id);
+      const toIndex = fromIndex + offset;
+      if (fromIndex < 0 || toIndex < 0 || toIndex >= entries.length) return current;
+      const reordered = [...entries];
+      const [entry] = reordered.splice(fromIndex, 1);
+      if (!entry) return current;
+      reordered.splice(toIndex, 0, entry);
+      return { ...current, [queuedInputDraftKey]: reordered };
+    });
+  }
+
+  function beginEditingQueuedInput(entry: QueuedComposerInput) {
+    setEditingQueuedInputId(entry.id);
+    setQueuedInputEditText(entry.text);
+  }
+
+  function cancelEditingQueuedInput() {
+    setEditingQueuedInputId(null);
+    setQueuedInputEditText('');
+  }
+
+  function saveQueuedInputEdit(id: number) {
+    const text = composerWireText(queuedInputEditText);
+    if (!text) return;
+    setQueuedInputsByDraftKey((current) => ({
+      ...current,
+      [queuedInputDraftKey]: (current[queuedInputDraftKey] ?? []).map((entry) => (
+        entry.id === id
+          ? {
+              id: entry.id,
+              text,
+              ...(text === entry.text && entry.metadata !== undefined
+                ? { metadata: entry.metadata }
+                : {}),
+            }
+          : entry
+      )),
+    }));
+    cancelEditingQueuedInput();
+  }
+
+  async function submitQueuedInput(entry: QueuedComposerInput) {
+    if (props.disabled || props.sendBlocked || sendPendingRef.current) return;
+    sendPendingRef.current = true;
+    setSendPending(true);
+    let sent: boolean | void;
+    try {
+      const submit = props.streaming && props.onSteer ? props.onSteer : props.onSend;
+      sent = await submit(entry.text, entry.metadata);
+    } finally {
+      sendPendingRef.current = false;
+      if (composerMountedRef.current) setSendPending(false);
+    }
+    if (!composerMountedRef.current || sent === false) return;
+    rememberSentEntry(entry.text);
+    removeQueuedInput(entry.id);
+  }
+
+  useEffect(() => {
+    const previous = previousQueueStreamingRef.current;
+    previousQueueStreamingRef.current = {
+      draftKey: queuedInputDraftKey,
+      streaming: Boolean(props.streaming),
+    };
+    if (
+      previous?.draftKey === queuedInputDraftKey
+      && previous.streaming
+      && !props.streaming
+    ) {
+      autoDrainReadyDraftKeysRef.current.add(queuedInputDraftKey);
+    }
+    if (
+      props.streaming
+      || props.disabled
+      || props.sendBlocked
+      || sendPending
+      || editingQueuedInputId !== null
+      || !autoDrainReadyDraftKeysRef.current.has(queuedInputDraftKey)
+    ) return;
+    const next = queuedInputs[0];
+    if (!next) {
+      autoDrainReadyDraftKeysRef.current.delete(queuedInputDraftKey);
+      return;
+    }
+    // Consume one completion edge per queued send. The send starts another
+    // busy cycle; its own busy -> idle edge releases exactly one next item.
+    autoDrainReadyDraftKeysRef.current.delete(queuedInputDraftKey);
+    void submitQueuedInput(next);
+  }, [
+    editingQueuedInputId,
+    props.disabled,
+    props.sendBlocked,
+    props.streaming,
+    queuedInputDraftKey,
+    queuedInputs,
+    sendPending,
+  ]);
+
   async function sendCurrent() {
     if (
       props.disabled
@@ -994,22 +1167,24 @@ export const Composer = forwardRef<
       || sendPendingRef.current
       || importActionOwnerRef.current?.pending
     ) return;
+    if (props.streaming) {
+      queueCurrentInput();
+      return;
+    }
     // There is one authoritative draft: staged Skills and files serialize into
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
-    const text = composerWireText(textPort.getValue());
-    if (!text) return;
-    const editable = editableNode();
-    const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
+    const input = currentInput();
+    if (!input) return;
+    const { text, metadata } = input;
     const submittedDraftKey = activeDraftKey();
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
     try {
-      const submit = props.streaming && props.onSteer ? props.onSteer : props.onSend;
-      sent = await submit(
+      sent = await props.onSend(
         text,
-        workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
+        metadata,
       );
     } finally {
       sendPendingRef.current = false;
@@ -1352,6 +1527,106 @@ export const Composer = forwardRef<
         onDrop={onComposerDrop}
         onSubmit={submit}
       >
+        {queuedInputs.length > 0 ? (
+          <div
+            className="maka-composer-pending-queue"
+            role="list"
+            aria-label={copy.queuedInputs}
+          >
+            {queuedInputs.map((entry, index) => (
+              <Card
+                className="maka-composer-pending-row"
+                role="listitem"
+                padding={2}
+                key={entry.id}
+              >
+                {editingQueuedInputId === entry.id ? (
+                  <div className="maka-composer-pending-editor">
+                    <TextArea
+                      label={copy.editQueuedInputAriaLabel}
+                      isLabelHidden
+                      value={queuedInputEditText}
+                      rows={2}
+                      size="sm"
+                      width="100%"
+                      hasAutoFocus
+                      onChange={setQueuedInputEditText}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          cancelEditingQueuedInput();
+                        } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                          event.preventDefault();
+                          saveQueuedInputEdit(entry.id);
+                        }
+                      }}
+                    />
+                    <div className="maka-composer-pending-edit-actions">
+                      <ButtonGroup label={copy.queuedInputActions} size="sm">
+                        <UiButton
+                          variant="ghost"
+                          isDisabled={!composerWireText(queuedInputEditText)}
+                          label={copy.saveQueuedInput}
+                          onClick={() => saveQueuedInputEdit(entry.id)}
+                        />
+                        <UiButton
+                          variant="ghost"
+                          label={copy.cancelEditQueuedInput}
+                          onClick={cancelEditingQueuedInput}
+                        />
+                      </ButtonGroup>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="maka-composer-pending-copy">
+                    <span className="maka-composer-pending-text">{entry.text}</span>
+                    <span className="maka-composer-pending-hint">{copy.queuedInputHint}</span>
+                  </div>
+                )}
+                <ButtonGroup
+                  className="maka-composer-pending-actions"
+                  label={copy.queuedInputActions}
+                  size="sm"
+                >
+                  <IconButton
+                    variant="ghost"
+                    isDisabled={index === 0 || sendPending || editingQueuedInputId !== null}
+                    label={copy.moveQueuedInputUp}
+                    icon={<ArrowUp size={ICON_SIZE.control} aria-hidden="true" />}
+                    onClick={() => moveQueuedInput(entry.id, -1)}
+                  />
+                  <IconButton
+                    variant="ghost"
+                    isDisabled={index === queuedInputs.length - 1 || sendPending || editingQueuedInputId !== null}
+                    label={copy.moveQueuedInputDown}
+                    icon={<ArrowDown size={ICON_SIZE.control} aria-hidden="true" />}
+                    onClick={() => moveQueuedInput(entry.id, 1)}
+                  />
+                  <IconButton
+                    variant="ghost"
+                    isDisabled={sendPending || editingQueuedInputId !== null}
+                    label={copy.editQueuedInput}
+                    icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
+                    onClick={() => beginEditingQueuedInput(entry)}
+                  />
+                  <UiButton
+                    variant="ghost"
+                    isDisabled={props.disabled || props.sendBlocked || sendPending || editingQueuedInputId !== null}
+                    label={props.streaming && props.onSteer ? copy.steerLabel : copy.sendLabel}
+                    onClick={() => { void submitQueuedInput(entry); }}
+                  />
+                  <IconButton
+                    variant="ghost"
+                    isDisabled={sendPending || editingQueuedInputId !== null}
+                    label={copy.removeQueuedInput}
+                    icon={<Trash2 size={ICON_SIZE.control} aria-hidden="true" />}
+                    onClick={() => removeQueuedInput(entry.id)}
+                  />
+                </ButtonGroup>
+              </Card>
+            ))}
+          </div>
+        ) : null}
         <AstryxChatComposer
           className="maka-composer-astryx"
           data-maka-contract="composer-inner"
@@ -1752,12 +2027,13 @@ export const Composer = forwardRef<
               />
               <IconButton
                 variant="primary"
-                type="submit"
+                type="button"
                 isDisabled={sendDisabled}
-                label={copy.steerLabel}
+                label={copy.queueInputLabel}
                 aria-busy={sendPending ? 'true' : undefined}
                 data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.steerLabel}
+                tooltip={copy.queueInputLabel}
+                onClick={queueCurrentInput}
                 icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
               />
             </div>

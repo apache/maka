@@ -19,7 +19,6 @@ import {
   type ShellRunUpdate,
 } from '@maka/core';
 import type { LiveTurnProjection, NavSelection } from '@maka/ui';
-import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
@@ -399,38 +398,20 @@ export function useAppShellBootstrapSubscriptions(options: {
 }
 
 export function useActiveSessionEvents(options: {
-  uiLocale: UiLocale;
   activeId: string | undefined;
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
-  markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
-  setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
+  refreshMessages: (
+    sessionId: string,
+    options?: { preserveVisibleMessagesOnEmpty?: boolean },
+  ) => Promise<boolean>;
   setMessageLoadPending: (pending: boolean) => void;
-  setMessages: (messages: StoredMessage[]) => void;
   setSessionEventHealthBySession: SessionEventHealthUpdater;
-  toastApi: Pick<ToastApi, 'error'>;
 }) {
   const activeId = options.activeId;
-  const applyReadMessages = useEffectEvent((sessionId: string, next: StoredMessage[], isDisposed: () => boolean) => {
+  const finishInitialRead = useEffectEvent((sessionId: string, isDisposed: () => boolean) => {
     if (!isDisposed() && options.activeIdRef.current === sessionId) {
-      options.markSessionReadLocally(sessionId, next);
-      // Ignore an empty read: it can race a just-sent message's save and wipe
-      // the optimistic copy shown to the user. length is enough only because
-      // sends are serialized (one optimistic per session); parallel sends
-      // would need a merge instead.
-      if (next.length > 0) options.setMessages(next);
       options.setMessageLoadPending(false);
-    }
-  });
-  const applyReadError = useEffectEvent((sessionId: string, error: unknown, isDisposed: () => boolean) => {
-    if (!isDisposed() && options.activeIdRef.current === sessionId) {
-      const message = messageReadErrorMessage(error, options.uiLocale);
-      options.setMessageLoadErrorBySession((current) => ({
-        ...current,
-        [sessionId]: message,
-      }));
-      options.setMessageLoadPending(false);
-      options.toastApi.error(getDesktopConversationCopy(options.uiLocale).actions.messageReadFailedTitle, message);
     }
   });
   const handleSessionEvent = useEffectEvent((sessionId: string, event: SessionEvent) => {
@@ -464,12 +445,6 @@ export function useActiveSessionEvents(options: {
     if (!activeId) return;
     let disposed = false;
     const subscribedAt = Date.now();
-    options.setMessageLoadErrorBySession((current) => {
-      if (!current[activeId]) return current;
-      const next = { ...current };
-      delete next[activeId];
-      return next;
-    });
     options.setSessionEventHealthBySession((current) => ({
       ...current,
       [activeId]: createSessionEventStreamSubscription({
@@ -477,14 +452,9 @@ export function useActiveSessionEvents(options: {
         now: subscribedAt,
       }),
     }));
-    void window.maka.sessions
-      .readMessages(activeId)
-      .then((next) => {
-        applyReadMessages(activeId, next, () => disposed);
-      })
-      .catch((error) => {
-        applyReadError(activeId, error, () => disposed);
-      });
+    void options.refreshMessages(activeId, { preserveVisibleMessagesOnEmpty: true }).finally(() => {
+      finishInitialRead(activeId, () => disposed);
+    });
     const unsubscribe = window.maka.sessions.subscribeEvents(activeId, (event) => {
       handleSessionEvent(activeId, event);
     });

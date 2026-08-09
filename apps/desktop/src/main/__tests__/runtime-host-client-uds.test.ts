@@ -292,12 +292,12 @@ test('drives the renderer Session execution facade through real UDS framing', as
               },
             };
           },
-          // #1954: plain-text sends route through turn.message.submit; the
-          // fixture must answer it (the default is operation_unavailable) so
-          // the facade drives the submit round-trip over real UDS framing.
+          // Plain-text sends route through turn.message.submit; the fixture
+          // must answer it (the default is operation_unavailable) so the
+          // facade drives the next-turn submission over real UDS framing.
           'turn.message.submit': async (input) => {
             assert.equal(input.sessionId, projected.id);
-            assert.equal(input.placement, 'current_turn');
+            assert.equal(input.placement, 'next_turn');
             assert.equal(input.content.text, 'Run through the Host');
             return {
               ok: true,

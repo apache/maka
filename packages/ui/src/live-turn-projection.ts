@@ -39,6 +39,8 @@ export interface LiveSteeringProjection {
   id: string;
   text: string;
   ts: number;
+  /** Live assistant steps already observed before this steering arrived. */
+  beforeStepIds?: string[];
 }
 
 export interface LiveTurnProjection {
@@ -161,6 +163,9 @@ export function applyLiveTurnEvent(
           id: event.messageId,
           text: event.content.displayText ?? event.content.text,
           ts: event.ts,
+          ...(prior.steps.length > 0
+            ? { beforeStepIds: prior.steps.map((step) => step.stepId) }
+            : {}),
         },
       ],
     };

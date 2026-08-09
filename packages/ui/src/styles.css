@@ -108,6 +108,10 @@
 .maka-user-message:focus-within .maka-message-meta .maka-turn-footer-action {
   opacity: 1;
 }
+
+.maka-steering-applied-label {
+  margin-bottom: var(--space-1);
+}
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }

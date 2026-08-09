@@ -515,24 +515,6 @@ export const TurnView = memo(function TurnView(props: {
 
         </LocalizedChatMessage>
       )}
-      {turn.userInterjections?.map((message) => (
-        <LocalizedChatMessage
-          key={message.id}
-          accessibleLabel={copy.userAriaLabel}
-          sender="user"
-          className="maka-chat-message maka-user-message maka-steering-message"
-        >
-          <MessageBody
-            role="user"
-            text={message.text}
-            ts={message.ts}
-            attachments={message.attachments}
-            quotes={message.quotes}
-            inlineReferences={message.inlineReferences}
-            onReadAttachmentBytes={props.onReadAttachmentBytes}
-          />
-        </LocalizedChatMessage>
-      ))}
       {turn.notes.map((note) => (
         <ChatSystemMessage
           key={note.id}
@@ -597,6 +579,7 @@ export const TurnView = memo(function TurnView(props: {
                   item={item}
                   onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                   onOpenLinkedSession={props.onOpenLinkedSession}
+                  onReadAttachmentBytes={props.onReadAttachmentBytes}
                 />
               ),
             )}
@@ -979,13 +962,39 @@ function TurnTimelineEntry(props: {
   item: TurnTimelineItem;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
+  onReadAttachmentBytes?: ReadAttachmentBytes;
 }) {
   const { item } = props;
+  const copy = getConversationCopy(useUiLocale()).messages;
   if (item.kind === 'thinking') {
     return <DeepThinking text={item.text} live={item.live === true} truncated={item.truncated === true} />;
   }
   if (item.kind === 'tools') {
     return <ToolTrow items={item.items} onOpenLinkedSession={props.onOpenLinkedSession} />;
+  }
+  if (item.kind === 'steering') {
+    return (
+      <LocalizedChatMessage
+        accessibleLabel={`${copy.userAriaLabel} · ${copy.steeringApplied}`}
+        sender="user"
+        className="maka-chat-message maka-user-message maka-steering-message"
+      >
+        <Badge
+          className="maka-steering-applied-label"
+          variant="blue"
+          label={copy.steeringApplied}
+        />
+        <MessageBody
+          role="user"
+          text={item.message.text}
+          ts={item.message.ts}
+          attachments={item.message.attachments}
+          quotes={item.message.quotes}
+          inlineReferences={item.message.inlineReferences}
+          onReadAttachmentBytes={props.onReadAttachmentBytes}
+        />
+      </LocalizedChatMessage>
+    );
   }
   if (item.kind === 'text' && item.live) {
     return (

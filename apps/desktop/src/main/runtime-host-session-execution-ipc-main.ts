@@ -190,8 +190,9 @@ export function registerRuntimeHostSessionExecutionIpc(
       });
       // #1954: a send whose payload fits canonical `MessageContent` routes
       // through the Host's `turn.message.submit`, so the Host atomically
-      // decides the disposition - `turn_started` on an idle session, or
-      // `steering` into the running turn. The submit message id reuses the
+      // decides the disposition - `turn_started` on an idle session, or a
+      // `followup` queued behind the running turn. Explicit steering uses the
+      // separate `sessions:steer` IPC below. The submit message id reuses the
       // renderer's pre-generated id (a no-op for the turn_started branch,
       // whose turn id is Host-generated). Only payloads the submit protocol
       // cannot carry (Skill ids, orchestration) keep opening a new turn
@@ -214,7 +215,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ...(command.quotes ? { quotes: command.quotes } : {}),
             inlineReferences,
           },
-          placement: "current_turn",
+          placement: "next_turn",
         });
         if (submitted.disposition === "turn_started") {
           deps.emitSessionsChanged("status-change", sessionId, {
@@ -279,11 +280,14 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle(
     "sessions:steer",
-    async (_event, sessionId: string, text: unknown) => {
+    async (_event, sessionId: string, text: unknown, clientMessageId?: unknown) => {
       const content = steeringContent(text);
       await deps.client.submitMessage({
         sessionId,
-        messageId: newId(),
+        messageId:
+          clientMessageId === undefined
+            ? newId()
+            : requiredId(clientMessageId, "Steering message"),
         content: { text: content },
         placement: "current_turn",
       });
