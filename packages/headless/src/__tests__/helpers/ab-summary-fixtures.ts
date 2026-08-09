@@ -36,6 +36,7 @@ export function withUsage(
       costUsd: usage.costUsd,
       pricingSource: 'runtime',
     },
+    tokenSummarySource: 'final',
     durationMs: usage.durationMs,
   };
 }

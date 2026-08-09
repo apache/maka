@@ -55,6 +55,7 @@ export function completed(taskId: string, passed: boolean): FixedPromptTaskCompl
     errorClass: passed ? undefined : 'verification_failed',
     promptHash: 'hash',
     tokenSummary: tokenSummary({ input: 1, output: 1, reasoning: 0, total: 2, costUsd: 0.01 }),
+    tokenSummarySource: 'final',
     steps: 1,
     durationMs: 100,
     runtimeEventsPath: `/logs/${taskId}/runtime-events.jsonl`,

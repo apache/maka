@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, truncate, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
+  hasFinalHarborCellTokenSummary,
   validateHarborCellOutput,
   type HarborCellExecutionIdentity,
   type HarborCellOutput,
@@ -830,6 +831,9 @@ function taskPlumbingFailedEvent(input: {
     expectedPromptHash: input.expectedPromptHash,
     runtimeRefs: input.output.cell.runtimeRefs,
     ...(input.output.cell.tokenSummary ? { tokenSummary: input.output.cell.tokenSummary } : {}),
+    ...(input.output.cell.tokenSummarySource
+      ? { tokenSummarySource: input.output.cell.tokenSummarySource }
+      : {}),
     ...(input.output.cell.contextBudgetPolicy
       ? { contextBudgetPolicy: input.output.cell.contextBudgetPolicy }
       : {}),
@@ -892,7 +896,7 @@ function classifyPlumbingFailure(
       error: `Harbor cell prompt hash ${promptHash} did not match ${expectedPromptHash}`,
     };
   }
-  if (requireFinalUsage && output.cell.tokenSummary === undefined) {
+  if (requireFinalUsage && !hasFinalHarborCellTokenSummary(output.cell)) {
     return {
       errorClass: 'missing_token_usage',
       error: 'Harbor cell did not report final token usage',
@@ -1094,8 +1098,7 @@ function taskBudgetExhaustedEvent(input: {
   const tokenSummary = artifactRefs.cellOutput?.tokenSummary ?? artifactRefs.tokenSummary;
   const tokenSummarySource = tokenSummary
     ? artifactRefs.cellOutput
-      ? (artifactRefs.cellOutput.tokenSummarySource ??
-        (artifactRefs.cellOutput.status === 'completed' ? 'final' : 'checkpoint'))
+      ? (artifactRefs.cellOutput.tokenSummarySource ?? 'checkpoint')
       : 'checkpoint'
     : undefined;
   const executionIdentity =

@@ -215,6 +215,13 @@ export interface HarborCellOutput {
   runtimeRefs: HarborCellRuntimeRefs;
 }
 
+export function hasFinalHarborCellTokenSummary(value: {
+  tokenSummary?: HarborCellTokenSummary;
+  tokenSummarySource?: HarborCellOutput['tokenSummarySource'];
+}): value is { tokenSummary: HarborCellTokenSummary; tokenSummarySource: 'final' } {
+  return value.tokenSummary !== undefined && value.tokenSummarySource === 'final';
+}
+
 export function buildHarborCellOutput(input: {
   invocation: InvocationResult;
   runtimeEventsPath: string;

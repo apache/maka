@@ -179,6 +179,7 @@ export interface FixedPromptTaskPlumbingFailedEvent {
   expectedPromptHash?: string;
   runtimeRefs?: HarborCellRuntimeRefs;
   tokenSummary?: HarborCellTokenSummary;
+  tokenSummarySource?: 'final' | 'checkpoint';
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
   continuationSummary?: HarborCellContinuationSummary;

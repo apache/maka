@@ -480,18 +480,16 @@ describe('harness A/B report', () => {
     assert.equal(summary.baseline.missingFinalUsage, 1);
   });
 
-  test('keeps failed legacy cell usage out of final metering', () => {
-    const legacyFailure = {
-      ...usage('a', true, 100, 40, 20, 0.1),
-      status: 'failed' as const,
-    };
+  test('keeps legacy usage without provenance out of final metering', () => {
+    const legacyUnknown = usage('a', true, 100, 40, 20, 0.1);
+    delete legacyUnknown.tokenSummarySource;
     const summary = summarizeAbComparison({
       runId: 'glm-harness-ab',
       roundId: 'ab-summary',
       baselineArmId: 'maka',
       candidateArmId: 'opencode',
       evaluationTaskIds: ['a'],
-      baselineRuns: [[legacyFailure]],
+      baselineRuns: [[legacyUnknown]],
       candidateRuns: [[usage('a', true, 120, 50, 30, 0.2)]],
     });
 

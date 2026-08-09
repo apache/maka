@@ -1208,6 +1208,7 @@ describe('fixed prompt controller', () => {
       const retainedContextBudgetSummary = contextBudgetSummary({ prunedToolResults: 2 });
       const cell = harborOutput({
         taskId: 'task-a',
+        tokenSummarySource: 'final',
         contextBudgetPolicy: { enabled: true, minRecentTurns: 2 },
         contextBudgetSummary: retainedContextBudgetSummary,
         executionIdentity: {
@@ -1254,6 +1255,35 @@ describe('fixed prompt controller', () => {
       );
       assert.equal(result.totalTokens, 3);
       assert.equal(result.totalCostUsd, 0.02);
+    });
+  });
+
+  test('keeps legacy completed timeout usage provisional without provenance', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const cell = harborOutput({ taskId: 'task-a' }).cell;
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () => {
+          throw new FixedPromptBudgetExhaustedError('agent timed out', undefined, {
+            cellOutput: cell,
+          });
+        },
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      const event = result.events[0];
+      assert.equal(event?.type, 'task_budget_exhausted');
+      if (event?.type !== 'task_budget_exhausted') assert.fail('expected budget exhaustion event');
+      assert.equal(event.tokenSummarySource, 'checkpoint');
     });
   });
 
@@ -2293,6 +2323,7 @@ describe('fixed prompt controller', () => {
             reward: 0,
             status: 'failed',
             errorClass: 'aborted',
+            tokenSummarySource: 'final',
             deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
             verifier: {
               outcome: 'failed',
@@ -2578,6 +2609,45 @@ describe('fixed prompt controller', () => {
       assert.equal(result.events[0]?.errorClass, 'missing_token_usage');
       assert.equal(result.events[0]?.eligible, false);
       assert.equal(result.events[0]?.scored, false);
+    });
+  });
+
+  test('rejects checkpoint usage when final usage is required', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireExecutionIdentity: true,
+        requireFinalUsage: true,
+        expectedPricingProfile: 'test-profile',
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            tokenSummarySource: 'checkpoint',
+            executionIdentity: {
+              llmConnectionSlug: 'fake',
+              model: 'fake-model',
+              systemPromptHash: hashSystemPrompt('fixed prompt\n'),
+              pricingProfile: 'test-profile',
+            },
+          }),
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      const event = result.events[0];
+      assert.equal(event?.type, 'task_plumbing_failed');
+      if (event?.type !== 'task_plumbing_failed') assert.fail('expected plumbing failure event');
+      assert.equal(event.errorClass, 'missing_token_usage');
+      assert.ok(event.tokenSummary);
+      assert.equal(event.tokenSummarySource, 'checkpoint');
     });
   });
 
