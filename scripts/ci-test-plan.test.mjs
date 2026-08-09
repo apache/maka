@@ -11,12 +11,19 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
-  // Product UI work is not a Storybook catalog change — typecheck/unit/e2e own it.
-  assert.equal(ui.storybook, false);
+  // Product UI is mounted by the catalog. Runtime export and render changes can
+  // break Storybook even when its story files themselves are unchanged.
+  assert.equal(ui.storybook, true);
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
-  // Ordinary desktop product files must not drag Storybook Chromium.
+  // Renderer code is mounted by product stories; main-process and e2e files are not.
+  assert.equal(
+    planTests(['apps/desktop/src/renderer/settings/daily-review-settings-page.tsx'], {
+      graph,
+    }).storybook,
+    true,
+  );
   assert.equal(planTests(['apps/desktop/src/main/main.ts'], { graph }).storybook, false);
   assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).storybook, false);
 

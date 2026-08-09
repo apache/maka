@@ -31,11 +31,10 @@ const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host', 'packages/he
 // evidence that the run it drives still works.
 const E2E_DRIVING_SCRIPTS = new Set(['scripts/audit-alignment.mjs']);
 
-// Scripts / paths that can break Storybook without touching product ship
-// gates. Storybook is a catalog harness, not the product: typecheck already
-// typechecks stories and checks annotations, unit/e2e cover product behavior.
-// Running build+smoke on every desktop/ui PR taxes CI for almost no unique
-// signal — only the catalog and its wiring need this job.
+// Scripts / paths that can break the built Storybook catalog. Product stories
+// mount the UI package and desktop renderer, so runtime export/render changes
+// there belong to this surface even when no story file changes. Main-process
+// and e2e-only desktop changes stay outside it.
 const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']);
 
 // .storybook/preview.tsx imports THEME_PALETTES from this module. Narrower
@@ -44,10 +43,14 @@ const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
 
 function isStorybookPath(path) {
   if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
+  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/'))
+    return true;
   if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
     return true;
   if (path === 'apps/desktop/stories' || path.startsWith('apps/desktop/stories/')) return true;
-  // packages/ui also ships its own story tree (see .storybook/main.ts).
+  // packages/ui ships both the primitives mounted by product stories and its
+  // own story tree (see .storybook/main.ts).
+  if (path === 'packages/ui/src' || path.startsWith('packages/ui/src/')) return true;
   if (path === 'packages/ui/stories' || path.startsWith('packages/ui/stories/')) return true;
   return false;
 }
