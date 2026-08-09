@@ -289,9 +289,10 @@ export function planTests(changedFiles, options = {}) {
 
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
   const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
+  const windowsBaselineChanged = files.includes('.github/workflows/windows-baseline.yml');
   const windows = code || files.some((path) => WINDOWS_BASELINE_FILES.has(path));
-  const windowsRuntime = workspaces.includes('packages/runtime');
-  const windowsStorage = workspaces.includes('packages/storage');
+  const windowsRuntime = windowsBaselineChanged || workspaces.includes('packages/runtime');
+  const windowsStorage = windowsBaselineChanged || workspaces.includes('packages/storage');
 
   return {
     code,
@@ -354,20 +355,18 @@ function parseArgs(args) {
   return parsed;
 }
 
+export function changedFilesBetween(base, head, exec = execFileSync) {
+  return exec('git', ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRD', base, head], {
+    cwd: defaultRepoRoot,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter(Boolean);
+}
+
 function main(args) {
   const parsed = parseArgs(args);
-  const changedFiles = parsed.forceFull
-    ? []
-    : execFileSync(
-        'git',
-        ['diff', '--name-only', '--diff-filter=ACMRD', parsed.base, parsed.head],
-        {
-          cwd: defaultRepoRoot,
-          encoding: 'utf8',
-        },
-      )
-        .split('\n')
-        .filter(Boolean);
+  const changedFiles = parsed.forceFull ? [] : changedFilesBetween(parsed.base, parsed.head);
   const plan = planTests(changedFiles, { forceFull: parsed.forceFull });
   process.stdout.write(`${formatGitHubOutputs(plan)}\n`);
   process.stderr.write(

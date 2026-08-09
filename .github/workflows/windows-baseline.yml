@@ -129,6 +129,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
+          npm.cmd --workspace @maka/desktop run build:smoke *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke-build.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke-build.log"
+          if ($exitCode -ne 0) { exit $exitCode }
           npm.cmd run smoke:windows:dist *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
           $exitCode = $LASTEXITCODE
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"

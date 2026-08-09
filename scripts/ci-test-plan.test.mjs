@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import {
+  changedFilesBetween,
+  formatGitHubOutputs,
+  loadWorkspaceGraph,
+  planTests,
+} from './ci-test-plan.mjs';
 
 const graph = loadWorkspaceGraph();
 
@@ -86,9 +91,13 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   }
 });
 
-test('Windows planning runs its contract changes without selecting storage', () => {
+test('Windows planning runs workflow changes fully and helper changes narrowly', () => {
+  const workflow = planTests(['.github/workflows/windows-baseline.yml'], { graph });
+  assert.equal(workflow.windows, true);
+  assert.equal(workflow.windowsRuntime, true);
+  assert.equal(workflow.windowsStorage, true);
+
   for (const path of [
-    '.github/workflows/windows-baseline.yml',
     'scripts/windows-baseline-workflow.test.mjs',
     'scripts/windows-process-identity.ps1',
     'scripts/windows-smoke.mjs',
@@ -98,6 +107,31 @@ test('Windows planning runs its contract changes without selecting storage', () 
     assert.equal(plan.windowsRuntime, false, path);
     assert.equal(plan.windowsStorage, false, path);
   }
+});
+
+test('cross-surface renames retain both paths for impact planning', () => {
+  let invocation;
+  const files = changedFilesBetween('base-sha', 'head-sha', (command, args, options) => {
+    invocation = { command, args, options };
+    return 'packages/storage/src/legacy.ts\napps/desktop/src/main/replacement.ts\n';
+  });
+
+  assert.deepEqual(files, [
+    'packages/storage/src/legacy.ts',
+    'apps/desktop/src/main/replacement.ts',
+  ]);
+  assert.deepEqual(invocation.args, [
+    'diff',
+    '--no-renames',
+    '--name-only',
+    '--diff-filter=ACMRD',
+    'base-sha',
+    'head-sha',
+  ]);
+
+  const plan = planTests(files, { graph });
+  assert.equal(plan.windows, true);
+  assert.equal(plan.windowsStorage, true);
 });
 
 test('stress and specialized script checks run only for their owning surfaces', () => {
