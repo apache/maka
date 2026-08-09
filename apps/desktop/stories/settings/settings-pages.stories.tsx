@@ -955,23 +955,47 @@ function assertDailyReviewSettingsBounds(
   const withinHorizontally = (inner: DOMRect, outer: DOMRect) =>
     inner.left >= outer.left - 1 && inner.right <= outer.right + 1;
   const timeRect = time.getBoundingClientRect();
+  const timeFormRect = timeForm.getBoundingClientRect();
   const selectorRect = selector.getBoundingClientRect();
+  const selectorFormRect = selectorForm.getBoundingClientRect();
   const popoverRect = popover.getBoundingClientRect();
   const pageRect = page.getBoundingClientRect();
   const doesNotCoverTrigger =
     popoverRect.top >= selectorRect.bottom - 1
     || popoverRect.bottom <= selectorRect.top + 1;
-  const valid =
-    withinHorizontally(timeRect, timeForm.getBoundingClientRect())
-    && withinHorizontally(selectorRect, selectorForm.getBoundingClientRect())
-    && popoverRect.width > 0
-    && popoverRect.height > 0
-    && withinHorizontally(popoverRect, pageRect)
-    && popoverRect.left >= -1
-    && popoverRect.right <= window.innerWidth + 1
-    && doesNotCoverTrigger;
-  if (!valid) {
-    throw new Error(`Daily Review controls overflow at ${window.innerWidth}px`);
+  const checks = {
+    timeWithinRow: withinHorizontally(timeRect, timeFormRect),
+    selectorWithinRow: withinHorizontally(selectorRect, selectorFormRect),
+    popoverHasSize: popoverRect.width > 0 && popoverRect.height > 0,
+    popoverWithinPage: withinHorizontally(popoverRect, pageRect),
+    popoverWithinViewport:
+      popoverRect.left >= -1 && popoverRect.right <= window.innerWidth + 1,
+    popoverDoesNotCoverTrigger: doesNotCoverTrigger,
+  };
+  const failedChecks = Object.entries(checks)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+  if (failedChecks.length > 0) {
+    const rect = (value: DOMRect) => ({
+      left: value.left,
+      right: value.right,
+      top: value.top,
+      bottom: value.bottom,
+      width: value.width,
+      height: value.height,
+    });
+    throw new Error(`Daily Review controls overflow: ${JSON.stringify({
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      failedChecks,
+      rects: {
+        time: rect(timeRect),
+        timeForm: rect(timeFormRect),
+        selector: rect(selectorRect),
+        selectorForm: rect(selectorFormRect),
+        popover: rect(popoverRect),
+        page: rect(pageRect),
+      },
+    })}`);
   }
 }
 
