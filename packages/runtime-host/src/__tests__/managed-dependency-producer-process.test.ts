@@ -117,6 +117,13 @@ test('runs the fixed npm install protocol with a hermetic environment', {
   assert.equal(invocation.env.npm_config_registry, 'https://registry.npmjs.org/');
   assert.equal(invocation.env.npm_config_ignore_scripts, 'true');
   assert.equal(invocation.env.MAKA_DEPENDENCY_SECRET_FOR_TEST, undefined);
+  if (process.platform === 'win32') {
+    const relativeHome = join('.maka-runtime', 'home');
+    assert.equal(invocation.env.HOME, relativeHome);
+    assert.equal(invocation.env.USERPROFILE, relativeHome);
+    assert.equal(invocation.env.APPDATA, join(relativeHome, 'AppData', 'Roaming'));
+    assert.equal(invocation.env.LOCALAPPDATA, join(relativeHome, 'AppData', 'Local'));
+  }
   assert.equal(await readFile(join(outputRoot, 'fixture', 'index.js'), 'utf8'), 'safe\n');
 });
 
