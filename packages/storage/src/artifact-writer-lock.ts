@@ -22,7 +22,8 @@
 import { constants as fsConstants } from 'node:fs';
 import { lstat, mkdir, open, realpath, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
-import { unlock, waitForLock } from 'fs-native-extensions';
+import { setTimeout as delay } from 'node:timers/promises';
+import { tryLock, unlock, waitForLock } from 'fs-native-extensions';
 import { ARTIFACT_WRITER_LOCK_FILE } from './artifact-storage-layout.js';
 import { withArtifactWriterBootstrapLock } from './artifact-writer-bootstrap-lock.js';
 import {
@@ -37,21 +38,32 @@ const lockGates = new Map<string, Promise<void>>();
 export async function withArtifactWriterLock<T>(
   workspaceRoot: string,
   operation: (canonicalRoot: string) => Promise<T>,
+  abortSignal?: AbortSignal,
 ): Promise<T> {
+  abortSignal?.throwIfAborted();
   await mkdir(workspaceRoot, { recursive: true });
   const requestedCanonicalRoot = await realpath(workspaceRoot);
   const bootstrap = await prepareArtifactWriterBootstrapAuthority(requestedCanonicalRoot);
-  return withArtifactWriterBootstrapLock(bootstrap.lockPath, async () => {
-    await bootstrap.assertCurrentRoot();
-    const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(
-      bootstrap.canonicalPath,
-    );
-    if (!authority) return operation(bootstrap.canonicalPath);
-    if (authority.bootstrapLockPath !== bootstrap.lockPath) {
-      throw new Error('Storage root identity changed while acquiring its Artifact writer lock');
-    }
-    return withAuthorityArtifactWriterLock(authority, () => operation(bootstrap.canonicalPath));
-  });
+  return withArtifactWriterBootstrapLock(
+    bootstrap.lockPath,
+    async () => {
+      abortSignal?.throwIfAborted();
+      await bootstrap.assertCurrentRoot();
+      const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(
+        bootstrap.canonicalPath,
+      );
+      if (!authority) return operation(bootstrap.canonicalPath);
+      if (authority.bootstrapLockPath !== bootstrap.lockPath) {
+        throw new Error('Storage root identity changed while acquiring its Artifact writer lock');
+      }
+      return withAuthorityArtifactWriterLock(
+        authority,
+        () => operation(bootstrap.canonicalPath),
+        abortSignal,
+      );
+    },
+    abortSignal,
+  );
 }
 
 export async function withLeaseBoundArtifactWriterLock<T>(
@@ -66,6 +78,7 @@ export async function withLeaseBoundArtifactWriterLock<T>(
 async function withAuthorityArtifactWriterLock<T>(
   authority: ArtifactWriterLockAuthority,
   operation: () => Promise<T>,
+  abortSignal?: AbortSignal,
 ): Promise<T> {
   return withArtifactWriterLockPath(
     join(authority.controlDirectory, ARTIFACT_WRITER_LOCK_FILE),
@@ -73,43 +86,91 @@ async function withAuthorityArtifactWriterLock<T>(
       await authority.assertCurrentRoot();
       return operation();
     },
+    abortSignal,
   );
 }
 
 async function withArtifactWriterLockPath<T>(
   lockPath: string,
   operation: () => Promise<T>,
+  abortSignal?: AbortSignal,
 ): Promise<T> {
-  return runWithLockGate(lockPath, async () => {
-    const handle = await openArtifactWriterLock(lockPath);
-    let acquired = false;
-    try {
-      await assertStableRegularFile(handle, lockPath);
-      await waitForLock(handle.fd);
-      acquired = true;
-      await assertStableRegularFile(handle, lockPath);
-      return await operation();
-    } finally {
-      if (acquired) releaseLock(handle);
-      await handle.close();
-    }
-  });
+  return runWithLockGate(
+    lockPath,
+    async () => {
+      abortSignal?.throwIfAborted();
+      const handle = await openArtifactWriterLock(lockPath);
+      let acquired = false;
+      try {
+        await assertStableRegularFile(handle, lockPath);
+        await acquireLock(handle.fd, abortSignal);
+        acquired = true;
+        await assertStableRegularFile(handle, lockPath);
+        abortSignal?.throwIfAborted();
+        return await operation();
+      } finally {
+        if (acquired) releaseLock(handle);
+        await handle.close();
+      }
+    },
+    abortSignal,
+  );
 }
 
-async function runWithLockGate<T>(lockPath: string, operation: () => Promise<T>): Promise<T> {
+async function runWithLockGate<T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+  abortSignal?: AbortSignal,
+): Promise<T> {
   const previous = lockGates.get(lockPath);
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
     release = resolve;
   });
   lockGates.set(lockPath, current);
-  await previous?.catch(() => {});
   try {
+    if (previous) await waitForGate(previous, abortSignal);
+    abortSignal?.throwIfAborted();
     return await operation();
   } finally {
     release();
     if (lockGates.get(lockPath) === current) lockGates.delete(lockPath);
   }
+}
+
+async function acquireLock(fd: number, abortSignal: AbortSignal | undefined): Promise<void> {
+  if (!abortSignal) {
+    await waitForLock(fd);
+    return;
+  }
+  abortSignal.throwIfAborted();
+  while (!tryLock(fd)) {
+    await delay(25, undefined, { signal: abortSignal });
+  }
+}
+
+async function waitForGate(
+  gate: Promise<void>,
+  abortSignal: AbortSignal | undefined,
+): Promise<void> {
+  if (!abortSignal) {
+    await gate.catch(() => {});
+    return;
+  }
+  abortSignal.throwIfAborted();
+  await Promise.race([
+    gate.catch(() => {}),
+    new Promise<never>((_resolve, reject) => {
+      const onAbort = () =>
+        reject(
+          abortSignal.reason instanceof Error
+            ? abortSignal.reason
+            : new DOMException('Artifact writer admission was aborted', 'AbortError'),
+        );
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      gate.finally(() => abortSignal.removeEventListener('abort', onAbort)).catch(() => {});
+    }),
+  ]);
 }
 
 async function openArtifactWriterLock(lockPath: string): Promise<FileHandle> {
