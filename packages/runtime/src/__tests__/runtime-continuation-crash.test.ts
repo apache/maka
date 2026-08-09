@@ -17,6 +17,7 @@ import { FakeBackend } from '../fake-backend.js';
 import { terminateChildProcessTree } from '../process-tree-terminator.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_CONTINUATION_CRASH_CHILD';
+const CRASH_HARNESS_TIMEOUT_MS = process.platform === 'win32' ? 120_000 : 60_000;
 const FAILPOINTS: readonly RuntimeContinuationFailpoint[] = [
   'after_continuation_claim_committed',
   'after_run_created',
@@ -30,7 +31,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
 } else {
   describe('runtime resume phase 1 process crash harness', () => {
     test('reopens and repairs every committed continuation prefix after SIGKILL', {
-      timeout: 60_000,
+      timeout: CRASH_HARNESS_TIMEOUT_MS,
     }, async () => {
       const root = await mkdtemp(join(tmpdir(), 'maka-runtime-continuation-crash-'));
       try {
