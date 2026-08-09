@@ -525,7 +525,7 @@ async function forwardProviderRequest(input: {
       }
     }
     const parsed = responseUsage?.finish() ?? null;
-    if (upstreamResponse.ok && parsed?.usage) input.usage.add(parsed.usage);
+    if (parsed?.usage) input.usage.add(parsed.usage);
     requestTelemetry.usage = parsed?.usage ?? undefined;
     requestTelemetry.terminalEvent = parsed?.terminalEvent ?? false;
     requestTelemetry.outcome = !upstreamResponse.ok
