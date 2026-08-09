@@ -694,6 +694,7 @@ function translateChunk(
                   providerOptions: openAiChatReasoningFieldProviderOptions(
                     openAiChatReasoningTransportState.reasoningField,
                   ),
+                  providerOptionsOrigin: 'maka_transport' as const,
                 }
               : {}),
         });
@@ -710,6 +711,10 @@ function translateChunk(
           : []),
       ];
     }
+    case 'tool-input-start':
+    case 'tool-input-delta':
+    case 'tool-input-end':
+      return chunk.providerExecuted === true ? [{ kind: 'provider-tool-input' }] : [];
     // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
     // carry no text/thinking to stream. The backend owns step accounting: it
     // counts and flushes one AssistantMessage per step and rotates the

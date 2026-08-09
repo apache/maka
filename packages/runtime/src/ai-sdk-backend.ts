@@ -1579,6 +1579,11 @@ export class AiSdkBackend implements AgentBackend {
         current: { readonly phase: StreamWatchdogPhase; readonly error: Error } | null;
       } = { current: null };
       const currentWatchdogTimeout = () => watchdogTimeoutState.current;
+      const consumeWatchdogTimeout = () => {
+        const timeout = watchdogTimeoutState.current;
+        watchdogTimeoutState.current = null;
+        return timeout;
+      };
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2087,7 +2092,9 @@ export class AiSdkBackend implements AgentBackend {
                   stepThinking += event.text;
                   if (event.text.length > 0) attemptSawThinking = true;
                   if (event.providerOptions !== undefined) {
-                    attemptSawContinuationMetadata = true;
+                    if (event.providerOptionsOrigin !== 'maka_transport') {
+                      attemptSawContinuationMetadata = true;
+                    }
                     stepThinkingProviderOptions = event.providerOptions;
                   }
                   const openai = event.providerOptions?.openai;
@@ -2128,6 +2135,11 @@ export class AiSdkBackend implements AgentBackend {
                 } else if (event.kind === 'thinking-signature') {
                   attemptSawContinuationMetadata = true;
                   stepSignature = event.signature;
+                } else if (event.kind === 'provider-tool-input') {
+                  // The provider has started its own tool. Even without a
+                  // final tool-call/result event, retrying can repeat external
+                  // work that the Runtime cannot observe or reconcile.
+                  attemptSawToolActivity = true;
                 } else if (event.kind === 'tool-call') {
                   attemptSawToolActivity = true;
                   if (event.toolCall.providerExecuted) {
@@ -2197,7 +2209,10 @@ export class AiSdkBackend implements AgentBackend {
               sawStreamError = true;
             }
             watchdogState.current?.stop();
-            const settledWatchdogTimeout = currentWatchdogTimeout();
+            // This timeout belongs to the physical request that just settled.
+            // Consume it before recovery/flush work: a later persistence error
+            // must not be reported as the already-handled watchdog timeout.
+            const settledWatchdogTimeout = consumeWatchdogTimeout();
             if (!sawStreamError && settledWatchdogTimeout) {
               streamFailure = settledWatchdogTimeout.error;
               sawStreamError = true;

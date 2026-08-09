@@ -10746,6 +10746,141 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
+  test('retries DeepSeek OpenAI Chat reasoning marked only for field replay', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            stream: hangingProviderStream(
+              [
+                { type: 'stream-start', warnings: [] },
+                { type: 'reasoning-start', id: 'reasoning-1' },
+                {
+                  type: 'reasoning-delta',
+                  id: 'reasoning-1',
+                  delta: 'ordinary DeepSeek reasoning',
+                },
+              ],
+              options.abortSignal,
+            ),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+              { type: 'text-end', id: 'text-1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-pro',
+        models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-pro',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'ordinary DeepSeek reasoning') {
+        timers.fire();
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry' && event.phase === 'started'),
+      true,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('does not report a consumed idle timeout for a later assistant append failure', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              { type: 'reasoning-start', id: 'reasoning-1' },
+              {
+                type: 'reasoning-delta',
+                id: 'reasoning-1',
+                delta: 'partial thought',
+              },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {
+        throw new Error('assistant append failed');
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'partial thought') timers.fire();
+    }
+
+    assert.equal(calls, 1);
+    const error = events.find((event) => event.type === 'error');
+    assert.equal(error?.type, 'error');
+    assert.notEqual(error?.type === 'error' ? error.reason : undefined, 'timeout');
+    assert.equal(error?.type === 'error' ? error.message : undefined, 'Operation failed');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('links a recovered tool call to the retry assistant step', async () => {
     const timers = manualWatchdogTimer();
     const durable = durableTurnHarness('turn-1', 'read notes');
@@ -11016,6 +11151,66 @@ describe('AiSdkBackend RunTrace', () => {
       events,
     );
     await waitFor(() => timers.armCount() >= 5);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('does not retry after provider-executed tool input starts', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        return {
+          stream: hangingProviderStream(
+            [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-input-start',
+                id: 'provider-tool-1',
+                toolName: 'web_search',
+                providerExecuted: true,
+              },
+              {
+                type: 'tool-input-delta',
+                id: 'provider-tool-1',
+                delta: '{"query":"release notes"}',
+              },
+            ],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
+      events,
+    );
+    await waitFor(() => timers.armCount() >= 4);
     timers.fire();
     await eventsPromise;
 
