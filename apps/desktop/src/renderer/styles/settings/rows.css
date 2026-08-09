@@ -128,6 +128,16 @@
   max-width: var(--settings-row-end-cap);
 }
 
+/* A Selector layer is min-width: anchor-size(width), but its intrinsic option
+   width may still make it wider than the right-aligned end slot. The selected
+   font decides that intrinsic width, so a label that fits on macOS can push
+   the left-aligned top-layer popover past the page edge on Linux. The setting
+   row owns the available inline space: cap its listbox layers to their anchor
+   and let the Selector's Item truncate long labels inside that stable width. */
+.settingsRowEnd [popover]:has([role="listbox"]) {
+  max-width: anchor-size(width);
+}
+
 @container settings-rows (max-width: 460px) {
   .settingsReadOnlyValue,
   .settingsRowEnd {
