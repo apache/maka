@@ -6,8 +6,8 @@ import type {
   SessionEvent,
   SessionSummary,
 } from '@maka/core';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Badge, type BadgeVariant, Button as UiButton, useToast } from '@maka/ui';
-import { ChevronDown } from '@maka/ui/icons';
 
 export interface PlanModeState {
   state: PlanSessionState | undefined;
@@ -256,23 +256,22 @@ export function PlanExecutionPanel(props: {
 
   return (
     <section className="plan-execution-panel" aria-label="计划执行状态">
-      <button
-        type="button"
+      <Collapsible
         className="plan-execution-toggle"
-        aria-expanded={expanded}
-        aria-controls={detailsId}
-        onClick={() => setExpanded((current) => !current)}
+        isOpen={expanded}
+        onOpenChange={setExpanded}
+        trigger={(
+          <div className="plan-execution-trigger-body">
+            <div>
+              <span>{execution.status === 'interrupted' ? '计划已中断' : '正在执行计划'}</span>
+              <strong>{proposal?.title ?? '已批准计划'}</strong>
+            </div>
+            <span className="plan-execution-summary">
+              <span className="plan-execution-count">{completedCount}/{execution.steps.length} 步</span>
+            </span>
+          </div>
+        )}
       >
-        <div>
-          <span>{execution.status === 'interrupted' ? '计划已中断' : '正在执行计划'}</span>
-          <strong>{proposal?.title ?? '已批准计划'}</strong>
-        </div>
-        <span className="plan-execution-summary">
-          <span className="plan-execution-count">{completedCount}/{execution.steps.length} 步</span>
-          <ChevronDown aria-hidden="true" />
-        </span>
-      </button>
-      {expanded && (
         <div className="plan-execution-details" id={detailsId}>
           <ol className="plan-execution-steps">
             {execution.steps.map((step) => (
@@ -313,7 +312,7 @@ export function PlanExecutionPanel(props: {
             </div>
           )}
         </div>
-      )}
+      </Collapsible>
       {planMode.error && <p className="plan-mode-error" role="alert">{planMode.error}</p>}
     </section>
   );

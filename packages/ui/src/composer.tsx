@@ -1313,13 +1313,13 @@ export const Composer = forwardRef<
         <div className="maka-composer-no-model-hint" role="status">
           <span>{copy.noModelHint}</span>
           {props.onOpenModelSettings && (
-            <button
-              type="button"
+            <UiButton
+              variant="ghost"
+              size="sm"
               className="maka-composer-no-model-hint-action"
+              label={copy.noModelAction}
               onClick={() => props.onOpenModelSettings?.()}
-            >
-              {copy.noModelAction}
-            </button>
+            />
           )}
         </div>
       )}
@@ -1330,15 +1330,14 @@ export const Composer = forwardRef<
             {props.revisionNotice.title}
             {props.revisionNotice.detail ? <span className="maka-composer-revision-notice-detail">{props.revisionNotice.detail}</span> : null}
           </span>
-          <button
-            type="button"
+          <UiButton
+            variant="ghost"
+            size="sm"
             className="maka-composer-revision-notice-cancel"
-            disabled={sendPending}
-            aria-busy={sendPending ? 'true' : undefined}
+            label={props.revisionNotice.cancelLabel}
+            isDisabled={sendPending}
             onClick={() => props.revisionNotice?.onCancel()}
-          >
-            {props.revisionNotice.cancelLabel}
-          </button>
+          />
         </div>
       )}
       <form

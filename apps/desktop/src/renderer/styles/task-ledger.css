@@ -16,7 +16,7 @@
   grid-template-columns: 14px minmax(34px, auto) minmax(100px, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
-  min-height: 30px;
+  min-height: 32px;
   padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) + var(--task-depth) * var(--space-5));
   border-radius: var(--radius-control);
   color: var(--foreground-secondary);
@@ -73,7 +73,7 @@
   align-items: center;
   gap: var(--space-1-5);
   width: 100%;
-  min-height: 30px;
+  min-height: 32px;
   justify-content: space-between;
   padding: var(--space-1) var(--space-2);
   color: var(--foreground-secondary);
@@ -86,7 +86,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 34px;
+  min-height: 32px;
   padding: var(--space-1) var(--space-2);
   color: var(--foreground-secondary);
 }

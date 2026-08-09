@@ -282,7 +282,7 @@
   align-items: center;
   gap: var(--space-3);
   width: 100%;
-  min-height: 40px;
+  min-height: 36px;
   padding: var(--space-1) var(--space-3);
   border: 0;
   border-radius: var(--radius-element);
@@ -387,7 +387,7 @@
 
 .maka-session-review-summary {
   display: flex;
-  min-height: 30px;
+  min-height: 32px;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
@@ -986,7 +986,7 @@
   font: var(--maka-text-supporting);
   width: 100%;
   justify-content: flex-start;
-  min-height: 42px;
+  min-height: 36px;
   padding: var(--space-1-5) var(--space-2);
   margin: 0;
   border: var(--border-width-hairline) solid transparent;

@@ -7,6 +7,7 @@ import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
 import type { TraceTotals } from '@maka/core/session-trace';
@@ -227,14 +228,13 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                     is asked to be a control, and it costs a word where a
                     Switch cost a track, a label and a wrapped line. */}
                 {failedTurns > 0 && (
-                  <button
-                    type="button"
+                  <ToggleButton
                     className="maka-inspector-failed-filter"
-                    aria-pressed={filter.failedOnly ?? false}
-                    onClick={() => setFilter({ ...filter, failedOnly: !filter.failedOnly })}
-                  >
-                    {copy.filterFailedOnly(failedTurns)}
-                  </button>
+                    size="sm"
+                    label={copy.filterFailedOnly(failedTurns)}
+                    isPressed={filter.failedOnly ?? false}
+                    onPressedChange={(pressed) => setFilter({ ...filter, failedOnly: pressed })}
+                  />
                 )}
                 <TextInput
                   size="sm"

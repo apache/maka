@@ -175,41 +175,33 @@
   box-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.04);
 }
 
+/* Astryx Collapsible owns the expand control; product styles the trigger slot. */
 .plan-execution-toggle {
   width: 100%;
+  color: inherit;
+}
+
+.plan-execution-trigger-body {
+  min-width: 0;
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
 }
 
-.plan-execution-toggle:hover strong {
-  color: var(--foreground);
-}
-
-.plan-execution-toggle:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--focus-ring);
-  border-radius: var(--radius-control);
-}
-
-.plan-execution-toggle > div {
+.plan-execution-trigger-body > div {
   min-width: 0;
   display: grid;
   gap: var(--space-0-5);
 }
 
-.plan-execution-toggle span {
+.plan-execution-trigger-body span {
   font: var(--maka-text-supporting);
   color: var(--muted-foreground);
 }
 
-.plan-execution-toggle strong {
+.plan-execution-trigger-body strong {
   font: var(--maka-text-label);
   min-width: 0;
   overflow: hidden;
@@ -223,16 +215,6 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-}
-
-.plan-execution-summary svg {
-  width: var(--icon-chrome);
-  height: var(--icon-chrome);
-  transition: transform var(--duration-quick) var(--ease-out-strong);
-}
-
-.plan-execution-toggle[aria-expanded="true"] .plan-execution-summary svg {
-  transform: rotate(180deg);
 }
 
 .plan-execution-count {

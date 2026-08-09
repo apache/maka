@@ -47,6 +47,7 @@ import {
 import { Badge } from '@astryxdesign/core/Badge';
 import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
+import { Item } from '@astryxdesign/core/Item';
 import { Section } from '@astryxdesign/core/Section';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
@@ -612,15 +613,15 @@ function WorkbarLauncher(props: {
   useLayoutEffect(() => {
     if (!props.active) return;
     menuRef.current
-      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      ?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')
       ?.focus();
   }, [props.active]);
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const menu = menuRef.current;
     if (!menu) return;
     const items = Array.from(
-      menu.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitem"]:not(:disabled)',
+      menu.querySelectorAll<HTMLElement>(
+        '[role="menuitem"]:not([aria-disabled="true"])',
       ),
     );
     const currentIndex = items.findIndex(
@@ -665,25 +666,25 @@ function WorkbarLauncher(props: {
         onKeyDown={handleMenuKeyDown}
       >
         {actions.map((action, index) => (
-          <button
+          <Item
             key={action.kind}
-            type="button"
             role="menuitem"
-            tabIndex={index === firstEnabledActionIndex ? 0 : -1}
             className="maka-workbar-launcher-row"
             data-secondary={
               action.kind === 'tasks' || action.kind === 'inspector' || undefined
             }
-            disabled={action.disabled}
-            aria-description={action.description}
+            tabIndex={index === firstEnabledActionIndex ? 0 : -1}
+            startContent={<span className="maka-workbar-launcher-icon">{action.icon}</span>}
+            label={action.label}
+            description={action.description}
+            endContent={
+              action.shortcut ? (
+                <kbd className="maka-workbar-launcher-shortcut">{action.shortcut}</kbd>
+              ) : undefined
+            }
+            isDisabled={action.disabled}
             onClick={() => props.onOpen(action.kind)}
-          >
-            <span className="maka-workbar-launcher-icon">{action.icon}</span>
-            <span className="maka-workbar-launcher-label">{action.label}</span>
-            {action.shortcut ? (
-              <kbd className="maka-workbar-launcher-shortcut">{action.shortcut}</kbd>
-            ) : null}
-          </button>
+          />
         ))}
       </div>
     </div>
