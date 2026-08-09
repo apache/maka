@@ -146,6 +146,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             label={copy.model}
             isLabelHidden
             options={modelOptions}
+            placement="below"
             isDisabled={formDisabled || modelOptions.length === 0}
             onChange={(value) => void patchConfig('modelKey', {
               modelKey: value === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : value,
