@@ -25,8 +25,8 @@ A story earns its place by rendering pixels no other story renders. A second lev
 
 Two facts decide it, and both were guessed wrong once:
 
-- **Where a story renders.** `scripts/storybook-visual-smoke.mjs` renders each `product-smoke-manifest.json` surface at the viewports and colour schemes that surface declares — several are wide-only or light-only, and every skipped viewport carries a written opt-out reason — and every *other* story exactly once, at 1280 wide in light (`catalogJobs`). A story is not a width matrix; a surface that needs one belongs in the manifest, with its reasons. And `parameters.viewport.defaultViewport` does nothing in Storybook 10, so a story claiming a viewport that way has been rendering at the default width all along.
-- **Whether `play` reaches the state.** `play` runs in the browser, so a story that clicks into a level renders that level — for a reviewer and for the smoke pass, which also fails if the click never lands (see below).
+- **Where a story renders.** CI mounts every story exactly once at 1280 wide in light. It does not maintain a viewport, theme or screenshot matrix. Responsive and theme behaviour belongs in a focused component contract or the real desktop E2E harness.
+- **Whether `play` reaches the state.** Local Storybook can use `play` to drive a story into the state a reviewer needs to see. CI deliberately mounts stories with `embed=true`, so it does not execute those interactions or treat them as product tests.
 
 Extra stories still cost: a reviewer scanning the sidebar cannot tell which entry is the page, and duplicates re-render the same pixels every run while claiming coverage they do not add. Where a state matters but renders nothing new, pin it somewhere that runs — a `packages/ui` test or an e2e journey.
 
@@ -42,11 +42,11 @@ When a component has two hosts, one frame is not both. `capability-audit-strip.s
 
 If the runtime computes a field, ask the runtime for it. A story that hardcodes what a classifier would have returned is asserting a fact rather than showing one, and nothing fails when the classifier moves.
 
-## A `play` function is a step, not a test report
+## A `play` function is a local review driver, not a CI test
 
-A `play` that throws — including from an assertion — fails the smoke run and CI: `scripts/storybook-visual-smoke.mjs` subscribes to `playFunctionThrewException` and `unhandledErrorsWhilePlaying`, and the throw also surfaces as a console error it collects. That failure path only exists while plays actually run, so the harness carries its own proof: `harness-play-contract.stories.tsx` flips a DOM marker from `play`, and the manifest's `play-executed` check fails the run if autoplay ever stops (#1981). What `play` cannot do is *report*: there is no test addon, so a run tells you the story broke, not which assertion, in what state, or against what expectation. It is also the slowest place to put a check, because reaching it means building and serving Storybook.
+The render smoke uses Storybook's embedded mode, which mounts the story but disables autoplay. That keeps the Storybook lane responsible for one thing: every production-backed story must render without runtime, console or page errors. It does not turn keyboard, pointer, focus, geometry or state-transition interactions into a second desktop E2E suite.
 
-So put behavioural and computed-style contracts where they can name what they check — a `packages/ui` test, an e2e journey, or the smoke script's `checks` — and use `play` for what it is good at: driving a story into the state it claims to render.
+Put behavioural and computed-style contracts where they can name what they check — a `packages/ui` test or a real Electron E2E journey. Use `play` only when a local reviewer needs help navigating to a visual state; do not put product assertions in it.
 
 ## A story that renders nothing is not a story
 

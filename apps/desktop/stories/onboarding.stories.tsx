@@ -2,7 +2,6 @@ import { type ComponentProps, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
 import { ChatSurfaceLayout, ChatView } from '@maka/ui';
-import { expect, fn, userEvent, within } from 'storybook/test';
 import { OnboardingHero } from '../src/renderer/onboarding-hero';
 
 const meta = {
@@ -99,40 +98,17 @@ export const NeedsConnection: Story = {
       <OnboardingHero {...heroProps({ kind: 'needs_connection' })} />
     </DetailPane>
   ),
-  play: async ({ canvasElement }) => {
-    const providerRow = canvasElement.querySelector<HTMLElement>('.maka-onboarding-provider-row');
-    await expect(providerRow).not.toBeNull();
-    const style = getComputedStyle(providerRow as HTMLElement);
-    await expect(style.paddingTop).toBe('8px');
-    await expect(style.paddingRight).toBe('8px');
-    await expect(canvasElement.querySelectorAll('[data-maka-contract="onboarding-card"]')).toHaveLength(1);
-
-    const chatLayout = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-    const composerDock = chatLayout?.lastElementChild;
-    await expect(composerDock).toBeInstanceOf(HTMLElement);
-    await expect(getComputedStyle(composerDock as HTMLElement).display).toBe('none');
-  },
 };
-
-const openConnectionDetail = fn();
 
 // Real path: a configured connection exists but its credential is unavailable.
 export const NeedsCredentials: Story = {
   render: () => (
     <DetailPane>
       <OnboardingHero
-        {...heroProps(
-          { kind: 'needs_connection_credentials', connectionSlug: 'zai-live' },
-          { onOpenConnectionDetail: openConnectionDetail },
-        )}
+        {...heroProps({ kind: 'needs_connection_credentials', connectionSlug: 'zai-live' })}
       />
     </DetailPane>
   ),
-  play: async ({ canvasElement }) => {
-    openConnectionDetail.mockClear();
-    await userEvent.click(within(canvasElement).getByRole('button', { name: '配置连接凭据' }));
-    await expect(openConnectionDetail).toHaveBeenCalledWith('zai-live');
-  },
 };
 
 // Real path: the snapshot references a connection before the renderer list catches up.
