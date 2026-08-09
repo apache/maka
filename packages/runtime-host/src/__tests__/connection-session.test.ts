@@ -14,6 +14,7 @@ import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.
 import {
   decodeHostFrame,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostFrame,
   type ResponseFrame,
@@ -82,6 +83,47 @@ test('concurrent responses remain framed and correlated in reverse completion or
         );
       } finally {
         for (const gate of release) gate.resolve();
+        await Promise.allSettled(requests);
+      }
+    },
+  );
+});
+
+test('the Client backpressures a healthy request burst at the Host connection limit', async () => {
+  const requestCount = 96;
+  const firstWaveEntered = deferred();
+  const releaseFirstWave = deferred();
+  let entered = 0;
+  let active = 0;
+  let maxActive = 0;
+
+  await withRuntimeHost(
+    async (input) => {
+      entered += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (entered === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS) firstWaveEntered.resolve();
+      await releaseFirstWave.promise;
+      active -= 1;
+      return {
+        ok: true,
+        result: runningSnapshot(input.sessionId, input.turnId),
+      };
+    },
+    async ({ connectClient }) => {
+      const client = await connectClient();
+      const requests = Array.from({ length: requestCount }, (_, index) =>
+        client.queryTurn({ sessionId: 'session', turnId: `burst-${index}` }, 5_000),
+      );
+      try {
+        await withTimeout(firstWaveEntered.promise, 1_000, 'first request wave was not admitted');
+        assert.equal(maxActive, RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS);
+        releaseFirstWave.resolve();
+        const results = await Promise.all(requests);
+        assert.equal(results.length, requestCount);
+        assert.equal((await client.status(1_000)).state, 'ready');
+      } finally {
+        releaseFirstWave.resolve();
         await Promise.allSettled(requests);
       }
     },

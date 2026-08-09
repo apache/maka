@@ -1,6 +1,7 @@
 import {
   decodeClientFrame,
   isClientCapabilityClientFrameKind,
+  RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS,
   type ClientCapabilityClientFrame,
   type HostOperationErrorCode,
   type RequestFrame,
@@ -31,8 +32,6 @@ import type {
   HostSessionCatalogChangeService,
   SessionCatalogChangeConnection,
 } from './session-catalog-change-service.js';
-
-const MAX_IN_FLIGHT_REQUESTS = 64;
 
 type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency'>;
 
@@ -125,11 +124,11 @@ export class RuntimeHostConnectionSession {
         throw new Error('Unexpected handshake frame after acceptance');
       }
       const usesLivenessReserve =
-        this.#requests.size === MAX_IN_FLIGHT_REQUESTS &&
+        this.#requests.size === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS &&
         (frame.operation === 'host.status' || this.#inFlightStatusRequests > 0);
       if (
         this.#requests.has(frame.requestId) ||
-        (this.#requests.size >= MAX_IN_FLIGHT_REQUESTS && !usesLivenessReserve)
+        (this.#requests.size >= RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS && !usesLivenessReserve)
       ) {
         this.#teardown();
         return;

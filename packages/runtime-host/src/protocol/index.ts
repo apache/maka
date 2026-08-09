@@ -63,6 +63,7 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 8 as const;
 // capacity large enough to represent that domain value; narrower surfaces such
 // as Session continuity retain their own limits.
 export const RUNTIME_HOST_MAX_FRAME_BYTES = 96 * 1024;
+export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
 
 export type ClientSurface = 'desktop' | 'tui' | 'run' | 'activation' | 'bot' | 'inspect';
 
