@@ -128,7 +128,8 @@ export type GitWorkspaceServiceErrorCode =
   | 'source_changed_during_baseline_import'
   | 'managed_workspace_identity_conflict'
   | 'managed_workspace_unavailable'
-  | 'managed_workspace_drifted';
+  | 'managed_workspace_drifted'
+  | 'managed_workspace_source_drifted';
 
 export class GitWorkspaceServiceError extends Error {
   constructor(
@@ -519,6 +520,10 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     binding: ManagedWorkspaceBinding,
     layout: WorkspaceLayout,
   ): Promise<ManagedWorkspaceBinding> {
+    const currentSource = await this.inspectSourceRepository(
+      await canonicalDirectory(binding.sourceRoot, 'repository_ineligible'),
+    );
+    assertBindingSourceObservation(binding, currentSource);
     const repository = await this.requireRepository(input, layout);
     assertBindingRepository(binding, repository);
     const epoch = await this.requireEpochArtifact(input, repository, layout);
@@ -2166,6 +2171,24 @@ function assertSameSourceObservation(
     throw new GitWorkspaceServiceError(
       'source_changed_during_baseline_import',
       'Managed workspace source changed while the baseline was being imported',
+    );
+  }
+}
+
+function assertBindingSourceObservation(
+  binding: ManagedWorkspaceBinding,
+  current: SourceRepositoryInspection,
+): void {
+  if (
+    !samePath(binding.sourceRoot, current.sourceRoot) ||
+    !samePath(binding.sourceGitCommonDir, current.gitCommonDir) ||
+    binding.sourceHeadCommitOid !== current.headCommitOid ||
+    binding.sourceTreeOid !== current.treeOid ||
+    binding.objectFormat !== current.objectFormat
+  ) {
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_source_drifted',
+      'Managed workspace source no longer matches its accepted Git boundary',
     );
   }
 }
