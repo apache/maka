@@ -1,0 +1,66 @@
+import { TextDecoder } from 'node:util';
+import {
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
+  RuntimeHostProtocolError,
+  type EncodedProtocolMessage,
+} from '../protocol/index.js';
+
+export const LOCAL_IPC_MAX_FRAME_BYTES = RUNTIME_HOST_MAX_MESSAGE_BYTES + 1;
+
+export function frameLocalIpcProtocolMessage(message: EncodedProtocolMessage): Buffer {
+  return Buffer.concat([message, Buffer.from('\n')]);
+}
+
+export class LocalIpcProtocolFrameDecoder {
+  readonly #decoder = new TextDecoder('utf-8', { fatal: true });
+  #pending = Buffer.alloc(0);
+
+  push(chunk: Uint8Array): unknown[] {
+    const frames: unknown[] = [];
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const newline = chunk.indexOf(0x0a, offset);
+      const end = newline === -1 ? chunk.byteLength : newline;
+      const segment = Buffer.from(chunk.subarray(offset, end));
+      if (this.#pending.byteLength + segment.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
+        throw new RuntimeHostProtocolError(
+          'frame_too_large',
+          'Runtime Host message exceeds the byte limit',
+        );
+      }
+      if (segment.byteLength > 0) this.#pending = Buffer.concat([this.#pending, segment]);
+      if (newline === -1) break;
+      frames.push(this.#decodePending());
+      this.#pending = Buffer.alloc(0);
+      offset = newline + 1;
+    }
+    return frames;
+  }
+
+  end(): void {
+    if (this.#pending.byteLength !== 0) {
+      throw new RuntimeHostProtocolError(
+        'invalid_frame',
+        'Runtime Host stream ended with a partial frame',
+      );
+    }
+  }
+
+  #decodePending(): unknown {
+    if (this.#pending.byteLength === 0) {
+      throw new RuntimeHostProtocolError('invalid_frame', 'Runtime Host frame is empty');
+    }
+    let text: string;
+    try {
+      const bytes = this.#pending.at(-1) === 0x0d ? this.#pending.subarray(0, -1) : this.#pending;
+      text = this.#decoder.decode(bytes);
+    } catch {
+      throw new RuntimeHostProtocolError('invalid_utf8', 'Runtime Host frame is not valid UTF-8');
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new RuntimeHostProtocolError('invalid_json', 'Runtime Host frame is not valid JSON');
+    }
+  }
+}

@@ -92,10 +92,8 @@ export type RuntimeHostCompositionFactory = (
   context: RuntimeHostCompositionContext,
 ) => Promise<RuntimeHostComposition>;
 
-export interface RuntimeHostKernelOptions {
+interface RuntimeHostKernelCommonOptions {
   owner: InteractiveRootOwner;
-  lifecycleMode?: RuntimeHostLifecycleMode;
-  idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
   compositionFactory?: RuntimeHostCompositionFactory;
@@ -103,6 +101,16 @@ export interface RuntimeHostKernelOptions {
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
+
+export type RuntimeHostKernelOptions = RuntimeHostKernelCommonOptions &
+  (
+    | { lifecycleMode?: 'ephemeral'; idleGraceMs?: number }
+    | { lifecycleMode: 'service'; idleGraceMs?: never }
+  );
+
+type RuntimeHostLifecycle =
+  | { readonly kind: 'ephemeral'; readonly idleGraceMs: number }
+  | { readonly kind: 'service' };
 
 export class RuntimeHostKernel {
   readonly hostEpoch = randomUUID();
@@ -114,8 +122,7 @@ export class RuntimeHostKernel {
   readonly #connectionSessions = new Set<RuntimeHostConnectionSession>();
   readonly #operationDrainWaiters = new Set<() => void>();
   readonly #residencyDrainWaiters = new Set<() => void>();
-  readonly #lifecycleMode: RuntimeHostLifecycleMode;
-  readonly #idleGraceMs: number;
+  readonly #lifecycle: RuntimeHostLifecycle;
   readonly #handshakeTimeoutMs: number;
   readonly #shutdownGraceMs: number;
   #listeners: RuntimeHostListenerSet | undefined;
@@ -137,16 +144,13 @@ export class RuntimeHostKernel {
   #rejectClosed!: (error: unknown) => void;
 
   private constructor(options: RuntimeHostKernelOptions) {
-    assertLifecycleMode(options.lifecycleMode ?? 'ephemeral');
-    assertDuration(options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS, 'idleGraceMs', 0);
+    this.#lifecycle = normalizeLifecycle(options);
     assertDuration(
       options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
       'handshakeTimeoutMs',
       1,
     );
     assertDuration(options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS, 'shutdownGraceMs', 1);
-    this.#idleGraceMs = options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
-    this.#lifecycleMode = options.lifecycleMode ?? 'ephemeral';
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.#shutdownGraceMs = options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.#options = options;
@@ -163,15 +167,7 @@ export class RuntimeHostKernel {
     const owner = authenticateInteractiveRootOwner(options.owner);
     let host: RuntimeHostKernel | undefined;
     try {
-      host = new RuntimeHostKernel({
-        owner,
-        lifecycleMode: options.lifecycleMode,
-        idleGraceMs: options.idleGraceMs,
-        handshakeTimeoutMs: options.handshakeTimeoutMs,
-        shutdownGraceMs: options.shutdownGraceMs,
-        compositionFactory: options.compositionFactory,
-        listenerSetFactory: options.listenerSetFactory,
-      });
+      host = new RuntimeHostKernel({ ...options, owner });
       await host.#start();
       return host;
     } catch (error) {
@@ -351,7 +347,10 @@ export class RuntimeHostKernel {
         protocolMax: HOST_PROTOCOL.max,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         state: admittedState,
-        replacement: this.#isTrueIdle() ? 'wait_for_idle_exit' : 'blocked_by_residency',
+        replacement:
+          this.#lifecycle.kind === 'ephemeral' && this.#isTrueIdle()
+            ? 'wait_for_idle_exit'
+            : 'blocked_by_residency',
       };
     }
     this.#acceptedTransports.add(transport);
@@ -528,14 +527,14 @@ export class RuntimeHostKernel {
   }
 
   #scheduleIdleIfNeeded(): void {
-    if (this.#lifecycleMode === 'service') return;
+    if (this.#lifecycle.kind === 'service') return;
     if (this.#shutdownRequested) return;
     if (!this.#isTrueIdle() || this.#idleTimer) return;
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = undefined;
       if (!this.#isTrueIdle()) return;
       void this.#commitShutdown().catch(() => undefined);
-    }, this.#idleGraceMs);
+    }, this.#lifecycle.idleGraceMs);
   }
 
   #isTrueIdle(): boolean {
@@ -726,8 +725,18 @@ function assertDuration(value: number, label: string, minimum: 0 | 1): void {
   }
 }
 
-function assertLifecycleMode(value: unknown): asserts value is RuntimeHostLifecycleMode {
-  if (value !== 'ephemeral' && value !== 'service') {
+function normalizeLifecycle(options: RuntimeHostKernelOptions): RuntimeHostLifecycle {
+  const lifecycleMode: unknown = options.lifecycleMode;
+  if (lifecycleMode === 'service') {
+    if (Object.hasOwn(options, 'idleGraceMs')) {
+      throw new TypeError('Runtime Host service lifecycle does not accept idleGraceMs');
+    }
+    return { kind: 'service' };
+  }
+  if (lifecycleMode !== undefined && lifecycleMode !== 'ephemeral') {
     throw new TypeError('Runtime Host lifecycleMode must be ephemeral or service');
   }
+  const idleGraceMs = options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
+  assertDuration(idleGraceMs, 'idleGraceMs', 0);
+  return { kind: 'ephemeral', idleGraceMs };
 }

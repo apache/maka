@@ -1,14 +1,10 @@
 import type { Socket } from 'node:net';
 import {
-  encodeProtocolMessage,
-  frameProtocolMessage,
-  ProtocolFrameDecoder,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
-  type ClientFrame,
   type EncodedProtocolMessage,
-  type HostFrame,
 } from '../protocol/index.js';
+import { frameLocalIpcProtocolMessage, LocalIpcProtocolFrameDecoder } from './local-ipc-framing.js';
 import type { RuntimeHostMessageTransport } from './message-transport.js';
 
 const MAX_QUEUED_FRAMES = 64;
@@ -44,7 +40,7 @@ export class RuntimeHostTransportError extends Error {
 
 export class FramedTransport implements RuntimeHostMessageTransport {
   readonly closed: Promise<void>;
-  readonly #decoder = new ProtocolFrameDecoder();
+  readonly #decoder = new LocalIpcProtocolFrameDecoder();
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
   #buffered = Buffer.alloc(0);
@@ -109,21 +105,11 @@ export class FramedTransport implements RuntimeHostMessageTransport {
     });
   }
 
-  write(message: EncodedProtocolMessage): Promise<void>;
-  write(frame: ClientFrame | HostFrame): Promise<void>;
-  write(input: EncodedProtocolMessage | ClientFrame | HostFrame): Promise<void> {
-    try {
-      const message = Buffer.isBuffer(input) ? input : encodeProtocolMessage(input);
-      return this.writeEncoded(frameProtocolMessage(message));
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-
-  writeEncoded(encoded: Uint8Array): Promise<void> {
+  write(message: EncodedProtocolMessage): Promise<void> {
     if (this.#failure) return Promise.reject(this.#failure);
+    const frame = frameLocalIpcProtocolMessage(message);
     return new Promise((resolve, reject) => {
-      this.socket.write(encoded, (error) => {
+      this.socket.write(frame, (error) => {
         if (error) reject(error);
         else resolve();
       });
@@ -136,14 +122,6 @@ export class FramedTransport implements RuntimeHostMessageTransport {
 
   abort(error?: Error): void {
     this.socket.destroy(error);
-  }
-
-  destroyAfterFlush(): void {
-    this.closeAfterFlush();
-  }
-
-  destroy(error?: Error): void {
-    this.abort(error);
   }
 
   #receive(chunk: Buffer): void {

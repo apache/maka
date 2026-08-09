@@ -3,10 +3,13 @@ import { createServer, Socket, type Server } from 'node:net';
 import { test } from 'node:test';
 import {
   encodeProtocolMessage,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
+  RUNTIME_HOST_PROTOCOL_VERSION,
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
+import { frameLocalIpcProtocolMessage } from '../transport/local-ipc-framing.js';
 
 test('drains clean half-open input before reporting typed read EOF', async () => {
   await withSocketPair(async (transport, peer) => {
@@ -17,14 +20,14 @@ test('drains clean half-open input before reporting typed read EOF', async () =>
       (error: unknown) => error instanceof RuntimeHostTransportError && error.code === 'read_eof',
     );
 
-    const reply = Buffer.from(`${JSON.stringify({ reply: true })}\n`);
-    const received = readSocket(peer, reply.byteLength);
-    await transport.writeEncoded(reply);
-    assert.deepEqual(await received, reply);
+    const reply = encodeProtocolMessage({ kind: 'draining', hostEpoch: 'host-1' });
+    const received = readSocket(peer, reply.byteLength + 1);
+    await transport.write(reply);
+    assert.deepEqual(await received, frameLocalIpcProtocolMessage(reply));
     await ended;
 
     const failure = new Error('forced transport failure');
-    transport.destroy(failure);
+    transport.abort(failure);
     await transport.closed;
     await assert.rejects(transport.read(0), (error: unknown) => error === failure);
   });
@@ -74,26 +77,13 @@ test('applies byte backpressure without dropping large valid frames', async () =
 test('fails closed on an oversized unterminated frame over a real socket', async () => {
   await withSocketPair(async (transport, peer) => {
     const read = transport.read(1_000);
-    peer.write(Buffer.alloc(RUNTIME_HOST_MAX_FRAME_BYTES + 1, 0x61));
+    peer.write(Buffer.alloc(RUNTIME_HOST_MAX_MESSAGE_BYTES + 1, 0x61));
     await assert.rejects(
       read,
       (error: unknown) =>
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );
     await transport.closed;
-  });
-});
-
-test('returns a rejected Promise for an oversized outbound frame', async () => {
-  await withSocketPair(async (transport) => {
-    await assert.rejects(
-      transport.write({
-        kind: 'draining',
-        hostEpoch: 'x'.repeat(RUNTIME_HOST_MAX_FRAME_BYTES),
-      }),
-      (error: unknown) =>
-        error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
-    );
   });
 });
 
@@ -104,7 +94,33 @@ test('adds Local IPC framing to an encoded protocol message', async () => {
 
     await transport.write(message);
 
-    assert.deepEqual(await received, Buffer.concat([message, Buffer.from('\n')]));
+    assert.deepEqual(await received, frameLocalIpcProtocolMessage(message));
+  });
+});
+
+test('decodes split UTF-8 and coalesced Local IPC frames', async () => {
+  await withSocketPair(async (transport, peer) => {
+    const hello = {
+      kind: 'hello' as const,
+      clientInstanceId: '客户端',
+      surface: 'tui' as const,
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    };
+    const status = { requestId: 'status-1', operation: 'host.status', input: {} } as const;
+    const wire = Buffer.concat([
+      frameLocalIpcProtocolMessage(encodeProtocolMessage(hello)),
+      frameLocalIpcProtocolMessage(encodeProtocolMessage(status)),
+    ]);
+    const split = wire.indexOf(Buffer.from('端')) + 1;
+
+    peer.write(wire.subarray(0, split));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    peer.write(wire.subarray(split));
+
+    assert.deepEqual(await transport.read(1_000), hello);
+    assert.deepEqual(await transport.read(1_000), status);
   });
 });
 
@@ -124,7 +140,7 @@ async function withSocketPair(
   try {
     await run(transport, peer);
   } finally {
-    transport.destroy();
+    transport.abort();
     peer.destroy();
     await transport.closed;
     await closeServer(server);

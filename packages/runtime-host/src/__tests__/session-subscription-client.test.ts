@@ -19,15 +19,17 @@ import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
   decodeClientFrame,
-  encodeProtocolFrame,
+  encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type HostFrame,
   type RequestFrame,
   type SubscriptionFrame,
 } from '../protocol/index.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import { frameLocalIpcProtocolMessage } from '../transport/local-ipc-framing.js';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -39,15 +41,16 @@ test('registers a subscription before receiving a coalesced first frame', async 
     async (transport, hostEpoch) => {
       const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
       const opened = openResult(hostEpoch, 'subscription-ordered');
-      await transport.writeEncoded(
+      await writeRawLocalIpc(
+        transport,
         Buffer.concat([
-          encodeProtocolFrame({
+          encodeLocalIpcTestFrame({
             requestId: request.requestId,
             operation: 'subscription.open',
             ok: true,
             result: opened,
           }),
-          encodeProtocolFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
@@ -80,15 +83,16 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
         ptySequence: 7,
         data: 'ready',
       };
-      await transport.writeEncoded(
+      await writeRawLocalIpc(
+        transport,
         Buffer.concat([
-          encodeProtocolFrame({
+          encodeLocalIpcTestFrame({
             requestId: request.requestId,
             operation: 'subscription.open',
             ok: true,
             result: opened,
           }),
-          encodeProtocolFrame(frame),
+          encodeLocalIpcTestFrame(frame),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
@@ -118,15 +122,16 @@ test('isolates a sequence gap and continues requests on the same connection', as
     async (transport, hostEpoch) => {
       const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
       const opened = openResult(hostEpoch, 'subscription-gap');
-      await transport.writeEncoded(
+      await writeRawLocalIpc(
+        transport,
         Buffer.concat([
-          encodeProtocolFrame({
+          encodeLocalIpcTestFrame({
             requestId: request.requestId,
             operation: 'subscription.open',
             ok: true,
             result: opened,
           }),
-          encodeProtocolFrame(deltaFrame(hostEpoch, opened.subscriptionId, 2)),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 2)),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
@@ -151,13 +156,14 @@ test('rejects epoch and Session correlation changes per subscription', async () 
       async (transport, hostEpoch) => {
         const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
         const opened = openResult(hostEpoch, `subscription-${changed}`);
-        await transport.write({
+        await writeProtocolFrame(transport, {
           requestId: request.requestId,
           operation: 'subscription.open',
           ok: true,
           result: opened,
         });
-        await transport.write(
+        await writeProtocolFrame(
+          transport,
           changed === 'graph'
             ? {
                 kind: 'subscription.agent_graph_changed',
@@ -201,7 +207,7 @@ test('evicts a locally slow iterator and keeps the connection usable', async () 
       const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
       const opened = openResult(hostEpoch, 'subscription-slow');
       const frames = [
-        encodeProtocolFrame({
+        encodeLocalIpcTestFrame({
           requestId: request.requestId,
           operation: 'subscription.open',
           ok: true,
@@ -209,9 +215,11 @@ test('evicts a locally slow iterator and keeps the connection usable', async () 
         }),
       ];
       for (let sequence = 1; sequence <= 33; sequence += 1) {
-        frames.push(encodeProtocolFrame(deltaFrame(hostEpoch, opened.subscriptionId, sequence)));
+        frames.push(
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, sequence)),
+        );
       }
-      await transport.writeEncoded(Buffer.concat(frames));
+      await writeRawLocalIpc(transport, Buffer.concat(frames));
       await answerClose(transport, opened.subscriptionId, closeObserved.resolve);
       await answerStatus(transport, hostEpoch);
     },
@@ -233,13 +241,13 @@ test('ends every active subscription with connection_closed on EOF', async () =>
   await withProtocolPeer(
     async (transport, hostEpoch) => {
       const request = await acceptConnectionAndReadOpen(transport, hostEpoch);
-      await transport.write({
+      await writeProtocolFrame(transport, {
         requestId: request.requestId,
         operation: 'subscription.open',
         ok: true,
         result: openResult(hostEpoch, 'subscription-eof'),
       });
-      transport.destroyAfterFlush();
+      transport.closeAfterFlush();
     },
     async (connection) => {
       const subscription = await connection.openSessionSubscription({
@@ -266,7 +274,7 @@ test('loads a canonical transcript while live frames continue on the same connec
     async (transport, hostEpoch) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch);
       const opened = openResult(hostEpoch, 'subscription-transcript');
-      await transport.write({
+      await writeProtocolFrame(transport, {
         requestId: openRequest.requestId,
         operation: 'subscription.open',
         ok: true,
@@ -279,10 +287,11 @@ test('loads a canonical transcript while live frames continue on the same connec
         kind: 'start',
         subscriptionId: opened.subscriptionId,
       });
-      await transport.writeEncoded(
+      await writeRawLocalIpc(
+        transport,
         Buffer.concat([
-          encodeProtocolFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
-          encodeProtocolFrame({
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
+          encodeLocalIpcTestFrame({
             requestId: transcriptRequest.requestId,
             operation: 'session.transcript.query',
             ok: true,
@@ -327,7 +336,7 @@ test('restarts transcript loading after an expired snapshot', async () => {
     async (transport, hostEpoch) => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch);
       const opened = openResult(hostEpoch, 'subscription-retry');
-      await transport.write({
+      await writeProtocolFrame(transport, {
         requestId: openRequest.requestId,
         operation: 'subscription.open',
         ok: true,
@@ -339,7 +348,7 @@ test('restarts transcript loading after an expired snapshot', async () => {
         kind: 'start',
         subscriptionId: opened.subscriptionId,
       });
-      await transport.write({
+      await writeProtocolFrame(transport, {
         requestId: startRequest.requestId,
         operation: 'session.transcript.query',
         ok: true,
@@ -363,7 +372,7 @@ test('restarts transcript loading after an expired snapshot', async () => {
         messageIndex: 0,
         byteOffset: splitAt,
       });
-      await transport.write({
+      await writeProtocolFrame(transport, {
         requestId: continuationRequest.requestId,
         operation: 'session.transcript.query',
         ok: true,
@@ -375,7 +384,7 @@ test('restarts transcript loading after an expired snapshot', async () => {
         kind: 'start',
         subscriptionId: opened.subscriptionId,
       });
-      await transport.write({
+      await writeProtocolFrame(transport, {
         requestId: retryStartRequest.requestId,
         operation: 'session.transcript.query',
         ok: true,
@@ -424,7 +433,8 @@ test('forces a same-v0 pre-epoch Host through its incompatible replacement path'
         { min: hello.protocolMin, max: hello.protocolMax },
         { min: RUNTIME_HOST_PROTOCOL_VERSION + 1, max: RUNTIME_HOST_PROTOCOL_VERSION + 1 },
       );
-      await transport.writeEncoded(
+      await writeRawLocalIpc(
+        transport,
         encodeLegacyProtocolFrame({
           kind: 'incompatible',
           hostEpoch,
@@ -434,7 +444,7 @@ test('forces a same-v0 pre-epoch Host through its incompatible replacement path'
           replacement: 'wait_for_idle_exit',
         }),
       );
-      transport.destroyAfterFlush();
+      transport.closeAfterFlush();
       await transport.closed;
     })().then(serverTask.resolve, serverTask.reject);
   });
@@ -537,7 +547,7 @@ async function acceptConnectionAndReadOpen(
 ): Promise<Extract<RequestFrame, { operation: 'subscription.open' }>> {
   const hello = decodeClientFrame(await transport.read(1_000));
   assert.ok('kind' in hello && hello.kind === 'hello');
-  await transport.write({
+  await writeProtocolFrame(transport, {
     kind: 'accepted',
     hostEpoch,
     connectionId: 'connection-1',
@@ -561,7 +571,7 @@ async function answerClose(
   assert.equal(request.operation, 'subscription.close');
   assert.deepEqual(request.input, { subscriptionId });
   onObserved?.();
-  await transport.write({
+  await writeProtocolFrame(transport, {
     requestId: request.requestId,
     operation: 'subscription.close',
     ok: true,
@@ -573,7 +583,7 @@ async function answerStatus(transport: FramedTransport, hostEpoch: string): Prom
   const request = decodeClientFrame(await transport.read(1_000));
   assert.ok(!('kind' in request));
   assert.equal(request.operation, 'host.status');
-  await transport.write({
+  await writeProtocolFrame(transport, {
     requestId: request.requestId,
     operation: 'host.status',
     ok: true,
@@ -641,6 +651,20 @@ function deltaFrame(
 function hasSubscriptionReason(reason: RuntimeHostSubscriptionError['reason']) {
   return (error: unknown) =>
     error instanceof RuntimeHostSubscriptionError && error.reason === reason;
+}
+
+function writeProtocolFrame(transport: FramedTransport, frame: HostFrame): Promise<void> {
+  return transport.write(encodeProtocolMessage(frame));
+}
+
+function encodeLocalIpcTestFrame(frame: HostFrame): Buffer {
+  return frameLocalIpcProtocolMessage(encodeProtocolMessage(frame));
+}
+
+function writeRawLocalIpc(transport: FramedTransport, frame: Uint8Array): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transport.socket.write(frame, (error) => (error ? reject(error) : resolve()));
+  });
 }
 
 function encodeLegacyProtocolFrame(frame: unknown): Buffer {

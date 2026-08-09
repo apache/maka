@@ -24,6 +24,7 @@ export {
   runRuntimeHostProcessLifecycle,
   type RuntimeHostProcessLifecycleOptions,
 } from './process-lifecycle.js';
+export { installRuntimeHostLogCapture } from '../process-diagnostics.js';
 export {
   createRuntimeHostListenerSet,
   startLocalRuntimeHostListenerSet,

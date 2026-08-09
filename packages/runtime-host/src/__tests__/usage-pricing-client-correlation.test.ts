@@ -14,10 +14,12 @@ import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
   decodeClientFrame,
+  encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   RuntimeHostProtocolError,
+  type HostFrame,
   type OperationInput,
   type OperationOutput,
   type RequestFrame,
@@ -154,7 +156,7 @@ describe('Usage/Pricing client response correlation', () => {
         async (transport, hostEpoch) => {
           const request = await acceptConnectionAndReadRequest(transport, hostEpoch);
           assert.equal(request.operation, mismatch.operation);
-          await transport.write({
+          await writeHostFrame(transport, {
             requestId: request.requestId,
             operation: mismatch.operation,
             ok: true,
@@ -186,7 +188,7 @@ describe('Usage/Pricing client response correlation', () => {
           offset: 50,
           limit: 10,
         });
-        await transport.write({
+        await writeHostFrame(transport, {
           requestId: request.requestId,
           operation: 'usage.query',
           ok: true,
@@ -313,7 +315,7 @@ async function acceptConnectionAndReadRequest(
 ): Promise<RequestFrame> {
   const hello = decodeClientFrame(await transport.read(REQUEST_TIMEOUT_MS));
   assert.ok('kind' in hello && hello.kind === 'hello');
-  await transport.write({
+  await writeHostFrame(transport, {
     kind: 'accepted',
     hostEpoch,
     connectionId: 'usage-pricing-correlation',
@@ -324,6 +326,10 @@ async function acceptConnectionAndReadRequest(
   const request = decodeClientFrame(await transport.read(REQUEST_TIMEOUT_MS));
   assert.ok(!('kind' in request));
   return request as RequestFrame;
+}
+
+function writeHostFrame(transport: FramedTransport, frame: HostFrame): Promise<void> {
+  return transport.write(encodeProtocolMessage(frame));
 }
 
 function listen(server: Server, path: string): Promise<void> {

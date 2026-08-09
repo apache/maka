@@ -6,9 +6,8 @@ import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
 import {
   decodeHostFrame,
-  encodeProtocolFrame,
-  ProtocolFrameDecoder,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  encodeProtocolMessage,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   type SessionTranscriptCursor,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -239,11 +238,9 @@ test('tool output preserves one domain event and one wire frame', async () => {
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', output);
   await waitFor(() => sink.frames.length === 1);
 
-  const encoded = encodeProtocolFrame(sink.frames[0]!);
-  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
-  const decodedFrames = new ProtocolFrameDecoder().push(encoded);
-  assert.equal(decodedFrames.length, 1);
-  const decoded = decodeHostFrame(decodedFrames[0]);
+  const encoded = encodeProtocolMessage(sink.frames[0]!);
+  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
+  const decoded = decodeHostFrame(JSON.parse(encoded.toString('utf8')));
   assert.ok('kind' in decoded);
   if (!('kind' in decoded)) return;
   assert.equal(decoded.kind, 'subscription.session_event');
