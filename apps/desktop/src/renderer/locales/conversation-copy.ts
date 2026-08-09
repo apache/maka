@@ -103,7 +103,6 @@ export interface DesktopConversationCopy {
     branchSource: string;
     unstagedSource: string;
     stagedSource: string;
-    lastTurnSource: string;
     notGitRepository: string;
     workspaceUnavailable: string;
     unbornRepository: string;
@@ -373,7 +372,7 @@ const COPY = {
     workbar: {
       ariaLabel: '会话工作栏',
       sectionsAriaLabel: '会话工作栏标签',
-      review: '审阅',
+      review: '变更',
       terminal: '终端',
       terminalNumbered: (index) => `终端 ${index}`,
       tasks: '任务',
@@ -395,7 +394,7 @@ const COPY = {
       closeOthers: '关闭其他标签',
       closeToRight: '关闭右侧标签',
       launcher: {
-        review: '审阅当前会话产生的文件差异',
+        review: '查看当前 Git 工作区变化',
         terminal: '查看当前会话的终端运行和实时输出',
         tasks: '查看和维护当前会话的任务台账',
         browser: '打开内置浏览器并保留当前页面',
@@ -405,14 +404,13 @@ const COPY = {
       },
     },
     reviewPanel: {
-      ariaLabel: '会话审阅',
-      empty: '当前会话还没有文件差异',
-      emptyHelp: '这个会话还没有可回顾的更改。',
-      sourceLabel: '审阅来源',
+      ariaLabel: 'Git 变更',
+      empty: '当前 Git 工作区没有变化',
+      emptyHelp: '提交、暂存或修改文件后，变化会显示在这里。',
+      sourceLabel: '变更范围',
       branchSource: '分支',
       unstagedSource: '未暂存',
       stagedSource: '已暂存',
-      lastTurnSource: '上一轮',
       notGitRepository: '当前会话目录不是 Git 仓库',
       workspaceUnavailable: '当前会话目录已不可用',
       unbornRepository: 'Git 仓库还没有可比较的提交',
@@ -434,9 +432,9 @@ const COPY = {
         `${files} 个文件 · +${additions} · -${deletions}`,
       comparison: (base, current) => `${current} 相对 ${base}`,
       workingTree: (branch) => `${branch} 工作区`,
-      loadFailed: '无法读取会话差异',
+      loadFailed: '无法读取 Git 变化',
       retry: '重试',
-      refresh: '刷新审阅',
+      refresh: '刷新变化',
       diffCount: (count) => `${count} 个差异`,
     },
     terminalPanel: {
@@ -570,7 +568,7 @@ const COPY = {
     workbar: {
       ariaLabel: 'Conversation workbar',
       sectionsAriaLabel: 'Conversation workbar tabs',
-      review: 'Review',
+      review: 'Changes',
       terminal: 'Terminal',
       terminalNumbered: (index) => `Terminal ${index}`,
       tasks: 'Tasks',
@@ -592,7 +590,7 @@ const COPY = {
       closeOthers: 'Close other tabs',
       closeToRight: 'Close tabs to the right',
       launcher: {
-        review: 'Review file diffs produced by this conversation',
+        review: 'View changes in the current Git workspace',
         terminal: 'Inspect terminal runs and live output for this conversation',
         tasks: 'View and maintain the task ledger for this conversation',
         browser: 'Open the embedded browser and keep the current page',
@@ -602,14 +600,13 @@ const COPY = {
       },
     },
     reviewPanel: {
-      ariaLabel: 'Conversation review',
-      empty: 'No file diffs in this conversation yet',
-      emptyHelp: 'No changes to review for this session yet.',
-      sourceLabel: 'Review source',
+      ariaLabel: 'Git changes',
+      empty: 'No changes in the current Git workspace',
+      emptyHelp: 'Committed, staged, and modified files appear here.',
+      sourceLabel: 'Change scope',
       branchSource: 'Branch',
       unstagedSource: 'Unstaged',
       stagedSource: 'Staged',
-      lastTurnSource: 'Last turn',
       notGitRepository: 'This conversation directory is not a Git repository',
       workspaceUnavailable: 'This conversation directory is unavailable',
       unbornRepository: 'This Git repository has no commit to compare yet',
@@ -632,9 +629,9 @@ const COPY = {
         `${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
       comparison: (base, current) => `${current} compared with ${base}`,
       workingTree: (branch) => `${branch} working tree`,
-      loadFailed: 'Could not read conversation diffs',
+      loadFailed: 'Could not read Git changes',
       retry: 'Retry',
-      refresh: 'Refresh review',
+      refresh: 'Refresh changes',
       diffCount: (count) => `${count} diff${count === 1 ? '' : 's'}`,
     },
     terminalPanel: {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
@@ -10,13 +10,11 @@ import {
 import { Section } from '@astryxdesign/core/Section';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import {
-  countDiffLineStats,
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
   type GitReviewMutationAction,
   type GitReviewReadResult,
   type GitReviewSource,
-  type StoredMessage,
 } from '@maka/core';
 import { ToolResultPreview, useToast, useUiLocale } from '@maka/ui';
 import {
@@ -30,28 +28,7 @@ import {
 } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 
-type ReviewSource = GitReviewSource | 'last-turn';
 const REVIEW_FILE_PAGE_SIZE = 20;
-
-type FileDiffMessage = Extract<StoredMessage, { type: 'tool_result' }> & {
-  content: Extract<
-    Extract<StoredMessage, { type: 'tool_result' }>['content'],
-    { kind: 'file_diff' }
-  >;
-};
-
-function fileDiffMessages(messages: readonly StoredMessage[]): FileDiffMessage[] {
-  return messages.filter(
-    (message): message is FileDiffMessage =>
-      message.type === 'tool_result' && message.content.kind === 'file_diff',
-  );
-}
-
-function latestFileDiffTurn(messages: readonly StoredMessage[]): FileDiffMessage[] {
-  const diffs = fileDiffMessages(messages);
-  const turnId = diffs.at(-1)?.turnId;
-  return turnId ? diffs.filter((message) => message.turnId === turnId) : [];
-}
 
 export function SessionReviewPanel(props: {
   sessionId: string;
@@ -60,9 +37,8 @@ export function SessionReviewPanel(props: {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
-  const [source, setSource] = useState<ReviewSource>('branch');
+  const [source, setSource] = useState<GitReviewSource>('branch');
   const [baseBranch, setBaseBranch] = useState<string | undefined>(undefined);
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [pendingPath, setPendingPath] = useState<string | null>(null);
@@ -75,27 +51,13 @@ export function SessionReviewPanel(props: {
     setLoading(true);
     setError(null);
     try {
-      const nextMessages = await window.maka.sessions.readMessages(props.sessionId);
-      const nextGit =
-        source === 'last-turn'
-          ? null
-          : await window.maka.gitReview.read({
-              sessionId: props.sessionId,
-              source,
-              ...(source === 'branch' && baseBranch ? { baseBranch } : {}),
-            });
+      const nextGit = await window.maka.gitReview.read({
+        sessionId: props.sessionId,
+        source,
+        ...(source === 'branch' && baseBranch ? { baseBranch } : {}),
+      });
       if (revision !== revisionRef.current) return;
-      setMessages(nextMessages);
       setGitResult(nextGit);
-      if (
-        source === 'branch' &&
-        nextGit?.ok === false &&
-        (nextGit.reason === 'not_git_repository' ||
-          nextGit.reason === 'workspace_unavailable') &&
-        latestFileDiffTurn(nextMessages).length > 0
-      ) {
-        setSource('last-turn');
-      }
     } catch (nextError) {
       if (revision === revisionRef.current) {
         setError(
@@ -132,34 +94,17 @@ export function SessionReviewPanel(props: {
     };
   }, [load, props.active, props.sessionId]);
 
-  const lastTurnDiffs = useMemo(
-    () => latestFileDiffTurn(messages).reverse(),
-    [messages],
-  );
   const gitSnapshot = gitResult?.ok ? gitResult.snapshot : null;
   const gitFiles = gitSnapshot?.files ?? [];
   const visibleGitFiles = gitFiles.slice(0, visibleFileCount);
   const remainingGitFiles = Math.max(0, gitFiles.length - visibleGitFiles.length);
-  const stats =
-    source === 'last-turn'
-      ? lastTurnDiffs.reduce(
-          (total, message) => {
-            const next = countDiffLineStats(message.content.diff);
-            return {
-              files: total.files + 1,
-              additions: total.additions + next.additions,
-              deletions: total.deletions + next.deletions,
-            };
-          },
-          { files: 0, additions: 0, deletions: 0 },
-        )
-      : {
-          files: gitFiles.length,
-          additions: gitSnapshot?.additions ?? 0,
-          deletions: gitSnapshot?.deletions ?? 0,
-        };
+  const stats = {
+    files: gitFiles.length,
+    additions: gitSnapshot?.additions ?? 0,
+    deletions: gitSnapshot?.deletions ?? 0,
+  };
   const sourceError =
-    source === 'last-turn' || gitResult?.ok !== false
+    gitResult?.ok !== false
       ? null
       : gitResult.reason === 'not_git_repository'
         ? copy.notGitRepository
@@ -190,7 +135,7 @@ export function SessionReviewPanel(props: {
     !loading &&
     !error &&
     !sourceError &&
-    (source === 'last-turn' ? lastTurnDiffs.length === 0 : gitFiles.length === 0);
+    gitFiles.length === 0;
 
   const mutateFile = async (
     path: string,
@@ -259,14 +204,13 @@ export function SessionReviewPanel(props: {
           <div className="maka-session-review-source">
             <SegmentedControl
               value={source}
-              onChange={(value) => setSource(value as ReviewSource)}
+              onChange={(value) => setSource(value as GitReviewSource)}
               label={copy.sourceLabel}
               size="sm"
             >
               <SegmentedControlItem value="branch" label={copy.branchSource} />
               <SegmentedControlItem value="unstaged" label={copy.unstagedSource} />
               <SegmentedControlItem value="staged" label={copy.stagedSource} />
-              <SegmentedControlItem value="last-turn" label={copy.lastTurnSource} />
             </SegmentedControl>
           </div>
         }
@@ -331,14 +275,7 @@ export function SessionReviewPanel(props: {
           description={copy.emptyHelp}
         />
       ) : null}
-      {source === 'last-turn' && lastTurnDiffs.length > 0 ? (
-        <div className="maka-session-review-list">
-          {lastTurnDiffs.map((message) => (
-            <ToolResultPreview key={message.id} content={message.content} />
-          ))}
-        </div>
-      ) : null}
-      {source !== 'last-turn' && gitFiles.length > 0 ? (
+      {gitFiles.length > 0 ? (
         <div className="maka-session-review-list">
           {visibleGitFiles.map((file) => (
             <ToolResultPreview
