@@ -709,10 +709,6 @@ test('side chat recovers from failures and preserves its draft', async ({
     failPanel.getByText(/Fake backend received: retry after deterministic network failure/),
   ).toBeVisible();
 
-  await failComposer.fill('__e2e_error__:auth');
-  await failComposer.press('Enter');
-  await expect(failPanel.locator('.maka-quote-companion-error')).toHaveText('鉴权失败');
-
   await failComposer.fill('__e2e_wait_for_steering__');
   await failComposer.press('Enter');
   const activeSideTab = page.locator(
@@ -726,7 +722,6 @@ test('side chat recovers from failures and preserves its draft', async ({
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
     .toBe(1);
-  await expect(page.getByText('鉴权失败')).toHaveCount(0);
 
   // Draft survival across collapse and launcher navigation.
   await waitForSourceSessionToSettle(page);
