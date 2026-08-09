@@ -112,8 +112,15 @@ export function runShellWithBoundedTail(
   command: string,
   options: BoundedShellOptions,
 ): Promise<BoundedShellResult> {
-  const plan = buildShellSpawnPlan(options.shell ?? defaultShellPlan(), command);
-  return runSpawnedProcessWithBoundedTail(plan.file, plan.args, plan.useShellOption, options);
+  const plan = buildShellSpawnPlan(
+    options.shell ?? defaultShellPlan(),
+    command,
+    options.env ?? process.env,
+  );
+  return runSpawnedProcessWithBoundedTail(plan.file, plan.args, plan.useShellOption, {
+    ...options,
+    ...(plan.env ? { env: plan.env } : {}),
+  });
 }
 
 /** Run an argv command directly, without a second shell parsing pass. */

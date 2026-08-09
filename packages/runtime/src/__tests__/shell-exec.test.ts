@@ -245,9 +245,7 @@ describe('runShellWithBoundedTail', () => {
       ),
       `flags then PowerShell wrapper, got: ${r.stdout}`,
     );
-    assert.ok(
-      r.stdout.includes("FromBase64String('ZQBjAGgAbwAgAHcAaQByAGUAZAAtAG0AYQByAGsAZQByAA==')"),
-    );
+    assert.ok(r.stdout.includes("GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')"));
     assert.ok(
       r.stdout.includes('exit $LASTEXITCODE'),
       'exit-code wrapper is part of the command argument',

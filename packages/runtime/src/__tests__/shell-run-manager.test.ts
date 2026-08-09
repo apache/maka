@@ -101,7 +101,8 @@ describe('ShellRunProcessManager', () => {
     const result = await manager.runForegroundBash(
       shellInput({
         cwd: await workspace(),
-        command: "New-Item -ItemType File -Path '中文文件名.txt' | Out-Null; Get-ChildItem -Name",
+        command:
+          "if (Test-Path Env:__MAKA_RUNTIME_POWERSHELL_COMMAND) { throw 'internal command env leaked' }; New-Item -ItemType File -Path '中文文件名.txt' | Out-Null; Get-ChildItem -Name",
         shell,
       }),
     );
@@ -115,7 +116,7 @@ describe('ShellRunProcessManager', () => {
     assert.doesNotMatch(result.output.stdout, /\uFFFD/u);
   });
 
-  test('uses the existing explicit PowerShell pipe plan unchanged', async () => {
+  test('uses the shared explicit PowerShell pipe plan', async () => {
     const manager = await createTestManager();
     const result = await manager.runForegroundBash(
       shellInput({
@@ -1175,7 +1176,8 @@ describe('ShellRunProcessManager', () => {
     const initial = await manager.runBackgroundBash(
       shellInput({
         cwd: await workspace(),
-        command: "New-Item -ItemType File -Path '中文文件名.txt' | Out-Null; Get-ChildItem -Name",
+        command:
+          "if (Test-Path Env:__MAKA_RUNTIME_POWERSHELL_COMMAND) { throw 'internal command env leaked' }; New-Item -ItemType File -Path '中文文件名.txt' | Out-Null; Get-ChildItem -Name",
         pty: true,
         shell,
       }),

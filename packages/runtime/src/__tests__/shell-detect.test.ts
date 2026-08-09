@@ -65,6 +65,7 @@ describe('buildShellSpawnPlan', () => {
     const spawnPlan = buildShellSpawnPlan(
       { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\Users\\u\\bin\\pwsh.exe' },
       command,
+      { INHERITED: 'kept', __maka_runtime_powershell_command: 'caller value' },
     );
     assert.equal(spawnPlan.file, 'C:\\Users\\u\\bin\\pwsh.exe');
     assert.equal(spawnPlan.useShellOption, false);
@@ -76,7 +77,10 @@ describe('buildShellSpawnPlan', () => {
     ]);
     const script = spawnPlan.args[4] ?? '';
     assert.match(script, /\[Console\]::OutputEncoding = \$__makaUtf8/u);
-    assert.equal(decodeWrappedPowerShellCommand(script), command);
+    assert.equal(spawnPlan.env?.INHERITED, 'kept');
+    assert.equal(spawnPlan.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND, command);
+    assert.equal(spawnPlan.env?.__maka_runtime_powershell_command, undefined);
+    assert.match(script, /SetEnvironmentVariable\('__MAKA_RUNTIME_POWERSHELL_COMMAND', \$null\)/u);
     assert.doesNotMatch(
       script,
       /Write-Output/u,
@@ -98,7 +102,9 @@ describe('buildShellSpawnPlan', () => {
       '$__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n' +
         '[Console]::OutputEncoding = $__makaUtf8\n' +
         '$OutputEncoding = $__makaUtf8\n' +
-        "$__makaCommand = [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('bgBwAG0AIAB0AGUAcwB0AA==')))\n" +
+        "$__makaCommandText = [Environment]::GetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND')\n" +
+        "[Environment]::SetEnvironmentVariable('__MAKA_RUNTIME_POWERSHELL_COMMAND', $null)\n" +
+        '$__makaCommand = [ScriptBlock]::Create($__makaCommandText)\n' +
         '. $__makaCommand\n' +
         '$__makaOk = $?\n' +
         'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }',
@@ -138,20 +144,16 @@ describe('buildPtyShellSpawnPlan', () => {
     const powershell = buildPtyShellSpawnPlan(
       { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\pf\\pwsh.exe' },
       'Write-Output ready',
+      { INHERITED: 'kept' },
     );
     assert.equal(powershell.file, 'C:\\pf\\pwsh.exe');
     assert.deepEqual(powershell.args.slice(0, 3), ['-NoLogo', '-NoProfile', '-Command']);
     assert.doesNotMatch(powershell.args.join(' '), /-NonInteractive/);
     assert.match(
       powershell.args[3] ?? '',
-      /\$OutputEncoding = \$__makaUtf8\n\$__makaCommand = \[ScriptBlock\]::Create/u,
+      /\$OutputEncoding = \$__makaUtf8\n\$__makaCommandText = \[Environment\]::GetEnvironmentVariable/u,
     );
-    assert.equal(decodeWrappedPowerShellCommand(powershell.args[3] ?? ''), 'Write-Output ready');
+    assert.equal(powershell.env?.INHERITED, 'kept');
+    assert.equal(powershell.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND, 'Write-Output ready');
   });
 });
-
-function decodeWrappedPowerShellCommand(script: string): string {
-  const encoded = /FromBase64String\('([^']+)'\)/u.exec(script)?.[1];
-  assert.ok(encoded, 'wrapper contains an encoded user command');
-  return Buffer.from(encoded, 'base64').toString('utf16le');
-}
