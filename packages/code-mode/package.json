@@ -18,7 +18,9 @@
     "test": "npm run clean && npm run build && npm run test:dist"
   },
   "dependencies": {
+    "@ai-sdk/code-mode": "1.0.15",
     "acorn": "^8.18.0",
+    "ai": "7.0.58",
     "typescript": "5.9.3"
   }
 }
