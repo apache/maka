@@ -19,7 +19,7 @@ async function waitForSourceSessionToSettle(page: Page) {
       const [source] = await page.evaluate(() => window.maka.sessions.list());
       return source?.status;
     })
-    .not.toBe('running');
+    .toBe('active');
 }
 
 /**
