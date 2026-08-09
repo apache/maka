@@ -450,6 +450,11 @@ dialog:modal {
   background: var(--state-hover-bg);
 }
 
+.maka-titlebar-identity__breadcrumbs button:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
 /* The session name carries the weight of the pair: it is what the window is
    showing, and the project is the context it sits in. Astryx gives every
    non-current crumb the same secondary ink, and this one has to be non-current

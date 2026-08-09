@@ -102,9 +102,6 @@
   background: oklch(0.30 0 0);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .settingsThemePreview { transition: none; }
-}
 
 /* PR-THEME-PRODUCT-PALETTES-0: palette picker. Each option shows a
    round swatch whose color is the palette's accent token. The swatch

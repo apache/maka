@@ -28,7 +28,12 @@
   gap: var(--border-width-hairline);
 }
 
-.maka-task-ledger-row:hover { background: color-mix(in srgb, var(--foreground) 5%, transparent); }
+.maka-task-ledger-row:hover { background: var(--state-hover-bg); }
+
+.maka-task-ledger-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
 .maka-task-ledger-row[data-status="in_progress"] > svg { color: var(--status-running); }
 .maka-task-ledger-row[data-status="blocked"] > svg { color: var(--warning); }
 .maka-task-ledger-row[data-status="completed"] > svg { color: var(--success); }
@@ -97,7 +102,12 @@
   color: inherit;
 }
 
-.maka-task-ledger-retry:hover { background: color-mix(in srgb, var(--foreground) 7%, transparent); }
+.maka-task-ledger-retry:hover { background: var(--state-hover-bg); }
+
+.maka-task-ledger-retry:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: 1px;
+}
 
 @media (max-width: 620px) {
   .maka-task-ledger-row { grid-template-columns: 14px minmax(32px, auto) minmax(0, 1fr); }

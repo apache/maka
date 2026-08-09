@@ -155,6 +155,9 @@
   color: var(--foreground-secondary);
   touch-action: none;
   user-select: none;
+  transition:
+    background var(--duration-quick) var(--ease-out-strong),
+    color var(--duration-quick) var(--ease-out-strong);
 }
 
 .maka-workbar-tab:hover,
@@ -998,6 +1001,13 @@
 
 .maka-artifact-row:hover {
   background: var(--state-hover-bg);
+}
+
+/* Rows are arrow-key navigable (artifact-list-keyboard.ts); keyboard focus
+   gets the same inset ring the workbar launcher rows use. */
+.maka-artifact-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
 .maka-artifact-row:active:not([data-deleted="true"]) {

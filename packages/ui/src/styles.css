@@ -1,8 +1,9 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
-.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick), background var(--duration-quick); }
+.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--foreground-alpha-10); }
+.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--foreground-alpha-10); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
 
 .maka-page-header-title,
 .maka-page-header-eyebrow,
@@ -136,7 +137,7 @@
 /* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
    fade out, then a text change, then a fade in, and the JS timer is what waits
    out this transition before rewriting the word. */
-.maka-turn-working-phrase { font-weight: 500; transition: opacity 300ms var(--ease-out-strong); }
+.maka-turn-working-phrase { font-weight: 500; transition: opacity var(--duration-large) var(--ease-out-strong); }
 .maka-turn-working-phrase[data-fading="true"] { opacity: 0; }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
@@ -818,7 +819,8 @@
 .maka-web-search-preview a {
   font: var(--maka-text-heading-4);
  color: var(--foreground); text-decoration: none; }
-.maka-web-search-preview a:hover { text-decoration: underline; }
+.maka-web-search-preview a:hover,
+.maka-web-search-preview a:focus-visible { text-decoration: underline; }
 .maka-web-search-preview li p {
   font: var(--maka-text-supporting);
  margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }

@@ -17,7 +17,7 @@
   /* The hook already waits for the selection to settle before rendering this;
      the fade keeps that arrival from reading as a pop. Short enough not to
      add to the wait the user has already served. */
-  animation: maka-quote-actions-in 120ms var(--ease-standard, ease-out);
+  animation: maka-quote-actions-in var(--duration-quick) var(--ease-out-strong);
 }
 
 @keyframes maka-quote-actions-in {

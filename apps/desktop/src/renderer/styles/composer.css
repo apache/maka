@@ -88,7 +88,7 @@
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
-  transition: opacity var(--duration-fast, 120ms) var(--ease-standard, ease);
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
   z-index: var(--z-tooltip);
 }
 

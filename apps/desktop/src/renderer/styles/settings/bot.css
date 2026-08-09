@@ -127,6 +127,10 @@
   text-decoration: underline;
 }
 
+.settingsBotConfigDocLink:focus-visible {
+  text-decoration: underline;
+}
+
 /* At the restored/sanitized 480px window floor, the fixed Settings navigation
    leaves a narrow content column. Keep provider summaries readable instead of
    squeezing the logo, title, status chip, and switch into one row. */
