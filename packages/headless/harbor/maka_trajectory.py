@@ -163,9 +163,12 @@ _RUNTIME_EVENT_REF_KEYS = {
     "traceEventId",
     "toolCallId",
     "providerEventId",
+    "sourceMessageDigest",
     "providerRequestTraceId",
     "artifactId",
     "operationId",
+    "parentToolCallId",
+    "parentOperationId",
     "stepId",
     "sourceInvocationId",
     "sourceRunId",
@@ -1785,6 +1788,10 @@ def _is_runtime_refs(refs: Any) -> bool:
         return False
     string_refs = _RUNTIME_EVENT_REF_KEYS - {"sourceRuntimeEventHighWater"}
     if any(key in refs and not isinstance(refs[key], str) for key in string_refs):
+        return False
+    if "sourceMessageDigest" in refs and re.fullmatch(
+        r"sha256:[0-9a-f]{64}", refs["sourceMessageDigest"]
+    ) is None:
         return False
     if "sourceRuntimeEventHighWater" not in refs:
         return True
