@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 28;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 29;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1034,6 +1034,34 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       )
       WHERE external_adapter_id IS NOT NULL
         AND external_source_session_id IS NOT NULL;
+  `,
+  ],
+  [
+    29,
+    `
+    CREATE TABLE external_conversation_bindings (
+      conversation_digest TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL UNIQUE,
+      updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
+    );
+
+    CREATE INDEX external_conversation_bindings_by_session
+      ON external_conversation_bindings(session_id);
+
+    CREATE TABLE external_conversation_release_receipts (
+      conversation_digest TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      had_binding INTEGER NOT NULL CHECK (had_binding IN (0, 1)),
+      committed_at INTEGER NOT NULL CHECK (committed_at >= 0),
+      PRIMARY KEY(conversation_digest, operation_id)
+    );
+
+    CREATE INDEX external_conversation_release_receipts_by_conversation
+      ON external_conversation_release_receipts(
+        conversation_digest,
+        committed_at DESC,
+        operation_id DESC
+      );
   `,
   ],
 ]);
