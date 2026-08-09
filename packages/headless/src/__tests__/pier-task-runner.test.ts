@@ -1865,12 +1865,13 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
           reasoningEffort: 'max',
           opencodeToolchainPath: repo,
           apiKeyFile: '/secrets/deepseek.key',
+          pricing: { inputUsdPer1M: 1, outputUsdPer1M: 2 },
           providerProxyHub: {
             baseUrl: 'http://host.docker.internal:443',
             issue: () => ({
               baseUrl: 'http://host.docker.internal:443',
               token: 'ephemeral-token',
-              usage: () => null,
+              usage: () => ({ input: 10, cacheRead: 0, cacheWrite: 0, output: 5 }),
               telemetry: () => [
                 {
                   requestId: 1,
@@ -1882,6 +1883,7 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
                   bodyChunks: 1,
                   responseBytes: 64,
                   terminalEvent: outcome === 'completed',
+                  usage: { input: 10, cacheRead: 0, cacheWrite: 0, output: 5 },
                 },
               ],
               close: async () => {},
@@ -1904,9 +1906,12 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
     // A completed terminal request takes the normal reward path.
     const output = await makeRunner('completed')(runInput());
     assert.equal(output.harbor.reward, 0);
+    assert.equal(output.cell.tokenSummarySource, 'final');
     // So does a tail the agent tore down itself on its way out: the trial
     // raised nothing and the verifier graded it, so the cell is evidence.
-    assert.equal((await makeRunner('aborted')(runInput())).harbor.reward, 0);
+    const aborted = await makeRunner('aborted')(runInput());
+    assert.equal(aborted.harbor.reward, 0);
+    assert.equal(aborted.cell.tokenSummarySource, 'checkpoint');
   });
 });
 

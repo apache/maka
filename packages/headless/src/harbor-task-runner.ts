@@ -618,14 +618,12 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
         selectedUsage && selectedUsage !== rawCell.tokenSummary
           ? { ...rawCell, tokenSummary: selectedUsage, tokenSummarySource: 'checkpoint' as const }
           : rawCell;
-      const usageCell =
-        checkpointedCell.tokenSummary || !providerUsage || !runnerOptions.pricing
-          ? checkpointedCell
-          : {
-              ...checkpointedCell,
-              tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
-              tokenSummarySource: 'final' as const,
-            };
+      const usageCell = withProviderTokenSummary(
+        checkpointedCell,
+        providerUsage,
+        providerTelemetry,
+        runnerOptions.pricing,
+      );
       const cell = completeTimedOutTrial
         ? {
             ...usageCell,
@@ -1516,6 +1514,28 @@ export function providerTokenSummary(
     total: usage.input + usage.output,
     costUsd,
     pricingSource: 'runtime',
+  };
+}
+
+/** Fill a missing cell summary from provider telemetry without overstating
+ * partial usage as final. Only requests that contributed usage need terminal
+ * evidence; requests without usage do not affect the aggregate. */
+export function withProviderTokenSummary(
+  cell: HarborCellOutput,
+  usage: ProviderTokenUsage | null,
+  telemetry: readonly ProviderRequestTelemetry[],
+  pricing: HarborTaskPricing | undefined,
+): HarborCellOutput {
+  if (cell.tokenSummary || !usage || !pricing) return cell;
+  const measuredRequests = telemetry.filter((request) => request.usage !== undefined);
+  const tokenSummarySource =
+    measuredRequests.length > 0 && measuredRequests.every((request) => request.terminalEvent)
+      ? ('final' as const)
+      : ('checkpoint' as const);
+  return {
+    ...cell,
+    tokenSummary: providerTokenSummary(usage, pricing),
+    tokenSummarySource,
   };
 }
 

@@ -928,7 +928,13 @@ describe('createHarborTaskRunner', () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       const upstream = createServer((_request, response) => {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+        response.write(
+          [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":70,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":1}}}',
+            '',
+          ].join('\n'),
+        );
       });
       await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
       const address = upstream.address();
@@ -937,14 +943,15 @@ describe('createHarborTaskRunner', () => {
         const runner = createHarborTaskRunner({
           makaRepoPath: repo,
           jobsDir,
-          agent: 'codex',
-          codexToolchainPath: '/toolchain',
-          agentVersion: '0.146.0',
+          agent: 'claude-code',
+          claudeCodeToolchainPath: '/toolchain',
+          agentVersion: CLAUDE_CODE_TOOLCHAIN_SPEC.claudeCode.version,
           model: 'deepseek/deepseek-v4-flash',
           provider: 'deepseek',
           reasoningEffort: 'max',
           apiKeyFile: keyFile,
           agentEnv: { MAKA_BASE_URL: `http://127.0.0.1:${address.port}` },
+          pricing: { inputUsdPer1M: 1, outputUsdPer1M: 2 },
           runHarbor: async (request) => {
             const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
               'host.docker.internal',
@@ -953,9 +960,9 @@ describe('createHarborTaskRunner', () => {
             const proxyToken = request.env?.MAKA_PROVIDER_PROXY_TOKEN;
             assert.ok(proxyUrl && proxyToken);
             const abort = new AbortController();
-            const pending = fetch(`${proxyUrl}/chat/completions`, {
+            const pending = fetch(`${proxyUrl}/messages`, {
               method: 'POST',
-              headers: { authorization: `Bearer ${proxyToken}` },
+              headers: { 'x-api-key': proxyToken },
               body: '{}',
               signal: abort.signal,
             });
@@ -963,13 +970,18 @@ describe('createHarborTaskRunner', () => {
             assert.equal(response.status, 200);
             abort.abort();
             await response.body?.cancel().catch(() => {});
-            return fakeRunner({ reward: '1\n' })(request);
+            return fakeRunner({
+              reward: '1\n',
+              cell: cellOutput({ tokenSummary: undefined }),
+            })(request);
           },
         });
 
         const output = await runner(runInput());
 
         assert.equal(output.harbor.reward, 1);
+        assert.equal(output.cell.tokenSummary?.total, 101);
+        assert.equal(output.cell.tokenSummarySource, 'checkpoint');
         const telemetry = JSON.parse(
           await readFile(output.cell.providerTelemetryPath!, 'utf8'),
         ) as { requests: Array<{ outcome: string }> };
