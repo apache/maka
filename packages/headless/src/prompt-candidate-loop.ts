@@ -32,6 +32,8 @@ export {
 import {
   FIXED_PROMPT_WAL_SCHEMA_VERSION,
   PROMPT_CANDIDATE_FAILURE_PATTERNS,
+  heldInTaskSetHash,
+  sortedUnique,
   type PromptCandidateCommittedEvent,
   type PromptCandidateFailurePattern,
   type PromptCandidateRationale,
@@ -41,9 +43,6 @@ import {
   type ProjectRsiPromptAttributionInput,
 } from './rsi-controller-attribution.js';
 import type { RsiRoundAnalysis } from './rsi-round-analysis.js';
-import { heldInTaskSetHash, sortedUnique } from './rsi-round-analysis.js';
-
-export { heldInTaskSetHash as hashHeldInTaskSet } from './rsi-round-analysis.js';
 
 const CANDIDATE_RATIONALE_MAX_TASK_IDS = 16;
 const CANDIDATE_RATIONALE_MAX_TEXT_CHARS = 280;

@@ -6,7 +6,6 @@ import type {
   PromptCandidateRewardHackScan,
 } from '../fixed-prompt-controller.js';
 import { promptStructuralSmokeReport } from '../prompt-structural-smoke.js';
-import { hashHeldInTaskSet } from '../prompt-candidate-loop.js';
 import { heldInTaskSetHash } from '../rsi-round-analysis.js';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
 
@@ -471,12 +470,12 @@ describe('prompt structural smoke report', () => {
     // Ids chosen to diverge between codepoint order and localeCompare.
     // localeCompare folds case (UCA tertiary weight), so it orders these as
     // ['apple','Banana','cherry','Date']; codepoint orders them as
-    // ['Banana','Date','apple','cherry'] (uppercase < lowercase). The committed
-    // event hashes with hashHeldInTaskSet (formerly localeCompare) and the
-    // attribution event hashes with heldInTaskSetHash (codepoint). Under the old
-    // split the two hashes diverged for these ids and the smoke check marked this
-    // legitimate round as malformed. The unified codepoint order must keep both
-    // sides equal so the round stays clean.
+    // ['Banana','Date','apple','cherry'] (uppercase < lowercase). Both the
+    // committed and attribution events now hash with the unified codepoint
+    // heldInTaskSetHash; this end-to-end test guards the cross-WAL-boundary
+    // smoke check against these ids. (The writer-side regression guard — that
+    // the real writer uses codepoint, not localeCompare — lives in the
+    // writer-contract test in prompt-candidate-loop.test.ts.)
     const heldInTaskIds = ['apple', 'Banana', 'cherry', 'Date'];
     const events: FixedPromptWalEvent[] = [
       committedEvent('round-1', 'run-1', promptHashForRound('round-1'), heldInTaskIds),
@@ -485,13 +484,13 @@ describe('prompt structural smoke report', () => {
       attributionEvent('round-1'),
     ];
 
-    // Override the placeholder hashes with the two real implementations, so the
+    // Override the placeholder hashes with the canonical implementation, so the
     // committed/attribution pair mirrors what each side actually writes.
     const committed = events[0] as Extract<
       FixedPromptWalEvent,
       { type: 'prompt_candidate_committed' }
     >;
-    committed.heldInTaskSetHash = hashHeldInTaskSet(heldInTaskIds);
+    committed.heldInTaskSetHash = heldInTaskSetHash(heldInTaskIds);
     const attribution = events[3] as Extract<
       FixedPromptWalEvent,
       { type: 'rsi_controller_attribution' }

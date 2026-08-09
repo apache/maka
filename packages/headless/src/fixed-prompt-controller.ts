@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, truncate, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
@@ -11,6 +11,7 @@ import {
 import type { Config } from './contracts.js';
 import {
   FIXED_PROMPT_WAL_SCHEMA_VERSION,
+  heldInTaskSetHash,
   type FixedPromptTaskAttemptStartedEvent,
   type FixedPromptTaskBudgetExhaustedEvent,
   type FixedPromptTaskCompletedEvent,
@@ -1264,28 +1265,20 @@ function projectStructuredVerifierOutcome(event: FixedPromptWalEvent): FixedProm
  * without this projection a resume after upgrade hard-fails for id sets where
  * the two orders differ (mixed case, e.g. apple/Banana). Re-computing here is
  * idempotent for records already on codepoint order.
+ *
+ * Tamper semantics: because the hash is re-derived on every read, a hash-only
+ * edit to a committed event is silently normalized away before the
+ * self-consistency check runs — only tampering with `heldInTaskIds` (which
+ * shifts the re-derived hash out of sync with other events) is still caught.
+ * This is the intended trade-off for legacy-WAL resume compatibility.
  */
 function projectLegacyHeldInTaskSetHash(event: FixedPromptWalEvent): FixedPromptWalEvent {
   if (event.type !== 'prompt_candidate_committed') return event;
+  if (!Array.isArray(event.heldInTaskIds)) return event;
   return {
     ...event,
-    heldInTaskSetHash: canonicalHeldInTaskSetHash(event.heldInTaskIds),
+    heldInTaskSetHash: heldInTaskSetHash(event.heldInTaskIds),
   };
-}
-
-/**
- * Mirrors the canonical codepoint `heldInTaskSetHash` in rsi-round-analysis.ts.
- * Inlined here (rather than imported) because fixed-prompt-controller sits
- * upstream of rsi-round-analysis in the dependency graph — importing it would
- * create a reverse dependency. The sort comparator must stay byte-identical to
- * rsi-round-analysis `compareStrings`; see the cross-WAL-boundary regression
- * test (prompt-structural-smoke.test.ts) and writer-contract test
- * (prompt-candidate-loop.test.ts) which pin this equivalence.
- */
-function canonicalHeldInTaskSetHash(taskIds: readonly string[]): string {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify([...new Set(taskIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))))
-    .digest('hex')}`;
 }
 
 /**
