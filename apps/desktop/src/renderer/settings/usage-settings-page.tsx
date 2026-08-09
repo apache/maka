@@ -21,7 +21,6 @@ import {
 } from '@maka/core';
 import {
   Button,
-  IconButton,
   TextInput,
   Selector,
   Switch,
@@ -135,14 +134,15 @@ export function UsageSettingsPage(props: {
               page refresh (one action, one shape everywhere); pinned to the
               row's trailing edge so the time cluster reads as a single
               left-aligned group. */}
-          <IconButton
+          {/* Button rather than IconButton: busy buttons take Astryx isLoading
+              (DESIGN.md §10), which IconButton does not expose. */}
+          <Button
             variant="ghost"
             size="sm"
-            isDisabled={refreshing}
-            aria-busy={refreshing}
-            data-pending={refreshing ? 'true' : undefined}
-            label={refreshing ? copy.refreshingAria : copy.refreshAria}
-            tooltip={refreshing ? copy.refreshingAria : copy.refreshAria}
+            isIconOnly
+            isLoading={refreshing}
+            label={copy.refreshAria}
+            tooltip={copy.refreshAria}
             onClick={() => void refresh()}
             icon={<RefreshCcw size={15} aria-hidden="true" />}
           />

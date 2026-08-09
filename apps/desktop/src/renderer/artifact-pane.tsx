@@ -413,11 +413,9 @@ export function ArtifactPane(props: {
               variant="secondary"
               size="sm"
               onClick={() => void retryArtifactListRefresh()}
-              isDisabled={pendingArtifactListRetry}
-              aria-busy={pendingArtifactListRetry ? 'true' : undefined}
-              data-pending={pendingArtifactListRetry ? 'true' : undefined}
+              isLoading={pendingArtifactListRetry}
               icon={<RefreshCcw size={13} aria-hidden="true" />}
-              label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
+              label={copy.pane.retry}
             />
           )}
         />

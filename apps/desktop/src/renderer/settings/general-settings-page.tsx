@@ -556,11 +556,9 @@ function NetworkProxySection(props: {
           <SettingsActions>
             <Button
               variant="primary"
-              isDisabled={testing}
-              aria-busy={testing}
-              data-pending={testing ? "true" : undefined}
+              isLoading={testing}
               onClick={() => void testProxy()}
-              label={testing ? copy.testing : copy.testCurrent}
+              label={copy.testCurrent}
             />
           </SettingsActions>
         </>
