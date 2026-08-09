@@ -3,7 +3,7 @@ import {
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
-import { isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { isAbsolute, join, normalize, parse, relative, sep } from 'node:path';
 import {
   requireManagedWorkspaceExecutionScopeInternal,
   type ManagedWorkspaceExecutionScope,
@@ -152,16 +152,38 @@ function routeDependencyOperation(
   if (!dependencyRoot) return operation;
   let segments: string[];
   if (isAbsolute(operation.path)) {
+    assertCanonicalPathSegments(operation.path.slice(parse(operation.path).root.length));
     const logicalDependencyRoot = join(cwd, 'node_modules');
     const suffix = relative(logicalDependencyRoot, operation.path);
-    if (suffix.startsWith('..') || isAbsolute(suffix)) return operation;
+    if (suffix === '..' || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) return operation;
     segments = suffix === '' ? [] : suffix.split(/[\\/]/u);
   } else {
     const portableSegments = operation.path.replaceAll('\\', '/').split('/');
-    if (portableSegments[0] !== 'node_modules') return operation;
+    assertCanonicalSegments(portableSegments);
+    if (!isNodeModulesSegment(portableSegments[0])) return operation;
     segments = portableSegments.slice(1);
   }
+  assertCanonicalSegments(segments, { allowEmpty: true });
+  const routedPath = join(dependencyRoot, ...segments);
+  if (!isPathWithin(routedPath, dependencyRoot)) {
+    throw new ManagedWorkspaceWorkerBridgeError(
+      'managed_workspace_operation_denied',
+      'Managed dependency path escapes its environment',
+    );
+  }
+  return Object.freeze({ ...operation, path: routedPath });
+}
+
+function assertCanonicalPathSegments(path: string): void {
+  assertCanonicalSegments(path.replaceAll('\\', '/').split('/'), { allowEmpty: true });
+}
+
+function assertCanonicalSegments(
+  segments: readonly string[],
+  options: { readonly allowEmpty?: boolean } = {},
+): void {
   if (
+    (!options.allowEmpty && segments.length === 0) ||
     segments.some(
       (segment) =>
         segment === '..' ||
@@ -176,14 +198,13 @@ function routeDependencyOperation(
       'Managed dependency path is invalid',
     );
   }
-  const routedPath = join(dependencyRoot, ...segments);
-  if (!isPathWithin(routedPath, dependencyRoot)) {
-    throw new ManagedWorkspaceWorkerBridgeError(
-      'managed_workspace_operation_denied',
-      'Managed dependency path escapes its environment',
-    );
-  }
-  return Object.freeze({ ...operation, path: routedPath });
+}
+
+function isNodeModulesSegment(segment: string | undefined): boolean {
+  if (segment === undefined) return false;
+  return process.platform === 'win32'
+    ? segment.toLowerCase() === 'node_modules'
+    : segment === 'node_modules';
 }
 
 function remapDependencyResult(

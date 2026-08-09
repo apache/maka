@@ -107,6 +107,7 @@ export interface OpenManagedWorkspaceBaselineResult {
 
 export interface ManagedWorkspaceExecutionOptions {
   readonly provisioning?: 'canonical_tree_only_v1' | 'dependency_environment_v1';
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface ManagedWorkspaceOwner {
@@ -345,6 +346,7 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
     options: ManagedWorkspaceExecutionOptions = {},
   ): Promise<T> {
     return this.#run(async () => {
+      options.abortSignal?.throwIfAborted();
       let accepted;
       try {
         accepted = requireManagedWorkspaceExecutionHandleInternal(
@@ -371,9 +373,10 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       const provisioning = requireExecutionProvisioning(options);
       const dependencyLease =
         provisioning === 'dependency_environment_v1'
-          ? await this.#acquireDependencyEnvironment(binding)
+          ? await this.#acquireDependencyEnvironment(binding, options.abortSignal)
           : undefined;
       try {
+        options.abortSignal?.throwIfAborted();
         // Provisioning may take minutes. External editors do not cooperate
         // with Maka's root lease, so the durable Git artifact and workspace
         // head are revalidated only after provisioning and immediately before
@@ -541,7 +544,10 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
     }
   }
 
-  async #acquireDependencyEnvironment(binding: ManagedWorkspaceBinding) {
+  async #acquireDependencyEnvironment(
+    binding: ManagedWorkspaceBinding,
+    abortSignal: AbortSignal | undefined,
+  ) {
     if (!this.dependencyProducer || !this.dependencyAuthority) {
       throw new ManagedWorkspaceOwnerError(
         'managed_dependency_producer_unavailable',
@@ -584,9 +590,19 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         producerPolicyIdentitySha256: this.dependencyProducer.capability.policyIdentitySha256,
         policyVersion: 'managed_dependency_environment_v1',
       });
-      return await this.dependencyAuthority.acquire(identity, { manifestBytes, lockfileBytes });
+      return await this.dependencyAuthority.acquire(identity, {
+        manifestBytes,
+        lockfileBytes,
+        ...(abortSignal ? { abortSignal } : {}),
+      });
     } catch (error) {
       if (error instanceof ManagedWorkspaceOwnerError) throw error;
+      if (isAbortError(error)) throw error;
+      if (abortSignal?.aborted) {
+        throw abortSignal.reason instanceof Error
+          ? abortSignal.reason
+          : new DOMException('Managed dependency provisioning was aborted', 'AbortError');
+      }
       throw new ManagedWorkspaceOwnerError(
         'managed_dependency_provision_failed',
         'Unable to provision the managed dependency environment',
@@ -594,6 +610,10 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       );
     }
   }
+}
+
+function isAbortError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function requireExecutionProvisioning(

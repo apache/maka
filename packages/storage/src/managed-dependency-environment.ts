@@ -189,6 +189,13 @@ interface PublishedManagedDependencyEnvironment {
   readonly dependencyRoot: string;
 }
 
+interface InflightManagedDependencyPublication {
+  readonly controller: AbortController;
+  readonly task: Promise<PublishedManagedDependencyEnvironment>;
+  waiters: number;
+  settled: boolean;
+}
+
 interface DependencyReceiptAuthority {
   read(digest: string): ManagedDependencyEnvironmentReceiptV1 | undefined;
   list(): readonly ManagedDependencyEnvironmentReceiptV1[];
@@ -437,7 +444,7 @@ async function createManagedDependencyEnvironmentAuthorityForOwner(
     receiptAuthority.close();
     throw error;
   }
-  const inflight = new Map<string, Promise<PublishedManagedDependencyEnvironment>>();
+  const inflight = new Map<string, InflightManagedDependencyPublication>();
   const leaseCounts = new Map<string, number>();
   const pendingCounts = new Map<string, number>();
   let state: 'open' | 'draining' | 'closed' = 'open';
@@ -470,6 +477,7 @@ async function createManagedDependencyEnvironmentAuthorityForOwner(
     async acquire(identity, source) {
       const finishAcquisition = beginAcquisition();
       try {
+        source.abortSignal?.throwIfAborted();
         assertCanonicalIdentity(identity, source);
         if (
           identity.packageManagerName !== input.producer.packageManagerName ||
@@ -489,23 +497,51 @@ async function createManagedDependencyEnvironmentAuthorityForOwner(
         pendingCounts.set(digest, (pendingCounts.get(digest) ?? 0) + 1);
         let artifact: PublishedManagedDependencyEnvironment;
         try {
-          let task = inflight.get(digest);
-          if (!task) {
-            task = openOrPublishEnvironment({
+          let publication = inflight.get(digest);
+          if (!publication) {
+            const controller = new AbortController();
+            let pending!: InflightManagedDependencyPublication;
+            const task = openOrPublishEnvironment({
               environmentsRoot,
               receiptAuthority,
               stagingRoot,
               identity,
-              source,
+              source: { ...source, abortSignal: controller.signal },
               producer: input.producer,
               failpoint: input.failpoint,
-            }).finally(() => inflight.delete(digest));
-            inflight.set(digest, task);
+            }).finally(() => {
+              pending.settled = true;
+              if (inflight.get(digest) === pending) inflight.delete(digest);
+            });
+            pending = {
+              controller,
+              task,
+              waiters: 0,
+              settled: false,
+            };
+            publication = pending;
+            inflight.set(digest, publication);
           }
-          artifact = await task;
+          publication.waiters += 1;
+          try {
+            artifact = await waitForPublication(publication.task, source.abortSignal);
+          } finally {
+            publication.waiters -= 1;
+            if (
+              publication.waiters === 0 &&
+              !publication.settled &&
+              !publication.controller.signal.aborted
+            ) {
+              publication.controller.abort(
+                new DOMException('Managed dependency acquisition was abandoned', 'AbortError'),
+              );
+            }
+          }
+          source.abortSignal?.throwIfAborted();
           const now = new Date();
           await utimes(dirname(artifact.dependencyRoot), now, now);
           await input.failpoint?.('before_environment_lease');
+          source.abortSignal?.throwIfAborted();
           leaseCounts.set(digest, (leaseCounts.get(digest) ?? 0) + 1);
         } finally {
           decrementCount(pendingCounts, digest);
@@ -545,6 +581,7 @@ async function createManagedDependencyEnvironmentAuthorityForOwner(
       state = 'draining';
       closeTask = (async () => {
         await waitForAcquisitions();
+        await Promise.allSettled([...inflight.values()].map(({ task }) => task));
         let gcError: unknown;
         try {
           await gcTask;
@@ -1208,6 +1245,33 @@ function decrementCount(counts: Map<string, number>, key: string): void {
   const remaining = (counts.get(key) ?? 1) - 1;
   if (remaining > 0) counts.set(key, remaining);
   else counts.delete(key);
+}
+
+function waitForPublication<T>(task: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return task;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (operation: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      operation();
+    };
+    const onAbort = () =>
+      finish(() =>
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new DOMException('Managed dependency acquisition was aborted', 'AbortError'),
+        ),
+      );
+    signal.addEventListener('abort', onAbort, { once: true });
+    task.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
 }
 
 async function syncDirectory(path: string): Promise<void> {
