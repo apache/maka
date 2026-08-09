@@ -1166,8 +1166,8 @@ export class AiSdkBackend implements AgentBackend {
       description: [
         'Execute a bounded orchestration cell over the active tools.',
         'Use tools.<name>(args), await dependent calls, and Promise.all for independent calls.',
-        'There is no console, process, filesystem, network, timer, eval, import, or cross-cell state.',
-        'Terminate by returning a plain-data value. Unsupported syntax returns a structured diagnostic.',
+        'The sandbox has no process, filesystem, network, timer, eval, import, or cross-cell state.',
+        'Terminate by returning a JSON-serializable value. Failures return a structured diagnostic.',
       ].join(' '),
       parameters: z.object({ code: z.string().max(DEFAULT_CODE_MODE_LIMITS.maxSourceBytes) }),
       executionSemantics: 'exclusive_step',
@@ -2734,7 +2734,7 @@ export class AiSdkBackend implements AgentBackend {
           const nextBytes = new TextEncoder().encode(event.chunk).byteLength;
           if (
             nestedOutputLimitExceeded ||
-            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_LIMITS.maxOutputBytes
+            nestedOutputBytes + nextBytes > DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes
           ) {
             nestedOutputLimitExceeded = true;
             return;
@@ -2766,7 +2766,7 @@ export class AiSdkBackend implements AgentBackend {
           origin: 'code_mode',
           parentToolCallId: context.toolCallId,
           ...(context.operationId ? { parentOperationId: context.operationId } : {}),
-          maxResultBytes: DEFAULT_CODE_MODE_LIMITS.maxResultBytes,
+          maxResultBytes: DEFAULT_CODE_MODE_LIMITS.maxToolOutputBytes,
         });
         if (settlement.providerError !== undefined) {
           throw new Error(settlement.providerError);

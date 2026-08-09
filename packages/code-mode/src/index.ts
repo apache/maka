@@ -3,7 +3,7 @@ export interface CodeModeToolDefinition {
 }
 
 /**
- * The byte definition shared by the interpreter and Runtime's nested-result
+ * The byte definition shared by Code Mode and Runtime's nested-result
  * publication boundary. JSON is the representation that is persisted and
  * returned to the cell, including quotes and escapes for strings.
  */
@@ -148,36 +148,32 @@ function addSerializedBytes(budget: SerializedByteBudget, bytes: number): boolea
 
 export interface CodeModeLimits {
   maxSourceBytes: number;
-  maxSteps: number;
   maxWallTimeMs: number;
+  maxMemoryBytes: number;
+  maxStackBytes: number;
   maxToolCalls: number;
-  maxConcurrency: number;
-  maxIntermediateBytes: number;
-  maxCollectionItems: number;
-  maxResultBytes: number;
+  maxToolConcurrency: number;
+  maxToolInputBytes: number;
+  maxToolOutputBytes: number;
   maxOutputBytes: number;
-  maxDataDepth: number;
 }
 
 export const DEFAULT_CODE_MODE_LIMITS: Readonly<CodeModeLimits> = Object.freeze({
   maxSourceBytes: 64 * 1024,
-  maxSteps: 100_000,
   maxWallTimeMs: 30_000,
+  maxMemoryBytes: 64 * 1024 * 1024,
+  maxStackBytes: 2 * 1024 * 1024,
   maxToolCalls: 32,
-  maxConcurrency: 8,
-  maxIntermediateBytes: 1024 * 1024,
-  maxCollectionItems: 100_000,
-  maxResultBytes: 1024 * 1024,
+  maxToolConcurrency: 8,
+  maxToolInputBytes: 1024 * 1024,
+  maxToolOutputBytes: 1024 * 1024,
   maxOutputBytes: 1024 * 1024,
-  maxDataDepth: 32,
 });
 
 export type CodeModeDiagnosticKind =
   | 'parse_error'
-  | 'unsupported_syntax'
   | 'execution_error'
   | 'unknown_tool'
-  | 'invalid_data'
   | 'limit_exceeded'
   | 'tool_failure';
 
@@ -264,4 +260,4 @@ function abortError(): Error {
   error.name = 'AbortError';
   return error;
 }
-import { executeCodeCellImpl } from './interpreter.js';
+import { executeCodeCellImpl } from './quickjs.js';
