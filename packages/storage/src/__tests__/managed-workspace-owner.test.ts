@@ -351,6 +351,76 @@ test('binds one Maka-owned dependency environment to the managed execution scope
   }
 });
 
+test('cancels dependency provisioning before issuing an execution scope', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleDependencySource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let acknowledgeProvision!: () => void;
+  const provisionStarted = new Promise<void>((resolve) => {
+    acknowledgeProvision = resolve;
+  });
+  try {
+    const runtimeIdentity = `sha256:${'8'.repeat(64)}` as const;
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      dependencyEnvironmentProducer: {
+        capability: createManagedDependencyEnvironmentProducerCapability(runtimeIdentity),
+        packageManagerName: 'npm',
+        packageManagerVersion: '12.0.2',
+        nodeRuntime: {
+          version: process.versions.node,
+          abi: process.versions.modules ?? 'unknown',
+          platform: process.platform,
+          arch: process.arch,
+        },
+        async provision(input) {
+          acknowledgeProvision();
+          await new Promise<never>((_resolve, reject) => {
+            const abort = () =>
+              reject(
+                input.abortSignal?.reason ??
+                  new DOMException('Dependency provision cancelled', 'AbortError'),
+              );
+            if (input.abortSignal?.aborted) abort();
+            else input.abortSignal?.addEventListener('abort', abort, { once: true });
+          });
+        },
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+    const abort = new AbortController();
+    let callbackEntered = false;
+    const execution = owner.withManagedWorkspaceExecution(
+      accepted.executionHandle,
+      async () => {
+        callbackEntered = true;
+      },
+      { provisioning: 'dependency_environment_v1', abortSignal: abort.signal },
+    );
+    await provisionStarted;
+
+    abort.abort(new DOMException('User cancelled managed execution', 'AbortError'));
+
+    await assert.rejects(execution, { name: 'AbortError' });
+    assert.equal(callbackEntered, false);
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
 test('does not let caller-mutated head state or a shadowed public reader forge execution authority', async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');

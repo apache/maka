@@ -190,6 +190,7 @@ test('rejects non-canonical dependency paths before worker dispatch', async () =
   for (const path of [
     'node_modules/../outside.txt',
     'node_modules/./fixture.js',
+    'foo/../node_modules/rogue.js',
     'node_modules/fixture.js:alternate-stream',
     'node_modules/fixture\0.js',
   ]) {
@@ -201,6 +202,34 @@ test('rejects non-canonical dependency paths before worker dispatch', async () =
     );
   }
   assert.equal(dispatches, 0);
+});
+
+test('routes Windows node_modules casing through the dependency lease', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows path identity is case insensitive');
+    return;
+  }
+  const ownerToken = {};
+  const dependencyRoot = join('C:\\maka', 'dependencies', 'node_modules');
+  let dispatchedPath: string | undefined;
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute(input) {
+      dispatchedPath = input.operation.path;
+      return { kind: 'read', content: 'maka-owned' };
+    },
+  });
+  const scope = issueManagedWorkspaceExecutionScopeInternal(ownerToken, {
+    provisioning: 'dependency_environment_v1',
+    workspaceEffect: 'none',
+    cwd: 'C:\\managed\\worktree',
+    dependencyRoot,
+    binding: Object.freeze({}) as never,
+    head: Object.freeze({}) as never,
+  });
+
+  await bridge.execute(scope, { kind: 'read', path: 'NODE_MODULES/fixture/index.js' });
+
+  assert.equal(dispatchedPath, join(dependencyRoot, 'fixture', 'index.js'));
 });
 
 test('never falls back a dependency scope without an exact leased root', async () => {
