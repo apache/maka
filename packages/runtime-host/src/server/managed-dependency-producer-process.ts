@@ -1,6 +1,14 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { lstat, mkdir, readdir, readlink, realpath, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+} from 'node:path';
 import type { Readable } from 'node:stream';
 import {
   DEFAULT_PROCESS_IO_DRAIN_TIMEOUT_MS,
@@ -266,9 +274,15 @@ function hermeticNpmEnvironment(
   temporaryRoot: string,
   compileCacheRoot: string,
 ): NodeJS.ProcessEnv {
+  // libuv's Windows home lookup rejects USERPROFILE values at MAX_PATH even
+  // though Node's filesystem APIs can access the owned long path. The cwd is
+  // the exact staging project, so a relative home preserves the same authority
+  // boundary without depending on that fixed-size OS lookup buffer.
+  const effectiveHomeRoot =
+    process.platform === 'win32' ? join('.maka-runtime', 'home') : homeRoot;
   return {
-    HOME: homeRoot,
-    USERPROFILE: homeRoot,
+    HOME: effectiveHomeRoot,
+    USERPROFILE: effectiveHomeRoot,
     npm_config_audit: 'false',
     npm_config_fund: 'false',
     npm_config_ignore_scripts: 'true',
@@ -281,7 +295,12 @@ function hermeticNpmEnvironment(
     TMPDIR: temporaryRoot,
     NODE_COMPILE_CACHE: compileCacheRoot,
     ...(process.platform === 'win32'
-      ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR }
+      ? {
+          APPDATA: join(effectiveHomeRoot, 'AppData', 'Roaming'),
+          LOCALAPPDATA: join(effectiveHomeRoot, 'AppData', 'Local'),
+          SystemRoot: process.env.SystemRoot,
+          WINDIR: process.env.WINDIR,
+        }
       : {}),
     ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
   };
