@@ -17,7 +17,25 @@ interface IconEntry {
   Comp: ElementType<{ size?: number | string; strokeWidth?: number | string; 'aria-hidden'?: boolean }>;
 }
 
+/**
+ * `icons.tsx` is not only components: it also owns `ICON_SIZE`, the sizing
+ * ladder every call site reads (#2538). Enumerating the module and rendering
+ * whatever comes back therefore mounts a plain object as an element, which
+ * React rejects outright ("element type is invalid", error #130) and which
+ * takes the whole story down with it.
+ *
+ * Keep the enumeration — a hand-kept list is what would let a newly added icon
+ * go unrendered — and filter on what can actually be mounted instead. Lucide's
+ * icons arrive as `forwardRef` objects rather than plain functions, so the test
+ * is React's own element-type marker, not `typeof value === 'function'`.
+ */
+function isRenderableIcon(value: unknown): boolean {
+  if (typeof value === 'function') return true;
+  return typeof value === 'object' && value !== null && '$$typeof' in value;
+}
+
 const LUCIDE_ICONS: IconEntry[] = Object.entries(Icons)
+  .filter(([, value]) => isRenderableIcon(value))
   .map(([name, value]) => ({ name, Comp: value as IconEntry['Comp'] }))
   .sort((a, b) => a.name.localeCompare(b.name));
 
