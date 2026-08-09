@@ -110,6 +110,7 @@ v1 receipt 严格包含：
 
 - durable binding 与调用 identity 完全相同；
 - repository record、epoch artifact、baseline ref、head ref、commit/tree 与 pinned Git capability 一致；
+- reopening 已存在 binding 时重新观测 source repository identity、HEAD commit 与 tree；任一项相对已接受边界发生漂移都 fail closed，不得静默复用旧 baseline；
 - worktree registration 仍被 Maka ownership lock 锁定；
 - HEAD/tree 等于 baseline，worktree clean；
 - policy version/hash 等于实现实际执行的 canonical M0 policy；
