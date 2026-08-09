@@ -94,6 +94,29 @@ const POWERSHELL_EXIT_CODE_TAIL =
   '$__makaOk = $?\n' +
   'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }';
 
+// Node decodes both pipe and PTY output as UTF-8. PowerShell 7 already defaults
+// to UTF-8, but Windows PowerShell 5.1 can inherit a legacy console code page
+// and corrupt non-ASCII output before Node sees it. Set both sides of the
+// PowerShell/native-program boundary: Console.OutputEncoding controls bytes
+// written by PowerShell, while $OutputEncoding controls text piped to native
+// commands. UTF8Encoding(false) avoids a BOM at the start of every shell run.
+const POWERSHELL_UTF8_BOOTSTRAP =
+  '$__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n' +
+  '[Console]::OutputEncoding = $__makaUtf8\n' +
+  '$OutputEncoding = $__makaUtf8';
+
+function buildPowerShellCommand(command: string): string {
+  // Keep the user command as its own parsed script. Prefixing statements
+  // directly would invalidate command text that begins with script-level
+  // syntax such as `using namespace`. Encoding also avoids interpolating any
+  // user quotes or PowerShell metacharacters into this bootstrap wrapper.
+  const encodedCommand = Buffer.from(command, 'utf16le').toString('base64');
+  const invokeCommand =
+    `$__makaCommand = [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedCommand}')))\n` +
+    '. $__makaCommand';
+  return `${POWERSHELL_UTF8_BOOTSTRAP}\n${invokeCommand}\n${POWERSHELL_EXIT_CODE_TAIL}`;
+}
+
 export function buildShellSpawnPlan(shell: ShellPlan, command: string): ShellSpawnPlan {
   if ((shell.kind === 'pwsh' || shell.kind === 'powershell') && shell.exe) {
     return {
@@ -103,7 +126,7 @@ export function buildShellSpawnPlan(shell: ShellPlan, command: string): ShellSpa
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `${command}\n${POWERSHELL_EXIT_CODE_TAIL}`,
+        buildPowerShellCommand(command),
       ],
       useShellOption: false,
     };
@@ -119,7 +142,7 @@ export function buildPtyShellSpawnPlan(
   if ((shell.kind === 'pwsh' || shell.kind === 'powershell') && shell.exe) {
     return {
       file: shell.exe,
-      args: ['-NoLogo', '-NoProfile', '-Command', `${command}\n${POWERSHELL_EXIT_CODE_TAIL}`],
+      args: ['-NoLogo', '-NoProfile', '-Command', buildPowerShellCommand(command)],
     };
   }
   if (shell.kind === 'cmd') {

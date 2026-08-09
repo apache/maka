@@ -3,6 +3,7 @@ import childProcess, {
   type ExecFileException,
   type ExecFileOptionsWithStringEncoding,
 } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -91,6 +92,29 @@ describe('ShellRunProcessManager', () => {
     assert.equal(manager.liveCount(), 0);
   });
 
+  test('preserves CJK PowerShell output through pipes', {
+    skip: process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression',
+  }, async () => {
+    const shell = windowsPowerShellPlan();
+    assert.ok(shell, 'Windows PowerShell 5.1 must exist on the Windows baseline runner');
+    const manager = await createTestManager();
+    const result = await manager.runForegroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: "New-Item -ItemType File -Path '中文文件名.txt' | Out-Null; Get-ChildItem -Name",
+        shell,
+      }),
+    );
+
+    assert.equal(result.kind, 'terminal');
+    assert.equal(result.status, 'completed');
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.output.mode, 'pipes');
+    if (result.output.mode !== 'pipes') throw new Error('expected pipes output');
+    assert.match(result.output.stdout, /中文文件名\.txt/u);
+    assert.doesNotMatch(result.output.stdout, /\uFFFD/u);
+  });
+
   test('uses the existing explicit PowerShell pipe plan unchanged', async () => {
     const manager = await createTestManager();
     const result = await manager.runForegroundBash(
@@ -104,11 +128,8 @@ describe('ShellRunProcessManager', () => {
     assert.equal(result.kind, 'terminal');
     assert.equal(result.output.mode, 'pipes');
     if (result.output.mode !== 'pipes') throw new Error('expected pipes output');
-    assert.ok(
-      result.output.stdout.startsWith(
-        '-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n',
-      ),
-    );
+    assert.match(result.output.stdout, /\$OutputEncoding = \$__makaUtf8/u);
+    assert.match(result.output.stdout, /\$__makaCommand = \[ScriptBlock\]::Create/u);
     assert.ok(result.output.stdout.includes('exit $LASTEXITCODE'));
   });
 
@@ -1142,6 +1163,33 @@ describe('ShellRunProcessManager', () => {
     assert.match(terminalText(result.output), /stdin=tty stdout=tty size=24 80/);
     assert.equal(result.output.cols, 80);
     assert.equal(result.output.rows, 24);
+    assert.equal(manager.livePtyCount(), 0);
+  });
+
+  test('preserves CJK PowerShell output through a real PTY', {
+    skip: process.platform === 'win32' ? false : 'Windows PowerShell 5.1 regression',
+  }, async () => {
+    const shell = windowsPowerShellPlan();
+    assert.ok(shell, 'Windows PowerShell 5.1 must exist on the Windows baseline runner');
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: "New-Item -ItemType File -Path '中文文件名.txt' | Out-Null; Get-ChildItem -Name",
+        pty: true,
+        shell,
+      }),
+    );
+    const result = await waitForTerminalShellRun(manager, initial.ref);
+
+    assert.equal(result.status, 'completed');
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.output);
+    assert.equal(result.output.mode, 'pty');
+    if (result.output.mode !== 'pty') throw new Error('expected pty output');
+    const output = terminalText(result.output);
+    assert.match(output, /中文文件名\.txt/u);
+    assert.doesNotMatch(output, /\uFFFD/u);
     assert.equal(manager.livePtyCount(), 0);
   });
 
@@ -2567,6 +2615,19 @@ function shellInput(input: {
     ...(input.onCompletion !== undefined ? { onCompletion: input.onCompletion } : {}),
     emitOutput: input.emitOutput ?? (() => undefined),
   };
+}
+
+function windowsPowerShellPlan(): ShellPlan | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const executable = join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  if (!existsSync(executable)) return undefined;
+  return { kind: 'powershell', displayName: 'Windows PowerShell 5.1', exe: executable };
 }
 
 function record(input: { shellRunId: string; status: ShellRunRecord['status'] }): ShellRunRecord {

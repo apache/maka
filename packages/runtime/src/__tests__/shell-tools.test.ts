@@ -17,7 +17,7 @@ const pwshPlan: ShellPlan = {
 describe('Bash tool shell is threaded through to execution, not just the description', () => {
   test('foreground tool executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the tool's shell reaches the
-    // spawn, stdout echoes the PowerShell flags back. A shell that only
+    // spawn, stdout echoes the PowerShell flags and wrapper back. A shell that only
     // reached the description would run via the default POSIX shell and
     // print a bare 'wired-marker'.
     const tool = buildLocalForegroundBashTool({
@@ -28,7 +28,7 @@ describe('Bash tool shell is threaded through to execution, not just the descrip
     };
     assert.ok(
       result.output.stdout.startsWith(
-        '-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n',
+        '-NoLogo -NoProfile -NonInteractive -Command $__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n',
       ),
       `expected declared shell to execute, got: ${result.output.stdout}`,
     );

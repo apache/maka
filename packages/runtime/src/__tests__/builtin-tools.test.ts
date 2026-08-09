@@ -250,8 +250,8 @@ describe('builtin Bash projection and shell execution', () => {
 
   test('executor Bash executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the shell reaches the local
-    // executor's spawn, stdout echoes the PowerShell flags back instead of a
-    // bare 'wired-marker' from the default POSIX shell.
+    // executor's spawn, stdout echoes the PowerShell flags and wrapper instead
+    // of a bare 'wired-marker' from the default POSIX shell.
     const tools = buildBuiltinTools({
       shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: '/bin/echo' },
     });
@@ -269,7 +269,7 @@ describe('builtin Bash projection and shell execution', () => {
     )) as { output: { mode: string; stdout: string } };
     expect(
       result.output.stdout.startsWith(
-        '-NoLogo -NoProfile -NonInteractive -Command echo wired-marker\n',
+        '-NoLogo -NoProfile -NonInteractive -Command $__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n',
       ),
     ).toBe(true);
   });

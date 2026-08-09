@@ -60,10 +60,11 @@ describe('detectShell', () => {
 });
 
 describe('buildShellSpawnPlan', () => {
-  test('spawns PowerShell explicitly with non-interactive flags and the command as one argument', () => {
+  test('spawns PowerShell explicitly and preserves the command in an isolated script block', () => {
+    const command = "using namespace System.Text\nWrite-Output '$HOME'";
     const spawnPlan = buildShellSpawnPlan(
       { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: 'C:\\Users\\u\\bin\\pwsh.exe' },
-      'Get-ChildItem -Name',
+      command,
     );
     assert.equal(spawnPlan.file, 'C:\\Users\\u\\bin\\pwsh.exe');
     assert.equal(spawnPlan.useShellOption, false);
@@ -73,9 +74,13 @@ describe('buildShellSpawnPlan', () => {
       '-NonInteractive',
       '-Command',
     ]);
-    assert.ok(
-      spawnPlan.args[4]!.startsWith('Get-ChildItem -Name\n'),
-      'command comes first, verbatim',
+    const script = spawnPlan.args[4] ?? '';
+    assert.match(script, /\[Console\]::OutputEncoding = \$__makaUtf8/u);
+    assert.equal(decodeWrappedPowerShellCommand(script), command);
+    assert.doesNotMatch(
+      script,
+      /Write-Output/u,
+      'user syntax is not interpolated into the wrapper',
     );
   });
 
@@ -90,7 +95,11 @@ describe('buildShellSpawnPlan', () => {
     );
     assert.equal(
       spawnPlan.args[4],
-      'npm test\n' +
+      '$__makaUtf8 = [System.Text.UTF8Encoding]::new($false)\n' +
+        '[Console]::OutputEncoding = $__makaUtf8\n' +
+        '$OutputEncoding = $__makaUtf8\n' +
+        "$__makaCommand = [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('bgBwAG0AIAB0AGUAcwB0AA==')))\n" +
+        '. $__makaCommand\n' +
         '$__makaOk = $?\n' +
         'if (-not $__makaOk) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }',
     );
@@ -133,6 +142,16 @@ describe('buildPtyShellSpawnPlan', () => {
     assert.equal(powershell.file, 'C:\\pf\\pwsh.exe');
     assert.deepEqual(powershell.args.slice(0, 3), ['-NoLogo', '-NoProfile', '-Command']);
     assert.doesNotMatch(powershell.args.join(' '), /-NonInteractive/);
-    assert.match(powershell.args[3] ?? '', /^Write-Output ready\n/);
+    assert.match(
+      powershell.args[3] ?? '',
+      /\$OutputEncoding = \$__makaUtf8\n\$__makaCommand = \[ScriptBlock\]::Create/u,
+    );
+    assert.equal(decodeWrappedPowerShellCommand(powershell.args[3] ?? ''), 'Write-Output ready');
   });
 });
+
+function decodeWrappedPowerShellCommand(script: string): string {
+  const encoded = /FromBase64String\('([^']+)'\)/u.exec(script)?.[1];
+  assert.ok(encoded, 'wrapper contains an encoded user command');
+  return Buffer.from(encoded, 'base64').toString('utf16le');
+}
