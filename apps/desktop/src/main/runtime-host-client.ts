@@ -834,6 +834,12 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.resolve", {});
   }
 
+  reconcileExternalConversation(
+    input: OperationInput<'external-conversation.reconcile'>,
+  ): Promise<OperationOutput<'external-conversation.reconcile'>> {
+    return this.#request('external-conversation.reconcile', input);
+  }
+
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }

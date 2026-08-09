@@ -76,6 +76,10 @@ import {
 } from '@maka/storage/artifact-stores';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
+import {
+  openInteractiveExternalConversationAuthorityForWrite,
+  type InteractiveExternalConversationAuthorityWriter,
+} from '@maka/storage/external-conversation-authority';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
@@ -112,6 +116,7 @@ import {
   createHostSessionEffectModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
+import { HostExternalConversationCoordinator } from './external-conversation-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
@@ -225,6 +230,9 @@ export async function createExecutionRuntimeHostComposition(
   });
   const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let externalConversationAuthority:
+    | InteractiveExternalConversationAuthorityWriter
+    | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
@@ -248,6 +256,9 @@ export async function createExecutionRuntimeHostComposition(
     const openedArtifactStore = storage.artifacts;
     const openedUsageStores = storage.usage;
     const openedShellRunStore = storage.shellRuns;
+    const openedExternalConversationAuthority =
+      await openInteractiveExternalConversationAuthorityForWrite(context.owner.lease);
+    externalConversationAuthority = openedExternalConversationAuthority;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
       storageRoot: context.owner.capability.canonicalPath,
     });
@@ -1251,6 +1262,15 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     scheduledTaskTool = scheduledTasks.modelTool;
+    const externalConversations = new HostExternalConversationCoordinator({
+      authority: openedExternalConversationAuthority,
+      sessions: {
+        get: (sessionId) => sessionCatalog.getSession(sessionId),
+        create: (input) => sessionCatalog.createSession(input),
+      },
+      newId: randomUUID,
+      requestDrain: context.requestDrain,
+    });
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
       admission: sessionAdmission,
@@ -1316,6 +1336,12 @@ export async function createExecutionRuntimeHostComposition(
         await stores.purgeConversationOperationalState(sessionId);
         await openedPlanStore.purgeSessionState(sessionId);
         await openedDeepResearchStore.purgeSessionState(sessionId);
+        await openedExternalConversationAuthority.purgeSession(sessionId);
+      },
+      retireExternalConversations: async (sessionIds) => {
+        for (const sessionId of sessionIds) {
+          await openedExternalConversationAuthority.purgeSession(sessionId);
+        }
       },
       purgeAgentGraphState: async (sessionId) => {
         for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
@@ -1385,7 +1411,12 @@ export async function createExecutionRuntimeHostComposition(
       }),
       createRuntimeHostDomainModule({
         id: 'session',
-        handlers: [sessionCatalog.handlers, externalSessions.handlers, sessionRevisions.handlers],
+        handlers: [
+          sessionCatalog.handlers,
+          externalConversations.handlers,
+          externalSessions.handlers,
+          sessionRevisions.handlers,
+        ],
         recovery: {
           state: () => externalSessions.recover(),
           resources: async () => {
@@ -1403,6 +1434,9 @@ export async function createExecutionRuntimeHostComposition(
             }
           },
         },
+        close: [
+          () => externalConversationAuthority?.close(),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'workhub',
@@ -1655,6 +1689,11 @@ export async function createExecutionRuntimeHostComposition(
       unsubscribeTranscriptChanges?.();
       unsubscribeUsageChanges?.();
       unsubscribeTaskLedger?.();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      externalConversationAuthority?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
