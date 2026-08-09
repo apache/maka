@@ -6,6 +6,8 @@ import {
   type CreateConnectionInput,
   type LlmConnection,
   type ModelDiscoveryResult,
+  type RequestHeaderUpdate,
+  type SavedRequestHeaders,
   type ProviderCategory,
   type ProviderType,
   type UiLocale,
@@ -24,6 +26,11 @@ export interface ConnectionsBridge {
   test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
   fetchModels(slug: string): Promise<ModelDiscoveryResult>;
   hasSecret(slug: string): Promise<boolean>;
+  getRequestHeaders(slug: string): Promise<SavedRequestHeaders>;
+  setRequestHeaders(
+    slug: string,
+    headers: readonly RequestHeaderUpdate[],
+  ): Promise<SavedRequestHeaders>;
   subscribeEvents?(handler: () => void): () => void;
 }
 

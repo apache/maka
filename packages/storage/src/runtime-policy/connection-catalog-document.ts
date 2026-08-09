@@ -177,7 +177,9 @@ export class ConnectionCatalogDocumentOwner {
     const testBasisChanged =
       endpointChanged ||
       previous.enabled !== changes.enabled ||
-      !sameStringArray(previous.enabledModelIds, changes.enabledModelIds);
+      !sameStringArray(previous.enabledModelIds, changes.enabledModelIds) ||
+      (changes.requestBodyOverlay !== undefined &&
+        !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined));
     const connections = [...current.connections];
     connections[index] = {
       connectionId: previous.connectionId,
@@ -213,6 +215,13 @@ export class ConnectionCatalogDocumentOwner {
         : changes.relayModelProfiles === null
           ? {}
           : { relayModelProfiles: changes.relayModelProfiles }),
+      ...(changes.requestBodyOverlay === undefined
+        ? previous.requestBodyOverlay === undefined
+          ? {}
+          : { requestBodyOverlay: previous.requestBodyOverlay }
+        : changes.requestBodyOverlay === null
+          ? {}
+          : { requestBodyOverlay: changes.requestBodyOverlay }),
       models: endpointChanged ? [] : previous.models,
       ...(endpointChanged || previous.modelSource === undefined
         ? {}

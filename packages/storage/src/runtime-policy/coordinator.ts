@@ -6,7 +6,12 @@ import {
   decodeCredentialLocator,
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
+  normalizeRequestHeaderUpdates,
+  normalizeRequestHeaders,
   normalizeSetCredentialInput,
+  parseRequestHeaders,
+  serializeRequestHeaders,
+  RequestCustomizationValidationError,
   normalizeCredentialSecret,
   type ConnectionCatalogEntry,
   type ConnectionCatalogSnapshot,
@@ -21,6 +26,8 @@ import {
   type MutateRuntimePolicyInput,
   type RemoveCatalogConnectionInput,
   type RuntimePolicy,
+  type RequestHeaderUpdate,
+  type SavedRequestHeaders,
   type SetCredentialInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
@@ -62,6 +69,7 @@ import {
 } from './errors.js';
 import {
   connectionCredentialLocator,
+  connectionRequestHeadersLocator,
   type CredentialStatusQueryResult,
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
@@ -84,6 +92,7 @@ import {
   type ResolveWebFetchExecutionResult,
   type ResolveWebSearchExecutionInput,
   type ResolveWebSearchExecutionResult,
+  type ReplaceConnectionRequestHeadersResult,
 } from './operations.js';
 import {
   clearConnectionOnboardingIntent,
@@ -101,6 +110,7 @@ interface PreparedConnectionMaterial {
   readonly kind: 'ready';
   readonly connection: ConnectionCatalogEntry;
   readonly connectionCredentialStatus: CredentialStatus | null;
+  readonly requestHeadersCredentialStatus: CredentialStatus;
   readonly proxyCredentialStatus: CredentialStatus | null;
   readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
   readonly networkProxy: RuntimePolicy['networkProxy'];
@@ -128,6 +138,7 @@ interface CommonSemanticConnectionBasis {
   readonly enabled: true;
   readonly effectiveEndpoint: string;
   readonly credential: CredentialStatus | null;
+  readonly requestHeadersCredential: CredentialStatus;
   readonly effectiveProxy: EffectiveProxyConfigurationBasis;
   readonly proxyCredential: CredentialStatus | null;
 }
@@ -139,6 +150,7 @@ type SemanticConnectionBasis =
     })
   | (CommonSemanticConnectionBasis & {
       readonly kind: 'connection_test';
+      readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
     });
 
@@ -315,7 +327,7 @@ export class RuntimePolicyCoordinator {
           connection.connectionId,
           PROVIDER_DEFAULTS[connection.providerType].authKind,
         );
-        if (!required || required.kind !== locator.kind) {
+        if (locator.kind !== 'request_headers' && (!required || required.kind !== locator.kind)) {
           throw codecError(
             'invalid_credential_input',
             'Connection credential kind does not match the provider auth contract',
@@ -587,6 +599,104 @@ export class RuntimePolicyCoordinator {
       }
       const credential = findCredential(await this.vault.read(root), locator);
       return credential ? credentialMaterial(credential) : null;
+    });
+  }
+
+  getConnectionRequestHeaders(rawConnectionId: string): Promise<SavedRequestHeaders | null> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawConnectionId),
+      );
+      const catalog = await this.catalog.read(root);
+      if (!findConnection(catalog, { connectionId })) return null;
+      const locator = connectionRequestHeadersLocator(connectionId);
+      const credential = findCredential(await this.vault.read(root), locator);
+      const headers = credential ? parseRequestHeaders(credential.secret) : {};
+      return deepFreeze({ names: Object.keys(headers) });
+    });
+  }
+
+  replaceConnectionRequestHeaders(
+    rawConnectionId: string,
+    rawUpdates: readonly RequestHeaderUpdate[],
+  ): Promise<ReplaceConnectionRequestHeadersResult> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawConnectionId),
+      );
+      const updates = decodeRequestHeaderUpdates(rawUpdates);
+      const catalog = await this.catalog.read(root);
+      if (!findConnection(catalog, { connectionId })) {
+        return deepFreeze({ kind: 'connection_not_found' as const });
+      }
+
+      const locator = connectionRequestHeadersLocator(connectionId);
+      const vault = await this.vault.read(root);
+      const existing = findCredential(vault, locator);
+      const savedHeaders = existing ? parseRequestHeaders(existing.secret) : {};
+      const savedByName = new Map(
+        Object.entries(savedHeaders).map(([name, value]) => [name.toLowerCase(), value]),
+      );
+      const merged = Object.fromEntries(
+        updates.map(({ name, value }) => {
+          const retained = value ?? savedByName.get(name.toLowerCase());
+          if (retained === undefined) {
+            throw codecError('invalid_credential_input', `Request header ${name} requires a value`);
+          }
+          return [name, retained];
+        }),
+      );
+      const headers = decodeRequestHeaders(merged);
+      const names = Object.keys(headers);
+
+      if (names.length === 0) {
+        if (!existing) return deepFreeze({ kind: 'unchanged' as const, names });
+        const prepared = this.vault.prepareDelete(vault, { expected: credentialBasis(existing) });
+        if (prepared.kind !== 'ready') {
+          throw codecError('invalid_document', 'Request header credential changed within its lane');
+        }
+        const cleared = await this.clearCredentialDependentLastTests(root, locator, catalog);
+        try {
+          await this.vault.commitDelete(root, prepared);
+        } catch (error) {
+          if (cleared) {
+            throw commitOutcomeUnknown(
+              'Connection verification was cleared before request headers were deleted',
+              error,
+            );
+          }
+          throw error;
+        }
+        return deepFreeze({ kind: 'committed' as const, names });
+      }
+
+      const secret = serializeRequestHeaders(headers);
+      if (existing?.secret === secret) {
+        return deepFreeze({ kind: 'unchanged' as const, names });
+      }
+      const prepared = this.vault.prepareSet(vault, {
+        locator,
+        expected: existing
+          ? { credentialId: existing.credentialId, revision: existing.revision }
+          : null,
+        secret,
+      });
+      if (prepared.kind !== 'ready') {
+        throw codecError('invalid_document', 'Request header credential changed within its lane');
+      }
+      const cleared = await this.clearCredentialDependentLastTests(root, locator, catalog);
+      try {
+        await this.vault.commitSet(root, prepared);
+      } catch (error) {
+        if (cleared) {
+          throw commitOutcomeUnknown(
+            'Connection verification was cleared before request headers were updated',
+            error,
+          );
+        }
+        throw error;
+      }
+      return deepFreeze({ kind: 'committed' as const, names });
     });
   }
 
@@ -948,15 +1058,20 @@ export class RuntimePolicyCoordinator {
     const proxyLocator = requiresNetworkProxyCredential(networkProxy)
       ? networkProxyCredentialLocator()
       : null;
+    const requestHeadersLocator = connectionRequestHeadersLocator(connection.connectionId);
     let connectionCredentialStatus: CredentialStatus | null = null;
     let proxyCredentialStatus: CredentialStatus | null = null;
+    const vault = await this.vault.read(root);
+    const requestHeadersCredentialStatus = credentialStatus(vault, requestHeadersLocator);
     const secretMaterial: {
       connection?: RuntimePolicyCredentialMaterial;
+      requestHeaders?: RuntimePolicyCredentialMaterial;
       networkProxy?: RuntimePolicyCredentialMaterial;
     } = {};
 
+    const requestHeaders = findCredential(vault, requestHeadersLocator);
+    if (requestHeaders) secretMaterial.requestHeaders = credentialMaterial(requestHeaders);
     if (locator || proxyLocator) {
-      const vault = await this.vault.read(root);
       if (locator) {
         const status = credentialStatus(vault, locator);
         connectionCredentialStatus = status;
@@ -990,6 +1105,7 @@ export class RuntimePolicyCoordinator {
       kind: 'ready',
       connection,
       connectionCredentialStatus,
+      requestHeadersCredentialStatus,
       proxyCredentialStatus,
       secretMaterial,
       networkProxy,
@@ -1003,6 +1119,7 @@ export class RuntimePolicyCoordinator {
     if (locator.scope !== 'connection') return true;
     const connection = findConnection(catalog, locator);
     if (!connection) return false;
+    if (locator.kind === 'request_headers') return true;
     const required = connectionCredentialLocator(
       connection.connectionId,
       PROVIDER_DEFAULTS[connection.providerType].authKind,
@@ -1048,6 +1165,8 @@ export class RuntimePolicyCoordinator {
       (basis.kind === 'model_fetch' &&
         !sameStringArray(connection.enabledModelIds, basis.enabledModelIds)) ||
       (basis.kind === 'connection_test' &&
+        JSON.stringify(connection.requestBodyOverlay ?? {}) !== basis.requestBodyOverlayJson) ||
+      (basis.kind === 'connection_test' &&
         !sameConnectionTestModelBasis(connectionTestModelBasis(connection), basis.model))
     ) {
       changed.push('connection');
@@ -1063,7 +1182,7 @@ export class RuntimePolicyCoordinator {
       changed.push('network_proxy');
     }
 
-    if (basis.credential || basis.proxyCredential) {
+    if (basis.credential || basis.requestHeadersCredential || basis.proxyCredential) {
       const vault = await this.vault.read(root);
       const connectionCredentialChanged = Boolean(
         basis.credential &&
@@ -1079,7 +1198,17 @@ export class RuntimePolicyCoordinator {
             basis.proxyCredential,
           ),
       );
-      if (connectionCredentialChanged || proxyCredentialChanged) changed.push('credential');
+      const requestHeadersCredentialChanged = !sameCredentialStatus(
+        credentialStatus(vault, basis.requestHeadersCredential.locator),
+        basis.requestHeadersCredential,
+      );
+      if (
+        connectionCredentialChanged ||
+        requestHeadersCredentialChanged ||
+        proxyCredentialChanged
+      ) {
+        changed.push('credential');
+      }
     }
     return { connection, changed };
   }
@@ -1229,6 +1358,7 @@ function commonSemanticConnectionBasis(
     enabled: true,
     effectiveEndpoint: canonicalEffectiveEndpoint(prepared.connection),
     credential: prepared.connectionCredentialStatus,
+    requestHeadersCredential: prepared.requestHeadersCredentialStatus,
     effectiveProxy: effectiveProxyConfigurationBasis(prepared.networkProxy),
     proxyCredential: prepared.proxyCredentialStatus,
   };
@@ -1250,6 +1380,7 @@ function connectionTestSemanticBasis(
   return {
     kind: 'connection_test',
     ...commonSemanticConnectionBasis(prepared),
+    requestBodyOverlayJson: JSON.stringify(prepared.connection.requestBodyOverlay ?? {}),
     model: connectionTestModelBasis(prepared.connection),
   };
 }
@@ -1333,6 +1464,28 @@ function sameStringArray(actual: readonly string[], expected: readonly string[])
   return (
     actual.length === expected.length && actual.every((value, index) => value === expected[index])
   );
+}
+
+function decodeRequestHeaderUpdates(value: unknown): readonly RequestHeaderUpdate[] {
+  try {
+    return normalizeRequestHeaderUpdates(value);
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) {
+      throw codecError('invalid_credential_input', error.message);
+    }
+    throw error;
+  }
+}
+
+function decodeRequestHeaders(value: unknown): Readonly<Record<string, string>> {
+  try {
+    return normalizeRequestHeaders(value);
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) {
+      throw codecError('invalid_credential_input', error.message);
+    }
+    throw error;
+  }
 }
 
 function sameCredentialStatus(actual: CredentialStatus, expected: CredentialStatus): boolean {

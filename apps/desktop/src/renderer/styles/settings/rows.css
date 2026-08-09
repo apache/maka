@@ -151,6 +151,38 @@
   gap: var(--space-3);
 }
 
+.settingsExpandableField {
+  padding-block: var(--space-3);
+}
+
+.requestHeaderRow {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.requestHeaderName,
+.requestHeaderValue {
+  min-width: 0;
+}
+
+.requestHeaderRemove {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+}
+
+@container settings-rows (max-width: 460px) {
+  .requestHeaderRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .requestHeaderName {
+    grid-column: 1 / -1;
+  }
+}
+
 /* The group's own corners (visual system 2.0, T4).
 
    DESIGN.md §6 keeps `border-radius: 0` legal on these rows — they are true

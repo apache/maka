@@ -48,7 +48,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 9);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 10);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'agent.graph.operator.query',
       'agent.graph.query',
@@ -69,6 +69,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.models.fetch',
       'connection.onboarding.save',
       'connection.onboarding.verify',
+      'connection.request-headers.query',
+      'connection.request-headers.replace',
       'connection.test.run',
       'context.compact',
       'context.diagnostics.query',
@@ -474,10 +476,11 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('declares exactly the ten Runtime Policy operations in the current framework', () => {
+  test('declares exactly the twelve Runtime Policy operations in the current framework', () => {
     const queries = [
       'runtime.policy.query',
       'connection.catalog.query',
+      'connection.request-headers.query',
       'credential.vault.query',
     ] as const;
     const mutations = [
@@ -486,6 +489,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.catalog.update',
       'connection.catalog.remove',
       'connection.catalog.set-default-target',
+      'connection.request-headers.replace',
       'credential.vault.set',
       'credential.vault.delete',
     ] as const;
@@ -509,6 +513,51 @@ describe('Runtime Host bootstrap protocol', () => {
       );
       assert.ok(RUNTIME_POLICY_OPERATION_SPECS[operation].errors.includes('internal_failure'));
     }
+  });
+
+  test('allows larger credential frames only for validated custom request headers', () => {
+    const secret = JSON.stringify(
+      Object.fromEntries(
+        Array.from({ length: 3 }, (_, index) => [`X-${index}`, '"'.repeat(8_192)]),
+      ),
+    );
+    const secretBase64 = Buffer.from(secret, 'utf8').toString('base64');
+    const requestHeadersLocator = {
+      scope: 'connection',
+      connectionId: '00000000-0000-4000-8000-000000000001',
+      kind: 'request_headers',
+    } as const;
+    const apiKeyLocator = { ...requestHeadersLocator, kind: 'api_key' as const };
+    const setCredential = RUNTIME_POLICY_OPERATION_SPECS['credential.vault.set'];
+    const exportCredentials = HOST_OPERATION_SPECS['configuration.credentials.export'];
+
+    assert.doesNotThrow(() =>
+      setCredential.decodeInput({ locator: requestHeadersLocator, expected: null, secret }),
+    );
+    assert.throws(
+      () => setCredential.decodeInput({ locator: apiKeyLocator, expected: null, secret }),
+      isInvalidFrame,
+    );
+    assert.doesNotThrow(() =>
+      exportCredentials.decodeOutput({
+        credential: { locator: requestHeadersLocator, secretBase64 },
+      }),
+    );
+    assert.doesNotThrow(() =>
+      encodeProtocolFrame({
+        requestId: 'credential-export',
+        operation: 'configuration.credentials.export',
+        ok: true,
+        result: { credential: { locator: requestHeadersLocator, secretBase64 } },
+      }),
+    );
+    assert.throws(
+      () =>
+        exportCredentials.decodeOutput({
+          credential: { locator: apiKeyLocator, secretBase64 },
+        }),
+      isInvalidFrame,
+    );
   });
 
   test('keeps Runtime Policy request and response codecs exact', () => {

@@ -20,6 +20,11 @@ import type {
   UpdateCatalogConnectionInput,
 } from '../runtime-policy.js';
 import {
+  normalizeOptionalRequestBodyOverlay,
+  RequestCustomizationValidationError,
+  type JsonObject,
+} from '../request-customization.js';
+import {
   assertCanonicalValue,
   booleanValue,
   domainError,
@@ -93,12 +98,25 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
   const item = exactRecord(
     value,
     'connection draft',
-    ['slug', 'name', 'providerType', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles'],
+    [
+      'slug',
+      'name',
+      'providerType',
+      'baseUrl',
+      'enabled',
+      'enabledModelIds',
+      'relayModelProfiles',
+      'requestBodyOverlay',
+    ],
     ['slug', 'name', 'providerType', 'enabled', 'enabledModelIds'],
   );
   const providerType = decodeProviderType(item.providerType);
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl, providerType);
   const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
+  const requestBodyOverlay =
+    item.requestBodyOverlay === undefined
+      ? undefined
+      : decodeRequestBodyOverlay(item.requestBodyOverlay);
   const profiles =
     item.relayModelProfiles === undefined
       ? {}
@@ -114,6 +132,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     enabled: booleanValue(item.enabled, 'connection enabled'),
     enabledModelIds,
     ...profiles,
+    ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   };
 }
 
@@ -123,11 +142,17 @@ export function normalizeConnectionCatalogEntryUpdate(
   const item = exactRecord(
     value,
     'connection update',
-    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles'],
+    ['name', 'baseUrl', 'enabled', 'enabledModelIds', 'relayModelProfiles', 'requestBodyOverlay'],
     ['name', 'enabled', 'enabledModelIds'],
   );
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl);
   const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
+  const requestBodyOverlay =
+    item.requestBodyOverlay === undefined
+      ? undefined
+      : item.requestBodyOverlay === null
+        ? null
+        : (decodeRequestBodyOverlay(item.requestBodyOverlay) ?? null);
   // Tri-state profile instruction: an absent key stays absent (untouched),
   // null clears, a table replaces. An absent key must never materialize into
   // a clear — profile-blind writers omit the key by definition.
@@ -139,6 +164,7 @@ export function normalizeConnectionCatalogEntryUpdate(
     ...(item.relayModelProfiles === undefined
       ? {}
       : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds)),
+    ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   };
 }
 
@@ -173,6 +199,9 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
     ...(update.relayModelProfiles === undefined
       ? {}
       : { relayModelProfiles: update.relayModelProfiles }),
+    ...(update.requestBodyOverlay === undefined
+      ? {}
+      : { requestBodyOverlay: update.requestBodyOverlay }),
   };
 }
 
@@ -288,6 +317,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'enabled',
       'enabledModelIds',
       'relayModelProfiles',
+      'requestBodyOverlay',
       'models',
       'modelSource',
       'modelsFetchedAt',
@@ -314,6 +344,9 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.relayModelProfiles === undefined
       ? {}
       : { relayModelProfiles: item.relayModelProfiles }),
+    ...(item.requestBodyOverlay === undefined
+      ? {}
+      : { requestBodyOverlay: item.requestBodyOverlay }),
   });
   if (
     !Array.isArray(item.models) ||
@@ -506,6 +539,17 @@ export function decodeConnectionName(value: unknown): string {
   return stringValue(value, 'connection name', CONNECTION_NAME_MAX_LENGTH);
 }
 
+function decodeRequestBodyOverlay(value: unknown): JsonObject | undefined {
+  try {
+    return normalizeOptionalRequestBodyOverlay(value);
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) {
+      throw domainError(error.message);
+    }
+    throw error;
+  }
+}
+
 export function decodeConnectionModelId(value: unknown): string {
   return nonEmptyStringValue(value, 'model id', CONNECTION_MODEL_ID_MAX_LENGTH);
 }
@@ -552,6 +596,9 @@ export function normalizeCatalogConnectionBaseUrl(
     throw domainError('connection base URL must not contain a query or fragment');
   }
   const canonical = parsed.toString();
+  if (new TextEncoder().encode(canonical).byteLength > 2_048) {
+    throw domainError('connection base URL must not exceed 2048 bytes');
+  }
   const providerDefault =
     providerType === undefined ? undefined : canonicalProviderBaseUrl(providerType);
   const override = canonical === providerDefault ? undefined : canonical;

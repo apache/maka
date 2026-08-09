@@ -7,6 +7,11 @@
 
 import type { BackendKind } from './session.js';
 import type { RelayModelProfiles } from './model-thinking.js';
+import type {
+  JsonObject,
+  RequestHeaderUpdate,
+  SavedRequestHeaders,
+} from './request-customization.js';
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -113,6 +118,8 @@ export interface RuntimeExecutionConnection {
    * (disabling a model deletes its profile).
    */
   relayModelProfiles?: RelayModelProfiles;
+  /** Additional top-level JSON properties added to model request bodies. */
+  requestBodyOverlay?: JsonObject;
   /** Free-form, non-secret per-connection data; nothing reads a key unless it is shaped for the connection's provider type. */
   extras?: Record<string, unknown>;
 }
@@ -531,6 +538,9 @@ export interface CreateConnectionInput {
   enabledModelIds?: string[];
   apiKey?: string;
   relayModelProfiles?: RelayModelProfiles;
+  /** Sensitive values are accepted only for initial creation and stored in the credential vault. */
+  requestHeaders?: Readonly<Record<string, string>>;
+  requestBodyOverlay?: JsonObject;
   extras?: Record<string, unknown>;
 }
 
@@ -553,8 +563,11 @@ export interface UpdateConnectionInput {
    * only `openai-compatible`, only for `enabledModelIds`).
    */
   relayModelProfiles?: RelayModelProfiles | null;
+  requestBodyOverlay?: JsonObject | null;
   extras?: Record<string, unknown>;
 }
+
+export type { RequestHeaderUpdate, SavedRequestHeaders } from './request-customization.js';
 
 export function migrateConnectionV1ToV2(old: unknown): LlmConnection {
   const value = old as Partial<LlmConnection> & {

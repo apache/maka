@@ -24,6 +24,8 @@ import {
   type ConnectionCatalogRemoveInput,
   type ConnectionCatalogSetDefaultTargetInput,
   type ConnectionCatalogUpdateInput,
+  type ConnectionRequestHeadersQueryInput,
+  type ConnectionRequestHeadersReplaceInput,
   type CredentialVaultDeleteInput,
   type CredentialVaultQueryInput,
   type CredentialVaultSetInput,
@@ -78,6 +80,8 @@ export class HostRuntimePolicyCoordinator {
     'credential.vault.query': (input) => this.#queryCredential(input),
     'credential.vault.set': (input) => this.#setCredential(input),
     'credential.vault.delete': (input) => this.#deleteCredential(input),
+    'connection.request-headers.query': (input) => this.#queryConnectionRequestHeaders(input),
+    'connection.request-headers.replace': (input) => this.#replaceConnectionRequestHeaders(input),
   };
 
   readonly #stores: RuntimePolicyStoresWriter;
@@ -231,6 +235,25 @@ export class HostRuntimePolicyCoordinator {
         status: unconfiguredStatus(input.expected.locator),
       };
     });
+  }
+
+  async #queryConnectionRequestHeaders(
+    input: ConnectionRequestHeadersQueryInput,
+  ): Promise<OperationOutcome<'connection.request-headers.query'>> {
+    return this.#storeCredentialQuery(async () => {
+      const result = await this.#stores.operations.getConnectionRequestHeaders(input.connectionId);
+      return result === null
+        ? { kind: 'connection_not_found' as const }
+        : { kind: 'found' as const, names: result.names };
+    });
+  }
+
+  async #replaceConnectionRequestHeaders(
+    input: ConnectionRequestHeadersReplaceInput,
+  ): Promise<OperationOutcome<'connection.request-headers.replace'>> {
+    return this.#storeMutation(() =>
+      this.#stores.operations.replaceConnectionRequestHeaders(input.connectionId, input.headers),
+    );
   }
 
   async #storeQuery<T>(operation: () => Promise<T>): Promise<StoreQueryOutcome<T>> {

@@ -20,7 +20,7 @@ import { stripSettingsSecretsForExport } from './settings-ipc-helpers.js';
  * wrappers that supply the real stores + file dialogs.
  *
  * The credential category (opt-in, plaintext) is gathered by walking the
- * connection list and reading each slug's `api_key` / `oauth_token` — the
+ * connection list and reading each slug's connection credentials — the
  * credential store exposes no bulk-list, so enumeration is the only path.
  */
 
@@ -30,10 +30,15 @@ export interface ExportedCredential {
   value: string;
 }
 
-const CONNECTION_CREDENTIAL_KINDS: readonly CredentialKind[] = ['api_key', 'oauth_token'];
+const CONNECTION_CREDENTIAL_KINDS: readonly CredentialKind[] = [
+  'api_key',
+  'oauth_token',
+  'request_headers',
+];
 const VALID_CREDENTIAL_KINDS: ReadonlySet<string> = new Set<CredentialKind>([
   'api_key',
   'oauth_token',
+  'request_headers',
   'bot_token',
   'app_secret',
   'proxy_password',

@@ -47,7 +47,10 @@ export type TurnOperationKey = Extract<
 export type ContextOperationKey = Extract<OperationKey, `context.${string}`>;
 export type RuntimePolicyOperationKey = Extract<
   OperationKey,
-  `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
+  | `runtime.policy.${string}`
+  | `connection.catalog.${string}`
+  | `connection.request-headers.${string}`
+  | `credential.vault.${string}`
 >;
 export type ConnectionEffectOperationKey = Extract<
   OperationKey,

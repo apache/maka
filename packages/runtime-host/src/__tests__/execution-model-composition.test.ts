@@ -500,7 +500,11 @@ test('production backend preserves coordinator Client Capability semantics acros
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
-        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, {
+            requestHeaders: { 'X-Maka-Test': 'tui-shared-setting' },
+            requestBodyOverlay: { provider: { only: ['deepseek'] } },
+          }),
         readPricing: async () => ({ revision: 0, overrides: [] }),
         snapshotClientCapabilities: () => coordinator.snapshotForSession(sessionId),
         executionBoundary: createBypassExecutionBoundary(0),
@@ -530,6 +534,11 @@ test('production backend preserves coordinator Client Capability semantics acros
       JSON.stringify({ events, requests: provider.requests, trace }),
     );
     assert.equal(calls.length, 1);
+    assert.ok(provider.requests.length > 0);
+    for (const request of provider.requests) {
+      assert.equal(request.customHeader, 'tui-shared-setting');
+      assert.deepEqual(request.body.provider, { only: ['deepseek'] });
+    }
     assert.deepEqual(calls[0]?.arguments, {
       url: 'https://example.test/client-capability',
     });
@@ -2754,13 +2763,22 @@ function backendCreationFixture(input: {
   } as unknown as HostAiSdkBackendInput;
 }
 
-function readyExecutionConnection(baseUrl?: string) {
+function readyExecutionConnection(
+  baseUrl?: string,
+  customization: {
+    readonly requestHeaders?: Readonly<Record<string, string>>;
+    readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+  } = {},
+) {
   return {
     kind: 'ready',
     connection: {
       slug: 'backend-creation-connection',
       providerType: 'moonshot',
       ...(baseUrl ? { baseUrl } : {}),
+      ...(customization.requestBodyOverlay
+        ? { requestBodyOverlay: customization.requestBodyOverlay }
+        : {}),
       enabledModelIds: [MODEL_ID],
       models: [
         {
@@ -2774,6 +2792,9 @@ function readyExecutionConnection(baseUrl?: string) {
     networkProxy: { enabled: false },
     secretMaterial: {
       connection: { secret: API_KEY },
+      ...(customization.requestHeaders
+        ? { requestHeaders: { secret: JSON.stringify(customization.requestHeaders) } }
+        : {}),
     },
   };
 }
@@ -2975,6 +2996,7 @@ async function fileExists(path: string): Promise<boolean> {
 interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
+  readonly customHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -3049,6 +3071,7 @@ async function handleProviderRequest(
   requests.push({
     url: request.url ?? '',
     authorization: request.headers.authorization,
+    customHeader: request.headers['x-maka-test'] as string | undefined,
     body,
   });
   if (body.stream !== true) {

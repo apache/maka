@@ -101,6 +101,10 @@ const connectionsBridge: ConnectionsBridge = {
         patch.relayModelProfiles === undefined
           ? current.relayModelProfiles
           : (patch.relayModelProfiles ?? undefined),
+      requestBodyOverlay:
+        patch.requestBodyOverlay === undefined
+          ? current.requestBodyOverlay
+          : (patch.requestBodyOverlay ?? undefined),
       updatedAt: NOW,
     };
   },
@@ -119,6 +123,12 @@ const connectionsBridge: ConnectionsBridge = {
   },
   async hasSecret() {
     return true;
+  },
+  async getRequestHeaders() {
+    return { names: [] };
+  },
+  async setRequestHeaders(_slug, headers) {
+    return { names: headers.map(({ name }) => name) };
   },
   subscribeEvents() {
     return () => undefined;

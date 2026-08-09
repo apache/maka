@@ -23,9 +23,17 @@ import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oau
 import { type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
-type CatalogCategory = ProviderCatalogGroup | 'recommended' | 'accounts';
+type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
 
-const CATALOG_CATEGORIES: CatalogCategory[] = ['recommended', 'accounts', 'plans', 'api', 'aggregators', 'local'];
+const CATALOG_CATEGORIES: CatalogCategory[] = [
+  'all',
+  'recommended',
+  'accounts',
+  'plans',
+  'api',
+  'aggregators',
+  'local',
+];
 
 /**
  * How the catalog is filtered. It lives in the panel, not in this component:
@@ -37,7 +45,7 @@ export interface CatalogFilter {
   category: CatalogCategory;
 }
 
-export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'recommended' };
+export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all' };
 
 /**
  * One provider being set up. `credentials` is a form, `account` is a browser
@@ -68,7 +76,7 @@ export function ProviderCatalogPage(props: {
   const copy = providerCopy.panel;
   const catalogCopy = providerCopy.catalog;
   const { query, category } = props.filter;
-  const showsOAuth = category === 'recommended' || category === 'accounts';
+  const showsOAuth = category === 'all' || category === 'recommended' || category === 'accounts';
   const oauth = useOAuthCards({ query: showsOAuth ? query : undefined });
 
   // Category is a Selector, not a second TabList: the page header already owns
@@ -119,7 +127,7 @@ export function ProviderCatalogPage(props: {
               variant="ghost"
               size="sm"
               label={copy.clearSearch}
-              onClick={() => props.onFilterChange({ query: '', category: 'recommended' })}
+              onClick={() => props.onFilterChange({ ...props.filter, query: '' })}
             />
           )}
         />
@@ -210,7 +218,13 @@ function providersForCategory(category: CatalogCategory, query: string, locale: 
   return source.filter((type) => {
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
     if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
-    if (category !== 'recommended' && PROVIDER_DEFAULTS[type].catalogGroup !== category) return false;
+    if (
+      category !== 'all' &&
+      category !== 'recommended' &&
+      PROVIDER_DEFAULTS[type].catalogGroup !== category
+    ) {
+      return false;
+    }
     if (!normalizedQuery) return true;
     const display = providerDisplay(type, locale);
     return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
