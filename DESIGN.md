@@ -41,11 +41,9 @@ typography:
   code: { fontSize: "14px", fontWeight: 400, lineHeight: 1.4286 }
   badge-label: { fontSize: "12px", fontWeight: 500, lineHeight: 1.6667 }
 rounded:
-  inner: "4px"
   control: "6px"
   card: "10px"
   container: "12px"
-  page: "16px"
   pill: "999px"
 spacing: { space-0-5: "2px", space-1: "4px", space-1-5: "6px", space-2: "8px", space-2-5: "10px", space-3: "12px", space-4: "16px", space-5: "20px", space-6: "24px", space-8: "32px", space-10: "40px", space-12: "48px", space-16: "64px" }
 components:
@@ -69,22 +67,20 @@ The system is calm, native, and compact: spacious around reading and decisions, 
 
 This document governs the default light and dark themes. Optional palettes may change canvas, ink, accent, and semantic colors, but must preserve their roles, contrast, and hierarchy.
 
-**Authority:** `apps/desktop/src/renderer/astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `apps/desktop/src/renderer/maka-tokens.css` owns product palettes, spacing, radii, product motion, and the Astryx bridge; Astryx owns primitive geometry, states, and internal motion; product source owns Maka-specific compositions. Generated `apps/desktop/src/renderer/astryx-theme/maka.css` is not an editing authority.
+**Authority:** `apps/desktop/src/renderer/astryx-theme/makaTheme.ts` owns type, neutral remaps, and theme-level component overrides; `apps/desktop/src/renderer/maka-tokens.css` owns product palettes, spacing, radii, and product motion; Astryx owns primitive geometry, states, and internal motion; product source owns Maka-specific compositions. Generated `apps/desktop/src/renderer/astryx-theme/maka.css` is not an editing authority. The bridge into Astryx is not one file: `makaTheme.ts` remaps the neutral stack, `maka-tokens.css` bridges the accent family, and `astryx-mount.css` carries a text/icon/border seam scoped to named containers. Changing what a primitive paints means checking all three files.
 
 Frontmatter is a snapshot of the current default theme. When it diverges from source or contract tests, source and tests win and this document must be refreshed.
 
 ## 2. Surfaces
 
-Depth is a ladder, not a decoration. Every background in the app resolves to one of four semantic tiers, each derived from `--background` with cumulative offsets (palettes override only `--background`; the ladder follows).
+Depth is a ladder, not a decoration. Every background resolves to one of four semantic tiers, each derived from `--background` with cumulative offsets — palettes override only `--background` and the ladder follows. Note that `--background` is the card fill, not the page color; older surface names are aliases onto these tiers, and `maka-tokens.css` is where that mapping lives.
 
-| Tier | Token | Role | Light | Dark |
-|---|---|---|---|---|
-| sunken | `--surface-sunken` | sidebar rail, recessed chrome | 237 | 9 |
-| base | `--surface-base` | shell canvas behind plates | 247 | 17 |
-| raised | `--surface-raised` | cards, content plates, reading surfaces | 255 | 23 |
-| overlay | `--surface-overlay` | menus, popovers, dialogs, toasts | 255 | 27 |
-
-(Values are measured rendered pixels, not aspirations; the ink/surface contract tests hold them.)
+| Tier | Token | Role |
+|---|---|---|
+| sunken | `--surface-sunken` | sidebar rail, recessed chrome |
+| base | `--surface-base` | shell canvas behind plates |
+| raised | `--surface-raised` | cards, content plates, reading surfaces |
+| overlay | `--surface-overlay` | menus, popovers, dialogs, toasts |
 
 **The Height Rule.** Height maps monotonically to lightness in both modes, and reading surfaces always occupy the brightest tier of their mode. In light mode the ladder tops out at pure white, so `raised` and `overlay` share the fill and overlay separation hands off to the floating recipe (§5). Light mode "higher = darker" is permanently forbidden — it makes elevation shadows contradict the fill.
 
@@ -92,21 +88,14 @@ Depth is a ladder, not a decoration. Every background in the app resolves to one
 
 **Paper.** `--surface-paper` sits outside the ladder on purpose and has no dark override. It backs content whose contrast we neither author nor may invert: the sandboxed HTML-artifact iframe and the PDF embed, and QR codes, where dark-on-light is a scanning requirement rather than a preference. It is not a fifth tier and app chrome never uses it.
 
-**Legacy names.** The semantic tiers are canonical. Old names are aliases and their resolved values never change out from under consumers: `--surface-canvas` → base, `--background` → raised (it is the card fill, not the page color), `--background-elevated`, `--color-background-card`, `--color-background-popover` → overlay, `--card-bg`, `--color-background-surface` → raised.
-
 ## 3. Ink
 
-Prose uses exactly three tiers, spaced at an even ~2× contrast rhythm, all above WCAG AA. Measured against `--surface-raised`:
-
-| Tier | Token | Light | Dark |
-|---|---|---|---|
-| primary | `--foreground` | 19.1:1 | 15.5:1 |
-| secondary | `--foreground-secondary` | 9.8:1 | 9.2:1 |
-| muted | `--muted-foreground` | 4.8:1 | 4.7:1 |
+Prose uses exactly three tiers — `--foreground`, `--foreground-secondary`, `--muted-foreground` — spaced at an even ~2× contrast rhythm against `--surface-raised`, every one of them clearing WCAG AA in both modes. Any new tier must hold that rhythm and that floor.
 
 - **The Three-Tier Reading Rule.** Prose uses primary, secondary, or muted. Neutral washes are surfaces, not extra text tiers. `--foreground-dimmed` is retired — its call sites name secondary directly — and must never come back with a definition of its own (contract-tested).
-- **The One Colorspace Rule.** Every derivation inside a token family uses one colorspace (`oklch` for ink, contract-tested). Mixing `srgb` and `oklch` derivations produces "same literal, different value" drift. This held one exception, dark `--surface-overlay`'s srgb mix, until T4 unified it onto oklch at its measured value; the ladder now derives every rung in one space.
-- **Links use the solid accent tier** (`--accent-solid`), never raw `--accent` — the accent identifies interaction; the solid tier is the only accent variant that clears text contrast on every palette.
+- **The One Colorspace Rule.** Every derivation inside a token family uses one colorspace (`oklch` for ink, contract-tested). Mixing `srgb` and `oklch` derivations produces "same literal, different value" drift, and the ladder is where it bites hardest because its rungs only mean anything relative to each other.
+- **Astryx's `secondary` is not this ladder's secondary.** `Text color="secondary"` reads `--color-text-secondary`, which resolves to a fixed neutral literal outside the containers `astryx-mount.css` bridges and to `--muted-foreground` inside them. Neither is `--foreground-secondary`. One word, three results — so pick an ink tier by the token, and treat a primitive's color prop as its own vocabulary.
+- **Links use the solid accent tier** (`--accent-solid`), never raw `--accent` — the accent identifies interaction, and the solid tier is the only accent variant that clears text contrast on every palette. A selection wash or outline is not link text and derives from `--accent` instead — deriving a surface from the link name lets a text-contrast rule silently govern a background.
 
 ## 4. Borders
 
@@ -114,8 +103,8 @@ Three strengths, each a job, spaced at ~1.6× like the ink ladder:
 
 - `--border-soft` (6% ink): quiet separation inside a plate — rails, row dividers that fills can't carry.
 - `--border` (10% ink): structural boundaries between regions.
-- `--border-strong` (16% ink): emphasis chrome only. Its legitimate jobs, from the live inventory: selected/active outlines and emphasized boundaries (onboarding, plan-mode, chat turn/quote chrome, the Astryx `--color-border-emphasized` mapping). Two call sites borrow it as a strong neutral *tint* rather than a border — a scrollbar thumb color and a separator glyph color — and are queued to migrate onto ink-derived tokens in T2–T4. It is not "the border for when you're unsure."
-- `--ring-soft` is a 1px ring drawn with box-shadow (`0 0 0 1px`) at the soft tier's own 6% alpha, not an elevation step. It was called `--shadow-minimal-flat` until T4, which is why it kept attracting call sites that wanted lift; the name now states the job, and it belongs to this chapter rather than §5.
+- `--border-strong` (16% ink): emphasis chrome — selected and active outlines, emphasized region boundaries, and the scrollbar thumb (§9). It is not "the border for when you're unsure," and it is not the general-purpose strong neutral: anything wanting a neutral *tint* at that weight takes `--foreground-alpha-16`. A hairline drawn with `background` is still a border and keeps it.
+- `--ring-soft` is a 1px ring drawn with box-shadow (`0 0 0 1px`) at the soft tier's own 6% alpha. It belongs to this chapter, not §5: a token is filed by the job it does, not by the CSS property it happens to use, and a shadow-shaped name on a border attracts call sites that wanted lift.
 
 **The One Means Rule.** Each boundary picks one separator: a fill step, a line, or a shadow — never stacked on the same edge.
 
@@ -123,8 +112,8 @@ Three strengths, each a job, spaced at ~1.6× like the ink ladder:
 
 Default surfaces are flat. Depth comes first from the surface ladder, then a line, then shadow only when an element genuinely floats above the plane.
 
-- Product elevation names alias the theme scale: `--elevation-raised` (low), `--elevation-overlay` (med), `--elevation-drag` (high). A scale only gets used when product code can name it — the theme shipped three shadows for months and product CSS consumed one, because the names meant nothing at a call site.
-- **The Floating Recipe.** Every portal surface (menu, popover, dialog, toast) is: `--surface-overlay` fill + `--border-soft` ring + `--elevation-overlay` + `overflow: hidden` + container radius. No portal invents its own mix. The recipe is currently enforced on Astryx's shared layer surface through a vendor patch that adds a hook class and decides no values — a transitional implementation with a stated exit condition (`patches/README.md`), not a second styling path. Tooltips are out of scope: a transient label is not a surface that holds content.
+- Three steps, named for their job: `--elevation-raised`, `--elevation-overlay`, `--elevation-drag`. Product CSS names these rather than the theme scale underneath — a shadow whose name means nothing at a call site is how the scale sat unused for months while one raw atom did all the work.
+- **The Floating Recipe.** Every portal surface (menu, popover, dialog, toast) is: `--surface-overlay` fill + `--border-soft` ring + `--elevation-overlay` + `overflow: hidden` + container radius. No portal invents its own mix, including Astryx's own shared layer surface — it is held to the recipe through a vendor patch that supplies a hook class and no values, on the terms recorded in `patches/README.md`. Tooltips are out of scope: a transient label is not a surface that holds content.
 - Dark mode relies on tone and rings before shadow. Neon edges and lifted-everything styling are forbidden.
 - Native shell vibrancy is allowed only in designated material; generic glassmorphism is not.
 
@@ -134,15 +123,14 @@ Default surfaces are flat. Depth comes first from the surface ladder, then a lin
 
 Nothing interactive is square. One ladder, assigned monotonically by box height:
 
-| Radius | Tier | Assign to |
-|---|---|---|
-| 4px | inner | chips, keycaps, nested inlays inside a control |
-| 6px | control | buttons, inputs, segmented items (≤ 36px tall) |
-| 10px | card | cards, rows-as-cards, list containers (the single card value — 8/10/12 coexistence is over) |
-| 12px | container | modals, panels, portal surfaces |
-| 16px | page | page-level plates and hero surfaces |
-| full | pill | badges, pills, circular controls |
+| Radius | Maka tier | Astryx tier | Assign to |
+|---|---|---|---|
+| 6px | control | inner | chips, keycaps, nested inlays, and product-drawn compact controls |
+| 10px | card | element | cards, rows-as-cards, list containers, chat bubbles; Astryx `Button`, `Input`, `SegmentedControl` |
+| 12px | container | container | modals, panels, portal surfaces; Astryx `Card`, `Dialog`, `DropdownMenu` |
+| full | pill (999px) | full (9999px) | badges, pills, circular controls |
 
+- **The Two-Name Rule.** These are one ladder under two vocabularies, and the names never line up: Maka's `control` is Astryx's `inner`, Maka's `card` is Astryx's `element`, Maka's `modal` is Astryx's `container`. Resolve a tier from the box, never from the token name that sounds right. The paired values agree *today* but are independent literals, not aliases — an Astryx upgrade can move one side silently, so a mismatch is a real failure mode rather than an impossibility. Astryx's `--radius-page` (28px) has no Maka tier and no product consumer; anything reaching for a page-level radius is inventing a rung.
 - **The Full-Bleed Rule.** `border-radius: 0` is legal only on true full-bleed rows — an element flush with its container on both sides. Radius and gap move together: if it has breathing room, it has corners.
 - **Proportional marks.** Product-drawn icon plates use ratio-owned radius (~25–27% of the box edge), recorded in prose because Stitch accepts only absolute units.
 
@@ -151,8 +139,9 @@ Nothing interactive is square. One ladder, assigned monotonically by box height:
 Use the system UI stack with explicit platform CJK fallbacks; Geist Variable is a late fallback. Code uses Geist Mono Variable, JetBrains Mono, then platform monospace. Chinese and Latin must read as one interface.
 
 - **Display 1–3:** rare large statements and empty-state anchors.
-- **Heading 1–5:** page, panel, section, and compact-title hierarchy.
+- **Heading 1–6:** page, panel, section, and compact-title hierarchy, down to an 11px semibold rung.
 - **Body:** conversation and normal reading.
+- **Large:** body-sized lead-in copy at semibold — the only role above body that is not a heading.
 - **Label:** controls and interactive labels.
 - **Supporting:** metadata and compact secondary copy.
 - **Code:** code, paths, commands, identifiers, and machine evidence.
@@ -166,8 +155,8 @@ Use the system UI stack with explicit platform CJK fallbacks; Geist Variable is 
 The palette is cool-neutral and quiet; color is generated to spec, not picked by eye.
 
 - **Brand mark** is fixed `#71a8fd`; it identifies Maka and is never the general CTA color.
-- **Interaction accent** follows the active palette for focus, selection, and live state; **links and accent-colored text use the solid tier** (§3).
-- **Status families** (success / active / attention / error / neutral — there is no "info" status semantic) are generated, not picked: one lightness per mode with each hue keeping its own chroma. Light mode is generated at L=0.50 (contrast vs white spans 5.5–6.3:1; the residual spread is hue physics — at equal L, yellow carries more luminance than blue — and flattening it would abandon the shared-L premise that makes them a family). This regeneration fixed two AA failures the old hand-picked values shipped (info 2.82:1, warning 3.29:1). Dark mode keeps its pre-2.0 values (all ≥4.5:1); regenerating dark at its own single L is a scheduled separate round. A louder band at ~90% gamut chroma exists only for 8px status dots — dots must read at a glance; washes must not shout.
+- **Interaction accent** follows the active palette for focus, selection, and live state; **links and accent-colored text use the solid tier** (§3). Astryx's own semantic components are the exception — `Badge` and `StatusDot` carry fixed literals inherited from the neutral theme and follow neither the palette nor the families below.
+- **Status families** — `--info`, `--success`, `--warning`, `--destructive` — are generated, not picked: one lightness per mode, each hue keeping its own chroma, every member clearing AA. The residual contrast spread within a mode is hue physics — at equal lightness, yellow carries more luminance than blue — and flattening it would abandon the shared-lightness premise that makes them a family. All four are declared in one block per mode, because the time warning sat thirty lines from its siblings is the time it lost its dark override and dropped under AA unnoticed. A louder band at ~90% gamut chroma exists only for 8px status dots: dots must read at a glance, washes must not shout. These are colors; what a state *means* is a separate vocabulary (§9).
 - **Tinted surfaces** (status washes behind rows and banners) derive from the same status hues; hand-rolled `oklch()` status washes at call sites are forbidden — consume the family. The family is `--{status}-wash` (0.08 fill) and `--{status}-wash-border` (0.24, ~3x the fill), every member derived with `oklch(from var(--{status}) ...)` so a status regeneration flows through it. A **strong** tier (0.12 / 0.40) exists for warnings about data destruction or an action the user cannot undo, and for nothing else — it is not the loud option for a notice that wants attention. Palette swatches are not washes: a swatch's job is to show a palette's real colour, so its literals stay. The family is kept complete even where a rung has no consumer yet: a family with holes in it sends the next author back to hand-rolling an alpha, which is the etiology of the fourteen that drifted.
 - **Identity colors** (avatars, channel marks) live in one 4.2–4.8:1 contrast band; desaturation for muted states happens at constant OKLab lightness.
 
@@ -179,7 +168,8 @@ Use Astryx primitives as the default seam. New work composes product meaning thr
 
 - **Controls:** Maka uses a 20/24/28/32/36/40px height ruler with 32px as the default; Astryx owns the 28/32/36px variants. Hover is restrained; press may use `scale(0.98)`; keyboard focus is always visible. At most one inverted (filled) element per control. Hover washes come in exactly two lanes: product rows and controls take `--state-hover-bg`; chrome that must stay in lockstep with Astryx internals takes `--color-overlay-hover`. Hand-mixed hover alphas are drift.
 - **Fields:** labels, descriptions, and validation belong to the field primitive; input focus belongs to its control. Keep disabled reasons discoverable through the owning control's tooltip; do not rebuild field chrome around a bare input.
-- **Badges and status:** Badge is 20px high and pill-shaped. Choose semantic variants by meaning, not hue; use status dots for success, active, attention, error, or neutral.
+- **Badges and status:** Badge is 20px high and pill-shaped. Choose variants by meaning, not hue.
+- **Status vocabulary:** what a state means is named once, in `packages/ui/src/status-vocabulary.ts`, and every status dot resolves its color through it — a surface never maps its own domain state onto a color. The semantics are `success` (proven healthy), `active` (the system is working), `attention` (waiting on a person), `error` (broken now), `neutral` (a settled fact); collapsing `active` and `attention` is the mistake that vocabulary exists to prevent. It deliberately has no `info` — two callers meant opposite things by it — but that is a statement about *dot semantics*, not about the `--info` color, which is live. Note that Astryx's `Badge` and `StatusDot` render fixed inherited literals, so an Astryx `info` pill and Maka's `--info` are two unrelated blues that merely look alike; a dot's color does not come from the family in §8.
 - **Counters:** a count is one step smaller and quieter than its label (supporting role, muted ink, `tabular-nums`) and follows its parent's active state back to full ink. Never bolder than the label it counts.
 - **Scrollbars:** one app-wide recipe — a 6px pill (10px hit area, 2px transparent inset), thumb at `--border-strong`, one step darker on hover, no painted track. Surfaces may hide their own bars; none may restyle them.
 - **Cards:** Astryx Card uses container radius, 12px default padding, and no resting elevation. Astryx components own their geometry.
@@ -232,9 +222,9 @@ Three mutually exclusive forms, chosen by structural predictability — never by
 - **Do** preserve keyboard focus, disabled reasons, loading and error states, and reduced-motion behavior.
 - **Do** keep optional palette inventories in source while preserving documented roles and contrast.
 
-### Don't (the forbidden list — each item is contract-tested or review-blocked):
+### Don't (the forbidden list — some items are contract-tested, the rest are review-blocked):
 
-- **Don't** write a bare `oklch()` status color or wash at a call site — consume the generated families (§8).
+- **Don't** write a bare `oklch()` status color at a call site, or hand-roll a status wash — consume the families (§8).
 - **Don't** use `border-radius: 0` off a full-bleed row (§6).
 - **Don't** put an illustration in an empty-state icon slot, add anything past tier 3's single action, or ship a state attribute with no visible feedback (§10).
 - **Don't** hardcode `background: white` or any literal surface color — resolve a ladder tier (§2), or `--surface-paper` when the content's own contrast is not ours to control (foreign documents, QR codes) and inverting it would break the content rather than restyle it.
