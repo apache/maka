@@ -2,8 +2,8 @@
  * Subagent sessions — session presentation contract (design lock).
  *
  * - Sidebar lists only root/user sessions (no nested subagent tree).
- * - Multiple spawn_subagent calls in one turn render as one collapsible
- *   ToolTrow / ChatToolCalls group (product tool primitives).
+ * - Multiple spawn_subagent calls in one turn render as compact linked-session
+ *   rows in source order; ordinary tool evidence keeps its own ChatToolCalls.
  * - Opening a linked subagent switches the main chat column (option A);
  *   titlebar is project › parent › child.
  * - No composer drawer, strip, or parallel card system for subagents.
@@ -15,6 +15,7 @@
  */
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent } from 'storybook/test';
 import {
   ChatComposer,
   ChatComposerInput,
@@ -382,8 +383,8 @@ function ParentShell() {
         <ProductTitlebar sessionName={PARENT_NAME} />
       </header>
       <Caption>
-        侧栏为 SessionListPanel + deriveSessionRail（仅 root）。流内一组可折叠
-        spawn_subagent；每个子会话是可直接打开的 Astryx 行。无 ComposerDrawer / strip。
+        侧栏为 SessionListPanel + deriveSessionRail（仅 root）。流内连续
+        spawn_subagent 保持为紧凑 Astryx 会话行。无 ComposerDrawer / strip。
       </Caption>
       <div style={shell.body}>
         <ProductRail activeSessionId={PARENT_SESSION_ID} />
@@ -397,7 +398,7 @@ function ParentShell() {
               </ChatMessage>
               <ChatMessage sender="assistant" name="Maka">
                 <ChatMessageBubble>
-                  当轮连续 spawn_subagent 合成一个工具组（与其它连续 tool run 相同）。点某行进对应子会话。
+                  当轮连续 spawn_subagent 保持原始顺序，每个子会话占一小行；点某行进入对应会话。
                 </ChatMessageBubble>
                 <ChatMessageMetadata timestamp="刚刚" />
                 <div style={{ marginTop: 10, width: '100%' }}>
@@ -469,7 +470,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Session presentation for subagents: flat sidebar, collapsible multi-spawn tool group, ' +
+          'Session presentation for subagents: flat sidebar, compact linked-session rows, ' +
           'main-column open with parent › child titlebar. No composer drawer.',
       },
     },
@@ -484,18 +485,27 @@ type Story = StoryObj<typeof meta>;
 export const ParentSession: Story = {
   name: '父会话 · 工具组 + 打开子会话',
   render: () => <ParentShell />,
+  play: async ({ canvasElement }) => {
+    const row = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button'))
+      .find(candidate => candidate.textContent?.includes('explore · 读布局'));
+    if (!row) throw new Error('linked subagent row not found');
+    await userEvent.click(row);
+    if (!canvasElement.querySelector('[aria-label="子会话消息输入"]')) {
+      throw new Error('linked subagent session did not open');
+    }
+  },
 };
 
 // Real path: one native Astryx row per linked child session.
 export const ToolGroupFold: Story = {
-  name: '工具组 · 原生子会话行',
+  name: '多子代理 · 原生会话行',
   render: () => (
     <div style={shell.comparePane}>
       <Text type="body" style={{ fontWeight: 600 }}>
         {MULTI_SUBAGENT_ITEMS.length} 个子代理会话
       </Text>
       <Text type="supporting" color="secondary">
-        展开工具组后，每个子会话是一条原生工具行；点击该行直接打开会话。
+        每个子会话是一条紧凑的原生 Astryx 行；点击该行直接打开会话。
       </Text>
       <SubagentToolGroup
         items={MULTI_SUBAGENT_ITEMS}

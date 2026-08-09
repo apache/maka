@@ -296,11 +296,10 @@ export function ToolCallDetail({
 }
 
 /**
- * Every tool row renders through Astryx `ChatToolCalls` — one component, one
- * visual language, whatever the status. The six product statuses fold into
- * Astryx's four: `interrupted` and sandbox denials are failures that carry
- * their own word in `errorMessage`, and the detail panel (banner, command,
- * output, previews) rides along in `resultDetail`.
+ * Ordinary tool evidence renders through Astryx `ChatToolCalls`; linked child
+ * sessions render through Astryx `ListItem` because their primary action is
+ * navigation, not inline evidence expansion. Adjacent segments preserve the
+ * source order without restoring a vendor activation patch.
  */
 export function ToolTrow({
   items,
@@ -358,7 +357,7 @@ function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrow
     const previous = segments.at(-1);
     if (rows) {
       if (previous?.kind === 'agents') previous.rows.push(...rows);
-      else segments.push({ kind: 'agents', key: rows[0]!.key, rows });
+      else segments.push({ kind: 'agents', key: item.toolUseId, rows });
       continue;
     }
     const call = standardToolCall(item, locale);
@@ -375,7 +374,7 @@ function LinkedAgentList(props: {
 }) {
   const copy = getToolActivityCopy(props.locale).agent;
   return (
-    <List density="compact" className="maka-subagent-session-list">
+    <List density="compact">
       {props.rows.map((row) => {
         const childSessionId = row.childSessionId;
         const open = childSessionId && props.onOpenLinkedSession
@@ -385,7 +384,6 @@ function LinkedAgentList(props: {
         return (
           <ListItem
             key={row.key}
-            className="maka-subagent-session-row"
             startContent={(
               <StatusDot
                 variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
@@ -395,7 +393,7 @@ function LinkedAgentList(props: {
             )}
             label={(
               <span className="maka-subagent-session-label">
-                <Text type="label" maxLines={1} className="maka-subagent-session-name">
+                <Text type="label" maxLines={1}>
                   {row.name}
                 </Text>
                 {row.target ? (
@@ -485,14 +483,18 @@ function linkedAgentRows(
   });
 }
 
-function linkedAgentStatusSemantic(
-  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
-): StatusSemantic {
-  if (status === 'completed') return 'success';
-  if (status === 'running') return 'active';
-  if (status === 'waiting_for_user') return 'attention';
-  if (status === 'failed') return 'error';
-  return 'neutral';
+type LinkedAgentStatus = Extract<ToolResultContent, { kind: 'subagent' }>['status'];
+
+const LINKED_AGENT_STATUS_SEMANTIC = {
+  completed: 'success',
+  running: 'active',
+  waiting_for_user: 'attention',
+  failed: 'error',
+  cancelled: 'neutral',
+} satisfies Record<LinkedAgentStatus, StatusSemantic>;
+
+function linkedAgentStatusSemantic(status: LinkedAgentStatus): StatusSemantic {
+  return LINKED_AGENT_STATUS_SEMANTIC[status];
 }
 
 function subagentStats(
@@ -513,10 +515,9 @@ function boundedAgentSummary(summary: string): string | undefined {
 }
 
 /**
- * Green `+N` / red `-N`, from the shared structural parse. One diff for a row,
- * every diff in the run for the collapsed group header. Zero stays unpainted,
- * so a run that changed no file leaves the header as it was rather than
- * wearing a "0 changes" badge.
+ * Green `+N` / red `-N`, from the shared structural parse. Each visible call
+ * owns its diff counts. Zero stays unpainted so unchanged calls do not wear a
+ * misleading "0 changes" badge.
  */
 function diffStats(diffs: string[]): { additions?: number; deletions?: number } {
   let additions = 0;

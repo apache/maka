@@ -136,12 +136,10 @@
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;
-  min-width: 0;
   align-items: center;
   gap: var(--space-2);
 }
-.maka-subagent-session-label { width: 100%; }
-.maka-subagent-session-name { flex: 0 1 auto; }
+.maka-subagent-session-label { width: 100%; min-width: 0; }
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
