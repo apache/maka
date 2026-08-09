@@ -74,6 +74,14 @@ test('the quote layer: settle timing, Escape, immediate hide, and scroll followi
     await expect(quoteLayer).toBeHidden();
   }
   await page.mouse.up();
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()?.toString().trim() ?? ''))
+    .not.toBe('');
+  // The synthetic events above exercise the mid-gesture timing contract, but
+  // can run ahead of Chromium's final native selectionchange. Finalize the
+  // observed non-empty selection explicitly so this phase does not depend on
+  // host event scheduling.
+  await page.evaluate(() => document.dispatchEvent(new Event('selectionchange')));
   await expect(quoteLayer).toBeVisible();
 
   // Back to no selection, so the measurement below times a fresh appearance

@@ -18,6 +18,7 @@ interface IconEntry {
 }
 
 const LUCIDE_ICONS: IconEntry[] = Object.entries(Icons)
+  .filter(([name]) => name !== 'ICON_SIZE')
   .map(([name, value]) => ({ name, Comp: value as IconEntry['Comp'] }))
   .sort((a, b) => a.name.localeCompare(b.name));
 

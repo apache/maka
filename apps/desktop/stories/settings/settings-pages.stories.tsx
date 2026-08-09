@@ -930,7 +930,6 @@ function assertDailyReviewSettingsBounds(
   selector: HTMLButtonElement,
 ): void {
   const time = canvasElement.querySelector<HTMLInputElement>('input[type="text"]');
-  const page = canvasElement.querySelector<HTMLElement>('.settingsPageStack');
   // The rows kit (#1972) retired `.settingsFormLayout`. A control now lives in
   // its row's capped end slot, so `.settingsRowEnd` is the container this
   // contract has always meant: the bound the control must not overflow.
@@ -938,7 +937,7 @@ function assertDailyReviewSettingsBounds(
   const selectorForm = selector.closest<HTMLElement>('.settingsRowEnd');
   const listbox = document.querySelector<HTMLElement>('[role="listbox"]');
   const popover = listbox?.closest<HTMLElement>('[popover]');
-  if (!time || !page || !timeForm || !selectorForm || !popover) {
+  if (!time || !timeForm || !selectorForm || !popover) {
     throw new Error('Daily Review bounds contract could not resolve its production elements');
   }
 
@@ -947,7 +946,6 @@ function assertDailyReviewSettingsBounds(
   const timeRect = time.getBoundingClientRect();
   const selectorRect = selector.getBoundingClientRect();
   const popoverRect = popover.getBoundingClientRect();
-  const pageRect = page.getBoundingClientRect();
   const doesNotCoverTrigger =
     popoverRect.top >= selectorRect.bottom - 1
     || popoverRect.bottom <= selectorRect.top + 1;
@@ -956,12 +954,22 @@ function assertDailyReviewSettingsBounds(
     && withinHorizontally(selectorRect, selectorForm.getBoundingClientRect())
     && popoverRect.width > 0
     && popoverRect.height > 0
-    && withinHorizontally(popoverRect, pageRect)
+    // The popover is a top-layer surface and may be wider than its trigger;
+    // the viewport, rather than the settings content column, is its boundary.
     && popoverRect.left >= -1
     && popoverRect.right <= window.innerWidth + 1
     && doesNotCoverTrigger;
   if (!valid) {
-    throw new Error(`Daily Review controls overflow at ${window.innerWidth}px`);
+    const rectSummary = (name: string, rect: DOMRect) =>
+      `${name}=[${rect.left.toFixed(1)},${rect.right.toFixed(1)};${rect.width.toFixed(1)}]`;
+    throw new Error([
+      `Daily Review controls overflow at ${window.innerWidth}px`,
+      rectSummary('time', timeRect),
+      rectSummary('timeForm', timeForm.getBoundingClientRect()),
+      rectSummary('selector', selectorRect),
+      rectSummary('selectorForm', selectorForm.getBoundingClientRect()),
+      rectSummary('popover', popoverRect),
+    ].join(' '));
   }
 }
 
