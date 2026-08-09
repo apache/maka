@@ -840,6 +840,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(lastCall?.totalTokens, 250);
   });
 
+  test('keeps a step-0 overflow checkpoint projected after the retry returns a tool call', async () => {
+    // The first request overflows before any step completes. Recovery folds
+    // only prior history into a pre-turn checkpoint and retries with the
+    // current user anchor verbatim. When that retry returns a tool call, the
+    // next request must rebuild from raw durable events through the checkpoint
+    // boundary instead of resurrecting the cached raw prior replay.
+    const fixture = buildReactiveFixture({ script: ['overflow', 'tool', 'done'], bigPriors: true });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]!.phase, undefined);
+    assert.equal(fixture.summarizerCalls(), 1);
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+
+    const retryPrompt = JSON.stringify(fixture.model.doStreamCalls[1]?.prompt);
+    const successorPrompt = JSON.stringify(fixture.model.doStreamCalls[2]?.prompt);
+    for (const prompt of [retryPrompt, successorPrompt]) {
+      assert.equal(prompt.includes('REACTIVE_SUMMARY_SENTINEL'), true);
+      assert.equal(prompt.includes(ANCHOR_TEXT), true);
+      assert.equal(prompt.includes('PRIOR_FACT'), false);
+    }
+    assert.equal(successorPrompt.includes(RAW_SPAN_ONE), true);
+  });
+
   test('does not retry an overflow after an after-step stop is requested', async () => {
     let signalSecondStream!: () => void;
     let releaseSecondStream!: () => void;

@@ -232,6 +232,7 @@ import {
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
+  isHistoryCompactContentEvent,
   replaceHistoryCompactReplayBlocks,
 } from './history-compact.js';
 import { selectSynthesisCacheForReplay } from './synthesis-cache.js';
@@ -1672,7 +1673,33 @@ export class AiSdkBackend implements AgentBackend {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
-          const replayPlan = buildRuntimeEventModelReplayPlan(turnEvents, {
+          const projectionCheckpoint = midTurnState?.projectionCheckpoint;
+          const rawProjectionEvents = projectionCheckpoint
+            ? [
+                ...midTurnState.priorContentEvents,
+                ...turnEvents.filter(isHistoryCompactContentEvent),
+              ]
+            : turnEvents;
+          let replayEvents = rawProjectionEvents;
+          if (projectionCheckpoint) {
+            const checkpointMatch = matchHistoryCompactCheckpointPrefix(
+              projectionCheckpoint,
+              rawProjectionEvents,
+            );
+            if (checkpointMatch.reason) {
+              throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
+            }
+            replayEvents = projectHistoryCompactCheckpointReplay(
+              projectionCheckpoint,
+              checkpointMatch.coveredRuntimeEvents,
+              checkpointMatch.successorRuntimeEvents,
+            );
+            // The checkpoint was capacity-validated before it was persisted.
+            // Do not re-run that gate against a later, larger successor tail:
+            // the active-step shaper must see that growth so it can roll the
+            // checkpoint forward instead of resurrecting raw history.
+          }
+          const replayPlan = buildRuntimeEventModelReplayPlan(replayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
               ...turnEvents,
@@ -1706,7 +1733,9 @@ export class AiSdkBackend implements AgentBackend {
             scope.imageBudget,
             settledModelOutputs,
           );
-          return [...priorReplay.messages, ...currentTurnMessages];
+          return projectionCheckpoint
+            ? currentTurnMessages
+            : [...priorReplay.messages, ...currentTurnMessages];
         };
         const activeCompactionHeadAnchor =
           messages[messages.length - 1]?.role === 'user'
@@ -2257,6 +2286,7 @@ export class AiSdkBackend implements AgentBackend {
                       retryAlreadyUsed: overflowRetryUsed,
                       midTurnState,
                       turnId,
+                      stepNumber: runtimeSteps,
                       currentMessages: attemptMessages,
                       providerTools,
                       activeTools: activeToolsForRequest,
