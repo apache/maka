@@ -7528,27 +7528,41 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(events.at(-1)?.type, 'complete');
   });
 
-  test('does not call a truncated provider stream a finished turn', async () => {
-    // The upstream cut the SSE connection mid-answer: chunks arrived, no
-    // `finish` frame did. The stream then ends without yielding an error and
-    // without throwing, so every guard that watches for a thrown failure sees
-    // nothing. Reporting `end_turn` here tells the caller the model said its
-    // piece when the connection simply died — a benchmark cell recorded
-    // `status: completed` on exactly this shape while the agent was still
-    // mid-task.
-    const durable = durableTurnHarness('turn-truncated', 'analyse the image');
+  test('retries an output-free truncated provider stream once and recovers', async () => {
+    const durable = durableTurnHarness('turn-truncated-retry', 'analyse the image');
+    let calls = 0;
     const model = new MockLanguageModelV4({
-      doStream: async () => ({
-        stream: simulateReadableStream({
-          chunks: [
-            { type: 'stream-start', warnings: [] },
-            { type: 'text-start', id: 'text-1' },
-            { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
-          ],
-          initialDelayInMs: null,
-          chunkDelayInMs: null,
-        }),
-      }),
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: undefined },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
     });
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -7562,6 +7576,120 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('classifies an exhausted output-free truncated stream as provider unavailable', async () => {
+    const durable = durableTurnHarness('turn-truncated-exhausted', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: undefined },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+
+    assert.equal(calls, 2);
+    assert.equal(error?.reason, 'provider_unavailable');
+    assert.equal(error?.message, 'Provider stream ended without finishing (other)');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('does not retry a truncated provider stream after partial output', async () => {
+    // The upstream cut the SSE connection mid-answer: chunks arrived, no
+    // `finish` frame did. The stream then ends without yielding an error and
+    // without throwing, so every guard that watches for a thrown failure sees
+    // nothing. Reporting `end_turn` here tells the caller the model said its
+    // piece when the connection simply died — a benchmark cell recorded
+    // `status: completed` on exactly this shape while the agent was still
+    // mid-task.
+    const durable = durableTurnHarness('turn-truncated', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
     });
 
     const events = await drainDurably(backend.send(durable.input()), durable);
@@ -7576,6 +7704,11 @@ describe('AiSdkBackend usage telemetry', () => {
       'error',
       'a stream that never delivered a finish frame did not end the turn',
     );
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
     // And it must say so. A failed terminal whose only trace is the stop reason
     // leaves the session's lastError empty and the request ledger reading
     // `success` — the same silence that let the benchmark cell pass unnoticed.
@@ -7583,6 +7716,10 @@ describe('AiSdkBackend usage telemetry', () => {
       events.some((event) => event.type === 'error'),
       'a failed terminal must be accompanied by an error event',
     );
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+    assert.equal(error?.reason, 'provider_unavailable');
   });
 
   test('says which failed terminal a content filter is', async () => {

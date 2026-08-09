@@ -94,6 +94,7 @@ import type {
   ModelFinishReason,
   ModelMessage,
   ReasoningPart,
+  ModelFailure,
   ModelToolSet,
   NormalizedUsage,
   ModelFailureKind,
@@ -845,6 +846,7 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
+const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -868,6 +870,19 @@ function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
     default:
       return 'unknown';
   }
+}
+
+function isIncompleteProviderFinishReason(reason: ModelFinishReason | undefined): boolean {
+  return reason === undefined || reason === 'other' || reason === 'unknown';
+}
+
+function incompleteProviderStreamFailure(reason: ModelFinishReason | undefined): ModelFailure {
+  return {
+    type: 'model_failure',
+    kind: 'provider_unavailable',
+    retryable: false,
+    message: `Provider stream ended without finishing (${reason ?? 'missing'})`,
+  };
 }
 
 function sleepForProviderRetry(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -2004,6 +2019,7 @@ export class AiSdkBackend implements AgentBackend {
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
+          let incompleteStreamRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
@@ -2020,6 +2036,7 @@ export class AiSdkBackend implements AgentBackend {
             let attemptSawToolActivity = false;
             let attemptSawContinuationMetadata = false;
             let attemptReachedStepBoundary = false;
+            let attemptStreamedFinishReason: ModelFinishReason | undefined;
             const attemptHasNoObservableOutput = () =>
               !attemptSawText &&
               !attemptSawThinking &&
@@ -2088,36 +2105,48 @@ export class AiSdkBackend implements AgentBackend {
                   sawStreamError = true;
                   break;
                 }
-                if (event.kind === 'finish' || event.kind === 'step-finish') {
+                const incompleteFinish =
+                  (event.kind === 'finish' || event.kind === 'step-finish') &&
+                  isIncompleteProviderFinishReason(event.finishReason);
+                if (
+                  (event.kind === 'finish' || event.kind === 'step-finish') &&
+                  !incompleteFinish
+                ) {
                   attemptReachedStepBoundary = true;
                 }
                 if (event.kind === 'step-finish') {
-                  // Step boundary: AI SDK 7 delimits steps with `finish-step`
-                  // (and `step-finish` for legacy replay fixtures); the adapter
-                  // reduces both to this event. A duplicate boundary is harmless:
-                  // the second flush no-ops (accumulators already cleared) and one
-                  // extra id rotation just discards an unused id.
-                  runtimeSteps += 1;
-                  const stepUsage = event.usage;
-                  providerStepUsage = stepUsage;
-                  if (!stepUsage) sawUnusableStepUsage = true;
-                  // Fail closed: reset on every step boundary so a missing final
-                  // step's usage does not leave a stale value from an earlier step.
-                  lastStepInputTokens = stepUsage?.inputTokens;
-                  if (stepUsage) {
-                    completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                    this.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                      this.cumulativeUsageCheckpoint,
-                      stepUsage,
-                    );
-                    await this.input.recordUsageCheckpoint?.({
-                      ...this.cumulativeUsageCheckpoint,
-                      costUsd: this.computeTokenUsageCostUsd(this.cumulativeUsageCheckpoint),
-                    });
+                  // AI SDK can synthesize `finish-step(other)` when the provider
+                  // stream reaches EOF without a terminal frame. That is not a
+                  // completed model step and must not consume the step budget or
+                  // checkpoint imaginary usage before the safe retry below.
+                  if (!incompleteFinish) {
+                    // Step boundary: AI SDK 7 delimits steps with `finish-step`
+                    // (and `step-finish` for legacy replay fixtures); the adapter
+                    // reduces both to this event. A duplicate boundary is harmless:
+                    // the second flush no-ops (accumulators already cleared) and one
+                    // extra id rotation just discards an unused id.
+                    runtimeSteps += 1;
+                    const stepUsage = event.usage;
+                    providerStepUsage = stepUsage;
+                    if (!stepUsage) sawUnusableStepUsage = true;
+                    // Fail closed: reset on every step boundary so a missing final
+                    // step's usage does not leave a stale value from an earlier step.
+                    lastStepInputTokens = stepUsage?.inputTokens;
+                    if (stepUsage) {
+                      completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+                      this.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+                        this.cumulativeUsageCheckpoint,
+                        stepUsage,
+                      );
+                      await this.input.recordUsageCheckpoint?.({
+                        ...this.cumulativeUsageCheckpoint,
+                        costUsd: this.computeTokenUsageCostUsd(this.cumulativeUsageCheckpoint),
+                      });
+                    }
                   }
                 }
                 if (event.kind === 'finish' || event.kind === 'step-finish') {
-                  streamedFinishReason = event.finishReason ?? streamedFinishReason;
+                  attemptStreamedFinishReason = event.finishReason ?? attemptStreamedFinishReason;
                 }
                 if (event.kind === 'text-start') {
                   stepTextPartStartOffset = stepText.length;
@@ -2240,7 +2269,7 @@ export class AiSdkBackend implements AgentBackend {
                     ),
                   } satisfies ToolResultEvent);
                   providerToolInputs.delete(event.toolCallId);
-                } else if (event.kind === 'step-finish') {
+                } else if (event.kind === 'step-finish' && !incompleteFinish) {
                   // The step's text/thinking deltas are all in (the stream is
                   // drained in order), so flush this step's AssistantMessage and
                   // rotate to a fresh id for the next step. Tool settlement
@@ -2270,6 +2299,25 @@ export class AiSdkBackend implements AgentBackend {
             if (!sawStreamError && settledWatchdogTimeout) {
               streamFailure = settledWatchdogTimeout.error;
               sawStreamError = true;
+            }
+
+            let incompleteStreamTerminal = false;
+            let incompleteStreamHasNoObservableOutput = false;
+            if (!sawStreamError) {
+              const settledFinishReason =
+                attemptStreamedFinishReason ?? (await result.finishReason.catch(() => undefined));
+              if (isIncompleteProviderFinishReason(settledFinishReason)) {
+                streamFailure = incompleteProviderStreamFailure(settledFinishReason);
+                sawStreamError = true;
+                incompleteStreamTerminal = true;
+                incompleteStreamHasNoObservableOutput =
+                  !attemptSawText &&
+                  !attemptSawThinking &&
+                  !attemptSawToolActivity &&
+                  !attemptSawContinuationMetadata;
+              } else {
+                streamedFinishReason = settledFinishReason;
+              }
             }
 
             if (sawStreamError && !scope.aborted) {
@@ -2321,11 +2369,15 @@ export class AiSdkBackend implements AgentBackend {
                 settledWatchdogTimeout?.phase === 'idle' &&
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
                 attemptCanRecoverFromIdleTimeout();
+              const incompleteStreamRecovery =
+                incompleteStreamTerminal &&
+                incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
+                incompleteStreamHasNoObservableOutput;
               if (
-                (failure.retryable || idleWatchdogRecovery) &&
+                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                (attemptHasNoObservableOutput() || idleWatchdogRecovery)
+                (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
               ) {
                 if (idleWatchdogRecovery) {
                   idleWatchdogRetryCount += 1;
@@ -2334,14 +2386,16 @@ export class AiSdkBackend implements AgentBackend {
                     currentStepMessageId = this.newId();
                   }
                 }
+                if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
-                const maxAttempts = idleWatchdogRecovery
-                  ? nextAttempt
-                  : MAX_PROVIDER_ATTEMPTS_PER_STEP;
+                const maxAttempts =
+                  idleWatchdogRecovery || incompleteStreamRecovery
+                    ? nextAttempt
+                    : MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
                 queue.push({
                   type: 'provider_retry',
@@ -2687,11 +2741,10 @@ export class AiSdkBackend implements AgentBackend {
           // Two different things arrive here and the message says which: the
           // provider stopping the stream on its own policy, and a stop nothing
           // named at all.
-          const err = new Error(
+          const err =
             finishReason === 'content-filter'
-              ? 'Provider stopped the stream on a content filter'
-              : `Provider stream ended without finishing (${finishReason})`,
-          );
+              ? new Error('Provider stopped the stream on a content filter')
+              : incompleteProviderStreamFailure(finishReason);
           streamStatus = 'error';
           streamErrorClass = this.modelAdapter.classifyError(err);
           queue.push(this.makeErrorEvent(turnId, err));
