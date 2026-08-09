@@ -1864,16 +1864,9 @@ export class ShellRunProcessManager
 
   private reserveSlot(mode: ShellMode): ShellRunSlotReservation {
     // The counters are manager-wide, so the session that hits the cap may own
-    // none of the runs holding it. Hedging on ownership — "stop one of yours
-    // if you started any" — is the wrong hedge, because the caller that most
-    // often hits this cap does not have the tool either. `Bash` reaches this
-    // path from a child agent, and `buildToolsForAgentDefinition` is a strict
-    // name allowlist: the `implementation` definition is granted Read, Glob,
-    // Grep, Write, Edit and Bash, and neither StopBackgroundTask nor
-    // WriteStdin is on any child list. Naming the tool would send that caller
-    // to look for a schema entry it does not have. So the refusal describes
-    // the action instead of naming the tool, and leads with waiting, which is
-    // the one move available to every caller.
+    // none of the runs holding it. Waiting is therefore the only recovery
+    // action available to every caller; stopping one of its own tasks is a
+    // conditional alternative.
     if (this.reservedShellRuns >= this.maxLiveShellRuns) {
       throw new Error(
         `No free background task slot: the runtime is at its limit of ${this.maxLiveShellRuns} ` +

@@ -886,7 +886,7 @@ describe('SessionManager graph operator provisioning', () => {
     const manager = new SessionManager({
       store,
       backends: new BackendRegistry(),
-      childTools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'].map(testTool),
+      childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
       worktreeChildExecutor: {
         isAvailable: async (input) => {
           checkedSources.push(input);
@@ -940,7 +940,7 @@ describe('SessionManager graph operator provisioning', () => {
       runStore,
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
-      childTools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'].map(testTool),
+      childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
       worktreeChildExecutor: {
         isAvailable: async () => true,
         provision: async (input) => {
