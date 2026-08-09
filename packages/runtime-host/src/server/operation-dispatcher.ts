@@ -17,7 +17,7 @@ export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
   surface: ClientSurface;
-  principal: 'local_os_user';
+  principal: string;
   acquireResidency(): OperationResidency;
 }
 

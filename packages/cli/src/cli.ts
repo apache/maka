@@ -11,6 +11,7 @@ export type MakaCliCommand =
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'inspect'; args: string[] }
+  | { kind: 'runtime-host-serve'; rootPath?: string }
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
   | { kind: 'error'; message: string; exitCode: number };
@@ -43,6 +44,7 @@ export function parseMakaCliArgs(argv: string[], version: string): MakaCliComman
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
   if (first === 'inspect') return { kind: 'inspect', args: argv.slice(1) };
+  if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
   return {
     kind: 'error',
     message: `Unexpected argument: ${first ?? ''}`,
@@ -96,6 +98,7 @@ function helpText(): string {
     '  maka -p ...       Alias for maka run',
     '  maka eval ...     Run evaluation and autonomous task commands',
     '  maka inspect ...  Inspect Session, AgentRun, or TaskRun evidence',
+    '  maka runtime-host serve [--root <path>]  Run a local Runtime Host service',
     '',
     'Options:',
     '  -h, --help        Show help',
@@ -130,6 +133,10 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       const { runMakaInspectCli } = await import('./inspect-command.js');
       return runMakaInspectCli(command.args);
     }
+    case 'runtime-host-serve': {
+      const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+      return runRuntimeHostServiceCli(command.rootPath ?? resolveMakaWorkspaceRoot());
+    }
     case 'help':
       process.stdout.write(`${command.text}\n`);
       return 0;
@@ -151,6 +158,30 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       });
     }
   }
+}
+
+function parseRuntimeHostCommand(argv: string[]): MakaCliCommand {
+  if (argv[0] !== 'serve') {
+    return {
+      kind: 'error',
+      message: argv[0]
+        ? `Unexpected runtime-host command: ${argv[0]}`
+        : 'runtime-host requires the serve command',
+      exitCode: 2,
+    };
+  }
+  if (argv[1] === undefined) return { kind: 'runtime-host-serve' };
+  if (argv[1] !== '--root') {
+    return { kind: 'error', message: `Unexpected argument: ${argv[1]}`, exitCode: 2 };
+  }
+  const rootPath = argv[2];
+  if (!rootPath || rootPath.startsWith('-')) {
+    return { kind: 'error', message: '--root requires a directory', exitCode: 2 };
+  }
+  if (argv[3] !== undefined) {
+    return { kind: 'error', message: `Unexpected argument: ${argv[3]}`, exitCode: 2 };
+  }
+  return { kind: 'runtime-host-serve', rootPath };
 }
 
 async function readPackageVersion(): Promise<string> {

@@ -62,8 +62,17 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 10 as const;
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
 // as Session continuity retain their own limits.
-export const RUNTIME_HOST_MAX_FRAME_BYTES = 96 * 1024;
+export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 96 * 1024;
+// Local IPC adds one newline byte around an otherwise transport-independent
+// protocol message.
+export const RUNTIME_HOST_MAX_FRAME_BYTES = RUNTIME_HOST_MAX_MESSAGE_BYTES + 1;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
+
+declare const encodedProtocolMessageBrand: unique symbol;
+
+export type EncodedProtocolMessage = Buffer & {
+  readonly [encodedProtocolMessageBrand]: true;
+};
 
 export type ClientSurface = 'desktop' | 'tui' | 'run' | 'activation' | 'bot' | 'inspect';
 
@@ -251,15 +260,23 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
   };
 }
 
-export function encodeProtocolFrame(value: ClientFrame | HostFrame): Buffer {
-  const encoded = Buffer.from(`${JSON.stringify(value)}\n`, 'utf8');
-  if (encoded.byteLength > RUNTIME_HOST_MAX_FRAME_BYTES) {
+export function encodeProtocolMessage(value: ClientFrame | HostFrame): EncodedProtocolMessage {
+  const encoded = Buffer.from(JSON.stringify(value), 'utf8');
+  if (encoded.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
     throw new RuntimeHostProtocolError(
       'frame_too_large',
-      'Runtime Host frame exceeds the byte limit',
+      'Runtime Host message exceeds the byte limit',
     );
   }
-  return encoded;
+  return encoded as EncodedProtocolMessage;
+}
+
+export function encodeProtocolFrame(value: ClientFrame | HostFrame): Buffer {
+  return frameProtocolMessage(encodeProtocolMessage(value));
+}
+
+export function frameProtocolMessage(message: EncodedProtocolMessage): Buffer {
+  return Buffer.concat([message, Buffer.from('\n')]);
 }
 
 export class ProtocolFrameDecoder {
@@ -273,14 +290,10 @@ export class ProtocolFrameDecoder {
       const newline = chunk.indexOf(0x0a, offset);
       const end = newline === -1 ? chunk.byteLength : newline;
       const segment = Buffer.from(chunk.subarray(offset, end));
-      const delimiterBytes = newline === -1 ? 0 : 1;
-      if (
-        this.#pending.byteLength + segment.byteLength + delimiterBytes >
-        RUNTIME_HOST_MAX_FRAME_BYTES
-      ) {
+      if (this.#pending.byteLength + segment.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
         throw new RuntimeHostProtocolError(
           'frame_too_large',
-          'Runtime Host frame exceeds the byte limit',
+          'Runtime Host message exceeds the byte limit',
         );
       }
       if (segment.byteLength > 0) this.#pending = Buffer.concat([this.#pending, segment]);

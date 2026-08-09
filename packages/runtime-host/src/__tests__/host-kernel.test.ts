@@ -73,6 +73,28 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
+  test('service lifecycle remains ready until explicitly closed', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        idleGraceMs: 0,
+      });
+
+      await sleep(25);
+      assert.equal(host.state, 'ready');
+      assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+
+      await host.close();
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor.close();
+    });
+  });
+
   test('elects one owner, serves status and diagnostics, and releases ownership after true-idle shutdown', async () => {
     await withHostPaths(async (paths) => {
       const winner = await startTestRuntimeHostCandidate(paths, {

@@ -11,7 +11,9 @@ import {
 import { readHostRegistration, RuntimeHostRegistrationError } from '../control/registration.js';
 import {
   decodeHostFrame,
+  encodeProtocolMessage,
   isClientCapabilityHostFrameKind,
+  type ClientFrame,
   type ClientCapabilityHostFrame,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
@@ -68,6 +70,7 @@ import {
   validateProtocolRange,
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import type { OperationSpec } from '../protocol/operation-spec.js';
 import {
   ClientSessionSubscription,
@@ -258,7 +261,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly connectionId: string;
   readonly selectedProtocol: number;
   readonly closed: Promise<void>;
-  readonly #transport: FramedTransport;
+  readonly #transport: RuntimeHostMessageTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
   readonly #retiredRequests = new Map<string, RetiredRequest>();
   readonly #queuedDomainFrames: QueuedDomainFrame[] = [];
@@ -275,7 +278,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #onLivenessProbe: (() => void) | undefined;
 
   constructor(
-    transport: FramedTransport,
+    transport: RuntimeHostMessageTransport,
     accepted: {
       hostEpoch: string;
       connectionId: string;
@@ -293,7 +296,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.selectedProtocol = accepted.selectedProtocol;
     this.closed = this.#transport.closed;
     this.#clientCapabilities = new ClientCapabilityChannel({
-      write: (frame) => this.#transport.write(frame),
+      write: (frame) => writeClientFrame(this.#transport, frame),
       replace: (input, timeoutMs) =>
         this.#requestOperation(
           'client.capability.replace',
@@ -389,7 +392,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       this.#queuedDomainFrames.push({ requestId, frame });
       this.#drainDomainRequests();
     } else {
-      void this.#transport.write(frame).catch((error: unknown) => this.#fail(asError(error)));
+      void writeClientFrame(this.#transport, frame).catch((error: unknown) =>
+        this.#fail(asError(error)),
+      );
     }
     return result;
   }
@@ -405,9 +410,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       if (!pending || pending.domainState !== 'queued') continue;
       pending.domainState = 'in_flight';
       this.#inFlightDomainRequests += 1;
-      void this.#transport
-        .write(queued.frame)
-        .catch((error: unknown) => this.#fail(asError(error)));
+      void writeClientFrame(this.#transport, queued.frame).catch((error: unknown) =>
+        this.#fail(asError(error)),
+      );
     }
   }
 
@@ -549,7 +554,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   async close(): Promise<void> {
     this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
-    this.#transport.destroy();
+    this.#transport.abort();
     await this.#transport.closed;
   }
 
@@ -845,7 +850,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#clientCapabilities.close(error);
     this.#configurationChangeListeners.clear();
     this.#sessionCatalogChangeListeners.clear();
-    this.#transport.destroy();
+    this.#transport.abort();
   }
 }
 
@@ -985,7 +990,7 @@ export async function connectResolvedRuntimeHost(
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
   const handshakeBudget = remainingTimeout(handshakeDeadline.at);
   if (handshakeBudget === undefined) {
-    transport.destroy();
+    transport.abort();
     if (handshakeDeadline.exhaustsElection) {
       return { kind: 'election_deadline_elapsed', endpointConnected: true };
     }
@@ -996,7 +1001,7 @@ export async function connectResolvedRuntimeHost(
     handshakeTimeoutError = handshakeDeadline.exhaustsElection
       ? new ElectionDeadlineElapsedError()
       : new Error('Timed out handshaking with Runtime Host');
-    transport.destroy(handshakeTimeoutError);
+    transport.abort(handshakeTimeoutError);
   }, handshakeBudget);
   try {
     const staleCompatibility = registration.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH;
@@ -1006,7 +1011,7 @@ export async function connectResolvedRuntimeHost(
           max: Math.min(Number.MAX_SAFE_INTEGER, registration.protocolMax + 1),
         }
       : input.protocol;
-    await transport.write({
+    await writeClientFrame(transport, {
       kind: 'hello',
       clientInstanceId: input.clientInstanceId,
       surface: input.surface,
@@ -1031,7 +1036,7 @@ export async function connectResolvedRuntimeHost(
       throw new Error('Runtime Host returned a non-handshake frame before acceptance');
     }
     if (handshake.hostEpoch !== registration.hostEpoch) {
-      transport.destroy();
+      transport.abort();
       return { kind: 'unavailable', reason: 'epoch_mismatch', registration };
     }
     if (handshake.kind === 'accepted') {
@@ -1055,11 +1060,11 @@ export async function connectResolvedRuntimeHost(
         }),
       };
     }
-    transport.destroy();
+    transport.abort();
     if (handshake.kind === 'incompatible') return { kind: 'incompatible', handshake, registration };
     return { kind: 'draining', registration };
   } catch (error) {
-    transport.destroy();
+    transport.abort();
     const failure = handshakeTimeoutError ?? error;
     if (failure instanceof ElectionDeadlineElapsedError) {
       return { kind: 'election_deadline_elapsed', endpointConnected: true };
@@ -1158,6 +1163,17 @@ function readRegistrationBeforeDeadline(
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function writeClientFrame(
+  transport: RuntimeHostMessageTransport,
+  frame: ClientFrame,
+): Promise<void> {
+  try {
+    return transport.write(encodeProtocolMessage(frame));
+  } catch (error) {
+    return Promise.reject(error);
+  }
 }
 
 function requestTimeoutError(operation: OperationKey): RuntimeHostTransportError {

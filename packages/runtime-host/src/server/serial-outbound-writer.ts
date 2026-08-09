@@ -1,11 +1,15 @@
-import { encodeProtocolFrame, type HostFrame } from '../protocol/index.js';
-import type { FramedTransport } from '../transport/framed-transport.js';
+import {
+  encodeProtocolMessage,
+  type EncodedProtocolMessage,
+  type HostFrame,
+} from '../protocol/index.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 
 const MAX_QUEUED_FRAMES = 64;
 const MAX_QUEUED_BYTES = 2 * 1024 * 1024;
 
 interface QueuedFrame {
-  encoded: Buffer;
+  message: EncodedProtocolMessage;
   resolve(): void;
   reject(error: Error): void;
 }
@@ -26,7 +30,7 @@ export class RuntimeHostOutboundQueueError extends Error {
 }
 
 export class BoundedSerialOutboundWriter {
-  readonly #transport: FramedTransport;
+  readonly #transport: RuntimeHostMessageTransport;
   readonly #onFailure: () => void;
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
@@ -34,7 +38,7 @@ export class BoundedSerialOutboundWriter {
   #drainTask: Promise<void> | undefined;
   #closed = false;
 
-  constructor(transport: FramedTransport, onFailure: () => void) {
+  constructor(transport: RuntimeHostMessageTransport, onFailure: () => void) {
     this.#transport = transport;
     this.#onFailure = onFailure;
   }
@@ -44,9 +48,9 @@ export class BoundedSerialOutboundWriter {
       throw new Error('Runtime Host outbound writer is closed');
     }
 
-    let encoded: Buffer;
+    let message: EncodedProtocolMessage;
     try {
-      encoded = encodeProtocolFrame(frame);
+      message = encodeProtocolMessage(frame);
     } catch (error) {
       const failure = asError(error);
       this.#fail(failure);
@@ -57,15 +61,15 @@ export class BoundedSerialOutboundWriter {
       this.#fail(failure);
       throw failure;
     }
-    if (this.#queuedBytes + encoded.byteLength > MAX_QUEUED_BYTES) {
+    if (this.#queuedBytes + message.byteLength > MAX_QUEUED_BYTES) {
       const failure = new RuntimeHostOutboundQueueError('byte_limit');
       this.#fail(failure);
       throw failure;
     }
 
     const flushed = new Promise<void>((resolve, reject) => {
-      this.#queue.push({ encoded, resolve, reject });
-      this.#queuedBytes += encoded.byteLength;
+      this.#queue.push({ message, resolve, reject });
+      this.#queuedBytes += message.byteLength;
       if (!this.#writing) {
         this.#writing = true;
         this.#drainTask = this.#drain();
@@ -93,14 +97,14 @@ export class BoundedSerialOutboundWriter {
         const queued = this.#queue[0];
         if (!queued) return;
         try {
-          await this.#transport.writeEncoded(queued.encoded);
+          await this.#transport.write(queued.message);
         } catch (error) {
           this.#fail(asError(error));
           return;
         }
         if (this.#closed) return;
         this.#queue.shift();
-        this.#queuedBytes -= queued.encoded.byteLength;
+        this.#queuedBytes -= queued.message.byteLength;
         queued.resolve();
       }
     } catch (error) {

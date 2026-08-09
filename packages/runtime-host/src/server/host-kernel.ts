@@ -1,15 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { createServer, type Server, type Socket } from 'node:net';
 import { arch as osArch, release as osRelease } from 'node:os';
 import {
   assertInteractiveRootOwner,
   authenticateInteractiveRootOwner,
   type InteractiveRootOwner,
 } from '@maka/storage/root-authority';
-import { prepareRuntimeHostEndpoint, type RuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
   decodeClientFrame,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
   negotiateProtocol,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -23,7 +22,7 @@ import {
   type HostStatusResult,
   type RequestFrame,
 } from '../protocol/index.js';
-import { FramedTransport } from '../transport/framed-transport.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import {
   RuntimeHostConnectionSession,
   type ConnectionOperationLease,
@@ -40,6 +39,12 @@ import type { ClientCapabilityService } from './client-capability-service.js';
 import type { HostConfigurationChangeService } from './configuration-change-service.js';
 import { runtimeHostLogBuffer } from '../process-diagnostics.js';
 import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
+import {
+  startLocalRuntimeHostListenerSet,
+  type RuntimeHostListenerConnection,
+  type RuntimeHostListenerSet,
+  type RuntimeHostListenerSetFactory,
+} from './listener-set.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -89,27 +94,31 @@ export type RuntimeHostCompositionFactory = (
 
 export interface RuntimeHostKernelOptions {
   owner: InteractiveRootOwner;
+  lifecycleMode?: RuntimeHostLifecycleMode;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
   compositionFactory?: RuntimeHostCompositionFactory;
+  listenerSetFactory?: RuntimeHostListenerSetFactory;
 }
+
+export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
 
 export class RuntimeHostKernel {
   readonly hostEpoch = randomUUID();
   readonly closed: Promise<void>;
   readonly #options: RuntimeHostKernelOptions;
   readonly #createdAt = new Date().toISOString();
-  readonly #server: Server;
-  readonly #handshakingTransports = new Set<FramedTransport>();
-  readonly #acceptedTransports = new Set<FramedTransport>();
+  readonly #handshakingTransports = new Set<RuntimeHostMessageTransport>();
+  readonly #acceptedTransports = new Set<RuntimeHostMessageTransport>();
   readonly #connectionSessions = new Set<RuntimeHostConnectionSession>();
   readonly #operationDrainWaiters = new Set<() => void>();
   readonly #residencyDrainWaiters = new Set<() => void>();
+  readonly #lifecycleMode: RuntimeHostLifecycleMode;
   readonly #idleGraceMs: number;
   readonly #handshakeTimeoutMs: number;
   readonly #shutdownGraceMs: number;
-  #endpoint: RuntimeHostEndpoint | undefined;
+  #listeners: RuntimeHostListenerSet | undefined;
   #state: HostLifecycleState = 'starting';
   #activeOperations = 0;
   #activeCommandOperations = 0;
@@ -128,6 +137,7 @@ export class RuntimeHostKernel {
   #rejectClosed!: (error: unknown) => void;
 
   private constructor(options: RuntimeHostKernelOptions) {
+    assertLifecycleMode(options.lifecycleMode ?? 'ephemeral');
     assertDuration(options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS, 'idleGraceMs', 0);
     assertDuration(
       options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
@@ -136,6 +146,7 @@ export class RuntimeHostKernel {
     );
     assertDuration(options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS, 'shutdownGraceMs', 1);
     this.#idleGraceMs = options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
+    this.#lifecycleMode = options.lifecycleMode ?? 'ephemeral';
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.#shutdownGraceMs = options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.#options = options;
@@ -146,7 +157,6 @@ export class RuntimeHostKernel {
       this.#resolveClosed = resolve;
       this.#rejectClosed = reject;
     });
-    this.#server = createServer({ allowHalfOpen: true }, (socket) => this.#accept(socket));
   }
 
   static async start(options: RuntimeHostKernelOptions): Promise<RuntimeHostKernel> {
@@ -155,16 +165,18 @@ export class RuntimeHostKernel {
     try {
       host = new RuntimeHostKernel({
         owner,
+        lifecycleMode: options.lifecycleMode,
         idleGraceMs: options.idleGraceMs,
         handshakeTimeoutMs: options.handshakeTimeoutMs,
         shutdownGraceMs: options.shutdownGraceMs,
         compositionFactory: options.compositionFactory,
+        listenerSetFactory: options.listenerSetFactory,
       });
       await host.#start();
       return host;
     } catch (error) {
       if (host) {
-        if (host.#endpoint) {
+        if (host.#listeners) {
           host.#requestDrain();
           try {
             await host.closed;
@@ -186,8 +198,8 @@ export class RuntimeHostKernel {
   }
 
   get endpoint(): string {
-    if (!this.#endpoint) throw new Error('Runtime Host has not started listening');
-    return this.#endpoint.path;
+    if (!this.#listeners) throw new Error('Runtime Host has not started listening');
+    return this.#listeners.localEndpoint;
   }
 
   get connectionCount(): number {
@@ -211,12 +223,11 @@ export class RuntimeHostKernel {
 
   async #start(): Promise<void> {
     await assertInteractiveRootOwner(this.#options.owner);
-    this.#endpoint = await prepareRuntimeHostEndpoint({
+    this.#listeners = await (this.#options.listenerSetFactory ?? startLocalRuntimeHostListenerSet)({
       rootId: this.#options.owner.capability.rootId,
       hostEpoch: this.hostEpoch,
+      accept: (connection) => this.#accept(connection),
     });
-    await listen(this.#server, this.#endpoint.path);
-    await this.#endpoint.prepareAfterListen();
     await this.#publishRegistration();
     const compositionFactory = this.#options.compositionFactory;
     if (compositionFactory) {
@@ -254,15 +265,16 @@ export class RuntimeHostKernel {
     this.#scheduleIdleIfNeeded();
   }
 
-  #accept(socket: Socket): void {
-    const transport = new FramedTransport(socket);
+  #accept(connection: RuntimeHostListenerConnection): void {
+    const { transport } = connection;
     this.#handshakingTransports.add(transport);
-    void this.#serveConnection(transport).finally(() => {
+    void this.#serveConnection(connection).finally(() => {
       this.#handshakingTransports.delete(transport);
     });
   }
 
-  async #serveConnection(transport: FramedTransport): Promise<void> {
+  async #serveConnection(connection: RuntimeHostListenerConnection): Promise<void> {
+    const { authority, transport } = connection;
     let transportReleased = false;
     let connectionId: string | undefined;
     const releaseTransport = () => {
@@ -277,9 +289,9 @@ export class RuntimeHostKernel {
       }
       const result = await this.#admitHandshake(frame, transport);
       connectionId = result.kind === 'accepted' ? result.connectionId : undefined;
-      await transport.write(result);
+      await transport.write(encodeProtocolMessage(result));
       if (result.kind !== 'accepted') {
-        transport.destroyAfterFlush();
+        transport.closeAfterFlush();
         return;
       }
       const session = new RuntimeHostConnectionSession({
@@ -287,8 +299,9 @@ export class RuntimeHostKernel {
         connection: {
           hostEpoch: this.hostEpoch,
           connectionId: result.connectionId,
+          clientInstanceId: frame.clientInstanceId,
           surface: frame.surface,
-          principal: 'local_os_user',
+          authority,
         },
         resolveHandlers: () => this.#operationHandlers,
         resolveContinuity: () => this.#composition?.continuity,
@@ -305,7 +318,7 @@ export class RuntimeHostKernel {
         this.#connectionSessions.delete(session);
       }
     } catch {
-      transport.destroy();
+      transport.abort();
     } finally {
       try {
         if (connectionId) this.#composition?.releaseConnection?.(connectionId);
@@ -317,7 +330,7 @@ export class RuntimeHostKernel {
 
   async #admitHandshake(
     hello: ClientHello,
-    transport: FramedTransport,
+    transport: RuntimeHostMessageTransport,
   ): Promise<HostHandshakeResult> {
     const admittedState = await this.#readAdmissionState();
     if (!admittedState) {
@@ -354,7 +367,7 @@ export class RuntimeHostKernel {
     };
   }
 
-  #releaseConnection(transport: FramedTransport): void {
+  #releaseConnection(transport: RuntimeHostMessageTransport): void {
     if (!this.#acceptedTransports.delete(transport)) {
       throw new Error('Runtime Host connection residency underflow');
     }
@@ -515,6 +528,7 @@ export class RuntimeHostKernel {
   }
 
   #scheduleIdleIfNeeded(): void {
+    if (this.#lifecycleMode === 'service') return;
     if (this.#shutdownRequested) return;
     if (!this.#isTrueIdle() || this.#idleTimer) return;
     this.#idleTimer = setTimeout(() => {
@@ -603,7 +617,9 @@ export class RuntimeHostKernel {
     // shutdown deadline may expire while publishing the draining registration;
     // leaving the listener open in that case strands an unreachable, ref'ed
     // server until the process is forcibly terminated.
-    const serverClosed = closeServer(this.#server).catch((error: unknown) => errors.push(error));
+    const listenerClosed = this.#listeners
+      ?.closeAdmission()
+      .catch((error: unknown) => errors.push(error));
     await this.#publishRegistration().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
     const accepted = [...this.#acceptedTransports];
@@ -615,9 +631,9 @@ export class RuntimeHostKernel {
     ]);
     this.#assertShutdownCanContinue();
     if (!operationsDrained) {
-      for (const transport of accepted) transport.destroy();
+      for (const transport of accepted) transport.abort();
     }
-    for (const transport of handshaking) transport.destroy();
+    for (const transport of handshaking) transport.abort();
     await operationDrain;
     this.#assertShutdownCanContinue();
     await this.#compositionStartup;
@@ -626,10 +642,10 @@ export class RuntimeHostKernel {
     this.#assertShutdownCanContinue();
     await this.#waitForResidencies();
     this.#assertShutdownCanContinue();
-    for (const transport of accepted) transport.destroy();
-    await serverClosed;
+    for (const transport of accepted) transport.abort();
+    await listenerClosed;
     this.#assertShutdownCanContinue();
-    await this.#endpoint?.cleanup().catch((error: unknown) => errors.push(error));
+    await this.#listeners?.cleanup().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       (error: unknown) => errors.push(error),
@@ -647,10 +663,10 @@ export class RuntimeHostKernel {
 
   async #abortStartup(): Promise<void> {
     this.#state = 'draining';
-    for (const transport of this.#handshakingTransports) transport.destroy();
-    for (const transport of this.#acceptedTransports) transport.destroy();
-    await closeServer(this.#server).catch(() => undefined);
-    await this.#endpoint?.cleanup().catch(() => undefined);
+    for (const transport of this.#handshakingTransports) transport.abort();
+    for (const transport of this.#acceptedTransports) transport.abort();
+    await this.#listeners?.closeAdmission().catch(() => undefined);
+    await this.#listeners?.cleanup().catch(() => undefined);
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       () => undefined,
     );
@@ -676,34 +692,8 @@ export class RuntimeHostKernel {
   }
 }
 
-function listen(server: Server, path: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onError = (error: Error) => {
-      server.off('listening', onListening);
-      reject(error);
-    };
-    const onListening = () => {
-      server.off('error', onError);
-      resolve();
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(path);
-  });
-}
-
-function closeServer(server: Server): Promise<void> {
-  if (!server.listening) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
 async function waitForTransportClose(
-  transports: readonly FramedTransport[],
+  transports: readonly RuntimeHostMessageTransport[],
   timeoutMs: number,
 ): Promise<void> {
   if (transports.length === 0) return;
@@ -733,5 +723,11 @@ async function waitForBoundedCompletion(
 function assertDuration(value: number, label: string, minimum: 0 | 1): void {
   if (!Number.isSafeInteger(value) || value < minimum || value > 120_000) {
     throw new RangeError(`${label} must be an integer between ${minimum} and 120000`);
+  }
+}
+
+function assertLifecycleMode(value: unknown): asserts value is RuntimeHostLifecycleMode {
+  if (value !== 'ephemeral' && value !== 'service') {
+    throw new TypeError('Runtime Host lifecycleMode must be ephemeral or service');
   }
 }

@@ -13,6 +13,19 @@ describe('Maka CLI args', () => {
         { kind: 'eval', args: ['task-run', 'inspect', 'run-1'] },
       ],
       [['inspect', 'run-1', '--json'], { kind: 'inspect', args: ['run-1', '--json'] }],
+      [['runtime-host', 'serve'], { kind: 'runtime-host-serve' }],
+      [
+        ['runtime-host', 'serve', '--root', '/srv/maka'],
+        { kind: 'runtime-host-serve', rootPath: '/srv/maka' },
+      ],
+      [
+        ['runtime-host'],
+        { kind: 'error', message: 'runtime-host requires the serve command', exitCode: 2 },
+      ],
+      [
+        ['runtime-host', 'serve', '--root'],
+        { kind: 'error', message: '--root requires a directory', exitCode: 2 },
+      ],
       [['run', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
       [['-p', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
       [['--version'], { kind: 'version', text: '0.1.0' }],

@@ -6,7 +6,7 @@ import {
   type HostOperationErrorCode,
   type RequestFrame,
 } from '../protocol/index.js';
-import type { FramedTransport } from '../transport/framed-transport.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import {
   dispatchOperation,
   operationFailureResponse,
@@ -32,8 +32,12 @@ import type {
   HostSessionCatalogChangeService,
   SessionCatalogChangeConnection,
 } from './session-catalog-change-service.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 
-type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency'>;
+type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency' | 'principal'> & {
+  readonly clientInstanceId: string;
+  readonly authority: RuntimeHostConnectionAuthority;
+};
 
 export interface ConnectionOperationLease {
   acquireResidency(): OperationResidency;
@@ -42,7 +46,7 @@ export interface ConnectionOperationLease {
 }
 
 export interface RuntimeHostConnectionSessionOptions {
-  transport: FramedTransport;
+  transport: RuntimeHostMessageTransport;
   connection: AcceptedConnectionContext;
   resolveHandlers(): OperationHandlerMap;
   resolveContinuity(): SessionContinuityService | undefined;
@@ -109,7 +113,7 @@ export class RuntimeHostConnectionSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#writer.close();
-    this.#options.transport.destroyAfterFlush();
+    this.#options.transport.closeAfterFlush();
     this.#options.onTeardown();
   }
 
@@ -180,6 +184,7 @@ export class RuntimeHostConnectionSession {
       }
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
+        principal: this.#options.connection.authority.principalId,
         acquireResidency: () => admission.acquireResidency(),
       });
       admission.seal();
@@ -309,7 +314,7 @@ export class RuntimeHostConnectionSession {
     this.#detachConfigurationChanges();
     this.#detachSessionCatalogChanges();
     this.#writer.close();
-    this.#options.transport.destroy();
+    this.#options.transport.abort();
     this.#options.onTeardown();
   }
 }

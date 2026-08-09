@@ -1,5 +1,5 @@
 import {
-  encodeProtocolFrame,
+  encodeProtocolMessage,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
@@ -298,7 +298,7 @@ export class ClientSessionSubscription
       waiting.resolve({ done: false, value: frame });
       return;
     }
-    const encodedBytes = encodeProtocolFrame(frame).byteLength;
+    const encodedBytes = encodeProtocolMessage(frame).byteLength;
     if (
       this.#queue.length >= MAX_CLIENT_QUEUED_FRAMES ||
       this.#queuedBytes + encodedBytes > MAX_CLIENT_QUEUED_BYTES

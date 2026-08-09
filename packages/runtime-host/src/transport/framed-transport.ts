@@ -1,12 +1,15 @@
 import type { Socket } from 'node:net';
 import {
-  encodeProtocolFrame,
+  encodeProtocolMessage,
+  frameProtocolMessage,
   ProtocolFrameDecoder,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
   type ClientFrame,
+  type EncodedProtocolMessage,
   type HostFrame,
 } from '../protocol/index.js';
+import type { RuntimeHostMessageTransport } from './message-transport.js';
 
 const MAX_QUEUED_FRAMES = 64;
 const MAX_QUEUED_BYTES = 2 * 1024 * 1024;
@@ -39,7 +42,7 @@ export class RuntimeHostTransportError extends Error {
   }
 }
 
-export class FramedTransport {
+export class FramedTransport implements RuntimeHostMessageTransport {
   readonly closed: Promise<void>;
   readonly #decoder = new ProtocolFrameDecoder();
   readonly #queue: QueuedFrame[] = [];
@@ -106,9 +109,12 @@ export class FramedTransport {
     });
   }
 
-  write(frame: ClientFrame | HostFrame): Promise<void> {
+  write(message: EncodedProtocolMessage): Promise<void>;
+  write(frame: ClientFrame | HostFrame): Promise<void>;
+  write(input: EncodedProtocolMessage | ClientFrame | HostFrame): Promise<void> {
     try {
-      return this.writeEncoded(encodeProtocolFrame(frame));
+      const message = Buffer.isBuffer(input) ? input : encodeProtocolMessage(input);
+      return this.writeEncoded(frameProtocolMessage(message));
     } catch (error) {
       return Promise.reject(error);
     }
@@ -124,12 +130,20 @@ export class FramedTransport {
     });
   }
 
-  destroyAfterFlush(): void {
+  closeAfterFlush(): void {
     this.socket.destroySoon();
   }
 
-  destroy(error?: Error): void {
+  abort(error?: Error): void {
     this.socket.destroy(error);
+  }
+
+  destroyAfterFlush(): void {
+    this.closeAfterFlush();
+  }
+
+  destroy(error?: Error): void {
+    this.abort(error);
   }
 
   #receive(chunk: Buffer): void {
@@ -149,10 +163,10 @@ export class FramedTransport {
       while (true) {
         const newline = this.#buffered.indexOf(0x0a);
         if (newline === -1) {
-          if (this.#buffered.byteLength > RUNTIME_HOST_MAX_FRAME_BYTES) {
+          if (this.#buffered.byteLength > RUNTIME_HOST_MAX_MESSAGE_BYTES) {
             throw new RuntimeHostProtocolError(
               'frame_too_large',
-              'Runtime Host frame exceeds the byte limit',
+              'Runtime Host message exceeds the byte limit',
             );
           }
           break;

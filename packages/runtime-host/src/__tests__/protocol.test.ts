@@ -9,12 +9,14 @@ import {
   decodeSessionMessageQueueProjection,
   decodeSessionContinuitySnapshot,
   encodeProtocolFrame,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_MAX_ENTRIES,
   negotiateProtocol,
   ProtocolFrameDecoder,
   RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -1561,7 +1563,28 @@ describe('Runtime Host bootstrap protocol', () => {
   test('rejects a frame before buffering more than the byte cap', () => {
     const decoder = new ProtocolFrameDecoder();
     assert.throws(
-      () => decoder.push(Buffer.alloc(RUNTIME_HOST_MAX_FRAME_BYTES + 1, 0x61)),
+      () => decoder.push(Buffer.alloc(RUNTIME_HOST_MAX_MESSAGE_BYTES + 1, 0x61)),
+      (error: unknown) =>
+        error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
+    );
+  });
+
+  test('bounds protocol messages independently from Local IPC framing', () => {
+    const empty = { kind: 'draining', hostEpoch: '' } as const;
+    const overhead = Buffer.byteLength(JSON.stringify(empty), 'utf8');
+    const value = {
+      ...empty,
+      hostEpoch: 'x'.repeat(RUNTIME_HOST_MAX_MESSAGE_BYTES - overhead),
+    };
+    const message = encodeProtocolMessage(value);
+    const frame = encodeProtocolFrame(value);
+
+    assert.equal(message.byteLength, RUNTIME_HOST_MAX_MESSAGE_BYTES);
+    assert.notEqual(message.at(-1), 0x0a);
+    assert.equal(frame.byteLength, RUNTIME_HOST_MAX_FRAME_BYTES);
+    assert.equal(frame.at(-1), 0x0a);
+    assert.throws(
+      () => encodeProtocolMessage({ ...value, hostEpoch: `${value.hostEpoch}x` }),
       (error: unknown) =>
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );

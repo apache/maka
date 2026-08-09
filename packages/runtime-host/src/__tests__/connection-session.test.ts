@@ -21,6 +21,7 @@ import {
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { RuntimeHostKernel, type RuntimeHostComposition } from '../server/index.js';
+import { LOCAL_OWNER_CONNECTION_AUTHORITY } from '../server/connection-authority.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
 import {
   createUnavailableDomainOperationHandlers,
@@ -41,6 +42,16 @@ const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
+
+function acceptedConnection(connectionId: string) {
+  return {
+    hostEpoch: 'host-epoch',
+    connectionId,
+    clientInstanceId: 'test-client',
+    surface: 'tui' as const,
+    authority: LOCAL_OWNER_CONNECTION_AUTHORITY,
+  };
+}
 
 type TurnQueryHandler = RuntimeHostComposition['handlers']['turn.query'];
 
@@ -354,12 +365,7 @@ test('connection reset while operation admission is pending does not execute the
   };
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: 'pending-admission',
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection('pending-admission'),
     resolveHandlers: () => handlers,
     resolveContinuity: () => undefined,
     beginOperation: async () => {
@@ -604,12 +610,7 @@ test('an in-flight status does not consume the final domain request slot', async
   };
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: 'status-before-final-domain-client',
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection('status-before-final-domain-client'),
     resolveHandlers: () => handlers,
     resolveContinuity: () => undefined,
     beginOperation: async () => ({
@@ -700,12 +701,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
   };
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: 'shared-subscription-connection',
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection('shared-subscription-connection'),
     resolveHandlers: () => handlers,
     resolveContinuity: () => coordinator,
     beginOperation: async () => ({
@@ -917,12 +913,7 @@ async function openHalfClosedDispatchedSession(
   let teardownCalls = 0;
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
-    connection: {
-      hostEpoch: 'host-epoch',
-      connectionId: `${turnId}-client`,
-      surface: 'tui',
-      principal: 'local_os_user',
-    },
+    connection: acceptedConnection(`${turnId}-client`),
     resolveHandlers: () => ({
       'host.status': async () => ({
         ok: true,

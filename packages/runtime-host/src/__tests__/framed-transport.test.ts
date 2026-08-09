@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { createServer, Socket, type Server } from 'node:net';
 import { test } from 'node:test';
-import { RUNTIME_HOST_MAX_FRAME_BYTES, RuntimeHostProtocolError } from '../protocol/index.js';
+import {
+  encodeProtocolMessage,
+  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RuntimeHostProtocolError,
+} from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 
 test('drains clean half-open input before reporting typed read EOF', async () => {
@@ -90,6 +94,17 @@ test('returns a rejected Promise for an oversized outbound frame', async () => {
       (error: unknown) =>
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );
+  });
+});
+
+test('adds Local IPC framing to an encoded protocol message', async () => {
+  await withSocketPair(async (transport, peer) => {
+    const message = encodeProtocolMessage({ kind: 'draining', hostEpoch: 'host-1' });
+    const received = readSocket(peer, message.byteLength + 1);
+
+    await transport.write(message);
+
+    assert.deepEqual(await received, Buffer.concat([message, Buffer.from('\n')]));
   });
 });
 
