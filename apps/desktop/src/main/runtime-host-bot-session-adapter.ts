@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import type { StoredMessage } from '@maka/core/session';
+import { foldRuntimeHostAssistantDelta } from '@maka/runtime-host/adapter';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
@@ -9,19 +10,16 @@ import type {
   BotSessionAdapter,
   BotSessionTurnResult,
 } from './bot-session-adapter.js';
-import { BotSessionUnavailableError } from './bot-session-adapter.js';
 import {
   DesktopRuntimeHostClientError,
   type DesktopRuntimeHostClient,
 } from './runtime-host-client.js';
-import { foldRuntimeHostAssistantDelta } from '@maka/runtime-host/adapter';
 
 type RuntimeHostBotSessionClient = Pick<
   DesktopRuntimeHostClient,
-  | 'createSession'
-  | 'getSession'
+  | 'reconcileExternalConversation'
   | 'openSession'
-  | 'startTurn'
+  | 'submitMessage'
   | 'updateSessionConfiguration'
 >;
 
@@ -37,74 +35,68 @@ export interface RuntimeHostBotSessionAdapterDeps {
     sessionId: string,
     extra?: { readonly turnId?: string },
   ): void;
-  newId?: () => string;
 }
 
 export function createRuntimeHostBotSessionAdapter(
   deps: RuntimeHostBotSessionAdapterDeps,
 ): BotSessionAdapter {
-  const newId = deps.newId ?? randomUUID;
-
   return {
-    async createSession(input) {
-      const target = await deps.resolveCreateTarget();
-      const sessionId = newId();
-      let session: SessionCatalogProjection;
-      try {
-        session = await deps.client.createSession({
-          sessionId,
-          workspace: target.workspace,
-          name: input.name,
-          labels: [...input.labels],
-          modelTarget: { kind: 'default' },
-          permissionMode: 'explore',
+    async resolveSession(input) {
+      let outcome = await deps.client.reconcileExternalConversation({
+        kind: 'resolve',
+        conversationId: input.conversationId,
+      });
+      if (outcome.kind === 'create_required') {
+        const target = await deps.resolveCreateTarget();
+        outcome = await deps.client.reconcileExternalConversation({
+          kind: 'resolve',
+          conversationId: input.conversationId,
+          session: {
+            workspace: target.workspace,
+            name: input.name,
+            labels: [...input.labels],
+            modelTarget: { kind: 'default' },
+          },
         });
-      } catch (error) {
-        if (
-          !(error instanceof RuntimeHostOperationError) ||
-          error.code !== 'commit_outcome_unknown'
-        ) {
+      }
+      if (outcome.kind !== 'resolved') {
+        throw new Error('Runtime Host returned an invalid external-conversation resolution');
+      }
+      if ('kind' in outcome.session) {
+        throw new Error('Runtime Host bound an external conversation to a legacy Session');
+      }
+      let session: SessionCatalogProjection = outcome.session;
+      let permissionUpdated = false;
+      if (session.permissionMode !== 'explore') {
+        try {
+          session = await deps.client.updateSessionConfiguration(session.id, {
+            permissionMode: 'explore',
+          });
+          permissionUpdated = true;
+        } catch (error) {
+          if (isPermissionUpdateRefusal(error)) return { kind: 'permission_refused' };
           throw error;
         }
-        const reconciled = await deps.client.getSession(sessionId);
-        if (!reconciled) throw error;
-        session = reconciled;
       }
-      deps.emitSessionsChanged('created', session.id);
-      return session.id;
+      if (session.permissionMode !== 'explore') return { kind: 'permission_refused' };
+      if (outcome.disposition === 'created') deps.emitSessionsChanged('created', session.id);
+      else if (permissionUpdated) deps.emitSessionsChanged('updated', session.id);
+      return { kind: 'ready', sessionId: session.id };
     },
 
-    async prepareSession(sessionId) {
-      let session: SessionCatalogProjection | null;
-      try {
-        session = await deps.client.getSession(sessionId);
-      } catch (error) {
-        throwUnavailable(error, sessionId);
-        throw error;
+    async releaseConversation(input) {
+      const outcome = await deps.client.reconcileExternalConversation({
+        kind: 'release',
+        conversationId: input.conversationId,
+        operationId: input.operationId,
+      });
+      if (outcome.kind !== 'released') {
+        throw new Error('Runtime Host returned an invalid external-conversation release');
       }
-      if (!session || session.isArchived) {
-        throw unavailableSession(sessionId);
-      }
-      if (session.permissionMode === 'explore') return 'ready';
-
-      try {
-        session = await deps.client.updateSessionConfiguration(sessionId, {
-          permissionMode: 'explore',
-        });
-      } catch (error) {
-        throwUnavailable(error, sessionId);
-        if (isPermissionUpdateRefusal(error)) return 'permission_refused';
-        throw error;
-      }
-      if (session.isArchived) {
-        throw unavailableSession(sessionId);
-      }
-      if (session.permissionMode !== 'explore') return 'permission_refused';
-      deps.emitSessionsChanged('updated', sessionId);
-      return 'ready';
+      return outcome.hadBinding;
     },
 
-    async runTurn({ sessionId, turnId, text, onReplySnapshot }) {
+    async runTurn({ sessionId, messageId, text, onReplySnapshot }) {
       let session;
       try {
         session = await deps.client.openSession(sessionId);
@@ -113,39 +105,33 @@ export function createRuntimeHostBotSessionAdapter(
         throw error;
       }
 
-      const completion = collectRuntimeHostBotTurn(
-        session.events,
-        turnId,
-        onReplySnapshot,
-      );
-      void completion.catch(() => undefined);
       try {
+        const active = session.snapshot.rootTurn;
+        if (active && !isTerminal(active.status)) {
+          return active.status === 'waiting_for_user'
+            ? { kind: 'suspended' as const }
+            : { kind: 'errored' as const, reason: 'Session is already running a Turn' };
+        }
+        let submitted;
         try {
-          const started = await deps.client.startTurn({
+          submitted = await deps.client.submitMessage({
             sessionId,
-            turnId,
+            messageId,
             content: { text },
+            placement: 'next_turn',
           });
-          if (started.kind === 'blocked') {
-            return {
-              kind: 'errored' as const,
-              reason: started.skillInvocation.failed
-                .map((failure) =>
-                  failure.reason === 'too_many_requests'
-                    ? `Skill request limit exceeded: ${failure.requestLimit}`
-                    : `${failure.request}: ${failure.reason}`,
-                )
-                .join(', '),
-            };
-          }
         } catch (error) {
-          await session.close().catch(() => undefined);
-          await completion.catch(() => undefined);
           throwUnavailable(error, sessionId);
           throw error;
         }
-        deps.emitSessionsChanged('status-change', sessionId, { turnId });
-        return await completion;
+        if (submitted.disposition !== 'turn_started') {
+          return {
+            kind: 'errored' as const,
+            reason: 'Message was queued because another Turn started first',
+          };
+        }
+        deps.emitSessionsChanged('status-change', sessionId, { turnId: submitted.turnId });
+        return await collectRuntimeHostBotTurn(session, submitted.turnId, onReplySnapshot);
       } finally {
         await session.close().catch(() => undefined);
       }
@@ -154,21 +140,33 @@ export function createRuntimeHostBotSessionAdapter(
 }
 
 async function collectRuntimeHostBotTurn(
-  events: AsyncIterable<SubscriptionFrame>,
+  session: {
+    readonly snapshot: import('@maka/runtime-host/protocol').SessionContinuitySnapshot;
+    readonly transcript: Promise<StoredMessage[]>;
+    readonly events: AsyncIterable<SubscriptionFrame>;
+  },
   turnId: string,
   onReplySnapshot?: (text: string) => void,
 ): Promise<BotSessionTurnResult> {
+  const initialTurn = session.snapshot.rootTurn;
+  if (
+    initialTurn?.turnId === turnId &&
+    (initialTurn.status === 'waiting_for_user' || isTerminal(initialTurn.status))
+  ) {
+    return projectTerminalBotTurn(initialTurn, await session.transcript, turnId);
+  }
   const assistantText = new Map<string, string>();
   let latestMessageId: string | undefined;
   let publishedSnapshot: string | undefined;
 
-  for await (const frame of events) {
+  for await (const frame of session.events) {
     if (frame.kind === 'subscription.closed') {
       throw new Error(`Runtime Host Bot Session subscription closed: ${frame.reason}`);
     }
     if (frame.kind === 'subscription.session_delta') {
       if (frame.delta.turnId !== turnId || frame.delta.kind !== 'text') continue;
-      latestMessageId = frame.delta.messageId;
+      const messageId = frame.delta.messageId;
+      latestMessageId = messageId;
       const folded = foldRuntimeHostAssistantDelta(
         frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
         frame.delta,
@@ -196,9 +194,7 @@ async function collectRuntimeHostBotTurn(
         text: latestMessageId ? (assistantText.get(latestMessageId) ?? '') : '',
       };
     }
-    if (turn.status === 'failed') {
-      return { kind: 'errored', reason: turn.failureClass };
-    }
+    if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };
     if (turn.status === 'cancelled') {
       return { kind: 'errored', reason: `Turn cancelled: ${turn.abortSource}` };
     }
@@ -207,13 +203,41 @@ async function collectRuntimeHostBotTurn(
   throw new Error('Runtime Host Bot Session subscription ended before the Turn settled');
 }
 
+function projectTerminalBotTurn(
+  turn: NonNullable<import('@maka/runtime-host/protocol').SessionContinuitySnapshot['rootTurn']>,
+  transcript: readonly StoredMessage[],
+  turnId: string,
+): BotSessionTurnResult {
+  if (turn.status === 'waiting_for_user') return { kind: 'suspended' };
+  if (turn.status === 'completed') {
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+      const message = transcript[index];
+      if (message?.type === 'assistant' && message.turnId === turnId) {
+        return { kind: 'completed', text: message.text };
+      }
+    }
+    return { kind: 'completed', text: '' };
+  }
+  if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };
+  if (turn.status === 'cancelled') {
+    return { kind: 'errored', reason: `Turn cancelled: ${turn.abortSource}` };
+  }
+  throw new Error(`Runtime Host Bot Turn has unsupported terminal status: ${turn.status}`);
+}
+
+function isTerminal(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 function throwUnavailable(error: unknown, sessionId: string): void {
   if (
-    (error instanceof RuntimeHostOperationError &&
-      (error.code === 'not_found' || error.code === 'session_archived')) ||
+    (error instanceof RuntimeHostOperationError && error.code === 'not_found') ||
     (error instanceof DesktopRuntimeHostClientError && error.code === 'session_not_found')
   ) {
-    throw unavailableSession(sessionId, error);
+    throw new Error(`Bot Session is missing: ${sessionId}`, { cause: error });
+  }
+  if (error instanceof RuntimeHostOperationError && error.code === 'session_archived') {
+    throw new Error(`Bot Session is retired: ${sessionId}`, { cause: error });
   }
 }
 
@@ -223,8 +247,4 @@ function isPermissionUpdateRefusal(error: unknown): boolean {
       (error.code === 'session_busy' || error.code === 'operation_conflict')) ||
     (error instanceof DesktopRuntimeHostClientError && error.code === 'revision_conflict')
   );
-}
-
-function unavailableSession(sessionId: string, cause?: unknown): BotSessionUnavailableError {
-  return new BotSessionUnavailableError(`Bot Session is unavailable: ${sessionId}`, { cause });
 }

@@ -138,10 +138,11 @@ describe('discordMessageToEvent', () => {
       platform: 'discord',
       userId: 'user-1',
       userName: 'Alice',
-      chatId: 'chan-1',
+      conversationId: 'chan-1',
+      sourceEventId: 'msg-1',
+      replyTarget: { chatId: 'chan-1', replyToMessageId: 'msg-1' },
       isGroup: true,
       text: 'hello',
-      sourceMessageId: 'msg-1',
       receivedAt: 1_700_000_000_000,
     });
     const direct = discordMessageToEvent(

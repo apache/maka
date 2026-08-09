@@ -27,10 +27,11 @@ describe('IM channel event mapping', () => {
       platform: 'feishu',
       userId: 'ou_1',
       userName: 'Alice',
-      chatId: 'oc_1',
+      conversationId: 'oc_1',
+      sourceEventId: 'om_1',
+      replyTarget: { chatId: 'oc_1', replyToMessageId: 'om_1' },
       isGroup: true,
       text: 'hello',
-      sourceMessageId: 'om_1',
       receivedAt: 456,
     });
     assert.equal(JSON.stringify(event).includes('must-not-cross'), false);
@@ -75,10 +76,11 @@ describe('IM channel event mapping', () => {
       platform: 'wecom',
       userId: 'user_1',
       userName: 'user_1',
-      chatId: 'user_1',
+      conversationId: 'user_1',
+      sourceEventId: 'msg_1',
+      replyTarget: { chatId: 'user_1', replyToMessageId: 'msg_1' },
       isGroup: false,
       text: 'question',
-      sourceMessageId: 'msg_1',
       receivedAt: 789,
     });
   });

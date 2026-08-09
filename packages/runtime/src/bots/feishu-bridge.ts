@@ -46,10 +46,11 @@ export function feishuMessageToEvent(
     platform: 'feishu' as const,
     userId: message.senderId,
     userName: message.senderName ?? message.senderId,
-    chatId: message.chatId,
+    conversationId: message.chatId,
+    sourceEventId: message.messageId,
+    replyTarget: { chatId: message.chatId, replyToMessageId: message.messageId },
     isGroup: message.chatType === 'group',
     text: message.content,
-    sourceMessageId: message.messageId,
     receivedAt,
   };
 }

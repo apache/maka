@@ -5,6 +5,7 @@ import { __TEST__ } from '../dingtalk-bridge.js';
 
 const {
   decideDingTalkClose,
+  dingTalkReconnectBackoffMs,
   pickDingTalkSendRoute,
   classifyDingTalkSendResponse,
   dingTalkPayloadToEvent,
@@ -14,7 +15,19 @@ const {
 describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
   it('only treats explicit stops as terminal', () => {
     assert.deepEqual(decideDingTalkClose(1000, true), { kind: 'stopped' });
+    assert.deepEqual(decideDingTalkClose(1006, true), { kind: 'stopped' });
     assert.deepEqual(decideDingTalkClose(1000, false), { kind: 'reconnect' });
+    assert.deepEqual(decideDingTalkClose(1006, false), { kind: 'reconnect' });
+  });
+});
+
+describe('dingTalkReconnectBackoffMs', () => {
+  it('doubles from 1s and caps at 30s', () => {
+    assert.equal(dingTalkReconnectBackoffMs(0), 1_000);
+    assert.equal(dingTalkReconnectBackoffMs(1), 2_000);
+    assert.equal(dingTalkReconnectBackoffMs(2), 4_000);
+    assert.equal(dingTalkReconnectBackoffMs(5), 30_000);
+    assert.equal(dingTalkReconnectBackoffMs(50), 30_000);
   });
 });
 
@@ -38,6 +51,7 @@ describe('pickDingTalkSendRoute', () => {
         msgParam: '{"content":"hi"}',
       },
     });
+    assert.equal(pickDingTalkSendRoute('', 'app-key-1', 'hi'), null);
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
   });
 });
@@ -84,16 +98,18 @@ describe('dingTalkPayloadToEvent', () => {
         text: { content: 'hello' },
         robotCode: 'app-key-1',
       },
+      'stream-message-1',
       1_700_000_000_000,
     );
     assert.ok(event);
     assert.equal(event!.platform, 'dingtalk');
     assert.equal(event!.userId, 'user-1');
     assert.equal(event!.userName, 'Alice');
-    assert.equal(event!.chatId, 'cidp-single');
+    assert.equal(event!.conversationId, 'cidp-single');
+    assert.deepEqual(event!.replyTarget, { chatId: 'user-1' });
     assert.equal(event!.isGroup, false);
     assert.equal(event!.text, 'hello');
-    assert.equal(event!.sourceMessageId, 'cidp-single:1700000000000');
+    assert.equal(event!.sourceEventId, 'stream-message-1');
     const groupEvent = dingTalkPayloadToEvent(
       {
         senderId: 'user-2',
@@ -101,16 +117,29 @@ describe('dingTalkPayloadToEvent', () => {
         conversationType: '2',
         text: { content: 'hi' },
       },
+      'stream-message-2',
       1,
     );
     assert.equal(groupEvent!.isGroup, true);
     assert.equal(groupEvent!.userName, 'user-2');
+    assert.deepEqual(groupEvent!.replyTarget, { chatId: 'cidp-group' });
   });
 
   it('drops payloads missing text or routing identity', () => {
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 1), null);
-    assert.equal(dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 1), null);
-    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: {} }, 'm', 1),
+      null,
+    );
+    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 'm', 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 'm', 1),
+      null,
+    );
+    assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 'm', 1), null);
+    assert.equal(
+      dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: { content: 'x' } }, '', 1),
+      null,
+    );
   });
 });
 

@@ -35,16 +35,19 @@ export function slackMessageToEvent(event: SlackMessageEvent, receivedAt: number
   ) {
     return null;
   }
+  const isGroup = event.channel_type !== 'im';
+  const threadRoot = event.thread_ts ?? event.ts;
   return {
     platform: 'slack' as const,
     userId: event.user,
     userName: event.user,
-    chatId: event.channel,
-    isGroup: event.channel_type !== 'im',
+    conversationId: isGroup
+      ? `channel:${event.channel}:thread:${threadRoot}`
+      : `dm:${event.channel}`,
+    sourceEventId: event.ts,
+    replyTarget: { chatId: event.channel, replyToMessageId: threadRoot },
+    isGroup,
     text: event.text ?? '',
-    // Slack replies must stay on the existing thread. A top-level message uses
-    // its own ts as the thread root; a thread reply carries the root in thread_ts.
-    sourceMessageId: event.thread_ts ?? event.ts,
     receivedAt,
   };
 }

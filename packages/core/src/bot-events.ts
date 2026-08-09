@@ -34,10 +34,17 @@ export interface BotMessageEvent {
   platform: BotPlatform;
   userId: string;
   userName: string;
-  chatId: string;
+  /** Stable identity for the external conversation whose context is shared. */
+  conversationId: string;
+  /** Stable identity for this inbound delivery, used only for exact retry. */
+  sourceEventId: string;
+  /** Channel address used to deliver the reply; it does not own Session continuity. */
+  replyTarget: {
+    chatId: string;
+    replyToMessageId?: string;
+  };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
   attachments?: BotAttachmentRef[];
   /**
@@ -96,8 +103,10 @@ export function botDisplayLabel(platform: BotPlatform): string {
   }
 }
 
-export function botConversationKey(message: Pick<BotMessageEvent, 'platform' | 'chatId'>): string {
-  return `${message.platform}:${message.chatId}`;
+export function botConversationKey(
+  message: Pick<BotMessageEvent, 'platform' | 'conversationId'>,
+): string {
+  return `${message.platform}:${message.conversationId}`;
 }
 
 /**
@@ -107,19 +116,35 @@ export function botConversationKey(message: Pick<BotMessageEvent, 'platform' | '
  * Maka turn or sending a transient ack, otherwise a repeated platform
  * update can produce duplicate agent replies.
  *
- * Scope deliberately stays at platform + chat + source message id. The
- * id is only trusted as an idempotency key inside that chat; it is NOT
+ * Scope deliberately stays at platform + conversation + source event id. The
+ * id is only trusted as an idempotency key inside that conversation; it is NOT
  * a permission token and does not grant access to message history.
  */
 export function botSourceEventKey(
-  message: Pick<BotMessageEvent, 'platform' | 'chatId' | 'sourceMessageId'>,
+  message: Pick<BotMessageEvent, 'platform' | 'conversationId' | 'sourceEventId'>,
 ): string | undefined {
-  const sourceMessageId = message.sourceMessageId.trim();
-  if (!sourceMessageId) return undefined;
-  return `${message.platform}:${message.chatId}:${sourceMessageId}`;
+  const sourceEventId = message.sourceEventId.trim();
+  if (!sourceEventId) return undefined;
+  return `${message.platform}:${message.conversationId}:${sourceEventId}`;
 }
 
-/** DM-only commands; a group shares one conversation key, so reset must not affect every member. */
+/**
+ * PR-BOT-PLAINTEXT-RESET-COMMAND-0 (external bot research): DM-only plain-text
+ * "restart this conversation" affordance. Maka has no slash command
+ * runtime; users on mobile cannot easily type `/restart` either, so we
+ * coerce a handful of natural phrases into a reset action.
+ *
+ * Why DM-only: the bot conversation identity belongs to the channel adapter, NOT
+ * keyed by userId. In a group chat any member typing "restart" would
+ * wipe the conversation everyone else is in. Until a userId-scoped key
+ * lands, plain-text reset is silently ignored in groups so the cost of
+ * a misfire stays bounded to the sender's own DM.
+ *
+ * Match policy: NFC-normalize + lowercase + trim, then exact membership.
+ * No substring matching — the word "restart" inside a sentence is NOT
+ * a reset request; matching only the bare command avoids surprising
+ * users who intended to send a message ABOUT restart.
+ */
 export const BOT_PLAINTEXT_RESET_COMMANDS: ReadonlyArray<string> = Object.freeze([
   'restart',
   'reset',
@@ -138,9 +163,23 @@ export const BOT_PLAINTEXT_RESET_COMMANDS: ReadonlyArray<string> = Object.freeze
 export function isPlaintextResetCommand(
   message: Pick<BotMessageEvent, 'text' | 'isGroup'>,
 ): boolean {
-  return isPlaintextCommand(message, BOT_PLAINTEXT_RESET_COMMANDS);
+  if (message.isGroup) return false;
+  const trimmed = message.text.normalize('NFC').trim().toLowerCase();
+  if (trimmed.length === 0) return false;
+  return BOT_PLAINTEXT_RESET_COMMANDS.includes(trimmed);
 }
 
+/**
+ * PR-BOT-PLAINTEXT-HELP-COMMAND-0 (external bot research): DM-only help
+ * affordance so a new user can discover what the bot supports
+ * without leaving Telegram. Same match policy as
+ * {@link isPlaintextResetCommand} — DM-only, NFC + lowercase + trim,
+ * exact membership, no substring match.
+ *
+ * The fixed reply text is deliberately short and product-scoped:
+ * how to chat, how to reset, and the threading behavior. No
+ * marketing copy or roadmap language.
+ */
 export const BOT_PLAINTEXT_HELP_COMMANDS: ReadonlyArray<string> = Object.freeze([
   'help',
   '/help',
@@ -153,17 +192,10 @@ export const BOT_PLAINTEXT_HELP_COMMANDS: ReadonlyArray<string> = Object.freeze(
 export function isPlaintextHelpCommand(
   message: Pick<BotMessageEvent, 'text' | 'isGroup'>,
 ): boolean {
-  return isPlaintextCommand(message, BOT_PLAINTEXT_HELP_COMMANDS);
-}
-
-function isPlaintextCommand(
-  message: Pick<BotMessageEvent, 'text' | 'isGroup'>,
-  commands: ReadonlyArray<string>,
-): boolean {
   if (message.isGroup) return false;
   const trimmed = message.text.normalize('NFC').trim().toLowerCase();
   if (trimmed.length === 0) return false;
-  return commands.includes(trimmed);
+  return BOT_PLAINTEXT_HELP_COMMANDS.includes(trimmed);
 }
 
 export function plaintextHelpReply(): string {

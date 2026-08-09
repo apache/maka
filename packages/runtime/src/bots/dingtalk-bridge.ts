@@ -177,15 +177,17 @@ export function classifyDingTalkSendResponse(
  */
 export function dingTalkPayloadToEvent(
   payload: DingTalkBotMessagePayload,
+  sourceEventId: string,
   receivedAt: number,
 ): {
   platform: 'dingtalk';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   if (!payload || typeof payload !== 'object') return null;
@@ -195,17 +197,17 @@ export function dingTalkPayloadToEvent(
   const userId = payload.senderId;
   if (typeof chatId !== 'string' || chatId.length === 0) return null;
   if (typeof userId !== 'string' || userId.length === 0) return null;
+  if (!sourceEventId) return null;
+  const isGroup = payload.conversationType === '2';
   return {
     platform: 'dingtalk',
     userId,
     userName: payload.senderNick ?? userId,
-    chatId,
-    isGroup: payload.conversationType === '2',
+    conversationId: chatId,
+    sourceEventId,
+    replyTarget: { chatId: isGroup ? chatId : userId },
+    isGroup,
     text: content,
-    // DingTalk Stream callbacks do not carry the original message id;
-    // use a synthetic key so downstream contracts that key off
-    // `sourceMessageId` still get a unique value.
-    sourceMessageId: `${chatId}:${receivedAt}`,
     receivedAt,
   };
 }

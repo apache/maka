@@ -38,10 +38,11 @@ export function wecomTextFrameToEvent(
     platform: 'wecom' as const,
     userId,
     userName: userId,
-    chatId,
+    conversationId: chatId,
+    sourceEventId: body.msgid,
+    replyTarget: { chatId, replyToMessageId: body.msgid },
     isGroup,
     text: body.text.content,
-    sourceMessageId: body.msgid,
     receivedAt,
   };
 }

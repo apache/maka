@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
+import type { BotIncomingMessage, BotRegistry } from '@maka/runtime';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
+import { createTestBotSessionAdapter } from './bot-session-adapter-fixture.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -41,28 +42,23 @@ test('the bot typing loop owns only its active abort listener', async (t) => {
         throw new Error('typing unavailable');
       },
     } as unknown as BotRegistry,
-    sessions: {
-      async createSession() {
-        return 'bot-session';
-      },
-      async prepareSession() {
-        return 'ready';
-      },
+    sessions: createTestBotSessionAdapter({
       async runTurn() {
         await turnReleased;
         return { kind: 'completed', text: 'Bot reply' };
       },
-    },
+    }),
   });
 
   const handling = service.handleBotIncomingMessage({
     platform: 'telegram',
     userId: 'user',
     userName: 'User',
-    chatId: 'chat',
+    conversationId: 'chat',
+    sourceEventId: 'source',
+    replyTarget: { chatId: 'chat', replyToMessageId: 'source' },
     isGroup: false,
     text: 'hello',
-    sourceMessageId: 'source',
     receivedAt: Date.now(),
   } as BotIncomingMessage);
 

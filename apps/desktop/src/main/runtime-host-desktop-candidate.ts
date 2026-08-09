@@ -625,11 +625,11 @@ export async function createDesktopRuntimeHostCandidate(
     );
     const botIncoming = createBotIncomingMainService({
       botRegistry: deps.botRegistry,
+      ...(deps.newId ? { newId: deps.newId } : {}),
       sessions: createRuntimeHostBotSessionAdapter({
         client,
         resolveCreateTarget: () => deps.resolveBotCreateTarget(target),
         emitSessionsChanged,
-        ...(deps.newId ? { newId: deps.newId } : {}),
       }),
     });
     return new DesktopRuntimeHostCandidateImpl({

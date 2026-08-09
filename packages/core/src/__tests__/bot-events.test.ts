@@ -16,17 +16,18 @@ describe('bot event contract', () => {
     platform: 'telegram',
     userId: 'u1',
     userName: ' Alice\u0000 ',
-    chatId: 'chat-1',
+    conversationId: 'chat-1',
+    sourceEventId: 'm1',
+    replyTarget: { chatId: 'chat-1', replyToMessageId: 'm1' },
     isGroup: false,
     text: '  hello  ',
-    sourceMessageId: 'm1',
     receivedAt: 1_700_000_000_000,
   };
 
   test('derives sanitized session text and stable keys', () => {
     assert.equal(botConversationKey(message), 'telegram:chat-1');
     assert.equal(botSourceEventKey(message), 'telegram:chat-1:m1');
-    assert.equal(botSourceEventKey({ ...message, sourceMessageId: '   ' }), undefined);
+    assert.equal(botSourceEventKey({ ...message, sourceEventId: '   ' }), undefined);
     assert.equal(formatBotMessageForSession(message), '[Telegram:Alice] hello');
   });
 

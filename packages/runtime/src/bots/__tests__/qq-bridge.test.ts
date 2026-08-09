@@ -69,19 +69,19 @@ describe('QQ message mapping', () => {
         platform: channel?.platform,
         userId: channel?.userId,
         userName: channel?.userName,
-        chatId: channel?.chatId,
+        conversationId: channel?.conversationId,
         isGroup: channel?.isGroup,
         text: channel?.text,
-        sourceMessageId: channel?.sourceMessageId,
+        sourceEventId: channel?.sourceEventId,
       },
       {
         platform: 'qq',
         userId: 'u-1',
         userName: 'Alice',
-        chatId: 'channel:chan-1',
+        conversationId: 'channel:chan-1',
         isGroup: true,
         text: '@bot hello',
-        sourceMessageId: 'm-1',
+        sourceEventId: 'm-1',
       },
     );
 
@@ -90,8 +90,12 @@ describe('QQ message mapping', () => {
       1,
     );
     assert.deepEqual(
-      { chatId: group?.chatId, userId: group?.userId, isGroup: group?.isGroup },
-      { chatId: 'group:g-1', userId: 'mo-1', isGroup: true },
+      {
+        conversationId: group?.conversationId,
+        userId: group?.userId,
+        isGroup: group?.isGroup,
+      },
+      { conversationId: 'group:g-1', userId: 'mo-1', isGroup: true },
     );
     assert.equal(
       qqGroupMessageToEvent({ id: 'gm-2', group_openid: 'g-2', author: { user_openid: 'uo-2' } }, 1)
@@ -106,7 +110,7 @@ describe('QQ message mapping', () => {
       { id: 'c2c-1', content: 'hi', author: { user_openid: 'uo-1' } },
       1,
     );
-    assert.equal(c2c?.chatId, 'c2c:uo-1');
+    assert.equal(c2c?.conversationId, 'c2c:uo-1');
     assert.equal(c2c?.isGroup, false);
     assert.equal(c2c?.userId, 'uo-1');
   });

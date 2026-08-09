@@ -136,10 +136,11 @@ export function qqChannelMessageToEvent(
   platform: 'qq';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   if (!d?.author || d.author.bot === true) return null;
@@ -148,10 +149,11 @@ export function qqChannelMessageToEvent(
     platform: 'qq',
     userId,
     userName: d.author.username ?? userId,
-    chatId: `channel:${d.channel_id}`,
+    conversationId: `channel:${d.channel_id}`,
+    sourceEventId: String(d.id),
+    replyTarget: { chatId: `channel:${d.channel_id}`, replyToMessageId: String(d.id) },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id),
     receivedAt,
   };
 }
@@ -163,10 +165,11 @@ export function qqGroupMessageToEvent(
   platform: 'qq';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   if (!d?.group_openid) return null;
@@ -176,10 +179,11 @@ export function qqGroupMessageToEvent(
     platform: 'qq',
     userId: String(userId),
     userName: String(userId),
-    chatId: `group:${d.group_openid}`,
+    conversationId: `group:${d.group_openid}`,
+    sourceEventId: String(d.id),
+    replyTarget: { chatId: `group:${d.group_openid}`, replyToMessageId: String(d.id) },
     isGroup: true,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id),
     receivedAt,
   };
 }
@@ -191,10 +195,11 @@ export function qqC2CMessageToEvent(
   platform: 'qq';
   userId: string;
   userName: string;
-  chatId: string;
+  conversationId: string;
+  sourceEventId: string;
+  replyTarget: { chatId: string; replyToMessageId?: string };
   isGroup: boolean;
   text: string;
-  sourceMessageId: string;
   receivedAt: number;
 } | null {
   const userId = d.author?.user_openid ?? d.author?.id ?? '';
@@ -203,10 +208,11 @@ export function qqC2CMessageToEvent(
     platform: 'qq',
     userId: String(userId),
     userName: String(userId),
-    chatId: `c2c:${userId}`,
+    conversationId: `c2c:${userId}`,
+    sourceEventId: String(d.id),
+    replyTarget: { chatId: `c2c:${userId}`, replyToMessageId: String(d.id) },
     isGroup: false,
     text: typeof d.content === 'string' ? d.content : '',
-    sourceMessageId: String(d.id),
     receivedAt,
   };
 }

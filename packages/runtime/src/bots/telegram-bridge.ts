@@ -460,14 +460,17 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
     this.readiness = 'operational';
     this.reason = undefined;
     const attachmentKind = telegramAttachmentKind(message);
+    const chatId = String(message.chat?.id ?? '');
+    const sourceEventId = String(message.message_id ?? '');
     this.emitIncomingMessage({
       platform: 'telegram',
       userId,
       userName: message.from.username ?? message.from.first_name ?? userId,
-      chatId: String(message.chat?.id ?? ''),
+      conversationId: chatId,
+      sourceEventId,
+      replyTarget: { chatId, replyToMessageId: sourceEventId },
       isGroup: message.chat?.type === 'group' || message.chat?.type === 'supergroup',
       text: message.text ?? message.caption ?? '',
-      sourceMessageId: String(message.message_id ?? ''),
       receivedAt: this.lastEventAt,
       ...(attachmentKind ? { attachmentKind } : {}),
     });
