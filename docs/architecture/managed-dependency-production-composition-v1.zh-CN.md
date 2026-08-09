@@ -39,7 +39,7 @@ packaged Electron process identity
   -> sandboxed filesystem worker
 ```
 
-只有 packaged Electron（存在 Electron identity 且 `defaultApp !== true`）可以把 `process.resourcesPath` 解释为 release authority。Node/CLI 与开发态 Electron 不从 ambient directory 自动发现 bundled runtime。测试可以显式注入 verified Git input，但生产 npm producer只能从 attested bundled resources 创建。
+只有 Desktop 父进程在 `app.isPackaged === true` 时显式传入的 resource root，才能成为 detached Runtime Host 的 release authority。子进程还必须证明自身 Electron identity、`defaultApp !== true`，并且观测到的 `process.resourcesPath` 与父进程授权值完全一致。`ELECTRON_RUN_AS_NODE=1` 下的开发态 Electron 即使拥有 Electron version 和 resources path，也不能从 ambient directory 自认证 bundled runtime。Node/CLI 同样不自动发现 bundled runtime。测试可以显式注入 verified Git input，但生产 npm producer 只能从 attested bundled resources 创建。
 
 `ManagedWorkspaceOwner` 是跨 Git baseline、dependency lease 与 worker scope 的组合 owner。它负责：
 

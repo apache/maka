@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { resolveExecutionBundledResourcesRoot } from '../server/execution-bundled-resources.js';
 import { startExecutionRuntimeHostCandidate } from '../server/execution-candidate.js';
+
+const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
 
 test('admits bundled resources only from packaged Electron identity', () => {
   assert.equal(
@@ -9,6 +16,7 @@ test('admits bundled resources only from packaged Electron identity', () => {
       electronVersion: '43.2.0',
       defaultApp: false,
       resourcesPath: '/Applications/Maka.app/Contents/Resources',
+      parentAuthorizedResourcesRoot: '/Applications/Maka.app/Contents/Resources',
     }),
     '/Applications/Maka.app/Contents/Resources',
   );
@@ -20,10 +28,40 @@ test('admits bundled resources only from packaged Electron identity', () => {
     }),
     undefined,
   );
+  assert.throws(
+    () =>
+      resolveExecutionBundledResourcesRoot({
+        electronVersion: '43.2.0',
+        resourcesPath: '/Applications/Maka.app/Contents/Resources',
+        parentAuthorizedResourcesRoot: '/tmp/forged-resources',
+      }),
+    /does not match the Electron resource root/u,
+  );
   assert.equal(
     resolveExecutionBundledResourcesRoot({ resourcesPath: '/ambient/resources' }),
     undefined,
   );
+});
+
+test('development Electron Node mode cannot self-authorize bundled resources', async () => {
+  const electronPath = require('electron') as string;
+  const { stdout } = await execFileAsync(
+    electronPath,
+    [fileURLToPath(new URL('./fixtures/execution-bundled-resources-child.js', import.meta.url))],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    },
+  );
+
+  const observed = JSON.parse(stdout) as {
+    defaultApp: boolean | null;
+    resourcesPath: string | null;
+    resolved: string | null;
+  };
+  assert.equal(observed.defaultApp, null);
+  assert.ok(observed.resourcesPath);
+  assert.equal(observed.resolved, null);
 });
 
 test('candidate refuses bundled npm without the paired managed Git authority', async () => {

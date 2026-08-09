@@ -2,6 +2,8 @@ export interface ExecutionBundledResourceProcessIdentity {
   readonly electronVersion?: string;
   readonly defaultApp?: boolean;
   readonly resourcesPath?: string;
+  /** Explicit authority forwarded by an app.isPackaged Desktop parent. */
+  readonly parentAuthorizedResourcesRoot?: string;
 }
 
 /**
@@ -12,8 +14,18 @@ export interface ExecutionBundledResourceProcessIdentity {
 export function resolveExecutionBundledResourcesRoot(
   identity: ExecutionBundledResourceProcessIdentity,
 ): string | undefined {
-  if (!identity.electronVersion || identity.defaultApp === true) return undefined;
-  return typeof identity.resourcesPath === 'string' && identity.resourcesPath.length > 0
-    ? identity.resourcesPath
-    : undefined;
+  if (
+    !identity.electronVersion ||
+    identity.defaultApp === true ||
+    !identity.parentAuthorizedResourcesRoot
+  ) {
+    return undefined;
+  }
+  if (
+    !identity.resourcesPath ||
+    identity.resourcesPath !== identity.parentAuthorizedResourcesRoot
+  ) {
+    throw new Error('Packaged resource authority does not match the Electron resource root');
+  }
+  return identity.resourcesPath;
 }

@@ -6,6 +6,8 @@ export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
   expectedRootId: string;
   initialConnectionTimeoutMs?: number;
+  packagedResourcesRoot?: string;
+  legacyConfigurationRoot?: string;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;

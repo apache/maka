@@ -484,6 +484,7 @@ owner = await startRuntimeHostDesktopOwner(
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
+    ...(app.isPackaged ? { packagedResourcesRoot: process.resourcesPath } : {}),
     ...(runtimeHostAtOwnerStart.profile.kind === "remote"
       ? {
           remote: {

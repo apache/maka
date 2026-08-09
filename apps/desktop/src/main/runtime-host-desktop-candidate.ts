@@ -130,6 +130,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
   readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
+  readonly packagedResourcesRoot?: string;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
   readonly connectTimeoutMs?: number;
@@ -693,6 +694,9 @@ function connectInput(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.packagedResourcesRoot === undefined
+      ? {}
+      : { packagedResourcesRoot: input.packagedResourcesRoot }),
   };
 }
 

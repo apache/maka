@@ -22,6 +22,7 @@ try {
     electronVersion: process.versions.electron,
     defaultApp: electronProcess.defaultApp,
     resourcesPath: electronProcess.resourcesPath,
+    parentAuthorizedResourcesRoot: options.packagedResourcesRoot,
   });
   result = await startExecutionRuntimeHostCandidate({
     ...options,
