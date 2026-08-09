@@ -80,6 +80,7 @@
     "@larksuiteoapi/node-sdk": "1.72.0",
     "@maka/code-mode": "0.1.0",
     "@maka/core": "0.1.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@mozilla/readability": "^0.6.0",
     "@slack/socket-mode": "^3.0.0",
     "@slack/web-api": "^8.0.0",
