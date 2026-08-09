@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { jsonSchema, tool } from 'ai';
 import { type ExecuteCodeCellInput, executeCodeCell, serializedByteLength } from '../index.js';
 
 function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>> = {}) {
@@ -12,10 +13,18 @@ function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>
 }
 
 test('counts the bounded JSON representation used at the tool boundary', () => {
-  const repeated = Array.from({ length: 1_024 }, () => '\0'.repeat(128));
+  let inspectedPastLimit = false;
+  const trailing = Object.defineProperty({}, 'value', {
+    enumerable: true,
+    get: () => {
+      inspectedPastLimit = true;
+      throw new Error('must not inspect values after the byte limit');
+    },
+  });
 
   assert.equal(serializedByteLength('\0'.repeat(10)), 62);
-  assert.equal(serializedByteLength(repeated, 32), 33);
+  assert.equal(serializedByteLength(['x'.repeat(128), trailing], 32), 33);
+  assert.equal(inspectedPastLimit, false);
 });
 
 test('executes standard JavaScript without an interpreter subset', async () => {
@@ -147,6 +156,28 @@ test('uses normal partial-execution semantics before an unknown tool failure', a
   if (!result.ok) assert.equal(result.error.kind, 'unknown_tool');
 });
 
+test('does not dispatch tools inherited from Object.prototype', async () => {
+  let inheritedCalls = 0;
+  Object.defineProperty(Object.prototype, 'inheritedCodeModeTool', {
+    configurable: true,
+    value: tool({
+      inputSchema: jsonSchema({}),
+      execute: async () => {
+        inheritedCalls += 1;
+        return 'escaped';
+      },
+    }),
+  });
+
+  try {
+    const result = await execute('return await tools.inheritedCodeModeTool({});');
+    assert.equal(result.ok ? undefined : result.error.kind, 'unknown_tool');
+    assert.equal(inheritedCalls, 0);
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).inheritedCodeModeTool;
+  }
+});
+
 test('does not start an unobserved tool call', async () => {
   let calls = 0;
   const result = await execute('tools.echo({}); return null;', {
@@ -167,7 +198,7 @@ test('lets cell code handle an ordinary tool failure', async () => {
       try {
         await tools.fail({});
       } catch (error) {
-        return { name: error.name, message: error.message };
+        return error.message;
       }
     `,
     {
@@ -180,14 +211,14 @@ test('lets cell code handle an ordinary tool failure', async () => {
 
   assert.deepEqual(result, {
     ok: true,
-    value: { name: 'CodeModeToolError', message: 'expected failure' },
+    value: 'expected failure',
     toolCalls: [{ index: 1, name: 'fail' }],
   });
 });
 
 test('reports uncaught runtime and tool failures', async (t) => {
   await t.test('runtime', async () => {
-    const result = await execute("throw new Error('boom');");
+    const result = await execute("throw new Error('out of memory');");
     assert.equal(result.ok ? undefined : result.error.kind, 'execution_error');
   });
 
@@ -195,8 +226,18 @@ test('reports uncaught runtime and tool failures', async (t) => {
     const result = await execute('return await tools.fail({});', {
       tools: [{ name: 'fail' }],
       callTool: async () => {
-        throw new Error('boom');
+        throw new Error('stack overflow');
       },
+    });
+    assert.equal(result.ok ? undefined : result.error.kind, 'tool_failure');
+  });
+
+  await t.test('non-serializable tool output', async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const result = await execute('return await tools.fail({});', {
+      tools: [{ name: 'fail' }],
+      callTool: async () => circular,
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'tool_failure');
   });
@@ -240,16 +281,35 @@ test('enforces byte and bridge limits', async (t) => {
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
   });
 
+  await t.test('undefined override keeps the product default', async () => {
+    const result = await execute(
+      `
+        for (let index = 0; index < 33; index += 1) await tools.echo({ index });
+        return null;
+      `,
+      {
+        tools: [{ name: 'echo' }],
+        limits: { maxToolCalls: undefined } as unknown as ExecuteCodeCellInput['limits'],
+        callTool: async () => null,
+      },
+    );
+    assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+  });
+
   await t.test('tool concurrency', async () => {
     const result = await execute('return await Promise.all([tools.echo({}), tools.echo({})]);', {
       tools: [{ name: 'echo' }],
-      limits: { maxToolConcurrency: 1 },
-      callTool: async () => {
-        await new Promise((resolve) => setImmediate(resolve));
+      limits: { maxToolConcurrency: 1, maxSandboxTimeMs: 500 },
+      callTool: async (_name, _input, signal) => {
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', () => resolve(), { once: true });
+        });
         return null;
       },
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
+    if (!result.ok) assert.match(result.error.message, /in-flight bridge request limit/i);
   });
 });
 
@@ -264,15 +324,15 @@ test('enforces the configured VM stack limit', async () => {
 
 test('enforces the configured VM memory limit', async () => {
   const result = await execute('return new ArrayBuffer(16 * 1024 * 1024).byteLength;', {
-    limits: { maxMemoryBytes: 8 * 1024 * 1024, maxWallTimeMs: 5_000 },
+    limits: { maxMemoryBytes: 8 * 1024 * 1024, maxSandboxTimeMs: 5_000 },
   });
 
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
 });
 
-test('preempts a pure compute loop at the wall-time limit', async () => {
-  const result = await execute('while (true) {}', { limits: { maxWallTimeMs: 20 } });
+test('preempts a pure compute loop at the sandbox-time limit', async () => {
+  const result = await execute('while (true) {}', { limits: { maxSandboxTimeMs: 20 } });
 
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.kind, 'limit_exceeded');
@@ -315,43 +375,83 @@ test('waits for an aborted host operation to settle before rejecting', async () 
   await assert.rejects(execution, (error) => error === reason);
 });
 
-test('does not let cell code suppress a fatal host failure', async () => {
+test('does not start later tools after a fatal host failure', async () => {
   const fatalError = new Error('durable commit failed');
+  const calls: string[] = [];
   const execution = execute(
     `
-      try {
-        await tools.fail({});
-      } catch {}
+      try { await tools.first({}); } catch {}
+      try { await tools.second({}); } catch {}
       return 'ignored';
     `,
     {
-      tools: [{ name: 'fail' }],
-      callTool: async () => {
-        throw fatalError;
+      tools: [{ name: 'first' }, { name: 'second' }],
+      callTool: async (name) => {
+        calls.push(name);
+        if (name === 'first') throw fatalError;
+        return null;
       },
       isFatalToolError: (error) => error === fatalError,
     },
   );
 
   await assert.rejects(execution, (error) => error === fatalError);
+  assert.deepEqual(calls, ['first']);
 });
 
-test('preserves a fatal host rejection whose reason is undefined', async () => {
-  const execution = execute(
-    `
-      try {
-        await tools.fail({});
-      } catch {}
-      return 'ignored';
-    `,
-    {
-      tools: [{ name: 'fail' }],
-      callTool: async () => Promise.reject(undefined),
-      isFatalToolError: (error) => error === undefined,
+test('aborts and drains concurrent tools while preserving the first fatal failure', async () => {
+  const firstFatal = new Error('first durable failure');
+  const secondFatal = new Error('second durable failure');
+  const calls: string[] = [];
+  let peerStarted!: () => void;
+  let peerAborted!: () => void;
+  let releasePeer!: () => void;
+  const peerHasStarted = new Promise<void>((resolve) => {
+    peerStarted = resolve;
+  });
+  const peerWasAborted = new Promise<void>((resolve) => {
+    peerAborted = resolve;
+  });
+  const peerCanFinish = new Promise<void>((resolve) => {
+    releasePeer = resolve;
+  });
+  const execution = execute('return await Promise.all([tools.peer({}), tools.fail({})]);', {
+    tools: [{ name: 'peer' }, { name: 'fail' }],
+    callTool: async (name, _input, signal) => {
+      calls.push(name);
+      if (name === 'fail') {
+        await peerHasStarted;
+        throw firstFatal;
+      }
+      peerStarted();
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      peerAborted();
+      await peerCanFinish;
+      throw secondFatal;
     },
-  );
+    isFatalToolError: (error) => error === firstFatal || error === secondFatal,
+  });
 
-  await assert.rejects(execution, (error) => error === undefined);
+  await peerWasAborted;
+  try {
+    const beforeRelease = await Promise.race([
+      execution.then(
+        () => 'settled' as const,
+        () => 'settled' as const,
+      ),
+      new Promise<'pending'>((resolve) => setImmediate(() => resolve('pending'))),
+    ]);
+    assert.equal(beforeRelease, 'pending');
+    assert.deepEqual(calls, ['peer', 'fail']);
+    releasePeer();
+    await assert.rejects(execution, (error) => error === firstFatal);
+  } finally {
+    releasePeer();
+    await Promise.allSettled([execution]);
+  }
 });
 
 test('serializes concurrent cells through one execution slot', async () => {

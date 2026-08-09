@@ -148,7 +148,8 @@ function addSerializedBytes(budget: SerializedByteBudget, bytes: number): boolea
 
 export interface CodeModeLimits {
   maxSourceBytes: number;
-  maxWallTimeMs: number;
+  /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
+  maxSandboxTimeMs: number;
   maxMemoryBytes: number;
   maxStackBytes: number;
   maxToolCalls: number;
@@ -160,7 +161,7 @@ export interface CodeModeLimits {
 
 export const DEFAULT_CODE_MODE_LIMITS: Readonly<CodeModeLimits> = Object.freeze({
   maxSourceBytes: 64 * 1024,
-  maxWallTimeMs: 30_000,
+  maxSandboxTimeMs: 30_000,
   maxMemoryBytes: 64 * 1024 * 1024,
   maxStackBytes: 2 * 1024 * 1024,
   maxToolCalls: 32,
