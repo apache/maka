@@ -13,21 +13,26 @@
 }
 
 .settingsPricingTableSkeleton {
-  min-width: 820px;
+  min-width: 819px;
   display: grid;
 }
 
 .settingsPricingTableSkeletonRow {
-  min-height: 40px;
+  min-height: 44px;
   display: grid;
-  grid-template-columns: minmax(180px, 2fr) 150px 72px 72px 112px 112px 132px;
+  grid-template-columns: minmax(169px, 2fr) 150px 72px 72px 112px 112px 132px;
   align-items: center;
-  gap: var(--space-3);
   border-bottom: 1px solid var(--border-soft);
 }
 
 .settingsPricingTableSkeletonRow:last-child {
   border-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .settingsPricingTableSkeletonRow {
+    min-height: 48px;
+  }
 }
 
 .settingsPricingTable {
