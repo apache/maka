@@ -156,6 +156,9 @@ function fakeManagedOwner(input: {
     async openManagedWorkspaceBaseline() {
       throw new Error('not used');
     },
+    async openManagedWorkspaceBaselineFromExecutionStores() {
+      throw new Error('not used');
+    },
     async withManagedWorkspaceExecution(handle, operation) {
       assert.equal(handle, input.handle);
       input.calls.push('managed:admit');
