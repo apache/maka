@@ -2,8 +2,8 @@
    owns generic component chrome; these selectors own only product semantics. */
 
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
-.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--foreground-alpha-10); }
-.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--foreground-alpha-10); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
+.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
+.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
 
 .maka-page-header-title,
 .maka-page-header-eyebrow,

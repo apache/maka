@@ -191,6 +191,12 @@ const DYNAMIC_STYLE_HOOKS = new Set([
  * unused, with no series around it, does not belong here; delete it instead.
  */
 const RESERVED_SCALE_TOKENS = new Set([
+  // Ink tint band --foreground-alpha-10/-16 (visual system 2.0). The 10 rung
+  // lost its last consumer when quote-chip hover converged onto
+  // --state-hover-bg (T5-B); the band only reads as a band with both rungs,
+  // and decorative tints must come from it rather than fresh hand-mixed
+  // alphas (DESIGN.md §3).
+  '--foreground-alpha-10',
   // z-index scale — --z-titlebar (40) and --z-overlay (300) are live; the
   // layering only reads as a scale with the rungs between them present.
   '--z-base',
