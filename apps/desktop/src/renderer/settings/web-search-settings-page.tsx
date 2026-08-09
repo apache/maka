@@ -374,9 +374,10 @@ export function WebSearchSettingsPage(props: {
             <div className="settingsWebSearchSearchControls">
               <Button
                 variant="primary"
-                isDisabled={liveQueryRunning || queryDisabledReason !== null}
+                isLoading={liveQueryRunning}
+                isDisabled={queryDisabledReason !== null}
                 onClick={() => void runLiveQuery()}
-                label={liveQueryRunning ? copy.searching : copy.search}
+                label={copy.search}
               />
               {!liveQueryRunning && queryDisabledReason && (
                 <small className="settingsWebSearchDisabledReason">{queryDisabledReason}</small>

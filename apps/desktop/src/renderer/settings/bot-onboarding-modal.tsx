@@ -169,7 +169,7 @@ export function BotOnboardingModal(props: {
             {showQr ? (
               <img src={qrDataUrl ?? undefined} alt={copy.qrAlt} />
             ) : starting || snapshot?.state === 'connecting' ? (
-              <Spinner size="xl" aria-label={onboardingCopy.generatingAria} />
+              <Spinner size="lg" aria-label={onboardingCopy.generatingAria} />
             ) : snapshot?.state === 'connected' ? (
               snapshot.warning ? (
                 <span className="settingsBotOnboardingEmpty" aria-hidden="true">

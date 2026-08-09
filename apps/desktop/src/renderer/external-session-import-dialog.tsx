@@ -258,7 +258,7 @@ export function ExternalSessionImportDialog(props: {
 
               {sourceLoading && (
                 <div className="maka-external-session-import-loading" role="status" aria-live="polite">
-                  <Spinner size="md" />
+                  <Spinner size="lg" />
                   <Text type="supporting" color="secondary">
                     {copy.loading}
                   </Text>
@@ -306,7 +306,7 @@ export function ExternalSessionImportDialog(props: {
 
               {catalogLoading && (
                 <div className="maka-external-session-import-loading" role="status" aria-live="polite">
-                  <Spinner size="md" />
+                  <Spinner size="lg" />
                   <Text type="supporting" color="secondary">
                     {copy.loading}
                   </Text>
