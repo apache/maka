@@ -33,6 +33,7 @@ export type ExternalConversationResolveResult =
   | { readonly kind: 'limit_reached' };
 
 export interface ExternalConversationAuthority {
+  lookup(conversationId: string): Promise<ExternalConversationBinding | undefined>;
   resolve(
     conversationId: string,
     proposedSessionId: string,
@@ -123,6 +124,7 @@ function createWriterFacade(
     kind: 'interactive',
     access: 'write',
     [writerBrand]: true,
+    lookup: (conversationId) => run(() => store.lookup(conversationId)),
     resolve: (conversationId, proposedSessionId) =>
       run(() => store.resolve(conversationId, proposedSessionId)),
     release: (conversationId, operationId) => run(() => store.release(conversationId, operationId)),
@@ -145,6 +147,12 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
 
   constructor(workspaceRoot: string) {
     this.#lease = acquireOperationalStateDatabase(workspaceRoot);
+  }
+
+  async lookup(conversationId: string): Promise<ExternalConversationBinding | undefined> {
+    return this.#lease.transaction('read', () =>
+      this.#readBinding(digestConversationId(conversationId)),
+    );
   }
 
   async resolve(

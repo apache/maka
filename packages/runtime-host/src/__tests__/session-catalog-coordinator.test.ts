@@ -1288,6 +1288,10 @@ function createFixture(
       hasMore: false,
     }),
     markSessionReadThroughMessage: async () => headerSnapshot(header, revision),
+    probeSessionRemoval: async () => ({
+      kind: 'present',
+      record: headerSnapshot(header, revision),
+    }),
     probeStableSessionCreate: async () => ({ kind: 'absent' }),
     readCatalogRecord: async () => catalogRecord(header, revision),
     readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),

@@ -10,6 +10,16 @@ describe('external-conversation protocol', () => {
       reconcile.decodeInput({
         kind: 'resolve',
         conversationId: 'slack:channel:C1:thread:123.456',
+      }),
+      {
+        kind: 'resolve',
+        conversationId: 'slack:channel:C1:thread:123.456',
+      },
+    );
+    assert.deepEqual(
+      reconcile.decodeInput({
+        kind: 'resolve',
+        conversationId: 'slack:channel:C1:thread:123.456',
         session: {
           cwd: '/workspace',
           name: 'Slack thread',

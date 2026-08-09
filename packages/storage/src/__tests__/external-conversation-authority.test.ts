@@ -25,6 +25,8 @@ describe('interactive external-conversation authority', () => {
       assert.equal(authenticateInteractiveExternalConversationAuthorityWriter(first), first);
       const claimed = await first.resolve('slack:C1:thread:10.1', 'session-1');
       assert.equal(claimed.kind, 'claimed');
+      assert.equal((await first.lookup('slack:C1:thread:10.1'))?.sessionId, 'session-1');
+      assert.equal(await first.lookup('slack:C1:thread:missing'), undefined);
       const repeated = await first.resolve('slack:C1:thread:10.1', 'session-2');
       assert.notEqual(repeated.kind, 'limit_reached');
       if (repeated.kind === 'limit_reached') return;
