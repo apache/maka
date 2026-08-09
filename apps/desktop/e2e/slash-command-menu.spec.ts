@@ -30,13 +30,27 @@ test('shows only slash commands executable in the current session state', async 
   await expect(groups.nth(0).getByRole('option')).toHaveCount(4);
 });
 
-test('dispatches Compact without sending it as a prompt', async ({
+test('compacts the active session', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('seed session');
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
+
+  const sessionId = await page.evaluate(async () => (await window.maka.sessions.list())[0]?.id);
+  expect(sessionId).toBeTruthy();
+  await page.evaluate((activeSessionId) => {
+    const testWindow = window as typeof window & {
+      __makaObservedCompactCompletion?: boolean;
+    };
+    testWindow.__makaObservedCompactCompletion = false;
+    window.maka.sessions.subscribeChanges((event) => {
+      if (event.reason === 'status-change' && event.sessionId === activeSessionId) {
+        testWindow.__makaObservedCompactCompletion = true;
+      }
+    });
+  }, sessionId!);
 
   await composer.click();
   await composer.pressSequentially('/');
@@ -50,6 +64,18 @@ test('dispatches Compact without sending it as a prompt', async ({
   await expect.poll(() => composer.textContent()).toBe('/compact ');
   await expect(menu).not.toBeVisible();
   await composer.press('Enter');
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __makaObservedCompactCompletion?: boolean })
+            .__makaObservedCompactCompletion,
+      ),
+    )
+    .toBe(true);
+  await expect.poll(() => composer.textContent()).toBe('');
+  await expect(page.getByText('压缩失败')).toHaveCount(0);
 
   await composer.fill('after compact');
   await composer.press('Enter');
