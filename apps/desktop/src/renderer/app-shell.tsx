@@ -2520,7 +2520,7 @@ function AppShellContent({
           one frame-level hit-test surface. */}
       <header
         className="maka-window-titlebar"
-        aria-hidden={hasModalOpen ? 'true' : undefined}
+        aria-hidden={shellObscured ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
       >
         {/* Settings owns the full window chrome. Keep this empty header mounted
