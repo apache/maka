@@ -1,21 +1,43 @@
 import type {
+  SessionSendProjection,
   TaskSubmissionReadinessDimension,
   TaskSubmissionReadinessSnapshot,
   UiLocale,
 } from '@maka/core';
+
+export function resolveTaskReadinessModelTarget(
+  session: { llmConnectionSlug: string; model: string } | undefined,
+  sendOutcome: SessionSendProjection | undefined,
+  newTaskTarget: { llmConnectionSlug: string; model: string } | undefined,
+): { connectionSlug?: string; model?: string } {
+  if (session && sendOutcome?.kind === 'rebind') {
+    return { connectionSlug: sendOutcome.connectionSlug, model: sendOutcome.model };
+  }
+  return {
+    connectionSlug: session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
+    model: session?.model ?? newTaskTarget?.model,
+  };
+}
 
 export interface TaskReadinessNotice {
   tone: 'warning' | 'destructive';
   title: string;
   description: string;
   actionLabel: string;
-  action: 'retry' | 'new_task';
+  action: 'retry' | 'workspace_picker';
 }
 
 export function isTaskSubmissionHardBlocked(
   snapshot: TaskSubmissionReadinessSnapshot | undefined,
+  options: { ignoreModelTarget?: boolean } = {},
 ): boolean {
-  return snapshot?.state === 'repair_required' || snapshot?.state === 'unavailable';
+  return (
+    snapshot?.blockers.some(
+      (blocker) =>
+        blocker.state !== 'unknown' &&
+        !(options.ignoreModelTarget === true && blocker.id === 'model_target'),
+    ) === true
+  );
 }
 
 /** Model blockers already have connection-specific recovery surfaces. */
@@ -54,19 +76,20 @@ function noticeForBlocker(
           action: 'retry',
         };
   }
+  const action = blocker.repairTarget?.kind === 'workspace_picker' ? 'workspace_picker' : 'retry';
   return locale === 'zh'
     ? {
         tone: 'destructive',
         title: '当前任务的工作区不可用。',
-        description: '原目录可能已移动、删除或无法访问。请新建任务并选择可用工作区。',
-        actionLabel: '新建任务',
-        action: 'new_task',
+        description: '原目录可能已移动、删除或无法访问。请选择可用工作区。',
+        actionLabel: action === 'workspace_picker' ? '选择工作区' : '重新检测',
+        action,
       }
     : {
         tone: 'destructive',
         title: 'This task workspace is unavailable.',
-        description: 'The folder may have moved, been deleted, or become inaccessible. Start a new task with an available workspace.',
-        actionLabel: 'New task',
-        action: 'new_task',
+        description: 'The folder may have moved, been deleted, or become inaccessible. Choose an available workspace.',
+        actionLabel: action === 'workspace_picker' ? 'Choose workspace' : 'Check again',
+        action,
       };
 }

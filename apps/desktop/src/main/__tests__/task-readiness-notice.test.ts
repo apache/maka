@@ -4,11 +4,29 @@ import type { TaskSubmissionReadinessSnapshot } from '@maka/core';
 import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
+  resolveTaskReadinessModelTarget,
 } from '../../renderer/task-readiness-notice.js';
+
+test('an unlocked stale session checks the send projection rebind target', () => {
+  assert.deepEqual(
+    resolveTaskReadinessModelTarget(
+      { llmConnectionSlug: 'stale', model: 'removed-model' },
+      { kind: 'rebind', connectionSlug: 'healthy', model: 'ready-model' },
+      undefined,
+    ),
+    { connectionSlug: 'healthy', model: 'ready-model' },
+  );
+});
 
 test('confirmed repair and unavailable states block, while loading uncertainty does not', () => {
   assert.equal(isTaskSubmissionHardBlocked(snapshot('repair_required', 'model_target')), true);
   assert.equal(isTaskSubmissionHardBlocked(snapshot('unavailable', 'runtime')), true);
+  assert.equal(
+    isTaskSubmissionHardBlocked(snapshot('repair_required', 'model_target'), {
+      ignoreModelTarget: true,
+    }),
+    false,
+  );
   assert.equal(isTaskSubmissionHardBlocked(snapshot('unknown', 'runtime')), false);
   assert.equal(isTaskSubmissionHardBlocked(undefined), false);
 });
@@ -19,7 +37,7 @@ test('runtime and workspace blockers produce actionable localized notices', () =
   assert.match(runtime?.title ?? '', /runtime/i);
 
   const workspace = deriveTaskReadinessNotice(snapshot('unavailable', 'workspace'), 'zh');
-  assert.equal(workspace?.action, 'new_task');
+  assert.equal(workspace?.action, 'workspace_picker');
   assert.match(workspace?.title ?? '', /工作区/);
 });
 
@@ -44,6 +62,7 @@ function snapshot(
           ? ('workspace_execution' as const)
           : ('connection_readiness' as const),
     checkedAt: 1,
+    ...(id === 'workspace' ? { repairTarget: { kind: 'workspace_picker' as const } } : {}),
   };
   return {
     checkedAt: 1,

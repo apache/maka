@@ -59,6 +59,7 @@ import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
+  resolveTaskReadinessModelTarget,
 } from './task-readiness-notice';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
@@ -720,6 +721,9 @@ function AppShellContent({
   // live in useShellChatModel (pure derivation of the snapshot + active session);
   // openSettingsSection is injected so the notice can wrap the derived click
   // target.
+  const activeSessionSendOutcome = activeSession
+    ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
+    : undefined;
   const {
     chatModelChoices,
     activeConnection,
@@ -740,9 +744,7 @@ function AppShellContent({
     uiLocale,
     connections,
     snapshotChoices: onboarding.snapshot?.chatModelChoices,
-    sessionSendOutcome: activeSession
-      ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
-      : undefined,
+    sessionSendOutcome: activeSessionSendOutcome,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
     activeSession,
@@ -1759,8 +1761,7 @@ function AppShellContent({
     onSelectNoProject: selectNoProject,
   };
   const taskReadinessRequest = {
-    connectionSlug: activeSession?.llmConnectionSlug ?? newChatModel?.llmConnectionSlug,
-    model: activeSession?.model ?? newChatModel?.model,
+    ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
     cwd: activeSession?.cwd ?? projectInfo?.projectPath,
   };
   const taskReadiness = useTaskSubmissionReadiness(
@@ -1768,7 +1769,11 @@ function AppShellContent({
     onboarding.snapshot,
   );
   const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
-  const taskSubmissionHardBlocked = isTaskSubmissionHardBlocked(taskReadiness.snapshot);
+  const ignoreTaskReadinessModelTarget =
+    activeSession !== undefined && activeSessionSendOutcome?.kind !== 'blocked';
+  const taskSubmissionHardBlocked = isTaskSubmissionHardBlocked(taskReadiness.snapshot, {
+    ignoreModelTarget: ignoreTaskReadinessModelTarget,
+  });
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
@@ -1912,6 +1917,13 @@ function AppShellContent({
     upsertSessionSummary,
   });
 
+  async function taskSubmissionReadyAtSend(): Promise<boolean> {
+    const snapshot = await taskReadiness.checkNow();
+    return !isTaskSubmissionHardBlocked(snapshot, {
+      ignoreModelTarget: ignoreTaskReadinessModelTarget,
+    });
+  }
+
   async function sendWithAttachments(
     text: string,
     metadata?: { workspaceFileReferences?: readonly WorkspaceFileReferencePosition[] },
@@ -2011,6 +2023,7 @@ function AppShellContent({
       }
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      if (!(await taskSubmissionReadyAtSend())) return false;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
@@ -2053,6 +2066,7 @@ function AppShellContent({
       }
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      if (!(await taskSubmissionReadyAtSend())) return false;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
@@ -2075,6 +2089,7 @@ function AppShellContent({
       ? revisionDraftRef.current
       : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    if (!(await taskSubmissionReadyAtSend())) return false;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
@@ -2978,8 +2993,12 @@ function AppShellContent({
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
                 taskReadinessNotice={taskReadinessNotice}
                 onTaskReadinessAction={
-                  taskReadinessNotice?.action === 'new_task'
-                    ? openNewTaskSurface
+                  taskReadinessNotice?.action === 'workspace_picker'
+                    ? activeSession
+                      ? openNewTaskSurface
+                      : () => {
+                          void addProject();
+                        }
                     : taskReadiness.refresh
                 }
                 showOnboardingHero={showOnboardingHero}
