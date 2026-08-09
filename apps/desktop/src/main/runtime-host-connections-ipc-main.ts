@@ -219,26 +219,27 @@ export function registerRuntimeHostConnectionsIpc(
       let current: ReturnType<typeof requireConnection>;
       try {
         current = requireConnection(catalog, slug);
-      } catch {
-        // Already gone — treat as success for UX (list will refresh).
-        deps.emitConnectionListChanged();
-        return;
+      } catch (error) {
+        // Only treat a missing slug as success. Invalid input must still fail.
+        if (error instanceof Error && error.message.startsWith('No such Connection:')) {
+          deps.emitConnectionListChanged();
+          return;
+        }
+        throw error;
       }
       const result = await deps.client.removeConnection({
         connectionId: current.connectionId,
         revision: current.revision,
       });
+      // RemoveCatalogConnectionResult is only committed | connection_stale.
       if (result.kind === 'committed') {
         deps.emitConnectionListChanged();
         return;
       }
-      if (result.kind === 'connection_stale' && attempt < maxAttempts - 1) {
+      if (attempt < maxAttempts - 1) {
         continue;
       }
-      if (result.kind === 'connection_stale') {
-        throw new Error('连接状态已更新，请刷新列表后再删除');
-      }
-      throw new Error(`Unable to delete Connection: ${result.kind}`);
+      throw new Error('连接状态已更新，请刷新列表后再删除');
     }
   });
   deps.ipcMain.handle('connections:fetchModels', async (_event, slug: unknown) => {

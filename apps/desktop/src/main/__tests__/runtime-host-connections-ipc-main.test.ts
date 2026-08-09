@@ -52,6 +52,62 @@ test('retries connection delete after a stale revision instead of failing perman
   assert.equal(removals, 2);
 });
 
+test('treats a missing connection as a successful delete without calling remove', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let removals = 0;
+  let listChanged = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        revision: 1,
+        defaultTarget: null,
+        connections: [],
+      }),
+      removeConnection: async () => {
+        removals += 1;
+        return { kind: 'committed', catalogRevision: 2 };
+      },
+    } as never,
+    emitConnectionListChanged() {
+      listChanged += 1;
+    },
+  });
+
+  await handlers.get('connections:delete')?.({}, 'already-gone');
+  assert.equal(removals, 0);
+  assert.equal(listChanged, 1);
+});
+
+test('rejects invalid connection slug input instead of treating it as already deleted', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        revision: 1,
+        defaultTarget: null,
+        connections: [],
+      }),
+      removeConnection: async () => ({ kind: 'committed', catalogRevision: 2 }),
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await assert.rejects(
+    async () => handlers.get('connections:delete')?.({}, 42),
+    /Invalid connection slug|connection slug/i,
+  );
+});
+
 test('reports an existing but unconfigured credential as missing', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   registerRuntimeHostConnectionsIpc({
