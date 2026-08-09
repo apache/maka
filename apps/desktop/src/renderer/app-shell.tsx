@@ -71,7 +71,6 @@ import {
   findPreferredSideChatWorkbarTab,
   terminalRefFromWorkbarTab,
   terminalSessionWorkbarTabId,
-  staticSessionWorkbarTabId,
 } from './session-workbar-tabs';
 import {
   consumeCompanionInitialPrompt,
@@ -181,7 +180,6 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
-import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { recoverOrphanedCompanionCopies } from './quote-companion-core';
 import { useSideConversationWorkspace } from './use-side-conversation-workspace';
 
@@ -1324,9 +1322,6 @@ function AppShellContent({
     pinWorkbarTab,
     openWorkbarLauncher,
   } = useShellLayout();
-  const workbarPanelsStateRef = useRef(workbarPanelsState);
-  workbarPanelsStateRef.current = workbarPanelsState;
-
   const revealWorkbarLauncher = useCallback(() => {
     setWorkbarCollapsed(false);
     openWorkbarLauncher('right');
@@ -1389,55 +1384,6 @@ function AppShellContent({
         : [],
     [activeId, workbarCopy],
   );
-  useEffect(() => {
-    return window.maka.artifacts.subscribeChanges((event) => {
-      if (
-        event.reason !== 'created' ||
-        event.sessionId !== activeIdRef.current ||
-        navSelectionRef.current.section !== 'sessions'
-      ) {
-        return;
-      }
-      const expectedSessionId = event.sessionId;
-      void window.maka.artifacts
-        .get(expectedSessionId, event.artifactId)
-        .then((artifact) => {
-          if (
-            !artifact ||
-            activeIdRef.current !== expectedSessionId ||
-            navSelectionRef.current.section !== 'sessions' ||
-            filterUserVisibleArtifacts([artifact]).length === 0
-          ) {
-            return;
-          }
-          const filesTabId = staticSessionWorkbarTabId('files');
-          const current = workbarPanelsStateRef.current;
-          const placement = current.right.tabs.some(
-            (tab) => tab.id === filesTabId,
-          )
-            ? 'right'
-            : current.bottom.tabs.some((tab) => tab.id === filesTabId)
-              ? 'bottom'
-              : 'right';
-          openDynamicWorkbarTab(
-            {
-              id: filesTabId,
-              kind: 'files',
-              preview: true,
-            },
-            placement,
-          );
-          if (placement === 'right') setWorkbarCollapsed(false);
-          else setBottomPanelOpen(true);
-        })
-        .catch(() => {});
-    });
-  }, [
-    openDynamicWorkbarTab,
-    setBottomPanelOpen,
-    setWorkbarCollapsed,
-  ]);
-
   const openSideConversationWithQuote = useCallback(
     (quote: QuoteRef) => {
       if (!activeId) return;
