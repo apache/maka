@@ -75,6 +75,11 @@
   text-align: left;
   box-shadow: none;
 }
+.maka-quote-chip-text-body {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
 .maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }

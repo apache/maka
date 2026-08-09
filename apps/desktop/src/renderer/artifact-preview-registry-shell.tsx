@@ -113,7 +113,27 @@ export function UnsupportedArtifactPreview(props: {
       status="info"
       role="status"
       title={copy.title}
-      description={copy.description}
+      description={(
+        <>
+          <p className="maka-artifact-preview-unsupported-body">{copy.description}</p>
+          <dl className="maka-artifact-preview-unsupported-meta">
+            <div>
+              <dt>{catalog.registry.name}</dt>
+              <dd>{props.input.name || catalog.registry.unnamed}</dd>
+            </div>
+            {props.input.mimeType ? (
+              <div>
+                <dt>{catalog.registry.type}</dt>
+                <dd>{props.input.mimeType}</dd>
+              </div>
+            ) : null}
+            <div>
+              <dt>{catalog.registry.size}</dt>
+              <dd>{formatPreviewSize(props.input.sizeBytes, locale)}</dd>
+            </div>
+          </dl>
+        </>
+      )}
       endContent={props.onShowInFolder ? (
         <Button
           variant="secondary"

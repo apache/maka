@@ -498,7 +498,11 @@ function SortableWorkbarTab(props: {
           variant="ghost"
           size="sm"
           role="tab"
-          label={label}
+          label={
+            props.count !== undefined
+              ? `${label}, ${props.count}`
+              : label
+          }
           aria-selected={props.selected}
           aria-busy={props.busy || props.running || undefined}
           tabIndex={props.selected ? 0 : -1}
@@ -645,6 +649,14 @@ function WorkbarLauncher(props: {
           )
           ?.focus();
       });
+      return;
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      // Item + role="menuitem" puts onClick on the row div (parent-role mode)
+      // and does not render a keyboard-activatable button — the menu parent
+      // must activate the focused item.
+      event.preventDefault();
+      const focused = items[currentIndex >= 0 ? currentIndex : 0];
+      focused?.click();
       return;
     }
     const target = items[targetIndex];

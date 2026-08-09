@@ -194,6 +194,10 @@ export function CustomPetSettingsSection() {
         )}
       />
 
+      {loading && library.pets.length === 0 ? (
+        <EmptyState isCompact title={copy.loading} />
+      ) : null}
+
       {!loading && library.pets.length === 0 ? (
         <EmptyState isCompact title={copy.empty} description={copy.emptyHelp} />
       ) : null}

@@ -21,13 +21,15 @@ export function QuoteRefChip(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
-  const textRef = useRef<HTMLButtonElement>(null);
+  // Measure the clipped text node itself — Astryx Button wraps children in an
+  // internal label span, so Button.root scrollWidth no longer reflects ellipsis.
+  const measureRef = useRef<HTMLSpanElement>(null);
   const label = props.quote.label;
   const displayText = stripQuoteHeadingMarkers(props.quote.text);
   const full = label ? `${label}: ${displayText}` : displayText;
 
   useLayoutEffect(() => {
-    const el = textRef.current;
+    const el = measureRef.current;
     if (!el || expanded) return;
     setClipped(el.scrollWidth > el.clientWidth + 1);
   }, [expanded, displayText, label]);
@@ -52,21 +54,28 @@ export function QuoteRefChip(props: {
         aria-hidden="true"
       />
       <Button
-        ref={textRef}
         type="button"
         variant="ghost"
         size="sm"
         label={a11yLabel}
         className={cn(
           'maka-quote-chip-text',
-          expanded ? 'maka-quote-chip-text-expanded' : 'maka-quote-chip-text-clipped',
+          expanded && 'maka-quote-chip-text-expanded',
         )}
         tabIndex={canExpand ? undefined : -1}
         aria-expanded={canExpand ? expanded : undefined}
         onClick={canExpand ? () => setExpanded((open) => !open) : undefined}
       >
-        {label ? <span className="maka-quote-chip-label">{label} </span> : null}
-        {displayText}
+        <span
+          ref={measureRef}
+          className={cn(
+            'maka-quote-chip-text-body',
+            !expanded && 'maka-quote-chip-text-clipped',
+          )}
+        >
+          {label ? <span className="maka-quote-chip-label">{label} </span> : null}
+          {displayText}
+        </span>
       </Button>
       {props.onRemove ? (
         <IconButton
