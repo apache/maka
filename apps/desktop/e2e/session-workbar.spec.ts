@@ -1,4 +1,46 @@
-import { test, expect } from './fixtures';
+import { COMPOSER_INPUT, test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+async function openGitChanges(page: Page) {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('create review session');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: create review session/)).toBeVisible();
+  await page.getByRole('button', { name: '展开会话工作栏' }).click();
+  await page.getByRole('button', { name: '打开工作栏标签' }).first().click();
+  await page.getByRole('menuitem', { name: '变更' }).click();
+  return page.getByRole('region', { name: 'Git 变更' });
+}
+
+test('Git changes show branch files as a collapsed single-open list', async ({
+  gitReviewWindow,
+}) => {
+  const panel = await openGitChanges(gitReviewWindow.page);
+  const feature = panel.getByRole('button', { name: /feature\.txt/ });
+  const base = panel.getByRole('button', { name: /base\.txt/ });
+  await expect(feature).toHaveAttribute('aria-expanded', 'false');
+  await expect(base).toHaveAttribute('aria-expanded', 'false');
+
+  await feature.click();
+  await expect(feature).toHaveAttribute('aria-expanded', 'true');
+  await base.click();
+  await expect(base).toHaveAttribute('aria-expanded', 'true');
+  await expect(feature).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('Git changes re-read the workspace after the app regains focus', async ({
+  gitReviewWindow,
+}) => {
+  const panel = await openGitChanges(gitReviewWindow.page);
+  await expect(panel.getByText('新增 4 行')).toBeVisible();
+
+  await writeFile(join(gitReviewWindow.projectRoot, 'base.txt'), 'base\nunstaged\nexternal\n');
+  await gitReviewWindow.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+  await expect(panel.getByText('新增 5 行')).toBeVisible();
+});
 
 test('generated files use list-to-preview navigation with a compact action menu', async ({ artifactPaneWindow: page }) => {
   const pane = page.getByRole('region', { name: '生成文件预览面板' });

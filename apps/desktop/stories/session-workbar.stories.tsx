@@ -137,6 +137,52 @@ const artifactText: Record<string, string> = {
   'artifact-notes': '# Conversation review\n\n- Long transcript\n- Narrow viewport',
 };
 
+const gitReviewFiles: GitReviewSnapshot['files'] = [
+  {
+    path: 'apps/desktop/src/renderer/session-review-panel.tsx',
+    status: 'modified',
+    additions: 28,
+    deletions: 94,
+    diff: [
+      'diff --git a/apps/desktop/src/renderer/session-review-panel.tsx b/apps/desktop/src/renderer/session-review-panel.tsx',
+      '--- a/apps/desktop/src/renderer/session-review-panel.tsx',
+      '+++ b/apps/desktop/src/renderer/session-review-panel.tsx',
+      '@@ -30,8 +30,6 @@',
+      "-type ReviewSource = GitReviewSource | 'last-turn';",
+      '+const REVIEW_FILE_PAGE_SIZE = 20;',
+      '-const [messages, setMessages] = useState<StoredMessage[]>([]);',
+      "+source: 'branch',",
+    ].join('\n'),
+  },
+  {
+    path: 'apps/desktop/src/renderer/locales/conversation-copy.ts',
+    status: 'modified',
+    additions: 17,
+    deletions: 4,
+    diff: [
+      'diff --git a/apps/desktop/src/renderer/locales/conversation-copy.ts b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '--- a/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '+++ b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '@@ -372,1 +372,1 @@',
+      "-      review: '审阅',",
+      "+      review: '变更',",
+    ].join('\n'),
+  },
+  {
+    path: 'apps/desktop/src/main/git-review-main.ts',
+    status: 'modified',
+    additions: 18,
+    deletions: 0,
+    diff: [
+      'diff --git a/apps/desktop/src/main/git-review-main.ts b/apps/desktop/src/main/git-review-main.ts',
+      '--- a/apps/desktop/src/main/git-review-main.ts',
+      '+++ b/apps/desktop/src/main/git-review-main.ts',
+      '@@ -56,1 +56,4 @@',
+      "+const branchComparison = await runGit(repositoryRoot, ['merge-base', baseBranch, 'HEAD']);",
+    ].join('\n'),
+  },
+];
+
 const gitReviewSnapshot: GitReviewSnapshot = {
   source: 'branch',
   repositoryRoot: '/Users/reviewer/maka-agent',
@@ -144,56 +190,10 @@ const gitReviewSnapshot: GitReviewSnapshot = {
   baseBranch: 'main',
   baseBranchOptions: ['main', 'release/0.1'],
   revision: 'storybook-git-review',
-  additions: 63,
-  deletions: 98,
+  additions: gitReviewFiles.reduce((total, file) => total + file.additions, 0),
+  deletions: gitReviewFiles.reduce((total, file) => total + file.deletions, 0),
   truncated: false,
-  files: [
-    {
-      path: 'apps/desktop/src/renderer/session-review-panel.tsx',
-      status: 'modified',
-      additions: 28,
-      deletions: 94,
-      diff: [
-        'diff --git a/apps/desktop/src/renderer/session-review-panel.tsx b/apps/desktop/src/renderer/session-review-panel.tsx',
-        '--- a/apps/desktop/src/renderer/session-review-panel.tsx',
-        '+++ b/apps/desktop/src/renderer/session-review-panel.tsx',
-        '@@ -30,8 +30,6 @@',
-        "-type ReviewSource = GitReviewSource | 'last-turn';",
-        '+const REVIEW_FILE_PAGE_SIZE = 20;',
-        '-const [messages, setMessages] = useState<StoredMessage[]>([]);',
-        '+const [source, setSource] = useState<GitReviewSource>(\'branch\');',
-      ].join('\n'),
-    },
-    {
-      path: 'apps/desktop/src/renderer/locales/conversation-copy.ts',
-      status: 'modified',
-      additions: 17,
-      deletions: 4,
-      diff: [
-        'diff --git a/apps/desktop/src/renderer/locales/conversation-copy.ts b/apps/desktop/src/renderer/locales/conversation-copy.ts',
-        '--- a/apps/desktop/src/renderer/locales/conversation-copy.ts',
-        '+++ b/apps/desktop/src/renderer/locales/conversation-copy.ts',
-        '@@ -372,1 +372,1 @@',
-        "-      review: '审阅',",
-        "+      review: '变更',",
-      ].join('\n'),
-    },
-    {
-      path: 'apps/desktop/src/main/__tests__/conversation-review-copy.test.ts',
-      status: 'untracked',
-      additions: 18,
-      deletions: 0,
-      diff: [
-        'diff --git a/apps/desktop/src/main/__tests__/conversation-review-copy.test.ts b/apps/desktop/src/main/__tests__/conversation-review-copy.test.ts',
-        'new file mode 100644',
-        '--- /dev/null',
-        '+++ b/apps/desktop/src/main/__tests__/conversation-review-copy.test.ts',
-        '@@ -0,0 +1,2 @@',
-        "+describe('conversation changes copy', () => {",
-        "+  it('describes one Git-backed changes surface', () => {});",
-      ].join('\n'),
-    },
-  ],
+  files: gitReviewFiles,
 };
 
 const populatedTrace: SessionTrace = {

@@ -212,7 +212,7 @@ async function withE2eWindow(
     gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
   },
-  use: (page: Page) => Promise<void>,
+  use: (page: Page, context: { userDataDir: string }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -275,7 +275,7 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page);
+    await use(page, { userDataDir });
   } finally {
     try {
       if (app) await closeElectronApplication(app, 5_000);
@@ -288,6 +288,7 @@ async function withE2eWindow(
 export const test = base.extend<{
   window: Page;
   artifactPaneWindow: Page;
+  gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
@@ -303,6 +304,22 @@ export const test = base.extend<{
         locale: 'zh',
       },
       use,
+    );
+  },
+  gitReviewWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: COMPOSER_INPUT,
+        locale: 'zh',
+        gitReviewExtraFiles: 0,
+      },
+      async (page, context) => {
+        await use({
+          page,
+          projectRoot: path.join(context.userDataDir, 'git-review-project'),
+        });
+      },
     );
   },
   // Project + workspace Skills for draft/chip journeys.

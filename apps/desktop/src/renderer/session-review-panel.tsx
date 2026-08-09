@@ -5,6 +5,7 @@ import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
+import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
 import {
   displayRedactSecrets,
@@ -18,6 +19,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
 const REVIEW_DIFF_LINE_CAP = 500;
+const REVIEW_SKELETON_ROWS = [0, 1, 2, 3] as const;
 
 function boundedDiff(diff: string) {
   const lines = displayRedactSecrets(diff).split('\n');
@@ -77,10 +79,18 @@ export function SessionReviewPanel(props: {
         timer = window.setTimeout(() => void load(), 250);
       },
     );
+    const refreshAfterExternalChange = () => {
+      if (document.visibilityState === 'hidden') return;
+      void load();
+    };
+    window.addEventListener('focus', refreshAfterExternalChange);
+    document.addEventListener('visibilitychange', refreshAfterExternalChange);
     void load();
     return () => {
       revisionRef.current += 1;
       if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('focus', refreshAfterExternalChange);
+      document.removeEventListener('visibilitychange', refreshAfterExternalChange);
       unsubscribe();
     };
   }, [load, props.active, props.sessionId]);
@@ -101,11 +111,11 @@ export function SessionReviewPanel(props: {
         ? copy.notGitRepository
         : gitResult.reason === 'workspace_unavailable'
           ? copy.workspaceUnavailable
-        : gitResult.reason === 'unborn_repository'
-          ? copy.unbornRepository
-          : gitResult.reason === 'invalid_base_branch'
-            ? copy.invalidBaseBranch
-          : copy.gitFailed;
+          : gitResult.reason === 'unborn_repository'
+            ? copy.unbornRepository
+            : gitResult.reason === 'invalid_base_branch'
+              ? copy.invalidBaseBranch
+              : copy.gitFailed;
   const empty = !loading && !error && !sourceError && gitFiles.length === 0;
   useEffect(() => {
     setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
@@ -116,10 +126,25 @@ export function SessionReviewPanel(props: {
       variant="transparent"
       padding={4}
       className="maka-session-review-panel"
+      role="region"
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
       <VStack gap={3} align="stretch" width="100%">
+        {loading && gitResult === null ? (
+          <VStack
+            gap={2}
+            align="stretch"
+            aria-hidden="true"
+          >
+            <Skeleton width="42%" height={16} radius="rounded" index={0} />
+            <div className="maka-session-review-loading-list">
+              {REVIEW_SKELETON_ROWS.map((index) => (
+                <Skeleton key={index} width="100%" height={36} radius={0} index={index + 1} />
+              ))}
+            </div>
+          </VStack>
+        ) : null}
         {gitSnapshot && gitFiles.length > 0 ? (
           <VStack gap={1} align="start" className="maka-session-review-summary">
             <Text type="label">{copy.changedFiles(stats.files)}</Text>
@@ -152,7 +177,21 @@ export function SessionReviewPanel(props: {
         ) : null}
         {/* A source that cannot be read is a failure, not an absence — it takes
             the same Banner the load error above does, not an EmptyState. */}
-        {sourceError ? <Banner status="error" title={sourceError} /> : null}
+        {sourceError ? (
+          <Banner
+            status="error"
+            title={sourceError}
+            endContent={
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.retry}
+                isLoading={loading}
+                onClick={() => void load()}
+              />
+            }
+          />
+        ) : null}
         {gitSnapshot?.truncated ? (
           <Banner status="info" title={copy.truncated} />
         ) : null}
@@ -172,6 +211,8 @@ export function SessionReviewPanel(props: {
               type="single"
               hasDividers
               density="compact"
+              role="list"
+              aria-label={copy.changedFiles(gitFiles.length)}
             >
               {visibleGitFiles.map((file) => {
                 const preview = boundedDiff(file.diff);
@@ -180,8 +221,10 @@ export function SessionReviewPanel(props: {
                     key={`${gitSnapshot?.revision}:${file.path}`}
                     value={file.path}
                     className="maka-session-review-file"
+                    role="listitem"
                     trigger={
                       <HStack
+                        as="span"
                         gap={2}
                         align="center"
                         justify="between"
@@ -196,6 +239,7 @@ export function SessionReviewPanel(props: {
                           {file.path}
                         </Text>
                         <HStack
+                          as="span"
                           gap={2}
                           align="center"
                           className="maka-session-review-file-stats"

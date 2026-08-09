@@ -367,19 +367,13 @@
   overflow: hidden;
   border: var(--border-width-hairline) solid var(--border-soft);
   border-radius: var(--radius-surface);
-}
-
-.maka-session-review-file > button {
   padding-inline: var(--space-3);
 }
 
-.maka-session-review-file > button > :first-child {
-  min-width: 0;
-  flex: 1;
-}
-
-.maka-session-review-file > div {
-  padding: 0 var(--space-3) var(--space-3);
+.maka-session-review-loading-list {
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-surface);
 }
 
 .maka-session-review-file-trigger {
@@ -404,7 +398,7 @@
   max-height: 360px;
   overflow: auto;
   border-radius: var(--radius-control);
-  background: var(--surface-raised);
+  background: var(--surface-sunken);
 }
 
 .maka-session-review-more {
