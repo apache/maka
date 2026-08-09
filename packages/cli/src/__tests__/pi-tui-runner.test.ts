@@ -55,7 +55,7 @@ import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
 import {
   assertBottomPickerPlacement,
   FakeTerminal,
-  inputSurfaceRows,
+  findInputSurfaceRows,
   latestPlainLineContaining,
   plainTerminalOutput,
   WAIT_BUDGET_MS,
@@ -5476,7 +5476,7 @@ describe('Maka Pi TUI runner', () => {
     // Sentinel render: a wrongly-opened picker would be on screen by the time
     // the typed char paints.
     terminal.input('z');
-    await waitFor(() => editorInputText(terminal).endsWith('z'));
+    await waitFor(() => editorInputText(terminal)?.endsWith('z') === true);
     assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'), false);
 
     exitMaka(terminal);
@@ -6489,9 +6489,11 @@ function bellCount(terminal: FakeTerminal): number {
   return terminal.writes.filter((write) => write === '\x07').length;
 }
 
-function editorInputText(terminal: FakeTerminal): string {
+function editorInputText(terminal: FakeTerminal): string | undefined {
   const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-  const [topEditorBorderIndex, bottomEditorBorderIndex] = inputSurfaceRows(lines);
+  const inputRows = findInputSurfaceRows(lines);
+  if (!inputRows) return undefined;
+  const [topEditorBorderIndex, bottomEditorBorderIndex] = inputRows;
   return lines
     .slice(topEditorBorderIndex + 1, bottomEditorBorderIndex)
     .join('\n')
