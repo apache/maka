@@ -2168,11 +2168,12 @@ function AppShellContent({
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || externalImportOpen;
+  const shellObscured = hasModalOpen || settingsOpen;
 
   useEffect(() => {
     const handleWorkbarShortcut = (event: KeyboardEvent) => {
       if (
-        hasModalOpen ||
+        shellObscured ||
         navSelectionRef.current.section !== 'sessions' ||
         !activeId
       ) {
@@ -2206,7 +2207,7 @@ function AppShellContent({
     };
     window.addEventListener('keydown', handleWorkbarShortcut, true);
     return () => window.removeEventListener('keydown', handleWorkbarShortcut, true);
-  }, [activeId, hasModalOpen, requestOpenWorkbarTab]);
+  }, [activeId, requestOpenWorkbarTab, shellObscured]);
 
   useAppShellNavRefSync({
     navSelection,
@@ -2522,48 +2523,54 @@ function AppShellContent({
         aria-hidden={hasModalOpen ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
       >
-        <AppShellTopbarActions
-          sidebarCollapsed={sessionListCollapsed}
-          onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
-          sidebarToggleHidden={settingsOpen}
-          onOpenSearchModal={() => setSearchModalOpen(true)}
-        />
-        {/* Only a session has an identity to state. The other views name
-            themselves in the nav column they are selected from, and the
-            new-task surface still shows its project in the composer's
-            WorkspacePicker — which stops rendering at the exact moment this
-            takes over, when the first message creates the session. */}
-        {/* `activeSessionForView`, not `activeSession`: opening or creating a
-            session runs a few hundred ms on a placeholder record while the real
-            summary loads, and the name this replaced (the context layer's) was
-            showing through that window. Hung on the real record alone, 新任务
-            was named nowhere for the length of it. */}
-        {navSelection.section === 'sessions' && activeSessionForView && (
-          <TitlebarSessionIdentity
-            /* Keyed by session: the open rename is local state and the field is
-               uncontrolled, so a switch that left the instance mounted would
-               carry one session's half-typed name — and its commit — onto the
-               next one. A remount ties the edit to the session it belongs to. */
-            key={activeSessionForView.id}
-            sessionName={activeSessionForView.name}
-            onRenameSession={(name) => {
-              void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
-            }}
-            project={
-              titlebarProjectName
-                ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
-                : undefined
-            }
-            parentSession={titlebarParentSession}
-          />
-        )}
-        {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-          <AppShellWorkspaceTopActions
-            workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-            workbarCollapsed={workbarCollapsed}
-            onOpenWorkbarLauncher={revealWorkbarLauncher}
-            onToggleWorkbar={toggleWorkbar}
-          />
+        {/* Settings owns the full window chrome. Keep this empty header mounted
+            as the frameless window's drag authority, but remove every control
+            and identity belonging to the obscured session shell. */}
+        {!settingsOpen && (
+          <>
+            <AppShellTopbarActions
+              sidebarCollapsed={sessionListCollapsed}
+              onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
+              onOpenSearchModal={() => setSearchModalOpen(true)}
+            />
+            {/* Only a session has an identity to state. The other views name
+                themselves in the nav column they are selected from, and the
+                new-task surface still shows its project in the composer's
+                WorkspacePicker — which stops rendering at the exact moment this
+                takes over, when the first message creates the session. */}
+            {/* `activeSessionForView`, not `activeSession`: opening or creating a
+                session runs a few hundred ms on a placeholder record while the real
+                summary loads, and the name this replaced (the context layer's) was
+                showing through that window. Hung on the real record alone, 新任务
+                was named nowhere for the length of it. */}
+            {navSelection.section === 'sessions' && activeSessionForView && (
+              <TitlebarSessionIdentity
+                /* Keyed by session: the open rename is local state and the field is
+                   uncontrolled, so a switch that left the instance mounted would
+                   carry one session's half-typed name — and its commit — onto the
+                   next one. A remount ties the edit to the session it belongs to. */
+                key={activeSessionForView.id}
+                sessionName={activeSessionForView.name}
+                onRenameSession={(name) => {
+                  void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
+                }}
+                project={
+                  titlebarProjectName
+                    ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
+                    : undefined
+                }
+                parentSession={titlebarParentSession}
+              />
+            )}
+            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+              <AppShellWorkspaceTopActions
+                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+                workbarCollapsed={workbarCollapsed}
+                onOpenWorkbarLauncher={revealWorkbarLauncher}
+                onToggleWorkbar={toggleWorkbar}
+              />
+            )}
+          </>
         )}
       </header>
       <AstryxAppShell
@@ -2576,8 +2583,8 @@ function AppShellContent({
         height="fill"
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
-        aria-hidden={hasModalOpen ? 'true' : undefined}
-        inert={hasModalOpen ? true : undefined}
+        aria-hidden={shellObscured ? 'true' : undefined}
+        inert={shellObscured ? true : undefined}
         sideNav={
           <SessionListPanel
             collapseHandleRef={sessionSideNavHandleRef}
@@ -3022,7 +3029,7 @@ function AppShellContent({
                 activeId={activeId}
                 rightCollapsed={workbarCollapsed}
                 bottomOpen={bottomPanelOpen}
-                hidden={hasModalOpen}
+                hidden={shellObscured}
                 rightWidth={workbarWidth}
                 bottomHeight={bottomPanelHeight}
                 onDismissPanel={(placement) => {
@@ -3085,7 +3092,7 @@ function AppShellContent({
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>
-      {!hasModalOpen && !settingsOpen && (
+      {!shellObscured && (
         <CustomPetCompanion
           activityState={petActivityState}
           completionNonce={petCompletionNonce}
