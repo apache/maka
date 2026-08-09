@@ -6,9 +6,15 @@ import type {
 } from './git-workspace-service.js';
 
 export interface ManagedBaselineReceiptAuthorityInternal {
-  issue(binding: ManagedWorkspaceBinding): Promise<ManagedWorkspaceBaselineReceiptV1>;
-  require(input: CreateManagedWorkspaceFromSourceInput): Promise<ManagedWorkspaceBaselineReceiptV1>;
-  verify(receipt: ManagedWorkspaceBaselineReceiptV1): Promise<void>;
+  issue(
+    binding: ManagedWorkspaceBinding,
+    abortSignal?: AbortSignal,
+  ): Promise<ManagedWorkspaceBaselineReceiptV1>;
+  require(
+    input: CreateManagedWorkspaceFromSourceInput,
+    abortSignal?: AbortSignal,
+  ): Promise<ManagedWorkspaceBaselineReceiptV1>;
+  verify(receipt: ManagedWorkspaceBaselineReceiptV1, abortSignal?: AbortSignal): Promise<void>;
 }
 
 const receiptAuthorities = new WeakMap<

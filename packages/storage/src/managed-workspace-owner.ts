@@ -34,6 +34,7 @@ import {
   computeManagedDependencyEnvironmentIdentity,
   createManagedDependencyEnvironmentAuthority,
   type ManagedDependencyEnvironmentAuthority,
+  type ManagedDependencyEnvironmentFailpoint,
   type ManagedDependencyEnvironmentProducer,
   type ManagedDependencyEnvironmentProducerInput,
 } from './managed-dependency-environment.js';
@@ -92,6 +93,7 @@ export interface OpenManagedWorkspaceOwnerInput {
 
 export type ManagedWorkspaceOwnerFailpoint =
   | GitWorkspaceServiceFailpoint
+  | ManagedDependencyEnvironmentFailpoint
   | 'after_initial_store_root_validation'
   | 'after_baseline_authority_commit'
   | 'after_post_commit_artifact_verification'
@@ -110,15 +112,21 @@ export interface ManagedWorkspaceExecutionOptions {
   readonly abortSignal?: AbortSignal;
 }
 
+export interface ManagedWorkspaceAdmissionOptions {
+  readonly abortSignal?: AbortSignal;
+}
+
 export interface ManagedWorkspaceOwner {
   readonly state: 'ready' | 'closing' | 'closed';
   openManagedWorkspaceBaseline(
     store: RuntimeWorkspaceVersionAuthorityStore,
     input: OpenManagedWorkspaceBaselineInput,
+    options?: ManagedWorkspaceAdmissionOptions,
   ): Promise<OpenManagedWorkspaceBaselineResult>;
   openManagedWorkspaceBaselineFromExecutionStores(
     stores: InteractiveExecutionStoresWriter,
     input: OpenManagedWorkspaceBaselineInput,
+    options?: ManagedWorkspaceAdmissionOptions,
   ): Promise<OpenManagedWorkspaceBaselineResult>;
   withManagedWorkspaceExecution<T>(
     handle: ManagedWorkspaceExecutionHandle,
@@ -177,6 +185,7 @@ export async function openManagedWorkspaceOwner(
       ? await createManagedDependencyEnvironmentAuthority({
           storageRoot: rootOwner.capability.canonicalPath,
           producer: input.dependencyEnvironmentProducer,
+          ...(input.failpoint ? { failpoint: (point) => input.failpoint?.(point) } : {}),
         })
       : undefined;
     const owner = new ManagedWorkspaceOwnerImpl(
@@ -240,8 +249,10 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
   async openManagedWorkspaceBaseline(
     store: RuntimeWorkspaceVersionAuthorityStore,
     input: OpenManagedWorkspaceBaselineInput,
+    options: ManagedWorkspaceAdmissionOptions = {},
   ): Promise<OpenManagedWorkspaceBaselineResult> {
     return this.#run(async () => {
+      options.abortSignal?.throwIfAborted();
       await assertWorkspaceBaselineAuthorityStoreRootInternal(
         store,
         this.rootOwner.capability.canonicalPath,
@@ -253,11 +264,17 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
         input.workspaceId,
         input.workspaceEpochId,
       );
-      const receipt = existingHead ? await this.receiptAuthority.require(input) : undefined;
+      const receipt = existingHead
+        ? await this.receiptAuthority.require(input, options.abortSignal)
+        : undefined;
       const binding = receipt
-        ? await this.#openReadyBinding(receipt.binding)
-        : await this.#requireReady(await this.service.createManagedWorkspaceFromSource(input));
-      const durableReceipt = receipt ?? (await this.receiptAuthority.issue(binding));
+        ? await this.#openReadyBinding(receipt.binding, options.abortSignal)
+        : await this.#requireReady(
+            await this.service.createManagedWorkspaceFromSource(input, options),
+            options.abortSignal,
+          );
+      const durableReceipt =
+        receipt ?? (await this.receiptAuthority.issue(binding, options.abortSignal));
       if (
         existingHead &&
         (existingHead.workspaceVersionId !== durableReceipt.workspaceVersionId ||
@@ -308,7 +325,7 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       // Canonical acceptance never makes a missing Git artifact acceptable.
       // Reverify after the SQLite transaction so post-accept artifact loss is
       // reported fail-closed instead of returning a usable workspace head.
-      await this.receiptAuthority.verify(durableReceipt);
+      await this.receiptAuthority.verify(durableReceipt, options.abortSignal);
       await this.failpoint?.('after_post_commit_artifact_verification');
       // The root marker is mutable host state and is not covered by receipt
       // verification. Revalidate its identity at the final return gate without
@@ -333,10 +350,12 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
   openManagedWorkspaceBaselineFromExecutionStores(
     stores: InteractiveExecutionStoresWriter,
     input: OpenManagedWorkspaceBaselineInput,
+    options: ManagedWorkspaceAdmissionOptions = {},
   ): Promise<OpenManagedWorkspaceBaselineResult> {
     return this.openManagedWorkspaceBaseline(
       requireExecutionStoresWorkspaceAuthorityInternal(stores),
       input,
+      options,
     );
   }
 
@@ -484,8 +503,11 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
     return new Promise((resolve) => this.#drainWaiters.add(resolve));
   }
 
-  async #requireReady(binding: ManagedWorkspaceBinding): Promise<ManagedWorkspaceBinding> {
-    const inspection = await this.service.inspectManagedWorkspace(binding);
+  async #requireReady(
+    binding: ManagedWorkspaceBinding,
+    abortSignal?: AbortSignal,
+  ): Promise<ManagedWorkspaceBinding> {
+    const inspection = await this.service.inspectManagedWorkspace(binding, { abortSignal });
     if (inspection.state === 'ready') return binding;
     const quarantine = await this.service.quarantineManagedWorkspace(
       binding,
@@ -497,9 +519,15 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
     );
   }
 
-  async #openReadyBinding(binding: ManagedWorkspaceBinding): Promise<ManagedWorkspaceBinding> {
+  async #openReadyBinding(
+    binding: ManagedWorkspaceBinding,
+    abortSignal?: AbortSignal,
+  ): Promise<ManagedWorkspaceBinding> {
     try {
-      return await this.#requireReady(await this.service.openManagedWorkspaceFromBinding(binding));
+      return await this.#requireReady(
+        await this.service.openManagedWorkspaceFromBinding(binding, { abortSignal }),
+        abortSignal,
+      );
     } catch (error) {
       if (
         !(error instanceof GitWorkspaceServiceError) ||
