@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 import {
@@ -27,6 +28,7 @@ import {
 import {
   createManagedWorkspaceWorkerBridgeInternal,
   ManagedWorkspaceWorkerBridgeError,
+  type ManagedWorkspaceReadOnlyOperation,
 } from '../managed-workspace-worker-bridge-internal.js';
 
 function scopeFor(ownerToken: object) {
@@ -34,6 +36,17 @@ function scopeFor(ownerToken: object) {
     provisioning: 'canonical_tree_only_v1',
     workspaceEffect: 'none',
     cwd: '/managed/worktree',
+    binding: Object.freeze({}) as never,
+    head: Object.freeze({}) as never,
+  });
+}
+
+function dependencyScopeFor(ownerToken: object, dependencyRoot: string) {
+  return issueManagedWorkspaceExecutionScopeInternal(ownerToken, {
+    provisioning: 'dependency_environment_v1',
+    workspaceEffect: 'none',
+    cwd: '/managed/worktree',
+    dependencyRoot,
     binding: Object.freeze({}) as never,
     head: Object.freeze({}) as never,
   });
@@ -115,6 +128,109 @@ test('rejects foreign, expired, mutating, and unknown operations before worker d
   ]) {
     await assert.rejects(
       () => bridge.execute(activeScope, operation as never),
+      (error) =>
+        error instanceof ManagedWorkspaceWorkerBridgeError &&
+        error.code === 'managed_workspace_operation_denied',
+    );
+  }
+  assert.equal(dispatches, 0);
+});
+
+test('routes logical node_modules reads through the leased dependency root', async () => {
+  const ownerToken = {};
+  const dependencyRoot = join('/maka', 'dependencies', 'environment', 'node_modules');
+  const calls: Array<{ operation: ManagedWorkspaceReadOnlyOperation; cwd: string }> = [];
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute(input) {
+      calls.push({ operation: input.operation, cwd: input.cwd });
+      return input.operation.kind === 'glob'
+        ? { kind: 'glob', files: [join(dependencyRoot, 'fixture-package', 'index.js')] }
+        : { kind: 'read', content: 'maka-owned' };
+    },
+  });
+  const scope = dependencyScopeFor(ownerToken, dependencyRoot);
+
+  assert.deepEqual(
+    await bridge.execute(scope, {
+      kind: 'read',
+      path: 'node_modules/fixture-package/index.js',
+    }),
+    { kind: 'read', content: 'maka-owned' },
+  );
+  assert.deepEqual(
+    await bridge.execute(scope, {
+      kind: 'glob',
+      path: 'node_modules',
+      pattern: '**/*.js',
+    }),
+    { kind: 'glob', files: ['node_modules/fixture-package/index.js'] },
+  );
+  assert.equal(calls[0]?.cwd, '/managed/worktree');
+  assert.equal(
+    calls[0]?.operation.kind === 'read' ? calls[0].operation.path : undefined,
+    join(dependencyRoot, 'fixture-package', 'index.js'),
+  );
+  assert.equal(
+    calls[1]?.operation.kind === 'glob' ? calls[1].operation.path : undefined,
+    dependencyRoot,
+  );
+});
+
+test('rejects non-canonical dependency paths before worker dispatch', async () => {
+  const ownerToken = {};
+  let dispatches = 0;
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute() {
+      dispatches += 1;
+      return { kind: 'read', content: 'unexpected' };
+    },
+  });
+  const scope = dependencyScopeFor(ownerToken, join('/maka', 'dependencies', 'node_modules'));
+
+  for (const path of [
+    'node_modules/../outside.txt',
+    'node_modules/./fixture.js',
+    'node_modules/fixture.js:alternate-stream',
+    'node_modules/fixture\0.js',
+  ]) {
+    await assert.rejects(
+      () => bridge.execute(scope, { kind: 'read', path }),
+      (error) =>
+        error instanceof ManagedWorkspaceWorkerBridgeError &&
+        error.code === 'managed_workspace_operation_denied',
+    );
+  }
+  assert.equal(dispatches, 0);
+});
+
+test('never falls back a dependency scope without an exact leased root', async () => {
+  const ownerToken = {};
+  let dispatches = 0;
+  const bridge = createManagedWorkspaceWorkerBridgeInternal(ownerToken, {
+    async execute() {
+      dispatches += 1;
+      return { kind: 'read', content: 'unexpected' };
+    },
+  });
+  const missingRoot = issueManagedWorkspaceExecutionScopeInternal(ownerToken, {
+    provisioning: 'dependency_environment_v1',
+    workspaceEffect: 'none',
+    cwd: '/managed/worktree',
+    binding: Object.freeze({}) as never,
+    head: Object.freeze({}) as never,
+  });
+  const unexpectedRoot = issueManagedWorkspaceExecutionScopeInternal(ownerToken, {
+    provisioning: 'canonical_tree_only_v1',
+    workspaceEffect: 'none',
+    cwd: '/managed/worktree',
+    dependencyRoot: '/maka/dependencies/node_modules',
+    binding: Object.freeze({}) as never,
+    head: Object.freeze({}) as never,
+  });
+
+  for (const scope of [missingRoot, unexpectedRoot]) {
+    await assert.rejects(
+      () => bridge.execute(scope, { kind: 'read', path: 'node_modules/a.js' }),
       (error) =>
         error instanceof ManagedWorkspaceWorkerBridgeError &&
         error.code === 'managed_workspace_operation_denied',

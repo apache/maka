@@ -61,9 +61,10 @@ const states = new WeakMap<
 >();
 
 export interface ManagedWorkspaceExecutionScopeStateInternal {
-  readonly provisioning: 'canonical_tree_only_v1';
+  readonly provisioning: 'canonical_tree_only_v1' | 'dependency_environment_v1';
   readonly workspaceEffect: 'none';
   readonly cwd: string;
+  readonly dependencyRoot?: string;
   readonly binding: Readonly<ManagedWorkspaceBinding>;
   readonly head: Readonly<WorkspaceHeadRecordV1>;
 }

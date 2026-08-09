@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -39,6 +39,7 @@ import {
 } from '../managed-workspace-execution-authority-internal.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
+import { createManagedDependencyEnvironmentProducerCapability } from '../managed-dependency-environment.js';
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
@@ -220,6 +221,129 @@ test('publishes only a revocable execution scope through its accepted handle', a
         error instanceof ManagedWorkspaceExecutionAuthorityError &&
         error.code === 'managed_workspace_execution_scope_expired',
     );
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('fails closed before scope issue when dependency provisioning is unavailable', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  try {
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+    let callbackEntered = false;
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(
+        accepted.executionHandle,
+        async () => {
+          callbackEntered = true;
+        },
+        { provisioning: 'unknown' } as never,
+      ),
+      isOwnerError('managed_workspace_execution_options_invalid'),
+    );
+
+    await assert.rejects(
+      owner.withManagedWorkspaceExecution(
+        accepted.executionHandle,
+        async () => {
+          callbackEntered = true;
+        },
+        { provisioning: 'dependency_environment_v1' },
+      ),
+      isOwnerError('managed_dependency_producer_unavailable'),
+    );
+    assert.equal(callbackEntered, false);
+    await owner.close();
+  } finally {
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
+test('binds one Maka-owned dependency environment to the managed execution scope', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleDependencySource(join(root, 'source'));
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  let provisionCalls = 0;
+  try {
+    const runtimeIdentity = `sha256:${'9'.repeat(64)}` as const;
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      dependencyEnvironmentProducer: {
+        capability: createManagedDependencyEnvironmentProducerCapability(runtimeIdentity),
+        packageManagerName: 'npm',
+        packageManagerVersion: '12.0.2',
+        nodeRuntime: {
+          version: process.versions.node,
+          abi: process.versions.modules ?? 'unknown',
+          platform: process.platform,
+          arch: process.arch,
+        },
+        async provision(input) {
+          provisionCalls += 1;
+          await mkdir(join(input.outputRoot, 'fixture-package'), { recursive: true });
+          await writeFile(
+            join(input.outputRoot, 'fixture-package', 'index.js'),
+            'export const source = "maka-owned";\n',
+          );
+        },
+      },
+      filesystemWorker: {
+        async execute(input) {
+          assert.equal(input.operation.kind, 'read');
+          assert.equal(input.operation.path.startsWith(sourceRoot), false);
+          return { kind: 'read', content: await readFile(input.operation.path, 'utf8') };
+        },
+      },
+    });
+    const accepted = await owner.openManagedWorkspaceBaseline(
+      runtimeStore,
+      openRequest(sourceRoot),
+    );
+
+    for (let index = 0; index < 2; index += 1) {
+      const result = await owner.withManagedWorkspaceExecution(
+        accepted.executionHandle,
+        (scope) =>
+          owner.executeReadOnlyFilesystemOperation(scope, {
+            kind: 'read',
+            path: 'node_modules/fixture-package/index.js',
+          }),
+        { provisioning: 'dependency_environment_v1' },
+      );
+      assert.deepEqual(result, {
+        kind: 'read',
+        content: 'export const source = "maka-owned";\n',
+      });
+    }
+    assert.equal(provisionCalls, 1);
     await owner.close();
   } finally {
     runtimeStore.close();
@@ -950,6 +1074,39 @@ async function createEligibleSource(sourceRoot: string): Promise<string> {
     'source baseline',
   );
   return realpath(sourceRoot);
+}
+
+async function createEligibleDependencySource(sourceRoot: string): Promise<string> {
+  const canonicalSource = await createEligibleSource(sourceRoot);
+  await Promise.all([
+    writeFile(
+      join(canonicalSource, 'package.json'),
+      '{"name":"fixture","packageManager":"npm@12.0.2"}\n',
+    ),
+    writeFile(
+      join(canonicalSource, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"":{"name":"fixture"}}}\n',
+    ),
+    writeFile(join(canonicalSource, '.gitignore'), '.maka-workspace.json\nnode_modules/\n'),
+  ]);
+  await git(canonicalSource, 'add', 'package.json', 'package-lock.json', '.gitignore');
+  await git(
+    canonicalSource,
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=test@maka.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'add dependency manifest',
+  );
+  await mkdir(join(canonicalSource, 'node_modules', 'fixture-package'), { recursive: true });
+  await writeFile(
+    join(canonicalSource, 'node_modules', 'fixture-package', 'index.js'),
+    'export const source = "attached-checkout";\n',
+  );
+  return canonicalSource;
 }
 
 function openRequest(sourceRoot: string) {
