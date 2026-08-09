@@ -326,6 +326,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     purgeConversationOperationalState: (sessionId) =>
       run(() => conversationOperationalStateStore.purge(sessionId)),
     sessionStore: {
+      ready: () => run(() => sessionStore.ready()),
       create: (input, initialBoundary) => run(() => sessionStore.create(input, initialBoundary)),
       createImportedSession: (input, messages) =>
         run(() => sessionStore.createImportedSession(input, messages)),

@@ -113,6 +113,7 @@ import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-co
 import { HostPlanCoordinator } from './plan-coordinator.js';
 import { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
+import { HostProjectMembershipGate } from './project-membership-gate.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
@@ -175,6 +176,7 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
+  await stores.sessionStore.ready();
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -421,11 +423,12 @@ export async function createExecutionRuntimeHostComposition(
     const configurationChanges = new HostConfigurationChangeService();
     const sessionCatalogChanges = new HostSessionCatalogChangeService();
     const projectCatalogChanges = new HostProjectCatalogChangeService();
+    const projectMembership = new HostProjectMembershipGate();
     const projects = new HostProjectCatalogCoordinator(
       openedProjectCatalog,
-      stores.sessionStore,
       projectCatalogChanges,
       sessionCatalogChanges,
+      projectMembership,
       context.requestDrain,
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
@@ -1064,6 +1067,8 @@ export async function createExecutionRuntimeHostComposition(
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
+      projectCatalog: openedProjectCatalog,
+      projectMembership,
       requestDrain: context.requestDrain,
     });
     const externalSessions = new HostExternalSessionCoordinator({

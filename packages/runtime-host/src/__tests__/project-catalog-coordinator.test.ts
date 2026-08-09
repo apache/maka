@@ -7,6 +7,7 @@ import { createProjectCatalog, createSessionStore } from '@maka/storage';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostProjectCatalogChangeService } from '../server/project-catalog-change-service.js';
 import { HostProjectCatalogCoordinator } from '../server/project-catalog-coordinator.js';
+import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
 import { HostSessionCatalogChangeService } from '../server/session-catalog-change-service.js';
 
 test('Host Project Catalog relink merges identities and reassigns every affected Session', async () => {
@@ -44,9 +45,9 @@ test('Host Project Catalog relink merges identities and reassigns every affected
   });
   const coordinator = new HostProjectCatalogCoordinator(
     catalog,
-    sessions,
     projectChanges,
     sessionChanges,
+    new HostProjectMembershipGate(),
     () => assert.fail('ordinary project mutations must not drain the Host'),
   );
 
@@ -64,9 +65,10 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     );
     assert.equal(relinked.ok, true);
     if (!relinked.ok || relinked.result.kind !== 'project') return;
-    assert.equal(relinked.result.project.id, original.id);
-    assert.deepEqual(relinked.result.project.aliases, [duplicate.id]);
-    assert.equal(relinked.result.project.preferredPath, destinationPath);
+    assert.equal(relinked.result.projectId, original.id);
+    const [project] = await catalog.list();
+    assert.deepEqual(project?.aliases, [duplicate.id]);
+    assert.equal(project?.preferredPath, destinationPath);
     assert.deepEqual(
       (await catalog.list()).map(({ id }) => id),
       [original.id],
@@ -96,7 +98,7 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     );
     assert.equal(listed.ok, true);
     assert.equal(listed.ok && listed.result.kind, 'page');
-    assert.equal(listed.ok && listed.result.kind === 'page' && listed.result.projects.length, 1);
+    assert.equal(listed.ok && listed.result.kind === 'page' && listed.result.projectCount, 1);
   } finally {
     catalog.close();
     await sessions.close?.();

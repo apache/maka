@@ -21,6 +21,7 @@ import {
   type SessionConfigurationUpdateInput,
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
 import {
   HostSessionCatalogCoordinator,
   type HostSessionCatalogCoordinatorOptions,
@@ -458,6 +459,62 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
   }
 });
 
+test('creation resolves a stale Client project path from current Host membership', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-create-project-'));
+  const stalePath = join(root, 'stale');
+  const currentPath = join(root, 'current');
+  await mkdir(currentPath);
+  try {
+    let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+    const fixture = createFixture({
+      projectCatalog: {
+        list: async () => [
+          {
+            id: 'project-current',
+            aliases: ['project-stale'],
+            name: 'Project',
+            locations: [{ path: currentPath, isWorktree: false }],
+            available: true,
+            preferredPath: currentPath,
+          },
+        ],
+      } as never,
+      stores: {
+        createStableSession: async (request) => {
+          created = request;
+          return {
+            kind: 'existing',
+            record: headerSnapshot(
+              {
+                ...sessionHeader(request.sessionId, []),
+                cwd: request.input.cwd,
+                projectId: request.input.projectId,
+              },
+              1,
+            ),
+          };
+        },
+      },
+    });
+
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        cwd: stalePath,
+        projectId: 'project-stale',
+        modelTarget: { kind: 'default' },
+      },
+      context,
+    );
+
+    assert.equal(outcome.ok, true);
+    assert.equal(created?.input.cwd, currentPath);
+    assert.equal(created?.input.projectId, 'project-current');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('cwd relocation canonicalizes once and commits through Runtime authority', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-relocate-cwd-'));
   const target = join(root, 'target');
@@ -605,6 +662,7 @@ function createFixture(
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
+    readonly projectCatalog?: HostSessionCatalogCoordinatorOptions['projectCatalog'];
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -670,6 +728,8 @@ function createFixture(
     manager,
     admission: new SessionAdmissionGate(),
     continuity,
+    projectCatalog: options.projectCatalog ?? ({ list: async () => [] } as never),
+    projectMembership: new HostProjectMembershipGate(),
     requestDrain: () => {
       drains += 1;
     },

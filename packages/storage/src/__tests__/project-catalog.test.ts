@@ -12,6 +12,7 @@ import {
   type ResolvedProjectLocation,
   resolveProjectLocation,
 } from '../project-catalog.js';
+import { createSessionStore } from '../session-store.js';
 import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +48,17 @@ async function rm(path: string, options?: Parameters<typeof remove>[1]): Promise
     }
   }
   await remove(path, options);
+}
+
+function sessionInput(cwd: string, projectId: string) {
+  return {
+    cwd,
+    projectId,
+    backend: 'fake' as const,
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask' as const,
+  };
 }
 
 test('a plain folder resolves without requiring the Git executable', async () => {
@@ -291,56 +303,6 @@ test('two catalogs changing one project at the same time keep both changes', asy
   }
 });
 
-test('a relink whose merge target changes mid-flight fails instead of half-committing', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-race-'));
-  try {
-    const storage = join(base, 'storage');
-    const home = join(base, 'home');
-    const shared = join(base, 'shared');
-    const elsewhere = join(base, 'elsewhere');
-    await Promise.all([mkdir(home), mkdir(shared), mkdir(elsewhere)]);
-    const first = createProjectCatalog(storage);
-    const second = createProjectCatalog(storage);
-    const moving = await first.register(home);
-    const target = await first.register(shared);
-    await Promise.all([first.list(), second.list()]);
-
-    let releaseCallback!: () => void;
-    let callbackStarted!: () => void;
-    const gate = new Promise<void>((release) => {
-      releaseCallback = release;
-    });
-    const started = new Promise<void>((resolve) => {
-      callbackStarted = resolve;
-    });
-    let observed: string | undefined;
-    const relink = first.relink(moving.id, shared, async (context) => {
-      observed = context.conflictingProjectId;
-      callbackStarted();
-      await gate;
-    });
-    await started;
-
-    // The callback was told to move `target`'s sessions onto `moving`. While it
-    // is doing that, the other window moves `target` somewhere else entirely.
-    await second.relink(target.id, elsewhere);
-    releaseCallback();
-
-    assert.equal(observed, target.id, 'precondition: the callback planned a merge');
-    await assert.rejects(() => relink, /retry/);
-    const projects = await first.list();
-    assert.deepEqual(
-      projects.map((project) => project.id).sort(),
-      [moving.id, target.id].sort(),
-      'neither project may be merged away after the plan went stale',
-    );
-    first.close();
-    second.close();
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
 test('relinking an unavailable project preserves its id and adopts the new directory', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-'));
   try {
@@ -371,49 +333,44 @@ test('relinking an unavailable project preserves its id and adopts the new direc
   }
 });
 
-test('conflicting relink waits for a retryable merge before removing the duplicate project', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-merge-'));
+test('Host relink rolls Project and Session membership back in one transaction', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-session-relink-'));
+  const storage = join(base, 'storage');
+  const originalPath = join(base, 'original');
+  const destinationPath = join(base, 'destination');
+  await Promise.all([mkdir(originalPath), mkdir(destinationPath)]);
+  const injected = new Error('injected atomic relink failure');
+  const catalog = createProjectCatalog(storage, {
+    createId: (() => {
+      let id = 0;
+      return () => `project-${++id}`;
+    })(),
+    relinkFailpoint: () => {
+      throw injected;
+    },
+  });
+  const sessions = createSessionStore(storage);
   try {
-    const relocated = join(base, 'relocated');
-    await mkdir(relocated);
-    let id = 0;
-    const catalog = createProjectCatalog(join(base, 'storage'), {
-      now: () => 1_000,
-      createId: () => `project-${++id}`,
-    });
-    const originalPath = join(base, 'original');
-    await mkdir(originalPath);
     const original = await catalog.register(originalPath);
-    await rm(originalPath, { recursive: true, force: true });
-    const duplicate = await catalog.register(relocated);
-    const interrupted = new Error('session reassignment interrupted');
+    const duplicate = await catalog.register(destinationPath);
+    const originalSession = await sessions.create(sessionInput(originalPath, original.id));
+    const duplicateSession = await sessions.create(sessionInput(destinationPath, duplicate.id));
 
     await assert.rejects(
-      () =>
-        catalog.relink(original.id, relocated, async () => {
-          throw interrupted;
-        }),
-      (error) => error === interrupted,
+      () => catalog.relinkWithSessions(original.id, destinationPath),
+      (error) => error === injected,
     );
+
     assert.deepEqual(
-      (await catalog.list()).map((project) => project.id).sort(),
+      (await catalog.list()).map(({ id }) => id).sort(),
       [original.id, duplicate.id].sort(),
     );
-
-    let mergedProjectId: string | undefined;
-    const merged = await catalog.relink(original.id, relocated, async (context) => {
-      mergedProjectId = context.conflictingProjectId;
-    });
-
-    assert.equal(mergedProjectId, duplicate.id);
-    assert.equal(merged.id, original.id);
-    assert.equal(merged.name, original.name);
-    assert.deepEqual((merged as typeof merged & { aliases?: string[] }).aliases, [duplicate.id]);
-    assert.deepEqual(
-      (await catalog.list()).map((project) => project.id),
-      [original.id],
-    );
+    assert.equal((await sessions.readHeaderSnapshot(originalSession.id)).projectId, original.id);
+    assert.equal((await sessions.readHeaderSnapshot(originalSession.id)).cwd, originalPath);
+    assert.equal((await sessions.readHeaderSnapshot(duplicateSession.id)).projectId, duplicate.id);
+    assert.equal((await sessions.readHeaderSnapshot(duplicateSession.id)).cwd, destinationPath);
   } finally {
+    await sessions.close?.();
     await rm(base, { recursive: true, force: true });
   }
 });
@@ -436,7 +393,7 @@ test('conflicting relink preserves every available worktree location from the me
     await catalog.register(repository);
     await catalog.register(linkedWorktree);
 
-    const relinked = await catalog.relink(original.id, repository, async () => {});
+    const { project: relinked } = await catalog.relinkWithSessions(original.id, repository);
 
     assert.deepEqual(
       relinked.locations.map((location) => location.path).sort(),

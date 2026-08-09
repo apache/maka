@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppSettings, ProjectRecord, UpdateAppSettingsResult } from '@maka/core';
 import {
   Badge,
@@ -47,10 +47,12 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
+    const generation = ++reloadGeneration.current;
     const next = await window.maka.projects.list();
-    if (mountedRef.current) setProjects(next);
+    if (mountedRef.current && generation === reloadGeneration.current) setProjects(next);
   }, [mountedRef]);
 
   useEffect(() => {

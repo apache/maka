@@ -182,6 +182,8 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore {
+  /** Complete one-time storage migrations before direct cross-domain transactions. */
+  ready(): Promise<void>;
   /** Atomically create a Session from already-converted Maka raw messages. */
   createImportedSession(
     input: CreateSessionInput,
@@ -341,6 +343,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
         error instanceof Error ? error.message : String(error),
       );
     }
+  }
+
+  ready(): Promise<void> {
+    return this.ensureReady();
   }
 
   async create(

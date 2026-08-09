@@ -90,8 +90,8 @@ function createWriterFacade(
     resolveHistoricalPath: (path, usedAt) => run(() => catalog.resolveHistoricalPath(path, usedAt)),
     select: (projectId) => run(() => catalog.select(projectId)),
     touch: (projectId, path) => run(() => catalog.touch(projectId, path)),
-    relink: (projectId, path, beforeCommit) =>
-      run(() => catalog.relink(projectId, path, beforeCommit)),
+    relink: (projectId, path) => run(() => catalog.relink(projectId, path)),
+    relinkWithSessions: (projectId, path) => run(() => catalog.relinkWithSessions(projectId, path)),
     rename: (projectId, name) => run(() => catalog.rename(projectId, name)),
     archive: (projectId) => run(() => catalog.archive(projectId)),
     restore: (projectId) => run(() => catalog.restore(projectId)),

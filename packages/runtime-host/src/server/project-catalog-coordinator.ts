@@ -6,20 +6,16 @@ import {
   ProjectNotFoundError,
   ProjectPathConflictError,
   ProjectPathMismatchError,
-  ProjectRelinkContentionError,
   ProjectUnavailableError,
 } from '@maka/storage';
 import {
   decodeProjectCatalogProject,
-  PROJECT_CATALOG_ALIAS_MAX_ITEMS,
-  PROJECT_CATALOG_LOCATION_MAX_ITEMS,
-  PROJECT_CATALOG_NAME_MAX_BYTES,
   PROJECT_CATALOG_PAGE_MAX_BYTES,
   PROJECT_CATALOG_PAGE_MAX_ITEMS,
-  PROJECT_CATALOG_PROJECT_MAX_BYTES,
   type OperationOutcome,
   type ProjectCatalogMutateInput,
   type ProjectCatalogMutateResult,
+  type ProjectCatalogPageItem,
   type ProjectCatalogProject,
   type ProjectCatalogQueryInput,
   type ProjectCatalogQueryResult,
@@ -27,17 +23,8 @@ import {
 } from '../protocol/index.js';
 import type { ProjectCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
+import type { HostProjectMembershipGate } from './project-membership-gate.js';
 import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
-
-interface ProjectSessionCatalog {
-  listHeaders(): Promise<
-    Array<{ readonly id: string; readonly cwd: string; readonly projectId?: string | null }>
-  >;
-  updateHeader(
-    sessionId: string,
-    patch: { readonly cwd?: string; readonly projectId?: string | null },
-  ): Promise<unknown>;
-}
 
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
@@ -47,9 +34,9 @@ export class HostProjectCatalogCoordinator {
 
   constructor(
     private readonly catalog: ProjectCatalog,
-    private readonly sessions: ProjectSessionCatalog,
     private readonly projectChanges: HostProjectCatalogChangeService,
     private readonly sessionChanges: HostSessionCatalogChangeService,
+    private readonly membership: HostProjectMembershipGate,
     private readonly requestDrain: () => void,
   ) {}
 
@@ -58,7 +45,8 @@ export class HostProjectCatalogCoordinator {
   ): Promise<OperationOutcome<'project.catalog.query'>> {
     try {
       const projects = (await this.catalog.list()).map(projectProject);
-      const revision = catalogRevision(projects);
+      const items = projectCatalogItems(projects);
+      const revision = catalogRevision(items);
       if (input.kind === 'list_continue' && input.revision !== revision) {
         return successQuery({
           kind: 'revision_changed',
@@ -69,12 +57,12 @@ export class HostProjectCatalogCoordinator {
       const offset = input.kind === 'list_start' ? 0 : decodeCursor(input.cursor);
       if (
         offset === undefined ||
-        offset > projects.length ||
-        (input.kind === 'list_continue' && offset === projects.length)
+        offset > items.length ||
+        (input.kind === 'list_continue' && offset === items.length)
       ) {
         return queryFailure('invalid_request', 'Project catalog cursor is invalid');
       }
-      return successQuery(createPage(revision, projects, offset));
+      return successQuery(createPage(revision, projects.length, items, offset));
     } catch {
       return queryFailure('persistence_failed', 'Project catalog is unavailable');
     }
@@ -84,7 +72,7 @@ export class HostProjectCatalogCoordinator {
     input: ProjectCatalogMutateInput,
   ): Promise<OperationOutcome<'project.catalog.mutate'>> {
     try {
-      const result = await this.#applyMutation(input);
+      const result = await this.membership.run(() => this.#applyMutation(input));
       this.projectChanges.publish();
       return { ok: true, result };
     } catch (error) {
@@ -95,8 +83,7 @@ export class HostProjectCatalogCoordinator {
         error instanceof ProjectArchivedError ||
         error instanceof ProjectUnavailableError ||
         error instanceof ProjectPathConflictError ||
-        error instanceof ProjectPathMismatchError ||
-        error instanceof ProjectRelinkContentionError
+        error instanceof ProjectPathMismatchError
       ) {
         return mutationFailure('operation_conflict', error.message);
       }
@@ -114,138 +101,115 @@ export class HostProjectCatalogCoordinator {
   async #applyMutation(input: ProjectCatalogMutateInput): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult(await this.catalog.register(input.path));
+        return projectResult((await this.catalog.register(input.path)).id);
       case 'select': {
         const selected = await this.catalog.select(input.projectId);
         return {
           kind: 'selection',
-          project: projectProject(selected.project),
+          projectId: selected.project.id,
           path: selected.path,
         };
       }
       case 'touch':
         return projectResult(
-          await this.catalog.touch(input.projectId, input.path === null ? undefined : input.path),
+          (await this.catalog.touch(input.projectId, input.path === null ? undefined : input.path))
+            .id,
         );
-      case 'relink':
-        return projectResult(
-          await this.catalog.relink(input.projectId, input.path, (context) =>
-            this.#reassignRelinkedSessions(context),
-          ),
-        );
-      case 'rename':
-        return projectResult(await this.catalog.rename(input.projectId, input.name));
-      case 'archive':
-        return projectResult(await this.catalog.archive(input.projectId));
-      case 'restore':
-        return projectResult(await this.catalog.restore(input.projectId));
-    }
-  }
-
-  async #reassignRelinkedSessions(context: {
-    readonly projectId: string;
-    readonly projectAliases: readonly string[];
-    readonly destinationPath: string;
-    readonly conflictingProjectId?: string;
-    readonly conflictingProjectAliases?: readonly string[];
-  }): Promise<void> {
-    const survivingIds = new Set([context.projectId, ...context.projectAliases]);
-    const conflictingIds = new Set([
-      ...(context.conflictingProjectId ? [context.conflictingProjectId] : []),
-      ...(context.conflictingProjectAliases ?? []),
-    ]);
-    for (const header of await this.sessions.listHeaders()) {
-      let patch: { cwd?: string; projectId?: string | null } | undefined;
-      if (header.projectId && survivingIds.has(header.projectId)) {
-        patch = {
-          cwd: context.destinationPath,
-          ...(header.projectId === context.projectId ? {} : { projectId: context.projectId }),
-        };
-      } else if (header.projectId && conflictingIds.has(header.projectId)) {
-        patch = { projectId: context.projectId };
+      case 'relink': {
+        const result = await this.catalog.relinkWithSessions(input.projectId, input.path);
+        for (const sessionId of result.updatedSessionIds) this.sessionChanges.publish(sessionId);
+        return projectResult(result.project.id);
       }
-      if (!patch) continue;
-      await this.sessions.updateHeader(header.id, patch);
-      this.sessionChanges.publish(header.id);
+      case 'rename':
+        return projectResult((await this.catalog.rename(input.projectId, input.name)).id);
+      case 'archive':
+        return projectResult((await this.catalog.archive(input.projectId)).id);
+      case 'restore':
+        return projectResult((await this.catalog.restore(input.projectId)).id);
     }
   }
 }
 
-function projectResult(project: ProjectRecord): ProjectCatalogMutateResult {
-  return { kind: 'project', project: projectProject(project) };
+function projectResult(projectId: string): ProjectCatalogMutateResult {
+  return { kind: 'project', projectId };
 }
 
 function projectProject(project: ProjectRecord): ProjectCatalogProject {
-  const aliases = [...(project.aliases ?? [])].slice(0, PROJECT_CATALOG_ALIAS_MAX_ITEMS);
-  const locations = preferredFirst(project).slice(0, PROJECT_CATALOG_LOCATION_MAX_ITEMS);
-  const projection: Mutable<ProjectCatalogProject> = {
+  return decodeProjectCatalogProject({
     id: project.id,
-    aliases,
-    aliasesTruncated: aliases.length < (project.aliases?.length ?? 0),
-    name: truncateUtf8(project.name, PROJECT_CATALOG_NAME_MAX_BYTES),
-    locations,
-    locationsTruncated: locations.length < project.locations.length,
+    aliases: [...(project.aliases ?? [])],
+    name: project.name,
+    locations: project.locations.map((location) => ({ ...location })),
     archivedAt: project.archivedAt ?? null,
     available: project.available,
     preferredPath: project.preferredPath ?? null,
-  };
-  while (encodedBytes(projection) > PROJECT_CATALOG_PROJECT_MAX_BYTES) {
-    if (projection.locations.length > 1) {
-      projection.locations = projection.locations.slice(0, -1);
-      projection.locationsTruncated = true;
-      continue;
-    }
-    if (projection.aliases.length > 0) {
-      projection.aliases = projection.aliases.slice(0, -1);
-      projection.aliasesTruncated = true;
-      continue;
-    }
-    throw new Error(`Project catalog projection is too large: ${project.id}`);
-  }
-  return decodeProjectCatalogProject(projection);
+  });
 }
 
-function preferredFirst(project: ProjectRecord): ProjectRecord['locations'] {
-  if (!project.preferredPath) return [...project.locations];
-  const preferred = project.locations.find((location) => location.path === project.preferredPath);
-  return preferred
-    ? [preferred, ...project.locations.filter((location) => location !== preferred)]
-    : [...project.locations];
+function projectCatalogItems(projects: readonly ProjectCatalogProject[]): ProjectCatalogPageItem[] {
+  return projects.flatMap((project, projectIndex): ProjectCatalogPageItem[] => [
+    {
+      kind: 'project',
+      projectIndex,
+      id: project.id,
+      name: project.name,
+      aliasCount: project.aliases.length,
+      locationCount: project.locations.length,
+      archivedAt: project.archivedAt,
+      available: project.available,
+      preferredPath: project.preferredPath,
+    },
+    ...project.aliases.map((alias, itemIndex) => ({
+      kind: 'alias' as const,
+      projectIndex,
+      itemIndex,
+      alias,
+    })),
+    ...project.locations.map((location, itemIndex) => ({
+      kind: 'location' as const,
+      projectIndex,
+      itemIndex,
+      location,
+    })),
+  ]);
 }
 
-function catalogRevision(projects: readonly ProjectCatalogProject[]): ProjectCatalogRevision {
-  return `sha256:${createHash('sha256').update(JSON.stringify(projects)).digest('hex')}`;
+function catalogRevision(items: readonly ProjectCatalogPageItem[]): ProjectCatalogRevision {
+  return `sha256:${createHash('sha256').update(JSON.stringify(items)).digest('hex')}`;
 }
 
 function createPage(
   revision: ProjectCatalogRevision,
-  projects: readonly ProjectCatalogProject[],
+  projectCount: number,
+  items: readonly ProjectCatalogPageItem[],
   offset: number,
 ): ProjectCatalogQueryResult {
-  const pageProjects: ProjectCatalogProject[] = [];
-  for (let index = offset; index < projects.length; index += 1) {
-    if (pageProjects.length >= PROJECT_CATALOG_PAGE_MAX_ITEMS) break;
-    const project = projects[index];
-    if (!project) throw new Error('Project catalog projection index was out of bounds');
+  const pageItems: ProjectCatalogPageItem[] = [];
+  for (let index = offset; index < items.length; index += 1) {
+    if (pageItems.length >= PROJECT_CATALOG_PAGE_MAX_ITEMS) break;
+    const item = items[index];
+    if (!item) throw new Error('Project catalog projection index was out of bounds');
     const nextOffset = index + 1;
     const candidate: ProjectCatalogQueryResult = {
       kind: 'page',
       revision,
-      projects: [...pageProjects, project],
-      nextCursor: nextOffset < projects.length ? encodeCursor(nextOffset) : null,
+      projectCount,
+      items: [...pageItems, item],
+      nextCursor: nextOffset < items.length ? encodeCursor(nextOffset) : null,
     };
     if (encodedBytes(candidate) > PROJECT_CATALOG_PAGE_MAX_BYTES) break;
-    pageProjects.push(project);
+    pageItems.push(item);
   }
-  if (pageProjects.length === 0 && offset < projects.length) {
-    throw new Error('A Project catalog projection exceeds the page byte limit');
+  if (pageItems.length === 0 && offset < items.length) {
+    throw new Error('A Project catalog item exceeds the page byte limit');
   }
-  const nextOffset = offset + pageProjects.length;
+  const nextOffset = offset + pageItems.length;
   return {
     kind: 'page',
     revision,
-    projects: pageProjects,
-    nextCursor: nextOffset < projects.length ? encodeCursor(nextOffset) : null,
+    projectCount,
+    items: pageItems,
+    nextCursor: nextOffset < items.length ? encodeCursor(nextOffset) : null,
   };
 }
 
@@ -261,19 +225,6 @@ function decodeCursor(cursor: string): number | undefined {
 
 function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
-
-function truncateUtf8(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
-  let bytes = 0;
-  let result = '';
-  for (const character of value) {
-    const width = Buffer.byteLength(character, 'utf8');
-    if (bytes + width > maxBytes) break;
-    result += character;
-    bytes += width;
-  }
-  return result;
 }
 
 function isInvalidPathError(error: unknown): boolean {
@@ -306,5 +257,3 @@ function mutationFailure(
 ): OperationOutcome<'project.catalog.mutate'> {
   return { ok: false, error: { code, message } };
 }
-
-type Mutable<T> = { -readonly [K in keyof T]: T[K] };

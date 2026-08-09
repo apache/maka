@@ -35,7 +35,6 @@ describe('Project catalog protocol', () => {
   });
 
   test('round-trips every closed mutation shape and correlates its result', () => {
-    const project = projectProjection();
     for (const input of [
       { kind: 'register', path: projectPath },
       { kind: 'select', projectId: 'project-1' },
@@ -58,20 +57,20 @@ describe('Project catalog protocol', () => {
         requestId: 'request-select',
         operation: 'project.catalog.mutate',
         ok: true,
-        result: { kind: 'selection', project, path: projectPath },
+        result: { kind: 'selection', projectId: 'project-1', path: projectPath },
       }),
       {
         requestId: 'request-select',
         operation: 'project.catalog.mutate',
         ok: true,
-        result: { kind: 'selection', project, path: projectPath },
+        result: { kind: 'selection', projectId: 'project-1', path: projectPath },
       },
     );
     assert.throws(
       () =>
         HOST_OPERATION_SPECS['project.catalog.mutate'].assertOutputForInput?.(
           { kind: 'select', projectId: 'project-1' },
-          { kind: 'project', project },
+          { kind: 'project', projectId: 'project-1' },
         ),
       isProtocolError,
     );
@@ -101,7 +100,8 @@ describe('Project catalog protocol', () => {
         decodeProjectCatalogQueryResult({
           kind: 'page',
           revision,
-          projects: Array.from({ length: PROJECT_CATALOG_PAGE_MAX_ITEMS + 1 }, projectProjection),
+          projectCount: 1,
+          items: Array.from({ length: PROJECT_CATALOG_PAGE_MAX_ITEMS + 1 }, projectHeaderItem),
           nextCursor: null,
         }),
       isProtocolError,
@@ -112,21 +112,21 @@ describe('Project catalog protocol', () => {
           kind: 'revision_changed',
           expected: revision,
           actual: revision,
-          projects: [],
+          items: [],
         }),
       isProtocolError,
     );
   });
 });
 
-function projectProjection() {
+function projectHeaderItem() {
   return {
+    kind: 'project',
+    projectIndex: 0,
     id: 'project-1',
-    aliases: [],
-    aliasesTruncated: false,
     name: 'Project',
-    locations: [{ path: projectPath, isWorktree: false }],
-    locationsTruncated: false,
+    aliasCount: 0,
+    locationCount: 1,
     archivedAt: null,
     available: true,
     preferredPath: projectPath,

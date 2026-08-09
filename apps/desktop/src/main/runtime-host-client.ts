@@ -505,42 +505,63 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  registerProject(path: string): Promise<ProjectRecord> {
-    return this.#mutateProject({ kind: "register", path }).then(requireProjectResult);
+  async registerProject(path: string): Promise<ProjectRecord> {
+    const result = await this.#mutateProject({ kind: "register", path });
+    return this.#projectForMutation(result);
   }
 
-  selectProject(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
-    return this.#mutateProject({ kind: "select", projectId }).then((result) => {
-      if (result.kind !== "selection") throw invalidProjection("Project selection");
-      return { project: toProjectRecord(result.project), path: result.path };
-    });
+  async selectProject(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
+    const result = await this.#mutateProject({ kind: "select", projectId });
+    if (result.kind !== "selection") throw invalidProjection("Project selection");
+    return { project: await this.#projectById(result.projectId), path: result.path };
   }
 
-  touchProject(projectId: string, path?: string): Promise<ProjectRecord> {
-    return this.#mutateProject({ kind: "touch", projectId, path: path ?? null }).then(
-      requireProjectResult,
+  async touchProject(projectId: string, path?: string): Promise<ProjectRecord> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "touch", projectId, path: path ?? null }),
     );
   }
 
-  relinkProject(projectId: string, path: string): Promise<ProjectRecord> {
-    return this.#mutateProject({ kind: "relink", projectId, path }).then(requireProjectResult);
+  async relinkProject(projectId: string, path: string): Promise<ProjectRecord> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "relink", projectId, path }),
+    );
   }
 
-  renameProject(projectId: string, name: string): Promise<ProjectRecord> {
-    return this.#mutateProject({ kind: "rename", projectId, name }).then(requireProjectResult);
+  async renameProject(projectId: string, name: string): Promise<ProjectRecord> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "rename", projectId, name }),
+    );
   }
 
-  archiveProject(projectId: string): Promise<ProjectRecord> {
-    return this.#mutateProject({ kind: "archive", projectId }).then(requireProjectResult);
+  async archiveProject(projectId: string): Promise<ProjectRecord> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "archive", projectId }),
+    );
   }
 
-  restoreProject(projectId: string): Promise<ProjectRecord> {
-    return this.#mutateProject({ kind: "restore", projectId }).then(requireProjectResult);
+  async restoreProject(projectId: string): Promise<ProjectRecord> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "restore", projectId }),
+    );
   }
 
   #mutateProject(input: ProjectCatalogMutateInput) {
     this.#assertOpen();
     return this.#request("project.catalog.mutate", input);
+  }
+
+  async #projectForMutation(result: ProjectCatalogMutateResult): Promise<ProjectRecord> {
+    if (result.kind !== "project") throw invalidProjection("Project mutation");
+    return this.#projectById(result.projectId);
+  }
+
+  async #projectById(projectId: string): Promise<ProjectRecord> {
+    const project = (await this.listProjects()).find(
+      (candidate) => candidate.id === projectId || candidate.aliases?.includes(projectId),
+    );
+    if (!project) throw invalidProjection("Project mutation");
+    return project;
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
@@ -1517,15 +1538,7 @@ function requireSessionProjection(
   );
 }
 
-function requireProjectResult(result: ProjectCatalogMutateResult): ProjectRecord {
-  if (result.kind !== "project") throw invalidProjection("Project mutation");
-  return toProjectRecord(result.project);
-}
-
 function toProjectRecord(project: ProjectCatalogProject): ProjectRecord {
-  if (project.aliasesTruncated || project.locationsTruncated) {
-    throw invalidProjection("Project catalog");
-  }
   return {
     id: project.id,
     ...(project.aliases.length === 0 ? {} : { aliases: [...project.aliases] }),

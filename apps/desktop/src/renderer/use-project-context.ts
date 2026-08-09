@@ -63,10 +63,12 @@ export function useAppShellProjectContext(options: {
 
   useEffect(() => {
     let cancelled = false;
-    const refresh = () =>
-      Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
+    let refreshGeneration = 0;
+    const refresh = () => {
+      const generation = ++refreshGeneration;
+      return Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
         ([next, info]) => {
-          if (cancelled) return;
+          if (cancelled || generation !== refreshGeneration) return;
           setProjects(next);
           setAppInfo({
             projectId: info.projectId,
@@ -79,6 +81,7 @@ export function useAppShellProjectContext(options: {
           // Project management failures surface at the next user action.
         },
       );
+    };
     const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh());
     void refresh();
     return () => {

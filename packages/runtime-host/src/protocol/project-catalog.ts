@@ -11,12 +11,9 @@ import { defineOperation } from './operation-spec.js';
 
 export const PROJECT_CATALOG_PAGE_MAX_ITEMS = 64;
 export const PROJECT_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
-export const PROJECT_CATALOG_PROJECT_MAX_BYTES = 40 * 1024;
 export const PROJECT_CATALOG_CURSOR_MAX_BYTES = 128;
-export const PROJECT_CATALOG_NAME_MAX_BYTES = 512;
+export const PROJECT_CATALOG_NAME_MAX_BYTES = 16 * 1024;
 export const PROJECT_CATALOG_PATH_MAX_BYTES = 4 * 1024;
-export const PROJECT_CATALOG_ALIAS_MAX_ITEMS = 256;
-export const PROJECT_CATALOG_LOCATION_MAX_ITEMS = 64;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -49,14 +46,37 @@ export interface ProjectCatalogLocation {
 export interface ProjectCatalogProject {
   readonly id: string;
   readonly aliases: readonly string[];
-  readonly aliasesTruncated: boolean;
   readonly name: string;
   readonly locations: readonly ProjectCatalogLocation[];
-  readonly locationsTruncated: boolean;
   readonly archivedAt: number | null;
   readonly available: boolean;
   readonly preferredPath: string | null;
 }
+
+export type ProjectCatalogPageItem =
+  | {
+      readonly kind: 'project';
+      readonly projectIndex: number;
+      readonly id: string;
+      readonly name: string;
+      readonly aliasCount: number;
+      readonly locationCount: number;
+      readonly archivedAt: number | null;
+      readonly available: boolean;
+      readonly preferredPath: string | null;
+    }
+  | {
+      readonly kind: 'alias';
+      readonly projectIndex: number;
+      readonly itemIndex: number;
+      readonly alias: string;
+    }
+  | {
+      readonly kind: 'location';
+      readonly projectIndex: number;
+      readonly itemIndex: number;
+      readonly location: ProjectCatalogLocation;
+    };
 
 export type ProjectCatalogQueryInput =
   | { readonly kind: 'list_start' }
@@ -70,7 +90,8 @@ export type ProjectCatalogQueryResult =
   | {
       readonly kind: 'page';
       readonly revision: ProjectCatalogRevision;
-      readonly projects: readonly ProjectCatalogProject[];
+      readonly projectCount: number;
+      readonly items: readonly ProjectCatalogPageItem[];
       readonly nextCursor: string | null;
     }
   | {
@@ -89,10 +110,10 @@ export type ProjectCatalogMutateInput =
   | { readonly kind: 'restore'; readonly projectId: string };
 
 export type ProjectCatalogMutateResult =
-  | { readonly kind: 'project'; readonly project: ProjectCatalogProject }
+  | { readonly kind: 'project'; readonly projectId: string }
   | {
       readonly kind: 'selection';
-      readonly project: ProjectCatalogProject;
+      readonly projectId: string;
       readonly path: string;
     };
 
@@ -169,16 +190,18 @@ export function decodeProjectCatalogQueryResult(value: unknown): ProjectCatalogQ
   const page = requireExactRecord(record, 'project catalog page result', [
     'kind',
     'revision',
-    'projects',
+    'projectCount',
+    'items',
     'nextCursor',
   ]);
-  if (!Array.isArray(page.projects) || page.projects.length > PROJECT_CATALOG_PAGE_MAX_ITEMS) {
-    throw invalidProtocolFrame('Invalid project catalog page projects');
+  if (!Array.isArray(page.items) || page.items.length > PROJECT_CATALOG_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invalid project catalog page items');
   }
   const decoded: ProjectCatalogQueryResult = {
     kind: 'page',
     revision: revision(page.revision, 'project catalog revision'),
-    projects: page.projects.map(decodeProjectCatalogProject),
+    projectCount: requireCount(page.projectCount, 'project catalog projectCount'),
+    items: page.items.map(decodeProjectCatalogPageItem),
     nextCursor:
       page.nextCursor === null
         ? null
@@ -252,45 +275,97 @@ export function decodeProjectCatalogMutateInput(value: unknown): ProjectCatalogM
 export function decodeProjectCatalogMutateResult(value: unknown): ProjectCatalogMutateResult {
   const record = requireRecord(value, 'project catalog mutation result');
   if (record.kind === 'project') {
-    const result = requireExactRecord(record, 'project mutation result', ['kind', 'project']);
-    return { kind: 'project', project: decodeProjectCatalogProject(result.project) };
+    const result = requireExactRecord(record, 'project mutation result', ['kind', 'projectId']);
+    return { kind: 'project', projectId: projectId(result.projectId) };
   }
   if (record.kind === 'selection') {
     const result = requireExactRecord(record, 'project selection result', [
       'kind',
-      'project',
+      'projectId',
       'path',
     ]);
     return {
       kind: 'selection',
-      project: decodeProjectCatalogProject(result.project),
+      projectId: projectId(result.projectId),
       path: absolutePath(result.path, 'selected project path'),
     };
   }
   throw invalidProtocolFrame('Invalid project catalog mutation result kind');
 }
 
+function decodeProjectCatalogPageItem(value: unknown): ProjectCatalogPageItem {
+  const record = requireRecord(value, 'project catalog page item');
+  if (record.kind === 'project') {
+    const item = requireExactRecord(record, 'project catalog header item', [
+      'kind',
+      'projectIndex',
+      'id',
+      'name',
+      'aliasCount',
+      'locationCount',
+      'archivedAt',
+      'available',
+      'preferredPath',
+    ]);
+    return {
+      kind: 'project',
+      projectIndex: requireCount(item.projectIndex, 'project index'),
+      id: projectId(item.id),
+      name: requireUtf8String(item.name, 'project name', PROJECT_CATALOG_NAME_MAX_BYTES),
+      aliasCount: requireCount(item.aliasCount, 'project alias count'),
+      locationCount: requireCount(item.locationCount, 'project location count'),
+      archivedAt:
+        item.archivedAt === null ? null : requireCount(item.archivedAt, 'project archivedAt'),
+      available: boolean(item.available, 'project available'),
+      preferredPath:
+        item.preferredPath === null
+          ? null
+          : absolutePath(item.preferredPath, 'project preferred path'),
+    };
+  }
+  if (record.kind === 'alias') {
+    const item = requireExactRecord(record, 'project catalog alias item', [
+      'kind',
+      'projectIndex',
+      'itemIndex',
+      'alias',
+    ]);
+    return {
+      kind: 'alias',
+      projectIndex: requireCount(item.projectIndex, 'project index'),
+      itemIndex: requireCount(item.itemIndex, 'project alias index'),
+      alias: projectId(item.alias),
+    };
+  }
+  if (record.kind === 'location') {
+    const item = requireExactRecord(record, 'project catalog location item', [
+      'kind',
+      'projectIndex',
+      'itemIndex',
+      'location',
+    ]);
+    return {
+      kind: 'location',
+      projectIndex: requireCount(item.projectIndex, 'project index'),
+      itemIndex: requireCount(item.itemIndex, 'project location index'),
+      location: decodeProjectLocation(item.location),
+    };
+  }
+  throw invalidProtocolFrame('Invalid project catalog page item kind');
+}
+
 export function decodeProjectCatalogProject(value: unknown): ProjectCatalogProject {
   const record = requireExactRecord(value, 'project catalog project', [
     'id',
     'aliases',
-    'aliasesTruncated',
     'name',
     'locations',
-    'locationsTruncated',
     'archivedAt',
     'available',
     'preferredPath',
   ]);
-  if (!Array.isArray(record.aliases) || record.aliases.length > PROJECT_CATALOG_ALIAS_MAX_ITEMS) {
-    throw invalidProtocolFrame('Invalid project aliases');
-  }
-  if (
-    !Array.isArray(record.locations) ||
-    record.locations.length > PROJECT_CATALOG_LOCATION_MAX_ITEMS
-  ) {
-    throw invalidProtocolFrame('Invalid project locations');
-  }
+  if (!Array.isArray(record.aliases)) throw invalidProtocolFrame('Invalid project aliases');
+  if (!Array.isArray(record.locations)) throw invalidProtocolFrame('Invalid project locations');
   const aliases = record.aliases.map(projectId);
   if (new Set(aliases).size !== aliases.length) {
     throw invalidProtocolFrame('Duplicate project aliases');
@@ -298,16 +373,8 @@ export function decodeProjectCatalogProject(value: unknown): ProjectCatalogProje
   const project: ProjectCatalogProject = {
     id: projectId(record.id),
     aliases,
-    aliasesTruncated: boolean(record.aliasesTruncated, 'project aliasesTruncated'),
     name: requireUtf8String(record.name, 'project name', PROJECT_CATALOG_NAME_MAX_BYTES),
-    locations: record.locations.map((location) => {
-      const item = requireExactRecord(location, 'project location', ['path', 'isWorktree']);
-      return {
-        path: absolutePath(item.path, 'project location path'),
-        isWorktree: boolean(item.isWorktree, 'project location isWorktree'),
-      };
-    }),
-    locationsTruncated: boolean(record.locationsTruncated, 'project locationsTruncated'),
+    locations: record.locations.map(decodeProjectLocation),
     archivedAt:
       record.archivedAt === null ? null : requireCount(record.archivedAt, 'project archivedAt'),
     available: boolean(record.available, 'project available'),
@@ -316,8 +383,15 @@ export function decodeProjectCatalogProject(value: unknown): ProjectCatalogProje
         ? null
         : absolutePath(record.preferredPath, 'project preferred path'),
   };
-  requireEncodedByteLimit(project, 'project catalog project', PROJECT_CATALOG_PROJECT_MAX_BYTES);
   return project;
+}
+
+function decodeProjectLocation(value: unknown): ProjectCatalogLocation {
+  const item = requireExactRecord(value, 'project location', ['path', 'isWorktree']);
+  return {
+    path: absolutePath(item.path, 'project location path'),
+    isWorktree: boolean(item.isWorktree, 'project location isWorktree'),
+  };
 }
 
 function projectId(value: unknown): string {
