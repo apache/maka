@@ -1,4 +1,4 @@
-import type { ProjectCatalog, ProjectRecord } from '@maka/storage';
+import type { ProjectRecord } from '@maka/core';
 import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =
@@ -29,19 +29,18 @@ export interface ProjectManagementService {
   restore(projectId: unknown): Promise<ProjectRecord>;
 }
 
-export interface ProjectSessionCatalog {
-  listHeaders(): Promise<
-    Array<{ readonly id: string; readonly cwd: string; readonly projectId?: string | null }>
-  >;
-  updateHeader(
-    sessionId: string,
-    patch: { readonly cwd?: string; readonly projectId?: string | null },
-  ): Promise<unknown>;
+export interface ProjectManagementCatalog {
+  list(): Promise<ProjectRecord[]>;
+  register(path: string): Promise<ProjectRecord>;
+  select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
+  relink(projectId: string, path: string): Promise<ProjectRecord>;
+  rename(projectId: string, name: string): Promise<ProjectRecord>;
+  archive(projectId: string): Promise<ProjectRecord>;
+  restore(projectId: string): Promise<ProjectRecord>;
 }
 
 export function createProjectManagementService(deps: {
-  catalog: ProjectCatalog;
-  sessions: ProjectSessionCatalog;
+  catalog: ProjectManagementCatalog;
   chooseDirectory(): Promise<string | undefined>;
   selection: {
     currentSelection(): Promise<CurrentProjectSelection>;
@@ -112,38 +111,17 @@ export function createProjectManagementService(deps: {
       const id = requireProjectId(projectId);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
-      let selectedProjectWasRelinked = false;
-      const prepareSessions = async (context: {
-        projectId: string;
-        projectAliases: string[];
-        destinationPath: string;
-        previousLocations: Array<{ path: string }>;
-        conflictingProjectId?: string;
-        conflictingProjectAliases?: string[];
-      }) => {
-        const selectedPath = (await deps.selection.currentSelection()).path;
-        selectedProjectWasRelinked = context.previousLocations.some(
-          (location) => location.path === selectedPath,
-        );
-        const survivingIds = new Set([context.projectId, ...context.projectAliases]);
-        const conflictingIds = new Set([
-          ...(context.conflictingProjectId ? [context.conflictingProjectId] : []),
-          ...(context.conflictingProjectAliases ?? []),
-        ]);
-        for (const header of await deps.sessions.listHeaders()) {
-          if (header.projectId && survivingIds.has(header.projectId)) {
-            await deps.sessions.updateHeader(header.id, {
-              cwd: context.destinationPath,
-              ...(header.projectId !== context.projectId
-                ? { projectId: context.projectId }
-                : {}),
-            });
-          } else if (header.projectId && conflictingIds.has(header.projectId)) {
-            await deps.sessions.updateHeader(header.id, { projectId: context.projectId });
-          }
-        }
-      };
-      const project = await deps.catalog.relink(id, path, prepareSessions);
+      const [selection, projects] = await Promise.all([
+        deps.selection.currentSelection(),
+        deps.catalog.list(),
+      ]);
+      const previous = projects.find(
+        (project) => project.id === id || project.aliases?.includes(id),
+      );
+      const selectedProjectWasRelinked = previous?.locations.some(
+        (location) => location.path === selection.path,
+      );
+      const project = await deps.catalog.relink(id, path);
       if (selectedProjectWasRelinked && project.preferredPath) {
         deps.selection.setSelection(project.id, project.preferredPath);
       }

@@ -93,6 +93,8 @@ function operationUsesHostPath(frame: RequestFrame): boolean {
     case 'skill.catalog.query':
     case 'skill.catalog.mutate':
     case 'skill.catalog.preview-update':
+    case 'project.catalog.query':
+    case 'project.catalog.mutate':
       return true;
     case 'skill.catalog.invocable.query':
       return frame.input.target.kind === 'new_session';

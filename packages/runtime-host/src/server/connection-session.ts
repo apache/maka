@@ -32,6 +32,10 @@ import type {
   HostSessionCatalogChangeService,
   SessionCatalogChangeConnection,
 } from './session-catalog-change-service.js';
+import type {
+  HostProjectCatalogChangeService,
+  ProjectCatalogChangeConnection,
+} from './project-catalog-change-service.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import {
   authorizeClientCapabilityFrame,
@@ -57,6 +61,7 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
   resolveConfigurationChanges?(): HostConfigurationChangeService | undefined;
+  resolveProjectCatalogChanges?(): HostProjectCatalogChangeService | undefined;
   resolveSessionCatalogChanges?(): HostSessionCatalogChangeService | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
@@ -72,6 +77,7 @@ export class RuntimeHostConnectionSession {
   #clientCapabilityService: ClientCapabilityService | undefined;
   #clientCapabilities: ClientCapabilityConnection | undefined;
   #configurationChanges: ConfigurationChangeConnection | undefined;
+  #projectCatalogChanges: ProjectCatalogChangeConnection | undefined;
   #sessionCatalogChanges: SessionCatalogChangeConnection | undefined;
   #inputClosed = false;
   #closed = false;
@@ -104,6 +110,7 @@ export class RuntimeHostConnectionSession {
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachConfigurationChanges();
+    this.#detachProjectCatalogChanges();
     this.#detachSessionCatalogChanges();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
@@ -300,12 +307,38 @@ export class RuntimeHostConnectionSession {
   attachGlobalChanges(): void {
     if (this.#closed || this.#inputClosed) return;
     this.#attachConfigurationChanges();
+    this.#attachProjectCatalogChanges();
     this.#attachSessionCatalogChanges();
   }
 
   #detachConfigurationChanges(): void {
     this.#configurationChanges?.close();
     this.#configurationChanges = undefined;
+  }
+
+  #attachProjectCatalogChanges(): void {
+    if (
+      !this.#options.connection.authority.canUseHostPaths ||
+      !hasRuntimeHostOperationGrant(this.#options.connection.authority, 'project.catalog.query')
+    ) {
+      return;
+    }
+    const service = this.#options.resolveProjectCatalogChanges?.();
+    if (!service || this.#projectCatalogChanges) return;
+    this.#projectCatalogChanges = service.attachConnection(this.#options.connection.connectionId, {
+      send: (frame) => {
+        try {
+          return this.#writer.enqueue(frame).flushed;
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    });
+  }
+
+  #detachProjectCatalogChanges(): void {
+    this.#projectCatalogChanges?.close();
+    this.#projectCatalogChanges = undefined;
   }
 
   #attachSessionCatalogChanges(): void {
@@ -339,6 +372,7 @@ export class RuntimeHostConnectionSession {
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachConfigurationChanges();
+    this.#detachProjectCatalogChanges();
     this.#detachSessionCatalogChanges();
     this.#writer.close();
     this.#options.transport.abort();

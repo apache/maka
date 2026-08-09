@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
+import type { ProjectRecord } from "@maka/core";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
   decodeStoredMessageForRead,
@@ -34,6 +35,7 @@ import {
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
+  readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from "@maka/runtime-host/client";
@@ -64,6 +66,9 @@ import {
   type PlanQueryResult,
   type PricingMutation,
   type PricingQueryResult,
+  type ProjectCatalogMutateInput,
+  type ProjectCatalogMutateResult,
+  type ProjectCatalogProject,
   type QueueRetractInput,
   type QueueRetractResult,
   type SessionCatalogFilter,
@@ -198,6 +203,11 @@ export class DesktopRuntimeHostClient {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeProjectCatalogChanges(listener);
   }
 
   subscribeSessionCatalogChanges(
@@ -480,6 +490,57 @@ export class DesktopRuntimeHostClient {
         "Session catalog kept changing while Desktop read it",
       );
     }
+  }
+
+  async listProjects(): Promise<ProjectRecord[]> {
+    this.#assertOpen();
+    try {
+      return (await readRuntimeHostProjects(this.connection)).map(toProjectRecord);
+    } catch (error) {
+      if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
+      throw new DesktopRuntimeHostClientError(
+        "catalog_unstable",
+        "Project catalog kept changing while Desktop read it",
+      );
+    }
+  }
+
+  registerProject(path: string): Promise<ProjectRecord> {
+    return this.#mutateProject({ kind: "register", path }).then(requireProjectResult);
+  }
+
+  selectProject(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
+    return this.#mutateProject({ kind: "select", projectId }).then((result) => {
+      if (result.kind !== "selection") throw invalidProjection("Project selection");
+      return { project: toProjectRecord(result.project), path: result.path };
+    });
+  }
+
+  touchProject(projectId: string, path?: string): Promise<ProjectRecord> {
+    return this.#mutateProject({ kind: "touch", projectId, path: path ?? null }).then(
+      requireProjectResult,
+    );
+  }
+
+  relinkProject(projectId: string, path: string): Promise<ProjectRecord> {
+    return this.#mutateProject({ kind: "relink", projectId, path }).then(requireProjectResult);
+  }
+
+  renameProject(projectId: string, name: string): Promise<ProjectRecord> {
+    return this.#mutateProject({ kind: "rename", projectId, name }).then(requireProjectResult);
+  }
+
+  archiveProject(projectId: string): Promise<ProjectRecord> {
+    return this.#mutateProject({ kind: "archive", projectId }).then(requireProjectResult);
+  }
+
+  restoreProject(projectId: string): Promise<ProjectRecord> {
+    return this.#mutateProject({ kind: "restore", projectId }).then(requireProjectResult);
+  }
+
+  #mutateProject(input: ProjectCatalogMutateInput) {
+    this.#assertOpen();
+    return this.#request("project.catalog.mutate", input);
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
@@ -1454,6 +1515,26 @@ function requireSessionProjection(
     "unsupported_session",
     `Runtime Host Session is not representable by this Desktop Client: ${item.id}`,
   );
+}
+
+function requireProjectResult(result: ProjectCatalogMutateResult): ProjectRecord {
+  if (result.kind !== "project") throw invalidProjection("Project mutation");
+  return toProjectRecord(result.project);
+}
+
+function toProjectRecord(project: ProjectCatalogProject): ProjectRecord {
+  if (project.aliasesTruncated || project.locationsTruncated) {
+    throw invalidProjection("Project catalog");
+  }
+  return {
+    id: project.id,
+    ...(project.aliases.length === 0 ? {} : { aliases: [...project.aliases] }),
+    name: project.name,
+    locations: project.locations.map((location) => ({ ...location })),
+    ...(project.archivedAt === null ? {} : { archivedAt: project.archivedAt }),
+    available: project.available,
+    ...(project.preferredPath === null ? {} : { preferredPath: project.preferredPath }),
+  };
 }
 
 function clientClosed(): DesktopRuntimeHostClientError {

@@ -63,23 +63,27 @@ export function useAppShellProjectContext(options: {
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
-      ([next, info]) => {
-        if (cancelled) return;
-        setProjects(next);
-        setAppInfo({
-          projectId: info.projectId,
-          projectPath: info.projectPath,
-          projectGit: info.projectGit,
-        });
-        setSelectedProjectId(info.projectId);
-      },
-      () => {
-        // Project management failures surface at the next user action.
-      },
-    );
+    const refresh = () =>
+      Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
+        ([next, info]) => {
+          if (cancelled) return;
+          setProjects(next);
+          setAppInfo({
+            projectId: info.projectId,
+            projectPath: info.projectPath,
+            projectGit: info.projectGit,
+          });
+          setSelectedProjectId(info.projectId);
+        },
+        () => {
+          // Project management failures surface at the next user action.
+        },
+      );
+    const unsubscribe = window.maka.projects.subscribeChanges(() => void refresh());
+    void refresh();
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 

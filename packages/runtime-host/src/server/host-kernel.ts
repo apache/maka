@@ -42,6 +42,7 @@ import {
 import type { SessionContinuityService } from './session-continuity-service.js';
 import type { ClientCapabilityService } from './client-capability-service.js';
 import type { HostConfigurationChangeService } from './configuration-change-service.js';
+import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
 import { runtimeHostLogBuffer } from '../process-diagnostics.js';
 import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 import {
@@ -86,6 +87,7 @@ export interface RuntimeHostComposition {
   readonly continuity?: SessionContinuityService;
   readonly clientCapabilities?: ClientCapabilityService;
   readonly configurationChanges?: HostConfigurationChangeService;
+  readonly projectCatalogChanges?: HostProjectCatalogChangeService;
   readonly sessionCatalogChanges?: HostSessionCatalogChangeService;
   releaseConnection?(connectionId: string): void;
   beginDrain(): void;
@@ -324,6 +326,7 @@ export class RuntimeHostKernel {
         resolveContinuity: () => this.#composition?.continuity,
         resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         resolveConfigurationChanges: () => this.#composition?.configurationChanges,
+        resolveProjectCatalogChanges: () => this.#composition?.projectCatalogChanges,
         resolveSessionCatalogChanges: () => this.#composition?.sessionCatalogChanges,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,

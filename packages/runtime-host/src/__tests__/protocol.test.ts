@@ -47,7 +47,7 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 11);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 12);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'access.credential.issue',
       'access.credential.revoke',
@@ -104,6 +104,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'plan.turn.start',
       'pricing.mutate',
       'pricing.query',
+      'project.catalog.mutate',
+      'project.catalog.query',
       'queue.retract',
       'runtime.policy.mutate',
       'runtime.policy.query',

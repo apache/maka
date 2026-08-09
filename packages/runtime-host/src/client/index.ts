@@ -21,6 +21,7 @@ export {
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
+  readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
   type RuntimeHostConnectionCatalogEntry,

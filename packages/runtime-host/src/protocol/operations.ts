@@ -20,6 +20,7 @@ import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
+import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
   type HostOperationError,
@@ -131,6 +132,7 @@ export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
+export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './session-catalog.js';
@@ -158,6 +160,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   RUNTIME_RESOURCE_OPERATION_SPECS,
   AUTOMATION_OPERATION_SPECS,
   PLAN_OPERATION_SPECS,
+  PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,

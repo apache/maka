@@ -23,7 +23,6 @@ import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
-  createProjectCatalog,
   createSqlitePlanReminderStore,
 } from "@maka/storage";
 import { registerAppIpc } from "./app-ipc-main.js";
@@ -100,7 +99,7 @@ import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
-import { createRuntimeHostProjectSessionCatalog } from "./runtime-host-project-session-catalog.js";
+import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
   loadRuntimeHostSettings,
@@ -157,10 +156,6 @@ if (e2eFixture) {
   }
 }
 const settingsStore = createSettingsStore(workspaceRoot);
-const projectCatalog = createProjectCatalog(workspaceRoot, {
-  onLegacyImportFailure: (error) =>
-    console.error("[projects] projects.json could not be imported:", error),
-});
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
@@ -238,13 +233,12 @@ const oauthPresentation = new RuntimeHostOAuthPresentation(
 );
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
+const projectCatalog = createRuntimeHostProjectCatalog(() => {
+  if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
+  return runtimePolicyClient;
+});
 const projectManagement: ProjectManagementService = createProjectManagementService({
   catalog: projectCatalog,
-  sessions: {
-    listHeaders: () => runtimeHostProjectSessionCatalog().listHeaders(),
-    updateHeader: (sessionId, patch) =>
-      runtimeHostProjectSessionCatalog().updateHeader(sessionId, patch),
-  },
   chooseDirectory: async () => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add project",
@@ -254,10 +248,6 @@ const projectManagement: ProjectManagementService = createProjectManagementServi
   },
   selection: projectRoot,
 });
-function runtimeHostProjectSessionCatalog() {
-  if (!runtimePolicyClient) throw new Error("Runtime Host client is unavailable");
-  return createRuntimeHostProjectSessionCatalog(runtimePolicyClient);
-}
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshotRevision(),
 );
@@ -522,6 +512,9 @@ function registerHostClientIpc(
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
     ({ sessionId }) => emitSessionsChanged("updated", sessionId),
   );
+  const unsubscribeProjectCatalogChanges = client.subscribeProjectCatalogChanges(() => {
+    mainWindowController.send("projects:changed");
+  });
   const capabilityBinding = mcpCapabilityPublisher.bind(
     controls.refreshClientCapabilities,
   );
@@ -759,6 +752,7 @@ function registerHostClientIpc(
   return async () => {
     unsubscribeConfigurationChanges();
     unsubscribeSessionCatalogChanges();
+    unsubscribeProjectCatalogChanges();
     candidateSettingsBotsIpc.dispose();
     if (settingsBotsIpc === candidateSettingsBotsIpc) {
       settingsBotsIpc = undefined;

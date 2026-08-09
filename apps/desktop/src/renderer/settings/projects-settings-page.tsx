@@ -55,11 +55,13 @@ export function ProjectsSettingsPage(props: {
 
   useEffect(() => {
     void reload();
+    const unsubscribe = window.maka.projects.subscribeChanges(() => void reload());
     // Paths render unabbreviated until this lands, which is why
     // `collapseHomePath` treats an unknown home as a no-op rather than a bug.
     void window.maka.app.info().then((info) => {
       if (mountedRef.current) setHomePath(info.homePath);
     });
+    return unsubscribe;
   }, [reload, mountedRef]);
 
   // Archived projects are removed-from-Maka, not deleted; they belong to the

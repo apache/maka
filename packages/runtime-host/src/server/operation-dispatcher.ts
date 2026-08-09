@@ -102,6 +102,7 @@ export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resourc
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
+export type ProjectCatalogOperationKey = Extract<OperationKey, `project.catalog.${string}`>;
 export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
 export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${string}`>;
 export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`>;
@@ -160,6 +161,10 @@ export type ClientCapabilityOperationHandlerMap = Pick<
 >;
 export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
 export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
+export type ProjectCatalogOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ProjectCatalogOperationKey
+>;
 export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;

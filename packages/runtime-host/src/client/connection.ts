@@ -48,6 +48,7 @@ import {
   type PlanQueryResult,
   type PlanTurnStartInput,
   type PlanTurnStartResult,
+  type ProjectCatalogChangedFrame,
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
@@ -241,6 +242,7 @@ export interface RuntimeHostConnection {
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
+  subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
 }
 
@@ -298,6 +300,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
   readonly #configurationChangeListeners = new Set<(revision: number) => void>();
+  readonly #projectCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
@@ -607,6 +610,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return () => this.#configurationChangeListeners.delete(listener);
   }
 
+  subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#projectCatalogChangeListeners.add(listener);
+    return () => this.#projectCatalogChangeListeners.delete(listener);
+  }
+
   subscribeSessionCatalogChanges(
     listener: (frame: SessionCatalogChangedFrame) => void,
   ): () => void {
@@ -627,6 +635,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           switch (frame.kind) {
             case 'configuration.changed':
               this.#acceptConfigurationChanged(frame);
+              continue;
+            case 'project.catalog.changed':
+              this.#acceptProjectCatalogChanged(frame);
               continue;
             case 'session.catalog.changed':
               this.#acceptSessionCatalogChanged(frame);
@@ -691,6 +702,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   #acceptConfigurationChanged(frame: ConfigurationChangedFrame): void {
     for (const listener of this.#configurationChangeListeners) {
+      try {
+        listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptProjectCatalogChanged(frame: ProjectCatalogChangedFrame): void {
+    for (const listener of this.#projectCatalogChangeListeners) {
       try {
         listener(frame.revision);
       } catch {

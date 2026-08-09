@@ -45,6 +45,8 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         'session.metadata.update',
         'session.create',
         'client.capability.replace',
+        'project.catalog.query',
+        'project.catalog.mutate',
       ],
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
@@ -89,6 +91,19 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     assert.equal(remote.hostEpoch, local.hostEpoch);
     await assert.rejects(
       remote.request('host.diagnostics.query', {}),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    await assert.rejects(
+      remote.request('project.catalog.query', { kind: 'list_start' }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    await assert.rejects(
+      remote.request('project.catalog.mutate', {
+        kind: 'select',
+        projectId: 'project-1',
+      }),
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );

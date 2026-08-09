@@ -13,6 +13,7 @@ import type {
   SkillCatalogRevision,
   SkillCatalogView,
   OperationOutput,
+  ProjectCatalogProject,
 } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 
@@ -44,7 +45,7 @@ export interface RuntimeHostConnectionCatalogSnapshot {
 
 export class RuntimeHostCatalogReadError extends Error {
   constructor(
-    readonly catalog: 'connection' | 'session' | 'skill' | 'runtime_resource',
+    readonly catalog: 'connection' | 'project' | 'session' | 'skill' | 'runtime_resource',
     readonly reason: 'unstable' | 'invalid_projection' | 'repeated_cursor',
   ) {
     super(`Runtime Host ${catalog} catalog read failed: ${reason}`);
@@ -155,6 +156,27 @@ export async function readRuntimeHostSessions(
     },
   );
   return pages.flatMap((page) => page.sessions);
+}
+
+export async function readRuntimeHostProjects(
+  connection: RuntimeHostCatalogConnection,
+): Promise<ProjectCatalogProject[]> {
+  const { pages } = await collectStablePages(
+    'project',
+    async () => {
+      const result = await connection.request('project.catalog.query', { kind: 'list_start' });
+      return result.kind === 'page' ? result : null;
+    },
+    async (revision, cursor) => {
+      const result = await connection.request('project.catalog.query', {
+        kind: 'list_continue',
+        revision,
+        cursor,
+      });
+      return result.kind === 'page' ? result : null;
+    },
+  );
+  return pages.flatMap((page) => page.projects);
 }
 
 export async function readRuntimeHostResources(

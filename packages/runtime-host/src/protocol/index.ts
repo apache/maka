@@ -23,6 +23,10 @@ import {
   type SessionCatalogChangedFrame,
 } from './session-catalog-change.js';
 import {
+  decodeProjectCatalogChangedFrame,
+  type ProjectCatalogChangedFrame,
+} from './project-catalog-change.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -39,6 +43,8 @@ export * from './client-capability.js';
 export * from './configuration-change.js';
 export * from './goal.js';
 export * from './plan.js';
+export * from './project-catalog.js';
+export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
@@ -55,8 +61,8 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // The wire version remains v0 before the first release. This independent epoch
 // lets a new Client retire a stale same-version Host whose closed schema is no
 // longer safe to use.
-// 11: authenticated root identity and admission authorization changed the closed schema.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 11 as const;
+// 12: Host-owned Project Catalog operations and invalidation changed the closed schema.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 12 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
@@ -123,6 +129,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame;
 
 export interface HostRegistration {
@@ -221,6 +228,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
   if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
   return decodeResponseFrame(frame);
 }

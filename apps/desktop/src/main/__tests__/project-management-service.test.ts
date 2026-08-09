@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createProjectCatalog, createSessionStore } from '@maka/storage';
+import { createProjectCatalog } from '@maka/storage';
 import { createProjectManagementService } from '../project-management-service.js';
 
 test('project management service owns selection and reversible lifecycle actions', async () => {
@@ -20,12 +20,6 @@ test('project management service owns selection and reversible lifecycle actions
   });
   const service = createProjectManagementService({
     catalog,
-    sessions: {
-      listHeaders: async () => [],
-      updateHeader: async () => {
-        throw new Error('No sessions expected');
-      },
-    },
     chooseDirectory: async () => nextDirectory,
     selection: {
       currentSelection: async () => ({
@@ -80,12 +74,6 @@ test('project management service rejects malformed IPC identities before catalog
   const base = await mkdtemp(join(tmpdir(), 'maka-project-service-input-'));
   const service = createProjectManagementService({
     catalog: createProjectCatalog(join(base, 'storage')),
-    sessions: {
-      listHeaders: async () => [],
-      updateHeader: async () => {
-        throw new Error('No sessions expected');
-      },
-    },
     chooseDirectory: async () => undefined,
     selection: {
       currentSelection: async () => ({ projectId: undefined, path: base }),
@@ -112,12 +100,6 @@ test('project management service resolves a legacy path into one canonical selec
   const savedSelections: Array<{ projectId: string | null; projectPath: string }> = [];
   const service = createProjectManagementService({
     catalog,
-    sessions: {
-      listHeaders: async () => [],
-      updateHeader: async () => {
-        throw new Error('No sessions expected');
-      },
-    },
     chooseDirectory: async () => undefined,
     selection: {
       currentSelection: async () => ({
@@ -153,12 +135,6 @@ test('project management service persists an explicit no-project selection in ma
   const savedSelections: Array<{ projectId: string | null; projectPath: string }> = [];
   const service = createProjectManagementService({
     catalog: createProjectCatalog(join(base, 'storage')),
-    sessions: {
-      listHeaders: async () => [],
-      updateHeader: async () => {
-        throw new Error('No sessions expected');
-      },
-    },
     chooseDirectory: async () => undefined,
     selection: {
       currentSelection: async () => ({
@@ -208,12 +184,6 @@ test('archiving the current project resolves fallback or no-project inside main'
   };
   const service = createProjectManagementService({
     catalog,
-    sessions: {
-      listHeaders: async () => [],
-      updateHeader: async () => {
-        throw new Error('No sessions expected');
-      },
-    },
     chooseDirectory: async () => undefined,
     selection: {
       currentSelection: async () => selection,
@@ -251,128 +221,3 @@ test('archiving the current project resolves fallback or no-project inside main'
     await rm(base, { recursive: true, force: true });
   }
 });
-
-test('relinking merges a project that was accidentally added from its new path', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-merge-'));
-  const oldPath = join(base, 'old-location');
-  const newPath = join(base, 'new-location');
-  const secondPath = join(base, 'second-location');
-  const storage = join(base, 'storage');
-  await mkdir(oldPath);
-  let nextDirectory: string | undefined = oldPath;
-  let nextId = 0;
-  const catalog = createProjectCatalog(storage, {
-    now: () => 1_000,
-    createId: () => `project-${++nextId}`,
-  });
-  const sessions = createSessionStore(storage);
-  let failUpdateNumber: number | undefined;
-  let updateCount = 0;
-  const service = createProjectManagementService({
-    catalog,
-    sessions: {
-      listHeaders: () => sessions.listHeaders(),
-      updateHeader: async (sessionId, patch) => {
-        updateCount += 1;
-        if (updateCount === failUpdateNumber) {
-          throw new Error('injected session reassignment failure');
-        }
-        return sessions.updateHeader(sessionId, patch);
-      },
-    },
-    chooseDirectory: async () => nextDirectory,
-    selection: {
-      currentSelection: async () => ({
-        projectId: undefined,
-        path: nextDirectory ? await realpath(nextDirectory) : base,
-      }),
-      setSelection: () => {},
-    },
-  });
-
-  try {
-    const original = await service.add();
-    assert.equal(original.ok, true);
-    if (!original.ok) throw new Error('Expected original project');
-    await service.rename(original.project.id, 'Original name');
-    await rename(oldPath, newPath);
-
-    nextDirectory = newPath;
-    const duplicate = await service.add();
-    assert.equal(duplicate.ok, true);
-    if (!duplicate.ok) throw new Error('Expected duplicate project');
-    const oldSession = await sessions.create(
-      makeSessionInput(oldPath, original.project.id, 'Old history'),
-    );
-    const newSession = await sessions.create(
-      makeSessionInput(newPath, duplicate.project.id, 'New history'),
-    );
-
-    failUpdateNumber = 2;
-    await assert.rejects(
-      () => service.relink(original.project.id),
-      /injected session reassignment failure/,
-    );
-    assert.deepEqual(
-      (await catalog.list()).map((project) => project.id).sort(),
-      [original.project.id, duplicate.project.id].sort(),
-    );
-
-    failUpdateNumber = undefined;
-    updateCount = 0;
-    const merged = await service.relink(original.project.id);
-
-    assert.equal(merged.ok, true);
-    if (!merged.ok) throw new Error('Expected merged project');
-    assert.equal(merged.project.id, original.project.id);
-    assert.equal(merged.project.name, 'Original name');
-    assert.equal(merged.project.preferredPath, await realpath(newPath));
-    assert.deepEqual(
-      (await catalog.list()).map((project) => project.id),
-      [original.project.id],
-    );
-    assert.equal(
-      (await sessions.readHeaderSnapshot(oldSession.id)).projectId,
-      original.project.id,
-    );
-    assert.equal(
-      (await sessions.readHeaderSnapshot(oldSession.id)).cwd,
-      await realpath(newPath),
-    );
-    assert.equal(
-      (await sessions.readHeaderSnapshot(newSession.id)).projectId,
-      original.project.id,
-    );
-
-    const lateAliasSession = await sessions.create(
-      makeSessionInput(newPath, duplicate.project.id, 'Late alias history'),
-    );
-    await rename(newPath, secondPath);
-    nextDirectory = secondPath;
-    const relinkedAgain = await service.relink(original.project.id);
-
-    assert.equal(relinkedAgain.ok, true);
-    const lateAliasHeader = await sessions.readHeaderSnapshot(lateAliasSession.id);
-    assert.equal(lateAliasHeader.projectId, original.project.id);
-    assert.equal(
-      lateAliasHeader.cwd,
-      await realpath(secondPath),
-    );
-  } finally {
-    await sessions.close?.();
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
-function makeSessionInput(cwd: string, projectId: string, name: string) {
-  return {
-    cwd,
-    projectId,
-    backend: 'fake' as const,
-    llmConnectionSlug: 'fake',
-    model: 'fake-model',
-    permissionMode: 'ask' as const,
-    name,
-    labels: [],
-  };
-}

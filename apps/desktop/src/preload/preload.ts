@@ -427,6 +427,11 @@ const makaBridge = {
     list(): Promise<ProjectRecord[]> {
       return ipcRenderer.invoke('projects:list');
     },
+    subscribeChanges(handler: () => void): () => void {
+      const listener = () => handler();
+      ipcRenderer.on('projects:changed', listener);
+      return () => ipcRenderer.off('projects:changed', listener);
+    },
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     > {

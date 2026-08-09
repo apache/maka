@@ -26,6 +26,42 @@ export class ProjectPathMismatchError extends Error {
   }
 }
 
+export class ProjectNotFoundError extends Error {
+  readonly name = 'ProjectNotFoundError';
+  readonly code = 'project_not_found';
+
+  constructor(readonly projectId: string) {
+    super(`No such project: ${projectId}`);
+  }
+}
+
+export class ProjectArchivedError extends Error {
+  readonly name = 'ProjectArchivedError';
+  readonly code = 'project_archived';
+
+  constructor(readonly projectId: string) {
+    super(`Project is archived: ${projectId}`);
+  }
+}
+
+export class ProjectUnavailableError extends Error {
+  readonly name = 'ProjectUnavailableError';
+  readonly code = 'project_unavailable';
+
+  constructor(readonly projectId: string) {
+    super(`Project is unavailable: ${projectId}`);
+  }
+}
+
+export class ProjectPathConflictError extends Error {
+  readonly name = 'ProjectPathConflictError';
+  readonly code = 'project_path_conflict';
+
+  constructor(readonly conflictingProjectId: string) {
+    super(`Project path already belongs to project: ${conflictingProjectId}`);
+  }
+}
+
 export function isProjectPathMismatchError(error: unknown): error is ProjectPathMismatchError {
   return error instanceof ProjectPathMismatchError;
 }
@@ -231,7 +267,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
       // Probing the filesystem cannot happen inside the write transaction, so
       // availability is decided first and the choice is re-validated under it.
       const existing = findProjectById((await this.read()).projects, projectId);
-      if (!existing) throw new Error(`No such project: ${projectId}`);
+      if (!existing) throw new ProjectNotFoundError(projectId);
       const availablePaths = new Set(
         (
           await Promise.all(
@@ -243,14 +279,14 @@ class SqliteProjectCatalog implements ProjectCatalog {
       );
       [selected, selectedPath] = await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         if (project.archivedAt !== undefined) {
-          throw new Error(`Project is archived: ${projectId}`);
+          throw new ProjectArchivedError(projectId);
         }
         const location = project.locations
           .filter((item) => availablePaths.has(item.path))
           .sort((a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path))[0];
-        if (!location) throw new Error(`Project is unavailable: ${projectId}`);
+        if (!location) throw new ProjectUnavailableError(projectId);
         const timestamp = this.now();
         location.lastUsedAt = timestamp;
         project.lastUsedAt = timestamp;
@@ -270,7 +306,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
       : undefined;
     const touched = await this.mutate((file) => {
       const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
+      if (!project) throw new ProjectNotFoundError(projectId);
       const location = resolvedPath
         ? project.locations.find((item) => item.path === resolvedPath)
         : [...project.locations].sort(
@@ -305,12 +341,12 @@ class SqliteProjectCatalog implements ProjectCatalog {
       // while the sessions the callback already moved point at the wrong owner.
       const preview = await this.read();
       const previewProject = findProjectById(preview.projects, projectId);
-      if (!previewProject) throw new Error(`No such project: ${projectId}`);
+      if (!previewProject) throw new ProjectNotFoundError(projectId);
       const previewConflict = preview.projects.find(
         (item) => item.id !== previewProject.id && item.identity === resolved.identity,
       );
       if (previewConflict && !beforeCommit) {
-        throw new Error(`Project path already belongs to project: ${previewConflict.id}`);
+        throw new ProjectPathConflictError(previewConflict.id);
       }
       await beforeCommit?.({
         projectId: previewProject.id,
@@ -326,12 +362,12 @@ class SqliteProjectCatalog implements ProjectCatalog {
       });
       relinked = await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         const conflict = file.projects.find(
           (item) => item.id !== project.id && item.identity === resolved.identity,
         );
         if (conflict && !beforeCommit) {
-          throw new Error(`Project path already belongs to project: ${conflict.id}`);
+          throw new ProjectPathConflictError(conflict.id);
         }
         if (conflict?.id !== previewConflict?.id) {
           throw new ProjectRelinkContentionError(projectId);
@@ -367,7 +403,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(
       await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         project.name = trimmed;
         return project;
       }),
@@ -378,7 +414,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(
       await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         project.archivedAt = this.now();
         return project;
       }),
@@ -389,7 +425,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(
       await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         delete project.archivedAt;
         return project;
       }),
