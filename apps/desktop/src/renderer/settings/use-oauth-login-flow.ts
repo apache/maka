@@ -327,6 +327,18 @@ export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale 
 export function subscriptionResultMessage(message: string | undefined, fallback: string, locale: UiLocale = 'zh'): string {
   const raw = redactSecrets(message ?? '').trim();
   if (!raw) return fallback;
+  // Host conflict / supersede copy before the coarse keyword classifier turns
+  // "authorization" into a generic 鉴权失败 that does not tell the user what to do.
+  if (/already in progress|superseded by a new attempt/i.test(raw)) {
+    return locale === 'zh'
+      ? '上一轮浏览器登录还在进行中，已为你重新发起；请在浏览器完成授权，或稍后再试。'
+      : 'A previous browser login was still running; a new attempt was started. Finish authorization in the browser, or try again shortly.';
+  }
+  if (/did not present OAuth|no matching OAuth presentation/i.test(raw)) {
+    return locale === 'zh'
+      ? '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。'
+      : 'Could not open the system browser for login. Check popup blockers and try again.';
+  }
   const classified = locale === 'zh'
     ? generalizedErrorMessageChinese(new Error(raw), '')
     : generalizedErrorMessage(new Error(raw), '');

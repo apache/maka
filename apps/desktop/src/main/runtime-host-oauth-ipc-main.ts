@@ -82,6 +82,9 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     }
     deps.ipcMain.handle(channel('get-auth-url'), async () => {
       if (!providerEnabled(provider)) return providerDisabled();
+      // Drop any Desktop-tracked attempt for this provider so a re-click does
+      // not race a stale completeAuthorization waiter against a new start.
+      await cancelProviderAttempts(deps, activeAttempts, provider);
       const connection = await ensureRuntimeHostAccountConnection(deps.client, {
         providerType: provider,
         slug: INTERACTIVE_OAUTH_CONNECTION_SLUGS[provider],
@@ -100,7 +103,13 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       } catch (error) {
         expectation.cancel(error);
         await deps.client.cancelOAuthLogin(attemptId).catch(() => undefined);
-        return actionFailure('Unable to start OAuth authorization');
+        // Prefer the host's message when present so "already in progress" is not
+        // flattened into a generic 鉴权失败 for the toast classifier.
+        const detail =
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : 'Unable to start OAuth authorization';
+        return actionFailure(detail);
       }
     });
     deps.ipcMain.handle(channel('open-auth-url'), (_event, attemptId: unknown) => {

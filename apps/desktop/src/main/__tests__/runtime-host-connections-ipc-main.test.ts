@@ -7,6 +7,51 @@ import {
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
 
+test('retries connection delete after a stale revision instead of failing permanently', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let revision = 1;
+  let removals = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        revision,
+        defaultTarget: null,
+        connections: [
+          {
+            connectionId: 'connection-1',
+            revision,
+            slug: 'openrouter',
+            name: 'OpenRouter',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://openrouter.ai/api/v1',
+            enabled: true,
+            enabledModelIds: ['model-1'],
+            models: [{ id: 'model-1' }],
+          },
+        ],
+      }),
+      removeConnection: async (expected: { connectionId: string; revision: number }) => {
+        removals += 1;
+        if (expected.revision === 1) {
+          revision = 2;
+          return { kind: 'connection_stale' };
+        }
+        assert.equal(expected.revision, 2);
+        return { kind: 'committed', catalogRevision: 3 };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await handlers.get('connections:delete')?.({}, 'openrouter');
+  assert.equal(removals, 2);
+});
+
 test('reports an existing but unconfigured credential as missing', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   registerRuntimeHostConnectionsIpc({

@@ -161,6 +161,84 @@ test('xAI enrollment keeps device polling and credential material in the Host', 
   });
 });
 
+test('a new OAuth start supersedes an in-progress login instead of failing with operation_conflict', async () => {
+  await withFixture('xai-oauth', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-xai-supersede', []);
+    let firstPollEntered = false;
+    let starts = 0;
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startXaiAuthorization: async () => {
+        starts += 1;
+        return {
+          deviceCode: `device-${starts}`,
+          userCode: `CODE-${starts}`,
+          verificationUrl: 'https://accounts.x.ai/device',
+          expiresAt: NOW + 60_000,
+          intervalMs: 1_000,
+        };
+      },
+      pollXaiAuthorization: async (input) => {
+        if (input.authorization.deviceCode === 'device-1') {
+          firstPollEntered = true;
+          // Park until supersede aborts this attempt (no external deadlock).
+          await new Promise<never>((_resolve, reject) => {
+            if (input.signal.aborted) {
+              reject(input.signal.reason ?? new DOMException('aborted', 'AbortError'));
+              return;
+            }
+            input.signal.addEventListener(
+              'abort',
+              () => {
+                reject(input.signal.reason ?? new DOMException('aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+          });
+        }
+        return tokenFixture('xai-second');
+      },
+    });
+
+    const first = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-first', connectionId: fixture.connection.connectionId },
+      operationContext('client-xai-supersede', fixture.acquireResidency),
+    );
+    assert.equal(first.ok, true);
+    // Wait until the first login has entered polling so #activeAttempt is set.
+    for (let i = 0; i < 50 && !firstPollEntered; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(firstPollEntered, true);
+
+    const second = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-second', connectionId: fixture.connection.connectionId },
+      operationContext('client-xai-supersede', fixture.acquireResidency),
+    );
+    assert.equal(second.ok, true, 'second start must supersede, not conflict');
+    if (second.ok) assert.equal(second.result.attemptId, 'attempt-second');
+
+    assert.equal((await waitForTerminal(coordinator, 'attempt-first')).phase, 'cancelled');
+    assert.equal((await waitForTerminal(coordinator, 'attempt-second')).phase, 'authenticated');
+    assert.equal(starts, 2);
+    assert.equal(fixture.invalidations, 1);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
 test('xAI cancellation waits for an admitted token poll and commits its successful outcome', async () => {
   await withFixture('xai-oauth', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-xai-cut', []);

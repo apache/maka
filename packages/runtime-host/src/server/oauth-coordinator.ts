@@ -283,9 +283,14 @@ export class HostOAuthCoordinator {
       ) {
         return this.#pendingStart.result;
       }
-      return authorizationInProgress();
+      // Another start is mid-admission. Wait for it so a double-click does not
+      // surface a permanent "already in progress" that only restart clears.
+      await this.#pendingStart.result.catch(() => undefined);
+      if (this.#activeAttempt) await this.#supersedeActiveLogin();
     }
-    if (this.#activeAttempt) return authorizationInProgress();
+    // User re-clicked 登录 after the browser already authorized (or abandoned)
+    // an earlier attempt. Supersede instead of blocking until process restart.
+    if (this.#activeAttempt) await this.#supersedeActiveLogin();
     if (this.#admissionClosed) return hostDraining();
 
     const result = this.#prepareStart(input, initiatingConnectionId);
@@ -295,6 +300,29 @@ export class HostOAuthCoordinator {
     } finally {
       if (this.#pendingStart?.result === result) this.#pendingStart = undefined;
     }
+  }
+
+  /**
+   * Cancel the active interactive login and wait until its residency is released.
+   * Used when the user starts a new login while a prior device-code poll is still open.
+   */
+  async #supersedeActiveLogin(): Promise<void> {
+    const previous = this.#activeAttempt;
+    if (!previous) return;
+    // Committing is the only phase that must finish — aborting mid-commit can
+    // leave credential write outcome unknown. Wait it out, then continue.
+    if (previous.phase === 'committing') {
+      await previous.settlement.catch(() => undefined);
+      return;
+    }
+    const reason = new DOMException('OAuth login superseded by a new attempt', 'AbortError');
+    previous.cancelRequested = true;
+    previous.cancellationDeferred = false;
+    if (previous.phase !== 'authenticated' && previous.phase !== 'failed') {
+      previous.phase = 'cancelled';
+    }
+    if (!previous.abort.signal.aborted) previous.abort.abort(reason);
+    await previous.settlement.catch(() => undefined);
   }
 
   async #prepareStart(
