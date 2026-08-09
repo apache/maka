@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent } from 'storybook/test';
+import { expect, userEvent, waitFor } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
@@ -721,16 +721,15 @@ async function waitForStorySelector<T extends Element>(
   canvasElement: HTMLElement,
   selector: string,
 ): Promise<T> {
-  // Catalog smoke renders four stories concurrently. A long Astryx list can
-  // commit its fixed header before its rows when the CI runner is saturated,
-  // so give the actual content the same five-second budget as the outer smoke
-  // runner's layout selectors.
-  for (let attempt = 0; attempt < 250; attempt += 1) {
-    const element = canvasElement.querySelector<T>(selector);
-    if (element) return element;
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
-  }
-  throw new Error(`Story selector did not render: ${selector}`);
+  let element: T | null = null;
+  await waitFor(
+    () => {
+      element = canvasElement.querySelector<T>(selector);
+      if (!element) throw new Error(`Story selector did not render: ${selector}`);
+    },
+    { timeout: 5_000, interval: 50 },
+  );
+  return element!;
 }
 
 async function waitForStoryText(canvasElement: HTMLElement, text: string): Promise<void> {
