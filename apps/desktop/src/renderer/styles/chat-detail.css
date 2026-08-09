@@ -357,45 +357,67 @@
   overflow-y: auto;
 }
 
-.maka-session-review-panel > .astryx-toolbar {
+.maka-session-review-header {
   position: sticky;
   z-index: 1;
   top: 0;
+  display: grid;
+  min-height: 40px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
   background: var(--agents-content-area-bg);
 }
 
-.maka-session-review-toolbar {
+.maka-session-review-scope {
   min-width: 0;
+  overflow: hidden;
 }
 
-.maka-session-review-source {
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.maka-session-review-source::-webkit-scrollbar {
-  display: none;
-}
-
-.maka-session-review-summary {
-  display: flex;
-  min-height: 32px;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1) var(--space-3);
-  padding: var(--space-1) var(--space-3);
-  border-bottom: 1px solid var(--border);
-  color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
+.maka-session-review-stats,
+.maka-session-review-file-stats {
+  white-space: nowrap;
 }
 
 .maka-session-review-list {
+  min-width: 0;
+}
+
+.maka-session-review-file-trigger {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.maka-session-review-file-path {
+  min-width: 0;
+  flex: 1;
+}
+
+.maka-session-review-additions {
+  color: var(--success);
+}
+
+.maka-session-review-deletions {
+  color: var(--destructive);
+}
+
+.maka-session-review-file-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding-block-end: var(--space-1);
+}
+
+.maka-session-review-diff {
+  max-height: 360px;
+  overflow: auto;
+  border-radius: var(--radius-control);
 }
 
 .maka-session-review-more {

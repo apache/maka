@@ -100,6 +100,7 @@ export interface DesktopConversationCopy {
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
     sourceLabel: string;
+    compareWith: string;
     branchSource: string;
     unstagedSource: string;
     stagedSource: string;
@@ -119,13 +120,11 @@ export interface DesktopConversationCopy {
     revertConfirm: string;
     cancel: string;
     showMore(remaining: number): string;
+    hiddenLines(count: number): string;
     summary(files: number, additions: number, deletions: number): string;
-    comparison(base: string, current: string): string;
-    workingTree(branch: string): string;
     loadFailed: string;
     retry: string;
     refresh: string;
-    diffCount(count: number): string;
   };
   terminalPanel: {
     ariaLabel: string;
@@ -408,6 +407,7 @@ const COPY = {
       empty: '当前 Git 工作区没有变化',
       emptyHelp: '提交、暂存或修改文件后，变化会显示在这里。',
       sourceLabel: '变更范围',
+      compareWith: '比较基准',
       branchSource: '分支',
       unstagedSource: '未暂存',
       stagedSource: '已暂存',
@@ -428,14 +428,12 @@ const COPY = {
       revertConfirm: '确认还原',
       cancel: '取消',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
+      hiddenLines: (count) => `另有 ${count} 行未显示`,
       summary: (files, additions, deletions) =>
         `${files} 个文件 · +${additions} · -${deletions}`,
-      comparison: (base, current) => `${current} 相对 ${base}`,
-      workingTree: (branch) => `${branch} 工作区`,
       loadFailed: '无法读取 Git 变化',
       retry: '重试',
       refresh: '刷新变化',
-      diffCount: (count) => `${count} 个差异`,
     },
     terminalPanel: {
       ariaLabel: '会话终端',
@@ -604,6 +602,7 @@ const COPY = {
       empty: 'No changes in the current Git workspace',
       emptyHelp: 'Committed, staged, and modified files appear here.',
       sourceLabel: 'Change scope',
+      compareWith: 'Compare with',
       branchSource: 'Branch',
       unstagedSource: 'Unstaged',
       stagedSource: 'Staged',
@@ -625,14 +624,13 @@ const COPY = {
       cancel: 'Cancel',
       showMore: (remaining) =>
         `Show ${Math.min(20, remaining)} more file${Math.min(20, remaining) === 1 ? '' : 's'}`,
+      hiddenLines: (count) =>
+        `${count} more line${count === 1 ? '' : 's'} not shown`,
       summary: (files, additions, deletions) =>
         `${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
-      comparison: (base, current) => `${current} compared with ${base}`,
-      workingTree: (branch) => `${branch} working tree`,
       loadFailed: 'Could not read Git changes',
       retry: 'Retry',
       refresh: 'Refresh changes',
-      diffCount: (count) => `${count} diff${count === 1 ? '' : 's'}`,
     },
     terminalPanel: {
       ariaLabel: 'Conversation terminal',

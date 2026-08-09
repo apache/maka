@@ -1,34 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from '@astryxdesign/core/SegmentedControl';
+  DropdownMenu,
+  type DropdownMenuOption,
+} from '@astryxdesign/core/DropdownMenu';
 import { Section } from '@astryxdesign/core/Section';
-import { Toolbar } from '@astryxdesign/core/Toolbar';
+import { Text } from '@astryxdesign/core/Text';
 import {
+  displayRedactSecrets,
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
   type GitReviewMutationAction,
   type GitReviewReadResult,
   type GitReviewSource,
 } from '@maka/core';
-import { ToolResultPreview, useToast, useUiLocale } from '@maka/ui';
-import {
-  ICON_SIZE,
-  Check,
-  GitBranch,
-  Minus,
-  Plus,
-  RotateCcw,
-  RotateCw,
-} from '@maka/ui/icons';
+import { DiffCodePreview, useToast, useUiLocale } from '@maka/ui';
+import { ICON_SIZE, Check, GitBranch, RotateCw } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
+const REVIEW_DIFF_LINE_CAP = 500;
+
+function boundedDiff(diff: string) {
+  const lines = displayRedactSecrets(diff).split('\n');
+  if (lines.length <= REVIEW_DIFF_LINE_CAP) {
+    return { body: lines.join('\n'), hiddenLines: 0 };
+  }
+  return {
+    body: lines.slice(0, REVIEW_DIFF_LINE_CAP).join('\n'),
+    hiddenLines: lines.length - REVIEW_DIFF_LINE_CAP,
+  };
+}
 
 export function SessionReviewPanel(props: {
   sessionId: string;
@@ -115,14 +120,6 @@ export function SessionReviewPanel(props: {
           : gitResult.reason === 'invalid_base_branch'
             ? copy.invalidBaseBranch
           : copy.gitFailed;
-  const comparison =
-    source === 'branch' &&
-    gitSnapshot?.baseBranch &&
-    gitSnapshot.currentBranch
-      ? gitSnapshot.baseBranch === gitSnapshot.currentBranch
-        ? copy.workingTree(gitSnapshot.currentBranch)
-        : copy.comparison(gitSnapshot.baseBranch, gitSnapshot.currentBranch)
-      : null;
   const mutationSource =
     source === 'unstaged' || source === 'staged' ? source : null;
   const mutationAction =
@@ -136,6 +133,47 @@ export function SessionReviewPanel(props: {
     !error &&
     !sourceError &&
     gitFiles.length === 0;
+  const sourceLabel =
+    source === 'branch'
+      ? gitSnapshot?.baseBranch
+        ? `${copy.branchSource} · ${gitSnapshot.baseBranch}`
+        : copy.branchSource
+      : source === 'unstaged'
+        ? copy.unstagedSource
+        : copy.stagedSource;
+  const sourceItems: DropdownMenuOption[] = [
+    {
+      type: 'section',
+      title: copy.sourceLabel,
+      items: (['branch', 'unstaged', 'staged'] as const).map((value) => ({
+        label:
+          value === 'branch'
+            ? copy.branchSource
+            : value === 'unstaged'
+              ? copy.unstagedSource
+              : copy.stagedSource,
+        icon:
+          source === value ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined,
+        onClick: () => setSource(value),
+      })),
+    },
+    ...(source === 'branch' && gitSnapshot?.baseBranchOptions.length
+      ? [
+          {
+            type: 'section' as const,
+            title: copy.compareWith,
+            items: gitSnapshot.baseBranchOptions.map((branch) => ({
+              label: branch,
+              icon:
+                branch === gitSnapshot.baseBranch ? (
+                  <Check size={ICON_SIZE.control} aria-hidden />
+                ) : undefined,
+              onClick: () => setBaseBranch(branch),
+            })),
+          },
+        ]
+      : []),
+  ];
 
   const mutateFile = async (
     path: string,
@@ -196,60 +234,30 @@ export function SessionReviewPanel(props: {
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
-      <Toolbar
-        size="sm"
-        label={copy.ariaLabel}
-        className="maka-session-review-toolbar"
-        startContent={
-          <div className="maka-session-review-source">
-            <SegmentedControl
-              value={source}
-              onChange={(value) => setSource(value as GitReviewSource)}
-              label={copy.sourceLabel}
-              size="sm"
-            >
-              <SegmentedControlItem value="branch" label={copy.branchSource} />
-              <SegmentedControlItem value="unstaged" label={copy.unstagedSource} />
-              <SegmentedControlItem value="staged" label={copy.stagedSource} />
-            </SegmentedControl>
-          </div>
-        }
-        endContent={
-          <Button
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            label={copy.refresh}
-            icon={<RotateCw size={ICON_SIZE.control} aria-hidden />}
-            isLoading={loading}
-            onClick={() => void load()}
-          />
-        }
-      />
-      <div className="maka-session-review-summary">
-        <span>{copy.summary(stats.files, stats.additions, stats.deletions)}</span>
-        {source === 'branch' &&
-        gitSnapshot &&
-        gitSnapshot.baseBranchOptions.length > 0 ? (
+      <div className="maka-session-review-header">
+        <div className="maka-session-review-scope">
           <DropdownMenu
-            button={{
-              label: comparison ?? copy.branchSource,
-              variant: 'ghost',
-              size: 'sm',
-            }}
-            alignment="end"
-            items={gitSnapshot.baseBranchOptions.map((branch) => ({
-              label: branch,
-              icon:
-                branch === gitSnapshot.baseBranch ? (
-                  <Check size={ICON_SIZE.control} aria-hidden />
-                ) : undefined,
-              onClick: () => setBaseBranch(branch),
-            }))}
+            button={{ label: sourceLabel, variant: 'ghost', size: 'sm' }}
+            items={sourceItems}
           />
-        ) : comparison ? (
-          <span>{comparison}</span>
-        ) : null}
+        </div>
+        <Text
+          type="supporting"
+          color="secondary"
+          hasTabularNumbers
+          className="maka-session-review-stats"
+        >
+          {copy.summary(stats.files, stats.additions, stats.deletions)}
+        </Text>
+        <Button
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          label={copy.refresh}
+          icon={<RotateCw size={ICON_SIZE.control} aria-hidden />}
+          isLoading={loading}
+          onClick={() => void load()}
+        />
       </div>
       {error ? (
         <Banner
@@ -277,51 +285,83 @@ export function SessionReviewPanel(props: {
       ) : null}
       {gitFiles.length > 0 ? (
         <div className="maka-session-review-list">
-          {visibleGitFiles.map((file) => (
-            <ToolResultPreview
-              key={`${gitSnapshot?.revision}:${file.path}`}
-              fileDiffActions={
-                mutationAction ? (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      isIconOnly
-                      label={
-                        mutationAction === 'stage'
-                          ? copy.stageFile
-                          : copy.unstageFile
-                      }
-                      icon={
-                        mutationAction === 'stage'
-                          ? <Plus size={ICON_SIZE.control} aria-hidden />
-                          : <Minus size={ICON_SIZE.control} aria-hidden />
-                      }
-                      isLoading={pendingPath === file.path}
-                      isDisabled={pendingPath !== null}
-                      onClick={() => void mutateFile(file.path)}
-                    />
-                    {mutationAction === 'stage' ? (
+          <CollapsibleGroup
+            key={gitSnapshot?.revision}
+            type="single"
+            defaultValue={visibleGitFiles[0]?.path}
+            hasDividers
+            density="compact"
+          >
+            {visibleGitFiles.map((file) => {
+              const preview = boundedDiff(file.diff);
+              return (
+                <Collapsible
+                  key={`${gitSnapshot?.revision}:${file.path}`}
+                  value={file.path}
+                  trigger={
+                    <div className="maka-session-review-file-trigger">
+                      <Text
+                        type="code"
+                        maxLines={1}
+                        className="maka-session-review-file-path"
+                      >
+                        {file.path}
+                      </Text>
+                      <Text
+                        type="supporting"
+                        color="secondary"
+                        hasTabularNumbers
+                        className="maka-session-review-file-stats"
+                      >
+                        <span className="maka-session-review-additions">
+                          +{file.additions}
+                        </span>{' '}
+                        <span className="maka-session-review-deletions">
+                          -{file.deletions}
+                        </span>
+                      </Text>
+                    </div>
+                  }
+                >
+                  {mutationAction ? (
+                    <div className="maka-session-review-file-actions">
                       <Button
                         variant="ghost"
                         size="sm"
-                        isIconOnly
-                        label={copy.revertFile}
-                        icon={<RotateCcw size={ICON_SIZE.control} aria-hidden />}
+                        label={
+                          mutationAction === 'stage'
+                            ? copy.stageFile
+                            : copy.unstageFile
+                        }
+                        isLoading={pendingPath === file.path}
                         isDisabled={pendingPath !== null}
-                        onClick={() => void revertFile(file.path)}
+                        onClick={() => void mutateFile(file.path)}
                       />
-                    ) : null}
-                  </>
-                ) : undefined
-              }
-              content={{
-                kind: 'file_diff',
-                paths: [file.path],
-                diff: file.diff,
-              }}
-            />
-          ))}
+                      {mutationAction === 'stage' ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          label={copy.revertFile}
+                          isDisabled={pendingPath !== null}
+                          onClick={() => void revertFile(file.path)}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <DiffCodePreview
+                    diff={preview.body}
+                    paths={[file.path]}
+                    className="maka-session-review-diff"
+                  />
+                  {preview.hiddenLines > 0 ? (
+                    <Text type="supporting" color="secondary" display="block">
+                      {copy.hiddenLines(preview.hiddenLines)}
+                    </Text>
+                  ) : null}
+                </Collapsible>
+              );
+            })}
+          </CollapsibleGroup>
           {remainingGitFiles > 0 ? (
             <div className="maka-session-review-more">
               <Button

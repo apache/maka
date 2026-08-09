@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ArtifactRecord, Task } from '@maka/core';
+import type { ArtifactRecord, GitReviewSnapshot, Task } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import { ToastProvider } from '@maka/ui';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
@@ -135,6 +135,65 @@ const artifactText: Record<string, string> = {
     '+    <Card variant="transparent" padding={0} height="100%">',
   ].join('\n'),
   'artifact-notes': '# Conversation review\n\n- Long transcript\n- Narrow viewport',
+};
+
+const gitReviewSnapshot: GitReviewSnapshot = {
+  source: 'branch',
+  repositoryRoot: '/Users/reviewer/maka-agent',
+  currentBranch: 'feat/git-authoritative-changes',
+  baseBranch: 'main',
+  baseBranchOptions: ['main', 'release/0.1'],
+  revision: 'storybook-git-review',
+  additions: 46,
+  deletions: 98,
+  truncated: false,
+  files: [
+    {
+      path: 'apps/desktop/src/renderer/session-review-panel.tsx',
+      status: 'modified',
+      additions: 28,
+      deletions: 94,
+      diff: [
+        'diff --git a/apps/desktop/src/renderer/session-review-panel.tsx b/apps/desktop/src/renderer/session-review-panel.tsx',
+        '--- a/apps/desktop/src/renderer/session-review-panel.tsx',
+        '+++ b/apps/desktop/src/renderer/session-review-panel.tsx',
+        '@@ -30,8 +30,6 @@',
+        "-type ReviewSource = GitReviewSource | 'last-turn';",
+        '+const REVIEW_FILE_PAGE_SIZE = 20;',
+        '-const [messages, setMessages] = useState<StoredMessage[]>([]);',
+        '+const [source, setSource] = useState<GitReviewSource>(\'branch\');',
+      ].join('\n'),
+    },
+    {
+      path: 'apps/desktop/src/renderer/locales/conversation-copy.ts',
+      status: 'modified',
+      additions: 17,
+      deletions: 4,
+      diff: [
+        'diff --git a/apps/desktop/src/renderer/locales/conversation-copy.ts b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+        '--- a/apps/desktop/src/renderer/locales/conversation-copy.ts',
+        '+++ b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+        '@@ -372,1 +372,1 @@',
+        "-      review: '审阅',",
+        "+      review: '变更',",
+      ].join('\n'),
+    },
+    {
+      path: 'apps/desktop/src/main/__tests__/conversation-review-copy.test.ts',
+      status: 'untracked',
+      additions: 18,
+      deletions: 0,
+      diff: [
+        'diff --git a/apps/desktop/src/main/__tests__/conversation-review-copy.test.ts b/apps/desktop/src/main/__tests__/conversation-review-copy.test.ts',
+        'new file mode 100644',
+        '--- /dev/null',
+        '+++ b/apps/desktop/src/main/__tests__/conversation-review-copy.test.ts',
+        '@@ -0,0 +1,2 @@',
+        "+describe('conversation changes copy', () => {",
+        "+  it('describes one Git-backed changes surface', () => {});",
+      ].join('\n'),
+    },
+  ],
 };
 
 const populatedTrace: SessionTrace = {
@@ -431,12 +490,19 @@ function bridge(options: {
           ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
           : { ok: true, data: options.trace ?? emptyTrace },
     },
+    gitReview: {
+      read: async (input: { source: GitReviewSnapshot['source'] }) => ({
+        ok: true,
+        snapshot: { ...gitReviewSnapshot, source: input.source },
+      }),
+      mutate: async () => ({ ok: true, review: { ok: true, snapshot: gitReviewSnapshot } }),
+    },
     sessions: { subscribeEvents: unsubscribe },
   });
 }
 
 /** The column AppShell hands the workbar, at the width it restores by default. */
-function Workbar(props: { tab: 'tasks' | 'files' | 'inspector' }) {
+function Workbar(props: { tab: 'review' | 'tasks' | 'files' | 'inspector' }) {
   const tabsState = openStaticSessionWorkbarTab(
     createSessionWorkbarTabsState(),
     props.tab,
@@ -474,6 +540,14 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
+
+// Real path: 会话工作栏 → 变更, showing the live branch comparison from the
+// session cwd. The panel is Git-backed; no message or tool-result fixture is
+// involved in this story.
+export const Changes: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" />,
+};
 
 // Real path: sidebar → a session → 展开会话工作栏, landing on the tab the app
 // restored. Tasks is the default: an in-progress root, a child claimed and
