@@ -23,7 +23,7 @@ import {
   HarborInfraError,
   incompleteTerminalProviderRequest,
   trialGradeSurvivingProviderOutage,
-  withProviderTokenSummary,
+  reconcileProviderTokenSummary,
   MAKA_SETTLEMENT_GRACE_SEC,
   type HarborProcessRunner,
   type HarborRunRequest,
@@ -1024,7 +1024,7 @@ describe('createHarborTaskRunner', () => {
         upstreamStartMs: 1,
       }),
     ]) {
-      const output = withProviderTokenSummary(
+      const output = reconcileProviderTokenSummary(
         cellOutput({ tokenSummary: undefined }),
         usage,
         [incomplete, request({ requestId: 2, usage })],

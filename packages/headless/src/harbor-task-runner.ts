@@ -618,7 +618,7 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
         selectedUsage && selectedUsage !== rawCell.tokenSummary
           ? { ...rawCell, tokenSummary: selectedUsage, tokenSummarySource: 'checkpoint' as const }
           : rawCell;
-      const usageCell = withProviderTokenSummary(
+      const usageCell = reconcileProviderTokenSummary(
         checkpointedCell,
         providerUsage,
         providerTelemetry,
@@ -1491,7 +1491,7 @@ function usesHostProviderProxy(
 }
 
 /** Shared cost math across runners: build the cell token summary from proxy-observed usage and per-1M pricing. */
-export function providerTokenSummary(
+function providerTokenSummary(
   usage: ProviderTokenUsage,
   pricing: HarborTaskPricing,
 ): NonNullable<HarborCellOutput['tokenSummary']> {
@@ -1517,10 +1517,8 @@ export function providerTokenSummary(
   };
 }
 
-/** Fill a missing cell summary from provider telemetry without overstating
- * partial usage as final. Only requests that contributed usage need terminal
- * evidence; requests without usage do not affect the aggregate. */
-export function withProviderTokenSummary(
+/** Reconcile native and proxy usage without labeling incomplete provider evidence as final. */
+export function reconcileProviderTokenSummary(
   cell: HarborCellOutput,
   usage: ProviderTokenUsage | null,
   telemetry: readonly ProviderRequestTelemetry[],

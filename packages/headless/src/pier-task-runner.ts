@@ -32,7 +32,7 @@ import {
   withProviderTelemetryArtifact,
   incompleteTerminalProviderRequest,
   trialGradeSurvivingProviderOutage,
-  withProviderTokenSummary,
+  reconcileProviderTokenSummary,
   modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
@@ -620,7 +620,7 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
         input.task.id,
         PierInfraError,
       );
-      const cell = withProviderTokenSummary(
+      const cell = reconcileProviderTokenSummary(
         rawCell,
         providerUsage,
         providerTelemetry,
