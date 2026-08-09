@@ -132,6 +132,13 @@ export function createRuntimeHostBotSessionAdapter(
             ? { kind: 'suspended' as const }
             : { kind: 'errored' as const, reason: 'Session is already running a Turn' };
         }
+        const turnId = deferred<string>();
+        const completion = collectRuntimeHostBotTurn(
+          session,
+          turnId.promise,
+          onReplySnapshot,
+        );
+        void completion.catch(() => undefined);
         let submitted;
         try {
           submitted = await deps.client.submitMessage({
@@ -141,17 +148,25 @@ export function createRuntimeHostBotSessionAdapter(
             placement: 'next_turn',
           });
         } catch (error) {
+          turnId.reject(error);
+          await session.close().catch(() => undefined);
+          await completion.catch(() => undefined);
           throwUnavailable(error, sessionId);
           throw error;
         }
         if (submitted.disposition !== 'turn_started') {
+          const error = new Error('Message was queued because another Turn started first');
+          turnId.reject(error);
+          await session.close().catch(() => undefined);
+          await completion.catch(() => undefined);
           return {
             kind: 'errored' as const,
-            reason: 'Message was queued because another Turn started first',
+            reason: error.message,
           };
         }
+        turnId.resolve(submitted.turnId);
         deps.emitSessionsChanged('status-change', sessionId, { turnId: submitted.turnId });
-        return await collectRuntimeHostBotTurn(session, submitted.turnId, onReplySnapshot);
+        return await completion;
       } finally {
         await session.close().catch(() => undefined);
       }
@@ -165,9 +180,16 @@ async function collectRuntimeHostBotTurn(
     readonly transcript: Promise<StoredMessage[]>;
     readonly events: AsyncIterable<SubscriptionFrame>;
   },
-  turnId: string,
+  turnIdPromise: Promise<string>,
   onReplySnapshot?: (text: string) => void,
 ): Promise<BotSessionTurnResult> {
+  const iterator = session.events[Symbol.asyncIterator]();
+  // Start the subscription read before message admission. The Host owns the
+  // Turn id, but a fast Turn (or a concurrent connection close) must not race
+  // ahead of the Desktop consumer while submitMessage is still returning it.
+  const firstFrame = iterator.next();
+  void firstFrame.catch(() => undefined);
+  const turnId = await turnIdPromise;
   const initialTurn = session.snapshot.rootTurn;
   if (
     initialTurn?.turnId === turnId &&
@@ -179,7 +201,9 @@ async function collectRuntimeHostBotTurn(
   let latestMessageId: string | undefined;
   let publishedSnapshot: string | undefined;
 
-  for await (const frame of session.events) {
+  let next = await firstFrame;
+  while (!next.done) {
+    const frame = next.value;
     if (frame.kind === 'subscription.closed') {
       throw new Error(`Runtime Host Bot Session subscription closed: ${frame.reason}`);
     }
@@ -191,7 +215,7 @@ async function collectRuntimeHostBotTurn(
         frame.delta.reset ? '' : (assistantText.get(latestMessageId) ?? ''),
         frame.delta,
       );
-      assistantText.set(latestMessageId, folded.text);
+      assistantText.set(messageId, folded.text);
       if (folded.text !== publishedSnapshot) {
         publishedSnapshot = folded.text;
         try {
@@ -202,25 +226,40 @@ async function collectRuntimeHostBotTurn(
           // authoritative Runtime Host Turn outcome.
         }
       }
-      continue;
+    } else if (frame.kind === 'subscription.session_projection') {
+      const turn = frame.snapshot.rootTurn;
+      if (turn?.turnId === turnId) {
+        if (turn.status === 'waiting_for_user') return { kind: 'suspended' };
+        if (turn.status === 'completed') {
+          return {
+            kind: 'completed',
+            text: latestMessageId ? (assistantText.get(latestMessageId) ?? '') : '',
+          };
+        }
+        if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };
+        if (turn.status === 'cancelled') {
+          return { kind: 'errored', reason: `Turn cancelled: ${turn.abortSource}` };
+        }
+      }
     }
-    if (frame.kind !== 'subscription.session_projection') continue;
-    const turn = frame.snapshot.rootTurn;
-    if (!turn || turn.turnId !== turnId) continue;
-    if (turn.status === 'waiting_for_user') return { kind: 'suspended' };
-    if (turn.status === 'completed') {
-      return {
-        kind: 'completed',
-        text: latestMessageId ? (assistantText.get(latestMessageId) ?? '') : '',
-      };
-    }
-    if (turn.status === 'failed') return { kind: 'errored', reason: turn.failureClass };
-    if (turn.status === 'cancelled') {
-      return { kind: 'errored', reason: `Turn cancelled: ${turn.abortSource}` };
-    }
+    next = await iterator.next();
   }
 
   throw new Error('Runtime Host Bot Session subscription ended before the Turn settled');
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function projectTerminalBotTurn(
