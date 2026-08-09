@@ -113,6 +113,12 @@
   align-items: center;
   justify-content: flex-end;
   position: relative;
+  /* Strip Astryx Button control size so the tick stays a rail mark. */
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  width: 100%;
+  box-shadow: none;
   transition: color var(--duration-base) var(--ease-out-strong);
   animation: maka-prompt-rail-tick-in var(--duration-large) var(--ease-out-strong) backwards;
   /* Capped, so a 90-prompt conversation cascades in a third of a second rather

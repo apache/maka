@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
+import { Button } from '@astryxdesign/core/Button';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -247,12 +248,14 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                 </span>
               }
             >
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="sm"
+                label={copy.jumpToPrompt(preview)}
                 className="maka-prompt-rail-tick"
                 data-active={isActive ? 'true' : undefined}
                 aria-current={isActive ? 'true' : undefined}
-                aria-label={copy.jumpToPrompt(preview)}
                 onClick={() => jumpTo(turn.turnId)}
                 onPointerEnter={() => setHoveredIndex(index)}
                 style={
@@ -268,7 +271,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                     the HoverCard puts its own `anchor-name` there, inline,
                     which wins over any rule of ours. */}
                 <span className="maka-prompt-rail-tick-bar" />
-              </button>
+              </Button>
             </HoverCard>
           );
         })}

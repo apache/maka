@@ -45,6 +45,7 @@ import {
   X,
 } from '@maka/ui/icons';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
 import { Item } from '@astryxdesign/core/Item';
@@ -500,9 +501,12 @@ function SortableWorkbarTab(props: {
         data-preview={props.tab.preview || undefined}
         style={style}
       >
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           role="tab"
+          label={label}
           aria-selected={props.selected}
           aria-busy={props.busy || props.running || undefined}
           tabIndex={props.selected ? 0 : -1}
@@ -513,16 +517,16 @@ function SortableWorkbarTab(props: {
           onDoubleClick={() => {
             if (props.tab.preview) props.onPin(props.tab.id);
           }}
+          icon={tabIcon(props.tab, props.busy || props.running)}
+          endContent={props.count !== undefined ? <TabCount count={props.count} /> : undefined}
         >
-          {tabIcon(props.tab, props.busy || props.running)}
           <span
             className="maka-workbar-tab-label"
             title={props.tab.preview ? `${label} · ${copy.pinTabHint}` : label}
           >
             {label}
           </span>
-          {props.count !== undefined ? <TabCount count={props.count} /> : null}
-        </button>
+        </Button>
         {!props.busy ? (
           <Tooltip content={copy.closeTab(label)}>
             <IconButton

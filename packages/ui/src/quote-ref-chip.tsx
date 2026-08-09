@@ -1,4 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { Button } from '@astryxdesign/core/Button';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import { TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { QuoteRef } from '@maka/core';
@@ -61,6 +63,10 @@ export function QuoteRefChip(props: {
   }, [expanded, displayText, label]);
 
   const canExpand = clipped || expanded;
+  const a11yLabel = canExpand
+    ? (expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel)
+    : full;
+
   return (
     <span
       className={cn(
@@ -75,34 +81,34 @@ export function QuoteRefChip(props: {
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />
-      <button
+      <Button
         ref={textRef}
         type="button"
-        {...(canExpand
-          ? {
-              onClick: () => setExpanded((open) => !open),
-              'aria-expanded': expanded,
-              'aria-label': expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel,
-            }
-          : { tabIndex: -1 })}
+        variant="ghost"
+        size="sm"
+        label={a11yLabel}
         className={cn(
           'maka-quote-chip-text',
           expanded ? 'maka-quote-chip-text-expanded' : 'maka-quote-chip-text-clipped',
         )}
+        tabIndex={canExpand ? undefined : -1}
+        aria-expanded={canExpand ? expanded : undefined}
+        onClick={canExpand ? () => setExpanded((open) => !open) : undefined}
       >
         {label ? <span className="maka-quote-chip-label">{label} </span> : null}
         {displayText}
-      </button>
-      {props.onRemove && (
-        <button
+      </Button>
+      {props.onRemove ? (
+        <IconButton
           type="button"
-          onClick={props.onRemove}
+          variant="ghost"
+          size="sm"
+          label={copy.removeQuoteAriaLabel}
+          icon={<X aria-hidden="true" />}
           className="maka-quote-chip-remove"
-          aria-label={copy.removeQuoteAriaLabel}
-        >
-          <X />
-        </button>
-      )}
+          onClick={props.onRemove}
+        />
+      ) : null}
     </span>
   );
 }

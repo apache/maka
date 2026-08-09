@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { TextInput } from '@astryxdesign/core/TextInput';
 
 /**
  * The rename-in-place text field: focus-and-select on mount, Enter commits,
@@ -18,9 +19,8 @@ import { useEffect, useRef } from 'react';
  *   sends Enter to accept its candidate. Without the guard that keystroke
  *   commits a half-typed name and closes the field mid-word.
  *
- * Uncontrolled by design: the value belongs to the DOM for the life of the
- * edit, and the caller only ever hears the final string. There is no state to
- * synchronize and no re-render per keystroke.
+ * Built on Astryx TextInput. Value is held in React state for the life of the
+ * edit; the caller only ever hears the final string.
  */
 export function InlineRenameInput(props: {
   defaultValue: string;
@@ -38,6 +38,7 @@ export function InlineRenameInput(props: {
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const escapeCancelledRef = useRef(false);
+  const [value, setValue] = useState(props.defaultValue);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -45,18 +46,20 @@ export function InlineRenameInput(props: {
   }, []);
 
   return (
-    <input
+    <TextInput
       ref={inputRef}
       className={props.className}
-      defaultValue={props.defaultValue}
-      maxLength={80}
-      aria-label={props.ariaLabel}
-      onBlur={(event) => {
+      label={props.ariaLabel}
+      isLabelHidden
+      size="sm"
+      value={value}
+      onChange={(next) => setValue(next.slice(0, 80))}
+      onBlur={() => {
         if (escapeCancelledRef.current) {
           escapeCancelledRef.current = false;
           return;
         }
-        props.onCommit(event.currentTarget.value.trim(), 'blur');
+        props.onCommit(value.trim(), 'blur');
       }}
       onKeyDown={(event) => {
         // The sidebar and the titlebar both sit under keyboard shortcuts that
@@ -65,15 +68,13 @@ export function InlineRenameInput(props: {
         if (event.nativeEvent.isComposing || event.key === 'Process') return;
         if (event.key === 'Enter') {
           event.preventDefault();
-          props.onCommit(event.currentTarget.value.trim(), 'keyboard');
+          props.onCommit(value.trim(), 'keyboard');
         } else if (event.key === 'Escape') {
           event.preventDefault();
           escapeCancelledRef.current = true;
           props.onCancel();
         }
       }}
-      autoComplete="off"
-      spellCheck={false}
     />
   );
 }
