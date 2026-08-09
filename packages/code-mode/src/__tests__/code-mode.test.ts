@@ -1518,3 +1518,93 @@ test('does not start later nested tools after a fatal failure is caught', async 
   await assert.rejects(execution, (error) => error === fatalError);
   assert.deepEqual(calls, ['first']);
 });
+
+test('serializes concurrent cells through one execution slot', async () => {
+  const started: string[] = [];
+  let firstStarted!: () => void;
+  let releaseFirst!: () => void;
+  const firstHasStarted = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const callTool = async (_name: string, input: unknown) => {
+    const id = (input as { id: string }).id;
+    started.push(id);
+    if (id === 'first') {
+      firstStarted();
+      await firstCanFinish;
+    }
+    return id;
+  };
+  const execute = (id: string) =>
+    executeCodeCell({
+      code: `return await tools.hold({ id: '${id}' });`,
+      tools: [{ name: 'hold' }],
+      callTool,
+    });
+
+  const first = execute('first');
+  await firstHasStarted;
+  const second = execute('second');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  try {
+    assert.deepEqual(started, ['first']);
+  } finally {
+    releaseFirst();
+    await Promise.allSettled([first, second]);
+  }
+});
+
+test('aborts a queued cell without waiting for the active cell', async () => {
+  let firstStarted!: () => void;
+  let releaseFirst!: () => void;
+  const firstHasStarted = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const first = executeCodeCell({
+    code: 'return await tools.hold({});',
+    tools: [{ name: 'hold' }],
+    callTool: async () => {
+      firstStarted();
+      await firstCanFinish;
+      return null;
+    },
+  });
+  await firstHasStarted;
+
+  const controller = new AbortController();
+  const abortReason = new Error('queued cell cancelled');
+  let queuedToolCalls = 0;
+  const queued = executeCodeCell({
+    code: 'return await tools.never({});',
+    tools: [{ name: 'never' }],
+    signal: controller.signal,
+    callTool: async () => {
+      queuedToolCalls += 1;
+      return null;
+    },
+  });
+  controller.abort(abortReason);
+
+  const outcome = await Promise.race([
+    queued.then(
+      () => 'resolved' as const,
+      (error) => error,
+    ),
+    new Promise<'still-pending'>((resolve) => setImmediate(() => resolve('still-pending'))),
+  ]);
+
+  try {
+    assert.equal(outcome, abortReason);
+    assert.equal(queuedToolCalls, 0);
+  } finally {
+    releaseFirst();
+    await Promise.allSettled([first, queued]);
+  }
+});

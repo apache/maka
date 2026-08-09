@@ -215,9 +215,53 @@ export interface ExecuteCodeCellInput {
   limits?: Partial<CodeModeLimits>;
 }
 
+interface QueuedCodeCell {
+  input: ExecuteCodeCellInput;
+  resolve: (result: CodeModeExecutionResult) => void;
+  reject: (error: unknown) => void;
+  onAbort?: () => void;
+}
+
+const queuedCodeCells: QueuedCodeCell[] = [];
+let codeCellActive = false;
+
 export async function executeCodeCell(
   input: ExecuteCodeCellInput,
 ): Promise<CodeModeExecutionResult> {
-  return executeCodeCellImpl(input);
+  if (input.signal?.aborted) throw input.signal.reason ?? abortError();
+  return new Promise<CodeModeExecutionResult>((resolve, reject) => {
+    const entry: QueuedCodeCell = { input, resolve, reject };
+    if (codeCellActive) {
+      const onAbort = () => {
+        const index = queuedCodeCells.indexOf(entry);
+        if (index === -1) return;
+        queuedCodeCells.splice(index, 1);
+        reject(input.signal?.reason ?? abortError());
+      };
+      entry.onAbort = onAbort;
+      input.signal?.addEventListener('abort', onAbort, { once: true });
+      queuedCodeCells.push(entry);
+      return;
+    }
+    codeCellActive = true;
+    runCodeCell(entry);
+  });
+}
+
+function runCodeCell(entry: QueuedCodeCell): void {
+  if (entry.onAbort) entry.input.signal?.removeEventListener('abort', entry.onAbort);
+  void executeCodeCellImpl(entry.input)
+    .then(entry.resolve, entry.reject)
+    .finally(() => {
+      const next = queuedCodeCells.shift();
+      if (next) runCodeCell(next);
+      else codeCellActive = false;
+    });
+}
+
+function abortError(): Error {
+  const error = new Error('Code Mode cell aborted');
+  error.name = 'AbortError';
+  return error;
 }
 import { executeCodeCellImpl } from './interpreter.js';
