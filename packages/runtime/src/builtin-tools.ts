@@ -29,6 +29,7 @@ import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
 import { parseCodexV4aPatch } from './codex-v4a-patch.js';
+import { executeApplyPatchOperations } from './apply-patch-batch.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -314,13 +315,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
       const operations = parseCodexV4aPatch(input);
-      for (const operation of operations) {
+      return await executeApplyPatchOperations(operations, async (operation) => {
         await filesystem.applyPatch({ operation, ...filesystemCall(ctx) });
-      }
-      return {
-        status: 'completed' as const,
-        output: `Applied ${operations.length} file operation${operations.length === 1 ? '' : 's'}.`,
-      };
+      });
     },
   } satisfies MakaTool;
   const tools: MakaTool[] = [

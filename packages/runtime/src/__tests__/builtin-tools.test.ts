@@ -155,7 +155,7 @@ describe('builtin tool activity kinds', () => {
         cwd: '/workspace',
         action: 'create',
         path: 'added.txt',
-        diff: '+hello\n+world',
+        diff: '+hello\n+world\n+',
         label: 'ApplyPatch',
         scope: 'workspace',
       },
@@ -175,7 +175,15 @@ describe('builtin tool activity kinds', () => {
         scope: 'workspace',
       },
     ]);
-    assert.deepEqual(result, { status: 'completed', output: 'Applied 3 file operations.' });
+    assert.deepEqual(result, {
+      status: 'completed',
+      applied: [
+        { type: 'create_file', path: 'added.txt' },
+        { type: 'update_file', path: 'changed.txt' },
+        { type: 'delete_file', path: 'removed.txt' },
+      ],
+      output: 'Applied 3 file operations.',
+    });
   });
 
   test('rejects unsupported V4A Move before applying any file operation', async () => {
@@ -211,6 +219,43 @@ describe('builtin tool activity kinds', () => {
     assert.equal(calls, 0);
   });
 
+  test('reports the applied prefix when a later V4A operation fails', async () => {
+    const applyPatch = buildBuiltinTools({
+      executor: fakeExecutor({
+        applyPatch: async ({ path }) => {
+          if (path === 'missing.txt') throw new Error('target is missing');
+          return { ok: true, path };
+        },
+      }),
+    }).find((tool) => tool.name === 'apply_patch');
+    if (!applyPatch) throw new Error('apply_patch tool missing');
+
+    const result = (await runTool(
+      applyPatch,
+      [
+        '*** Begin Patch',
+        '*** Add File: first.txt',
+        '+first',
+        '*** Update File: missing.txt',
+        '@@',
+        '-before',
+        '+after',
+        '*** End Patch',
+      ].join('\n'),
+      '/workspace',
+    )) as {
+      status: string;
+      applied: unknown;
+      failed: unknown;
+      error: string;
+    };
+
+    assert.equal(result.status, 'failed');
+    assert.deepEqual(result.applied, [{ type: 'create_file', path: 'first.txt' }]);
+    assert.deepEqual(result.failed, { type: 'update_file', path: 'missing.txt' });
+    assert.match(result.error, /target is missing/);
+  });
+
   test('applies freeform V4A contents to real files', async (t) => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-freeform-apply-patch-'));
     t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -233,7 +278,7 @@ describe('builtin tool activity kinds', () => {
       cwd,
     );
 
-    assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello');
+    assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello\n');
     assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'after\n');
   });
 });

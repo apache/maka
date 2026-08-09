@@ -58,7 +58,7 @@ export function parseCodexV4aPatch(input: string): ApplyPatchOperation[] {
       if (body.some((line) => !line.startsWith('+'))) {
         throw new CodexV4aPatchError(`ApplyPatch Add for ${path} must prefix every line with +.`);
       }
-      operations.push({ type: 'create_file', path, diff: body.join('\n') });
+      operations.push({ type: 'create_file', path, diff: [...body, '+'].join('\n') });
       continue;
     }
     if (body.some((line) => !isUpdateDiffLine(line))) {
