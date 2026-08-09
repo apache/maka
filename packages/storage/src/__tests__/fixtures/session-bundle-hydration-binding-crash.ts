@@ -34,12 +34,20 @@ fs.promises.open = async (...args) => {
 syncBuiltinESMExports();
 
 const { createSessionBundleFileService } = await import('../../index.js');
-await createSessionBundleFileService().hydrate({
-  source: {
-    path: archivePath,
-    expectedArchiveDigest: archiveDigest as `sha256:${string}`,
-  },
-  limits: JSON.parse(limitsJson),
-  expectedSessionId: 'cloud-session-1',
-  destinationRoot,
-});
+// Keep the deliberately wedged top-level await alive until the parent delivers
+// SIGKILL. Without a referenced handle, Node exits with code 13 as soon as the
+// event loop is empty and races the crash-state assertions in the parent test.
+const keepAlive = setInterval(() => undefined, 60_000);
+try {
+  await createSessionBundleFileService().hydrate({
+    source: {
+      path: archivePath,
+      expectedArchiveDigest: archiveDigest as `sha256:${string}`,
+    },
+    limits: JSON.parse(limitsJson),
+    expectedSessionId: 'cloud-session-1',
+    destinationRoot,
+  });
+} finally {
+  clearInterval(keepAlive);
+}
