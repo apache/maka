@@ -68,9 +68,12 @@ test('expanded activity headers stay reachable while their long details scroll',
   await expect(reasoningHeader).toHaveAttribute('aria-expanded', 'false');
 
   const toolGroup = page.locator('.maka-tool-activity-card').filter({
-    has: page.locator(':scope > [role="button"]'),
+    // Astryx renders both a single interactive call and a multi-call group
+    // with a direct role=button row. Only the group header always controls
+    // the persistent group-content region before it is expanded.
+    has: page.locator(':scope > [role="button"][aria-controls]'),
   }).first();
-  const groupHeader = toolGroup.locator(':scope > [role="button"]');
+  const groupHeader = toolGroup.locator(':scope > [role="button"][aria-controls]');
   await groupHeader.click();
 
   // Stock ChatToolCalls marks expandable call rows with role=button only —

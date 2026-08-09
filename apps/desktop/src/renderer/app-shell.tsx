@@ -2334,6 +2334,17 @@ function AppShellContent({
   }
 
   function openNewTaskSurface() {
+    const currentSessionId = activeIdRef.current;
+    if (currentSessionId) {
+      // Persist at the navigation boundary instead of relying only on the
+      // draft-key effect. React may batch a fast session -> new task ->
+      // session round trip without committing the intermediate key, but the
+      // draft still belongs to the session the user just left.
+      composerRef.current?.setDraft(
+        currentSessionId,
+        composerRef.current.getText(),
+      );
+    }
     startNewSession();
     setNewChatPlanModeActive(false);
     setNavSelection({ section: 'sessions', filter: 'chats' });

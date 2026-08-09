@@ -591,7 +591,7 @@ test("routes a plain-text send through turn.message.submit and surfaces the Host
   const submits: unknown[] = [];
   const changes: unknown[] = [];
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         getSession: async () => session(),
@@ -638,7 +638,7 @@ test("routes a plain-text send through turn.message.submit and surfaces the Host
 
 test("surfaces a followup disposition without opening a turn", async () => {
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         getSession: async () => session(),
@@ -668,17 +668,21 @@ test("keeps orchestration sends on turn.start (submit cannot carry them)", async
   const starts: unknown[] = [];
   let submitCalls = 0;
   const ipc = ipcHarness();
-  registerRuntimeHostSessionExecutionIpc(
+  registerExecutionIpc(
     {
       client: executionClient({
         getSession: async () => session(),
         startTurn: async (input) => {
           starts.push(input);
           return {
-            sessionId: input.sessionId,
-            turnId: input.turnId,
-            runId: "run-1",
-            status: "running",
+            kind: "started",
+            turn: {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              runId: "run-1",
+              status: "running",
+            },
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
           };
         },
         submitMessage: async () => {

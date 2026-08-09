@@ -226,7 +226,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             turnId: submitted.turnId,
             attachments,
             inlineReferences,
-            skillInvocation: EMPTY_SKILL_INVOCATION,
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
           };
         }
         // steering | followup: the Host owns the queues and drains them into
