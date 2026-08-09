@@ -721,7 +721,11 @@ async function waitForStorySelector<T extends Element>(
   canvasElement: HTMLElement,
   selector: string,
 ): Promise<T> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  // Catalog smoke renders four stories concurrently. A long Astryx list can
+  // commit its fixed header before its rows when the CI runner is saturated,
+  // so give the actual content the same five-second budget as the outer smoke
+  // runner's layout selectors.
+  for (let attempt = 0; attempt < 250; attempt += 1) {
     const element = canvasElement.querySelector<T>(selector);
     if (element) return element;
     await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
