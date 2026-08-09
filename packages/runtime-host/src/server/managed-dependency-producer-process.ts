@@ -107,6 +107,7 @@ export async function runManagedNpmDependencyProvision(
     argv: [
       nodeExecutablePath,
       '--permission',
+      ...(requiresExplicitNetworkPermission(runtime.nodeVersion) ? ['--allow-net'] : []),
       `--allow-fs-read=${npmRuntimeRoot}`,
       `--allow-fs-read=${projectRoot}`,
       `--allow-fs-write=${projectRoot}`,
@@ -134,6 +135,11 @@ export async function runManagedNpmDependencyProvision(
     maxObservedBytes: MANAGED_NPM_MAX_OBSERVED_BYTES,
     maxObservedEntries: MANAGED_NPM_MAX_OBSERVED_ENTRIES,
   });
+}
+
+function requiresExplicitNetworkPermission(nodeVersion: string): boolean {
+  const major = Number.parseInt(nodeVersion.split('.')[0] ?? '', 10);
+  return Number.isSafeInteger(major) && major >= 26;
 }
 
 async function requireAttestedNpmRuntimeCapability(
