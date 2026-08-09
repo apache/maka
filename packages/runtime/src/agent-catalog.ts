@@ -301,6 +301,25 @@ export function evaluateAgentDefinitionAvailability(input: {
     };
   }
 
+  const { missingTools } = resolveAgentDefinitionToolSet(tools, definition);
+  if (missingTools.length > 0) {
+    return { status: 'unavailable', reason: 'missing_tools', missingTools };
+  }
+
+  return { status: 'available' };
+}
+
+export function buildToolsForAgentDefinition(
+  tools: readonly MakaTool[],
+  definition: AgentRuntimeDefinition = LOCAL_READ_AGENT_DEFINITION,
+): MakaTool[] {
+  return resolveAgentDefinitionToolSet(tools, definition).tools;
+}
+
+function resolveAgentDefinitionToolSet(
+  tools: readonly MakaTool[],
+  definition: AgentRuntimeDefinition,
+): { tools: MakaTool[]; missingTools: string[] } {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const groupedToolNames = new Set<string>(
     (definition.toolGroups ?? []).flatMap((group) =>
@@ -317,25 +336,13 @@ export function evaluateAgentDefinitionAvailability(input: {
       if (!byName.has(name) && !missingTools.includes(name)) missingTools.push(name);
     }
   }
-  if (missingTools.length > 0) {
-    return { status: 'unavailable', reason: 'missing_tools', missingTools };
-  }
-
-  return { status: 'available' };
-}
-
-export function buildToolsForAgentDefinition(
-  tools: readonly MakaTool[],
-  definition: AgentRuntimeDefinition = LOCAL_READ_AGENT_DEFINITION,
-): MakaTool[] {
-  const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  const out: MakaTool[] = [];
-  for (const name of definition.tools) {
-    const tool = byName.get(name);
-    if (!tool) continue;
-    out.push(tool);
-  }
-  return out;
+  return {
+    tools: definition.tools.flatMap((name) => {
+      const tool = byName.get(name);
+      return tool ? [tool] : [];
+    }),
+    missingTools,
+  };
 }
 
 export function assertAgentDefinitionRunnable(input: {
