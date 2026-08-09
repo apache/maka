@@ -136,13 +136,11 @@ export class HostOAuthCoordinator {
   readonly #authorizationTimeoutMs: number;
   readonly #attempts = new Map<string, LoginAttemptRecord>();
   #activeAttempt: ActiveLoginAttempt | undefined;
-  #pendingStart:
-    | {
-        readonly attemptId: string;
-        readonly connectionId: string;
-        readonly result: Promise<OperationOutcome<'oauth.login.start'>>;
-      }
-    | undefined;
+  /**
+   * Serializes oauth.login.start admissions so concurrent starts cannot dual-open
+   * interactive logins after supersede replaced operation_conflict.
+   */
+  #startGate: Promise<void> = Promise.resolve();
   #admissionClosed = false;
   #closeTask: Promise<void> | undefined;
 
@@ -276,29 +274,29 @@ export class HostOAuthCoordinator {
       }
       return { ok: true, result: projection(existing) };
     }
-    if (this.#pendingStart) {
-      if (
-        this.#pendingStart.attemptId === input.attemptId &&
-        this.#pendingStart.connectionId === input.connectionId
-      ) {
-        return this.#pendingStart.result;
-      }
-      // Another start is mid-admission. Wait for it so a double-click does not
-      // surface a permanent "already in progress" that only restart clears.
-      await this.#pendingStart.result.catch(() => undefined);
-      if (this.#activeAttempt) await this.#supersedeActiveLogin();
-    }
-    // User re-clicked 登录 after the browser already authorized (or abandoned)
-    // an earlier attempt. Supersede instead of blocking until process restart.
-    if (this.#activeAttempt) await this.#supersedeActiveLogin();
-    if (this.#admissionClosed) return hostDraining();
 
-    const result = this.#prepareStart(input, initiatingConnectionId);
-    this.#pendingStart = { ...input, result };
+    // Claim the start gate before any await so concurrent admissions queue.
+    let releaseGate!: () => void;
+    const previousGate = this.#startGate;
+    this.#startGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    await previousGate.catch(() => undefined);
     try {
-      return await result;
+      const again = this.#attempts.get(input.attemptId);
+      if (again) {
+        if (projection(again).connectionId !== input.connectionId) {
+          return invalidRequest('OAuth attemptId is already bound to another connection');
+        }
+        return { ok: true, result: projection(again) };
+      }
+      // User re-clicked 登录 after the browser already authorized (or abandoned)
+      // an earlier attempt. Supersede instead of blocking until process restart.
+      if (this.#activeAttempt) await this.#supersedeActiveLogin();
+      if (this.#admissionClosed) return hostDraining();
+      return await this.#prepareStart(input, initiatingConnectionId);
     } finally {
-      if (this.#pendingStart?.result === result) this.#pendingStart = undefined;
+      releaseGate();
     }
   }
 
@@ -309,15 +307,14 @@ export class HostOAuthCoordinator {
   async #supersedeActiveLogin(): Promise<void> {
     const previous = this.#activeAttempt;
     if (!previous) return;
-    // Committing is the only phase that must finish — aborting mid-commit can
-    // leave credential write outcome unknown. Wait it out, then continue.
-    if (previous.phase === 'committing') {
+    // Align with cancel: once a token poll is admitted or credentials are
+    // committing, finish that path instead of aborting a browser-approved grant.
+    if (previous.phase === 'committing' || previous.cancellationDeferred) {
       await previous.settlement.catch(() => undefined);
       return;
     }
     const reason = new DOMException('OAuth login superseded by a new attempt', 'AbortError');
     previous.cancelRequested = true;
-    previous.cancellationDeferred = false;
     if (previous.phase !== 'authenticated' && previous.phase !== 'failed') {
       previous.phase = 'cancelled';
     }
@@ -685,16 +682,6 @@ function authorizationTimeout(value: number | undefined): number {
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
   return error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown';
-}
-
-function authorizationInProgress(): OperationOutcome<'oauth.login.start'> {
-  return {
-    ok: false,
-    error: {
-      code: 'operation_conflict',
-      message: 'Another OAuth authorization is already in progress',
-    },
-  };
 }
 
 function invalidRequest(message: string) {

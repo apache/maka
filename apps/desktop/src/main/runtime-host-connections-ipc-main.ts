@@ -239,7 +239,8 @@ export function registerRuntimeHostConnectionsIpc(
       if (attempt < maxAttempts - 1) {
         continue;
       }
-      throw new Error('连接状态已更新，请刷新列表后再删除');
+      // English so renderer locale mapping (provider-panel-shared) can choose zh/en.
+      throw new Error('Unable to delete Connection: connection_stale');
     }
   });
   deps.ipcMain.handle('connections:fetchModels', async (_event, slug: unknown) => {
