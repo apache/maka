@@ -10,9 +10,11 @@ stack_base: managed-dependency-producer-boundary-v1
 
 ## 1. 本 PR 只证明一个主要不变量
 
-> 固定 npm producer 只能使用由 Maka 发布、完整清单验证通过、且绑定当前受支持 Host Node 的 npm 运行闭包；调用者不能通过伪造结构体、传入任意 executable 或在签发后替换 npm 文件来取得执行权。
+> 在调用方已经取得“来自 Maka 已签名发布物”的 resources-root authority 后，固定 npm producer 只能使用其中完整清单验证通过、且绑定当前受支持 Host Node 的 npm 运行闭包；调用者不能通过伪造结构体、传入任意 executable 或在签发后替换 npm 文件来取得执行权。
 
 本 PR 的 owner 是 Runtime Host package 内部的 bundled npm attestation 模块。它拥有 npm 运行树 manifest 的解码、完整文件清单校验、Host Node 版本与 executable identity、不可伪造 capability 的签发和每次调用前的重新验证。
+
+这里必须区分两层证明：外层应用签名与平台发布链提供 **provenance trust**，本模块的 manifest 提供 **runtime integrity**。manifest 与 npm tree 位于同一资源目录，攻击者若能同时替换二者并重算摘要，本模块本身无法识别；它绝不是自足的密码学信任根。PR 3 的 API 合同因此有一个显式前置条件：`resourcesRoot` 必须已经由后续 packaged-process owner 认证。本 PR 单独只能证明“受权目录在 admission 与每次 invocation 时没有发生未声明变化”，不能证明任意目录来自 Maka。
 
 本 PR 不包含 Desktop/CLI/Runtime Host composition 的生产 consumer。attestation resolver、capability issuer 和固定 npm provision 入口不通过 `@maka/runtime-host/server` 公共 barrel 暴露；PR 4 必须在一个固定 `resourcesPath` 的 composition owner 中把三者接通。因此本 PR 保持 Draft，不能单独宣称 M1.3 已可用。
 
@@ -98,7 +100,9 @@ release gate 对独立 audit lock 执行 `npm audit --omit=dev --audit-level=hig
 | 每 invocation tree revalidation | 支持 | 支持 | 支持 |
 | npm producer permission profile | Node permission model | Node permission model | Node permission model |
 
-manifest 与 npm tree 一起受最终应用签名/发布物保护。manifest hash 本身不是独立信任根；如果攻击者已经能同时替换已签名应用内的代码、manifest 和 npm tree，本层不声称独立抵抗该攻击。
+manifest 与 npm tree 一起受最终应用签名/发布物保护。macOS 的 trust root 是通过 Gatekeeper/代码签名发布的 app bundle；Windows 的 trust root 是 Authenticode 签名的安装包与已安装应用。Linux v1 没有统一的平台签名验证 API，因此只承诺由官方发布/更新链安装后的完整性检查，不把任意本机目录提升为可信发布物。manifest hash 本身不是独立信任根；如果恶意本机进程已经能替换已安装应用资源、伪造父进程或直接运行修改后的 Maka 代码，本层不声称独立抵抗该攻击。
+
+同理，后续父子进程 bootstrap 只负责把已经取得的 application authority 传给 detached Host，防止普通 CLI 参数或 ambient path 被误当成发布资源；它不是 macOS code-signing/Windows Authenticode 的替代物，也不抵御能够任意创建 Electron 父进程和 fd channel 的同用户恶意进程。若产品威胁模型将该攻击者纳入边界，必须另行引入平台签名验证 owner，不能继续给 bootstrap 增加可伪造字段。
 
 ## 7. Crash / tamper matrix
 
@@ -118,7 +122,7 @@ PR 4 才能增加首个生产 consumer，并必须同时证明：
 
 1. Desktop/Runtime Host 只从固定 packaged `resourcesPath` 解析 npm；
 2. storage authority、producer owner、runtime capability 由同一 composition 生命周期持有；
-3. production-shaped 测试使用实际生成的 npm tree 完成一次依赖环境 acquire；
+3. production-shaped 测试使用实际生成的 npm tree，从 hermetic loopback registry 安装一个真实 tarball package，验证解包与 `.bin` 生成后再完成依赖环境 acquire；
 4. runtime identity 写入 dependency environment identity，不能由调用者自报；
 5. shutdown 顺序先停止新 acquire，再 drain producer，最后关闭 storage authority。
 
