@@ -357,26 +357,18 @@
   overflow-y: auto;
 }
 
-.maka-session-review-header {
+.maka-session-review-summary {
   position: sticky;
   z-index: 1;
   top: 0;
-  display: grid;
-  min-height: 40px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: flex;
+  min-height: 32px;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
+  padding-inline: var(--space-3);
   border-bottom: 1px solid var(--border);
   background: var(--agents-content-area-bg);
 }
 
-.maka-session-review-scope {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.maka-session-review-stats,
 .maka-session-review-file-stats {
   white-space: nowrap;
 }
@@ -405,13 +397,6 @@
 
 .maka-session-review-deletions {
   color: var(--destructive);
-}
-
-.maka-session-review-file-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-1);
-  padding-block-end: var(--space-1);
 }
 
 .maka-session-review-diff {

@@ -99,32 +99,17 @@ export interface DesktopConversationCopy {
     empty: string;
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
-    sourceLabel: string;
-    compareWith: string;
-    branchSource: string;
-    unstagedSource: string;
-    stagedSource: string;
     notGitRepository: string;
     workspaceUnavailable: string;
     unbornRepository: string;
     gitFailed: string;
     invalidBaseBranch: string;
     truncated: string;
-    stageFile: string;
-    unstageFile: string;
-    mutationFailed: string;
-    snapshotChanged: string;
-    revertFile: string;
-    revertTitle: string;
-    revertDescription(path: string): string;
-    revertConfirm: string;
-    cancel: string;
     showMore(remaining: number): string;
     hiddenLines(count: number): string;
-    summary(files: number, additions: number, deletions: number): string;
+    summary(base: string | null, files: number, additions: number, deletions: number): string;
     loadFailed: string;
     retry: string;
-    refresh: string;
   };
   terminalPanel: {
     ariaLabel: string;
@@ -406,34 +391,18 @@ const COPY = {
       ariaLabel: 'Git 变更',
       empty: '当前 Git 工作区没有变化',
       emptyHelp: '提交、暂存或修改文件后，变化会显示在这里。',
-      sourceLabel: '变更范围',
-      compareWith: '比较基准',
-      branchSource: '分支',
-      unstagedSource: '未暂存',
-      stagedSource: '已暂存',
       notGitRepository: '当前会话目录不是 Git 仓库',
       workspaceUnavailable: '当前会话目录已不可用',
       unbornRepository: 'Git 仓库还没有可比较的提交',
       gitFailed: '无法读取 Git 工作区变化',
       invalidBaseBranch: '选择的比较分支已不可用',
       truncated: '变化过多，仅显示前一部分文件',
-      stageFile: '暂存文件',
-      unstageFile: '取消暂存文件',
-      mutationFailed: '无法更新 Git 暂存区',
-      snapshotChanged: 'Git 变化已更新，请重试',
-      revertFile: '还原文件',
-      revertTitle: '还原未暂存变化？',
-      revertDescription: (path) =>
-        `${path} 的未暂存变化会被移除；未跟踪文件会被删除。`,
-      revertConfirm: '确认还原',
-      cancel: '取消',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
       hiddenLines: (count) => `另有 ${count} 行未显示`,
-      summary: (files, additions, deletions) =>
-        `${files} 个文件 · +${additions} · -${deletions}`,
+      summary: (base, files, additions, deletions) =>
+        `${base ? `相对 ${base} · ` : ''}${files} 个文件 · +${additions} · -${deletions}`,
       loadFailed: '无法读取 Git 变化',
       retry: '重试',
-      refresh: '刷新变化',
     },
     terminalPanel: {
       ariaLabel: '会话终端',
@@ -601,36 +570,20 @@ const COPY = {
       ariaLabel: 'Git changes',
       empty: 'No changes in the current Git workspace',
       emptyHelp: 'Committed, staged, and modified files appear here.',
-      sourceLabel: 'Change scope',
-      compareWith: 'Compare with',
-      branchSource: 'Branch',
-      unstagedSource: 'Unstaged',
-      stagedSource: 'Staged',
       notGitRepository: 'This conversation directory is not a Git repository',
       workspaceUnavailable: 'This conversation directory is unavailable',
       unbornRepository: 'This Git repository has no commit to compare yet',
       gitFailed: 'Could not read Git workspace changes',
       invalidBaseBranch: 'The selected comparison branch is unavailable',
       truncated: 'Too many changes; showing the first files only',
-      stageFile: 'Stage file',
-      unstageFile: 'Unstage file',
-      mutationFailed: 'Could not update the Git index',
-      snapshotChanged: 'Git changes were refreshed; try again',
-      revertFile: 'Revert file',
-      revertTitle: 'Revert unstaged changes?',
-      revertDescription: (path) =>
-        `Unstaged changes in ${path} will be removed; untracked files will be deleted.`,
-      revertConfirm: 'Revert',
-      cancel: 'Cancel',
       showMore: (remaining) =>
         `Show ${Math.min(20, remaining)} more file${Math.min(20, remaining) === 1 ? '' : 's'}`,
       hiddenLines: (count) =>
         `${count} more line${count === 1 ? '' : 's'} not shown`,
-      summary: (files, additions, deletions) =>
-        `${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
+      summary: (base, files, additions, deletions) =>
+        `${base ? `vs ${base} · ` : ''}${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
       loadFailed: 'Could not read Git changes',
       retry: 'Retry',
-      refresh: 'Refresh changes',
     },
     terminalPanel: {
       ariaLabel: 'Conversation terminal',

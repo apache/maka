@@ -491,11 +491,10 @@ function bridge(options: {
           : { ok: true, data: options.trace ?? emptyTrace },
     },
     gitReview: {
-      read: async (input: { source: GitReviewSnapshot['source'] }) => ({
+      read: async () => ({
         ok: true,
-        snapshot: { ...gitReviewSnapshot, source: input.source },
+        snapshot: gitReviewSnapshot,
       }),
-      mutate: async () => ({ ok: true, review: { ok: true, snapshot: gitReviewSnapshot } }),
     },
     sessions: { subscribeEvents: unsubscribe },
   });
