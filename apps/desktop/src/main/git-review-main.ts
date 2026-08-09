@@ -56,10 +56,16 @@ export async function readGitReview(
         ? requestedBaseBranch ??
           (await resolveBaseBranch(repositoryRoot, currentBranch, runGit))
         : null;
+    const branchComparison =
+      source === 'branch' && baseBranch
+        ? cleanLine(
+            await runGit(repositoryRoot, ['merge-base', baseBranch, 'HEAD']),
+          )
+        : null;
     const tracked = await readTrackedChanges({
       repositoryRoot,
       source,
-      baseBranch,
+      branchComparison,
       hasHead,
       runGit,
     });
@@ -197,7 +203,7 @@ export async function mutateGitReview(input: {
 async function readTrackedChanges(input: {
   repositoryRoot: string;
   source: GitReviewSource;
-  baseBranch: string | null;
+  branchComparison: string | null;
   hasHead: boolean;
   runGit: GitReviewCommandRunner;
 }): Promise<{ files: GitReviewFile[]; diffChars: number; truncated: boolean }> {
@@ -206,8 +212,8 @@ async function readTrackedChanges(input: {
       ? [['--cached']]
       : input.source === 'unstaged'
         ? [[]]
-        : input.baseBranch
-          ? [[input.baseBranch]]
+        : input.branchComparison
+          ? [[input.branchComparison]]
           : [
               input.hasHead ? ['--cached'] : ['--cached', '--root'],
               [],
