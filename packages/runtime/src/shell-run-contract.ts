@@ -63,6 +63,8 @@ export interface ShellRunProcessManagerInput {
   pipeOutputDrainMs?: number;
   /** Schedules the automatic durable flush and returns its canceler; injected so tests can drive flush timing. */
   scheduleFlush?: (run: () => void, delayMs: number) => () => void;
+  /** Schedules the run timeout and returns its canceler; injected so tests can drive timeout timing. */
+  scheduleTimeout?: (run: () => void, delayMs: number) => () => void;
 }
 
 export interface ShellRunBashInput {
