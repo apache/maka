@@ -104,7 +104,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     });
     const observer = await connectClient(fixture.root, 'tui');
     const committed = await waitForTurn(observer, fixture.sessionId, turnId);
-    dropped.destroy();
+    dropped.abort();
 
     const retried = requireStartedTurn(
       await observer.startTurn({

@@ -73,13 +73,6 @@
   min-height: 32px;
 }
 
-.maka-quote-companion-error {
-  font: var(--maka-text-supporting);
-  flex: 0 0 auto;
-  padding: var(--space-1) var(--space-3);
-  color: var(--destructive-text);
-}
-
 .maka-session-workbar-panel[data-placement="right"] .maka-quote-companion .composer {
   padding-inline: var(--space-2);
   padding-bottom: var(--space-2);
@@ -92,7 +85,7 @@
 
   overflow: hidden;
   border-radius: var(--radius-surface);
-  box-shadow: 0 2px 8px oklch(from var(--foreground) l c h / 0.08);
+  /* Leave elevation to ChatComposer; product shadow overrode hover/focus lift. */
 }
 
 .maka-session-workbar-panel[data-placement="right"]

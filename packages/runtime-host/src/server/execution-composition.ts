@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
+import type { PermissionMode } from '@maka/core/permission';
 import { isDeepResearchSession } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
@@ -31,6 +32,10 @@ import {
   type MakaTool,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
+import {
+  openInteractiveProjectCatalogForWrite,
+  type InteractiveProjectCatalogWriter,
+} from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   createArtifactAttachmentResourceReader,
@@ -106,6 +111,9 @@ import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
 import { HostPlanCoordinator } from './plan-coordinator.js';
+import { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
+import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
+import { HostProjectMembershipGate } from './project-membership-gate.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
@@ -168,6 +176,7 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
+  await stores.sessionStore.ready();
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let taskLedgerStore:
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
@@ -192,7 +201,13 @@ export async function createExecutionRuntimeHostComposition(
   let unsubscribeTaskLedger: (() => void) | undefined;
   let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
+  let projectCatalog: InteractiveProjectCatalogWriter | undefined;
   try {
+    const openedProjectCatalog = await openInteractiveProjectCatalogForWrite(context.owner.lease, {
+      onLegacyImportFailure: (error) =>
+        console.error('[runtime-host] projects.json could not be imported:', error),
+    });
+    projectCatalog = openedProjectCatalog;
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
@@ -366,6 +381,7 @@ export async function createExecutionRuntimeHostComposition(
       | ((
           previewSessionId: string,
           collaborationMode: 'agent' | 'plan',
+          permissionMode: PermissionMode,
           initiatingConnectionId: string,
         ) => Promise<string[]>)
       | undefined;
@@ -397,6 +413,7 @@ export async function createExecutionRuntimeHostComposition(
             await requireNewSessionToolNameResolver(resolveNewSessionToolNames)(
               previewSessionId,
               input.target.collaborationMode,
+              input.target.permissionMode,
               connection.connectionId,
             ),
           ),
@@ -405,6 +422,15 @@ export async function createExecutionRuntimeHostComposition(
     );
     const configurationChanges = new HostConfigurationChangeService();
     const sessionCatalogChanges = new HostSessionCatalogChangeService();
+    const projectCatalogChanges = new HostProjectCatalogChangeService();
+    const projectMembership = new HostProjectMembershipGate();
+    const projects = new HostProjectCatalogCoordinator(
+      openedProjectCatalog,
+      projectCatalogChanges,
+      sessionCatalogChanges,
+      projectMembership,
+      context.requestDrain,
+    );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
@@ -656,6 +682,7 @@ export async function createExecutionRuntimeHostComposition(
             store: openedPlanStore,
             state: planState,
             mode: header.collaborationMode ?? 'agent',
+            permissionMode: header.permissionMode,
           },
           ...(isDeepResearchSession(header.labels)
             ? {
@@ -672,6 +699,7 @@ export async function createExecutionRuntimeHostComposition(
     resolveNewSessionToolNames = async (
       previewSessionId,
       collaborationMode,
+      permissionMode,
       initiatingConnectionId,
     ) => {
       const preview = await requireClientCapabilities(
@@ -695,6 +723,7 @@ export async function createExecutionRuntimeHostComposition(
               store: openedPlanStore,
               state: emptyPlanSessionState(previewSessionId),
               mode: collaborationMode,
+              permissionMode,
             },
           }).tools.map((tool) => tool.name);
         } finally {
@@ -1038,12 +1067,26 @@ export async function createExecutionRuntimeHostComposition(
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
+      projectCatalog: openedProjectCatalog,
+      projectMembership,
       requestDrain: context.requestDrain,
     });
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
+      admission: sessionAdmission,
       sessions: stores.sessionStore,
       resolveTarget: () => sessionCatalog.resolveExternalSessionImportTarget(),
+      prepareImportedSessionHistory: (sessionId) =>
+        requireSessionManager(manager).prepareImportedSessionHistory(sessionId),
+      discardImportedSession: async (sessionId) => {
+        const outcomes = await Promise.allSettled([
+          stores.purgeConversationOperationalState(sessionId),
+          stores.sessionStore.remove(sessionId),
+        ]);
+        for (const outcome of outcomes) {
+          if (outcome.status === 'rejected') throw outcome.reason;
+        }
+      },
       requestDrain: context.requestDrain,
     });
     const plans = new HostPlanCoordinator({
@@ -1127,6 +1170,7 @@ export async function createExecutionRuntimeHostComposition(
       ...runtimeResources.handlers,
       ...automations.handlers,
       ...plans.handlers,
+      ...projects.handlers,
       ...requireDeepResearch(deepResearch).handlers,
       ...requireDailyReview(dailyReview).handlers,
       ...webSearch.handlers,
@@ -1139,6 +1183,7 @@ export async function createExecutionRuntimeHostComposition(
         await skills.recover();
         await openedArtifactStore.recover();
         await sessionRetirement.recover();
+        await externalSessions.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         await worktreeChildExecutor.recover(
           sessions.flatMap((session) =>
@@ -1346,6 +1391,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          openedProjectCatalog.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -1363,6 +1413,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       clientCapabilities,
       configurationChanges,
+      projectCatalogChanges,
       sessionCatalogChanges,
       releaseConnection: (connectionId: string) => {
         artifacts.releaseConnection(connectionId);
@@ -1445,6 +1496,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       planStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      projectCatalog?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -1541,12 +1597,14 @@ function requireNewSessionToolNameResolver(
     | ((
         previewSessionId: string,
         collaborationMode: 'agent' | 'plan',
+        permissionMode: PermissionMode,
         initiatingConnectionId: string,
       ) => Promise<string[]>)
     | undefined,
 ): (
   previewSessionId: string,
   collaborationMode: 'agent' | 'plan',
+  permissionMode: PermissionMode,
   initiatingConnectionId: string,
 ) => Promise<string[]> {
   if (!resolver) throw new Error('Runtime Host new Session tool resolver is not composed');

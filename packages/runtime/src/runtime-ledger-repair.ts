@@ -1,5 +1,12 @@
-import { isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
-import type { AgentRunHeader, AgentRunStore, RuntimeEvent, RuntimeEventStore } from '@maka/core';
+import { createHash } from 'node:crypto';
+import { deriveTurnRecords, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
+import type {
+  AgentRunHeader,
+  AgentRunStore,
+  RuntimeEvent,
+  RuntimeEventStore,
+  SessionHeader,
+} from '@maka/core';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentRunLineage } from './agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
@@ -57,6 +64,54 @@ export class RuntimeLedgerRepair {
     return this.repairRunTerminalFact(sessionId, run);
   }
 
+  async materializeTranscriptLedger(header: SessionHeader): Promise<void> {
+    const sessionId = header.id;
+    return this.withRepairQueue(sessionId, 'transcript-runs', async () => {
+      const [messages, runs] = await Promise.all([
+        this.deps.readMessages(sessionId),
+        this.deps.runStore.listSessionRuns(sessionId),
+      ]);
+      const inlineRunsByTurn = new Map(
+        runs.filter(isSessionInlineRun).map((run) => [run.turnId, run] as const),
+      );
+      const messagesByTurn = groupMessagesByTurn(messages);
+      const turns = deriveTurnRecords(messages).filter((turn) =>
+        (messagesByTurn.get(turn.turnId) ?? []).some((message) => message.type === 'user'),
+      );
+      if (turns.length === 0) return;
+
+      const firstCreatedAt = Math.max(0, header.createdAt - turns.length);
+
+      for (const [index, turn] of turns.entries()) {
+        const turnMessages = messagesByTurn.get(turn.turnId) ?? [];
+        const runId = transcriptRunId(sessionId, turn.turnId);
+        const existing = inlineRunsByTurn.get(turn.turnId);
+        if (existing && existing.runId !== runId) continue;
+        const run =
+          existing ??
+          (await this.deps.runStore.createRun(
+            transcriptRunHeader({
+              header,
+              turn,
+              turnMessages,
+              runId,
+              createdAt: firstCreatedAt + index,
+            }),
+          ));
+        if (!(await this.materializeTranscriptRun(sessionId, run))) {
+          throw new Error(`Imported transcript Run ${run.runId} could not be materialized`);
+        }
+        const runtimeEvents = await this.deps.runtimeEventStore.readRuntimeEvents(
+          sessionId,
+          run.runId,
+        );
+        if (!runtimeEvents.some((event) => isMatchingTerminalRuntimeEvent(run, event))) {
+          throw new Error(`Imported transcript Run ${run.runId} has no terminal RuntimeEvent`);
+        }
+      }
+    });
+  }
+
   async repairSteeringMessagesOnce(sessionId: string): Promise<number> {
     return this.withRepairQueue(sessionId, 'steering-transcript', async () => {
       const messages = await this.deps.readMessages(sessionId);
@@ -86,66 +141,95 @@ export class RuntimeLedgerRepair {
     return this.withRepairQueue(sessionId, staleRun.runId, async () => {
       const run = await this.deps.runStore.readRun(sessionId, staleRun.runId).catch(() => staleRun);
       if (!isTerminalRunStatus(run.status)) return false;
-      let runtimeEvents: RuntimeEvent[];
-      try {
-        runtimeEvents = await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId);
-      } catch {
-        return false;
-      }
-
-      let messages: StoredMessage[];
-      try {
-        messages = await this.deps.readMessages(sessionId);
-      } catch {
-        return false;
-      }
-      const recovered = backfillRuntimeEventsFromStoredMessages({
-        run,
-        messages,
-        invocationId: runtimeEvents[0]?.invocationId,
-        newId: this.deps.newId,
-        now: this.deps.now,
-      }).events;
-      const recoveredTerminal = recovered.find((event) =>
-        isMatchingTerminalRuntimeEvent(run, event),
-      );
-      const legacyTerminal = latestTurnState(messages, run.turnId);
-      const canTrustRecoveredTerminal = recoveredTerminal
-        ? isTrustworthyRecoveredTerminal(run, legacyTerminal, recoveredTerminal)
-        : false;
-      const recoveredEventsToPersist = canTrustRecoveredTerminal
-        ? recovered
-        : recovered.filter((event) => !isMatchingTerminalRuntimeEvent(run, event));
-      const eventsToAppend = missingRecoveredRuntimeEvents(
+      const runtimeEvents = await this.deps.runtimeEventStore
+        .readRuntimeEvents(sessionId, run.runId)
+        .catch(() => undefined);
+      if (!runtimeEvents) return false;
+      const messages = await this.deps.readMessages(sessionId).catch(() => undefined);
+      if (!messages) return false;
+      return this.repairRunTerminalFactFromSnapshot(
+        sessionId,
         run,
         runtimeEvents,
-        recoveredEventsToPersist,
+        messages,
+        'full',
       );
-      for (const event of eventsToAppend) {
-        await this.deps.runtimeEventStore.appendRuntimeEvent(sessionId, run.runId, event);
-      }
-
-      const existingTerminal = [...runtimeEvents, ...eventsToAppend].find((event) =>
-        isMatchingTerminalRuntimeEvent(run, event),
-      );
-      if (existingTerminal) {
-        return (
-          (await this.repairRunHeaderFromExistingTerminal(
-            sessionId,
-            run,
-            messages,
-            legacyTerminal,
-            existingTerminal,
-          )) || eventsToAppend.length > 0
-        );
-      }
-
-      await this.repairMissingTerminalAsFailed(sessionId, run, messages, [
-        ...runtimeEvents,
-        ...eventsToAppend,
-      ]);
-      return true;
     });
+  }
+
+  private async materializeTranscriptRun(
+    sessionId: string,
+    createdRun: AgentRunHeader,
+  ): Promise<boolean> {
+    return this.withRepairQueue(sessionId, createdRun.runId, async () => {
+      const run = await this.deps.runStore.readRun(sessionId, createdRun.runId);
+      if (!isTerminalRunStatus(run.status)) return false;
+      const [runtimeEvents, messages] = await Promise.all([
+        this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId),
+        this.deps.readMessages(sessionId),
+      ]);
+      return this.repairRunTerminalFactFromSnapshot(
+        sessionId,
+        run,
+        runtimeEvents,
+        messages,
+        'conversation_text',
+      );
+    });
+  }
+
+  private async repairRunTerminalFactFromSnapshot(
+    sessionId: string,
+    run: AgentRunHeader,
+    runtimeEvents: readonly RuntimeEvent[],
+    messages: readonly StoredMessage[],
+    modelHistory: 'full' | 'conversation_text',
+  ): Promise<boolean> {
+    const recovered = backfillRuntimeEventsFromStoredMessages({
+      run,
+      messages,
+      modelHistory,
+      invocationId: runtimeEvents[0]?.invocationId,
+      newId: this.deps.newId,
+      now: this.deps.now,
+    }).events;
+    const recoveredTerminal = recovered.find((event) => isMatchingTerminalRuntimeEvent(run, event));
+    const legacyTerminal = latestTurnState(messages, run.turnId);
+    const canTrustRecoveredTerminal = recoveredTerminal
+      ? isTrustworthyRecoveredTerminal(run, legacyTerminal, recoveredTerminal)
+      : false;
+    const recoveredEventsToPersist = canTrustRecoveredTerminal
+      ? recovered
+      : recovered.filter((event) => !isMatchingTerminalRuntimeEvent(run, event));
+    const eventsToAppend = missingRecoveredRuntimeEvents(
+      run,
+      runtimeEvents,
+      recoveredEventsToPersist,
+    );
+    for (const event of eventsToAppend) {
+      await this.deps.runtimeEventStore.appendRuntimeEvent(sessionId, run.runId, event);
+    }
+
+    const existingTerminal = [...runtimeEvents, ...eventsToAppend].find((event) =>
+      isMatchingTerminalRuntimeEvent(run, event),
+    );
+    if (existingTerminal) {
+      return (
+        (await this.repairRunHeaderFromExistingTerminal(
+          sessionId,
+          run,
+          messages,
+          legacyTerminal,
+          existingTerminal,
+        )) || eventsToAppend.length > 0
+      );
+    }
+
+    await this.repairMissingTerminalAsFailed(sessionId, run, messages, [
+      ...runtimeEvents,
+      ...eventsToAppend,
+    ]);
+    return true;
   }
 
   private async repairRunHeaderFromExistingTerminal(
@@ -302,6 +386,64 @@ export class RuntimeLedgerRepair {
     if (latest && isTerminalTurnStatus(latest.status) && latest.status === status) return;
     await this.deps.appendTurnState(sessionId, decision.turnId, status, decision.lineage, options);
   }
+}
+
+function transcriptRunId(sessionId: string, turnId: string): string {
+  const digest = createHash('sha256').update(sessionId).update('\0').update(turnId).digest('hex');
+  return `transcript-${digest.slice(0, 48)}`;
+}
+
+function transcriptRunHeader(input: {
+  header: SessionHeader;
+  turn: TurnRecord;
+  turnMessages: readonly StoredMessage[];
+  runId: string;
+  createdAt: number;
+}): AgentRunHeader {
+  const updatedAt = Math.max(input.createdAt, ...input.turnMessages.map((message) => message.ts));
+  const status = transcriptRunStatus(input.turn.status);
+  return {
+    runId: input.runId,
+    invocationId: `invocation-${input.runId}`,
+    sessionId: input.header.id,
+    turnId: input.turn.turnId,
+    status,
+    backendKind: input.header.backend,
+    llmConnectionSlug: input.header.llmConnectionSlug,
+    modelId: input.header.model,
+    cwd: input.header.cwd,
+    permissionMode: input.header.permissionMode,
+    collaborationMode: input.header.collaborationMode,
+    orchestrationMode: input.header.orchestrationMode,
+    createdAt: input.createdAt,
+    updatedAt,
+    completedAt: updatedAt,
+    ...(status === 'failed'
+      ? { failureClass: input.turn.errorClass ?? 'external_transcript_failed' }
+      : {}),
+    ...(status === 'cancelled'
+      ? { abortSource: input.turn.abortSource ?? 'external_session_snapshot' }
+      : {}),
+  };
+}
+
+function transcriptRunStatus(status: TurnRecord['status']): AgentRunHeader['status'] {
+  if (status === 'failed') return 'failed';
+  if (status === 'aborted') return 'cancelled';
+  if (status === 'completed') return 'completed';
+  return 'cancelled';
+}
+
+function groupMessagesByTurn(messages: readonly StoredMessage[]): Map<string, StoredMessage[]> {
+  const grouped = new Map<string, StoredMessage[]>();
+  for (const message of messages) {
+    const turnId = 'turnId' in message ? message.turnId : undefined;
+    if (!turnId) continue;
+    const bucket = grouped.get(turnId) ?? [];
+    bucket.push(message);
+    grouped.set(turnId, bucket);
+  }
+  return grouped;
 }
 
 interface RuntimeLedgerRepairDecision {

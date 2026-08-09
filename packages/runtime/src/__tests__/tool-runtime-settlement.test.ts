@@ -257,6 +257,38 @@ describe('ToolRuntime settlement', () => {
     });
   });
 
+  it('records apply_patch failures without changing their provider output shape', async () => {
+    const events: Array<{ type: string; isError?: boolean }> = [];
+    const runtime = makeRuntime();
+    const settlement = await runtime.settleToolCall({
+      tool: {
+        ...tool(() => ({ error: 'dispatch failed' })),
+        name: 'apply_patch',
+        providerTool: { kind: 'openai-apply-patch' },
+      },
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    assert.equal(
+      events.some((event) => event.type === 'tool_result' && event.isError === true),
+      true,
+    );
+    assert.deepEqual(settlement.modelOutput, {
+      type: 'json',
+      value: { status: 'failed', output: 'dispatch failed' },
+    });
+  });
+
   it('falls back from provider text to the raw error message', async () => {
     const runtime = makeRuntime();
     for (const [result, expected] of [

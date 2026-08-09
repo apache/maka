@@ -41,17 +41,57 @@ const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']
 // than "any packages/core change".
 const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
 
-function isStorybookPath(path) {
-  if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
-  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/'))
-    return true;
+function isStorybookCatalogPath(path) {
   if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
     return true;
   if (path === 'apps/desktop/stories' || path.startsWith('apps/desktop/stories/')) return true;
-  // packages/ui ships both the primitives mounted by product stories and its
-  // own story tree (see .storybook/main.ts).
-  if (path === 'packages/ui/src' || path.startsWith('packages/ui/src/')) return true;
   if (path === 'packages/ui/stories' || path.startsWith('packages/ui/stories/')) return true;
+  return false;
+}
+
+/** Unit / contract tests under src — not the Storybook catalog mount surface. */
+function isPackageTestPath(path) {
+  if (path.includes('/__tests__/')) return true;
+  if (/\.test\.(ts|tsx|js|mjs)$/.test(path)) return true;
+  return false;
+}
+
+/**
+ * Product UI that product stories import. Test files under packages/ui/src
+ * only need the unit lane — forcing Storybook (~2m wall with Chromium +
+ * build-storybook) on every presentation unit edit was pure wall-clock waste.
+ */
+function isUiProductSourcePath(path) {
+  if (path === 'packages/ui/src' || path.startsWith('packages/ui/src/')) {
+    return !isPackageTestPath(path);
+  }
+  return false;
+}
+
+function isStorybookPath(path) {
+  if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
+  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
+    // Renderer unit tests do not change Storybook mount code.
+    return !isPackageTestPath(path);
+  }
+  if (isStorybookCatalogPath(path)) return true;
+  // packages/ui product sources (not __tests__) ship into the catalog.
+  if (isUiProductSourcePath(path)) return true;
+  return false;
+}
+
+/**
+ * Electron e2e should pay cold install/boot only when the real window surface
+ * or e2e driver changed — not when only packages/ui unit tests changed.
+ */
+function isE2eProductPath(path) {
+  if (E2E_DRIVING_SCRIPTS.has(path)) return true;
+  if (path === 'apps/desktop' || path.startsWith('apps/desktop/')) {
+    // Storybook catalog under desktop never needs a real Electron window.
+    if (isStorybookCatalogPath(path)) return false;
+    return true;
+  }
+  if (isUiProductSourcePath(path)) return true;
   return false;
 }
 
@@ -189,6 +229,14 @@ export function planTests(changedFiles, options = {}) {
   let scriptMode = 'none';
   let unknownCode = false;
   for (const path of files) {
+    // Catalog/config changes are fully exercised by Storybook's build + render
+    // smoke. They do not change the shipped Electron app, so do not route them
+    // through workspace tests or real-window E2E merely because they live
+    // inside an application workspace.
+    if (isStorybookCatalogPath(path)) {
+      code = true;
+      continue;
+    }
     if (RELEASE_CONFIG_FILES.has(path)) {
       code = true;
       directWorkspaces.add('apps/desktop');
@@ -233,16 +281,10 @@ export function planTests(changedFiles, options = {}) {
 
   return {
     code,
-    // Electron E2E + alignment audit. Direct desktop/ui only — a storage or
-    // runtime change must not drag cold Electron boots.
-    //
-    // Scripts that DRIVE the suite belong here too. `scripts/**` only sets
-    // scriptMode, so without this a change to the auditor itself was verified
-    // by its unit tests and never by the run it orchestrates.
-    e2e:
-      directWorkspaces.has('apps/desktop') ||
-      directWorkspaces.has('packages/ui') ||
-      files.some((path) => E2E_DRIVING_SCRIPTS.has(path)),
+    // Electron E2E + alignment audit (same job). Product desktop/ui sources and
+    // e2e drivers only — a storage/runtime change must not drag cold Electron
+    // boots, and packages/ui unit-test-only PRs must not either.
+    e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever

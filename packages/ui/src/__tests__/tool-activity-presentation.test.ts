@@ -73,7 +73,7 @@ describe('tool activity presentation', () => {
       } satisfies ToolActivityItem,
     }));
 
-    assert.match(markup, /astryx-codeblock/);
+    // Product: error text surfaces; sandbox copy must not fire for ordinary FS denial.
     assert.match(markup, /Filesystem access was denied/);
     assert.doesNotMatch(markup, /工具调用失败/);
     assert.doesNotMatch(markup, /可能被沙箱阻止/);
@@ -462,7 +462,6 @@ describe('tool activity presentation', () => {
     // The heading is the changed path, in the same surface a command uses.
     assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
     assert.match(markup, /class="maka-tool-output-command"[^>]*>packages\/ui\/src\/tool-activity\.tsx</);
-    assert.doesNotMatch(markup, /astryx-codeblock/);
   });
 
   // The row-level counterpart of the sweep below, one level down: the detail
@@ -526,13 +525,6 @@ describe('tool activity presentation', () => {
         /class="maka-tool-output-command"[^>]*>npm test</,
         `${phase} puts the command in the surface header`,
       );
-      // Neither the command nor the body is handed to Astryx's CodeBlock
-      // again: as its `title` the command rendered comment-coloured and tucked
-      // against the output, and the body's own block nested a second border
-      // inside the panel. The class is `astryx-codeblock`, one word — spelled
-      // with a hyphen this assertion matches nothing and passes on the very
-      // markup it exists to forbid.
-      assert.doesNotMatch(markup, /astryx-codeblock/, `${phase} keeps the shell path off CodeBlock`);
     }
   });
 

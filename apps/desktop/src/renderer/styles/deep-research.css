@@ -94,12 +94,12 @@
   padding: var(--space-3) var(--space-4);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: oklch(from var(--focus-ring) l c h / 0.035);
+  background: var(--info-wash);
   color: var(--foreground);
 }
 
 .maka-deep-research-run-panel[data-status="completed"] {
-  background: oklch(from var(--success) l c h / 0.035);
+  background: var(--success-wash);
 }
 
 .maka-deep-research-run-summary,
@@ -141,7 +141,7 @@
   align-items: center;
   padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-pill);
-  background: oklch(from var(--focus-ring) l c h / 0.10);
+  background: var(--info-wash);
   font-variant-numeric: tabular-nums;
 }
 
@@ -163,11 +163,11 @@
 }
 
 .maka-deep-research-handoff-button:hover {
-  background: oklch(from var(--focus-ring) l c h / 0.08);
+  background: var(--info-wash);
 }
 
 .maka-deep-research-handoff-button:active {
-  background: oklch(from var(--focus-ring) l c h / 0.14);
+  background: var(--info-wash-border);
 }
 
 .maka-deep-research-handoff-button:focus-visible {

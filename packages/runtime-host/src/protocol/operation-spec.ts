@@ -4,6 +4,7 @@ export type OperationAvailability = 'bootstrap' | 'ready';
 export type HostOperationErrorCode =
   | 'host_not_ready'
   | 'host_draining'
+  | 'unauthorized'
   | 'operation_unavailable'
   | 'not_found'
   | 'session_archived'

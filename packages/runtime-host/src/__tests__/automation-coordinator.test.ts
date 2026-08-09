@@ -382,35 +382,43 @@ describe('Host Automation coordinator', () => {
   });
 
   test('rejects new Automations whose creator Session cannot execute hosted roots', async () => {
-    await withHarness(
-      async (harness) => {
-        await harness.coordinator.prepareRecovery();
-        const result = await harness.coordinator.handlers['automation.mutate'](
-          {
-            kind: 'create',
-            sessionId: 'creator-session',
-            automationKind: 'heartbeat',
-            name: 'unsupported heartbeat',
-            prompt: 'This cannot execute here.',
-            schedule: { type: 'interval', seconds: 60 },
-          },
-          CONNECTION_CONTEXT,
-        );
-        assert.deepEqual(result, {
-          ok: false,
-          error: {
-            code: 'operation_unavailable',
-            message: 'Automations cannot execute while the target Session is in Plan mode.',
-          },
-        });
-        assert.deepEqual(await harness.store.read(), {
-          revision: 0,
-          automations: [],
-          pendingFires: [],
-        });
+    for (const scenario of [
+      {
+        creatorHeader: { collaborationMode: 'plan' as const },
+        message: 'Automations cannot execute while the target Session is in Plan mode.',
       },
-      { creatorHeader: { collaborationMode: 'plan' } },
-    );
+      {
+        creatorHeader: { transcriptLedgerVersion: 0 as const },
+        message: 'Imported Session history is still being prepared.',
+      },
+    ]) {
+      await withHarness(
+        async (harness) => {
+          await harness.coordinator.prepareRecovery();
+          const result = await harness.coordinator.handlers['automation.mutate'](
+            {
+              kind: 'create',
+              sessionId: 'creator-session',
+              automationKind: 'heartbeat',
+              name: 'unsupported heartbeat',
+              prompt: 'This cannot execute here.',
+              schedule: { type: 'interval', seconds: 60 },
+            },
+            CONNECTION_CONTEXT,
+          );
+          assert.deepEqual(result, {
+            ok: false,
+            error: { code: 'operation_unavailable', message: scenario.message },
+          });
+          assert.deepEqual(await harness.store.read(), {
+            revision: 0,
+            automations: [],
+            pendingFires: [],
+          });
+        },
+        { creatorHeader: scenario.creatorHeader },
+      );
+    }
   });
 
   test('defers a due fire while incognito without admitting execution', async () => {

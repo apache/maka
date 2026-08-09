@@ -9,6 +9,7 @@ import type {
   ThemePreference,
   UiLocalePreference,
 } from '@maka/core';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { SearchModal, useUiLocale } from '@maka/ui';
 import { KeyboardHelpModal } from './keyboard-help';
 import { CommandPalette } from './command-palette';
@@ -17,11 +18,6 @@ import type { UiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { ExternalSessionImportDialog } from './external-session-import-dialog.js';
 
-// Settings is a large surface (providers, OAuth, network, bots, daily-review,
-// usage, etc.) that is only needed once the user opens the Settings modal.
-// Loading it lazily keeps all of that out of the initial chunk so the first
-// paint of the chat shell isn't blocked on parsing hundreds of KB of settings
-// UI that may never be opened.
 const SettingsModal = lazy(() => import('./settings/settings-modal').then((m) => ({ default: m.SettingsModal })));
 
 type SearchModalProps = Parameters<typeof SearchModal>[0];
@@ -36,7 +32,9 @@ function SettingsModalFallback() {
       className="settingsModal settingsPage agents-layout-root"
       data-agents-page
     >
-      <div className="maka-lazy-fallback" data-surface="modal">{copy.loadingSettingsProgress}</div>
+      <div className="maka-lazy-fallback" data-surface="modal">
+        <Spinner size="md" shade="subtle" label={copy.loadingSettingsProgress} />
+      </div>
     </div>
   );
 }

@@ -38,21 +38,6 @@ function renderToStaticMarkup(node: ReactNode): string {
 }
 
 describe('ToolTrow stable structure', () => {
-  it('keeps the Astryx tool-call root when a second tool arrives', () => {
-    const first = runningTool('tool-1', 'Read');
-    const one = renderToStaticMarkup(createElement(ToolTrow, { items: [first] }));
-    const two = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [first, runningTool('tool-2', 'Grep')],
-    }));
-
-    assert.match(one, /class="astryx-chat-tool-calls\b/);
-    assert.match(one, /aria-expanded="false"/);
-    assert.match(two, /class="astryx-chat-tool-calls\b/);
-    // Still collapsed, and its header projects the last call on its own.
-    assert.doesNotMatch(two, /aria-expanded="true"/);
-    assert.match(two, />Grep</);
-  });
-
   it('renders addition and deletion counts for a file_diff result', () => {
     const item: ToolActivityItem = {
       toolUseId: 'tool-1',

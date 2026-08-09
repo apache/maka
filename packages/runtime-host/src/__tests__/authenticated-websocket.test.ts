@@ -1,0 +1,281 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { resolveRootControlNamespace, resolveStorageRoot } from '@maka/storage/root-authority';
+import {
+  connectRemoteRuntimeHost,
+  connectRuntimeHost,
+  consumeAccessCredentialDelivery,
+  RuntimeHostOperationError,
+  type RuntimeHostConnection,
+} from '../client/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
+import {
+  openRuntimeHostAccessAuthority,
+  startExecutionRuntimeHostService,
+} from '../server/index.js';
+
+const PROTOCOL = {
+  min: RUNTIME_HOST_PROTOCOL_VERSION,
+  max: RUNTIME_HOST_PROTOCOL_VERSION,
+} as const;
+
+test('one Local IPC owner and one authenticated WebSocket Client control the same Session', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-authenticated-websocket-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const host = await startExecutionRuntimeHostService({
+    rootPath: root,
+    websocket: { host: '127.0.0.1', port: 0 },
+  });
+  let local: RuntimeHostConnection | undefined;
+  let remote: RuntimeHostConnection | undefined;
+  try {
+    local = requireConnection(
+      await connectRuntimeHost({ rootPath: root, surface: 'desktop', protocol: PROTOCOL }),
+    );
+    const issued = await local.request('access.credential.issue', {
+      principalId: 'remote-device',
+      operationGrants: [
+        'session.catalog.query',
+        'session.metadata.update',
+        'session.create',
+        'client.capability.replace',
+        'project.catalog.query',
+        'project.catalog.mutate',
+      ],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      root,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const url = host.websocketEndpoints[0];
+    assert.ok(url);
+    await assert.rejects(
+      connectRemoteRuntimeHost({
+        url: `${url}?route=forbidden`,
+        credential,
+        surface: 'tui',
+        protocol: PROTOCOL,
+      }),
+      /must not contain credentials, a query, or a fragment/u,
+    );
+
+    const wrongRoot = await connectRemoteRuntimeHost({
+      url,
+      credential,
+      expectedRootId: 'f'.repeat(64),
+      surface: 'tui',
+      protocol: PROTOCOL,
+    });
+    assert.deepEqual(wrongRoot, { kind: 'unavailable', reason: 'root_mismatch' });
+
+    const connected = await connectRemoteRuntimeHost({
+      url,
+      credential,
+      expectedRootId: capability.rootId,
+      surface: 'tui',
+      protocol: PROTOCOL,
+    });
+    assert.equal(connected.kind, 'connected');
+    if (connected.kind !== 'connected') assert.fail('WebSocket Client did not connect');
+    remote = connected.connection;
+    assert.equal(remote.rootId, local.rootId);
+    assert.equal(remote.hostEpoch, local.hostEpoch);
+    await assert.rejects(
+      remote.request('host.diagnostics.query', {}),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    await assert.rejects(
+      remote.request('project.catalog.query', { kind: 'list_start' }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    await assert.rejects(
+      remote.request('project.catalog.mutate', {
+        kind: 'select',
+        projectId: 'project-1',
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+
+    const created = await local.request('session.create', {
+      sessionId: 'shared-session',
+      cwd: root,
+      name: 'Shared Session',
+      modelTarget: { kind: 'default' },
+    });
+    assert.ok(!('kind' in created));
+    assert.deepEqual(
+      await remote.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'shared-session',
+      }),
+      { kind: 'session', session: created },
+    );
+
+    const catalogChanged = new Promise<string>((resolve) => {
+      local?.subscribeSessionCatalogChanges((frame) => resolve(frame.sessionId));
+    });
+    const renamed = await remote.request('session.metadata.update', {
+      sessionId: 'shared-session',
+      expectedRevision: created.revision,
+      patch: { name: 'Renamed remotely' },
+    });
+    assert.equal(renamed.kind, 'committed');
+    assert.equal(await catalogChanged, 'shared-session');
+    assert.deepEqual(
+      await local.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'shared-session',
+      }),
+      renamed.kind === 'committed'
+        ? { kind: 'session', session: renamed.session }
+        : assert.fail('Remote Session rename did not commit'),
+    );
+
+    await assert.rejects(
+      remote.request('session.create', {
+        sessionId: 'remote-path-session',
+        cwd: root,
+        modelTarget: { kind: 'default' },
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    await assert.rejects(
+      remote.replaceClientCapabilities({
+        offers: () => [
+          {
+            offerId: 'test',
+            version: '1',
+            affinity: 'call',
+            label: 'Test',
+            tools: [
+              {
+                serverId: 'test',
+                name: 'noop',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    assert.equal(
+      (
+        await remote.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: 'shared-session',
+        })
+      ).kind,
+      'session',
+    );
+
+    assert.deepEqual(
+      await local.request('access.credential.revoke', { credentialId: issued.credentialId }),
+      { credentialId: issued.credentialId, revoked: true },
+    );
+    await remote.closed;
+    remote = undefined;
+    assert.deepEqual(
+      await connectRemoteRuntimeHost({
+        url,
+        credential,
+        expectedRootId: capability.rootId,
+        surface: 'tui',
+        protocol: PROTOCOL,
+      }),
+      { kind: 'unavailable', reason: 'connect_failed' },
+    );
+  } finally {
+    await Promise.allSettled([remote?.close(), local?.close()]);
+    await host.close().catch(() => undefined);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('access credentials persist only as hashes and stay revoked after reload', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-'));
+  try {
+    const { consumeAccessCredentialDeliveryFromControlDirectory } = await import(
+      '../control/access-credential-delivery.js'
+    );
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    const issued = await authority.issue({
+      principalId: 'device-1',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDeliveryFromControlDirectory(
+      directory,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    assert.equal(authority.authenticate(credential)?.principalId, 'device-1');
+    assert.doesNotMatch(
+      await readFile(join(directory, 'runtime-host-access.json'), 'utf8'),
+      new RegExp(credential, 'u'),
+    );
+
+    const reopened = await openRuntimeHostAccessAuthority(directory);
+    assert.equal(reopened.authenticate(credential)?.credentialId, issued.credentialId);
+    assert.deepEqual(await reopened.revoke({ credentialId: issued.credentialId }), {
+      credentialId: issued.credentialId,
+      revoked: true,
+    });
+    assert.equal(reopened.authenticate(credential), undefined);
+    assert.equal(
+      (await openRuntimeHostAccessAuthority(directory)).authenticate(credential),
+      undefined,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a rejected required WebSocket listener releases Local IPC and root ownership', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-websocket-startup-rollback-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  try {
+    await assert.rejects(
+      startExecutionRuntimeHostService({
+        rootPath: root,
+        websocket: { host: '0.0.0.0', port: 0 },
+      }),
+      /must bind to loopback/u,
+    );
+    const successor = await startExecutionRuntimeHostService({ rootPath: root });
+    await successor.close();
+  } finally {
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+function requireConnection(
+  result: Awaited<ReturnType<typeof connectRuntimeHost>>,
+): RuntimeHostConnection {
+  if (result.kind !== 'connected') throw new Error(`Local Client did not connect: ${result.kind}`);
+  return result.connection;
+}

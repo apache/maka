@@ -175,7 +175,7 @@ test('new sessions resolve a merged project alias to the surviving project id', 
     const original = await catalog.register(originalPath);
     await rm(originalPath, { recursive: true, force: true });
     const duplicate = await catalog.register(cwd);
-    await catalog.relink(original.id, cwd, async () => {});
+    await catalog.relinkWithSessions(original.id, cwd);
 
     const resolved = await resolveNewSessionProjectInput(
       makeInput(cwd, { projectId: duplicate.id }),

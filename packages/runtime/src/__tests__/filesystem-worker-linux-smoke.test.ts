@@ -120,6 +120,23 @@ describe('Linux filesystem worker smoke', { skip }, () => {
     }
   });
 
+  test('creates a nested patch file inside bubblewrap', async () => {
+    const target = join(workspace, 'nested', 'created.txt');
+
+    await client.execute({
+      operation: {
+        kind: 'apply_patch',
+        path: target,
+        action: 'create',
+        diff: '+created\n',
+      },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    assert.equal(await readFile(target, 'utf8'), 'created');
+  });
+
   test('applies one exact outside grant without opening its sibling', async () => {
     const allowedPath = join(outside, 'allowed.txt');
     const siblingPath = join(outside, 'sibling.txt');

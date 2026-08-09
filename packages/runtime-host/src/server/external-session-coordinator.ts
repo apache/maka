@@ -23,19 +23,24 @@ import {
   projectSessionCatalogRecord,
   SessionOperationFailure,
 } from './session-catalog-coordinator.js';
+import type { SessionAdmissionGate } from './session-admission-gate.js';
 
 type ExternalSessionStore = {
   createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
   ): Promise<SessionHeader>;
+  listHeaders(): Promise<SessionHeader[]>;
   readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord>;
 };
 
 export interface HostExternalSessionCoordinatorOptions {
   readonly adapters: ExternalSessionAdapterRegistry;
+  readonly admission: SessionAdmissionGate;
   readonly sessions: ExternalSessionStore;
   readonly resolveTarget: () => Promise<Omit<CreateSessionInput, 'cwd' | 'name'>>;
+  readonly prepareImportedSessionHistory: (sessionId: string) => Promise<void>;
+  readonly discardImportedSession: (sessionId: string) => Promise<void>;
   readonly requestDrain: () => void;
 }
 
@@ -48,15 +53,30 @@ export class HostExternalSessionCoordinator {
   };
 
   readonly #adapters: ExternalSessionAdapterRegistry;
+  readonly #admission: SessionAdmissionGate;
   readonly #sessions: ExternalSessionStore;
   readonly #resolveTarget: HostExternalSessionCoordinatorOptions['resolveTarget'];
+  readonly #prepareImportedSessionHistory: HostExternalSessionCoordinatorOptions['prepareImportedSessionHistory'];
+  readonly #discardImportedSession: HostExternalSessionCoordinatorOptions['discardImportedSession'];
   readonly #requestDrain: () => void;
 
   constructor(options: HostExternalSessionCoordinatorOptions) {
     this.#adapters = options.adapters;
+    this.#admission = options.admission;
     this.#sessions = options.sessions;
     this.#resolveTarget = options.resolveTarget;
+    this.#prepareImportedSessionHistory = options.prepareImportedSessionHistory;
+    this.#discardImportedSession = options.discardImportedSession;
     this.#requestDrain = options.requestDrain;
+  }
+
+  async recover(): Promise<void> {
+    const headers = await this.#sessions.listHeaders();
+    for (const header of headers) {
+      if (header.transcriptLedgerVersion === 0) {
+        await this.#prepareStagedSession(header.id);
+      }
+    }
   }
 
   async listSources(): Promise<OperationOutcome<'external-session.source.query'>> {
@@ -139,14 +159,13 @@ export class HostExternalSessionCoordinator {
         return this.#sessions.createImportedSession(sessionInput, messages);
       },
     });
+    let header: SessionHeader;
     try {
-      const header = await importer.import({
+      header = await importer.import({
         adapterId: input.adapterId,
         sourceSessionId: input.sourceSessionId,
         target,
       });
-      const record = await this.#sessions.readCatalogRecord(header.id);
-      return { ok: true, result: { session: projectSessionCatalogRecord(record) } };
     } catch (error) {
       if (!commitAttempted) {
         return importFailure(
@@ -162,6 +181,31 @@ export class HostExternalSessionCoordinator {
         'External Session import outcome is unknown; check the Session list before retrying',
       );
     }
+
+    let prepared: boolean;
+    try {
+      prepared = await this.#prepareStagedSession(header.id);
+    } catch {
+      this.#requestDrain();
+      return importFailure(
+        'commit_outcome_unknown',
+        'External Session import outcome is unknown; check the Session list before retrying',
+      );
+    }
+    if (!prepared) {
+      return importFailure('persistence_failed', 'External Session history could not be prepared');
+    }
+
+    try {
+      const record = await this.#sessions.readCatalogRecord(header.id);
+      return { ok: true, result: { session: projectSessionCatalogRecord(record) } };
+    } catch {
+      this.#requestDrain();
+      return importFailure(
+        'commit_outcome_unknown',
+        'External Session import outcome is unknown; check the Session list before retrying',
+      );
+    }
   }
 
   async #isDetected(adapter: ExternalSessionAdapter): Promise<boolean> {
@@ -170,6 +214,18 @@ export class HostExternalSessionCoordinator {
     } catch {
       return false;
     }
+  }
+
+  async #prepareStagedSession(sessionId: string): Promise<boolean> {
+    return this.#admission.run(sessionId, async () => {
+      try {
+        await this.#prepareImportedSessionHistory(sessionId);
+        return true;
+      } catch {
+        await this.#discardImportedSession(sessionId);
+        return false;
+      }
+    });
   }
 }
 

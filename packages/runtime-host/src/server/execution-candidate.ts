@@ -4,13 +4,10 @@ import {
 } from '@maka/storage/root-authority';
 import type { RuntimeHostCandidateOptions } from './candidate.js';
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
-import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
 import {
-  createExecutionRuntimeHostComposition,
-  type CreateExecutionRuntimeHostCompositionOptions,
-  type ExecutionRuntimeHostComposition,
-} from './execution-composition.js';
-import type { RuntimeHostCompositionContext } from './host-kernel.js';
+  createExecutionRuntimeHostCompositionFactory,
+  type ExecutionRuntimeHostCompositionDependencies,
+} from './execution-composition-factory.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 
 export type ExecutionRuntimeHostCandidateResult =
@@ -23,23 +20,16 @@ export interface ExecutionRuntimeHostCandidateOptions extends RuntimeHostCandida
   readonly bundledGitResourcesRoot?: string;
 }
 
-export interface ExecutionRuntimeHostCandidateDependencies {
-  readonly createComposition?: (
-    context: RuntimeHostCompositionContext,
-    options: CreateExecutionRuntimeHostCompositionOptions,
-  ) => Promise<ExecutionRuntimeHostComposition>;
-}
+export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;
 
 export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
-  if (options.managedWorkspaceGitRuntime && options.bundledGitResourcesRoot) {
-    throw new Error('Managed workspace Git runtime must have exactly one authority');
-  }
-  const managedWorkspaceGitRuntime = options.bundledGitResourcesRoot
-    ? await resolveBundledGitRuntime({ resourcesRoot: options.bundledGitResourcesRoot })
-    : options.managedWorkspaceGitRuntime;
+  const compositionFactory = await createExecutionRuntimeHostCompositionFactory(
+    options,
+    dependencies,
+  );
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
@@ -49,15 +39,10 @@ export async function startExecutionRuntimeHostCandidate(
   if (!owner) return { kind: 'loser' };
   const host = await RuntimeHostKernel.start({
     owner,
+    lifecycleMode: 'ephemeral',
     idleGraceMs: options.idleGraceMs,
     handshakeTimeoutMs: options.handshakeTimeoutMs,
-    compositionFactory: (context) =>
-      (dependencies.createComposition ?? createExecutionRuntimeHostComposition)(context, {
-        ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
-        ...(options.legacyConfigurationRoot
-          ? { legacyConfigurationRoot: options.legacyConfigurationRoot }
-          : {}),
-      }),
+    compositionFactory,
   });
   return { kind: 'winner', host };
 }

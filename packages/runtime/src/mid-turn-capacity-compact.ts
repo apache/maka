@@ -203,6 +203,8 @@ export type MidTurnSummarizer = (input: {
 
 export interface PlanMidTurnCapacityCompactionInput {
   sessionId: string;
+  /** Step-0 overflow folds only prior history; later steps also fold the head anchor. */
+  phase?: 'pre_turn' | 'mid_turn';
   /**
    * Full ordered content-event projection for the compaction pool:
    * `[...prior turns, head anchor, ...current-turn completed steps]`.
@@ -233,7 +235,7 @@ export type PlanMidTurnCapacityCompactionResult =
   | {
       decision: 'compacted';
       checkpoint: HistoryCompactCheckpoint;
-      /** Deterministic `[block, head anchor, tail]` replacement projection. */
+      /** Deterministic checkpoint-block plus verbatim successor projection. */
       replacementEvents: RuntimeEvent[];
       coveredRuntimeEvents: RuntimeEvent[];
       tailRuntimeEvents: RuntimeEvent[];
@@ -255,6 +257,7 @@ export type MidTurnFailReason = 'no_safe_completed_span' | 'summarizer_failed';
 export async function planMidTurnCapacityCompaction(
   input: PlanMidTurnCapacityCompactionInput,
 ): Promise<PlanMidTurnCapacityCompactionResult> {
+  const phase = input.phase ?? 'mid_turn';
   const charsPerToken = Math.max(1, input.charsPerToken ?? 4);
   const highWater = Math.max(1, input.contextWindow - Math.max(0, input.reserveTokens));
   if (input.estimatedNextRequestTokens <= highWater) {
@@ -268,24 +271,30 @@ export async function planMidTurnCapacityCompaction(
   const boundary = selectMidTurnSafeBoundary(input.orderedEvents, {
     reserveTailEvents: input.reserveTailEvents ?? 1,
     isPinned: (event) =>
-      event.turnId === input.headAnchor.turnId &&
-      event.content?.kind === 'text' &&
-      event.content.steering === true,
+      (phase === 'pre_turn' && event.id === input.headAnchor.runtimeEventId) ||
+      (event.turnId === input.headAnchor.turnId &&
+        event.content?.kind === 'text' &&
+        event.content.steering === true),
   });
   const headAnchorIndex = input.orderedEvents.findIndex(
     (event) => event.id === input.headAnchor.runtimeEventId,
   );
-  // Coverage must include the head anchor and at least one other event, since the
-  // anchor is re-rendered verbatim — folding only the anchor saves nothing.
-  if (
-    !boundary.ok ||
-    headAnchorIndex < 0 ||
-    boundary.coveredCount <= headAnchorIndex ||
-    boundary.coveredCount < 2
-  ) {
+  // Mid-turn coverage includes the head anchor and at least one other event;
+  // the anchor is re-rendered verbatim, so folding only it saves nothing.
+  // Step-0 recovery is a pre-turn fold: the anchor is pinned in the successor
+  // tail and at least one prior event must be covered.
+  const hasSafeCoverage =
+    phase === 'mid_turn'
+      ? boundary.ok && boundary.coveredCount > headAnchorIndex && boundary.coveredCount >= 2
+      : boundary.ok && boundary.coveredCount > 0 && boundary.coveredCount <= headAnchorIndex;
+  if (headAnchorIndex < 0 || !hasSafeCoverage) {
     return { decision: 'fail_open', reason: 'no_safe_completed_span' };
   }
 
+  // Narrowing above proves the boundary is safe.
+  if (!boundary.ok) {
+    return { decision: 'fail_open', reason: 'no_safe_completed_span' };
+  }
   const coveredRuntimeEvents = input.orderedEvents.slice(0, boundary.coveredCount);
   const tailRuntimeEvents = input.orderedEvents.slice(boundary.coveredCount);
 
@@ -329,8 +338,7 @@ export async function planMidTurnCapacityCompaction(
     sessionId: input.sessionId,
     coveredRuntimeEvents,
     summary,
-    phase: 'mid_turn',
-    headAnchor: input.headAnchor,
+    ...(phase === 'mid_turn' ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor } : {}),
     ...(input.highWaterName !== undefined ? { highWaterName: input.highWaterName } : {}),
     ...(input.highWaterSeq !== undefined ? { highWaterSeq: input.highWaterSeq } : {}),
     ...(previousCheckpoint ? { previousCheckpointId: previousCheckpoint.checkpointId } : {}),

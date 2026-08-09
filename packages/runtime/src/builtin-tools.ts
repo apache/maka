@@ -27,6 +27,7 @@ import {
 } from '@maka/core';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
+import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -299,6 +300,17 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     ...(options.backgroundTasks ? [buildStopBackgroundTaskTool(options.backgroundTasks)] : []),
     ...(options.ptyControls ? [buildWriteStdinTool(options.ptyControls)] : []),
   ];
+  const applyPatchTool = {
+    name: 'apply_patch',
+    activityKind: 'edit',
+    categoryHint: 'file_write',
+    description: 'Apply one OpenAI V4A file operation.',
+    parameters: openAiApplyPatchInputSchema,
+    providerTool: { kind: 'openai-apply-patch' },
+    executionFacts,
+    impl: async ({ operation }, ctx) =>
+      await filesystem.applyPatch({ operation, ...filesystemCall(ctx) }),
+  } satisfies MakaTool;
   const tools: MakaTool[] = [
     ...bashTools,
     ...backgroundTools,
@@ -368,6 +380,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         return { content: result.content };
       },
     },
+    ...(executor.applyPatch ? [applyPatchTool] : []),
     {
       name: 'Write',
       activityKind: 'edit',

@@ -1,4 +1,5 @@
 import type { ipcMain as electronIpcMain } from "electron";
+import type { ChatDefaultPermissionMode } from "@maka/core";
 import {
   resolveSkillDiscoveryPaths,
   scanSkillsWithDiagnostics,
@@ -40,6 +41,7 @@ interface RuntimeHostSkillsIpcDeps {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly getCurrentProjectRoot: () => Promise<string>;
+  readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
 }
 
@@ -85,6 +87,7 @@ export function registerRuntimeHostSkillsIpc(
               collaborationMode:
                 normalizeNewSessionCollaborationMode(newSessionContext) ??
                 "agent",
+              permissionMode: await deps.getDefaultPermissionMode(),
             };
       return (await deps.client.listInvocableSkills(target)).map(
         (item): InvocableSkillEntry => ({ ...item }),

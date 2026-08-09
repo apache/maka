@@ -760,11 +760,10 @@ function McpServerInspector(props: {
         />
         <Button
           size="sm"
-          variant="ghost"
+          variant="destructive"
           onClick={props.onRemove}
           isDisabled={props.busy === `remove:${serverId}`}
           label={copy.row.delete}
-          style={{ color: 'var(--destructive-text)' }}
         />
       </HStack>
 

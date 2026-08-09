@@ -202,13 +202,16 @@
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  min-height: 0;
   height: 100%;
   padding: 0 var(--space-1) 0 var(--space-3);
   border: 0;
+  border-radius: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
   font: var(--maka-text-supporting);
+  box-shadow: none;
 }
 
 .maka-workbar-tab[data-active] .maka-workbar-tab-select {
@@ -282,7 +285,7 @@
   align-items: center;
   gap: var(--space-3);
   width: 100%;
-  min-height: 40px;
+  min-height: 36px;
   padding: var(--space-1) var(--space-3);
   border: 0;
   border-radius: var(--radius-element);
@@ -312,9 +315,10 @@
   border-radius: 0 0 var(--radius-element) var(--radius-element);
 }
 
-.maka-workbar-launcher-row:disabled {
+.maka-workbar-launcher-row[aria-disabled="true"] {
   cursor: default;
   opacity: 0.45;
+  pointer-events: none;
 }
 
 .maka-workbar-launcher-icon {
@@ -328,20 +332,9 @@
   height: var(--icon-chrome);
 }
 
-.maka-workbar-launcher-label {
-  overflow: hidden;
-  font: var(--maka-text-supporting);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* Astryx Kbd owns keycap chrome; only mute the cluster. */
 .maka-workbar-launcher-shortcut {
-  padding: 2px var(--space-2);
-  border: 0;
-  border-radius: var(--radius-full);
-  background: var(--card-bg);
   color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
   white-space: nowrap;
 }
 
@@ -387,7 +380,7 @@
 
 .maka-session-review-summary {
   display: flex;
-  min-height: 30px;
+  min-height: 32px;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
@@ -921,11 +914,16 @@
 
 .maka-browser-toolbar {
   flex: 0 0 auto;
+  /* Band chrome only — Astryx Toolbar owns the row; start slot stretches. */
+  border-bottom: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-browser-toolbar-start {
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: var(--space-1);
-  padding: var(--space-1-5) var(--space-2);
-  border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
 .maka-browser-address-field {
@@ -986,7 +984,7 @@
   font: var(--maka-text-supporting);
   width: 100%;
   justify-content: flex-start;
-  min-height: 42px;
+  min-height: 36px;
   padding: var(--space-1-5) var(--space-2);
   margin: 0;
   border: var(--border-width-hairline) solid transparent;
@@ -1237,11 +1235,6 @@
   color: var(--foreground-secondary);
 }
 
-.maka-artifact-preview-unsupported-title {
-  font: var(--maka-text-heading-4);
-  color: var(--foreground);
-}
-
 .maka-artifact-preview-unsupported-body {
   font: var(--maka-text-body);
   margin: 0;
@@ -1325,15 +1318,6 @@
   background: oklch(from var(--info) l c h / 0.08);
   border-color: oklch(from var(--info) l c h / 0.22);
   color: var(--info-text);
-}
-
-.maka-artifact-preview-fail-title {
-  font: var(--maka-text-heading-4);
-}
-
-.maka-artifact-preview-fail-body {
-  font: var(--maka-text-supporting);
-  margin: 0;
 }
 
 /* Narrow windows place the single workbar below the conversation. */

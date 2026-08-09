@@ -76,6 +76,7 @@
     "@ai-sdk/google": "4.0.39",
     "@ai-sdk/openai": "4.0.36",
     "@ai-sdk/openai-compatible": "3.0.27",
+    "@openai/agents-core": "0.14.3",
     "@larksuiteoapi/node-sdk": "1.72.0",
     "@maka/code-mode": "0.1.0",
     "@maka/core": "0.1.0",

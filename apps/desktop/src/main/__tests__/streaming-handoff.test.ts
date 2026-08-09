@@ -80,9 +80,8 @@ describe('single live-turn handoff', () => {
 
     // The render-layer fold keeps answer text as the grouping boundary, but
     // adds no second Processing disclosure around the native reasoning and
-    // Astryx tool-call disclosures.
+    // tool-call disclosures. Order is product-facing; vendor class names are not.
     assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 0);
-    assert.equal((markup.match(/astryx-chat-tool-calls/g) ?? []).length, 1);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
     assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));

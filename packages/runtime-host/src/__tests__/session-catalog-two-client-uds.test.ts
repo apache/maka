@@ -24,8 +24,10 @@ import {
 } from '../client/index.js';
 import {
   decodeHostFrame,
+  encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionCreateInput,
@@ -693,7 +695,7 @@ test('stable Session creation survives response loss and Host restart', {
     dropped = await sendCreateWithoutReadingResponse(host.endpoint, input);
     const observer = await connectClient(root, 'tui');
     const committed = await waitForSession(observer, input.sessionId);
-    dropped.destroy();
+    dropped.abort();
     dropped = undefined;
     await observer.close();
 
@@ -711,7 +713,7 @@ test('stable Session creation survives response loss and Host restart', {
     await stopHost(host);
     host = undefined;
   } finally {
-    dropped?.destroy();
+    dropped?.abort();
     await terminateHost(host);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
       recursive: true,
@@ -1060,7 +1062,7 @@ async function sendCreateWithoutReadingResponse(
   input: SessionCreateInput,
 ): Promise<FramedTransport> {
   const transport = new FramedTransport(await openSocket(endpoint));
-  await transport.write({
+  await writeClientFrame(transport, {
     kind: 'hello',
     clientInstanceId: randomUUID(),
     surface: 'desktop',
@@ -1071,12 +1073,16 @@ async function sendCreateWithoutReadingResponse(
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);
   assert.equal(handshake.kind, 'accepted');
-  await transport.write({
+  await writeClientFrame(transport, {
     requestId: randomUUID(),
     operation: 'session.create',
     input,
   });
   return transport;
+}
+
+function writeClientFrame(transport: FramedTransport, frame: ClientFrame): Promise<void> {
+  return transport.write(encodeProtocolMessage(frame));
 }
 
 function openSocket(path: string): Promise<Socket> {

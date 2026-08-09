@@ -976,6 +976,10 @@ export class SqliteSessionMetadataStore {
             json_extract(metadata.payload_json, '$.conversationCopy.state'),
             ''
           ) <> 'preparing'
+          AND COALESCE(
+            json_extract(metadata.payload_json, '$.transcriptLedgerVersion'),
+            1
+          ) <> 0
       `)
       .get(sessionId) as SessionMetadataCatalogRow | undefined;
     if (!row) throw new SessionNotFoundError(sessionId);

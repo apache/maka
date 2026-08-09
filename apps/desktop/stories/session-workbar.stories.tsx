@@ -29,8 +29,8 @@ import { withScopedMakaBridge } from './maka-bridge';
 // Read these at a canvas of 990px or wider. The app's own breakpoint is on the
 // viewport, and Storybook's canvas IS the viewport, so a narrower window puts
 // the panel in its stacked full-width variant rather than in a column. That is
-// the real rule firing, not the story misbehaving; the visual smoke pass
-// renders at 1280, above it.
+// the real rule firing, not the story misbehaving; the render smoke mounts at
+// 1280, above it.
 
 const SESSION_ID = 'session-workbar';
 const NOW = Date.UTC(2026, 6, 31, 10, 30, 0);

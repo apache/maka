@@ -12,6 +12,7 @@ import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
+import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector';
@@ -45,6 +46,8 @@ interface ChatMessageSurfaceProps extends Omit<
   activeSessionId: string | undefined;
   sessionHealthNotice?: SessionHealthNoticeView;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
+  taskReadinessNotice?: TaskReadinessNotice;
+  onTaskReadinessAction: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
@@ -62,6 +65,8 @@ export function ChatMessageSurface({
   activeSessionId,
   sessionHealthNotice,
   workspaceReadinessRecovery,
+  taskReadinessNotice,
+  onTaskReadinessAction,
   showOnboardingHero,
   onboardingState,
   isOnboardingLoading,
@@ -151,6 +156,22 @@ export function ChatMessageSurface({
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
       />
+      {taskReadinessNotice && (
+        <div className="maka-workspace-readiness-notice">
+          <Banner
+            status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
+            className="maka-workspace-readiness-notice-alert"
+            role="status"
+            title={taskReadinessNotice.title}
+            description={taskReadinessNotice.description}
+            endContent={<Button
+              label={taskReadinessNotice.actionLabel}
+              variant="ghost"
+              size="sm"
+              onClick={onTaskReadinessAction}
+            />} />
+        </div>
+      )}
       {workspaceReadinessRecovery && (
         <div className="maka-workspace-readiness-notice">
           <Banner

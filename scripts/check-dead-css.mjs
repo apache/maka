@@ -130,6 +130,13 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // grid's implicit column to the grid's own width so the staged-attachment
   // row wraps at the real drawer edge instead of a max-content phantom width.
   'astryx-chat-composer-drawer',
+  // ChatToolCalls root + CodeBlock root (themeProps). chat-message.css and
+  // tool presentation styles target them; Astryx emits the class strings at
+  // runtime so they never appear as Maka className literals. Tests used to
+  // keep them "live" via markup greps — those greps were removed as vendor
+  // DOM contracts (#2587).
+  'astryx-chat-tool-calls',
+  'astryx-codeblock',
   // Astryx's Item (themeProps class on every settings row). rows.css squares
   // its corners inside an open row group: Item ships a 10px radius for its
   // standalone chip use, and our hairline is a border on the Item itself, so

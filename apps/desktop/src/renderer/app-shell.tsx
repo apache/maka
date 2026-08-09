@@ -57,6 +57,12 @@ import { MessageCircleQuestion } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
+import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
+import {
+  deriveTaskReadinessNotice,
+  isTaskSubmissionHardBlocked,
+  resolveTaskReadinessModelTarget,
+} from './task-readiness-notice';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -72,7 +78,6 @@ import {
   findPreferredSideChatWorkbarTab,
   terminalRefFromWorkbarTab,
   terminalSessionWorkbarTabId,
-  staticSessionWorkbarTabId,
 } from './session-workbar-tabs';
 import {
   consumeCompanionInitialPrompt,
@@ -194,7 +199,6 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
-import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { recoverOrphanedCompanionCopies } from './quote-companion-core';
 import { useSideConversationWorkspace } from './use-side-conversation-workspace';
 
@@ -746,6 +750,9 @@ function AppShellContent({
   // live in useShellChatModel (pure derivation of the snapshot + active session);
   // openSettingsSection is injected so the notice can wrap the derived click
   // target.
+  const activeSessionSendOutcome = activeSession
+    ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
+    : undefined;
   const {
     chatModelChoices,
     activeConnection,
@@ -766,9 +773,7 @@ function AppShellContent({
     uiLocale,
     connections,
     snapshotChoices: onboarding.snapshot?.chatModelChoices,
-    sessionSendOutcome: activeSession
-      ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
-      : undefined,
+    sessionSendOutcome: activeSessionSendOutcome,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
     activeSession,
@@ -1338,9 +1343,6 @@ function AppShellContent({
     pinWorkbarTab,
     openWorkbarLauncher,
   } = useShellLayout();
-  const workbarPanelsStateRef = useRef(workbarPanelsState);
-  workbarPanelsStateRef.current = workbarPanelsState;
-
   const revealWorkbarLauncher = useCallback(() => {
     setWorkbarCollapsed(false);
     openWorkbarLauncher('right');
@@ -1403,55 +1405,6 @@ function AppShellContent({
         : [],
     [activeId, workbarCopy],
   );
-  useEffect(() => {
-    return window.maka.artifacts.subscribeChanges((event) => {
-      if (
-        event.reason !== 'created' ||
-        event.sessionId !== activeIdRef.current ||
-        navSelectionRef.current.section !== 'sessions'
-      ) {
-        return;
-      }
-      const expectedSessionId = event.sessionId;
-      void window.maka.artifacts
-        .get(expectedSessionId, event.artifactId)
-        .then((artifact) => {
-          if (
-            !artifact ||
-            activeIdRef.current !== expectedSessionId ||
-            navSelectionRef.current.section !== 'sessions' ||
-            filterUserVisibleArtifacts([artifact]).length === 0
-          ) {
-            return;
-          }
-          const filesTabId = staticSessionWorkbarTabId('files');
-          const current = workbarPanelsStateRef.current;
-          const placement = current.right.tabs.some(
-            (tab) => tab.id === filesTabId,
-          )
-            ? 'right'
-            : current.bottom.tabs.some((tab) => tab.id === filesTabId)
-              ? 'bottom'
-              : 'right';
-          openDynamicWorkbarTab(
-            {
-              id: filesTabId,
-              kind: 'files',
-              preview: true,
-            },
-            placement,
-          );
-          if (placement === 'right') setWorkbarCollapsed(false);
-          else setBottomPanelOpen(true);
-        })
-        .catch(() => {});
-    });
-  }, [
-    openDynamicWorkbarTab,
-    setBottomPanelOpen,
-    setWorkbarCollapsed,
-  ]);
-
   const openSideConversationWithQuote = useCallback(
     (quote: QuoteRef) => {
       if (!activeId) return;
@@ -1784,6 +1737,20 @@ function AppShellContent({
     },
     onSelectNoProject: selectNoProject,
   };
+  const taskReadinessRequest = {
+    ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
+    cwd: activeSession?.cwd ?? projectInfo?.projectPath,
+  };
+  const taskReadiness = useTaskSubmissionReadiness(
+    taskReadinessRequest,
+    onboarding.snapshot,
+  );
+  const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
+  const ignoreTaskReadinessModelTarget =
+    activeSession !== undefined && activeSessionSendOutcome?.kind !== 'blocked';
+  const taskSubmissionHardBlocked = isTaskSubmissionHardBlocked(taskReadiness.snapshot, {
+    ignoreModelTarget: ignoreTaskReadinessModelTarget,
+  });
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
@@ -1832,6 +1799,9 @@ function AppShellContent({
     projectPath: projectInfo?.projectPath,
     newSessionModel: newChatModel,
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
+    // Refresh only; Desktop Main re-reads the authoritative default before
+    // constructing the Runtime Host preview target.
+    newSessionPermissionMode: defaultPermissionMode,
   });
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
@@ -1864,6 +1834,7 @@ function AppShellContent({
     activeIdRef,
     addPendingSessionAction,
     captureComposerImportOwner,
+    checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -1926,6 +1897,13 @@ function AppShellContent({
     toastApi,
     upsertSessionSummary,
   });
+
+  async function taskSubmissionReadyAtSend(): Promise<boolean> {
+    const snapshot = await taskReadiness.checkNow();
+    return !isTaskSubmissionHardBlocked(snapshot, {
+      ignoreModelTarget: ignoreTaskReadinessModelTarget,
+    });
+  }
 
   async function sendWithAttachments(
     text: string,
@@ -2729,10 +2707,9 @@ function AppShellContent({
                 />
               ) : null}
               <ChatSurfaceLayout
-                // Stay mounted across session switches. Remounting would drop the
-                // Composer draft Map (drafts are not hosted outside this tree).
-                // Stock ChatLayout has no conversationKey; accept that scroll /
-                // new-message state is owned by content swaps, not a hard remount.
+                // Reset conversation-owned scroll state without remounting the
+                // composer: its contenteditable DOM carries the live draft.
+                conversationKey={activeId}
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>
@@ -2837,7 +2814,9 @@ function AppShellContent({
                   onOpenModelSettings={() => openSettingsSection('models')}
                   noModelConnection={connections.length === 0}
                   sendBlocked={
-                    Boolean(workspaceReadinessRecovery) || sessionHealthNotice?.tone === 'destructive'
+                    Boolean(workspaceReadinessRecovery) ||
+                    sessionHealthNotice?.tone === 'destructive' ||
+                    taskSubmissionHardBlocked
                   }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
@@ -3018,6 +2997,16 @@ function AppShellContent({
                 }}
                 sessionHealthNotice={sessionHealthNotice}
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
+                taskReadinessNotice={taskReadinessNotice}
+                onTaskReadinessAction={
+                  taskReadinessNotice?.action === 'workspace_picker'
+                    ? activeSession
+                      ? openNewTaskSurface
+                      : () => {
+                          void addProject();
+                        }
+                    : taskReadiness.refresh
+                }
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 isOnboardingLoading={isOnboardingLoading}

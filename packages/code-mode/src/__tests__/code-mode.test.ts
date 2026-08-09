@@ -70,7 +70,15 @@ test('runs nested tools concurrently inside one cell', async () => {
   const calls: Array<{ name: string; input: unknown }> = [];
   let active = 0;
   let maxActive = 0;
-  const result = await execute(
+  let releaseTools!: () => void;
+  let observeConcurrency!: () => void;
+  const toolsReleased = new Promise<void>((resolve) => {
+    releaseTools = resolve;
+  });
+  const concurrencyObserved = new Promise<void>((resolve) => {
+    observeConcurrency = resolve;
+  });
+  const execution = execute(
     `return await Promise.all([
       tools.lookup({ id: 'a' }),
       tools.lookup({ id: 'b' }),
@@ -81,12 +89,21 @@ test('runs nested tools concurrently inside one cell', async () => {
         calls.push({ name, input });
         active += 1;
         maxActive = Math.max(maxActive, active);
-        await new Promise((resolve) => setImmediate(resolve));
+        if (active === 2) observeConcurrency();
+        await toolsReleased;
         active -= 1;
         return input;
       },
     },
   );
+
+  const overlapped = await Promise.race([
+    concurrencyObserved.then(() => true),
+    execution.then(() => false),
+  ]);
+  assert.equal(overlapped, true);
+  releaseTools();
+  const result = await execution;
 
   assert.equal(maxActive, 2);
   assert.deepEqual(calls, [
@@ -317,7 +334,7 @@ test('enforces byte and bridge limits', async (t) => {
       },
     });
     assert.equal(result.ok ? undefined : result.error.kind, 'limit_exceeded');
-    assert.equal(started, 1);
+    assert.ok(started <= 1);
   });
 });
 

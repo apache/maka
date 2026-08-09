@@ -23,6 +23,95 @@ afterEach(async () => {
 });
 
 describe('filesystem worker operations', () => {
+  test('creates nested patch files exclusively', async () => {
+    const root = await temporaryDirectory('maka-worker-create-patch-');
+    const target = join(root, 'nested', 'file.txt');
+    const operation = {
+      kind: 'apply_patch' as const,
+      cwd: root,
+      path: target,
+      action: 'create' as const,
+      diff: '+created\n',
+    };
+
+    const created = await executeFilesystemWorkerRequest(
+      requestFor(operation, {
+        enforcementPath: target,
+        access: 'write',
+        scope: 'exact',
+        targetType: 'missing',
+      }),
+    );
+    assert.equal(created.ok, true);
+    assert.equal(await readFile(target, 'utf8'), 'created');
+
+    const conflict = await executeFilesystemWorkerRequest(
+      requestFor(operation, {
+        enforcementPath: target,
+        access: 'write',
+        scope: 'exact',
+        targetType: 'file',
+      }),
+    );
+    assert.equal(conflict.ok, false);
+    assert.equal(await readFile(target, 'utf8'), 'created');
+  });
+
+  test('returns a recoverable patch conflict without changing the file', async () => {
+    const root = await temporaryDirectory('maka-worker-patch-conflict-');
+    const target = join(root, 'file.txt');
+    await writeFile(target, 'before\n', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        {
+          kind: 'apply_patch',
+          cwd: root,
+          path: target,
+          action: 'update',
+          diff: '@@\n-missing\n+after\n',
+        },
+        {
+          enforcementPath: target,
+          access: 'write',
+          scope: 'exact',
+          targetType: 'file',
+        },
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(response.error.code, 'edit_conflict');
+      assert.match(response.error.message, /Invalid Context/);
+    }
+    assert.equal(await readFile(target, 'utf8'), 'before\n');
+  });
+
+  test('deletes a symlink entry without deleting its target', async () => {
+    const root = await temporaryDirectory('maka-worker-delete-link-');
+    const target = join(root, 'target.txt');
+    const link = join(root, 'link.txt');
+    await writeFile(target, 'keep', 'utf8');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'apply_patch', cwd: root, path: link, action: 'delete' },
+        {
+          enforcementPath: link,
+          access: 'write',
+          scope: 'exact',
+          targetType: 'symlink',
+        },
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(await readFile(target, 'utf8'), 'keep');
+    await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
+  });
+
   test('runs Grep from the filesystem root without broadening its target permission', async () => {
     const root = await temporaryDirectory('maka-worker-grep-root-');
     const target = join(root, 'file.ts');

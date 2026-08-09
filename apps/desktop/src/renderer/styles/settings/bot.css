@@ -18,8 +18,8 @@
   display: block;
 }
 .settingsBotLogo[data-large="true"] {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
 }
 
 .settingsRemoteAccessChannelRow,

@@ -5,10 +5,12 @@ const WORKTREE_CHILD_UNAVAILABLE_REASON =
   'Worktree child Sessions must be continued through their parent agent.';
 const CHILD_CONTINUATION_UNAVAILABLE_REASON =
   'Child Sessions must be continued through their parent agent.';
+const IMPORT_STAGING_UNAVAILABLE_REASON = 'Imported Session history is still being prepared.';
 
 export function runtimeHostAutomationSessionUnavailableReason(
-  header: Pick<SessionHeader, 'collaborationMode'>,
+  header: Pick<SessionHeader, 'collaborationMode' | 'transcriptLedgerVersion'>,
 ): string | undefined {
+  if (header.transcriptLedgerVersion === 0) return IMPORT_STAGING_UNAVAILABLE_REASON;
   if (header.collaborationMode === 'plan') {
     return 'Automations cannot execute while the target Session is in Plan mode.';
   }
@@ -16,22 +18,33 @@ export function runtimeHostAutomationSessionUnavailableReason(
 }
 
 export function runtimeHostExternalTurnUnavailableReason(
-  header: Pick<SessionHeader, 'collaborationMode' | 'subagentWorkspace'>,
+  header: Pick<
+    SessionHeader,
+    'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
+  >,
 ): string | undefined {
   return runtimeHostExecutionUnavailableReason(header, { kind: 'external_message' });
 }
 
 export function runtimeHostSafeBoundaryContinuationUnavailableReason(
-  header: Pick<SessionHeader, 'subagentParent'>,
+  header: Pick<SessionHeader, 'subagentParent' | 'transcriptLedgerVersion'>,
 ): string | undefined {
-  return header.subagentParent ? CHILD_CONTINUATION_UNAVAILABLE_REASON : undefined;
+  return header.transcriptLedgerVersion === 0
+    ? IMPORT_STAGING_UNAVAILABLE_REASON
+    : header.subagentParent
+      ? CHILD_CONTINUATION_UNAVAILABLE_REASON
+      : undefined;
 }
 
 export function runtimeHostExecutionUnavailableReason(
-  header: Pick<SessionHeader, 'collaborationMode' | 'subagentWorkspace'>,
+  header: Pick<
+    SessionHeader,
+    'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
+  >,
   execution: RootExecutionDescriptor,
 ): string | undefined {
   return (
+    (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
     (header.collaborationMode === 'plan' &&
     execution.kind !== 'external_message' &&
     execution.kind !== 'regenerate' &&

@@ -24,6 +24,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { getBrowserCopy, type BrowserCopy } from './locales/browser-copy';
 
@@ -145,73 +146,82 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
 
   return (
     <div className="maka-browser-panel" role="region" aria-label={copy.panelAria}>
-      <div className="maka-browser-toolbar">
-        <Tooltip content={copy.back}>
-          <IconButton
-            label={copy.backAria}
-            icon={<ChevronLeft size={ICON_SIZE.chrome} aria-hidden />}
-            variant="ghost"
-            size="sm"
-            isDisabled={!state.canGoBack}
-            onClick={() => void window.maka.browser.back(sessionId)}
-          />
-        </Tooltip>
-        <Tooltip content={copy.forward}>
-          <IconButton
-            label={copy.forwardAria}
-            icon={<ChevronRight size={ICON_SIZE.chrome} aria-hidden />}
-            variant="ghost"
-            size="sm"
-            isDisabled={!state.canGoForward}
-            onClick={() => void window.maka.browser.forward(sessionId)}
-          />
-        </Tooltip>
-        <Tooltip content={state.loading ? copy.stop : copy.refresh}>
-          <IconButton
-            label={state.loading ? copy.stopAria : copy.refreshAria}
-            icon={state.loading ? <X size={ICON_SIZE.chrome} aria-hidden /> : <RotateCw size={ICON_SIZE.chrome} aria-hidden />}
-            variant="ghost"
-            size="sm"
-            isDisabled={!state.hasPage && !state.loading}
-            onClick={() =>
-              state.loading ? void window.maka.browser.stop(sessionId) : void window.maka.browser.reload(sessionId)
-            }
-          />
-        </Tooltip>
-        <div className="maka-browser-address-field">
-          <TextInput
-            type="text"
-            label={copy.addressAria}
-            isLabelHidden
-            width="100%"
-            placeholder={copy.addressPlaceholder}
-            value={address}
-            onChange={setAddress}
-            onFocus={() => {
-              editingRef.current = true;
-            }}
-            onBlur={() => {
-              editingRef.current = false;
-              setAddress(state.url);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.currentTarget.blur();
-                go();
-              }
-            }}
-          />
-        </div>
-        <Tooltip content={copy.close}>
-          <IconButton
-            label={copy.closeAria}
-            icon={<X size={ICON_SIZE.chrome} aria-hidden />}
-            variant="ghost"
-            size="sm"
-            onClick={() => void window.maka.browser.close(sessionId)}
-          />
-        </Tooltip>
-      </div>
+      <Toolbar
+        className="maka-browser-toolbar"
+        label={copy.panelAria}
+        size="sm"
+        startContent={(
+          <div className="maka-browser-toolbar-start">
+            <Tooltip content={copy.back}>
+              <IconButton
+                label={copy.backAria}
+                icon={<ChevronLeft size={ICON_SIZE.chrome} aria-hidden />}
+                variant="ghost"
+                size="sm"
+                isDisabled={!state.canGoBack}
+                onClick={() => void window.maka.browser.back(sessionId)}
+              />
+            </Tooltip>
+            <Tooltip content={copy.forward}>
+              <IconButton
+                label={copy.forwardAria}
+                icon={<ChevronRight size={ICON_SIZE.chrome} aria-hidden />}
+                variant="ghost"
+                size="sm"
+                isDisabled={!state.canGoForward}
+                onClick={() => void window.maka.browser.forward(sessionId)}
+              />
+            </Tooltip>
+            <Tooltip content={state.loading ? copy.stop : copy.refresh}>
+              <IconButton
+                label={state.loading ? copy.stopAria : copy.refreshAria}
+                icon={state.loading ? <X size={ICON_SIZE.chrome} aria-hidden /> : <RotateCw size={ICON_SIZE.chrome} aria-hidden />}
+                variant="ghost"
+                size="sm"
+                isDisabled={!state.hasPage && !state.loading}
+                onClick={() =>
+                  state.loading ? void window.maka.browser.stop(sessionId) : void window.maka.browser.reload(sessionId)
+                }
+              />
+            </Tooltip>
+            <div className="maka-browser-address-field">
+              <TextInput
+                type="text"
+                label={copy.addressAria}
+                isLabelHidden
+                width="100%"
+                placeholder={copy.addressPlaceholder}
+                value={address}
+                onChange={setAddress}
+                onFocus={() => {
+                  editingRef.current = true;
+                }}
+                onBlur={() => {
+                  editingRef.current = false;
+                  setAddress(state.url);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                    go();
+                  }
+                }}
+              />
+            </div>
+          </div>
+        )}
+        endContent={(
+          <Tooltip content={copy.close}>
+            <IconButton
+              label={copy.closeAria}
+              icon={<X size={ICON_SIZE.chrome} aria-hidden />}
+              variant="ghost"
+              size="sm"
+              onClick={() => void window.maka.browser.close(sessionId)}
+            />
+          </Tooltip>
+        )}
+      />
       <div className="maka-browser-strip" ref={stripRef}>
         {!state.hasPage && (
           <EmptyState

@@ -182,21 +182,6 @@ async function seedE2eGitReviewProject(
 }
 
 /**
- * The sandboxed HOME of the run currently under test. Set by withE2eWindow
- * before Electron launches.
- *
- * Read it from inside a test BODY, never as a fixture: a fixture would have no
- * declared dependency on the window fixture, so Playwright could resolve it
- * before the window is set up and hand back a stale path.
- */
-let currentHomeDir = '';
-
-export function e2eHomeDir(): string {
-  if (!currentHomeDir) throw new Error('e2eHomeDir() is only valid inside a test that opened a window');
-  return currentHomeDir;
-}
-
-/**
  * Own the full launch lifecycle so a failure anywhere — seeding, Electron
  * launch, firstWindow, or the readiness wait — still tears down the Electron
  * process and the throwaway userData dir. The previous shape ran `mkdtemp`
@@ -234,7 +219,6 @@ async function withE2eWindow(
   // it too — there is no second path to leak.
   const homeDir = path.join(userDataDir, 'home');
   await mkdir(homeDir, { recursive: true });
-  currentHomeDir = homeDir;
   let app: ElectronApplication | undefined;
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
@@ -303,123 +287,12 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
-  externalSessionImportWindow: Page;
-  firstRunWindow: Page;
-  modelPickerLongWindow: Page;
-  sandboxBoundaryWindow: Page;
-  readOnlyBoundaryWindow: Page;
-  activityCardWindow: Page;
-  sessionWorkbarWindow: Page;
   artifactPaneWindow: Page;
-  botSettingsWindow: Page;
   invocableSkillsWindow: Page;
-  settingsProjectsWindow: Page;
-  oauthReloginWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
-  // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
-  },
-  // External Session import runs through the production Runtime Host owner.
-  externalSessionImportWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: '.maka-session-panel',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  // No connection: the real main process derives `needs_connection`, and the
-  // renderer replaces the empty chat with the first-task activation card.
-  firstRunWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '[data-maka-contract="onboarding-card"]',
-        e2eFixtureScenario: 'first-run',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  // Settings -> 偏好 -> 项目, with three seeded catalog entries (available,
-  // long-path, and folder-gone) so the list, the default control, and the
-  // unavailable row all render without touching a native directory picker.
-  settingsProjectsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: '.settingsMainPane',
-        e2eFixtureScenario: 'settings-projects',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  modelPickerLongWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: true,
-        readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
-        extraConnectionCount: 10,
-      },
-      use,
-    );
-  },
-  // Sandbox-boundary takeover: boots a deterministic expansion request in the
-  // real desktop shell so the composer-slot placement and non-modal behavior
-  // are covered without a provider or test-only renderer state path.
-  sandboxBoundaryWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-sandbox-boundary-prompt', e2eFixtureScenario: 'sandbox-boundary', locale: 'zh' },
-      use,
-    );
-  },
-  // Read-only boundary (#1611): the Deep Research fixture session is seeded
-  // with `permissionMode: 'explore'`, so the metadata store derives a genesis
-  // managed read-only boundary for it. That makes this the only window where
-  // the composer's permission label is driven by a real read-only profile
-  // travelling main → IPC → renderer.
-  readOnlyBoundaryWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: COMPOSER_INPUT, e2eFixtureScenario: 'deep-research-progress', locale: 'zh' },
-      use,
-    );
-  },
-  // A committed reasoning + multi-tool transcript. Geometry specs amplify the
-  // existing detail height in the browser; the production projection and
-  // disclosure components remain the fixture's rendering path.
-  activityCardWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.maka-deep-thinking',
-        e2eFixtureScenario: 'turn-narrative',
-        locale: 'zh',
-        showWindow: true,
-      },
-      use,
-    );
-  },
-  // Session workbar: seeds a task tree and opens the unified auxiliary
-  // workspace so its shell controls and peer tabs run against real IPC data.
-  sessionWorkbarWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        // The data contract, not the tag: the panel's surface is an Astryx Card
-        // (a div carrying role="complementary"), so a tag-anchored selector
-        // would pin an implementation detail the design system owns.
-        readinessSelector: '[data-maka-contract="session-workbar-right"]',
-        e2eFixtureScenario: 'task-ledger',
-        locale: 'zh',
-      },
-      use,
-    );
   },
   artifactPaneWindow: async ({}, use) => {
     await withE2eWindow(
@@ -432,17 +305,7 @@ export const test = base.extend<{
       use,
     );
   },
-  // Remote access: uses the e2e-fixture workspace so Settings opens on the
-  // channel catalog and main injects deterministic IM onboarding adapters.
-  // The renderer still talks through the real preload/IPC/session authority.
-  botSettingsWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '[aria-label="设置内容"]', e2eFixtureScenario: 'settings-bots', locale: 'zh' },
-      use,
-    );
-  },
-  // Project + Maka-workspace Skills with one deliberately host-incompatible
-  // entry. Proves `/` uses Runtime discovery/gating rather than management UI data.
+  // Project + workspace Skills for draft/chip journeys.
   invocableSkillsWindow: async ({}, use) => {
     await withE2eWindow({
       seed: true,
@@ -450,19 +313,6 @@ export const test = base.extend<{
       locale: 'zh',
       invocableSkills: true,
     }, use);
-  },
-  oauthReloginWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        // The connection detail is a page now, not a dialog; waiting on
-        // `dialog[open]` waited for markup this redesign deleted.
-        readinessSelector: '[data-maka-contract="connection-detail"]',
-        e2eFixtureScenario: 'oauth-relogin',
-        locale: 'zh',
-      },
-      use,
-    );
   },
 });
 

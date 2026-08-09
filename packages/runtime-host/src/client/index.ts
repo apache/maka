@@ -1,9 +1,12 @@
 export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
+  connectRemoteRuntimeHost,
   RuntimeHostOperationError,
   type ConnectRuntimeHostInput,
   type ConnectRuntimeHostResult,
+  type ConnectRemoteRuntimeHostInput,
+  type ConnectRemoteRuntimeHostResult,
   type RuntimeHostConnection,
   type RuntimeHostUnavailableReason,
   type DirectRequestOperationKey,
@@ -18,6 +21,7 @@ export {
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
+  readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
   type RuntimeHostConnectionCatalogEntry,
@@ -30,6 +34,7 @@ export {
   type ConnectOrSpawnRuntimeHostResult,
 } from './connect-or-spawn.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
+export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {
   createOAuthPresentationClientProvider,
   OAUTH_PRESENTATION_SERVICE_ID,

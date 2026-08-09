@@ -4,6 +4,7 @@ import type { RuntimeHostConnection } from '../client/connection.js';
 import {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
+  readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
 } from '../client/catalog-reader.js';
@@ -97,6 +98,64 @@ test('reassembles per-item relay profiles into the connection profile table', as
       // Only the profiled model lands in the reassembled table — the item
       // shape is wire-only and never surfaces per item downstream.
       relayModelProfiles: { declared: profile },
+    },
+  ]);
+});
+
+test('reassembles Project aliases and locations across bounded pages without truncation', async () => {
+  const aliases = Array.from({ length: 300 }, (_, index) => `project-alias-${index}`);
+  const root = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';
+  const locations = Array.from({ length: 70 }, (_, index) => ({
+    path: `${root}${process.platform === 'win32' ? '\\' : '/'}location-${index}`,
+    isWorktree: index > 0,
+  }));
+  const items = [
+    {
+      kind: 'project' as const,
+      projectIndex: 0,
+      id: 'project-1',
+      name: 'Project',
+      aliasCount: aliases.length,
+      locationCount: locations.length,
+      archivedAt: null,
+      available: true,
+      preferredPath: locations[0]!.path,
+    },
+    ...aliases.map((alias, itemIndex) => ({
+      kind: 'alias' as const,
+      projectIndex: 0,
+      itemIndex,
+      alias,
+    })),
+    ...locations.map((location, itemIndex) => ({
+      kind: 'location' as const,
+      projectIndex: 0,
+      itemIndex,
+      location,
+    })),
+  ];
+  const connection = fakeConnection(async (_operation, input) => {
+    const offset = input.kind === 'list_start' ? 0 : Number(input.cursor);
+    const page = items.slice(offset, offset + 64);
+    const nextOffset = offset + page.length;
+    return {
+      kind: 'page',
+      revision: `sha256:${'a'.repeat(64)}`,
+      projectCount: 1,
+      items: page,
+      nextCursor: nextOffset < items.length ? String(nextOffset) : null,
+    };
+  });
+
+  assert.deepEqual(await readRuntimeHostProjects(connection), [
+    {
+      id: 'project-1',
+      aliases,
+      name: 'Project',
+      locations,
+      archivedAt: null,
+      available: true,
+      preferredPath: locations[0]!.path,
     },
   ]);
 });

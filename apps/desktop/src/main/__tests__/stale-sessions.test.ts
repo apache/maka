@@ -10,7 +10,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { deriveStaleSessionIds } from '../../renderer/stale-sessions.js';
-import { readRendererContractCss } from './contract-css-helpers.js';
 
 function session(partial: { id: string; backend?: string; slug?: string }): {
   id: string;
@@ -108,54 +107,9 @@ describe('deriveStaleSessionIds', () => {
   });
 });
 
-describe('stale session CSS contract (@kenji review gate)', () => {
-  // @kenji's PR108g review: "active stale row 不要因为 active state 取消所有
-  // warning 信号". Active state can restore opacity, but the pill must NOT
-  // disappear, and no rule may set `display: none` / `visibility: hidden`
-  // on the pill regardless of selector chain. This grep-style assertion
-  // catches that contract from a CSS regression — cheap second layer on
-  // top of the component-level invariant that `stale` prop is derived from
-  // `staleSessionIds.has(session.id)` (independent of active state).
-
-  it('inactive stale row dims, active stale row restores opacity', async () => {
-    const css = await readRendererContractCss();
-    // SideNav session rows: stale dims only this row's item (child combinators);
-    // current page on that item restores opacity.
-    assert.match(
-      css,
-      /\.maka-session-row\[data-stale="true"\]\s*>\s*div\s*>\s*\.astryx-side-nav-item\s*\{[\s\S]*?opacity:\s*var\(--opacity-muted\)/,
-      'expected stale SideNav session rows to dim only the direct SideNavItem',
-    );
-    assert.match(
-      css,
-      /\.maka-session-row\[data-stale="true"\]\s*>\s*div\s*>\s*\.astryx-side-nav-item\[aria-current="page"\]/,
-      'expected the active stale leaf SideNav row to restore full opacity',
-    );
-    assert.match(
-      css,
-      /\.maka-session-row\[data-stale="true"\]\s*>\s*div\s*>\s*\.astryx-side-nav-item:has\(\s*>\s*\[aria-current="page"\]\s*\)/,
-      'expected the active stale collapsible SideNav row to restore full opacity',
-    );
-    // A bare descendant selector would mute healthy subagents under a stale parent.
-    assert.doesNotMatch(
-      css,
-      /\.maka-session-row\[data-stale="true"\](?![^\n{]*\s*>\s*div\s*>)\s+\.astryx-side-nav-item/,
-      'stale opacity must not use an unbounded descendant selector',
-    );
-  });
-
-  it('stale pill is never hidden by any CSS rule (active state preserves warning signal)', async () => {
-    const css = await readRendererContractCss();
-    // Any rule that targets `.maka-list-row-stale-pill` AND applies
-    // display: none / visibility: hidden / opacity: 0 is a regression on
-    // the @kenji gate. Scan the CSS body for those patterns.
-    const PILL_HIDE = /\.maka-list-row-stale-pill[^{]*\{[^}]*?(?:display:\s*none|visibility:\s*hidden|opacity:\s*0(?![\.\d]))/;
-    assert.doesNotMatch(
-      css,
-      PILL_HIDE,
-      'no CSS rule may hide `.maka-list-row-stale-pill` (active stale row must still show pill)',
-    );
-  });
+describe('stale session list wiring', () => {
+  // Pill visibility on active rows is a product invariant; assert it through
+  // the panel render, not by grepping Astryx SideNav CSS selectors.
 
   it('staleSessionIds wires data-stale and pill only on marked sessions', async () => {
     const { makeSessionSummary, renderSessionListPanel } = await import(

@@ -448,6 +448,15 @@ dialog:modal {
    used to carry was 1px the crumb did not have, so the trail lost a pixel of
    height the moment the field appeared. */
 .maka-titlebar-identity__rename-input {
+  min-width: 2rem;
+  max-width: min(20rem, 100%);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.maka-titlebar-identity__rename-input input {
   font: var(--maka-text-body);
   font-weight: var(--font-weight-medium);
   color: var(--foreground);
@@ -460,15 +469,11 @@ dialog:modal {
   /* The crumb button's own inline padding, so the first glyph does not step
      4px left the moment the label becomes a field. */
   padding-inline: var(--space-1);
-  /* Small enough that a real name is always the binding measure — at `4rem`
-     the field opened wider than the word it replaced and nudged the trail. */
   min-width: 2rem;
-  /* Bounded by the column, not by a guess: `20rem` alone overflowed the same
-     way the segments did once the window was narrow enough. */
   max-width: min(20rem, 100%);
 }
 
-.maka-titlebar-identity__rename-input:focus {
+.maka-titlebar-identity__rename-input input:focus {
   box-shadow: 0 1px 0 var(--focus-ring);
 }
 

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
 
 import {
+  Banner,
   Button,
   EmptyState,
   FormLayout,
@@ -148,10 +149,12 @@ export function MemorySettingsPage(props: {
       >
         {memoryEntryPreviewBlockedReason && (
           <SettingsField>
-            <div className="settingsMemoryEntryPreviewNotice" role="status">
-              <strong>{copy.text.previewPaused}</strong>
-              <small>{memoryEntryPreviewBlockedReason}</small>
-            </div>
+            <Banner
+              status="warning"
+              role="status"
+              title={copy.text.previewPaused}
+              description={memoryEntryPreviewBlockedReason}
+            />
           </SettingsField>
         )}
         {addFormOpen && (
@@ -210,10 +213,12 @@ export function MemorySettingsPage(props: {
         )}
         {memoryDraftHasSensitiveFields && (
           <SettingsField>
-            <div className="settingsMemoryDraftWarning" role="status">
-              <strong>{copy.text.sensitiveDraft}</strong>
-              <small>{copy.text.sensitiveDraftHelp}</small>
-            </div>
+            <Banner
+              status="warning"
+              role="status"
+              title={copy.text.sensitiveDraft}
+              description={copy.text.sensitiveDraftHelp}
+            />
           </SettingsField>
         )}
         {visibleMemoryEntries.entries.length > 0 ? (

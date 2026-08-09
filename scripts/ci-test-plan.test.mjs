@@ -17,6 +17,16 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
+  // Unit-only packages/ui edits still run workspace tests, but must not force
+  // cold Electron e2e or Storybook build+Chromium smoke.
+  const uiUnitOnly = planTests(['packages/ui/src/__tests__/tool-activity-presentation.test.ts'], {
+    graph,
+  });
+  assert.equal(uiUnitOnly.e2e, false);
+  assert.equal(uiUnitOnly.storybook, false);
+  assert.ok(uiUnitOnly.workspaces.includes('packages/ui'));
+  assert.equal(planTests(['packages/ui/src/composer.tsx'], { graph }).e2e, true);
+
   // Renderer code is mounted by product stories; main-process and e2e files are not.
   assert.equal(
     planTests(['apps/desktop/src/renderer/settings/daily-review-settings-page.tsx'], {
@@ -26,14 +36,21 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   );
   assert.equal(planTests(['apps/desktop/src/main/main.ts'], { graph }).storybook, false);
   assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).storybook, false);
+  assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).e2e, true);
 
-  // Catalog + harness only.
-  assert.equal(
-    planTests(['apps/desktop/stories/app-shell.stories.tsx'], { graph }).storybook,
-    true,
-  );
-  assert.equal(planTests(['apps/desktop/.storybook/preview.tsx'], { graph }).storybook, true);
-  assert.equal(planTests(['packages/ui/stories/composer.stories.tsx'], { graph }).storybook, true);
+  // Catalog + harness changes build and render the catalog without paying for
+  // workspace tests or real-window Electron E2E.
+  for (const path of [
+    'apps/desktop/stories/app-shell.stories.tsx',
+    'apps/desktop/stories/FIDELITY.md',
+    'apps/desktop/.storybook/preview.tsx',
+    'packages/ui/stories/composer.stories.tsx',
+  ]) {
+    const catalog = planTests([path], { graph });
+    assert.equal(catalog.storybook, true, path);
+    assert.equal(catalog.e2e, false, path);
+    assert.deepEqual(catalog.workspaces, [], path);
+  }
 
   // .storybook/preview.tsx reads THEME_PALETTES from this one core module.
   // Other core paths must not force Storybook.

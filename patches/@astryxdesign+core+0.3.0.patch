@@ -1,5 +1,103 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
+index ff34874..0a15599 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
+@@ -69,6 +69,11 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+      * @default 'balanced'
+      */
+     density?: Density;
++    /**
++     * Per-conversation identity for hosts that switch conversations in place.
++     * Resets scroll and unread state without remounting composer content.
++     */
++    conversationKey?: string | number;
+ }
+ export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
+ export declare namespace ChatLayout {
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
+index ea27cd5..856556c 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
+@@ -28,7 +28,7 @@
+  * - /apps/storybook/stories/ChatLayout.stories.tsx
+  * - /packages/cli/assets/templates/blocks/components/ChatLayout/ (block examples)
+  */
+-import { useMemo, useRef } from 'react';
++import { useEffect, useMemo, useRef } from 'react';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+ import { spacingVars } from "../theme/tokens.stylex.js";
+@@ -195,6 +195,7 @@ export function ChatLayout({
+   className,
+   style,
+   'data-testid': testId,
++  conversationKey,
+   ref,
+   ...rest
+ }) {
+@@ -211,6 +212,20 @@ export function ChatLayout({
+     isLocked: scroll.isLocked,
+     onResize: scroll.scrollIfLocked
+   });
++  useEffect(() => {
++    if (scroll.isLocked) {
++      newMsgs.dismiss();
++    }
++  }, [scroll.isLocked, newMsgs.dismiss]);
++  const conversationKeyRef = useRef(conversationKey);
++  useEffect(() => {
++    if (conversationKey === conversationKeyRef.current) {
++      return;
++    }
++    conversationKeyRef.current = conversationKey;
++    scroll.lock();
++    newMsgs.reset();
++  }, [conversationKey, scroll.lock, newMsgs.reset]);
+   const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
+     isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
+     label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
+index 791909e..9d4aa32 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
+@@ -114,6 +114,7 @@ function CallRow({
+   const row = /*#__PURE__*/_jsxs("div", {
+     role: hasDetail ? 'button' : undefined,
+     tabIndex: hasDetail ? 0 : undefined,
++    "data-slot": "chat-tool-call-row",
+     "aria-expanded": hasDetail ? isDetailOpen : undefined,
+     "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
+     onClick: toggleDetail,
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
+index 8c509bc..e86d673 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
+@@ -49,6 +49,8 @@ export function useChatNewMessages({
+   const elementRef = useRef(null);
+   const cleanupRef = useRef(null);
+   const attach = useCallback(el => {
++    lastMessageRef.current = null;
++    setHasNewMessages(false);
+     observeResize(el, () => {
+       onResizeRef.current?.();
+       const messages = el.getElementsByClassName('astryx-chat-message');
+@@ -90,9 +92,14 @@ export function useChatNewMessages({
+   const dismiss = useCallback(() => {
+     setHasNewMessages(false);
+   }, []);
++  const reset = useCallback(() => {
++    lastMessageRef.current = null;
++    setHasNewMessages(false);
++  }, []);
+   return {
+     hasNewMessages,
+     dismiss,
++    reset,
+     contentRef
+   };
+ }
 diff --git a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
-index 33ed78d..0ecbce6 100644
+index 33ed78d..44c6ad0 100644
 --- a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 +++ b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 @@ -111,7 +111,10 @@ function detectMac() {
@@ -14,8 +112,28 @@ index 33ed78d..0ecbce6 100644
    }
    // Fallback: navigator.platform (deprecated but still shipped everywhere)
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
+diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
+index 08b5f7d..5fc3c63 100644
+--- a/node_modules/@astryxdesign/core/dist/List/List.js
++++ b/node_modules/@astryxdesign/core/dist/List/List.js
+@@ -89,6 +89,7 @@ export function List({
+   className,
+   style,
+   'data-testid': testId,
++  'aria-label': ariaLabel,
+   ref
+ }) {
+   const headerId = useId();
+@@ -102,6 +103,7 @@ export function List({
+   const listElement = /*#__PURE__*/_jsx(Tag, {
+     ref: ref,
+     "data-testid": testId,
++    "aria-label": ariaLabel,
+     "aria-labelledby": header != null ? headerId : undefined,
+     ...(isOrdered && start != null && start !== 1 ? {
+       start
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
-index 65f9278..f7515e2 100644
+index 65f9278..56f6021 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 @@ -54,7 +54,10 @@ function isApplePlatform() {
@@ -30,3 +148,15 @@ index 65f9278..f7515e2 100644
    }
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
  }
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
+index 234a2e4..e3f1842 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
+@@ -378,6 +378,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+     <div
+       role={hasDetail ? 'button' : undefined}
+       tabIndex={hasDetail ? 0 : undefined}
++      data-slot="chat-tool-call-row"
+       aria-expanded={hasDetail ? isDetailOpen : undefined}
+       aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
+       onClick={toggleDetail}

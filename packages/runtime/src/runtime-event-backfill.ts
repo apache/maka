@@ -30,6 +30,7 @@ export interface RuntimeEventBackfillInput {
   run: AgentRunHeader;
   messages: readonly StoredMessage[];
   invocationId?: string;
+  modelHistory?: 'full' | 'conversation_text';
   now?: () => number;
   newId?: () => string;
 }
@@ -59,10 +60,11 @@ export function backfillRuntimeEventsFromStoredMessages(
     input.run.invocationId ?? input.invocationId ?? `backfill-${input.run.runId}`;
   const diagnostics: RuntimeEventBackfillDiagnostic[] = [];
   const events: RuntimeEvent[] = [];
+  const conversationTextOnly = input.modelHistory === 'conversation_text';
   const turnMessages = input.messages
     .filter((message) => messageTurnId(message) === input.run.turnId)
     .slice()
-    .sort((a, b) => a.ts - b.ts || messageId(a).localeCompare(messageId(b)));
+    .sort((a, b) => a.ts - b.ts);
   const toolCalls = new Map<string, ToolCallMessage>();
   const replayableProviderToolUseIds = new Set(
     turnMessages
@@ -119,16 +121,18 @@ export function backfillRuntimeEventsFromStoredMessages(
         break;
 
       case 'assistant':
-        events.push({
-          ...base,
-          id: newId(),
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: message.text },
-          actions: { stateDelta: recoveryState(now, message) },
-          refs: { storedMessageId: message.id },
-        });
-        if (message.thinking) {
+        if (!conversationTextOnly || message.text.length > 0) {
+          events.push({
+            ...base,
+            id: newId(),
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text: message.text },
+            actions: { stateDelta: recoveryState(now, message) },
+            refs: { storedMessageId: message.id },
+          });
+        }
+        if (!conversationTextOnly && message.thinking) {
           const parts = message.thinking.parts ?? [message.thinking];
           for (const part of parts) {
             events.push({
@@ -152,6 +156,7 @@ export function backfillRuntimeEventsFromStoredMessages(
         break;
 
       case 'tool_call': {
+        if (conversationTextOnly) break;
         if (message.providerExecuted === true && !replayableProviderToolUseIds.has(message.id)) {
           diagnostics.push({
             code: 'skipped_provider_native_replay_gap',
@@ -200,6 +205,7 @@ export function backfillRuntimeEventsFromStoredMessages(
       }
 
       case 'tool_result': {
+        if (conversationTextOnly) break;
         if (message.providerExecuted === true && message.providerOutput === undefined) {
           break;
         }
@@ -255,6 +261,7 @@ export function backfillRuntimeEventsFromStoredMessages(
       }
 
       case 'permission_decision': {
+        if (conversationTextOnly) break;
         const call = safePriorToolCall(toolCalls, message);
         if (!call) {
           diagnostics.push({
@@ -291,6 +298,7 @@ export function backfillRuntimeEventsFromStoredMessages(
       }
 
       case 'token_usage':
+        if (conversationTextOnly) break;
         events.push({
           ...base,
           id: newId(),
@@ -313,6 +321,7 @@ export function backfillRuntimeEventsFromStoredMessages(
         break;
 
       case 'system_note':
+        if (conversationTextOnly) break;
         diagnostics.push({
           code: 'skipped_high_risk_message',
           message:

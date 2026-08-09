@@ -403,6 +403,7 @@ export interface MakaBridge {
   };
   projects: {
     list(): Promise<ProjectRecord[]>;
+    subscribeChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;

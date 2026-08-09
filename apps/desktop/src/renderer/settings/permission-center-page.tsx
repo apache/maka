@@ -158,15 +158,17 @@ export function PermissionCenterPage() {
 
   if (error || !permissions || !capabilities) {
     return (
-      <Banner
-        status="error"
-        role="alert"
-        title={copy.readFailed}
-        description={error ?? copy.noData}
-        endContent={(
-          <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
-        )}
-      />
+      <SettingsPage>
+        <Banner
+          status="error"
+          role="alert"
+          title={copy.readFailed}
+          description={error ?? copy.noData}
+          endContent={(
+            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
+          )}
+        />
+      </SettingsPage>
     );
   }
 

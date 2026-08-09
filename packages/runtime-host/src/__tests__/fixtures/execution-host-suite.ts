@@ -61,9 +61,11 @@ import {
 } from '../../client/index.js';
 import {
   decodeHostFrame,
+  encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
+  type ClientFrame,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
@@ -1118,7 +1120,7 @@ export async function sendStartWithoutReadingResponse(
   input: { sessionId: string; turnId: string; text: string },
 ): Promise<FramedTransport> {
   const transport = new FramedTransport(await openSocket(endpoint));
-  await transport.write({
+  await writeClientFrame(transport, {
     kind: 'hello',
     clientInstanceId: randomUUID(),
     surface: 'desktop',
@@ -1129,7 +1131,7 @@ export async function sendStartWithoutReadingResponse(
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);
   assert.equal(handshake.kind, 'accepted');
-  await transport.write({
+  await writeClientFrame(transport, {
     requestId: randomUUID(),
     operation: 'turn.start',
     input: {
@@ -1139,6 +1141,10 @@ export async function sendStartWithoutReadingResponse(
     },
   });
   return transport;
+}
+
+function writeClientFrame(transport: FramedTransport, frame: ClientFrame): Promise<void> {
+  return transport.write(encodeProtocolMessage(frame));
 }
 
 function openSocket(path: string): Promise<Socket> {

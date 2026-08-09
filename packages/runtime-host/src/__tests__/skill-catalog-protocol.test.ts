@@ -114,7 +114,12 @@ describe('Runtime Host Skill catalog protocol', () => {
       { kind: 'start', target: { kind: 'session', sessionId: 'session-1' } },
       {
         kind: 'start',
-        target: { kind: 'new_session', context: CONTEXT, collaborationMode: 'plan' },
+        target: {
+          kind: 'new_session',
+          context: CONTEXT,
+          collaborationMode: 'plan',
+          permissionMode: 'bypass',
+        },
       },
       {
         kind: 'continue',
@@ -158,6 +163,19 @@ describe('Runtime Host Skill catalog protocol', () => {
         result,
       },
     );
+    assertInvalidRequest('skill.catalog.invocable.query', {
+      kind: 'start',
+      target: { kind: 'new_session', context: CONTEXT, collaborationMode: 'plan' },
+    });
+    assertInvalidRequest('skill.catalog.invocable.query', {
+      kind: 'start',
+      target: {
+        kind: 'new_session',
+        context: CONTEXT,
+        collaborationMode: 'plan',
+        permissionMode: 'unrestricted',
+      },
+    });
   });
 
   test('decodes start and continuation queries with bounded typed local context', () => {

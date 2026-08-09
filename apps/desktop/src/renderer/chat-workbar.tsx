@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { useUiLocale, type Composer } from '@maka/ui';
 import type { ChatModelChoice, SessionSummary } from '@maka/core';
 import { getShellCopy } from './locales/shell-copy';
@@ -38,7 +39,7 @@ function SessionWorkbarFallback() {
         aria-label={copy.loadingWorkbarLabel}
       >
         <div className="maka-lazy-fallback" data-surface="panel">
-          {copy.loadingWorkbar}
+          <Spinner size="sm" shade="subtle" label={copy.loadingWorkbar} />
         </div>
       </Card>
     </div>

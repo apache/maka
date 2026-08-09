@@ -13,6 +13,54 @@ describe('Maka CLI args', () => {
         { kind: 'eval', args: ['task-run', 'inspect', 'run-1'] },
       ],
       [['inspect', 'run-1', '--json'], { kind: 'inspect', args: ['run-1', '--json'] }],
+      [['runtime-host', 'serve'], { kind: 'runtime-host-serve' }],
+      [
+        ['runtime-host', 'serve', '--root', '/srv/maka'],
+        { kind: 'runtime-host-serve', rootPath: '/srv/maka' },
+      ],
+      [
+        ['runtime-host'],
+        {
+          kind: 'error',
+          message: 'runtime-host requires the serve or access command',
+          exitCode: 2,
+        },
+      ],
+      [
+        ['runtime-host', 'serve', '--root'],
+        { kind: 'error', message: '--root requires a value', exitCode: 2 },
+      ],
+      [
+        ['runtime-host', 'serve', '--websocket-port', '43120', '--websocket-host', '::1'],
+        {
+          kind: 'runtime-host-serve',
+          websocket: { host: '::1', port: 43120 },
+        },
+      ],
+      [
+        [
+          'runtime-host',
+          'access',
+          'issue',
+          '--principal',
+          'device-1',
+          '--grant',
+          'session.catalog.query',
+          '--grant',
+          'subscription.open',
+        ],
+        {
+          kind: 'runtime-host-access-issue',
+          principalId: 'device-1',
+          operationGrants: ['session.catalog.query', 'subscription.open'],
+          canPublishClientCapabilities: false,
+          canUseHostPaths: false,
+        },
+      ],
+      [
+        ['runtime-host', 'access', 'revoke', '--credential', 'credential-1'],
+        { kind: 'runtime-host-access-revoke', credentialId: 'credential-1' },
+      ],
       [['run', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
       [['-p', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
       [['--version'], { kind: 'version', text: '0.1.0' }],

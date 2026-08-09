@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { PermissionMode } from '@maka/core/permission';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { SessionActivityRegistry, type InvocableSkillEntry } from '@maka/runtime';
 import {
@@ -77,7 +78,8 @@ export async function createRuntimeHostTuiContext(
         ?.contextWindow,
       modelChoices,
       turnActivity: createHostOwnedTurnActivity(),
-      listSkills: (cwd) => listStablePresentedSkills(connection, cwd),
+      listSkills: (cwd) =>
+        listStablePresentedSkills(connection, cwd, driver.getPermissionMode?.() ?? 'ask'),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding: createRuntimeHostOnboardingSurface(connection),
       close: () => connected.close(),
@@ -110,12 +112,14 @@ function createRuntimeHostRecapGenerator(connection: RuntimeHostConnection): Ses
 async function listStablePresentedSkills(
   connection: RuntimeHostConnection,
   projectRoot: string,
+  permissionMode: PermissionMode,
 ): Promise<InvocableSkillEntry[]> {
   return [
     ...(await readRuntimeHostInvocableSkills(connection, {
       kind: 'new_session',
       context: { projectRoot },
       collaborationMode: 'agent',
+      permissionMode,
     })),
   ];
 }

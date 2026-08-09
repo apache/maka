@@ -62,6 +62,7 @@ import {
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
+  resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
@@ -87,6 +88,29 @@ const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const execFileAsync = promisify(execFile);
+
+test('Plan mode preserves bypass while narrowing every managed permission mode', () => {
+  assert.equal(
+    resolveCollaborationPermissionMode({
+      collaborationMode: 'plan',
+      permissionMode: 'bypass',
+    }),
+    'bypass',
+  );
+  for (const permissionMode of ['explore', 'ask', 'execute'] as const) {
+    assert.equal(
+      resolveCollaborationPermissionMode({ collaborationMode: 'plan', permissionMode }),
+      'explore',
+    );
+  }
+  assert.equal(
+    resolveCollaborationPermissionMode({
+      collaborationMode: 'agent',
+      permissionMode: 'bypass',
+    }),
+    'bypass',
+  );
+});
 
 test('backend creation aborts a stalled canonical connection read', async () => {
   const abort = new AbortController();
@@ -2361,6 +2385,41 @@ test('Plan composition admits only planning tools before approval and execution 
     /Collaboration Mode: Plan/,
   );
 
+  const fullAccessPlanning = createHostExecutionModelComposition({
+    ...base,
+    hostTools: [
+      {
+        name: 'PlanningWriteFixture',
+        description: 'Mutating planning fixture',
+        parameters: {},
+        categoryHint: 'file_write',
+        impl: () => null,
+      },
+      {
+        name: 'ExploreAgentFixture',
+        description: 'Delegated planning fixture',
+        parameters: {},
+        categoryHint: 'subagent',
+        impl: () => null,
+      },
+    ],
+    plan: { store, state: pending, mode: 'plan', permissionMode: 'bypass' },
+  });
+  assert.ok(fullAccessPlanning.tools.some((tool) => tool.name === 'PlanningWriteFixture'));
+  assert.equal(
+    fullAccessPlanning.tools.some((tool) => tool.name === 'ExploreAgentFixture'),
+    false,
+  );
+  assert.match(
+    (await fullAccessPlanning.systemPrompt({
+      sessionId: 'session-1',
+      turnId: 'turn-full-access',
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    })) ?? '',
+    /Full access is active/,
+  );
+
   const execution = {
     executionId: 'execution-1',
     planId: proposal.planId,
@@ -2375,6 +2434,33 @@ test('Plan composition admits only planning tools before approval and execution 
     startedAt: 2,
     updatedAt: 2,
   };
+  const interrupted: PlanSessionState = {
+    ...pending,
+    storeVersion: 2,
+    proposals: [{ ...proposal, status: 'approved' }],
+    executions: [
+      {
+        ...execution,
+        status: 'interrupted',
+        interruptedAt: 3,
+        interruptionReason: 'User requested replanning',
+        updatedAt: 3,
+      },
+    ],
+  };
+  const fullAccessReplanning = createHostExecutionModelComposition({
+    ...base,
+    plan: { store, state: interrupted, mode: 'plan', permissionMode: 'bypass' },
+  });
+  const replanningTail = await fullAccessReplanning.turnTailPrompt({
+    sessionId: 'session-1',
+    turnId: 'turn-full-access-replanning',
+    cwd: process.cwd(),
+    workspaceRoot: process.cwd(),
+  });
+  assert.match(replanningTail, /Full access remains active/);
+  assert.doesNotMatch(replanningTail, /Do not resume execution or modify files/);
+
   const active: PlanSessionState = {
     ...pending,
     storeVersion: 2,

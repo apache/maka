@@ -6,7 +6,7 @@ import {
   type HostOperationErrorCode,
   type RequestFrame,
 } from '../protocol/index.js';
-import type { FramedTransport } from '../transport/framed-transport.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import {
   dispatchOperation,
   operationFailureResponse,
@@ -32,8 +32,21 @@ import type {
   HostSessionCatalogChangeService,
   SessionCatalogChangeConnection,
 } from './session-catalog-change-service.js';
+import type {
+  HostProjectCatalogChangeService,
+  ProjectCatalogChangeConnection,
+} from './project-catalog-change-service.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
+import {
+  authorizeClientCapabilityFrame,
+  authorizeRuntimeHostOperation,
+  hasRuntimeHostOperationGrant,
+} from './connection-authority.js';
 
-type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency'>;
+type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency' | 'principal'> & {
+  readonly clientInstanceId: string;
+  readonly authority: RuntimeHostConnectionAuthority;
+};
 
 export interface ConnectionOperationLease {
   acquireResidency(): OperationResidency;
@@ -42,12 +55,13 @@ export interface ConnectionOperationLease {
 }
 
 export interface RuntimeHostConnectionSessionOptions {
-  transport: FramedTransport;
+  transport: RuntimeHostMessageTransport;
   connection: AcceptedConnectionContext;
   resolveHandlers(): OperationHandlerMap;
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
   resolveConfigurationChanges?(): HostConfigurationChangeService | undefined;
+  resolveProjectCatalogChanges?(): HostProjectCatalogChangeService | undefined;
   resolveSessionCatalogChanges?(): HostSessionCatalogChangeService | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
@@ -63,6 +77,7 @@ export class RuntimeHostConnectionSession {
   #clientCapabilityService: ClientCapabilityService | undefined;
   #clientCapabilities: ClientCapabilityConnection | undefined;
   #configurationChanges: ConfigurationChangeConnection | undefined;
+  #projectCatalogChanges: ProjectCatalogChangeConnection | undefined;
   #sessionCatalogChanges: SessionCatalogChangeConnection | undefined;
   #inputClosed = false;
   #closed = false;
@@ -95,6 +110,7 @@ export class RuntimeHostConnectionSession {
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachConfigurationChanges();
+    this.#detachProjectCatalogChanges();
     this.#detachSessionCatalogChanges();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
@@ -109,7 +125,7 @@ export class RuntimeHostConnectionSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#writer.close();
-    this.#options.transport.destroyAfterFlush();
+    this.#options.transport.closeAfterFlush();
     this.#options.onTeardown();
   }
 
@@ -118,7 +134,14 @@ export class RuntimeHostConnectionSession {
       const frame = decodeClientFrame(await this.#options.transport.read(0));
       if ('kind' in frame) {
         if (isClientCapabilityClientFrameKind(frame.kind)) {
-          this.#ensureClientCapabilities()?.accept(frame as ClientCapabilityClientFrame);
+          const capabilityFrame = frame as ClientCapabilityClientFrame;
+          if (
+            !authorizeClientCapabilityFrame(this.#options.connection.authority, capabilityFrame)
+          ) {
+            this.#teardown();
+            return;
+          }
+          this.#ensureClientCapabilities()?.accept(capabilityFrame);
           continue;
         }
         throw new Error('Unexpected handshake frame after acceptance');
@@ -151,6 +174,13 @@ export class RuntimeHostConnectionSession {
   }
 
   async #handleRequest(frame: RequestFrame): Promise<void> {
+    if (!authorizeRuntimeHostOperation(this.#options.connection.authority, frame)) {
+      if (this.#closed) return;
+      await this.#writer.enqueue(
+        operationFailureResponse(frame, 'unauthorized', 'Runtime Host operation is not authorized'),
+      ).flushed;
+      return;
+    }
     const admission = await this.#options.beginOperation(frame);
     if (typeof admission === 'string') {
       if (this.#closed) return;
@@ -180,6 +210,7 @@ export class RuntimeHostConnectionSession {
       }
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
+        principal: this.#options.connection.authority.principalId,
         acquireResidency: () => admission.acquireResidency(),
       });
       admission.seal();
@@ -257,6 +288,9 @@ export class RuntimeHostConnectionSession {
   }
 
   #attachConfigurationChanges(): void {
+    if (!hasRuntimeHostOperationGrant(this.#options.connection.authority, 'runtime.policy.query')) {
+      return;
+    }
     const service = this.#options.resolveConfigurationChanges?.();
     if (!service || this.#configurationChanges) return;
     this.#configurationChanges = service.attachConnection(this.#options.connection.connectionId, {
@@ -273,6 +307,7 @@ export class RuntimeHostConnectionSession {
   attachGlobalChanges(): void {
     if (this.#closed || this.#inputClosed) return;
     this.#attachConfigurationChanges();
+    this.#attachProjectCatalogChanges();
     this.#attachSessionCatalogChanges();
   }
 
@@ -281,7 +316,37 @@ export class RuntimeHostConnectionSession {
     this.#configurationChanges = undefined;
   }
 
+  #attachProjectCatalogChanges(): void {
+    if (
+      !this.#options.connection.authority.canUseHostPaths ||
+      !hasRuntimeHostOperationGrant(this.#options.connection.authority, 'project.catalog.query')
+    ) {
+      return;
+    }
+    const service = this.#options.resolveProjectCatalogChanges?.();
+    if (!service || this.#projectCatalogChanges) return;
+    this.#projectCatalogChanges = service.attachConnection(this.#options.connection.connectionId, {
+      send: (frame) => {
+        try {
+          return this.#writer.enqueue(frame).flushed;
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    });
+  }
+
+  #detachProjectCatalogChanges(): void {
+    this.#projectCatalogChanges?.close();
+    this.#projectCatalogChanges = undefined;
+  }
+
   #attachSessionCatalogChanges(): void {
+    if (
+      !hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
+    ) {
+      return;
+    }
     const service = this.#options.resolveSessionCatalogChanges?.();
     if (!service || this.#sessionCatalogChanges) return;
     this.#sessionCatalogChanges = service.attachConnection(this.#options.connection.connectionId, {
@@ -307,9 +372,10 @@ export class RuntimeHostConnectionSession {
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachConfigurationChanges();
+    this.#detachProjectCatalogChanges();
     this.#detachSessionCatalogChanges();
     this.#writer.close();
-    this.#options.transport.destroy();
+    this.#options.transport.abort();
     this.#options.onTeardown();
   }
 }

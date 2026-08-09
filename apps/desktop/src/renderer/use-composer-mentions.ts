@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { ChatDefaultPermissionMode } from '@maka/core';
 import type { SkillEntry } from '@maka/ui';
 import type { InvocableSkillEntry } from '@maka/runtime';
 
@@ -16,6 +17,7 @@ export function useComposerMentions(options: {
   projectPath?: string;
   newSessionModel?: { llmConnectionSlug: string; model: string };
   newSessionCollaborationMode?: 'agent' | 'plan';
+  newSessionPermissionMode?: ChatDefaultPermissionMode;
 }): {
   mentionSkills: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
@@ -26,6 +28,7 @@ export function useComposerMentions(options: {
     skills,
     newSessionModel,
     newSessionCollaborationMode,
+    newSessionPermissionMode,
   } = options;
   const [mentionSkills, setMentionSkills] = useState<InvocableSkillEntry[]>([]);
 
@@ -84,6 +87,7 @@ export function useComposerMentions(options: {
     newSessionModel?.llmConnectionSlug,
     newSessionModel?.model,
     newSessionCollaborationMode,
+    newSessionPermissionMode,
   ]);
 
   const searchMentionFiles = useCallback(

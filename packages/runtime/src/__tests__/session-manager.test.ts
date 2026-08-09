@@ -4694,6 +4694,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
 
   test('a claimed turn waits for an in-flight session mutation before reading its header', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
     const updateStarted = makeGate();
     const releaseUpdate = makeGate();
     const activatedModels: string[] = [];
@@ -4704,6 +4705,8 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     });
     const manager = new SessionManager({
       store,
+      runStore,
+      runtimeEventStore: runStore,
       backends,
       newId: nextId(),
       now: nextNow(26_475),
@@ -4731,11 +4734,13 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const turn = drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'start' }));
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(activatedModels, []);
+    assert.equal((await store.readHeader(session.id)).transcriptLedgerVersion, undefined);
 
     releaseUpdate.release();
     await transition;
     await turn;
     assert.deepEqual(activatedModels, ['new-model']);
+    assert.equal((await store.readHeader(session.id)).transcriptLedgerVersion, 1);
   });
 
   test('backend refresh propagates delayed disposal failure after an active turn settles', async () => {
@@ -7965,6 +7970,159 @@ describe('SessionManager permission mode updates', () => {
     expect(repairedRuntimeEvents.at(-1)?.status).toBe('completed');
   });
 
+  test('sendMessage completes interrupted imported history beside native runs', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore({ failRuntimeEventAppendAfter: 3 });
+    const backends = new BackendRegistry();
+    let backend: TestBackend | undefined;
+    backends.register('fake', (ctx) => {
+      backend = new TestBackend(ctx);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(7_025),
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput());
+    await store.appendMessages(session.id, [
+      { type: 'user', id: 'imported-user-1', turnId: 'turn-1', ts: 101, text: 'First question' },
+      {
+        type: 'assistant',
+        id: 'imported-assistant-1',
+        turnId: 'turn-1',
+        ts: 102,
+        text: 'First answer',
+        modelId: 'external-model',
+      },
+      {
+        type: 'turn_state',
+        id: 'imported-state-1',
+        turnId: 'turn-1',
+        ts: 103,
+        status: 'completed',
+        partialOutputRetained: true,
+      },
+      { type: 'user', id: 'imported-user-2', turnId: 'turn-2', ts: 104, text: 'Second question' },
+      {
+        type: 'assistant',
+        id: 'imported-assistant-2',
+        turnId: 'turn-2',
+        ts: 105,
+        text: 'Second answer',
+        modelId: 'external-model',
+      },
+      {
+        type: 'turn_state',
+        id: 'imported-state-2',
+        turnId: 'turn-2',
+        ts: 106,
+        status: 'completed',
+        partialOutputRetained: true,
+      },
+    ]);
+
+    await expectRejects(
+      manager.prepareImportedSessionHistory(session.id),
+      /runtime event append failed/,
+    );
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        sessionId: session.id,
+        runId: 'native-run',
+        invocationId: 'native-invocation',
+        turnId: 'turn-3',
+        status: 'completed',
+        createdAt: 10,
+        updatedAt: 12,
+        completedAt: 12,
+      }),
+      [
+        runtimeEvent({
+          id: 'native-user',
+          invocationId: 'native-invocation',
+          sessionId: session.id,
+          runId: 'native-run',
+          turnId: 'turn-3',
+          ts: 10,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'Native question' },
+        }),
+        runtimeEvent({
+          id: 'native-assistant',
+          invocationId: 'native-invocation',
+          sessionId: session.id,
+          runId: 'native-run',
+          turnId: 'turn-3',
+          ts: 11,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'Native answer' },
+        }),
+        runtimeEvent({
+          id: 'native-complete',
+          invocationId: 'native-invocation',
+          sessionId: session.id,
+          runId: 'native-run',
+          turnId: 'turn-3',
+          ts: 12,
+          status: 'completed',
+          actions: { endInvocation: true },
+        }),
+      ],
+    );
+
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-4', text: 'Continue' }));
+
+    expect(
+      backend?.sendInputs[0]?.runtimeContext?.flatMap((event) =>
+        event.content?.kind === 'text' ? [event.content.text] : [],
+      ),
+    ).toEqual([
+      'First question',
+      'First answer',
+      'Second question',
+      'Second answer',
+      'Native question',
+      'Native answer',
+    ]);
+    expect((await store.readHeader(session.id)).transcriptLedgerVersion).toBe(1);
+    const repairedRuns = await runStore.listSessionRuns(session.id);
+    expect(repairedRuns.filter((run) => run.turnId === 'turn-1')).toHaveLength(1);
+    expect(repairedRuns.filter((run) => run.turnId === 'turn-2')).toHaveLength(1);
+  });
+
+  test('sendMessage rejects an imported Session while its history is staging', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new TestBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(7_040),
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput());
+    await store.updateHeader(session.id, { transcriptLedgerVersion: 0 });
+
+    await expectRejects(
+      drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'Too early' })),
+      /history is still being prepared/,
+    );
+
+    expect(await runStore.listSessionRuns(session.id)).toHaveLength(0);
+  });
+
   test('sendMessage rejects missing prior ledger when legacy message reads fail', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -7997,7 +8155,7 @@ describe('SessionManager permission mode updates', () => {
       collectSessionEvents(
         manager.sendMessage(session.id, { turnId: 'turn-2', text: 'follow up' }),
       ),
-      /RuntimeEvent ledger is missing for prior run run-1/,
+      /Cannot read messages/,
     );
   });
 

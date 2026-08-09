@@ -9,6 +9,7 @@ import {
   type ExecutionBoundarySummary,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { ProjectCatalog } from '@maka/storage';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
@@ -56,6 +57,7 @@ import {
   type SessionUpdateResult,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
+import type { HostProjectMembershipGate } from './project-membership-gate.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 
@@ -105,6 +107,8 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly manager: SessionConfigurationAuthority;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuity;
+  readonly projectCatalog: ProjectCatalog;
+  readonly projectMembership: HostProjectMembershipGate;
   readonly requestDrain: () => void;
 }
 
@@ -130,6 +134,8 @@ export class HostSessionCatalogCoordinator {
   readonly #manager: SessionConfigurationAuthority;
   readonly #admission: SessionAdmissionGate;
   readonly #continuity: SessionContinuity;
+  readonly #projectCatalog: ProjectCatalog;
+  readonly #projectMembership: HostProjectMembershipGate;
   readonly #requestDrain: () => void;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
@@ -138,6 +144,8 @@ export class HostSessionCatalogCoordinator {
     this.#manager = options.manager;
     this.#admission = options.admission;
     this.#continuity = options.continuity;
+    this.#projectCatalog = options.projectCatalog;
+    this.#projectMembership = options.projectMembership;
     this.#requestDrain = options.requestDrain;
   }
 
@@ -249,24 +257,31 @@ export class HostSessionCatalogCoordinator {
           this.#resolveModel(input.modelTarget, input.thinkingLevel),
           this.#readRuntimePolicy(),
         ]);
-        const createInput: CreateSessionInput = {
-          cwd: prepared.cwd,
-          ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-          name: prepared.name,
-          labels: [...prepared.labels],
-          backend: 'ai-sdk',
-          llmConnectionSlug: model.connectionSlug,
-          model: model.model,
-          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
-          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
-          collaborationMode: input.collaborationMode ?? 'agent',
-          orchestrationMode: input.orchestrationMode ?? 'default',
-        };
-        commitAttempted = true;
-        const result = await this.#stores.createStableSession({
-          sessionId: input.sessionId,
-          requestFingerprint: prepared.requestFingerprint,
-          input: createInput,
+        const result = await this.#projectMembership.run(async () => {
+          const workspace = await resolveSessionProjectWorkspace(
+            this.#projectCatalog,
+            prepared.cwd,
+            input.projectId,
+          );
+          const createInput: CreateSessionInput = {
+            cwd: workspace.cwd,
+            ...(workspace.projectId !== undefined ? { projectId: workspace.projectId } : {}),
+            name: prepared.name,
+            labels: [...prepared.labels],
+            backend: 'ai-sdk',
+            llmConnectionSlug: model.connectionSlug,
+            model: model.model,
+            ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+            permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+            collaborationMode: input.collaborationMode ?? 'agent',
+            orchestrationMode: input.orchestrationMode ?? 'default',
+          };
+          commitAttempted = true;
+          return this.#stores.createStableSession({
+            sessionId: input.sessionId,
+            requestFingerprint: prepared.requestFingerprint,
+            input: createInput,
+          });
         });
         if (result.kind === 'conflict') {
           return createFailure(
@@ -699,6 +714,30 @@ interface PreparedSessionCreate {
   readonly requestFingerprint: string;
 }
 
+async function resolveSessionProjectWorkspace(
+  catalog: Pick<ProjectCatalog, 'list'>,
+  cwd: string,
+  projectId: string | null | undefined,
+): Promise<{ readonly cwd: string; readonly projectId?: string | null }> {
+  if (typeof projectId !== 'string') {
+    return { cwd, ...(projectId === undefined ? {} : { projectId }) };
+  }
+  const project = (await catalog.list()).find(
+    (candidate) => candidate.id === projectId || candidate.aliases?.includes(projectId),
+  );
+  if (!project) {
+    throw new SessionOperationFailure('operation_conflict', `Project does not exist: ${projectId}`);
+  }
+  if (project.archivedAt !== undefined) {
+    throw new SessionOperationFailure('operation_conflict', `Project is archived: ${projectId}`);
+  }
+  const resolved = project.preferredPath;
+  if (!project.available || !resolved) {
+    throw new SessionOperationFailure('operation_conflict', `Project is unavailable: ${projectId}`);
+  }
+  return { cwd: resolved, projectId: project.id };
+}
+
 async function prepareCreate(input: SessionCreateInput): Promise<PreparedSessionCreate> {
   if (!isAbsolute(input.cwd)) {
     throw new SessionOperationFailure('invalid_request', 'Session cwd must be absolute');
@@ -716,7 +755,10 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
       'Session creation requires a declared mode for explore permission',
     );
   }
-  const cwd = await canonicalSessionDirectory(input.cwd);
+  const cwd =
+    typeof input.projectId === 'string'
+      ? resolve(input.cwd)
+      : await canonicalSessionDirectory(input.cwd);
   const name = normalizedSessionName(mode?.name ?? input.name ?? DEFAULT_SESSION_NAME);
   const labels = [...(input.labels ?? []), ...(mode?.labels ?? [])];
   const permissionMode = mode?.permissionMode ?? input.permissionMode;

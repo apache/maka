@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -52,6 +52,29 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
+  test('authorizes delete against the symlink entry', async () => {
+    const workspace = await temporaryDirectory('maka-worker-client-delete-link-');
+    const target = join(workspace, 'target.txt');
+    const link = join(workspace, 'link.txt');
+    await writeFile(target, 'keep', 'utf8');
+    await symlink(target, link);
+    const { client, requests } = fakeClient();
+
+    await client.execute({
+      operation: { kind: 'apply_patch', path: link, action: 'delete' },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    assert.equal(requests[0]?.operation.path, link);
+    assert.deepEqual(requests[0]?.expectedTarget, {
+      enforcementPath: link,
+      access: 'write',
+      scope: 'exact',
+      targetType: 'symlink',
+    });
+  });
+
   for (const kind of ['bypass', 'external'] as const) {
     test(`rejects an authoritative ${kind} boundary instead of falling back to legacy mode`, async () => {
       const workspace = await temporaryDirectory(`maka-worker-client-${kind}-`);
@@ -506,6 +529,8 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
         path: request.operation.path,
         bytes: Buffer.byteLength(request.operation.content, 'utf8'),
       };
+    case 'apply_patch':
+      return { kind: 'apply_patch', ok: true, path: request.operation.path };
     case 'grep':
       return { kind: 'grep', matches: ['file.ts:1:value'] };
     case 'glob':

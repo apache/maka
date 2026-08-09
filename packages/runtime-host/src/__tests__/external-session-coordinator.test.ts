@@ -11,6 +11,7 @@ import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { EXTERNAL_SESSION_RESULT_MAX_BYTES } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostExternalSessionCoordinator } from '../server/external-session-coordinator.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const context: ConnectionContext = {
   hostEpoch: 'external-session-test-epoch',
@@ -158,6 +159,95 @@ test('reports conversion errors before persistence and store uncertainty after e
   assert.equal(persistenceFailure.drainRequests(), 1);
 });
 
+test('removes an imported Session when its model history cannot be prepared', async () => {
+  const fixture = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async () => {
+      throw new Error('ledger repair failed');
+    },
+  });
+
+  assert.deepEqual(
+    await fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'persistence_failed',
+        message: 'External Session history could not be prepared',
+      },
+    },
+  );
+  assert.equal(fixture.hasRecord('imported-1'), false);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('holds Session admission through failed history preparation and cleanup', async () => {
+  let markPreparationStarted!: () => void;
+  const preparationStarted = new Promise<void>((resolve) => {
+    markPreparationStarted = resolve;
+  });
+  let releasePreparation!: () => void;
+  const preparationRelease = new Promise<void>((resolve) => {
+    releasePreparation = resolve;
+  });
+  let discarded = false;
+  const fixture = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async () => {
+      markPreparationStarted();
+      await preparationRelease;
+      throw new Error('ledger repair failed');
+    },
+    discardImportedSession: async () => {
+      discarded = true;
+    },
+  });
+
+  const importing = fixture.coordinator.handlers['external-session.import'](
+    { adapterId: 'codex', sourceSessionId: 'source-0' },
+    context,
+  );
+  await preparationStarted;
+  let competingAdmissionEntered = false;
+  const competingAdmission = fixture.admission.run('imported-1', () => {
+    competingAdmissionEntered = true;
+    assert.equal(discarded, true);
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(competingAdmissionEntered, false);
+
+  releasePreparation();
+  const outcome = await importing;
+  await competingAdmission;
+
+  assert.equal(outcome.ok, false);
+  assert.equal(competingAdmissionEntered, true);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('recovers or discards staged imported Sessions after restart', async () => {
+  const recovered = coordinatorFixture([adapterFixture()]);
+  await recovered.seedStagingSession();
+  assert.equal(recovered.readHeader('imported-1')?.transcriptLedgerVersion, 0);
+
+  await recovered.coordinator.recover();
+
+  assert.equal(recovered.readHeader('imported-1')?.transcriptLedgerVersion, 1);
+
+  const discarded = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async () => {
+      throw new Error('ledger repair failed');
+    },
+  });
+  await discarded.seedStagingSession();
+
+  await discarded.coordinator.recover();
+
+  assert.equal(discarded.hasRecord('imported-1'), false);
+  assert.equal(discarded.drainRequests(), 0);
+});
+
 function coordinatorFixture(
   adapters: readonly ExternalSessionAdapter[],
   storeOverrides: Partial<{
@@ -165,10 +255,13 @@ function coordinatorFixture(
       input: Parameters<HostStore['createImportedSession']>[0],
       messages: readonly StoredMessage[],
     ): Promise<SessionHeader>;
+    prepareImportedSessionHistory(sessionId: string): Promise<void>;
+    discardImportedSession(sessionId: string): Promise<void>;
   }> = {},
 ) {
   let sequence = 0;
   let drains = 0;
+  const admission = new SessionAdmissionGate();
   const records = new Map<string, SessionCatalogRecord>();
   const creates: Array<{
     input: Parameters<HostStore['createImportedSession']>[0];
@@ -176,7 +269,10 @@ function coordinatorFixture(
   }> = [];
   const defaultCreate: HostStore['createImportedSession'] = async (input, messages) => {
     sequence += 1;
-    const header = sessionHeader(`imported-${sequence}`, input.cwd, input.name ?? 'Imported');
+    const header = {
+      ...sessionHeader(`imported-${sequence}`, input.cwd, input.name ?? 'Imported'),
+      transcriptLedgerVersion: 0 as const,
+    };
     creates.push({ input, messages });
     records.set(header.id, {
       header,
@@ -188,6 +284,7 @@ function coordinatorFixture(
   };
   const store: HostStore = {
     createImportedSession: storeOverrides.createImportedSession ?? defaultCreate,
+    listHeaders: async () => [...records.values()].map((record) => record.header),
     readCatalogRecord: async (sessionId) => {
       const record = records.get(sessionId);
       if (!record) throw new Error(`missing record: ${sessionId}`);
@@ -197,6 +294,7 @@ function coordinatorFixture(
   return {
     coordinator: new HostExternalSessionCoordinator({
       adapters: new ExternalSessionAdapterRegistry(adapters),
+      admission,
       sessions: store,
       resolveTarget: async () => ({
         backend: 'ai-sdk',
@@ -206,11 +304,43 @@ function coordinatorFixture(
         collaborationMode: 'agent',
         orchestrationMode: 'default',
       }),
+      prepareImportedSessionHistory:
+        storeOverrides.prepareImportedSessionHistory ??
+        (async (sessionId) => {
+          const record = records.get(sessionId);
+          if (!record) throw new Error(`missing record: ${sessionId}`);
+          const header = { ...record.header, transcriptLedgerVersion: 1 as const };
+          records.set(sessionId, {
+            ...record,
+            header,
+            revision: record.revision + 1,
+            summary: headerToSummary(header),
+          });
+        }),
+      discardImportedSession:
+        storeOverrides.discardImportedSession ??
+        (async (sessionId) => {
+          records.delete(sessionId);
+        }),
       requestDrain: () => {
         drains += 1;
       },
     }),
     creates,
+    admission,
+    seedStagingSession: () =>
+      defaultCreate(
+        {
+          cwd: '/external',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'default',
+          model: 'gpt-5',
+          permissionMode: 'ask',
+        },
+        [],
+      ),
+    readHeader: (sessionId: string) => records.get(sessionId)?.header,
+    hasRecord: (sessionId: string) => records.has(sessionId),
     drainRequests: () => drains,
   };
 }

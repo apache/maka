@@ -28,6 +28,7 @@ export async function startRuntimeHostCandidate(
   if (!owner) return { kind: 'loser' };
   const host = await RuntimeHostKernel.start({
     owner,
+    lifecycleMode: 'ephemeral',
     idleGraceMs: options.idleGraceMs,
     handshakeTimeoutMs: options.handshakeTimeoutMs,
   });
