@@ -43,9 +43,14 @@ export async function executeCodeCellImpl(
       execute: async (toolInput, options) => {
         if (fatalToolFailure) throw fatalToolFailure.reason;
         toolCalls.push({ index: toolCalls.length + 1, name });
-        const operation = Promise.resolve().then(() =>
-          input.callTool(name, toolInput, options.abortSignal ?? invocationSignal),
-        );
+        let operation: Promise<unknown>;
+        try {
+          operation = Promise.resolve(
+            input.callTool(name, toolInput, options.abortSignal ?? invocationSignal),
+          );
+        } catch (error) {
+          operation = Promise.reject(error);
+        }
         hostToolOperations.add(operation);
         return operation.then(
           (value) => {
