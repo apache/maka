@@ -41,6 +41,10 @@ describe('Host Session retirement coordinator', () => {
       await assertFamilyLifecycle(harness, true);
       assert.deepEqual(new Set(harness.actions.disposed), new Set(harness.familyIds));
       assert.deepEqual(new Set(harness.actions.refreshed), new Set(harness.familyIds));
+      assert.deepEqual(
+        new Set(harness.actions.retiredExternalConversations),
+        new Set(harness.familyIds),
+      );
 
       harness.actions.disposed.length = 0;
       harness.actions.refreshed.length = 0;
@@ -932,6 +936,7 @@ interface RetirementActions {
   readonly retiredWorktrees: string[];
   readonly finalizedWorkspacePatches: string[];
   readonly retiredGraphWakes: string[];
+  readonly retiredExternalConversations: string[];
   goalCommits: number;
   goalRollbacks: number;
   scheduledTaskCommits: number;
@@ -970,6 +975,7 @@ async function withHarness(
       retiredWorktrees: [],
       finalizedWorkspacePatches: [],
       retiredGraphWakes: [],
+      retiredExternalConversations: [],
       goalCommits: 0,
       goalRollbacks: 0,
       scheduledTaskCommits: 0,
@@ -1131,6 +1137,9 @@ async function withHarness(
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
+      },
+      retireExternalConversations: async (sessionIds) => {
+        actions.retiredExternalConversations.push(...sessionIds);
       },
       purgeAgentGraphState: async (sessionId) => {
         actions.purgedAgentGraphs.push(sessionId);

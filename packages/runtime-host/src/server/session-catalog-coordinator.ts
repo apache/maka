@@ -175,6 +175,19 @@ export class HostSessionCatalogCoordinator {
     if (!outcome.ok) throw new Error(outcome.error.message);
   }
 
+  async getSession(sessionId: string): Promise<SessionCatalogItem | null> {
+    const outcome = await this.#query({ kind: 'get', sessionId });
+    if (!outcome.ok) throw new Error(outcome.error.message);
+    if (outcome.result.kind !== 'session') {
+      throw new Error('Session catalog lookup returned a non-Session result');
+    }
+    return outcome.result.session;
+  }
+
+  createSession(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+    return this.#create(input);
+  }
+
   async #query(
     input: SessionCatalogQueryInput,
   ): Promise<OperationOutcome<'session.catalog.query'>> {

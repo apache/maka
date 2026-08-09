@@ -103,6 +103,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
+  readonly retireExternalConversations: (sessionIds: readonly string[]) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
@@ -173,6 +174,7 @@ export class HostSessionRetirementCoordinator {
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
   readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
+  readonly #retireExternalConversations: HostSessionRetirementCoordinatorOptions['retireExternalConversations'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
@@ -200,6 +202,7 @@ export class HostSessionRetirementCoordinator {
     this.#artifacts = options.artifacts;
     this.#taskLedger = options.taskLedger;
     this.#purgeOperationalState = options.purgeOperationalState;
+    this.#retireExternalConversations = options.retireExternalConversations;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
@@ -257,6 +260,7 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.scheduledTasks.commit();
+          await this.#retireExternalConversations(family.sessionIds);
           await this.#graphWake.retireSessions(family.sessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);

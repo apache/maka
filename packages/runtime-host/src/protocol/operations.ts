@@ -8,6 +8,7 @@ import { DEEP_RESEARCH_OPERATION_SPECS } from './deep-research.js';
 import { DAILY_REVIEW_OPERATION_SPECS } from './daily-review.js';
 import { CONTEXT_OPERATION_SPECS } from './context.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from './execution-inspect.js';
+import { EXTERNAL_CONVERSATION_OPERATION_SPECS } from './external-conversation.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -134,6 +135,7 @@ export * from './daily-review.js';
 export * from './context.js';
 export * from './agent-graph.js';
 export * from './execution-inspect.js';
+export * from './external-conversation.js';
 export * from './client-capability.js';
 export * from './goal.js';
 export * from './memory.js';
@@ -167,6 +169,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   DEEP_RESEARCH_OPERATION_SPECS,
   DAILY_REVIEW_OPERATION_SPECS,
   EXECUTION_INSPECT_OPERATION_SPECS,
+  EXTERNAL_CONVERSATION_OPERATION_SPECS,
   EXTERNAL_SESSION_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
