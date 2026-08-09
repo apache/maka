@@ -17,6 +17,7 @@ import {
   applyCompanionInteractionEvent,
   cleanupCompanionCopy,
   createCompanionDismissalGuard,
+  dismissCompanionCopy,
   companionRunEventEffect,
   deriveCompanionComposerState,
   isCompanionTurnTerminal,
@@ -58,6 +59,7 @@ interface FakeControl {
 
 function makeApi(control: FakeControl = {}) {
   const calls = {
+    lifecycle: [] as string[],
     removed: [] as string[],
     sent: [] as {
       id: string;
@@ -95,12 +97,16 @@ function makeApi(control: FakeControl = {}) {
       return forked;
     },
     cleanupSessionCopy: async (id) => {
+      calls.lifecycle.push(`cleanup:${id}`);
       calls.removed.push(id);
       if (control.cleanupThrows) throw new Error('cleanup failed');
     },
     abandonSessionCopy: async (id) => {
       calls.abandoned.push(id);
       if (control.abandonThrows) throw new Error('abandon acknowledgement lost');
+    },
+    stop: async (id) => {
+      calls.lifecycle.push(`stop:${id}`);
     },
     send: async (id, cmd) => {
       calls.sent.push({ id, cmd });
@@ -171,6 +177,19 @@ describe('companion dismissal guard', () => {
 
     assert.equal(replayedCleanup(), false);
     assert.equal(activeCleanup(), true);
+  });
+
+  it('stops a live companion before dismissing its durable copy', async () => {
+    const { api, calls } = makeApi();
+
+    assert.equal(
+      await dismissCompanionCopy(api, 'source-session', 'panel-1', 'companion-session'),
+      true,
+    );
+    assert.deepEqual(calls.lifecycle, [
+      'stop:companion-session',
+      'cleanup:companion-session',
+    ]);
   });
 });
 

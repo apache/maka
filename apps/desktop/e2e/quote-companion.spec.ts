@@ -711,6 +711,10 @@ test('side chat recovers from failures and preserves its draft', async ({
 
   await failComposer.fill('__e2e_error__:auth');
   await failComposer.press('Enter');
+  await expect(failPanel.locator('.maka-quote-companion-error')).toHaveText('鉴权失败');
+
+  await failComposer.fill('__e2e_wait_for_steering__');
+  await failComposer.press('Enter');
   const activeSideTab = page.locator(
     '.maka-workbar-tab[data-running][data-workbar-tab-id^="side-chat:"]',
   );

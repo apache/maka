@@ -97,6 +97,7 @@ import {
 } from "@maka/runtime-host/protocol";
 
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
+const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
 export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
@@ -730,7 +731,7 @@ export class DesktopRuntimeHostClient {
   }
 
   async removeSession(sessionId: string): Promise<void> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
       const result = await this.#request("session.remove", {
         sessionId,
@@ -1379,7 +1380,7 @@ export class DesktopRuntimeHostClient {
     sessionId: string,
     update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
   ): Promise<SessionCatalogProjection> {
-    for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
       const result = await update(current);
       if (result.kind === "committed")

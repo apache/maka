@@ -24,8 +24,8 @@ import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import {
   abandonPendingCompanionCopy,
   applyCompanionInteractionEvent,
-  cleanupCompanionCopy,
   createCompanionDismissalGuard,
+  dismissCompanionCopy,
   companionRunEventEffect,
   deriveCompanionComposerState,
   ensureCompanionFork,
@@ -307,7 +307,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const sourceSessionId = sourceSessionIdRef.current;
         const id = companionIdRef.current ?? pendingForkIdRef.current;
         if (id && sourceSessionId) {
-          void cleanupCompanionCopy(
+          void dismissCompanionCopy(
             window.maka.sessions,
             sourceSessionId,
             panelId,

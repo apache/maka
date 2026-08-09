@@ -48,6 +48,7 @@ export interface CompanionSessionApi {
   ): Promise<SessionSummary>;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sessionId: string): Promise<void>;
+  stop(sessionId: string): Promise<void>;
   send(
     sessionId: string,
     command: {
@@ -168,6 +169,16 @@ export async function cleanupCompanionCopy(
   } catch {
     return false;
   }
+}
+
+export async function dismissCompanionCopy(
+  api: CompanionSessionApi,
+  sourceSessionId: string,
+  panelId: string,
+  companionSessionId: string,
+): Promise<boolean> {
+  await api.stop(companionSessionId).catch(() => undefined);
+  return cleanupCompanionCopy(api, sourceSessionId, panelId, companionSessionId);
 }
 
 /**

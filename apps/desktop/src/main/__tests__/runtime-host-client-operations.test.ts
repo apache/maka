@@ -211,6 +211,35 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
   );
 });
 
+test('retries a Session update through transient revision churn', async () => {
+  const responses: unknown[] = [];
+  for (let revision = 10; revision < 14; revision += 1) {
+    responses.push(
+      { kind: 'session', session: session('session-1', revision) },
+      {
+        kind: 'revision_conflict',
+        expectedRevision: revision,
+        actualRevision: revision + 1,
+      },
+    );
+  }
+  responses.push(
+    { kind: 'session', session: session('session-1', 14) },
+    {
+      kind: 'committed',
+      session: session('session-1', 15, { collaborationMode: 'plan' }),
+    },
+  );
+  const { client } = clientWithResponses(responses);
+
+  const updated = await client.updateSessionConfiguration('session-1', {
+    collaborationMode: 'plan',
+  });
+
+  assert.equal(updated.revision, 15);
+  assert.equal(updated.collaborationMode, 'plan');
+});
+
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
   const initial = createDefaultRuntimePolicy();
   const concurrent = {
