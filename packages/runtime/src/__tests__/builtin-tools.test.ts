@@ -113,6 +113,129 @@ describe('builtin tool activity kinds', () => {
       true,
     );
   });
+
+  test('applies a freeform V4A patch through the existing filesystem authority', async () => {
+    const calls: Array<{
+      action: string;
+      path: string;
+      diff?: string;
+      cwd: string;
+      label: string;
+      scope: string;
+    }> = [];
+    const applyPatch = buildBuiltinTools({
+      executor: fakeExecutor({
+        applyPatch: async (input) => {
+          calls.push(input);
+          return { ok: true, path: input.path };
+        },
+      }),
+    }).find((tool) => tool.name === 'apply_patch');
+    if (!applyPatch) throw new Error('apply_patch tool missing');
+
+    const result = await runTool(
+      applyPatch,
+      [
+        '*** Begin Patch',
+        '*** Add File: added.txt',
+        '+hello',
+        '+world',
+        '*** Update File: changed.txt',
+        '@@',
+        '-before',
+        '+after',
+        '*** Delete File: removed.txt',
+        '*** End Patch',
+      ].join('\n'),
+      '/workspace',
+    );
+
+    assert.deepEqual(calls, [
+      {
+        cwd: '/workspace',
+        action: 'create',
+        path: 'added.txt',
+        diff: '+hello\n+world',
+        label: 'ApplyPatch',
+        scope: 'workspace',
+      },
+      {
+        cwd: '/workspace',
+        action: 'update',
+        path: 'changed.txt',
+        diff: '@@\n-before\n+after',
+        label: 'ApplyPatch',
+        scope: 'workspace',
+      },
+      {
+        cwd: '/workspace',
+        action: 'delete',
+        path: 'removed.txt',
+        label: 'ApplyPatch',
+        scope: 'workspace',
+      },
+    ]);
+    assert.deepEqual(result, { status: 'completed', output: 'Applied 3 file operations.' });
+  });
+
+  test('rejects unsupported V4A Move before applying any file operation', async () => {
+    let calls = 0;
+    const applyPatch = buildBuiltinTools({
+      executor: fakeExecutor({
+        applyPatch: async (input) => {
+          calls += 1;
+          return { ok: true, path: input.path };
+        },
+      }),
+    }).find((tool) => tool.name === 'apply_patch');
+    if (!applyPatch) throw new Error('apply_patch tool missing');
+
+    await assert.rejects(
+      runTool(
+        applyPatch,
+        [
+          '*** Begin Patch',
+          '*** Add File: first.txt',
+          '+first',
+          '*** Update File: old.txt',
+          '*** Move to: new.txt',
+          '@@',
+          '-old',
+          '+new',
+          '*** End Patch',
+        ].join('\n'),
+        '/workspace',
+      ),
+      /Move is not supported/,
+    );
+    assert.equal(calls, 0);
+  });
+
+  test('applies freeform V4A contents to real files', async (t) => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-freeform-apply-patch-'));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    await writeFile(join(cwd, 'changed.txt'), 'before\n', 'utf8');
+    const applyPatch = buildBuiltinTools().find((tool) => tool.name === 'apply_patch');
+    if (!applyPatch) throw new Error('apply_patch tool missing');
+
+    await runTool(
+      applyPatch,
+      [
+        '*** Begin Patch',
+        '*** Add File: added.txt',
+        '+hello',
+        '*** Update File: changed.txt',
+        '@@',
+        '-before',
+        '+after',
+        '*** End Patch',
+      ].join('\n'),
+      cwd,
+    );
+
+    assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello');
+    assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'after\n');
+  });
 });
 
 describe('builtin Read capabilities', () => {

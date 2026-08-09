@@ -86,7 +86,7 @@ import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 
-describe('AiSdkBackend native ApplyPatch routing', () => {
+describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
     for (const [providerType, modelId, expected] of [
       ['openai', 'gpt-5.4', true],
@@ -105,14 +105,53 @@ describe('AiSdkBackend native ApplyPatch routing', () => {
         apiKey: 'sk-test',
         modelId,
         modelFactory: () => model,
-        tools: [nativeApplyPatchTool()],
+        tools: [
+          nativeApplyPatchTool(),
+          testTool('Write', z.object({})),
+          testTool('Edit', z.object({})),
+        ],
         newId: idGenerator(),
         now: monotonicClock(),
       });
 
       await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
-      assert.equal(modelToolNames(model).includes('apply_patch'), expected);
+      const names = modelToolNames(model);
+      assert.equal(names.includes('apply_patch'), expected);
+      assert.equal(names.includes('Write'), !expected);
+      assert.equal(names.includes('Edit'), !expected);
     }
+  });
+
+  test('replaces Write and Edit with freeform apply_patch for official DeepSeek V4 Flash', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'sk-test',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [
+        nativeApplyPatchTool(),
+        testTool('Write', z.object({})),
+        testTool('Edit', z.object({})),
+      ],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+
+    const names = modelToolNames(model);
+    assert.equal(names.includes('apply_patch'), true);
+    assert.equal(names.includes('Write'), false);
+    assert.equal(names.includes('Edit'), false);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -181,6 +220,83 @@ describe('AiSdkBackend native ApplyPatch routing', () => {
     assert.deepEqual(toolResult?.output, {
       type: 'json',
       value: { status: 'failed', output: 'diff rejected' },
+    });
+  });
+
+  test('replays a durable DeepSeek freeform apply_patch result as plain text', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'sk-test',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch it',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'call-1',
+              name: 'apply_patch',
+              args: {
+                callId: 'call-1',
+                operation: { type: 'delete_file', path: 'file.txt' },
+              },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: { status: 'completed', output: 'Applied 1 file operation.' },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'tool')
+      ?.content.find((part) => part.type === 'tool-result');
+    const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'assistant')
+      ?.content.find((part) => part.type === 'tool-call');
+    assert.equal(toolCall?.input, '*** Begin Patch\n*** Delete File: file.txt\n*** End Patch');
+    assert.deepEqual(toolResult?.output, {
+      type: 'text',
+      value: 'Applied 1 file operation.',
     });
   });
 });

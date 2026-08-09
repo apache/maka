@@ -208,8 +208,14 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses } from './model-runtime.js';
-import { openAiModelSupportsApplyPatch } from './openai-apply-patch.js';
+import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import {
+  freeformApplyPatchResultText,
+  normalizeApplyPatchReplayInput,
+  resolveApplyPatchProfile,
+  routeApplyPatchTools,
+  type ApplyPatchProfile,
+} from './apply-patch-profile.js';
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
@@ -844,6 +850,16 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
   };
 }
 
+function freeformApplyPatchOutput(output: ToolResultOutput): ToolResultOutput {
+  if (output.type === 'text' || output.type === 'error-text') return output;
+  const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+  const text = record ? freeformApplyPatchResultText(record) : freeformApplyPatchResultText(value);
+  return output.type === 'error-json'
+    ? { type: 'error-text', value: text }
+    : { type: 'text', value: text };
+}
+
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
@@ -992,6 +1008,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly applyPatchProfile: ApplyPatchProfile | null;
 
   /**
    * Every `send()` currently in flight on this backend.
@@ -1074,11 +1091,16 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
-    const modelTools =
-      modelUsesNativeOpenAiResponses(input.connection, input.modelId) &&
-      openAiModelSupportsApplyPatch(input.modelId)
-        ? input.tools
-        : input.tools.filter((tool) => tool.providerTool?.kind !== 'openai-apply-patch');
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
+    this.applyPatchProfile = resolveApplyPatchProfile(
+      {
+        providerType: input.connection.providerType,
+        wire: runtime.wire,
+        baseUrl: runtime.baseUrl,
+      },
+      input.modelId,
+    );
+    const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
       // this session's placeholders name it, so this session advertises it.
@@ -3726,9 +3748,11 @@ export class AiSdkBackend implements AgentBackend {
           result.isError,
           `runtime-event:${result.eventId}:tool-result`,
         ));
-      return toolName === 'apply_patch' && result.isError
-        ? nativeApplyPatchFailureOutput(output)
-        : output;
+      if (toolName !== 'apply_patch') return output;
+      if (this.applyPatchProfile?.kind === 'codex-v4a-freeform') {
+        return freeformApplyPatchOutput(output);
+      }
+      return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
     const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {
       for (const call of calls) {
@@ -3880,7 +3904,24 @@ export class AiSdkBackend implements AgentBackend {
     for (const item of plan.items) {
       switch (item.kind) {
         case 'tool_call':
-          bufferedCalls.push(item);
+          if (item.toolName !== 'apply_patch') {
+            bufferedCalls.push(item);
+            break;
+          }
+          {
+            const replayInput = normalizeApplyPatchReplayInput(
+              this.applyPatchProfile,
+              item.toolCallId,
+              item.input,
+            );
+            if (replayInput !== null) {
+              bufferedCalls.push({
+                ...item,
+                input: replayInput,
+                ...(replayInput !== item.input ? { providerOptions: undefined } : {}),
+              });
+            }
+          }
           break;
         case 'tool_result':
           results.set(item.toolCallId, item);

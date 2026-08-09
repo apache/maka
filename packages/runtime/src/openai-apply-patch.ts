@@ -1,6 +1,7 @@
 import { openai } from '@ai-sdk/openai';
 
 export const openAiApplyPatchProviderTool = openai.tools.applyPatch({});
+export const codexV4aApplyPatchProviderTool = openai.tools.customTool({});
 const inputSchema = openAiApplyPatchProviderTool.inputSchema;
 export const openAiApplyPatchInputSchema =
   typeof inputSchema === 'function' ? inputSchema() : inputSchema;

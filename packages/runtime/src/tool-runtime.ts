@@ -129,7 +129,11 @@ export interface MakaTool<P = any, R = unknown> {
    * client-executed tools such as ApplyPatch still settle through ToolRuntime.
    */
   providerTool?: {
-    readonly kind: 'openai-apply-patch' | 'openai-web-search' | 'anthropic-web-search-20250305';
+    readonly kind:
+      | 'openai-apply-patch'
+      | 'openai-custom-apply-patch'
+      | 'openai-web-search'
+      | 'anthropic-web-search-20250305';
     readonly searchContextSize?: 'low' | 'medium' | 'high';
     readonly maxUses?: number;
   };
