@@ -3673,7 +3673,7 @@ export class AiSdkBackend implements AgentBackend {
     const downgradedApplyPatchCalls = new Map<string, ToolCallItem>();
     const replayFactsByStep = new Map<
       string,
-      { readonly text: string; readonly eventIds: readonly string[] }
+      Array<{ readonly text: string; readonly eventIds: readonly string[] }>
     >();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, TextItem>();
@@ -3785,7 +3785,9 @@ export class AiSdkBackend implements AgentBackend {
         ...(reasoning ?? []).map((item) => item.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
-        ...(text?.stepId ? (replayFactsByStep.get(text.stepId)?.eventIds ?? []) : []),
+        ...(text?.stepId
+          ? (replayFactsByStep.get(text.stepId)?.flatMap((fact) => fact.eventIds) ?? [])
+          : []),
       ];
       const replayReasoning = reasoning
         ?.map(reasoningReplay)
@@ -3825,9 +3827,11 @@ export class AiSdkBackend implements AgentBackend {
           ...(text.providerOptions !== undefined ? { providerOptions: text.providerOptions } : {}),
         });
       }
-      const replayFact = text?.stepId ? replayFactsByStep.get(text.stepId) : undefined;
-      if (replayFact) {
-        content.push({ type: 'text', text: replayFact.text });
+      const replayFacts = text?.stepId ? replayFactsByStep.get(text.stepId) : undefined;
+      if (replayFacts) {
+        for (const replayFact of replayFacts) {
+          content.push({ type: 'text', text: replayFact.text });
+        }
         replayFactsByStep.delete(text!.stepId!);
       }
       for (const call of calls) {
@@ -3943,10 +3947,14 @@ export class AiSdkBackend implements AgentBackend {
           );
           if (!replayFact) break;
           if (downgradedCall.stepId) {
-            replayFactsByStep.set(downgradedCall.stepId, {
-              text: replayFact,
-              eventIds: [downgradedCall.eventId, item.eventId],
-            });
+            const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
+            replayFactsByStep.set(downgradedCall.stepId, [
+              ...stepFacts,
+              {
+                text: replayFact,
+                eventIds: [downgradedCall.eventId, item.eventId],
+              },
+            ]);
             if (!textByStep.has(downgradedCall.stepId)) {
               textByStep.set(downgradedCall.stepId, {
                 kind: 'text',

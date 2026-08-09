@@ -390,6 +390,103 @@ describe('AiSdkBackend ApplyPatch routing', () => {
       false,
     );
   });
+
+  test('preserves every multi-file ApplyPatch fact from one provider step', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const firstPatch = [
+      '*** Begin Patch',
+      '*** Add File: first.txt',
+      '+first',
+      '*** Delete File: old-first.txt',
+      '*** End Patch',
+    ].join('\n');
+    const secondPatch = [
+      '*** Begin Patch',
+      '*** Add File: second.txt',
+      '+second',
+      '*** Delete File: old-second.txt',
+      '*** End Patch',
+    ].join('\n');
+    const call = (id: string, args: string) =>
+      runtimeEvent({
+        id: `rt-${id}`,
+        turnId: 'turn-previous',
+        role: 'model',
+        author: 'agent',
+        refs: { stepId: 'patch-step' },
+        content: { kind: 'function_call', id, name: 'apply_patch', args },
+      });
+    const result = (id: string, applied: Array<{ type: string; path: string }>) =>
+      runtimeEvent({
+        id: `rt-${id}-result`,
+        turnId: 'turn-previous',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id,
+          name: 'apply_patch',
+          result: { status: 'completed', applied, output: 'Applied 2 file operations.' },
+        },
+      });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch both pairs',
+          }),
+          call('call-1', firstPatch),
+          call('call-2', secondPatch),
+          result('call-1', [
+            { type: 'create_file', path: 'first.txt' },
+            { type: 'delete_file', path: 'old-first.txt' },
+          ]),
+          result('call-2', [
+            { type: 'create_file', path: 'second.txt' },
+            { type: 'delete_file', path: 'old-second.txt' },
+          ]),
+          runtimeEvent({
+            id: 'rt-step-text',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'patch-step' },
+            content: { kind: 'text', text: 'Both patches finished.' },
+          }),
+        ],
+      }),
+    );
+
+    const replayFacts = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'text' && part.text.startsWith('ApplyPatch completed'))
+      .map((part) => part.text);
+    assert.deepEqual(replayFacts, [
+      'ApplyPatch completed 2 file operations: create_file first.txt, delete_file old-first.txt.',
+      'ApplyPatch completed 2 file operations: create_file second.txt, delete_file old-second.txt.',
+    ]);
+  });
 });
 
 describe('AiSdkBackend Memory Extraction triggers', () => {
