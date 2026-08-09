@@ -13,6 +13,7 @@ import type {
   PlanReminder,
   QuoteRef,
   SessionSummary,
+  SlashCommandId,
   UiLocale,
   UiLocalePreference,
 } from '@maka/core';
@@ -22,6 +23,7 @@ import {
   parseGraphCommand,
   parseSwarmCommand,
   resolveUiLocale,
+  slashCommandsForSurface,
 } from '@maka/core';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
@@ -52,7 +54,7 @@ import {
   getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
-import { MessageCircleQuestion } from '@maka/ui/icons';
+import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
@@ -1371,25 +1373,42 @@ function AppShellContent({
     (initialPrompt?: string) => openNewSideConversation('right', initialPrompt),
     [openNewSideConversation],
   );
-  const openSideConversationRef = useRef(openSideConversation);
-  openSideConversationRef.current = openSideConversation;
-  const sideChatSlashCommands = useMemo<
-    readonly ComposerSlashCommandOption[]
-  >(
-    () =>
-      activeId
-        ? [
-            {
-              id: 'side',
-              name: workbarCopy.sideChat,
-              description: workbarCopy.launcher.sideChat,
-              keywords: ['side', 'btw', '侧聊', '追问'],
-              Icon: MessageCircleQuestion,
-              onSelect: () => openSideConversationRef.current(),
-            },
-          ]
-        : [],
-    [activeId, workbarCopy],
+  const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
+    () => {
+      const availableCommands = slashCommandsForSurface('desktop').filter(
+        ({ session }) => session === 'none' || Boolean(activeId),
+      );
+      const presentation: Partial<
+        Record<SlashCommandId, Omit<ComposerSlashCommandOption, 'id'>>
+      > = {
+        compact: {
+          ...shellCopy.slashCommands.compact,
+          keywords: ['compact', 'context', '压缩', '上下文'],
+          Icon: Minimize2,
+        },
+        side: {
+          ...shellCopy.slashCommands.side,
+          keywords: ['side', 'btw', '侧聊', '追问'],
+          Icon: MessageCircleQuestion,
+        },
+        swarm: {
+          ...shellCopy.slashCommands.swarm,
+          keywords: ['swarm', 'multi-agent', '多智能体'],
+          Icon: Network,
+        },
+        graph: {
+          ...shellCopy.slashCommands.graph,
+          keywords: ['graph', 'agent graph', '智能体图'],
+          Icon: GitBranch,
+        },
+      };
+      return availableCommands.map(({ id }) => {
+        const option = presentation[id];
+        if (!option) throw new Error(`Missing Desktop slash command presentation: /${id}`);
+        return { id, ...option };
+      });
+    },
+    [activeId, shellCopy.slashCommands],
   );
   const openSideConversationWithQuote = useCallback(
     (quote: QuoteRef) => {
@@ -2725,7 +2744,7 @@ function AppShellContent({
                       : undefined
                   }
                   mentionSkills={mentionSkills}
-                  slashCommands={sideChatSlashCommands}
+                  slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}

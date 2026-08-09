@@ -100,12 +100,11 @@ export interface ComposerSlashCommandOption {
   description?: string;
   keywords?: readonly string[];
   Icon?: LucideIcon;
-  onSelect(): void;
 }
 
 type ComposerSlashSuggestion =
-  | { kind: 'command'; command: ComposerSlashCommandOption }
-  | { kind: 'skill'; skill: ComposerSkillOption };
+  | { kind: 'command'; command: ComposerSlashCommandOption; group: string }
+  | { kind: 'skill'; skill: ComposerSkillOption; group: string };
 
 /**
  * The draft text a chosen Skill becomes. This is the product-wide invocation
@@ -719,7 +718,11 @@ export const Composer = forwardRef<
         .map((command) => ({
           id: `command:${command.id}`,
           label: command.name,
-          auxiliaryData: { kind: 'command', command } satisfies ComposerSlashSuggestion,
+          auxiliaryData: {
+            kind: 'command',
+            command,
+            group: mentionCopy.commandsGroup,
+          } satisfies ComposerSlashSuggestion,
         }));
       const skillItems = skills
         .filter((skill) =>
@@ -728,7 +731,11 @@ export const Composer = forwardRef<
         .map((skill) => ({
           id: `skill:${skill.id}`,
           label: skill.name,
-          auxiliaryData: { kind: 'skill', skill } satisfies ComposerSlashSuggestion,
+          auxiliaryData: {
+            kind: 'skill',
+            skill,
+            group: mentionCopy.skillsGroup,
+          } satisfies ComposerSlashSuggestion,
         }));
       return [...commandItems, ...skillItems].slice(0, 50);
     };
@@ -821,7 +828,10 @@ export const Composer = forwardRef<
                   />
                 ) : null}
                 <span className="maka-composer-mention-text">
-                  <span className="maka-composer-mention-name">{command.name}</span>
+                  <span className="maka-composer-mention-name">
+                    {command.name}
+                    <span className="maka-composer-command-token">/{command.id}</span>
+                  </span>
                   <span className="maka-composer-mention-secondary">
                     {command.description}
                   </span>
@@ -858,8 +868,7 @@ export const Composer = forwardRef<
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
           if (suggestion.kind === 'command') {
-            suggestion.command.onSelect();
-            return '';
+            return `/${suggestion.command.id} `;
           }
           return inlineReferenceToken({
             kind: 'skill',

@@ -24,9 +24,11 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import {
   projectRevisionLinkedSessionTree,
+  slashCommandsForSurface,
   type QueueEnqueueOutcome,
   type SessionSummary,
   type ShellRunUpdate,
+  type SlashCommandId,
 } from '@maka/core';
 import {
   buildForeignSessionHandoffMessage,
@@ -2305,9 +2307,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const slashCommands: MakaSlashCommand[] = [
-    {
-      name: 'context',
+  type TuiSlashCommandId = Exclude<SlashCommandId, 'side'>;
+  type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
+
+  const slashCommandHandlers = {
+    context: {
       description: 'Show latest request context usage',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2332,8 +2336,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         });
       },
     },
-    {
-      name: 'compact',
+    compact: {
       description: 'Compact session context',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2348,30 +2351,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(compactSession);
       },
     },
-    {
-      name: 'exit',
+    exit: {
       description: 'Exit Maka',
-      aliases: ['quit'],
       run: () => {
         beginGracefulClose();
       },
     },
-    {
-      name: 'help',
+    help: {
       description: 'Show commands and keybindings',
       run: () => {
         void runControl(async () => showHelp());
       },
     },
-    {
-      name: 'new',
+    new: {
       description: 'Start a new session',
       run: () => {
         void runControl(async () => newSession());
       },
     },
-    {
-      name: 'skill',
+    skill: {
       description: 'Invoke a skill (or type /skill:<name> inline)',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2386,8 +2384,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void showSkillList();
       },
     },
-    {
-      name: 'setup',
+    setup: {
       description: 'Set up a model provider (API key)',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2402,8 +2399,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void showSetupWizard();
       },
     },
-    {
-      name: 'model',
+    model: {
       description: 'Select model',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2423,8 +2419,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => setModel(nextModel));
       },
     },
-    {
-      name: 'move',
+    move: {
       description: 'Move current session to another directory',
       run: (parts: string[], rawTail?: string) => {
         const targetCwd = (rawTail ?? parts.slice(1).join(' ')).trim();
@@ -2435,8 +2430,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         showMovePicker();
       },
     },
-    {
-      name: 'thinking',
+    thinking: {
       description: 'Set thinking level',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2474,8 +2468,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => setThinkingLevel(level));
       },
     },
-    {
-      name: 'permissions',
+    permissions: {
       description: 'Set session permissions',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2495,15 +2488,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestSandboxBoundaryMode(mode);
       },
     },
-    {
-      name: 'recap',
+    recap: {
       description: 'One-sentence recap of the session so far',
       run: () => {
         void runRecap('manual');
       },
     },
-    {
-      name: 'rename',
+    rename: {
       description: 'Rename current session',
       run: (parts: string[]) => {
         const name = parts.slice(1).join(' ').trim();
@@ -2528,8 +2519,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         });
       },
     },
-    {
-      name: 'resume',
+    resume: {
       description: 'Resume latest interrupted run at a safe boundary',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
@@ -2544,15 +2534,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(resumeSession);
       },
     },
-    {
-      name: 'rewind',
+    rewind: {
       description: 'Rewind to an earlier turn',
       run: () => {
         void runControl(showRewindPicker);
       },
     },
-    {
-      name: 'session',
+    session: {
       description: 'Resume session',
       run: (parts: string[]) => {
         if (parts.length === 1) {
@@ -2572,23 +2560,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => switchSession(sessionId));
       },
     },
-    {
-      name: 'graph',
+    graph: {
       description: 'Show, enable, disable, or run one Graph turn',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
       },
     },
-    {
-      name: 'swarm',
+    swarm: {
       description: 'Show, enable, disable, or run one Swarm turn',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseSwarmCommand(`/swarm${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runSwarmCommand(parsed, context.idleMs);
       },
     },
-  ].sort((left, right) => left.name.localeCompare(right.name));
+  } satisfies Record<TuiSlashCommandId, TuiSlashCommandHandler>;
+
+  const slashCommands: MakaSlashCommand[] = slashCommandsForSurface('tui').flatMap((spec) => {
+    if (spec.id === 'side') return [];
+    return [
+      {
+        name: spec.id,
+        ...('aliases' in spec ? { aliases: spec.aliases } : {}),
+        ...slashCommandHandlers[spec.id],
+      },
+    ];
+  });
 
   const handleSlashCommand = (prompt: string, idleMs: number): boolean => {
     const trimmed = prompt.trim();

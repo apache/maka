@@ -372,6 +372,10 @@ type ShellCopy = {
     newConversation: string;
     compactErrorTitle: string;
     compactErrorFallback: string;
+    slashCommands: Record<'compact' | 'graph' | 'side' | 'swarm', {
+      name: string;
+      description: string;
+    }>;
     sideChatUnavailableTitle: string;
     sideChatUnavailableDescription: string;
     sideChatContextPendingTitle: string;
@@ -1048,6 +1052,12 @@ const SHELL_COPY_BY_LOCALE = {
       newConversation: '新建对话',
       compactErrorTitle: '压缩失败',
       compactErrorFallback: '对话暂时无法压缩，请稍后重试。',
+      slashCommands: {
+        compact: { name: '压缩上下文', description: '压缩旧历史并保留当前任务' },
+        graph: { name: '使用 Graph', description: '查看、切换或单次运行 Graph' },
+        side: { name: '打开侧聊', description: '在右侧开始一个具体话题' },
+        swarm: { name: '使用 Swarm', description: '查看、切换或单次运行 Swarm' },
+      },
       sideChatUnavailableTitle: '暂时无法打开侧边对话',
       sideChatUnavailableDescription: '请先在主会话中发送一条消息，再使用 /side。',
       sideChatContextPendingTitle: '先处理待发送的上下文',
@@ -1553,6 +1563,12 @@ const SHELL_COPY_BY_LOCALE = {
       newConversation: 'New conversation',
       compactErrorTitle: 'Compaction failed',
       compactErrorFallback: 'The conversation could not be compacted. Try again later.',
+      slashCommands: {
+        compact: { name: 'Compact context', description: 'Compact older history while preserving the current task' },
+        graph: { name: 'Use Graph', description: 'Inspect, switch, or run Graph once' },
+        side: { name: 'Open side chat', description: 'Start a specific topic in the side panel' },
+        swarm: { name: 'Use Swarm', description: 'Inspect, switch, or run Swarm once' },
+      },
       sideChatUnavailableTitle: 'Side chat is not available yet',
       sideChatUnavailableDescription:
         'Send a message in the main conversation before using /side.',
