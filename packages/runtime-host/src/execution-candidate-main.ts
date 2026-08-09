@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseInteractiveRuntimeHostCandidateArguments } from './candidate-cli.js';
 import { startExecutionRuntimeHostCandidate } from './server/execution-candidate.js';
+import { resolveExecutionBundledResourcesRoot } from './server/execution-bundled-resources.js';
 import { runRuntimeHostProcessLifecycle } from './server/process-lifecycle.js';
 import { installRuntimeHostLogCapture } from './process-diagnostics.js';
 import {
@@ -13,7 +14,24 @@ installRuntimeHostLogCapture();
 let result: Awaited<ReturnType<typeof startExecutionRuntimeHostCandidate>>;
 try {
   const options = parseInteractiveRuntimeHostCandidateArguments(process.argv.slice(2));
-  result = await startExecutionRuntimeHostCandidate(options);
+  const electronProcess = process as NodeJS.Process & {
+    readonly defaultApp?: boolean;
+    readonly resourcesPath?: string;
+  };
+  const resourcesRoot = resolveExecutionBundledResourcesRoot({
+    electronVersion: process.versions.electron,
+    defaultApp: electronProcess.defaultApp,
+    resourcesPath: electronProcess.resourcesPath,
+  });
+  result = await startExecutionRuntimeHostCandidate({
+    ...options,
+    ...(resourcesRoot
+      ? {
+          bundledGitResourcesRoot: resourcesRoot,
+          bundledNpmResourcesRoot: resourcesRoot,
+        }
+      : {}),
+  });
 } catch (error) {
   console.error('[runtime-host] startup failed:', error);
   process.exit(candidateStartupFailureExitCode(classifyCandidateStartupFailure(error)));

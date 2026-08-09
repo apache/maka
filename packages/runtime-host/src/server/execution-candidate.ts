@@ -16,6 +16,8 @@ export interface ExecutionRuntimeHostCandidateOptions
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   /** Packaged resource root containing bundled-git.json and the Git toolchain. */
   readonly bundledGitResourcesRoot?: string;
+  /** Packaged resource root containing bundled-npm.json and the npm runtime. */
+  readonly bundledNpmResourcesRoot?: string;
 }
 
 export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;

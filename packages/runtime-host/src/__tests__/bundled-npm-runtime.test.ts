@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { resolveBundledNpmRuntime } from '../server/bundled-npm-runtime.js';
 import { runManagedNpmDependencyProvision } from '../server/managed-dependency-producer-process.js';
+import { createManagedNpmDependencyEnvironmentProducer } from '../server/managed-npm-dependency-producer.js';
 
 test('attests a strict packaged npm tree against every declared file', async (t) => {
   const fixture = await createFixture();
@@ -26,6 +27,22 @@ test('attests a strict packaged npm tree against every declared file', async (t)
     await realpath(join(fixture.root, 'npm', 'bin', 'npm-cli.js')),
   );
   assert.match(capability.runtimeIdentitySha256, /^sha256:[a-f0-9]{64}$/u);
+});
+
+test('binds the storage producer identity to the attested npm capability', async (t) => {
+  const fixture = await createFixture();
+  t.after(fixture.remove);
+  const runtime = await resolveBundledNpmRuntime({ resourcesRoot: fixture.root });
+
+  const producer = createManagedNpmDependencyEnvironmentProducer(runtime);
+
+  assert.equal(producer.packageManagerName, 'npm');
+  assert.equal(producer.packageManagerVersion, runtime.npmVersion);
+  assert.equal(producer.nodeRuntime.version, runtime.nodeVersion);
+  assert.equal(producer.nodeRuntime.abi, runtime.nodeAbi);
+  assert.equal(producer.capability.runtimeIdentitySha256, runtime.runtimeIdentitySha256);
+  assert.equal(producer.capability.kind, 'hermetic_dependency_builder_v1');
+  assert.equal(producer.capability.lifecycleScripts, 'disabled');
 });
 
 test('rejects a bundled npm file changed before attestation', async (t) => {
