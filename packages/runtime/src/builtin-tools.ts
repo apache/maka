@@ -315,9 +315,13 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
       const operations = parseCodexV4aPatch(input);
-      return await executeApplyPatchOperations(operations, async (operation) => {
-        await filesystem.applyPatch({ operation, ...filesystemCall(ctx) });
-      });
+      return await executeApplyPatchOperations(
+        operations,
+        async (operation) => {
+          await filesystem.applyPatch({ operation, ...filesystemCall(ctx) });
+        },
+        ctx.abortSignal,
+      );
     },
   } satisfies MakaTool;
   const tools: MakaTool[] = [

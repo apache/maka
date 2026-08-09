@@ -256,6 +256,47 @@ describe('builtin tool activity kinds', () => {
     assert.match(result.error, /target is missing/);
   });
 
+  test('does not start another V4A operation after the turn is stopped', async () => {
+    const abortController = new AbortController();
+    const paths: string[] = [];
+    const applyPatch = buildBuiltinTools({
+      executor: fakeExecutor({
+        applyPatch: async ({ path }) => {
+          paths.push(path);
+          abortController.abort();
+          return { ok: true, path };
+        },
+      }),
+    }).find((tool) => tool.name === 'apply_patch');
+    if (!applyPatch) throw new Error('apply_patch tool missing');
+
+    const result = (await runTool(
+      applyPatch,
+      [
+        '*** Begin Patch',
+        '*** Add File: first.txt',
+        '+first',
+        '*** Delete File: second.txt',
+        '*** Add File: third.txt',
+        '+third',
+        '*** End Patch',
+      ].join('\n'),
+      '/workspace',
+      abortController.signal,
+    )) as {
+      status: string;
+      applied: unknown;
+      stoppedBefore: unknown;
+      error: string;
+    };
+
+    assert.deepEqual(paths, ['first.txt']);
+    assert.equal(result.status, 'failed');
+    assert.deepEqual(result.applied, [{ type: 'create_file', path: 'first.txt' }]);
+    assert.deepEqual(result.stoppedBefore, { type: 'delete_file', path: 'second.txt' });
+    assert.match(result.error, /stopped before delete_file second\.txt/);
+  });
+
   test('applies freeform V4A contents to real files', async (t) => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-freeform-apply-patch-'));
     t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -2832,6 +2873,7 @@ function runTool(
   tool: ReturnType<typeof buildBuiltinTools>[number],
   args: unknown,
   cwd: string,
+  abortSignal = new AbortController().signal,
 ): Promise<unknown> {
   return Promise.resolve(
     tool.impl(args as never, {
@@ -2839,7 +2881,7 @@ function runTool(
       turnId: 'turn-1',
       cwd,
       toolCallId: 'tool-1',
-      abortSignal: new AbortController().signal,
+      abortSignal,
       emitOutput: () => {},
     }),
   );

@@ -17,6 +17,12 @@ export type ApplyPatchBatchResult =
       readonly applied: readonly AppliedPatchOperationFact[];
       readonly failed: AppliedPatchOperationFact;
       readonly error: string;
+    }
+  | {
+      readonly status: 'failed';
+      readonly applied: readonly AppliedPatchOperationFact[];
+      readonly stoppedBefore: AppliedPatchOperationFact;
+      readonly error: string;
     };
 
 function operationFact(operation: ApplyPatchOperation): AppliedPatchOperationFact {
@@ -27,9 +33,24 @@ function operationFact(operation: ApplyPatchOperation): AppliedPatchOperationFac
 export async function executeApplyPatchOperations(
   operations: readonly ApplyPatchOperation[],
   apply: (operation: ApplyPatchOperation) => Promise<void>,
+  abortSignal?: AbortSignal,
 ): Promise<ApplyPatchBatchResult> {
   const applied: AppliedPatchOperationFact[] = [];
   for (const operation of operations) {
+    if (abortSignal?.aborted) {
+      const stoppedBefore = operationFact(operation);
+      const appliedText = applied.length
+        ? ` Applied before stop: ${applied.map((item) => `${item.type} ${item.path}`).join(', ')}.`
+        : ' No file operation was applied.';
+      return {
+        status: 'failed',
+        applied,
+        stoppedBefore,
+        error: formatSyntheticToolErrorText(
+          `ApplyPatch stopped before ${stoppedBefore.type} ${stoppedBefore.path} after ${applied.length} of ${operations.length} operations.${appliedText}`,
+        ),
+      };
+    }
     try {
       await apply(operation);
       applied.push(operationFact(operation));
