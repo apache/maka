@@ -16,6 +16,23 @@ import {
  */
 const SELECTION_SETTLE_MS = 350;
 
+// Capturing an interactive descendant onto its Turn would retarget pointerup
+// away from the control and can suppress its click. Control labels are UI, not
+// transcript content, so they are not quote-selection gesture owners.
+const INTERACTIVE_QUOTE_TARGET = [
+  'a[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'summary',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="menuitem"]',
+  '[role="tab"]',
+].join(',');
+
 export interface SelectionQuoteGestureBoundary {
   beginPointerSelection(pointerId: number): void;
   selectionChanged(): void;
@@ -118,8 +135,10 @@ function readSelection(root: HTMLElement): QuoteTarget | null {
  * became something else. Primary pointer events only gate that signal while a
  * drag is active; they never capture a quote on their own, so an unrelated
  * click cannot resurrect a dismissed layer. The pointer gate starts only
- * inside a turn that can own a quote; controls elsewhere in the scroll surface
- * (including the quote actions themselves) are not selection gestures.
+ * inside a turn that can own a quote, and that turn captures the pointer so a
+ * release outside the Electron window still closes the gesture. Controls
+ * elsewhere in the scroll surface (including the quote actions themselves)
+ * are not selection gestures.
  *
  * Listeners live on `document` and resolve `scrollRef.current` at event time —
  * binding them to the element instead would capture whatever the ref held on
@@ -174,19 +193,34 @@ export function useMessageSelectionQuote(
 
     function onPointerDown(event: PointerEvent): void {
       const root = scrollRef.current;
+      const targetNode = event.target instanceof Node ? event.target : null;
+      const targetElement =
+        targetNode instanceof Element ? targetNode : targetNode?.parentElement ?? null;
+      const turnOwner = targetElement?.closest('[data-turn-id]') ?? null;
+      const interactiveOwner = targetElement?.closest(INTERACTIVE_QUOTE_TARGET) ?? null;
       if (
         !root ||
         !event.isPrimary ||
         event.button !== 0 ||
-        !(event.target instanceof Node) ||
+        !targetNode ||
+        !turnOwner ||
+        !root.contains(turnOwner) ||
+        (interactiveOwner !== null && turnOwner.contains(interactiveOwner)) ||
         findEnclosingTurnId(
-          event.target as unknown as QuoteScopeNode,
+          targetNode as unknown as QuoteScopeNode,
           root as unknown as QuoteScopeNode,
         ) === null
       ) {
         return;
       }
       gesture.beginPointerSelection(event.pointerId);
+      try {
+        turnOwner.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture can fail if Chromium has already retired the physical
+        // pointer. Do not retain a gesture that can no longer deliver its end.
+        gesture.cancelPointerSelection(event.pointerId);
+      }
     }
 
     function onSelectionChange(): void {
@@ -199,6 +233,13 @@ export function useMessageSelectionQuote(
 
     function onPointerCancel(event: PointerEvent): void {
       gesture.cancelPointerSelection(event.pointerId);
+    }
+
+    function onLostPointerCapture(event: PointerEvent): void {
+      // Normal pointerup already settles first, making this a no-op. When the
+      // owner loses capture without pointerup, this is the only trustworthy
+      // end boundary left for the final selection.
+      gesture.endPointerSelection(event.pointerId);
     }
 
     function onWindowBlur(): void {
@@ -232,6 +273,7 @@ export function useMessageSelectionQuote(
     document.addEventListener('pointerdown', onPointerDown, { capture: true });
     document.addEventListener('pointerup', onPointerUp, { capture: true });
     document.addEventListener('pointercancel', onPointerCancel, { capture: true });
+    document.addEventListener('lostpointercapture', onLostPointerCapture, { capture: true });
     window.addEventListener('blur', onWindowBlur);
     // Capture-phase: scroll does not bubble.
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
@@ -241,6 +283,7 @@ export function useMessageSelectionQuote(
       document.removeEventListener('pointerdown', onPointerDown, { capture: true });
       document.removeEventListener('pointerup', onPointerUp, { capture: true });
       document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
+      document.removeEventListener('lostpointercapture', onLostPointerCapture, { capture: true });
       window.removeEventListener('blur', onWindowBlur);
       document.removeEventListener('scroll', onScroll, { capture: true });
     };
