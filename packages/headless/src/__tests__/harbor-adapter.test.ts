@@ -1984,7 +1984,10 @@ with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "maka-cell-usage-checkpoint.json").write_text(json.dumps(deadline_usage), encoding="utf-8")
     hydrated_deadline_output = agent._read_cell_output(required=True)
     assert hydrated_deadline_output["tokenSummary"] == deadline_usage, hydrated_deadline_output
-    assert json.loads(deadline_output_path.read_text(encoding="utf-8"))["tokenSummary"] == deadline_usage
+    assert hydrated_deadline_output["tokenSummarySource"] == "checkpoint", hydrated_deadline_output
+    persisted_deadline_output = json.loads(deadline_output_path.read_text(encoding="utf-8"))
+    assert persisted_deadline_output["tokenSummary"] == deadline_usage, persisted_deadline_output
+    assert persisted_deadline_output["tokenSummarySource"] == "checkpoint", persisted_deadline_output
 
     class DownloadEnvironment:
         def __init__(self):
@@ -3708,6 +3711,7 @@ try:
         assert cell["tokenSummary"]["cacheMissInput"] == 60, cell
         assert cell["tokenSummary"]["cacheWriteInput"] == 10, cell
         assert cell["tokenSummary"]["reasoning"] == 5, cell
+        assert cell["tokenSummarySource"] == "final", cell
         assert cell["toolSummary"]["actualToolCallCounts"] == {"bash": 1}, cell
         assert "test-zai-key" not in json.dumps(cell), cell
 
@@ -3749,10 +3753,12 @@ try:
             pass
         else:
             raise AssertionError("expected OpenCode failure")
-        failing_agent.populate_context_post_run(AgentContext())
+        failing_agent._parse_stdout = agent._parse_stdout
+        failing_agent.populate_context_post_run(context)
         failed_cell = json.loads((Path(tmp) / "maka-cell-output.json").read_text(encoding="utf-8"))
         assert failed_cell["status"] == "failed", failed_cell
         assert failed_cell["errorClass"] == "auth", failed_cell
+        assert failed_cell["tokenSummarySource"] == "checkpoint", failed_cell
         assert failed_cell["finishedAt"] >= failed_cell["startedAt"], failed_cell
         print("opencode_estimated_cost_usd", context.cost_usd)
 finally:
@@ -4921,6 +4927,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert cell["tokenSummary"]["cacheMissInput"] == 60, cell
     assert cell["tokenSummary"]["output"] == 25, cell
     assert abs(cell["tokenSummary"]["costUsd"] - 0.00107) < 1e-12, cell
+    assert cell["tokenSummarySource"] == "final", cell
     assert cell["toolSummary"]["actualToolCallCounts"] == {"command_execution": 1}, cell
     assert "ephemeral-token" not in json.dumps(cell), cell
 
@@ -4934,6 +4941,10 @@ with tempfile.TemporaryDirectory() as tmp:
             "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
             "MAKA_MODEL": "gpt-5.6-sol",
             "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_TRIAL_INPUT_USD_PER_1M": "5",
+            "MAKA_TRIAL_CACHE_READ_USD_PER_1M": "0.5",
+            "MAKA_TRIAL_OUTPUT_USD_PER_1M": "30",
+            "MAKA_TRIAL_PRICING_SOURCE": "openai-gpt-5.6-sol-2026-07-20",
         },
     )
     try:
@@ -4946,6 +4957,7 @@ with tempfile.TemporaryDirectory() as tmp:
     failed = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
     assert failed["status"] == "failed", failed
     assert failed["errorClass"] == "auth", failed
+    assert failed["tokenSummarySource"] == "checkpoint", failed
 
     transport = MakaCodexAgent(
         logs,

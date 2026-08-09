@@ -93,7 +93,6 @@ export function ArtifactPane(props: {
   const recordsSessionIdRef = useRef<string | undefined>(undefined);
   const pendingArtifactListRetryRef = useRef(false);
   const pendingArtifactActionRef = useRef<string | null>(null);
-  const pendingCreatedArtifactIdRef = useRef<string | null>(null);
 
   artifactPaneSessionIdRef.current = sessionId;
 
@@ -104,7 +103,6 @@ export function ArtifactPane(props: {
       artifactListRequestSeqRef.current += 1;
       pendingArtifactListRetryRef.current = false;
       pendingArtifactActionRef.current = null;
-      pendingCreatedArtifactIdRef.current = null;
     };
   }, []);
 
@@ -156,9 +154,6 @@ export function ArtifactPane(props: {
     // (one session's worth) and the metadata is already in memory on main.
     const unsubscribe = window.maka.artifacts.subscribeChanges((event) => {
       if (event.sessionId === sessionId) {
-        if (event.reason === 'created') {
-          pendingCreatedArtifactIdRef.current = event.artifactId;
-        }
         void refresh();
       }
     });
@@ -179,17 +174,6 @@ export function ArtifactPane(props: {
 
   // 已删除墓碑记录保持可选，用于展示明确失败态；只有选中 id 彻底消失时才回退到最新 live artifact。
   useEffect(() => {
-    const pendingId = pendingCreatedArtifactIdRef.current;
-    if (pendingId && recordsSessionId === sessionId) {
-      if (activeRecords.some((record) => record.id === pendingId)) {
-        pendingCreatedArtifactIdRef.current = null;
-        if (selectedId !== pendingId) setSelectedId(pendingId);
-        return;
-      }
-      if (records.some((record) => record.id === pendingId)) {
-        pendingCreatedArtifactIdRef.current = null;
-      }
-    }
     if (activeRecords.length === 0) {
       if (selectedId !== null) setSelectedId(null);
       return;
@@ -197,7 +181,7 @@ export function ArtifactPane(props: {
     if (!selectedId || !activeRecords.some((record) => record.id === selectedId)) {
       setSelectedId(preferredArtifactSelectionId(activeRecords));
     }
-  }, [activeRecords, records, recordsSessionId, selectedId, sessionId]);
+  }, [activeRecords, selectedId]);
 
   const previewRecord = useMemo(
     () => view.kind === 'preview'

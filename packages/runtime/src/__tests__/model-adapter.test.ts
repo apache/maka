@@ -196,6 +196,56 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
+  test('marks OpenAI Chat field metadata as a Maka transport hint', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-pro',
+        models: [{ id: 'deepseek-v4-pro', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-pro',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(adapter.translateChunk({ type: 'reasoning-delta', text: 'think' } as Chunk), [
+      {
+        kind: 'thinking',
+        text: 'think',
+        providerOptions: { maka: { openAiChatReasoningField: 'reasoning_content' } },
+        providerOptionsOrigin: 'maka_transport',
+      },
+    ]);
+  });
+
+  test('surfaces provider-executed tool input as replay-unsafe activity', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-input-start',
+        toolCallId: 'search-1',
+        toolName: 'WebSearch',
+        providerExecuted: true,
+      } as Chunk),
+      [{ kind: 'provider-tool-input' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'tool-input-start',
+        toolCallId: 'read-1',
+        toolName: 'Read',
+        providerExecuted: false,
+      } as Chunk),
+      [],
+    );
+  });
+
   test('returns a Maka-owned tool call event from one provider step', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];

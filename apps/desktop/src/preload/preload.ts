@@ -560,6 +560,15 @@ const makaBridge = {
     hasSecret(slug: string): Promise<boolean> {
       return ipcRenderer.invoke('connections:hasSecret', slug);
     },
+    getRequestHeaders(slug: string): Promise<import('@maka/core').SavedRequestHeaders> {
+      return ipcRenderer.invoke('connections:getRequestHeaders', slug);
+    },
+    setRequestHeaders(
+      slug: string,
+      headers: readonly import('@maka/core').RequestHeaderUpdate[],
+    ): Promise<import('@maka/core').SavedRequestHeaders> {
+      return ipcRenderer.invoke('connections:setRequestHeaders', slug, headers);
+    },
     subscribeEvents(handler: (event: ConnectionEvent) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: ConnectionEvent) => handler(payload);
       ipcRenderer.on('connections:event', listener);

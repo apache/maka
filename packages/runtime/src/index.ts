@@ -1158,6 +1158,10 @@ export type {
 } from './semantic-compact.js';
 export { runConnectionTestEffect, testConnection } from './test-connection.js';
 export {
+  createRequestCustomizationFetch,
+  type RequestCustomization,
+} from './request-customization-fetch.js';
+export {
   fetchGitHubCopilotModels,
   fetchOpenAiCodexModels,
   fetchProviderModels,

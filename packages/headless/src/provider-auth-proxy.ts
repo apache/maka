@@ -73,6 +73,8 @@ export interface ProviderRequestTelemetry {
   durationMs: number;
   bodyChunks: number;
   responseBytes: number;
+  /** The upstream response was an SSE stream parsed for provider usage. */
+  usageStream?: boolean;
   terminalEvent: boolean;
   usage?: ProviderTokenUsage;
   errorClass?: string;
@@ -488,6 +490,7 @@ async function forwardProviderRequest(input: {
       upstreamResponse.headers.get('content-type')?.includes('text/event-stream')
         ? new SseUsageParser(input.usageProtocol)
         : null;
+    if (responseUsage) requestTelemetry.usageStream = true;
     if (upstreamResponse.body) {
       for await (const chunk of upstreamResponse.body) {
         const observedAt = input.now();
@@ -522,7 +525,7 @@ async function forwardProviderRequest(input: {
       }
     }
     const parsed = responseUsage?.finish() ?? null;
-    if (upstreamResponse.ok && parsed?.usage) input.usage.add(parsed.usage);
+    if (parsed?.usage) input.usage.add(parsed.usage);
     requestTelemetry.usage = parsed?.usage ?? undefined;
     requestTelemetry.terminalEvent = parsed?.terminalEvent ?? false;
     requestTelemetry.outcome = !upstreamResponse.ok

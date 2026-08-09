@@ -429,7 +429,16 @@ class MakaOpenCodeAgent(OpenCode):
             "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
             "promptHash": prompt_hash,
             "executionIdentity": execution_identity,
-            **({"tokenSummary": token_summary} if token_summary is not None else {}),
+            **(
+                {
+                    "tokenSummary": token_summary,
+                    "tokenSummarySource": (
+                        "checkpoint" if hasattr(self, "_failure_class") else "final"
+                    ),
+                }
+                if token_summary is not None
+                else {}
+            ),
             "toolSummary": {
                 "providerVisibleToolCount": 0,
                 "actualToolCalls": sum(tool_call_counts.values()),

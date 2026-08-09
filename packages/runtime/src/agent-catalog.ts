@@ -147,7 +147,7 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
 };
 
 export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
-  definitionVersion: 1,
+  definitionVersion: 2,
   id: IMPLEMENTATION_AGENT_ID,
   profile: IMPLEMENTATION_AGENT_PROFILE,
   name: 'Implementation',
@@ -161,7 +161,7 @@ export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
     supportedWriteBack: [AGENT_WRITE_BACK_PATCH],
   },
   permissionMode: 'execute',
-  tools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
+  tools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'WriteStdin', 'StopBackgroundTask'],
   systemPrompt: [
     'You are a foreground implementation child agent.',
     'Run only inside a dedicated worktree child executor when the host provides one.',

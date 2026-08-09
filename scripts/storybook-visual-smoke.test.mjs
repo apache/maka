@@ -4,7 +4,31 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { startStaticServer } from './storybook-visual-smoke.mjs';
+import { catalogJobs, startStaticServer, storyUrl } from './storybook-visual-smoke.mjs';
+
+test('catalog jobs include every story once and reject an empty catalog', () => {
+  assert.deepEqual(
+    catalogJobs({
+      entries: {
+        docs: { id: 'docs', type: 'docs' },
+        first: { id: 'product-first--default', type: 'story' },
+        second: { id: 'product-second--default', type: 'story' },
+      },
+    }),
+    [{ storyId: 'product-first--default' }, { storyId: 'product-second--default' }],
+  );
+  assert.throws(() => catalogJobs({ entries: {} }), /index has no stories/);
+  assert.throws(() => catalogJobs(null), /index has no entries/);
+});
+
+test('render URLs disable play functions in embedded Storybook', () => {
+  const url = new URL(storyUrl('http://127.0.0.1:6006', 'product-example--default'));
+  assert.equal(url.pathname, '/iframe.html');
+  assert.equal(url.searchParams.get('id'), 'product-example--default');
+  assert.equal(url.searchParams.get('viewMode'), 'story');
+  assert.equal(url.searchParams.get('embed'), 'true');
+  assert.equal(url.searchParams.get('globals'), 'colorScheme:light');
+});
 
 test('the Storybook static server handles only the optional favicon specially', async () => {
   const staticDir = await mkdtemp(join(tmpdir(), 'maka-storybook-smoke-'));

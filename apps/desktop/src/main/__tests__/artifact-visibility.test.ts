@@ -32,10 +32,17 @@ describe('generated artifact visibility', () => {
     assert.deepEqual(filterUserVisibleArtifacts(hiddenSources.map(artifact)), []);
   });
 
-  it('preserves user-facing generated files and legacy records without a source', () => {
-    const visibleSources: Array<ArtifactSource | undefined> = [
+  it('excludes generic tool traces from generated files', () => {
+    const hiddenSources: ArtifactSource[] = [
       'tool_result',
       'tool_result_archive',
+    ];
+
+    assert.deepEqual(filterUserVisibleArtifacts(hiddenSources.map(artifact)), []);
+  });
+
+  it('preserves user-facing generated files and legacy records without a source', () => {
+    const visibleSources: Array<ArtifactSource | undefined> = [
       'subagent_writeback',
       'deep_research',
       'export',

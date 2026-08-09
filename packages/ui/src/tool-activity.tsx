@@ -304,23 +304,20 @@ export function ToolTrow({
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
-  const calls = items.flatMap((item) => linkedAgentCalls(item, locale, onOpenLinkedSession)
+  const calls = items.flatMap((item) => linkedAgentCalls(item, locale)
     ?? [standardToolCall(item, locale)]);
+  const openers = items.flatMap((item) => linkedSessionOpeners(item, locale, onOpenLinkedSession));
 
-  // No defaultIsExpanded: opening a group is the reader's move. Seeding it open
-  // from in-flight status latches, since the prop is uncontrolled and the
-  // timeline key is stable (see timelineEntryKey). Cost: the collapsed header
-  // projects the last call, which can settle before a parallel sibling.
-  //
-  // A group's own +/- is the whole turn's, not the last call's: a run of five
-  // Edits collapses to one line, and "what did this turn change" is the
-  // question that line has to answer. Per-call counts stay on the rows inside.
+  // Stock ChatToolCalls only. Linked child sessions open via Astryx Button
+  // beside the row — no vendor onActivate patch.
   return (
-    <ChatToolCalls
-      className="maka-tool-activity-card"
-      calls={calls}
-      {...diffStats(items.flatMap(itemDiffs))}
-    />
+    <>
+      <ChatToolCalls
+        className="maka-tool-activity-card"
+        calls={calls}
+      />
+      {openers}
+    </>
   );
 }
 
@@ -349,12 +346,10 @@ function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCal
 function linkedAgentCalls(
   item: ToolActivityItem,
   locale: UiLocale,
-  onOpenLinkedSession: ((sessionId: string) => void) | undefined,
 ): ChatToolCallItem[] | undefined {
   const result = item.result;
   if (result?.kind === 'subagent') {
     const name = redactSecrets(result.agentName.trim()) || resolveToolDisplayName(item, locale);
-    const open = linkedSessionActivation(result.childSessionId, name, locale, onOpenLinkedSession);
     return [{
       key: item.toolUseId,
       name,
@@ -367,7 +362,6 @@ function linkedAgentCalls(
         ? redactSecrets(result.failureClass)
         : toolCallErrorMessage(item, locale),
       stats: subagentStats(result.status, result.permissionMode === 'explore', locale),
-      ...open,
     }];
   }
   if (result?.kind !== 'agent_swarm') return undefined;
@@ -382,7 +376,6 @@ function linkedAgentCalls(
       duration: formatDuration(child.durationMs) ?? undefined,
       errorMessage: child.failureClass ? redactSecrets(child.failureClass) : undefined,
       stats: subagentStats(child.status, child.profile === 'local_read', locale),
-      ...linkedSessionActivation(child.childSessionId, name, locale, onOpenLinkedSession),
     } satisfies ChatToolCallItem;
   });
 }
@@ -407,17 +400,41 @@ function subagentStats(
     .join(' · ');
 }
 
-function linkedSessionActivation(
-  childSessionId: string | undefined,
-  name: string,
+function linkedSessionOpeners(
+  item: ToolActivityItem,
   locale: UiLocale,
   onOpenLinkedSession: ((sessionId: string) => void) | undefined,
-): Pick<ChatToolCallItem, 'onActivate' | 'activateLabel'> {
-  if (!childSessionId || !onOpenLinkedSession) return {};
-  return {
-    onActivate: () => onOpenLinkedSession(childSessionId),
-    activateLabel: getToolActivityCopy(locale).agent.openSessionAriaLabel(name),
-  };
+) {
+  if (!onOpenLinkedSession) return [];
+  const result = item.result;
+  if (result?.kind === 'subagent') {
+    if (!result.childSessionId) return [];
+    const name = redactSecrets(result.agentName.trim()) || resolveToolDisplayName(item, locale);
+    return [linkedSessionButton(result.childSessionId, name, locale, onOpenLinkedSession)];
+  }
+  if (result?.kind !== 'agent_swarm') return [];
+  return result.items.flatMap((child) => {
+    if (!child.childSessionId) return [];
+    const name = redactSecrets((child.agentName || child.itemId).trim()) || child.profile;
+    return [linkedSessionButton(child.childSessionId, name, locale, onOpenLinkedSession)];
+  });
+}
+
+function linkedSessionButton(
+  childSessionId: string,
+  name: string,
+  locale: UiLocale,
+  onOpenLinkedSession: (sessionId: string) => void,
+) {
+  const label = getToolActivityCopy(locale).agent.openSessionAriaLabel(name);
+  return (
+    <UiButton
+      key={childSessionId}
+      variant="secondary"
+      label={label}
+      onClick={() => onOpenLinkedSession(childSessionId)}
+    />
+  );
 }
 
 function boundedAgentSummary(summary: string): string | undefined {

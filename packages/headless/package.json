@@ -79,7 +79,7 @@
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
-    "ai": "^7.0.31",
+    "ai": "7.0.58",
     "fs-native-extensions": "^1.5.0",
     "undici": "^8.7.0"
   }

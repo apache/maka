@@ -17,8 +17,8 @@ const meta = {
   // frame reproduces the two wrappers the renderer puts around the composer
   // slot rather than approximating them with a bare canvas.
   //
-  // A narrower column is a viewport, not a second story — the smoke manifest
-  // renders this one at compact and floor.
+  // A narrower column is a viewport, not a second story. Responsive behaviour
+  // belongs in the real desktop harness rather than a duplicate catalog entry.
   decorators: [
     (Story) => (
       <div

@@ -21,7 +21,6 @@ import {
   AGENT_LIST_TOOL_NAME,
   AGENT_OUTPUT_TOOL_NAME,
   AGENT_SPAWN_TOOL_NAME,
-  buildChildAgentTools,
   buildSubagentOutputTool,
   buildSubagentProjectionTools,
   buildSubagentSpawnTool,
@@ -617,43 +616,7 @@ describe('E5 — background task refs and capacity', () => {
     assert.ok(!text.includes('task-3-secret-value'), `must not echo the rejected ref: ${text}`);
   });
 
-  /**
-   * The seam the earlier version of these tests could not see.
-   *
-   * A refusal is read by whichever agent made the call, and `Bash` is on the
-   * `implementation` child list, so a child agent reaches the manager-wide cap
-   * exactly like a parent does. `buildToolsForAgentDefinition` is a strict name
-   * allowlist, so the child's schema is decided here and nowhere else. Asserting
-   * against a hand-written list of names would restate the message; asking the
-   * real builder which names a child never receives is what catches the next
-   * refusal that reaches for one.
-   */
-  const parentTools = buildBuiltinTools({
-    backgroundTasks: { stopBackgroundTask: async () => ({}) } as never,
-    ptyControls: { writeStdin: async () => ({}) } as never,
-  });
-  const childToolNames = new Set(buildChildAgentTools(parentTools).map((tool) => tool.name));
-  const parentOnlyToolNames = parentTools
-    .map((tool) => tool.name)
-    .filter((name) => !childToolNames.has(name));
-
-  function assertNamesNoToolAChildLacks(text: string): void {
-    // Guards the guard: if `Bash` ever leaves the child lists, a child can no
-    // longer reach this refusal and the assertion below stops meaning anything.
-    assert.ok(childToolNames.has('Bash'), 'a child agent must still be able to run Bash');
-    assert.ok(
-      parentOnlyToolNames.includes('StopBackgroundTask'),
-      'StopBackgroundTask must still be a parent-only tool for this test to bite',
-    );
-    for (const name of parentOnlyToolNames) {
-      assert.ok(
-        !text.includes(name),
-        `refusal names ${name}, which no child agent receives: ${text}`,
-      );
-    }
-  }
-
-  test('a full shell slot does not send the caller to a tool it may not have', async () => {
+  test('a full shell slot gives a session-independent recovery action', async () => {
     const cwd = await workspace();
     const manager = new ShellRunProcessManager({
       store: createSqliteShellRunStore(cwd),
@@ -673,14 +636,13 @@ describe('E5 — background task refs and capacity', () => {
         abortSignal: NO_ABORT,
       } as never),
     );
-    assertNamesNoToolAChildLacks(text);
     // The counters are manager-wide, so the session that hits the cap may own
     // none of the runs holding it: the move that always exists is waiting.
     assert.ok(/shared across sessions/.test(text), `must not promise an unavailable move: ${text}`);
     assert.ok(/Wait for a running background task to finish/.test(text), text);
   });
 
-  test('a full PTY slot does not send the caller to a tool it may not have', async () => {
+  test('a full PTY slot offers a non-interactive fallback', async () => {
     const cwd = await workspace();
     const manager = new ShellRunProcessManager({
       store: createSqliteShellRunStore(cwd),
@@ -701,7 +663,6 @@ describe('E5 — background task refs and capacity', () => {
         abortSignal: NO_ABORT,
       } as never),
     );
-    assertNamesNoToolAChildLacks(text);
     assert.ok(/PTY/.test(text), text);
     assert.ok(/shared across sessions/.test(text), text);
     // The one move that is both available and immediate: the same command

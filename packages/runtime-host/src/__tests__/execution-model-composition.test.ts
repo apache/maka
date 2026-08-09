@@ -82,6 +82,10 @@ const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
 const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 const CHILD_AGENT_RESULT_TEXT = 'HOSTED_CHILD_AGENT_RESULT_SENTINEL';
 const WEB_RESEARCH_CHILD_RESULT_TEXT = 'HOSTED_WEB_RESEARCH_RESULT_SENTINEL';
+const MAX_IMPLEMENTATION_CHILD_PTY_READS = 5;
+const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
+const MAX_IMPLEMENTATION_CHILD_REQUESTS =
+  MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const execFileAsync = promisify(execFile);
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -496,7 +500,11 @@ test('production backend preserves coordinator Client Capability semantics acros
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
-        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, {
+            requestHeaders: { 'X-Maka-Test': 'tui-shared-setting' },
+            requestBodyOverlay: { provider: { only: ['deepseek'] } },
+          }),
         readPricing: async () => ({ revision: 0, overrides: [] }),
         snapshotClientCapabilities: () => coordinator.snapshotForSession(sessionId),
         executionBoundary: createBypassExecutionBoundary(0),
@@ -526,6 +534,11 @@ test('production backend preserves coordinator Client Capability semantics acros
       JSON.stringify({ events, requests: provider.requests, trace }),
     );
     assert.equal(calls.length, 1);
+    assert.ok(provider.requests.length > 0);
+    for (const request of provider.requests) {
+      assert.equal(request.customHeader, 'tui-shared-setting');
+      assert.deepEqual(request.body.provider, { only: ['deepseek'] });
+    }
     assert.deepEqual(calls[0]?.arguments, {
       url: 'https://example.test/client-capability',
     });
@@ -1326,8 +1339,20 @@ test('production Host publishes and retires an implementation child patch', asyn
   try {
     await mkdir(project);
     await writeFile(join(project, 'README.md'), '# Hosted child fixture\n');
+    await writeFile(
+      join(project, 'pty-child.mjs'),
+      [
+        "process.stdin.setEncoding('utf8');",
+        "process.stdout.write('READY\\n');",
+        "process.stdin.once('data', (data) => {",
+        '  process.stdout.write(`CHILD_PTY_OK:${data.trim()}\\n`);',
+        '  setTimeout(() => {}, 30_000);',
+        '});',
+        '',
+      ].join('\n'),
+    );
     await git(project, 'init', '--initial-branch=main');
-    await git(project, 'add', 'README.md');
+    await git(project, 'add', 'README.md', 'pty-child.mjs');
     await git(
       project,
       '-c',
@@ -1419,7 +1444,11 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(requests.length, 5);
+    assert.ok(
+      requests.length >= MIN_IMPLEMENTATION_CHILD_REQUESTS + 3 &&
+        requests.length <= MAX_IMPLEMENTATION_CHILD_REQUESTS + 3,
+      JSON.stringify(providerRequestTrace(requests)),
+    );
     assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
@@ -1427,17 +1456,26 @@ test('production Host publishes and retires an implementation child patch', asyn
       'local_read',
       'implementation',
     ]);
-    assert.deepEqual(toolNames(requests[2]?.body), [
+    const childToolNames = [
       'ArchiveRead',
       'Bash',
       'Edit',
       'Glob',
       'Grep',
       'Read',
+      'StopBackgroundTask',
       'Write',
-    ]);
-    assert.deepEqual(toolNames(requests[3]?.body), toolNames(requests[2]?.body));
-    assert.ok(toolNames(requests[4]?.body).includes('agent_spawn'));
+      'WriteStdin',
+    ];
+    const childRequests = requests.slice(2, -1);
+    assert.ok(
+      childRequests.length >= MIN_IMPLEMENTATION_CHILD_REQUESTS &&
+        childRequests.length <= MAX_IMPLEMENTATION_CHILD_REQUESTS,
+    );
+    for (const request of childRequests) {
+      assert.deepEqual(toolNames(request.body), childToolNames);
+    }
+    assert.ok(toolNames(requests.at(-1)?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
     const child = sessions.find((session) => session.id !== parent.id);
@@ -1460,10 +1498,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 4);
+    assert.equal(childArtifacts.length, childRequests.length + 2);
     assert.equal(
       childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
-      2,
+      childRequests.length,
     );
     assert.ok(
       childArtifacts.some(
@@ -2725,13 +2763,22 @@ function backendCreationFixture(input: {
   } as unknown as HostAiSdkBackendInput;
 }
 
-function readyExecutionConnection(baseUrl?: string) {
+function readyExecutionConnection(
+  baseUrl?: string,
+  customization: {
+    readonly requestHeaders?: Readonly<Record<string, string>>;
+    readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+  } = {},
+) {
   return {
     kind: 'ready',
     connection: {
       slug: 'backend-creation-connection',
       providerType: 'moonshot',
       ...(baseUrl ? { baseUrl } : {}),
+      ...(customization.requestBodyOverlay
+        ? { requestBodyOverlay: customization.requestBodyOverlay }
+        : {}),
       enabledModelIds: [MODEL_ID],
       models: [
         {
@@ -2745,6 +2792,9 @@ function readyExecutionConnection(baseUrl?: string) {
     networkProxy: { enabled: false },
     secretMaterial: {
       connection: { secret: API_KEY },
+      ...(customization.requestHeaders
+        ? { requestHeaders: { secret: JSON.stringify(customization.requestHeaders) } }
+        : {}),
     },
   };
 }
@@ -2876,21 +2926,35 @@ function toolNames(body: Record<string, unknown> | undefined): string[] {
 
 function providerRequestTrace(requests: readonly ProviderRequest[]): readonly unknown[] {
   return requests.map((request) => {
-    const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-    const lastToolResult = messages
-      .filter(
-        (message): message is Record<string, unknown> =>
-          Boolean(message) && typeof message === 'object' && message.role === 'tool',
-      )
-      .at(-1)?.content;
-    const serializedToolResult =
-      typeof lastToolResult === 'string' ? lastToolResult : JSON.stringify(lastToolResult);
     return {
       stream: request.body.stream,
       tools: toolNames(request.body),
-      lastToolResult: serializedToolResult?.slice(0, 1_000),
+      lastToolResult: latestToolResultText(request.body)?.slice(0, 1_000),
     };
   });
+}
+
+function latestToolResultText(body: Record<string, unknown>): string | undefined {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const content = messages
+    .filter(
+      (message): message is Record<string, unknown> =>
+        Boolean(message) && typeof message === 'object' && message.role === 'tool',
+    )
+    .at(-1)?.content;
+  return typeof content === 'string'
+    ? content
+    : content === undefined
+      ? undefined
+      : JSON.stringify(content);
+}
+
+function requireLatestToolResult(body: Record<string, unknown>): Record<string, unknown> {
+  const serialized = latestToolResultText(body);
+  assert.ok(serialized, 'provider fixture expected a tool result in model history');
+  const result: unknown = JSON.parse(serialized);
+  assert.ok(result && typeof result === 'object' && !Array.isArray(result));
+  return result as Record<string, unknown>;
 }
 
 function toolParameterEnum(
@@ -2906,6 +2970,12 @@ function toolParameterEnum(
   }) as { function?: { parameters?: { properties?: Record<string, unknown> } } } | undefined;
   const schema = tool?.function?.parameters?.properties?.[property];
   return schema && typeof schema === 'object' ? (schema as { enum?: unknown }).enum : undefined;
+}
+
+function requireRuntimeResourceRef(body: Record<string, unknown>): string {
+  const ref = JSON.stringify(body).match(/maka:\/\/runtime\/background-tasks\/[A-Za-z0-9_-]+/)?.[0];
+  assert.ok(ref, 'provider fixture expected a background-task ref in model history');
+  return ref;
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -2926,6 +2996,7 @@ async function fileExists(path: string): Promise<boolean> {
 interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
+  readonly customHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -2936,7 +3007,12 @@ type ProviderFlow =
       readonly groupId: string;
       readonly toolName: string;
     }
-  | { readonly kind: 'child_agent' | 'implementation_child_agent' }
+  | { readonly kind: 'child_agent' }
+  | {
+      readonly kind: 'implementation_child_agent';
+      ptyReadCount: number;
+      stopRequested: boolean;
+    }
   | { readonly kind: 'agent_graph'; readonly scenario: AgentGraphProviderScenario };
 
 async function startProvider(): Promise<{
@@ -2971,7 +3047,7 @@ async function startProvider(): Promise<{
     },
     configureImplementationChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
-      flow = { kind: 'implementation_child_agent' };
+      flow = { kind: 'implementation_child_agent', ptyReadCount: 0, stopRequested: false };
     },
     configureAgentGraphFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -2995,6 +3071,7 @@ async function handleProviderRequest(
   requests.push({
     url: request.url ?? '',
     authorization: request.headers.authorization,
+    customHeader: request.headers['x-maka-test'] as string | undefined,
     body,
   });
   if (body.stream !== true) {
@@ -3087,7 +3164,9 @@ async function handleProviderRequest(
       'Glob',
       'Grep',
       'Read',
+      'StopBackgroundTask',
       'Write',
+      'WriteStdin',
     ]);
     respondProviderToolCall(response, streamRequestIndex, 'Write', {
       path: 'implementation.txt',
@@ -3096,6 +3175,57 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 4) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: 'node pty-child.mjs',
+      run_in_background: true,
+      pty: true,
+    });
+    return;
+  }
+  if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 5) {
+    respondProviderToolCall(response, streamRequestIndex, 'WriteStdin', {
+      ref: requireRuntimeResourceRef(body),
+      actions: [
+        { type: 'text', text: 'ping' },
+        { type: 'key', key: 'enter' },
+      ],
+    });
+    return;
+  }
+  if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 6) {
+    flow.ptyReadCount = 1;
+    respondProviderToolCall(response, streamRequestIndex, 'Read', {
+      ref: requireRuntimeResourceRef(body),
+    });
+    return;
+  }
+  if (
+    flow.kind === 'implementation_child_agent' &&
+    streamRequestIndex >= 7 &&
+    !toolNames(body).includes('agent_spawn')
+  ) {
+    const latestResult = latestToolResultText(body) ?? '';
+    if (!flow.stopRequested) {
+      if (!latestResult.includes('CHILD_PTY_OK:ping')) {
+        assert.ok(
+          flow.ptyReadCount < MAX_IMPLEMENTATION_CHILD_PTY_READS,
+          'PTY child did not publish its input response',
+        );
+        flow.ptyReadCount += 1;
+        respondProviderToolCall(response, streamRequestIndex, 'Read', {
+          ref: requireRuntimeResourceRef(body),
+        });
+        return;
+      }
+      flow.stopRequested = true;
+      respondProviderToolCall(response, streamRequestIndex, 'StopBackgroundTask', {
+        ref: requireRuntimeResourceRef(body),
+      });
+      return;
+    }
+    const stopResult = requireLatestToolResult(body);
+    assert.equal(stopResult.status, 'cancelled');
+    assert.deepEqual(stopResult.operation, { kind: 'stop', applied: true });
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
     return;
   }

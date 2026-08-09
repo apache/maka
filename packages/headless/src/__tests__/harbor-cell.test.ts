@@ -901,10 +901,8 @@ describe('runHarborCell', () => {
         costUsd: 0.012,
         pricingSource: 'runtime',
       });
-      assert.deepEqual(
-        JSON.parse(await readFile(result.outputPath, 'utf8')).tokenSummary,
-        result.output.tokenSummary,
-      );
+      assert.equal(result.output.tokenSummarySource, 'checkpoint');
+      assert.deepEqual(JSON.parse(await readFile(result.outputPath, 'utf8')), result.output);
     });
   });
 

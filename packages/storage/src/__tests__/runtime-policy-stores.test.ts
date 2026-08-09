@@ -119,6 +119,62 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('persists extra request bodies and resolves custom headers as secret execution material', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('customized-openai', 'openai', 'Customized OpenAI'),
+        requestBodyOverlay: { provider: { order: ['primary'] } },
+      });
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: 'provider-secret',
+      });
+      assert.deepEqual(
+        await stores.operations.replaceConnectionRequestHeaders(connection.connectionId, [
+          { name: 'X-Tenant', value: 'tenant-a' },
+        ]),
+        { kind: 'committed', names: ['X-Tenant'] },
+      );
+      assert.deepEqual(
+        await stores.operations.replaceConnectionRequestHeaders(connection.connectionId, [
+          { name: 'x-tenant' },
+          { name: 'X-Title', value: 'Maka' },
+        ]),
+        { kind: 'committed', names: ['x-tenant', 'X-Title'] },
+      );
+      assert.deepEqual(
+        await stores.operations.getConnectionRequestHeaders(connection.connectionId),
+        { names: ['x-tenant', 'X-Title'] },
+      );
+
+      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind !== 'ready') return;
+      assert.deepEqual(resolved.connection.requestBodyOverlay, {
+        provider: { order: ['primary'] },
+      });
+      assert.equal(
+        resolved.secretMaterial.requestHeaders?.secret,
+        JSON.stringify({ 'x-tenant': 'tenant-a', 'X-Title': 'Maka' }),
+      );
+
+      const updated = await stores.connectionCatalog.update({
+        expected: connectionBasis(resolved.connection),
+        changes: {
+          name: resolved.connection.name,
+          enabled: resolved.connection.enabled,
+          enabledModelIds: resolved.connection.enabledModelIds,
+          requestBodyOverlay: null,
+        },
+      });
+      assert.equal(updated.kind, 'committed');
+      if (updated.kind === 'committed') {
+        assert.equal(updated.snapshot.connections[0]?.requestBodyOverlay, undefined);
+      }
+    });
+  });
+
   test('carries, replaces, clears, and endpoint-retires the typed capability table', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const declared = {
@@ -277,6 +333,43 @@ describe('runtime policy stores', () => {
       assert.equal(allDisabled.kind, 'committed');
       if (allDisabled.kind !== 'committed') return;
       assert.equal(allDisabled.snapshot.connections[0]?.relayModelProfiles, undefined);
+    });
+  });
+
+  // The migrating half of this behaviour is covered in @maka/core: seeding an
+  // OAuth credential for the provider that declares aliases is refused here,
+  // since the vault only accepts client-supplied OAuth for GitHub Copilot.
+  test('a relay keeps its own ids opaque through a model refresh', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      // Same ids, different provider. A relay may serve `claude-*` names as its
+      // own identifiers, so nothing here may be rewritten on Anthropic's behalf.
+      const connection = await createConnection(stores, 0, {
+        ...connectionDraft('alias-relay', 'openai-compatible', 'Alias Relay'),
+        baseUrl: 'https://relay.example/v1',
+        enabledModelIds: ['claude-haiku-4-5-20251001'],
+        relayModelProfiles: { 'claude-haiku-4-5-20251001': { vision: true } },
+      });
+
+      const credential = await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: 'sk-relay',
+      });
+      assert.equal(credential.kind, 'committed');
+
+      const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(fetch.kind, 'ready');
+      if (fetch.kind !== 'ready') return;
+
+      const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
+        models: [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }],
+        source: 'fetched',
+        fetchedAt: 1_800_000_000_000,
+      });
+      assert.equal(discovered.kind, 'committed');
+      if (discovered.kind !== 'committed') return;
+      // Repaired against the live list like any other id, not migrated.
+      assert.deepEqual(discovered.snapshot.connections[0]?.enabledModelIds, ['claude-opus-5']);
     });
   });
 
@@ -1681,7 +1774,7 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('commits a connection test when a proxy bypass pattern moves between equivalent lists', async () => {
+  test('commits effects when proxy representation or GET-irrelevant body settings change', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
         stores,
@@ -1748,6 +1841,31 @@ describe('runtime policy stores', () => {
         status: 'verified',
         checkedAt: '2026-07-29T12:01:00.000Z',
       });
+
+      const current = completed.snapshot.connections[0]!;
+      const modelFetch = await stores.operations.beginModelFetch(current.connectionId);
+      assert.equal(modelFetch.kind, 'ready');
+      if (modelFetch.kind !== 'ready') return;
+      const bodyUpdate = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: current.name,
+          enabled: current.enabled,
+          enabledModelIds: current.enabledModelIds,
+          requestBodyOverlay: { provider: { only: ['deepseek'] } },
+        },
+      });
+      assert.equal(bodyUpdate.kind, 'committed');
+      assert.equal(
+        (
+          await stores.operations.completeModelFetch(modelFetch.ticket, {
+            models: [{ id: 'gpt-5' }],
+            source: 'fetched',
+            fetchedAt: 2,
+          })
+        ).kind,
+        'committed',
+      );
     });
   });
 
@@ -2718,7 +2836,7 @@ function connectionBasis(connection: ConnectionCatalogEntry): ConnectionVersionB
 
 function connectionCredential(
   connection: ConnectionCatalogEntry,
-  kind: 'api_key' | 'oauth_token',
+  kind: 'api_key' | 'oauth_token' | 'request_headers',
 ): Extract<CredentialLocator, { scope: 'connection' }> {
   return { scope: 'connection', connectionId: connection.connectionId, kind };
 }

@@ -463,7 +463,14 @@ class MakaCodexAgent(Codex):
             "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
             "promptHash": identity["systemPromptHash"],
             "executionIdentity": identity,
-            **({"tokenSummary": token_summary} if token_summary is not None else {}),
+            **(
+                {
+                    "tokenSummary": token_summary,
+                    "tokenSummarySource": "checkpoint" if failed else "final",
+                }
+                if token_summary is not None
+                else {}
+            ),
             "toolSummary": {
                 "providerVisibleToolCount": 0,
                 "actualToolCalls": sum(tool_call_counts.values()),

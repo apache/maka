@@ -1,5 +1,7 @@
 import {
   normalizeConnectionBaseUrl,
+  normalizeOptionalRequestBodyOverlay,
+  normalizeRequestHeaders,
   type CreateConnectionInput,
   type UpdateConnectionInput,
 } from '@maka/core';
@@ -56,11 +58,19 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     input.relayModelProfiles === undefined
       ? undefined
       : normalizeRelayModelProfiles(input.relayModelProfiles);
+  const requestHeaders =
+    input.requestHeaders === undefined ? undefined : normalizeRequestHeaders(input.requestHeaders);
+  const requestBodyOverlay =
+    input.requestBodyOverlay === undefined
+      ? undefined
+      : normalizeOptionalRequestBodyOverlay(input.requestBodyOverlay);
   const normalized = {
     ...input,
     slug,
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
+    ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   } as CreateConnectionInput;
   return normalizeConnectionBaseUrlForIpc(normalized);
 }
@@ -68,12 +78,16 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
 export function normalizeConnectionPatchSecretsForIpc(value: unknown): UpdateConnectionInput {
   if (typeof value !== 'object' || value === null) throw new Error('Invalid Connection update');
   const patch = value as UpdateConnectionInput;
-  if (!Object.prototype.hasOwnProperty.call(patch, 'apiKey') || patch.apiKey === undefined) {
-    return patch;
-  }
-  return {
+  const normalized = {
     ...patch,
-    apiKey: normalizeConnectionApiKeyForIpc(patch.apiKey, 'apiKey'),
+    ...(Object.prototype.hasOwnProperty.call(patch, 'apiKey') && patch.apiKey !== undefined
+      ? { apiKey: normalizeConnectionApiKeyForIpc(patch.apiKey, 'apiKey') }
+      : {}),
+  };
+  if (patch.requestBodyOverlay === undefined || patch.requestBodyOverlay === null) return normalized;
+  return {
+    ...normalized,
+    requestBodyOverlay: normalizeOptionalRequestBodyOverlay(patch.requestBodyOverlay) ?? null,
   };
 }
 

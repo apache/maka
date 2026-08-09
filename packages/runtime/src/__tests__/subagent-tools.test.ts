@@ -281,19 +281,14 @@ describe('subagent tools', () => {
       'Write',
       'Edit',
       'Bash',
+      'WriteStdin',
+      'StopBackgroundTask',
     ]);
     expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('WebSearch')).toBe(false);
     expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const availability = listBuiltinAgentDefinitions({
-      tools: [
-        testCatalogTool('Read', 'read'),
-        testCatalogTool('Glob', 'read'),
-        testCatalogTool('Grep', 'read'),
-        testCatalogTool('Write', 'file_write'),
-        testCatalogTool('Edit', 'file_write'),
-        testCatalogTool('Bash', 'shell_unsafe'),
-      ],
+      tools: implementationCatalogTools(),
     }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
     expect(availability).toEqual({
       status: 'unavailable',
@@ -306,14 +301,7 @@ describe('subagent tools', () => {
       Promise.resolve().then(() =>
         assertAgentDefinitionRunnable({
           definition: IMPLEMENTATION_AGENT_DEFINITION,
-          tools: [
-            testCatalogTool('Read', 'read'),
-            testCatalogTool('Glob', 'read'),
-            testCatalogTool('Grep', 'read'),
-            testCatalogTool('Write', 'file_write'),
-            testCatalogTool('Edit', 'file_write'),
-            testCatalogTool('Bash', 'shell_unsafe'),
-          ],
+          tools: implementationCatalogTools(),
         }),
       ),
       /worktree child executor/,
@@ -321,27 +309,13 @@ describe('subagent tools', () => {
 
     const runnableAvailability = listBuiltinAgentDefinitions({
       worktreeChildExecutorAvailable: true,
-      tools: [
-        testCatalogTool('Read', 'read'),
-        testCatalogTool('Glob', 'read'),
-        testCatalogTool('Grep', 'read'),
-        testCatalogTool('Write', 'file_write'),
-        testCatalogTool('Edit', 'file_write'),
-        testCatalogTool('Bash', 'shell_unsafe'),
-      ],
+      tools: implementationCatalogTools(),
     }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
     expect(runnableAvailability).toEqual({ status: 'available' });
     assertAgentDefinitionRunnable({
       worktreeChildExecutorAvailable: true,
       definition: IMPLEMENTATION_AGENT_DEFINITION,
-      tools: [
-        testCatalogTool('Read', 'read'),
-        testCatalogTool('Glob', 'read'),
-        testCatalogTool('Grep', 'read'),
-        testCatalogTool('Write', 'file_write'),
-        testCatalogTool('Edit', 'file_write'),
-        testCatalogTool('Bash', 'shell_unsafe'),
-      ],
+      tools: implementationCatalogTools(),
     });
   });
 
@@ -425,6 +399,8 @@ describe('subagent tools', () => {
   test('child agent toolset keeps only built-in profile allowlisted tools', () => {
     const tools = buildChildAgentTools([
       ...buildBuiltinTools(),
+      testCatalogTool('WriteStdin', 'shell_unsafe'),
+      testCatalogTool('StopBackgroundTask', 'shell_unsafe'),
       {
         name: AGENT_SPAWN_TOOL_NAME,
         description: 'spawn',
@@ -456,6 +432,8 @@ describe('subagent tools', () => {
       'Write',
       'Edit',
       'Bash',
+      'WriteStdin',
+      'StopBackgroundTask',
     ]);
     expect([...CHILD_AGENT_TOOL_NAMES]).toEqual([
       'Read',
@@ -465,6 +443,8 @@ describe('subagent tools', () => {
       'Write',
       'Edit',
       'Bash',
+      'WriteStdin',
+      'StopBackgroundTask',
     ]);
   });
 
@@ -1470,6 +1450,10 @@ function testCatalogTool(name: string, categoryHint: MakaTool['categoryHint']): 
     categoryHint,
     impl: async () => ({}),
   };
+}
+
+function implementationCatalogTools(): MakaTool[] {
+  return IMPLEMENTATION_AGENT_DEFINITION.tools.map((name) => testCatalogTool(name, undefined));
 }
 
 async function expectRejects(promise: Promise<unknown>, pattern: RegExp): Promise<void> {

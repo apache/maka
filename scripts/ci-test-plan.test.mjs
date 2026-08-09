@@ -11,22 +11,35 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
-  // Product UI work is not a Storybook catalog change — typecheck/unit/e2e own it.
-  assert.equal(ui.storybook, false);
+  // Product UI is mounted by the catalog. Runtime export and render changes can
+  // break Storybook even when its story files themselves are unchanged.
+  assert.equal(ui.storybook, true);
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
-  // Ordinary desktop product files must not drag Storybook Chromium.
+  // Renderer code is mounted by product stories; main-process and e2e files are not.
+  assert.equal(
+    planTests(['apps/desktop/src/renderer/settings/daily-review-settings-page.tsx'], {
+      graph,
+    }).storybook,
+    true,
+  );
   assert.equal(planTests(['apps/desktop/src/main/main.ts'], { graph }).storybook, false);
   assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).storybook, false);
 
-  // Catalog + harness only.
-  assert.equal(
-    planTests(['apps/desktop/stories/app-shell.stories.tsx'], { graph }).storybook,
-    true,
-  );
-  assert.equal(planTests(['apps/desktop/.storybook/preview.tsx'], { graph }).storybook, true);
-  assert.equal(planTests(['packages/ui/stories/composer.stories.tsx'], { graph }).storybook, true);
+  // Catalog + harness changes build and render the catalog without paying for
+  // workspace tests or real-window Electron E2E.
+  for (const path of [
+    'apps/desktop/stories/app-shell.stories.tsx',
+    'apps/desktop/stories/FIDELITY.md',
+    'apps/desktop/.storybook/preview.tsx',
+    'packages/ui/stories/composer.stories.tsx',
+  ]) {
+    const catalog = planTests([path], { graph });
+    assert.equal(catalog.storybook, true, path);
+    assert.equal(catalog.e2e, false, path);
+    assert.deepEqual(catalog.workspaces, [], path);
+  }
 
   // .storybook/preview.tsx reads THEME_PALETTES from this one core module.
   // Other core paths must not force Storybook.

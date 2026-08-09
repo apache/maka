@@ -496,7 +496,7 @@ test('provider auth proxy accepts a client x-api-key while authenticating upstre
   }
 });
 
-test('provider auth proxy totals Anthropic streaming usage without changing the response bytes', async () => {
+test('provider auth proxy totals Anthropic usage across success and error streams', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-usage-'));
   const stream = [
     'event: message_start',
@@ -505,9 +505,14 @@ test('provider auth proxy totals Anthropic streaming usage without changing the 
     'event: message_delta',
     'data: {"type":"message_delta","usage":{"output_tokens":25}}',
     '',
+    'event: message_stop',
+    'data: {"type":"message_stop"}',
+    '',
   ].join('\n');
+  const statuses = [500, 200];
+  let requestIndex = 0;
   const upstream = createServer((_request, response) => {
-    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.writeHead(statuses[requestIndex++] ?? 500, { 'content-type': 'text/event-stream' });
     response.write(stream.slice(0, 91));
     response.end(stream.slice(91));
   });
@@ -524,18 +529,32 @@ test('provider auth proxy totals Anthropic streaming usage without changing the 
   });
 
   try {
-    const response = await fetch(`${proxy.baseUrl}/messages`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${proxy.token}` },
-      body: '{}',
-    });
-    assert.equal(await response.text(), stream);
+    for (const status of statuses) {
+      const response = await fetch(`${proxy.baseUrl}/messages`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}` },
+        body: '{}',
+      });
+      assert.equal(response.status, status);
+      assert.equal(await response.text(), stream);
+    }
     assert.deepEqual(proxy.usage(), {
-      input: 100,
-      cacheRead: 20,
-      cacheWrite: 10,
-      output: 25,
+      input: 200,
+      cacheRead: 40,
+      cacheWrite: 20,
+      output: 50,
     });
+    assert.deepEqual(
+      proxy.telemetry().map(({ status, outcome, terminalEvent }) => ({
+        status,
+        outcome,
+        terminalEvent,
+      })),
+      [
+        { status: 500, outcome: 'failed', terminalEvent: true },
+        { status: 200, outcome: 'completed', terminalEvent: true },
+      ],
+    );
   } finally {
     await proxy.close();
     await new Promise<void>((resolve, reject) =>

@@ -22,7 +22,6 @@ import {
   providerProxyApiProtocol,
   providerRequiresSecret,
   providerTelemetryArtifactRefs,
-  providerTokenSummary,
   readCellOutput,
   readTimedOutTrialArtifacts,
   classifyTrialTermination,
@@ -33,6 +32,7 @@ import {
   withProviderTelemetryArtifact,
   incompleteTerminalProviderRequest,
   trialGradeSurvivingProviderOutage,
+  reconcileProviderTokenSummary,
   modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
@@ -620,10 +620,12 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
         input.task.id,
         PierInfraError,
       );
-      const cell =
-        rawCell.tokenSummary || !providerUsage || !options.pricing
-          ? rawCell
-          : { ...rawCell, tokenSummary: providerTokenSummary(providerUsage, options.pricing) };
+      const cell = reconcileProviderTokenSummary(
+        rawCell,
+        providerUsage,
+        providerTelemetry,
+        options.pricing,
+      );
       const hostEventsPath = join(trialDir, TRIAL_RUNTIME_EVENTS);
       // Pier's verifier grading is the scoring authority. Surface it as the
       // structured verifier outcome the controller requires: without it a

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, truncate, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
+  hasFinalHarborCellTokenSummary,
   validateHarborCellOutput,
   type HarborCellExecutionIdentity,
   type HarborCellOutput,
@@ -302,7 +303,6 @@ export async function runFixedPromptController(
           billingMode: input.billingMode,
           resumeFingerprint: input.resumeFingerprint,
           id: newId(),
-          ts: now(),
           newId,
           now,
         }).then((event) => ({ index, event })),
@@ -498,7 +498,6 @@ async function runTaskAndBuildEvent(input: {
   billingMode?: HarborBillingMode;
   resumeFingerprint?: string;
   id: string;
-  ts: number;
   newId: () => string;
   now: () => number;
 }): Promise<FixedPromptTaskWalEvent> {
@@ -544,7 +543,7 @@ async function runTaskAndBuildEvent(input: {
         billingMode: input.billingMode,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
-        ts: input.ts,
+        ts: input.now(),
       });
     }
     if (input.input.protectPassAtOne || input.input.infraFailurePolicy === 'terminal') {
@@ -555,7 +554,7 @@ async function runTaskAndBuildEvent(input: {
         roundId: input.input.roundId,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
-        ts: input.ts,
+        ts: input.now(),
       });
     }
     // #64: a thrown Harbor/Docker error is an infra failure, often a transient
@@ -583,7 +582,7 @@ async function runTaskAndBuildEvent(input: {
           billingMode: input.billingMode,
           resumeFingerprint: input.resumeFingerprint,
           id: input.id,
-          ts: input.ts,
+          ts: input.now(),
         });
       }
       return taskInfraFailedEvent({
@@ -593,7 +592,7 @@ async function runTaskAndBuildEvent(input: {
         roundId: input.input.roundId,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
-        ts: input.ts,
+        ts: input.now(),
       });
     }
   }
@@ -610,7 +609,7 @@ async function runTaskAndBuildEvent(input: {
     runId: input.input.runId,
     roundId: input.input.roundId,
     id: input.id,
-    ts: input.ts,
+    ts: input.now(),
   });
 }
 
@@ -732,6 +731,9 @@ function taskCompletedEvent(input: {
       ? { deadlineSettlement: output.cell.deadlineSettlement }
       : {}),
     ...(output.cell.tokenSummary ? { tokenSummary: output.cell.tokenSummary } : {}),
+    ...(output.cell.tokenSummarySource
+      ? { tokenSummarySource: output.cell.tokenSummarySource }
+      : {}),
     ...(output.cell.contextBudgetPolicy
       ? { contextBudgetPolicy: output.cell.contextBudgetPolicy }
       : {}),
@@ -829,6 +831,9 @@ function taskPlumbingFailedEvent(input: {
     expectedPromptHash: input.expectedPromptHash,
     runtimeRefs: input.output.cell.runtimeRefs,
     ...(input.output.cell.tokenSummary ? { tokenSummary: input.output.cell.tokenSummary } : {}),
+    ...(input.output.cell.tokenSummarySource
+      ? { tokenSummarySource: input.output.cell.tokenSummarySource }
+      : {}),
     ...(input.output.cell.contextBudgetPolicy
       ? { contextBudgetPolicy: input.output.cell.contextBudgetPolicy }
       : {}),
@@ -891,7 +896,7 @@ function classifyPlumbingFailure(
       error: `Harbor cell prompt hash ${promptHash} did not match ${expectedPromptHash}`,
     };
   }
-  if (requireFinalUsage && output.cell.tokenSummary === undefined) {
+  if (requireFinalUsage && !hasFinalHarborCellTokenSummary(output.cell)) {
     return {
       errorClass: 'missing_token_usage',
       error: 'Harbor cell did not report final token usage',
@@ -1093,7 +1098,7 @@ function taskBudgetExhaustedEvent(input: {
   const tokenSummary = artifactRefs.cellOutput?.tokenSummary ?? artifactRefs.tokenSummary;
   const tokenSummarySource = tokenSummary
     ? artifactRefs.cellOutput
-      ? 'final'
+      ? (artifactRefs.cellOutput.tokenSummarySource ?? 'checkpoint')
       : 'checkpoint'
     : undefined;
   const executionIdentity =

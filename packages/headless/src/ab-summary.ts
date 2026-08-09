@@ -1,7 +1,7 @@
 import { canonicalJson } from './ab-manifest.js';
 import { BUDGET_EXHAUSTED_RUNTIME_UNAVAILABLE_REASON } from './fixed-prompt-controller.js';
 import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
-import type { HarborCellTokenSummary } from './cell-output.js';
+import { hasFinalHarborCellTokenSummary, type HarborCellTokenSummary } from './cell-output.js';
 import { assertRatio } from './numeric-guards.js';
 import type {
   AbArmSummary,
@@ -671,8 +671,7 @@ function summarizeAttemptPairs(
 function hasCompleteTokenSummary(
   event: FixedPromptTaskWalEvent,
 ): event is FixedPromptTaskWalEvent & { tokenSummary: HarborCellTokenSummary } {
-  if (!hasTokenSummary(event)) return false;
-  return event.type !== 'task_budget_exhausted' || event.tokenSummarySource === 'final';
+  return hasTokenSummary(event) && hasFinalHarborCellTokenSummary(event);
 }
 
 function hasTokenSummary(

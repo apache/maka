@@ -9,6 +9,8 @@ import type {
   CredentialStatus,
   CredentialVersionBasis,
   RuntimePolicy,
+  RequestHeaderUpdate,
+  SavedRequestHeaders,
 } from '@maka/core/runtime-policy';
 import type { ProviderAuthActionAvailability } from '@maka/core/provider-auth';
 import type { ProviderDefaults } from '@maka/core/llm-connections';
@@ -28,6 +30,7 @@ export interface RuntimePolicyCredentialMaterial extends CredentialVersionBasis 
 
 export interface RuntimePolicyOperationSecretMaterial {
   readonly connection?: RuntimePolicyCredentialMaterial;
+  readonly requestHeaders?: RuntimePolicyCredentialMaterial;
   readonly networkProxy?: RuntimePolicyCredentialMaterial;
 }
 
@@ -217,10 +220,19 @@ export type ResolveExecutionConnectionResult =
       readonly networkProxy: RuntimePolicy['networkProxy'];
     };
 
+export type ReplaceConnectionRequestHeadersResult =
+  | ({ readonly kind: 'committed' | 'unchanged' } & SavedRequestHeaders)
+  | { readonly kind: 'connection_not_found' };
+
 export interface RuntimePolicyOperationCoordinator {
   exportCredentialMaterial(
     locator: CredentialLocator,
   ): Promise<RuntimePolicyCredentialMaterial | null>;
+  getConnectionRequestHeaders(connectionId: string): Promise<SavedRequestHeaders | null>;
+  replaceConnectionRequestHeaders(
+    connectionId: string,
+    updates: readonly RequestHeaderUpdate[],
+  ): Promise<ReplaceConnectionRequestHeadersResult>;
   resolveExecutionConnection(connectionSlug: string): Promise<ResolveExecutionConnectionResult>;
   resolveWebSearchExecution(
     input?: ResolveWebSearchExecutionInput,
@@ -269,4 +281,10 @@ export function connectionCredentialLocator(
     case 'none':
       return null;
   }
+}
+
+export function connectionRequestHeadersLocator(
+  connectionId: string,
+): Extract<CredentialLocator, { scope: 'connection' }> & { readonly kind: 'request_headers' } {
+  return { scope: 'connection', connectionId, kind: 'request_headers' };
 }

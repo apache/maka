@@ -73,7 +73,10 @@ test('expanded activity headers stay reachable while their long details scroll',
   const groupHeader = toolGroup.locator(':scope > [role="button"]');
   await groupHeader.click();
 
-  const callHeader = toolGroup.locator('[data-slot="chat-tool-call-row"]').first();
+  // Stock ChatToolCalls marks expandable call rows with role=button only —
+  // data-slot="chat-tool-call-row" was a removed Astryx patch (#2574). Nested
+  // rows live under the group content; the group header is the direct child.
+  const callHeader = toolGroup.locator(':scope [role="button"]').nth(1);
   await callHeader.click();
   await toolGroup.locator('.maka-chat-tool-detail-inner').first().evaluate((element) => {
     element.style.minHeight = '720px';

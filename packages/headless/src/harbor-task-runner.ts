@@ -616,15 +616,14 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
       const selectedUsage = selectHarborCellTokenSummary(rawCell.tokenSummary, usageCheckpoint);
       const checkpointedCell =
         selectedUsage && selectedUsage !== rawCell.tokenSummary
-          ? { ...rawCell, tokenSummary: selectedUsage }
+          ? { ...rawCell, tokenSummary: selectedUsage, tokenSummarySource: 'checkpoint' as const }
           : rawCell;
-      const usageCell =
-        checkpointedCell.tokenSummary || !providerUsage || !runnerOptions.pricing
-          ? checkpointedCell
-          : {
-              ...checkpointedCell,
-              tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
-            };
+      const usageCell = reconcileProviderTokenSummary(
+        checkpointedCell,
+        providerUsage,
+        providerTelemetry,
+        runnerOptions.pricing,
+      );
       const cell = completeTimedOutTrial
         ? {
             ...usageCell,
@@ -944,7 +943,7 @@ export async function readTimedOutTrialArtifacts(
     const selectedUsage = selectHarborCellTokenSummary(cell.tokenSummary, usageCheckpoint);
     const recoveredCell =
       selectedUsage && selectedUsage !== cell.tokenSummary
-        ? { ...cell, tokenSummary: selectedUsage }
+        ? { ...cell, tokenSummary: selectedUsage, tokenSummarySource: 'checkpoint' as const }
         : cell;
     return cellArtifactRefs(
       recoveredCell,
@@ -1492,7 +1491,7 @@ function usesHostProviderProxy(
 }
 
 /** Shared cost math across runners: build the cell token summary from proxy-observed usage and per-1M pricing. */
-export function providerTokenSummary(
+function providerTokenSummary(
   usage: ProviderTokenUsage,
   pricing: HarborTaskPricing,
 ): NonNullable<HarborCellOutput['tokenSummary']> {
@@ -1516,6 +1515,47 @@ export function providerTokenSummary(
     costUsd,
     pricingSource: 'runtime',
   };
+}
+
+/** Reconcile native and proxy usage without labeling incomplete provider evidence as final. */
+export function reconcileProviderTokenSummary(
+  cell: HarborCellOutput,
+  usage: ProviderTokenUsage | null,
+  telemetry: readonly ProviderRequestTelemetry[],
+  pricing: HarborTaskPricing | undefined,
+): HarborCellOutput {
+  const usageRequests = telemetry.filter(providerRequestMayHaveUsage);
+  if (
+    cell.tokenSummary &&
+    cell.tokenSummarySource === 'final' &&
+    usageRequests.some((request) => !request.terminalEvent)
+  ) {
+    return { ...cell, tokenSummarySource: 'checkpoint' };
+  }
+  if (cell.tokenSummary || !usage || !pricing) return cell;
+  const tokenSummarySource =
+    usageRequests.length > 0 &&
+    usageRequests.every((request) => request.usage !== undefined && request.terminalEvent)
+      ? ('final' as const)
+      : ('checkpoint' as const);
+  return {
+    ...cell,
+    tokenSummary: providerTokenSummary(usage, pricing),
+    tokenSummarySource,
+  };
+}
+
+function providerRequestMayHaveUsage(request: ProviderRequestTelemetry): boolean {
+  if (request.usageStream === true || request.usage !== undefined) return true;
+  const method = request.method.toUpperCase();
+  return (
+    request.protocol !== undefined &&
+    method !== 'GET' &&
+    method !== 'HEAD' &&
+    request.upstreamStartMs !== undefined &&
+    request.status === undefined &&
+    request.outcome !== 'completed'
+  );
 }
 
 /** Match the Maka host connection's protocol authority when configuring its auth proxy. */

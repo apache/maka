@@ -35,6 +35,51 @@ test('reports an existing but unconfigured credential as missing', async () => {
   );
 });
 
+test('keeps saved custom header values out of the renderer and preserves them by name', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let replacedHeaders: unknown;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async () => catalog(),
+      getConnectionRequestHeaders: async () => ({
+        kind: 'found',
+        names: ['HTTP-Referer'],
+      }),
+      replaceConnectionRequestHeaders: async (_connectionId: string, headers: unknown) => {
+        replacedHeaders = headers;
+        return { kind: 'committed', names: ['HTTP-Referer', 'X-Title'] };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  assert.deepEqual(
+    await handlers.get('connections:getRequestHeaders')?.({}, 'openrouter'),
+    { names: ['HTTP-Referer'] },
+  );
+  assert.equal(
+    JSON.stringify(await handlers.get('connections:getRequestHeaders')?.({}, 'openrouter')).includes('private.example'),
+    false,
+  );
+
+  assert.deepEqual(
+    await handlers.get('connections:setRequestHeaders')?.({}, 'openrouter', [
+      { name: 'HTTP-Referer' },
+      { name: 'X-Title', value: 'Maka' },
+    ]),
+    { names: ['HTTP-Referer', 'X-Title'] },
+  );
+  assert.deepEqual(replacedHeaders, [
+    { name: 'HTTP-Referer' },
+    { name: 'X-Title', value: 'Maka' },
+  ]);
+});
+
 test('preserves the provider default inventory beside the recommended model', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let createdModels: readonly string[] = [];

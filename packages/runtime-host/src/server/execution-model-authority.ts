@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
-import type { RuntimePolicy } from '@maka/core/runtime-policy';
+import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
 import type { ModelCallKind } from '@maka/core/usage-stats/types';
@@ -475,6 +475,7 @@ async function runHostAuxiliaryModelCall(
           apiKey,
           modelId: target.model,
           fetch: modelFetch,
+          requestHeaders: target.requestHeaders,
         });
         return request.tools !== undefined
           ? generateProviderPrefixModelCall({
@@ -695,6 +696,7 @@ interface ResolvedExecutionTarget {
   readonly connection: RuntimeExecutionConnection;
   readonly model: string;
   readonly apiKey: string;
+  readonly requestHeaders: Readonly<Record<string, string>>;
   readonly oauthBinding?: HostOAuthExecutionBinding;
   readonly networkProxy: RuntimePolicy['networkProxy'];
   readonly proxySecret?: string;
@@ -788,7 +790,13 @@ export async function resolveExecutionTarget(
     ...(resolved.connection.relayModelProfiles === undefined
       ? {}
       : { relayModelProfiles: resolved.connection.relayModelProfiles }),
+    ...(resolved.connection.requestBodyOverlay === undefined
+      ? {}
+      : { requestBodyOverlay: resolved.connection.requestBodyOverlay }),
   };
+  const requestHeaders = resolved.secretMaterial.requestHeaders
+    ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
+    : {};
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {
@@ -804,6 +812,7 @@ export async function resolveExecutionTarget(
       connection,
       model,
       apiKey: '',
+      requestHeaders,
       oauthBinding: oauthCredentials.bind({
         providerType: resolved.connection.providerType,
         connectionSlug: resolved.connection.slug,
@@ -821,6 +830,7 @@ export async function resolveExecutionTarget(
     connection,
     model,
     apiKey: resolved.secretMaterial.connection?.secret ?? '',
+    requestHeaders,
     networkProxy: resolved.networkProxy,
     ...(resolved.secretMaterial.networkProxy
       ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
