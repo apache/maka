@@ -16,6 +16,7 @@
     "./deep-research-store": "./dist/deep-research-store.js",
     "./encrypted-file-managed-secret-store": "./dist/encrypted-file-managed-secret-store.js",
     "./execution-stores": "./dist/execution-stores.js",
+    "./external-conversation-authority": "./dist/external-conversation-authority.js",
     "./external-sessions": "./dist/external-sessions.js",
     "./file-update-lock": "./dist/file-update-lock.js",
     "./foreign-session-store": "./dist/foreign-session-store.js",
