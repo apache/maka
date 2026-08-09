@@ -299,6 +299,90 @@ describe('AiSdkBackend ApplyPatch routing', () => {
       value: 'Applied 1 file operation.',
     });
   });
+
+  test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: added.txt',
+      '+hello',
+      '*** Delete File: removed.txt',
+      '*** End Patch',
+    ].join('\n');
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch both files',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'function_call', id: 'call-1', name: 'apply_patch', args: patch },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: {
+                status: 'completed',
+                applied: [
+                  { type: 'create_file', path: 'added.txt' },
+                  { type: 'delete_file', path: 'removed.txt' },
+                ],
+                output: 'Applied 2 file operations.',
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const replayText = prompt
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .find((part) => part.type === 'text' && part.text.includes('added.txt'));
+    assert.equal(
+      replayText?.text,
+      'ApplyPatch completed 2 file operations: create_file added.txt, delete_file removed.txt.',
+    );
+    assert.equal(
+      prompt.some((message) =>
+        message.content.some(
+          (part) => part.type === 'tool-call' && part.toolName === 'apply_patch',
+        ),
+      ),
+      false,
+    );
+  });
 });
 
 describe('AiSdkBackend Memory Extraction triggers', () => {

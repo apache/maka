@@ -87,6 +87,67 @@ export function normalizeApplyPatchReplayInput(
   }
 }
 
+/** Preserve an executed multi-file patch when the target wire cannot replay one call for it. */
+export function applyPatchReplayFactText(
+  input: unknown,
+  output: unknown,
+  isError: boolean,
+): string | null {
+  if (typeof input !== 'string') return null;
+  let operations: ApplyPatchOperation[];
+  try {
+    operations = parseCodexV4aPatch(input);
+  } catch {
+    return null;
+  }
+  const recorded = recordedAppliedOperations(output);
+  const applied = recorded ?? (isError ? [] : operations.map(operationFact));
+  const facts = applied.map((item) => `${item.type} ${item.path}`).join(', ');
+  if (!isError) {
+    return `ApplyPatch completed ${applied.length} file operation${applied.length === 1 ? '' : 's'}: ${facts}.`;
+  }
+  const attempted = operations.map(operationFact);
+  const attemptedFacts = attempted.map((item) => `${item.type} ${item.path}`).join(', ');
+  return applied.length > 0
+    ? `ApplyPatch failed after applying ${applied.length} file operation${applied.length === 1 ? '' : 's'}: ${facts}.`
+    : `ApplyPatch failed while attempting ${attempted.length} file operation${attempted.length === 1 ? '' : 's'}: ${attemptedFacts}. No applied operation was recorded.`;
+}
+
+function operationFact(operation: ApplyPatchOperation): {
+  type: ApplyPatchOperation['type'];
+  path: string;
+} {
+  return { type: operation.type, path: operation.path };
+}
+
+function recordedAppliedOperations(
+  output: unknown,
+): Array<{ type: ApplyPatchOperation['type']; path: string }> | null {
+  const candidate = unwrapToolResultValue(output);
+  if (!candidate || typeof candidate !== 'object') return null;
+  const applied = (candidate as { applied?: unknown }).applied;
+  if (!Array.isArray(applied)) return null;
+  const facts: Array<{ type: ApplyPatchOperation['type']; path: string }> = [];
+  for (const item of applied) {
+    if (!item || typeof item !== 'object') return null;
+    const { type, path } = item as { type?: unknown; path?: unknown };
+    if (
+      (type !== 'create_file' && type !== 'update_file' && type !== 'delete_file') ||
+      typeof path !== 'string'
+    ) {
+      return null;
+    }
+    facts.push({ type, path });
+  }
+  return facts;
+}
+
+function unwrapToolResultValue(output: unknown): unknown {
+  if (!output || typeof output !== 'object') return output;
+  const record = output as { kind?: unknown; value?: unknown };
+  return record.kind === 'json' ? record.value : output;
+}
+
 function structuredApplyPatchOperation(input: unknown): ApplyPatchOperation | null {
   if (!input || typeof input !== 'object') return null;
   const operation = (input as { operation?: unknown }).operation;

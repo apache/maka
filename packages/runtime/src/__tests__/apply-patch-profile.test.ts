@@ -74,7 +74,7 @@ describe('ApplyPatch profile routing', () => {
     assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'gpt-5.6'), null);
   });
 
-  test('normalizes portable history and drops an unrepresentable multi-file call', () => {
+  test('normalizes portable single-operation history', () => {
     assert.deepEqual(
       normalizeApplyPatchReplayInput(
         { kind: 'openai-structured' },
@@ -85,19 +85,6 @@ describe('ApplyPatch profile routing', () => {
         callId: 'call-1',
         operation: { type: 'delete_file', path: 'old.txt' },
       },
-    );
-    assert.equal(
-      normalizeApplyPatchReplayInput(
-        { kind: 'openai-structured' },
-        'call-1',
-        [
-          '*** Begin Patch',
-          '*** Delete File: one.txt',
-          '*** Delete File: two.txt',
-          '*** End Patch',
-        ].join('\n'),
-      ),
-      null,
     );
     assert.equal(
       normalizeApplyPatchReplayInput({ kind: 'codex-v4a-freeform' }, 'call-1', {

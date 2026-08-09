@@ -210,6 +210,7 @@ import {
 } from './memory-extraction.js';
 import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
 import {
+  applyPatchReplayFactText,
   freeformApplyPatchResultText,
   normalizeApplyPatchReplayInput,
   routeApplyPatchTools,
@@ -3669,6 +3670,11 @@ export class AiSdkBackend implements AgentBackend {
     };
     let bufferedCalls: ToolCallItem[] = [];
     const results = new Map<string, ToolResultItem>();
+    const downgradedApplyPatchCalls = new Map<string, ToolCallItem>();
+    const replayFactsByStep = new Map<
+      string,
+      { readonly text: string; readonly eventIds: readonly string[] }
+    >();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, TextItem>();
 
@@ -3779,6 +3785,7 @@ export class AiSdkBackend implements AgentBackend {
         ...(reasoning ?? []).map((item) => item.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
+        ...(text?.stepId ? (replayFactsByStep.get(text.stepId)?.eventIds ?? []) : []),
       ];
       const replayReasoning = reasoning
         ?.map(reasoningReplay)
@@ -3817,6 +3824,11 @@ export class AiSdkBackend implements AgentBackend {
           text: text.content,
           ...(text.providerOptions !== undefined ? { providerOptions: text.providerOptions } : {}),
         });
+      }
+      const replayFact = text?.stepId ? replayFactsByStep.get(text.stepId) : undefined;
+      if (replayFact) {
+        content.push({ type: 'text', text: replayFact.text });
+        replayFactsByStep.delete(text!.stepId!);
       }
       for (const call of calls) {
         if (call.providerExecuted === true) continue;
@@ -3912,12 +3924,48 @@ export class AiSdkBackend implements AgentBackend {
                 input: replayInput,
                 ...(replayInput !== item.input ? { providerOptions: undefined } : {}),
               });
+            } else {
+              downgradedApplyPatchCalls.set(item.toolCallId, item);
             }
           }
           break;
-        case 'tool_result':
-          results.set(item.toolCallId, item);
+        case 'tool_result': {
+          const downgradedCall = downgradedApplyPatchCalls.get(item.toolCallId);
+          if (!downgradedCall) {
+            results.set(item.toolCallId, item);
+            break;
+          }
+          downgradedApplyPatchCalls.delete(item.toolCallId);
+          const replayFact = applyPatchReplayFactText(
+            downgradedCall.input,
+            item.output,
+            item.isError,
+          );
+          if (!replayFact) break;
+          if (downgradedCall.stepId) {
+            replayFactsByStep.set(downgradedCall.stepId, {
+              text: replayFact,
+              eventIds: [downgradedCall.eventId, item.eventId],
+            });
+            if (!textByStep.has(downgradedCall.stepId)) {
+              textByStep.set(downgradedCall.stepId, {
+                kind: 'text',
+                role: 'assistant',
+                content: '',
+                stepId: downgradedCall.stepId,
+                eventId: downgradedCall.eventId,
+                ts: downgradedCall.ts,
+              });
+            }
+          } else {
+            await flushPendingSteps();
+            push({ role: 'assistant', content: [{ type: 'text', text: replayFact }] }, [
+              downgradedCall.eventId,
+              item.eventId,
+            ]);
+          }
           break;
+        }
         case 'thinking':
           if (item.stepId !== undefined) {
             const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
