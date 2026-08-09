@@ -57,16 +57,25 @@ test('the quote layer: settle timing, Escape, immediate hide, and scroll followi
   let replyBox: { x: number; y: number; width: number; height: number } | null = null;
   await expect
     .poll(async () => {
-      replyBox = await reply.boundingBox();
+      replyBox = await reply.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const rect = range.getBoundingClientRect();
+        return rect.width > 4 && rect.height > 0
+          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          : null;
+      });
       return replyBox;
     })
     .not.toBeNull();
   if (!replyBox) throw new Error('settled selection reply has no visible bounds');
   const dragY = replyBox.y + replyBox.height / 2;
-  await page.mouse.move(replyBox.x + 20, dragY);
+  const dragStartX = replyBox.x + 2;
+  const dragDistance = replyBox.width - 4;
+  await page.mouse.move(dragStartX, dragY);
   await page.mouse.down();
-  for (const dx of [60, 120, 180, 240, 300]) {
-    await page.mouse.move(replyBox.x + 20 + dx, dragY);
+  for (const fraction of [0.2, 0.4, 0.6, 0.8, 1]) {
+    await page.mouse.move(dragStartX + dragDistance * fraction, dragY);
     await page.evaluate(() =>
       document.dispatchEvent(new Event('selectionchange')),
     );
@@ -74,6 +83,9 @@ test('the quote layer: settle timing, Escape, immediate hide, and scroll followi
     await expect(quoteLayer).toBeHidden();
   }
   await page.mouse.up();
+  // Chromium does not consistently emit a final selectionchange when mouseup
+  // leaves an unchanged range. Start the settle window from gesture end.
+  await page.evaluate(() => document.dispatchEvent(new Event('selectionchange')));
   await expect(quoteLayer).toBeVisible();
 
   // Back to no selection, so the measurement below times a fresh appearance
