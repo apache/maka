@@ -21,7 +21,7 @@ import {
   Layout,
   LayoutContent,
   LayoutFooter,
-  Spinner,
+  Skeleton,
   Table,
   Text,
   TextInput,
@@ -34,7 +34,7 @@ import {
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import type { EffectivePricingEntry, PricingMutation } from '@maka/runtime-host/protocol';
 import { useMountedRef, useUiLocale } from '@maka/ui';
-import { BarChart3, Plus, RefreshCcw } from '@maka/ui/icons';
+import { ICON_SIZE, BarChart3, Plus, RefreshCcw } from '@maka/ui/icons';
 import type {
   DesktopPricingSettingsPort,
   DesktopPricingSnapshot,
@@ -573,7 +573,7 @@ export function PricingSettingsPanel(props: { port: DesktopPricingSettingsPort }
               variant="ghost"
               size="sm"
               label={refreshing ? copy.refreshing : copy.refresh}
-              icon={<RefreshCcw size={15} aria-hidden="true" />}
+              icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
               isLoading={refreshing}
               isDisabled={initialLoading || writePending}
               onClick={() => void loadSnapshot(true)}
@@ -583,7 +583,7 @@ export function PricingSettingsPanel(props: { port: DesktopPricingSettingsPort }
               variant="secondary"
               size="sm"
               label={copy.addPrice}
-              icon={<Plus size={15} aria-hidden="true" />}
+              icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
               isDisabled={snapshot === null || refreshing || writePending}
               onClick={(event) => openEditor(undefined, event.currentTarget)}
             />
@@ -603,17 +603,13 @@ export function PricingSettingsPanel(props: { port: DesktopPricingSettingsPort }
             />
           ) : null}
           {initialLoading ? (
-            <div className="settingsPricingLoading" role="status" aria-live="polite">
-              <Spinner label={copy.loading} />
-            </div>
+            <PricingTableSkeleton label={copy.loading} />
           ) : snapshot === null ? null : data.length === 0 ? (
-            <Card padding={3}>
-              <EmptyState
-                icon={<BarChart3 />}
-                title={copy.emptyTitle}
-                description={copy.emptyBody}
-              />
-            </Card>
+            <EmptyState
+              icon={<BarChart3 size={ICON_SIZE.empty} />}
+              title={copy.emptyTitle}
+              description={copy.emptyBody}
+            />
           ) : (
             <Card className="settingsPricingTable" padding={3}>
               <Table
@@ -663,6 +659,37 @@ export function PricingSettingsPanel(props: { port: DesktopPricingSettingsPort }
         }}
       />
     </div>
+  );
+}
+
+function PricingTableSkeleton(props: { label: string }) {
+  return (
+    <Card className="settingsPricingTable" padding={3}>
+      {/* Loading (DESIGN.md §10): Pricing has a known table shape, so reserve
+          the header plus this surface's typical three ready rows. */}
+      <div
+        className="settingsPricingTableSkeleton"
+        role="status"
+        aria-busy="true"
+        aria-label={props.label}
+      >
+        {[0, 1, 2, 3].map((rowIndex) => (
+          <div
+            key={rowIndex}
+            className="settingsPricingTableSkeletonRow"
+            aria-hidden="true"
+          >
+            <Skeleton width="76%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex} />
+            <Skeleton width="58%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex + 1} />
+            <Skeleton width="64%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex + 2} />
+            <Skeleton width="64%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex + 3} />
+            <Skeleton width="72%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex + 4} />
+            <Skeleton width="72%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex + 5} />
+            <Skeleton width="68%" height={rowIndex === 0 ? 10 : 12} radius="rounded" index={rowIndex + 6} />
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

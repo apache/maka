@@ -12,14 +12,27 @@
   gap: var(--space-3);
 }
 
-.settingsPricingLoading {
-  min-height: 160px;
+.settingsPricingTableSkeleton {
+  min-width: 820px;
   display: grid;
-  place-items: center;
+}
+
+.settingsPricingTableSkeletonRow {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) 150px 72px 72px 112px 112px 132px;
+  align-items: center;
+  gap: var(--space-3);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settingsPricingTableSkeletonRow:last-child {
+  border-bottom: 0;
 }
 
 .settingsPricingTable {
   min-width: 0;
+  overflow-x: auto;
 }
 
 .settingsPricingModelKey {

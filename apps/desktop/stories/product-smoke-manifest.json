@@ -61,6 +61,16 @@
         "compact": "The floor viewport is the stricter horizontal-containment case for the same Pricing table."
       }
     },
+    "pricingSettingsLoading": {
+      "storyId": "product-settings-pages--pricing-loading",
+      "productionHost": "SettingsSurface > UsageSettingsPage > PricingSettingsPanel (M5 preview)",
+      "state": "Table-shaped initial loading state at wide and minimum desktop widths",
+      "viewports": ["wide", "floor"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "compact": "The floor viewport is the stricter horizontal-containment case for the same Pricing skeleton."
+      }
+    },
     "providers": {
       "storyId": "product-settings-providers--configured-providers",
       "productionHost": "ProvidersPanel",
