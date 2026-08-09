@@ -84,11 +84,10 @@ export async function runManagedNpmDependencyProvision(
   if (!isPathWithin(npmCliPath, npmRuntimeRoot)) {
     throw new Error('Managed npm CLI escapes its verified runtime root');
   }
-  const [homeRoot, npmCache, temporaryRoot, compileCacheRoot] = await Promise.all([
+  const [homeRoot, npmCache, temporaryRoot] = await Promise.all([
     createOwnedScratchDirectory(scratchRoot, 'home'),
     createOwnedScratchDirectory(scratchRoot, 'cache'),
     createOwnedScratchDirectory(scratchRoot, 'temp'),
-    createOwnedScratchDirectory(scratchRoot, 'node-compile-cache'),
   ]);
   const userConfig = join(homeRoot, 'npmrc');
   const globalConfig = join(homeRoot, 'global-npmrc');
@@ -122,13 +121,7 @@ export async function runManagedNpmDependencyProvision(
       `--globalconfig=${globalConfig}`,
     ],
     cwd: projectRoot,
-    env: hermeticNpmEnvironment(
-      homeRoot,
-      userConfig,
-      globalConfig,
-      temporaryRoot,
-      compileCacheRoot,
-    ),
+    env: hermeticNpmEnvironment(homeRoot, userConfig, globalConfig, temporaryRoot),
     monitorRoot: projectRoot,
     ...(input.producerInput.abortSignal ? { abortSignal: input.producerInput.abortSignal } : {}),
     timeoutMs: DEFAULT_PRODUCER_TIMEOUT_MS,
@@ -264,7 +257,6 @@ function hermeticNpmEnvironment(
   userConfig: string,
   globalConfig: string,
   temporaryRoot: string,
-  compileCacheRoot: string,
 ): NodeJS.ProcessEnv {
   // libuv's Windows home lookup rejects USERPROFILE values at MAX_PATH even
   // though Node's filesystem APIs can access the owned long path. The cwd is
@@ -284,7 +276,11 @@ function hermeticNpmEnvironment(
     TEMP: temporaryRoot,
     TMP: temporaryRoot,
     TMPDIR: temporaryRoot,
-    NODE_COMPILE_CACHE: compileCacheRoot,
+    // This producer is short lived, so a compile cache has no meaningful
+    // performance value. More importantly, Node 26 on Windows can hang while
+    // initializing NODE_COMPILE_CACHE under the Permission Model. Keep the
+    // execution profile explicit and deterministic across supported hosts.
+    NODE_DISABLE_COMPILE_CACHE: '1',
     ...(process.platform === 'win32'
       ? {
           APPDATA: join(effectiveHomeRoot, 'AppData', 'Roaming'),

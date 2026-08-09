@@ -86,6 +86,57 @@ test('never falls back a managed profile to attached execution', async () => {
   await composition.close();
 });
 
+test('preserves explicit dependency provisioning through managed admission', async () => {
+  const calls: string[] = [];
+  const admissionOptions: unknown[] = [];
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  const scope = Object.freeze({ kind: 'managed_workspace_execution_scope_v1' as const });
+  const managedOwner = fakeManagedOwner({ handle, scope, calls, admissionOptions });
+  const composition = createRuntimeHostWorkspaceExecutionComposition({ managedOwner });
+  const profile = createManagedWorkspaceExecutionProfile(handle, {
+    provisioning: 'dependency_environment_v1',
+  });
+
+  await composition.executeReadOnly(profile, {
+    kind: 'read',
+    path: 'node_modules/fixture/index.js',
+  });
+
+  assert.deepEqual(admissionOptions, [{ provisioning: 'dependency_environment_v1' }]);
+  await composition.close();
+});
+
+test('opens a managed profile through the authenticated production stores', async () => {
+  const calls: string[] = [];
+  const handle = Object.freeze({ kind: 'managed_workspace_execution_handle_v1' as const });
+  const scope = Object.freeze({ kind: 'managed_workspace_execution_scope_v1' as const });
+  const managedOwner = fakeManagedOwner({ handle, scope, calls });
+  const executionStores = Object.freeze({}) as never;
+  const composition = createRuntimeHostWorkspaceExecutionComposition({
+    managedOwner,
+    executionStores,
+  });
+
+  const profile = await composition.openManagedWorkspace(
+    {
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      sourceRoot: '/source',
+    },
+    { provisioning: 'dependency_environment_v1' },
+  );
+
+  assert.deepEqual(profile, {
+    kind: 'managed_worktree_v1',
+    executionHandle: handle,
+    provisioning: 'dependency_environment_v1',
+  });
+  assert.deepEqual(calls, ['managed:open']);
+  await composition.close();
+});
+
 test('rejects forged or malformed profiles before worker dispatch', async () => {
   let workerCalls = 0;
   const composition = createRuntimeHostWorkspaceExecutionComposition({
@@ -150,6 +201,7 @@ function fakeManagedOwner(input: {
   scope: ManagedWorkspaceExecutionScope;
   calls: string[];
   workerBlocked?: Promise<void>;
+  admissionOptions?: unknown[];
 }): ManagedWorkspaceOwner {
   return {
     state: 'ready',
@@ -157,10 +209,16 @@ function fakeManagedOwner(input: {
       throw new Error('not used');
     },
     async openManagedWorkspaceBaselineFromExecutionStores() {
-      throw new Error('not used');
+      input.calls.push('managed:open');
+      return {
+        created: true,
+        head: Object.freeze({}) as never,
+        executionHandle: input.handle,
+      };
     },
-    async withManagedWorkspaceExecution(handle, operation) {
+    async withManagedWorkspaceExecution(handle, operation, options) {
       assert.equal(handle, input.handle);
+      input.admissionOptions?.push(options);
       input.calls.push('managed:admit');
       return await operation(input.scope);
     },
