@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import {
+  findEnclosingTurnId,
   resolveQuoteTarget,
   type QuoteScopeNode,
   type QuoteTarget,
@@ -116,7 +117,9 @@ function readSelection(root: HTMLElement): QuoteTarget | null {
  * to expire. `selectionchange` remains the only event that says the selection
  * became something else. Primary pointer events only gate that signal while a
  * drag is active; they never capture a quote on their own, so an unrelated
- * click cannot resurrect a dismissed layer.
+ * click cannot resurrect a dismissed layer. The pointer gate starts only
+ * inside a turn that can own a quote; controls elsewhere in the scroll surface
+ * (including the quote actions themselves) are not selection gestures.
  *
  * Listeners live on `document` and resolve `scrollRef.current` at event time —
  * binding them to the element instead would capture whatever the ref held on
@@ -176,7 +179,10 @@ export function useMessageSelectionQuote(
         !event.isPrimary ||
         event.button !== 0 ||
         !(event.target instanceof Node) ||
-        !root.contains(event.target)
+        findEnclosingTurnId(
+          event.target as unknown as QuoteScopeNode,
+          root as unknown as QuoteScopeNode,
+        ) === null
       ) {
         return;
       }
