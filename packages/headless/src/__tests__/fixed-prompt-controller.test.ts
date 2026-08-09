@@ -39,6 +39,7 @@ describe('fixed prompt controller', () => {
         outcome: 'passed' as const,
         attempts: [{ attempt: 1, classification: 'passed' as const, durationMs: 12, reward: 1 }],
       };
+      let clock = 100;
       const result = await runFixedPromptController({
         runId: 'run-1',
         roundId: 'round-1',
@@ -46,8 +47,11 @@ describe('fixed prompt controller', () => {
         systemPromptPath,
         resultsJsonlPath: join(dir, 'results.jsonl'),
         tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () =>
-          harborOutput({ taskId: 'task-a', verifier, tokenSummarySource: 'final' }),
+        taskRunner: async () => {
+          clock = 250;
+          return harborOutput({ taskId: 'task-a', verifier, tokenSummarySource: 'final' });
+        },
+        now: () => clock,
       });
 
       const event = result.events[0];
@@ -55,6 +59,7 @@ describe('fixed prompt controller', () => {
       if (event?.type !== 'task_completed') assert.fail('expected completed event');
       assert.deepEqual(event.harbor.verifier, verifier);
       assert.equal(event.tokenSummarySource, 'final');
+      assert.equal(event.ts, 250);
     });
   });
 

@@ -302,7 +302,6 @@ export async function runFixedPromptController(
           billingMode: input.billingMode,
           resumeFingerprint: input.resumeFingerprint,
           id: newId(),
-          ts: now(),
           newId,
           now,
         }).then((event) => ({ index, event })),
@@ -498,7 +497,6 @@ async function runTaskAndBuildEvent(input: {
   billingMode?: HarborBillingMode;
   resumeFingerprint?: string;
   id: string;
-  ts: number;
   newId: () => string;
   now: () => number;
 }): Promise<FixedPromptTaskWalEvent> {
@@ -544,7 +542,7 @@ async function runTaskAndBuildEvent(input: {
         billingMode: input.billingMode,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
-        ts: input.ts,
+        ts: input.now(),
       });
     }
     if (input.input.protectPassAtOne || input.input.infraFailurePolicy === 'terminal') {
@@ -555,7 +553,7 @@ async function runTaskAndBuildEvent(input: {
         roundId: input.input.roundId,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
-        ts: input.ts,
+        ts: input.now(),
       });
     }
     // #64: a thrown Harbor/Docker error is an infra failure, often a transient
@@ -583,7 +581,7 @@ async function runTaskAndBuildEvent(input: {
           billingMode: input.billingMode,
           resumeFingerprint: input.resumeFingerprint,
           id: input.id,
-          ts: input.ts,
+          ts: input.now(),
         });
       }
       return taskInfraFailedEvent({
@@ -593,7 +591,7 @@ async function runTaskAndBuildEvent(input: {
         roundId: input.input.roundId,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
-        ts: input.ts,
+        ts: input.now(),
       });
     }
   }
@@ -610,7 +608,7 @@ async function runTaskAndBuildEvent(input: {
     runId: input.input.runId,
     roundId: input.input.roundId,
     id: input.id,
-    ts: input.ts,
+    ts: input.now(),
   });
 }
 
