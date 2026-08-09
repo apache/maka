@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { chmod, lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -84,19 +84,23 @@ async function verifyRealDependencyInstall({
   const fixtureRoot = join(scratchProject, 'registry-fixture');
   const packageRoot = join(fixtureRoot, 'package');
   const tarballPath = join(fixtureRoot, 'maka-fixture-bin-1.0.0.tgz');
-  const projectRoot = join(scratchProject, 'project');
+  const requestedProjectRoot = join(scratchProject, 'project');
+  await Promise.all([
+    mkdir(join(packageRoot, 'bin'), { recursive: true }),
+    mkdir(join(requestedProjectRoot, 'node_modules'), { recursive: true }),
+    mkdir(join(requestedProjectRoot, '.maka-runtime', 'home'), { recursive: true }),
+    mkdir(join(requestedProjectRoot, '.maka-runtime', 'cache'), { recursive: true }),
+    mkdir(join(requestedProjectRoot, '.maka-runtime', 'temp'), { recursive: true }),
+  ]);
+  // Windows hosted runners commonly expose TEMP through an 8.3 alias such as
+  // RUNNER~1. The producer owner canonicalizes cwd before spawn, so the
+  // verifier must build its Permission Model allowlist from the same identity.
+  const projectRoot = await realpath(requestedProjectRoot);
   const outputRoot = join(projectRoot, 'node_modules');
   const scratchRoot = join(projectRoot, '.maka-runtime');
   const homeRoot = join(scratchRoot, 'home');
   const cacheRoot = join(scratchRoot, 'cache');
   const tempRoot = join(scratchRoot, 'temp');
-  await Promise.all([
-    mkdir(join(packageRoot, 'bin'), { recursive: true }),
-    mkdir(outputRoot, { recursive: true }),
-    mkdir(homeRoot, { recursive: true }),
-    mkdir(cacheRoot, { recursive: true }),
-    mkdir(tempRoot, { recursive: true }),
-  ]);
   await Promise.all([
     writeFile(
       join(packageRoot, 'package.json'),
