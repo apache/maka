@@ -1526,10 +1526,15 @@ export function withProviderTokenSummary(
   telemetry: readonly ProviderRequestTelemetry[],
   pricing: HarborTaskPricing | undefined,
 ): HarborCellOutput {
+  const usageRequests = telemetry.filter(providerRequestMayHaveUsage);
+  if (
+    cell.tokenSummary &&
+    cell.tokenSummarySource === 'final' &&
+    usageRequests.some((request) => !request.terminalEvent)
+  ) {
+    return { ...cell, tokenSummarySource: 'checkpoint' };
+  }
   if (cell.tokenSummary || !usage || !pricing) return cell;
-  const usageRequests = telemetry.filter(
-    (request) => request.usageStream === true || request.usage !== undefined,
-  );
   const tokenSummarySource =
     usageRequests.length > 0 &&
     usageRequests.every((request) => request.usage !== undefined && request.terminalEvent)
@@ -1540,6 +1545,19 @@ export function withProviderTokenSummary(
     tokenSummary: providerTokenSummary(usage, pricing),
     tokenSummarySource,
   };
+}
+
+function providerRequestMayHaveUsage(request: ProviderRequestTelemetry): boolean {
+  if (request.usageStream === true || request.usage !== undefined) return true;
+  const method = request.method.toUpperCase();
+  return (
+    request.protocol !== undefined &&
+    method !== 'GET' &&
+    method !== 'HEAD' &&
+    request.upstreamStartMs !== undefined &&
+    request.status === undefined &&
+    request.outcome !== 'completed'
+  );
 }
 
 /** Match the Maka host connection's protocol authority when configuring its auth proxy. */

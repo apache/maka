@@ -973,7 +973,7 @@ describe('createHarborTaskRunner', () => {
             await response.body?.cancel().catch(() => {});
             return fakeRunner({
               reward: '1\n',
-              cell: cellOutput({ tokenSummary: undefined }),
+              cell: cellOutput({ tokenSummarySource: 'final' }),
             })(request);
           },
         });
@@ -981,7 +981,7 @@ describe('createHarborTaskRunner', () => {
         const output = await runner(runInput());
 
         assert.equal(output.harbor.reward, 1);
-        assert.equal(output.cell.tokenSummary?.total, 101);
+        assert.equal(output.cell.tokenSummary?.total, 150);
         assert.equal(output.cell.tokenSummarySource, 'checkpoint');
         const telemetry = JSON.parse(
           await readFile(output.cell.providerTelemetryPath!, 'utf8'),
@@ -995,7 +995,7 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
-  test('keeps provider usage provisional when an earlier generation request has no usage', () => {
+  test('keeps provider usage provisional when an earlier request cannot prove final usage', () => {
     const usage = { input: 10, cacheRead: 0, cacheWrite: 0, output: 5 };
     const request = (overrides: Partial<ProviderRequestTelemetry>): ProviderRequestTelemetry => ({
       requestId: 1,
@@ -1012,14 +1012,27 @@ describe('createHarborTaskRunner', () => {
       ...overrides,
     });
 
-    const output = withProviderTokenSummary(
-      cellOutput({ tokenSummary: undefined }),
-      usage,
-      [request({ outcome: 'aborted', terminalEvent: false }), request({ requestId: 2, usage })],
-      { inputUsdPer1M: 1, outputUsdPer1M: 2 },
-    );
+    for (const incomplete of [
+      request({ outcome: 'aborted', terminalEvent: false }),
+      request({
+        outcome: 'aborted',
+        status: undefined,
+        bodyChunks: 0,
+        responseBytes: 0,
+        usageStream: undefined,
+        terminalEvent: false,
+        upstreamStartMs: 1,
+      }),
+    ]) {
+      const output = withProviderTokenSummary(
+        cellOutput({ tokenSummary: undefined }),
+        usage,
+        [incomplete, request({ requestId: 2, usage })],
+        { inputUsdPer1M: 1, outputUsdPer1M: 2 },
+      );
 
-    assert.equal(output.tokenSummarySource, 'checkpoint');
+      assert.equal(output.tokenSummarySource, 'checkpoint');
+    }
   });
 
   test('gives Codex an ephemeral OpenAI proxy without exposing the provider key file', async () => {

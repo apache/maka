@@ -6,6 +6,7 @@ import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { tokenSummary } from './helpers/cell-output-fixtures.js';
 import type { HarborCellOutput } from '../cell-output.js';
 import {
   FixedPromptBudgetExhaustedError,
@@ -1852,7 +1853,7 @@ test('createPierTaskRunner requires the OpenCode toolchain mount for the OpenCod
 
 test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is incomplete', async () => {
   await withDirs(async ({ jobsDir, repo }) => {
-    const makeRunner = (outcome: ProviderRequestTelemetry['outcome']) =>
+    const makeRunner = (outcome: ProviderRequestTelemetry['outcome'], cell?: HarborCellOutput) =>
       createPierTaskRunner(
         baseOptions({
           jobsDir,
@@ -1890,7 +1891,7 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
             }),
             close: async () => {},
           },
-          runPier: fakePier({ reward: 0 }),
+          runPier: fakePier({ reward: 0, ...(cell ? { cell } : {}) }),
         }),
       );
 
@@ -1912,6 +1913,20 @@ test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is
     const aborted = await makeRunner('aborted')(runInput());
     assert.equal(aborted.harbor.reward, 0);
     assert.equal(aborted.cell.tokenSummarySource, 'checkpoint');
+    const nativeAborted = await makeRunner(
+      'aborted',
+      cellOutput({
+        tokenSummary: tokenSummary({
+          input: 10,
+          output: 5,
+          reasoning: 0,
+          total: 15,
+          costUsd: 0.00002,
+        }),
+        tokenSummarySource: 'final',
+      }),
+    )(runInput());
+    assert.equal(nativeAborted.cell.tokenSummarySource, 'checkpoint');
   });
 });
 
