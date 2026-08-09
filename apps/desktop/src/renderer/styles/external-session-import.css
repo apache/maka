@@ -1,34 +1,48 @@
+/* External-session import dialog. This file was authored in the vendor
+   (Astryx) token dialect; it now consumes the product token contract —
+   spacing, radius, color, type roles, motion (visual system 2.0, T5-E). */
+
 .maka-external-session-import-source {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--spacing-3);
+  gap: var(--space-3);
 }
 
 .maka-external-session-import-source-list {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--spacing-1);
+  gap: var(--space-1);
 }
 
 .maka-external-session-import-source-button {
-  min-height: var(--spacing-8);
-  padding-inline: var(--spacing-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-element);
-  background: var(--color-background-surface);
-  color: var(--color-text-secondary);
+  min-height: var(--h-control-lg);
+  padding-inline: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  color: var(--foreground-secondary);
   font: inherit;
+  transition:
+    background var(--duration-quick) var(--ease-out-strong),
+    border-color var(--duration-quick) var(--ease-out-strong);
 }
 
 .maka-external-session-import-source-button:hover {
-  background: var(--color-overlay-hover);
+  background: var(--state-hover-bg);
+}
+
+.maka-external-session-import-source-button:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .maka-external-session-import-source-button[aria-pressed="true"] {
-  border-color: var(--color-border-emphasized);
-  background: var(--color-accent-muted);
-  color: var(--color-text-primary);
+  /* Selection chrome follows the interaction accent — same idiom as the
+     chat-detail artifact rows. */
+  border-color: oklch(from var(--accent) l c h / 0.24);
+  background: var(--state-selected-bg);
+  color: var(--foreground);
 }
 
 .maka-external-session-import-loading {
@@ -36,28 +50,29 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--spacing-2);
+  gap: var(--space-2);
 }
 
 .maka-external-session-import-list {
   display: grid;
   max-height: min(420px, 45dvh);
   overflow: auto;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-container);
-  background: var(--color-background-surface);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--surface-raised);
 }
 
 .maka-external-session-import-row {
   display: grid;
-  gap: var(--spacing-1);
-  padding: var(--spacing-3);
+  gap: var(--space-1);
+  padding: var(--space-3);
   border: 0;
-  border-block-end: 1px solid var(--color-border);
+  border-block-end: var(--border-width-hairline) solid var(--border);
   background: transparent;
-  color: var(--color-text-primary);
+  color: var(--foreground);
   text-align: start;
   font: inherit;
+  transition: background var(--duration-quick) var(--ease-out-strong);
 }
 
 .maka-external-session-import-row:last-child {
@@ -65,12 +80,18 @@
 }
 
 .maka-external-session-import-row:hover {
-  background: var(--color-overlay-hover);
+  background: var(--state-hover-bg);
+}
+
+/* Keyboard focus gets the same inset ring the artifact rows use. */
+.maka-external-session-import-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
 
 .maka-external-session-import-row[aria-pressed="true"] {
-  background: var(--color-accent-muted);
-  box-shadow: inset 3px 0 0 var(--color-accent);
+  background: var(--state-selected-bg);
+  box-shadow: inset var(--border-width-accent) 0 0 var(--accent);
 }
 
 .maka-external-session-import-row-heading,
@@ -79,7 +100,7 @@
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: var(--spacing-3);
+  gap: var(--space-3);
 }
 
 .maka-external-session-import-row-name,
@@ -91,12 +112,12 @@
 }
 
 .maka-external-session-import-row-name {
-  font-weight: 600;
+  font: var(--maka-text-label);
 }
 
 .maka-external-session-import-row-meta {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
 }
 
 .maka-external-session-import-row-meta time {
@@ -105,9 +126,9 @@
 
 .maka-external-session-import-row-badge {
   flex: none;
-  padding: 1px var(--spacing-2);
-  border-radius: var(--radius-full);
-  background: var(--color-background-muted);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-base);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
 }
