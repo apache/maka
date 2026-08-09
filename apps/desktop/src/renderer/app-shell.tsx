@@ -1854,6 +1854,7 @@ function AppShellContent({
     activeIdRef,
     addPendingSessionAction,
     captureComposerImportOwner,
+    checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -2023,7 +2024,6 @@ function AppShellContent({
       }
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
-      if (!(await taskSubmissionReadyAtSend())) return false;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
@@ -2066,7 +2066,6 @@ function AppShellContent({
       }
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
-      if (!(await taskSubmissionReadyAtSend())) return false;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
@@ -2089,7 +2088,6 @@ function AppShellContent({
       ? revisionDraftRef.current
       : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
-    if (!(await taskSubmissionReadyAtSend())) return false;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length

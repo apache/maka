@@ -139,6 +139,7 @@ export function createAppShellChatActions(deps: {
     setPendingBySession: BooleanRecordUpdater,
   ) => boolean;
   captureComposerImportOwner: () => ComposerImportOwner;
+  checkTaskSubmissionReadiness: () => Promise<boolean>;
   clearPendingSessionAction: (
     sessionId: string,
     pendingRef: RefBox<Set<string>>,
@@ -178,6 +179,7 @@ export function createAppShellChatActions(deps: {
     activeIdRef,
     addPendingSessionAction,
     captureComposerImportOwner,
+    checkTaskSubmissionReadiness,
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -305,6 +307,13 @@ export function createAppShellChatActions(deps: {
     const initialSessionId = activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
+    if (!(await checkTaskSubmissionReadiness())) return false;
+    if (
+      (initialSessionId && !isShellSurfaceOwnerActive(sendOwner)) ||
+      (newChatOwner && !isNewChatSendSurfaceActive(newChatOwner))
+    ) {
+      return false;
+    }
     let optimisticSessionId: string | undefined;
     let optimisticTurnId: string | undefined;
     // #1433: the composer creates the session BEFORE it sends, so a first
