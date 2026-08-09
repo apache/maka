@@ -35,7 +35,9 @@ for (const rel of BUTTON_GUARD_FILES) {
   const text = readFileSync(join(root, rel), 'utf8');
   const lines = text.split('\n');
   lines.forEach((line, i) => {
-    if (!RAW_BUTTON_RE.test(line)) return;
+    // Strip line comments so prose like "renders a real <button>" does not fail.
+    const codeLine = line.replace(/\/\/.*$/, '');
+    if (!/<\s*button\b/.test(codeLine)) return;
     const window = lines.slice(Math.max(0, i - 3), i + 3).join('\n');
     if (ALLOW_COMMENT_RE.test(window)) return;
     // Workbar tab strip is intentional custom chrome (dnd-kit + role=tab).
@@ -127,13 +129,33 @@ const importTsx = readFileSync(
   join(root, 'apps/desktop/src/renderer/external-session-import-dialog.tsx'),
   'utf8',
 );
+// Parent-role paths (listitem/option/menuitem) put onClick on the root and
+// suppress Item's native button — easy to ship a -1-only tabIndex trap.
 if (/role=["']listitem["']/.test(importTsx)) {
   failures.push(
-    'external-session-import-dialog.tsx: Item role=listitem drops keyboard button; use option/listbox or no role',
+    'external-session-import-dialog.tsx: Item role=listitem drops keyboard button',
   );
 }
-if (!/role=["']option["']/.test(importTsx) && !/role=["']listbox["']/.test(importTsx)) {
-  failures.push('external-session-import-dialog.tsx: expected listbox/option selection pattern');
+if (/role=["']option["']/.test(importTsx) || /role=["']listbox["']/.test(importTsx)) {
+  failures.push(
+    'external-session-import-dialog.tsx: avoid listbox/option parent-role path; leave Item without role so it supplies a focusable button',
+  );
+}
+// Every session Item must use onClick (button path) and must not pin tabIndex=-1.
+const sessionItemBlocks = [...importTsx.matchAll(/className="maka-external-session-import-row"[\s\S]{0,400}?\/>/g)];
+if (sessionItemBlocks.length === 0) {
+  failures.push('external-session-import-dialog.tsx: missing session Item rows');
+}
+for (const block of sessionItemBlocks) {
+  const body = block[0];
+  if (!/onClick=/.test(body)) {
+    failures.push('external-session-import-dialog.tsx: session Item missing onClick (no button path)');
+  }
+  if (/tabIndex=\{-1\}|tabIndex=\{selectedId/.test(body)) {
+    failures.push(
+      'external-session-import-dialog.tsx: session Item must not use selected-only tabIndex (null selectedId traps keyboard)',
+    );
+  }
 }
 
 const importCss = readFileSync(
