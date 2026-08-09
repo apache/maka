@@ -114,146 +114,145 @@ export function SessionReviewPanel(props: {
   return (
     <Section
       variant="transparent"
-      padding={0}
+      padding={4}
       className="maka-session-review-panel"
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
-      {gitSnapshot ? (
-        <VStack
-          gap={0}
-          align="start"
-          className="maka-session-review-summary"
-        >
-          <Text type="label">{copy.changedFiles(stats.files)}</Text>
-          <HStack gap={3} align="center">
-            <Text
-              type="supporting"
-              hasTabularNumbers
-              className="maka-session-review-additions"
+      <VStack gap={3} align="stretch" width="100%">
+        {gitSnapshot && gitFiles.length > 0 ? (
+          <VStack gap={1} align="start" className="maka-session-review-summary">
+            <Text type="label">{copy.changedFiles(stats.files)}</Text>
+            <HStack gap={3} align="center">
+              <Text
+                type="supporting"
+                hasTabularNumbers
+                className="maka-session-review-additions"
+              >
+                {copy.addedLines(stats.additions)}
+              </Text>
+              <Text
+                type="supporting"
+                hasTabularNumbers
+                className="maka-session-review-deletions"
+              >
+                {copy.deletedLines(stats.deletions)}
+              </Text>
+            </HStack>
+          </VStack>
+        ) : null}
+        {error ? (
+          <Banner
+            status="error"
+            title={error}
+            endContent={
+              <Button variant="ghost" size="sm" label={copy.retry} onClick={() => void load()} />
+            }
+          />
+        ) : null}
+        {/* A source that cannot be read is a failure, not an absence — it takes
+            the same Banner the load error above does, not an EmptyState. */}
+        {sourceError ? <Banner status="error" title={sourceError} /> : null}
+        {gitSnapshot?.truncated ? (
+          <Banner status="info" title={copy.truncated} />
+        ) : null}
+        {empty ? (
+          /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
+             carries icon and description, not the compact form. */
+          <EmptyState
+            icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
+            title={copy.empty}
+            description={copy.emptyHelp}
+          />
+        ) : null}
+        {gitFiles.length > 0 ? (
+          <div className="maka-session-review-list">
+            <CollapsibleGroup
+              key={gitSnapshot?.revision}
+              type="single"
+              hasDividers
+              density="compact"
             >
-              {copy.addedLines(stats.additions)}
-            </Text>
-            <Text
-              type="supporting"
-              hasTabularNumbers
-              className="maka-session-review-deletions"
-            >
-              {copy.deletedLines(stats.deletions)}
-            </Text>
-          </HStack>
-        </VStack>
-      ) : null}
-      {error ? (
-        <Banner
-          status="error"
-          title={error}
-          endContent={
-            <Button variant="ghost" size="sm" label={copy.retry} onClick={() => void load()} />
-          }
-        />
-      ) : null}
-      {/* A source that cannot be read is a failure, not an absence — it takes
-          the same Banner the load error above does, not an EmptyState. */}
-      {sourceError ? <Banner status="error" title={sourceError} /> : null}
-      {gitSnapshot?.truncated ? (
-        <Banner status="info" title={copy.truncated} />
-      ) : null}
-      {empty ? (
-        /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
-           carries icon and description, not the compact form. */
-        <EmptyState
-          icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
-          title={copy.empty}
-          description={copy.emptyHelp}
-        />
-      ) : null}
-      {gitFiles.length > 0 ? (
-        <div className="maka-session-review-list">
-          <CollapsibleGroup
-            key={gitSnapshot?.revision}
-            type="single"
-            hasDividers
-            density="compact"
-          >
-            {visibleGitFiles.map((file) => {
-              const preview = boundedDiff(file.diff);
-              return (
-                <Collapsible
-                  key={`${gitSnapshot?.revision}:${file.path}`}
-                  value={file.path}
-                  trigger={
-                    <HStack
-                      gap={2}
-                      align="center"
-                      justify="between"
-                      width="100%"
-                      className="maka-session-review-file-trigger"
-                    >
-                      <Text
-                        type="code"
-                        maxLines={1}
-                        className="maka-session-review-file-path"
-                      >
-                        {file.path}
-                      </Text>
+              {visibleGitFiles.map((file) => {
+                const preview = boundedDiff(file.diff);
+                return (
+                  <Collapsible
+                    key={`${gitSnapshot?.revision}:${file.path}`}
+                    value={file.path}
+                    className="maka-session-review-file"
+                    trigger={
                       <HStack
                         gap={2}
                         align="center"
-                        className="maka-session-review-file-stats"
+                        justify="between"
+                        width="100%"
+                        className="maka-session-review-file-trigger"
                       >
-                        {file.additions > 0 ? (
-                          <Text
-                            type="supporting"
-                            hasTabularNumbers
-                            className="maka-session-review-additions"
-                          >
-                            {copy.added(file.additions)}
-                          </Text>
-                        ) : null}
-                        {file.deletions > 0 ? (
-                          <Text
-                            type="supporting"
-                            hasTabularNumbers
-                            className="maka-session-review-deletions"
-                          >
-                            {copy.deleted(file.deletions)}
-                          </Text>
-                        ) : null}
+                        <Text
+                          type="code"
+                          maxLines={1}
+                          className="maka-session-review-file-path"
+                        >
+                          {file.path}
+                        </Text>
+                        <HStack
+                          gap={2}
+                          align="center"
+                          className="maka-session-review-file-stats"
+                        >
+                          {file.additions > 0 ? (
+                            <Text
+                              type="supporting"
+                              hasTabularNumbers
+                              className="maka-session-review-additions"
+                            >
+                              {copy.added(file.additions)}
+                            </Text>
+                          ) : null}
+                          {file.deletions > 0 ? (
+                            <Text
+                              type="supporting"
+                              hasTabularNumbers
+                              className="maka-session-review-deletions"
+                            >
+                              {copy.deleted(file.deletions)}
+                            </Text>
+                          ) : null}
+                        </HStack>
                       </HStack>
-                    </HStack>
+                    }
+                  >
+                    <DiffCodePreview
+                      diff={preview.body}
+                      paths={[file.path]}
+                      className="maka-session-review-diff"
+                    />
+                    {preview.hiddenLines > 0 ? (
+                      <Text type="supporting" color="secondary" display="block">
+                        {copy.hiddenLines(preview.hiddenLines)}
+                      </Text>
+                    ) : null}
+                  </Collapsible>
+                );
+              })}
+            </CollapsibleGroup>
+            {remainingGitFiles > 0 ? (
+              <div className="maka-session-review-more">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={copy.showMore(remainingGitFiles)}
+                  onClick={() =>
+                    setVisibleFileCount((current) =>
+                      Math.min(gitFiles.length, current + REVIEW_FILE_PAGE_SIZE),
+                    )
                   }
-                >
-                  <DiffCodePreview
-                    diff={preview.body}
-                    paths={[file.path]}
-                    className="maka-session-review-diff"
-                  />
-                  {preview.hiddenLines > 0 ? (
-                    <Text type="supporting" color="secondary" display="block">
-                      {copy.hiddenLines(preview.hiddenLines)}
-                    </Text>
-                  ) : null}
-                </Collapsible>
-              );
-            })}
-          </CollapsibleGroup>
-          {remainingGitFiles > 0 ? (
-            <div className="maka-session-review-more">
-              <Button
-                variant="ghost"
-                size="sm"
-                label={copy.showMore(remainingGitFiles)}
-                onClick={() =>
-                  setVisibleFileCount((current) =>
-                    Math.min(gitFiles.length, current + REVIEW_FILE_PAGE_SIZE),
-                  )
-                }
-              />
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </VStack>
     </Section>
   );
 }
