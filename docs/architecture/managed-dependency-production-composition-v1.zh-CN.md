@@ -109,7 +109,7 @@ node --permission
 
 producer failure、timeout、abort、process-tree drain failure、runtime revalidation failure 或 observed limit failure都回滚 staging，不发布 receipt，也不 fallback。
 
-调用者取消从 Runtime Host composition 贯穿 `ManagedWorkspaceOwner`、dependency authority 到 producer。等价 environment 的并发 acquisition 共用一次 publication，但共享 producer 不受任意单个 waiter 支配：只有最后一个 waiter 放弃且 publication 尚未结束时，authority 才终止 producer。Host drain 等待 acquisition 和 producer 清理结束后才能关闭 receipt authority。
+调用者取消从 Runtime Host composition 贯穿 baseline admission、Git invocation、`ManagedWorkspaceOwner`、dependency authority 到 producer。可取消的 artifact writer admission 使用有界轮询获取 OS lock，取消后不会留下仍在等待锁的后台 owner。等价 environment 的并发 acquisition 共用一次 publication，但共享 producer 不受任意单个 waiter 支配：只有最后一个 waiter 放弃且 publication 尚未结束时，authority 才终止 producer。若新 caller 在被撤销 publication 的清理窗口进入，它必须等待旧 owner 收敛后重新观察 canonical slot，不能继承旧 caller 的 abort。Host drain 等待 admission、acquisition 和 producer 清理结束后才能关闭 receipt authority。
 
 `ManagedWorkspaceInspect` 从 ToolRuntime context 取得 canonical session cwd 与 AbortSignal。Host 以 canonical source root 和 session identity 域分离地产生稳定的 repository/workspace/epoch/instance identity；模型无法自认证这些 ID。同一 session/source 的多次只读任务复用同一 accepted baseline，source 后续漂移时 fail closed，不在工具内部创建隐式 rebaseline。工具使用 `replay_safe`：它只消费同一 managed baseline 的只读结果，崩溃后重复 admission 不产生 workspace mutation；provider-facing 结果另有 64 KiB 上限，超限要求缩小读取或搜索范围。
 
@@ -136,7 +136,7 @@ managed_workspace_operation_denied
 - provision 后 workspace head/drift 变化：释放 lease并拒绝 scope；
 - operation 完成/失败：先 revoke scope，再释放 lease；
 - host drain：等待 active operation，关闭 workspace composition/managed owner/dependency authority，最后释放 root owner。
-- caller abort：尚未签发 scope 时终止该 acquisition；若已没有其他 waiter，则回收 producer tree 与 staging；不得进入 filesystem worker。
+- caller abort：baseline Git admission、尚未签发 scope 的 acquisition 与 filesystem worker 均消费同一 signal；若已没有其他 waiter，则回收 producer tree 与 staging；不得继续签发 scope。
 
 ## 7. 平台能力矩阵
 
@@ -161,6 +161,7 @@ observed bytes/entries 是 soft postcondition，不是 OS quota；不能宣称�
 7. filesystem worker读取逻辑 `node_modules/**` 时得到 Maka-owned 内容，而不是 attached 内容；
 8. drain/close 能在 lease释放后完成；
 9. producer missing、manifest mismatch、path traversal、forged scope、unbound logical state均 fail closed。
+10. 真实 Host 子进程在 dependency receipt durable 后退出；同一 source/session/task 重开后只存在一份 canonical baseline、dependency artifact 与 receipt，staging 为空，并返回相同只读结果。
 
 当前切片通过 `ManagedWorkspaceInspect` 形成 M1.3 的生产闭环：普通 session 保持 attached；显式工具调用才进入 managed baseline、dependency lease 与 read-only worker，工具完成后 scope 与 lease 均释放。production-shaped 测试使用真实 Git source、execution stores、root owner、attested npm child process 和 managed owner，并通过该生产工具读取 Maka-owned `node_modules`，不再直接把内部 composition API 当作消费者。
 

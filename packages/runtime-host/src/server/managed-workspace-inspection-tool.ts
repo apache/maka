@@ -91,7 +91,10 @@ export function createManagedWorkspaceInspectionTool(
       const identity = managedInspectionIdentity(sourceRoot, context.sessionId);
       const profile = await workspaceExecution.openManagedWorkspace(
         { ...identity, sourceRoot },
-        { provisioning: 'dependency_environment_v1' },
+        {
+          provisioning: 'dependency_environment_v1',
+          abortSignal: context.abortSignal,
+        },
       );
       context.abortSignal.throwIfAborted();
       const result = await workspaceExecution.executeReadOnly(

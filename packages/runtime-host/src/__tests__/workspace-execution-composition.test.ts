@@ -244,6 +244,64 @@ test('caller cancellation releases a provisioning operation so drain can close',
   assert.equal(closed, true);
 });
 
+test('caller cancellation releases baseline admission so drain can close', async () => {
+  let acknowledgeAdmission!: () => void;
+  const admissionStarted = new Promise<void>((resolve) => {
+    acknowledgeAdmission = resolve;
+  });
+  let closed = false;
+  const managedOwner: ManagedWorkspaceOwner = {
+    state: 'ready',
+    async openManagedWorkspaceBaseline() {
+      throw new Error('not used');
+    },
+    async openManagedWorkspaceBaselineFromExecutionStores(_stores, _input, options) {
+      acknowledgeAdmission();
+      return await new Promise<never>((_resolve, reject) => {
+        const abort = () =>
+          reject(
+            options?.abortSignal?.reason ??
+              new DOMException('Managed baseline admission cancelled', 'AbortError'),
+          );
+        if (options?.abortSignal?.aborted) abort();
+        else options?.abortSignal?.addEventListener('abort', abort, { once: true });
+      });
+    },
+    async withManagedWorkspaceExecution() {
+      throw new Error('not used');
+    },
+    async executeReadOnlyFilesystemOperation() {
+      throw new Error('not used');
+    },
+    async close() {
+      closed = true;
+    },
+  };
+  const composition = createRuntimeHostWorkspaceExecutionComposition({
+    managedOwner,
+    executionStores: Object.freeze({}) as never,
+  });
+  const abort = new AbortController();
+  const admission = composition.openManagedWorkspace(
+    {
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      sourceRoot: '/source',
+    },
+    { provisioning: 'dependency_environment_v1', abortSignal: abort.signal },
+  );
+  await admissionStarted;
+
+  const closing = composition.close();
+  abort.abort(new DOMException('User cancelled baseline admission', 'AbortError'));
+
+  await assert.rejects(admission, { name: 'AbortError' });
+  await closing;
+  assert.equal(closed, true);
+});
+
 function fakeManagedOwner(input: {
   handle: ManagedWorkspaceExecutionHandle;
   scope: ManagedWorkspaceExecutionScope;

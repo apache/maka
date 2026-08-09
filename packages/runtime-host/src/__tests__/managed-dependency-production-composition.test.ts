@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -16,6 +17,9 @@ import { createManagedWorkspaceInspectionTool } from '../server/managed-workspac
 import { createRuntimeHostWorkspaceExecutionComposition } from '../server/workspace-execution-composition.js';
 
 const execFileAsync = promisify(execFile);
+const crashChildEntrypoint = fileURLToPath(
+  new URL('./fixtures/managed-workspace-inspection-crash-child.js', import.meta.url),
+);
 
 test('production composition acquires, reads, and drains an attested dependency environment', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-managed-dependency-composition-'));
@@ -79,6 +83,101 @@ test('production composition acquires, reads, and drains an attested dependency 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('replays one managed inspection after a real Host crash at durable dependency receipt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-managed-inspection-crash-'));
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createSource(join(root, 'source'));
+  const resourcesRoot = await createNpmFixture(join(root, 'resources'));
+  let rootOwner: Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>;
+  let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+  let composition: ReturnType<typeof createRuntimeHostWorkspaceExecutionComposition> | undefined;
+  try {
+    await assert.rejects(
+      execFileAsync(process.execPath, [crashChildEntrypoint], {
+        env: {
+          ...process.env,
+          MAKA_MANAGED_INSPECTION_CRASH_STORAGE_ROOT: storageRoot,
+          MAKA_MANAGED_INSPECTION_CRASH_SOURCE_ROOT: sourceRoot,
+          MAKA_MANAGED_INSPECTION_CRASH_RESOURCES_ROOT: resourcesRoot,
+        },
+        windowsHide: true,
+      }),
+      (error: unknown) => error instanceof Error && 'code' in error && Number(error.code) === 73,
+    );
+
+    const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+    rootOwner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(rootOwner);
+    stores = await openInteractiveExecutionStoresForWrite(rootOwner.lease);
+    const gitExecutable = await findGitExecutable();
+    const owner = await openManagedWorkspaceOwner({
+      rootOwner,
+      gitRuntime: {
+        executablePath: gitExecutable,
+        expectedSha256: await sha256File(gitExecutable),
+      },
+      dependencyEnvironmentProducer: createManagedNpmDependencyEnvironmentProducer(
+        await resolveBundledNpmRuntime({ resourcesRoot }),
+      ),
+      filesystemWorker: {
+        async execute(input) {
+          assert.equal(input.operation.kind, 'read');
+          return { kind: 'read', content: await readFile(input.operation.path, 'utf8') };
+        },
+      },
+    });
+    composition = createRuntimeHostWorkspaceExecutionComposition({
+      managedOwner: owner,
+      executionStores: stores,
+    });
+    const result = await createManagedWorkspaceInspectionTool(composition).impl(
+      { kind: 'read', path: 'node_modules/fixture-package/index.js' },
+      {
+        sessionId: 'session_11111111111111111111111111111111',
+        turnId: 'turn_22222222222222222222222222222222',
+        toolCallId: 'call_33333333333333333333333333333333',
+        cwd: sourceRoot,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      },
+    );
+
+    assert.deepEqual(result, {
+      kind: 'managed_workspace_inspection_v1',
+      result: { kind: 'read', content: 'module.exports = "maka-owned";\n' },
+    });
+    const dependencyRoot = join(storageRoot, 'managed-workspaces', 'dependency-environments');
+    assert.deepEqual(await readdir(join(dependencyRoot, '.staging')), []);
+    assert.equal(
+      (await readdir(dependencyRoot, { withFileTypes: true })).filter(
+        (entry) => entry.isDirectory() && entry.name !== '.staging',
+      ).length,
+      1,
+    );
+    assert.equal(await countFilesNamed(join(storageRoot, 'managed-workspaces'), 'binding.json'), 1);
+    assert.equal(
+      await countFilesNamed(join(storageRoot, 'managed-workspaces'), 'baseline-receipt.json'),
+      1,
+    );
+  } finally {
+    composition?.beginDrain();
+    await composition?.close().catch(() => undefined);
+    await stores?.sessionStore.close?.();
+    await rootOwner?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function countFilesNamed(root: string, expectedName: string): Promise<number> {
+  let count = 0;
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) count += await countFilesNamed(path, expectedName);
+    else if (entry.isFile() && entry.name === expectedName) count += 1;
+  }
+  return count;
+}
 
 async function createSource(sourceRoot: string): Promise<string> {
   await mkdir(sourceRoot, { recursive: true });
