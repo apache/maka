@@ -149,7 +149,7 @@ export function BotOnboardingModal(props: {
       isOpen={props.isOpen}
       onOpenChange={handleOpenChange}
       className="settingsBotOnboardingModal"
-      width={520}
+      width={480}
       aria-label={copy.ariaLabel}
       purpose="form"
     >

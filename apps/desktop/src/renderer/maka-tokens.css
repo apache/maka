@@ -933,6 +933,9 @@
      the same edge — and one column width for the trailing selects. */
   --settings-row-end-cap: min(320px, 62cqi);
   --settings-control-width: 260px;
+  /* One QR frame spec for the paired dialogs (bot onboarding + WeChat QR
+     login, T5-E): both frames read this so the pair cannot drift. */
+  --qr-frame-size: 256px;
 
 }
 

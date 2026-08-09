@@ -184,8 +184,10 @@
 
 .settingsBotOnboardingQrFrame {
   display: grid;
-  width: 284px;
-  height: 284px;
+  /* Shared with the WeChat QR login frame (settings/wechat.css): both read
+     --qr-frame-size so the paired dialogs present one QR spec. */
+  width: var(--qr-frame-size);
+  height: var(--qr-frame-size);
   place-items: center;
   overflow: hidden;
   border: var(--border-width-hairline) solid var(--border);
@@ -193,6 +195,7 @@
   /* Paper, not a ladder tier: a QR code has to stay dark-on-light to be
      scannable at all. See --surface-paper in maka-tokens.css. */
   background: var(--surface-paper);
+  padding: var(--space-3);
 }
 
 .settingsBotOnboardingQrFrame img {
