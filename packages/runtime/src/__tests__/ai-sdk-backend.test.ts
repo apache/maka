@@ -267,7 +267,11 @@ describe('AiSdkBackend ApplyPatch routing', () => {
               name: 'apply_patch',
               args: {
                 callId: 'call-1',
-                operation: { type: 'delete_file', path: 'file.txt' },
+                operation: {
+                  type: 'update_file',
+                  path: 'file.txt',
+                  diff: '@@\n-before\n+after',
+                },
               },
             },
           }),
@@ -293,7 +297,10 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
       .find((message) => message.role === 'assistant')
       ?.content.find((part) => part.type === 'tool-call');
-    assert.equal(toolCall?.input, '*** Begin Patch\n*** Delete File: file.txt\n*** End Patch');
+    assert.equal(
+      toolCall?.input,
+      '*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch',
+    );
     assert.deepEqual(toolResult?.output, {
       type: 'text',
       value: 'Applied 1 file operation.',

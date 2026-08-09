@@ -7,6 +7,8 @@ import {
   thinkingVariantsForModel,
 } from '@maka/core';
 import { buildProviderOptions, getAIModel } from '@maka/runtime';
+import { z } from 'zod';
+import { routeApplyPatchTools } from '../apply-patch-profile.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 
@@ -161,10 +163,37 @@ describe('responses wire request body', () => {
       modelId: 'deepseek-v4-flash',
       fetch,
     });
-    const tools = lowerModelTools({
-      apply_patch: { kind: 'provider', providerTool: { kind: 'openai-custom-apply-patch' } },
-    });
     const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
+    const runtime = resolveModelRuntime(connection, 'deepseek-v4-flash');
+    const [routedTool] = routeApplyPatchTools(
+      [
+        {
+          name: 'apply_patch',
+          description: 'Apply file changes',
+          parameters: z.object({}),
+          providerTool: { kind: 'openai-apply-patch' },
+          impl: async () => ({ status: 'completed' }),
+        },
+      ],
+      runtime.applyPatchProfile,
+    );
+    assert.ok(routedTool);
+    assert.ok(routedTool.providerTool);
+    assert.equal((routedTool.parameters as z.ZodType).safeParse(patch).success, true);
+    assert.deepEqual(
+      await routedTool.toModelOutput?.({
+        toolCallId: 'call-1',
+        input: patch,
+        output: { status: 'completed', output: 'Applied 1 file operation.' },
+      }),
+      { type: 'text', value: 'Applied 1 file operation.' },
+    );
+    const tools = lowerModelTools({
+      apply_patch: {
+        kind: 'provider',
+        providerTool: routedTool.providerTool,
+      },
+    });
 
     await model.doGenerate({
       prompt: [
