@@ -4,6 +4,9 @@ import type { SandboxBoundaryRequestEvent, ToolOutputStream, ToolResultContent }
 import type { SettingsSection } from './settings.js';
 import type { UiLocale } from './ui-locale.js';
 
+export const FIRST_VERIFIED_RESULT_E2E_PROMPT =
+  'Create verified-result.txt and validate the change.';
+
 export type E2eFixtureScenario =
   | 'all'
   | 'first-run'

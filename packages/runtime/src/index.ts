@@ -1200,6 +1200,7 @@ export type { ToolActivityItem, ChatItem, SessionViewModel } from './materialize
 export { AsyncEventQueue } from './async-queue.js';
 export {
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_FIRST_VERIFIED_RESULT_PROMPT,
   FAKE_MERMAID_HOSTILE_PROMPT,
   FAKE_MERMAID_PROMPT,
   FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,

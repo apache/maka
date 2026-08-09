@@ -181,6 +181,39 @@ async function seedE2eGitReviewProject(
   );
 }
 
+async function seedFirstVerifiedResultProject(userDataDir: string): Promise<void> {
+  const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
+  const projectRoot = path.join(userDataDir, 'first-verified-result-project');
+  await mkdir(projectRoot, { recursive: true });
+  const git = (...args: string[]) =>
+    execFileAsync('git', ['-C', projectRoot, ...args], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+  await git('init', '-b', 'main');
+  await git('config', 'user.name', 'Maka E2E');
+  await git('config', 'user.email', 'maka-e2e@example.invalid');
+  await writeFile(path.join(projectRoot, 'README.md'), '# First verified result\n', 'utf8');
+  await writeFile(
+    path.join(projectRoot, 'verified-result.check.mjs'),
+    [
+      "import assert from 'node:assert/strict';",
+      "import { readFile } from 'node:fs/promises';",
+      "assert.equal(await readFile('verified-result.txt', 'utf8'), 'Maka first verified result\\n');",
+      "console.log('validation: 1 passed, 0 failed');",
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await git('add', 'README.md', 'verified-result.check.mjs');
+  await git('commit', '-m', 'initial fixture');
+  await writeFile(
+    path.join(workspaceRoot, 'last-project-path.json'),
+    JSON.stringify({ projectPath: projectRoot }),
+    'utf8',
+  );
+}
+
 /**
  * Own the full launch lifecycle so a failure anywhere — seeding, Electron
  * launch, firstWindow, or the readiness wait — still tears down the Electron
@@ -199,6 +232,7 @@ async function withE2eWindow(
     invocableSkills,
     gitReviewExtraFiles,
     extraConnectionCount,
+    firstVerifiedResultProject,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -211,6 +245,7 @@ async function withE2eWindow(
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
     extraConnectionCount?: number;
+    firstVerifiedResultProject?: boolean;
   },
   use: (page: Page) => Promise<void>,
 ): Promise<void> {
@@ -228,6 +263,7 @@ async function withE2eWindow(
     if (gitReviewExtraFiles !== undefined) {
       await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
     }
+    if (firstVerifiedResultProject) await seedFirstVerifiedResultProject(userDataDir);
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
@@ -289,6 +325,7 @@ export const test = base.extend<{
   window: Page;
   artifactPaneWindow: Page;
   invocableSkillsWindow: Page;
+  firstVerifiedResultWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -313,6 +350,17 @@ export const test = base.extend<{
       locale: 'zh',
       invocableSkills: true,
     }, use);
+  },
+  firstVerifiedResultWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: COMPOSER_INPUT,
+        locale: 'en',
+        firstVerifiedResultProject: true,
+      },
+      use,
+    );
   },
 });
 
