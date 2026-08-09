@@ -12,6 +12,7 @@ import { openManagedWorkspaceOwner } from '@maka/storage/managed-workspace-owner
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { resolveBundledNpmRuntime } from '../server/bundled-npm-runtime.js';
 import { createManagedNpmDependencyEnvironmentProducer } from '../server/managed-npm-dependency-producer.js';
+import { createManagedWorkspaceInspectionTool } from '../server/managed-workspace-inspection-tool.js';
 import { createRuntimeHostWorkspaceExecutionComposition } from '../server/workspace-execution-composition.js';
 
 const execFileAsync = promisify(execFile);
@@ -49,23 +50,24 @@ test('production composition acquires, reads, and drains an attested dependency 
       managedOwner: owner,
       executionStores: stores,
     });
-    const profile = await composition.openManagedWorkspace(
-      {
-        repositoryId: 'repository_11111111111111111111111111111111',
-        workspaceId: 'workspace_22222222222222222222222222222222',
-        workspaceEpochId: 'epoch_33333333333333333333333333333333',
-        workspaceInstanceId: 'instance_44444444444444444444444444444444',
-        sourceRoot,
-      },
-      { provisioning: 'dependency_environment_v1' },
-    );
+    const tool = createManagedWorkspaceInspectionTool(composition);
 
     assert.deepEqual(
-      await composition.executeReadOnly(profile, {
-        kind: 'read',
-        path: 'node_modules/fixture-package/index.js',
-      }),
-      { kind: 'read', content: 'module.exports = "maka-owned";\n' },
+      await tool.impl(
+        { kind: 'read', path: 'node_modules/fixture-package/index.js' },
+        {
+          sessionId: 'session_11111111111111111111111111111111',
+          turnId: 'turn_22222222222222222222222222222222',
+          toolCallId: 'call_33333333333333333333333333333333',
+          cwd: sourceRoot,
+          abortSignal: new AbortController().signal,
+          emitOutput() {},
+        },
+      ),
+      {
+        kind: 'managed_workspace_inspection_v1',
+        result: { kind: 'read', content: 'module.exports = "maka-owned";\n' },
+      },
     );
     composition.beginDrain();
     await composition.close();

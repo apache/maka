@@ -1,6 +1,6 @@
 ---
 document_status: implementation-contract
-status: draft-production-consumer-required
+status: implemented-stacked-pr4
 date: 2026-08-09
 milestone: M1.3
 stack_base: bundled-npm-runtime-attestation-v1
@@ -20,6 +20,8 @@ stack_base: bundled-npm-runtime-attestation-v1
 4. 本切片：由 Runtime Host candidate、execution composition、`ManagedWorkspaceOwner` 和 filesystem worker bridge 连接以上能力。
 
 本切片不启用 Desktop UI 的默认 managed mode，不改变普通 attached checkout，不提供 Shell/Build、Write/Edit、secret projection 或 scratch capability，也不把依赖环境当作 workspace checkpoint。
+
+首个生产消费者是模型可见的 `ManagedWorkspaceInspect` 专用只读任务工具。它不是 session execution mode，也不会替换普通 Read/Glob/Grep：只有模型显式调用该工具时，当前 session cwd 才会作为 source 进入 managed admission。工具参数只能表达一个有界的 Read、Glob 或 Grep 操作，不能提供 source root、workspace identity、raw cwd 或 execution profile。
 
 ## 2. Owner 与能力边界
 
@@ -109,6 +111,8 @@ producer failure、timeout、abort、process-tree drain failure、runtime revali
 
 调用者取消从 Runtime Host composition 贯穿 `ManagedWorkspaceOwner`、dependency authority 到 producer。等价 environment 的并发 acquisition 共用一次 publication，但共享 producer 不受任意单个 waiter 支配：只有最后一个 waiter 放弃且 publication 尚未结束时，authority 才终止 producer。Host drain 等待 acquisition 和 producer 清理结束后才能关闭 receipt authority。
 
+`ManagedWorkspaceInspect` 从 ToolRuntime context 取得 canonical session cwd 与 AbortSignal。Host 以 canonical source root 和 session identity 域分离地产生稳定的 repository/workspace/epoch/instance identity；模型无法自认证这些 ID。同一 session/source 的多次只读任务复用同一 accepted baseline，source 后续漂移时 fail closed，不在工具内部创建隐式 rebaseline。工具使用 `replay_safe`：它只消费同一 managed baseline 的只读结果，崩溃后重复 admission 不产生 workspace mutation；provider-facing 结果另有 64 KiB 上限，超限要求缩小读取或搜索范围。
+
 ## 6. 稳定失败与回滚
 
 主要稳定失败包括：
@@ -153,10 +157,11 @@ observed bytes/entries 是 soft postcondition，不是 OS quota；不能宣称�
 3. attested fixture npm runtime经真实 producer child process运行；
 4. storage authority发布并租用 artifact；
 5. Runtime Host workspace composition打开 managed profile；
-6. filesystem worker读取逻辑 `node_modules/**` 时得到 Maka-owned 内容，而不是 attached 内容；
-7. drain/close 能在 lease释放后完成；
-8. producer missing、manifest mismatch、path traversal、forged scope、unbound logical state均 fail closed。
+6. 生产模型工具注册 `ManagedWorkspaceInspect`，并由该工具打开 owner-bound profile；
+7. filesystem worker读取逻辑 `node_modules/**` 时得到 Maka-owned 内容，而不是 attached 内容；
+8. drain/close 能在 lease释放后完成；
+9. producer missing、manifest mismatch、path traversal、forged scope、unbound logical state均 fail closed。
 
-当前切片只建立了 Runtime Host 内部可组合的 managed dependency read profile；它还不是 M1.3 的可合并终态。仓库当前没有 session/task execution profile 的持久选择，也没有 handler、Desktop 或 CLI 把真实任务送入 `openManagedWorkspace`。在首个生产消费者与 production-shaped task test 落地前，本 PR 必须保持 Draft，并且不得仅靠启动时构造 owner、测试引用或伪 handler 满足“有消费者”的合并门槛。
+当前切片通过 `ManagedWorkspaceInspect` 形成 M1.3 的生产闭环：普通 session 保持 attached；显式工具调用才进入 managed baseline、dependency lease 与 read-only worker，工具完成后 scope 与 lease 均释放。production-shaped 测试使用真实 Git source、execution stores、root owner、attested npm child process 和 managed owner，并通过该生产工具读取 Maka-owned `node_modules`，不再直接把内部 composition API 当作消费者。
 
-消费者接入必须显式决定任务的 workspace execution profile，并保证同一个任务的 Read/Glob/Grep 使用 owner-bound managed scope；普通 attached session 不得被静默切换。由于这个选择会改变用户任务语义，不能从 cwd、环境变量或临时内存状态猜测。若需要把选择跨重启保留，必须由后续消费者切片定义它的 durable owner、协议版本、失败状态和回滚方式。
+这不等于 session-level managed mode 已完成。将来若让整个 session 的普通 Read/Write/Bash 都进入 managed workspace，仍必须显式定义 durable execution profile、M2 mutation acceptance 与 M3 workspace-bound continuation；不能把本工具的 session/source identity 偷换成全 session 模式。
