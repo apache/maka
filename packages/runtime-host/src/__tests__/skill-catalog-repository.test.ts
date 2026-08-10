@@ -212,7 +212,7 @@ test('bounds oversized metadata with an explicit diagnostic and encodable mutati
     requestId: 'metadata-projection',
     operation: 'skill.catalog.mutate' as const,
     ok: true as const,
-    result: committed,
+    result: { ...committed, resolvedWorkspace: workspaceProjection(fixture.project) },
   };
   assert.deepEqual(decodeHostFrame(frame), frame);
 
@@ -456,7 +456,7 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
     requestId: 'noncanonical-external-id',
     operation: 'skill.catalog.query' as const,
     ok: true as const,
-    result: page,
+    result: { ...page, resolvedWorkspace: workspaceProjection(fixture.project) },
   };
   assert.deepEqual(decodeHostFrame(frame), frame);
 
@@ -521,6 +521,7 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
   const boundaryPage = {
     ...page,
     items: [{ ...filesystemItem, id: boundaryId }],
+    resolvedWorkspace: workspaceProjection(fixture.project),
   };
   const queryFrame = {
     requestId: 'display-id-boundary-query',
@@ -553,7 +554,7 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
     requestId: 'display-id-boundary-mutation',
     operation: 'skill.catalog.mutate' as const,
     ok: true as const,
-    result: committed,
+    result: { ...committed, resolvedWorkspace: workspaceProjection(fixture.project) },
   };
   assert.deepEqual(decodeHostFrame(mutationFrame), mutationFrame);
 
@@ -1393,6 +1394,13 @@ function stateFile(ref: string, enabled: boolean, pinned: boolean, updatedAt: st
     schemaVersion: 2,
     skills: { [ref]: { enabled, pinned, updatedAt } },
   })}\n`;
+}
+
+function workspaceProjection(projectRoot: string) {
+  return {
+    target: { kind: 'host_path' as const, path: projectRoot },
+    hostCwd: projectRoot,
+  };
 }
 
 async function start(

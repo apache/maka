@@ -59,13 +59,13 @@ import {
   type SkillCatalogInvocableQueryResult,
   type SkillCatalogManagedSourceItem,
   type SkillCatalogMutateInput,
-  type SkillCatalogMutateResult,
+  type SkillCatalogMutationOutcome,
   type SkillCatalogMutation,
   type SkillCatalogMutationRejectedReason,
   type SkillCatalogPageItem,
   type SkillCatalogPreviewUpdateInput,
-  type SkillCatalogPreviewUpdateResult,
-  type SkillCatalogQueryResult,
+  type SkillCatalogPreviewUpdateOutcome,
+  type SkillCatalogQueryProjection,
   type SkillCatalogRevision,
   type SkillCatalogValidationCode,
   type SkillCatalogView,
@@ -244,7 +244,7 @@ export class SkillCatalogRepository {
   async query(
     input: SkillCatalogRepositoryQueryInput,
     context: SkillCatalogLocalContext,
-  ): Promise<SkillCatalogQueryResult> {
+  ): Promise<SkillCatalogQueryProjection> {
     const snapshot = await this.#freshSnapshot(context);
     if (input.kind === 'continue' && input.revision !== snapshot.revision) {
       return {
@@ -301,7 +301,7 @@ export class SkillCatalogRepository {
   async mutate(
     input: SkillCatalogRepositoryMutateInput,
     context: SkillCatalogLocalContext,
-  ): Promise<SkillCatalogMutateResult> {
+  ): Promise<SkillCatalogMutationOutcome> {
     const current = await this.#freshSnapshot(context);
     if (current.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, current.revision);
@@ -347,7 +347,7 @@ export class SkillCatalogRepository {
   async previewUpdate(
     input: SkillCatalogRepositoryPreviewUpdateInput,
     context: SkillCatalogLocalContext,
-  ): Promise<SkillCatalogPreviewUpdateResult> {
+  ): Promise<SkillCatalogPreviewUpdateOutcome> {
     const snapshot = await this.#freshSnapshot(context);
     if (snapshot.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, snapshot.revision);
@@ -389,7 +389,7 @@ export class SkillCatalogRepository {
 
     const currentSnippet = boundedSnippet(current.content);
     const sourceSnippet = boundedSnippet(source.content);
-    const result: SkillCatalogPreviewUpdateResult = {
+    const result: SkillCatalogPreviewUpdateOutcome = {
       kind: 'preview',
       revision: snapshot.revision,
       currentSnippet: currentSnippet.text,
@@ -1385,7 +1385,7 @@ function createPage(
   view: SkillCatalogView,
   items: readonly SkillCatalogPageItem[],
   offset: number,
-): SkillCatalogQueryResult {
+): SkillCatalogQueryProjection {
   const pageItems: SkillCatalogPageItem[] = [];
   let cursor = offset;
   while (cursor < items.length && pageItems.length < SKILL_CATALOG_PAGE_MAX_ITEMS) {
@@ -1897,8 +1897,8 @@ function boundedSnippet(content: string): { text: string; truncated: boolean } {
 }
 
 function shrinkPreview(
-  result: Extract<SkillCatalogPreviewUpdateResult, { kind: 'preview' }>,
-): SkillCatalogPreviewUpdateResult {
+  result: Extract<SkillCatalogPreviewUpdateOutcome, { kind: 'preview' }>,
+): SkillCatalogPreviewUpdateOutcome {
   let currentSnippet = result.currentSnippet;
   let sourceSnippet = result.sourceSnippet;
   while (
@@ -1962,7 +1962,7 @@ function canonicalJson(value: unknown): string {
 function revisionConflict(
   expectedRevision: SkillCatalogRevision,
   actualRevision: SkillCatalogRevision,
-): SkillCatalogMutateResult & SkillCatalogPreviewUpdateResult {
+): Extract<SkillCatalogMutationOutcome, { kind: 'revision_conflict' }> {
   return { kind: 'revision_conflict', expectedRevision, actualRevision };
 }
 

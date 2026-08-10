@@ -127,6 +127,8 @@ The Project Catalog has revision-pinned, paginated summary and location views. T
 
 Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop keeps its selected Project as a root-scoped Client preference; selecting a Project does not mutate global Host state. A Client without Host-path authority can use a registered Project, but cannot register, relink, request a Host-side reveal, or submit a Host path.
 
+Skill catalog management is a Host-filesystem operation. It requires Host-path authority and returns the workspace resolved by that operation.
+
 ## Lifecycle
 
 | Stage | Contract |

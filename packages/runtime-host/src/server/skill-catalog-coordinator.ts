@@ -4,6 +4,7 @@ import type {
   SkillCatalogMutateInput,
   SkillCatalogPreviewUpdateInput,
   SkillCatalogQueryInput,
+  WorkspaceProjection,
 } from '../protocol/index.js';
 import type { ConnectionContext, SkillCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostCapabilities } from '@maka/runtime';
@@ -17,7 +18,11 @@ import {
   type SkillCatalogRepositoryPreviewUpdateInput,
   type SkillCatalogRepositoryQueryInput,
 } from './skill-catalog-repository.js';
-import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
+import {
+  type HostWorkspaceResolver,
+  type ResolvedWorkspace,
+  WorkspaceResolutionError,
+} from './workspace-resolver.js';
 
 type CatalogOperation =
   | 'skill.catalog.query'
@@ -67,8 +72,13 @@ export class HostSkillCatalogCoordinator {
 
   query(input: SkillCatalogQueryInput): Promise<OperationOutcome<'skill.catalog.query'>> {
     return this.#admitProtocolOperation('skill.catalog.query', () =>
-      this.#workspaceResolver.run(input.context.workspace, (workspace) =>
-        this.#repository.query(repositoryQueryInput(input), { projectRoot: workspace.cwd }),
+      this.#workspaceResolver.run(input.context.workspace, async (workspace) =>
+        withResolvedWorkspace(
+          await this.#repository.query(repositoryQueryInput(input), {
+            projectRoot: workspace.cwd,
+          }),
+          workspace,
+        ),
       ),
     );
   }
@@ -98,8 +108,13 @@ export class HostSkillCatalogCoordinator {
 
   mutate(input: SkillCatalogMutateInput): Promise<OperationOutcome<'skill.catalog.mutate'>> {
     return this.#admitProtocolOperation('skill.catalog.mutate', () =>
-      this.#workspaceResolver.run(input.context.workspace, (workspace) =>
-        this.#repository.mutate(repositoryMutateInput(input), { projectRoot: workspace.cwd }),
+      this.#workspaceResolver.run(input.context.workspace, async (workspace) =>
+        withResolvedWorkspace(
+          await this.#repository.mutate(repositoryMutateInput(input), {
+            projectRoot: workspace.cwd,
+          }),
+          workspace,
+        ),
       ),
     );
   }
@@ -108,10 +123,13 @@ export class HostSkillCatalogCoordinator {
     input: SkillCatalogPreviewUpdateInput,
   ): Promise<OperationOutcome<'skill.catalog.preview-update'>> {
     return this.#admitProtocolOperation('skill.catalog.preview-update', () =>
-      this.#workspaceResolver.run(input.context.workspace, (workspace) =>
-        this.#repository.previewUpdate(repositoryPreviewInput(input), {
-          projectRoot: workspace.cwd,
-        }),
+      this.#workspaceResolver.run(input.context.workspace, async (workspace) =>
+        withResolvedWorkspace(
+          await this.#repository.previewUpdate(repositoryPreviewInput(input), {
+            projectRoot: workspace.cwd,
+          }),
+          workspace,
+        ),
       ),
     );
   }
@@ -171,6 +189,16 @@ export class HostSkillCatalogCoordinator {
     );
     return pending;
   }
+}
+
+function withResolvedWorkspace<Result extends object>(
+  result: Result,
+  workspace: ResolvedWorkspace,
+): Result & { readonly resolvedWorkspace: WorkspaceProjection } {
+  return {
+    ...result,
+    resolvedWorkspace: { target: workspace.target, hostCwd: workspace.cwd },
+  };
 }
 
 function repositoryQueryInput(input: SkillCatalogQueryInput): SkillCatalogRepositoryQueryInput {

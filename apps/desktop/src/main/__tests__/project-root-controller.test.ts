@@ -12,15 +12,35 @@ test('persists Project preferences by Runtime Host root identity', async () => {
   const preferenceFile = join(base, 'project-preferences.json');
   try {
     const first = controller(base, fallback, 'root-a');
-    first.setSelection('project-a', fallback);
-    await waitForPreference(preferenceFile, 'root-a', 'project-a');
+    await first.setSelection('project-a', fallback);
 
     const second = controller(base, fallback, 'root-b');
-    second.setSelection('project-b', fallback);
-    await waitForPreference(preferenceFile, 'root-b', 'project-b');
+    await second.setSelection('project-b', fallback);
 
     assert.equal((await controller(base, fallback, 'root-a').currentSelection()).projectId, 'project-a');
     assert.equal((await controller(base, fallback, 'root-b').currentSelection()).projectId, 'project-b');
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('serializes rapid selections without losing another Runtime Host root', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-preference-concurrency-'));
+  const fallback = join(base, 'fallback');
+  await mkdir(fallback);
+  const preferenceFile = join(base, 'project-preferences.json');
+  try {
+    const first = controller(base, fallback, 'root-a');
+    const second = controller(base, fallback, 'root-b');
+    await Promise.all([
+      first.setSelection('project-a-1', fallback),
+      second.setSelection('project-b', fallback),
+      first.setSelection('project-a-2', fallback),
+    ]);
+    assert.deepEqual(JSON.parse(await readFile(preferenceFile, 'utf8')).selections, {
+      'root-a': 'project-a-2',
+      'root-b': 'project-b',
+    });
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -37,7 +57,12 @@ test('migrates the legacy path selection once and removes the legacy file', asyn
     assert.equal(selection.projectId, 'project-1');
     assert.equal(selection.path, project);
     await assert.rejects(() => readFile(legacy), /ENOENT/);
-    await waitForPreference(join(base, 'project-preferences.json'), 'root-a', 'project-1');
+    assert.equal(
+      JSON.parse(await readFile(join(base, 'project-preferences.json'), 'utf8')).selections[
+        'root-a'
+      ],
+      'project-1',
+    );
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -89,23 +114,4 @@ function controller(base: string, fallback: string, rootId: string) {
     legacySelectionFile: join(base, 'last-project-path.json'),
     fallbackRoots: () => [fallback],
   });
-}
-
-async function waitForPreference(
-  file: string,
-  rootId: string,
-  projectId: string,
-): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      const parsed = JSON.parse(await readFile(file, 'utf8')) as {
-        selections?: Record<string, string>;
-      };
-      if (parsed.selections?.[rootId] === projectId) return;
-    } catch {
-      // The best-effort write may still be pending.
-    }
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail(`Preference was not persisted for ${rootId}`);
 }

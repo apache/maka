@@ -1,4 +1,5 @@
-import { readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { resolveProjectRoot } from '@maka/runtime';
 
 export interface CurrentProjectSelection {
@@ -15,7 +16,7 @@ export interface ProjectRootController {
     | { ok: true; projectPath: string }
     | { ok: false; reason: 'invalid-path' | 'not-found' }
   >;
-  setSelection(projectId: string | null, projectPath: string): void;
+  setSelection(projectId: string | null, projectPath: string): Promise<void>;
 }
 
 export interface ProjectRootControllerDeps {
@@ -29,6 +30,8 @@ interface ProjectPreferenceFile {
   readonly version: 1;
   readonly selections: Readonly<Record<string, string | null>>;
 }
+
+const preferenceWriteTails = new Map<string, Promise<void>>();
 
 export function createProjectRootController(
   deps: ProjectRootControllerDeps,
@@ -60,9 +63,9 @@ export function createProjectRootController(
     return { ok: true, projectPath: await resolveProjectRoot([projectPath]) };
   }
 
-  function setSelection(projectId: string | null, projectPath: string): void {
+  function setSelection(projectId: string | null, projectPath: string): Promise<void> {
     selectedProject = { projectId, path: projectPath };
-    void persistSelection(deps, projectId);
+    return persistSelection(deps, projectId);
   }
 
   return { current, currentSelection, resolveExplicit, setSelection };
@@ -127,20 +130,46 @@ async function savePreference(
   deps: ProjectRootControllerDeps,
   projectId: string | null,
 ): Promise<boolean> {
-  try {
-    const current = await readPreferenceFile(deps.preferenceFile);
-    await writeFile(
-      deps.preferenceFile,
-      JSON.stringify({
+  return enqueuePreferenceWrite(deps.preferenceFile, async () => {
+    try {
+      const current = await readPreferenceFile(deps.preferenceFile);
+      await writePreferenceFile(deps.preferenceFile, {
         version: 1,
         selections: { ...current.selections, [deps.rootId]: projectId },
-      } satisfies ProjectPreferenceFile),
-      'utf8',
-    );
-    return true;
-  } catch {
-    // Selection persistence is best-effort and never blocks the active window.
-    return false;
+      });
+      return true;
+    } catch {
+      // Selection persistence is best-effort and never blocks the active window.
+      return false;
+    }
+  });
+}
+
+function enqueuePreferenceWrite<Result>(
+  file: string,
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  const previous = preferenceWriteTails.get(file) ?? Promise.resolve();
+  const result = previous.then(operation, operation);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  preferenceWriteTails.set(file, tail);
+  void tail.then(() => {
+    if (preferenceWriteTails.get(file) === tail) preferenceWriteTails.delete(file);
+  });
+  return result;
+}
+
+async function writePreferenceFile(file: string, value: ProjectPreferenceFile): Promise<void> {
+  const temporaryFile = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryFile, JSON.stringify(value), { encoding: 'utf8', flag: 'wx' });
+    await rename(temporaryFile, file);
+  } catch (error) {
+    await rm(temporaryFile, { force: true }).catch(() => undefined);
+    throw error;
   }
 }
 

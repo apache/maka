@@ -52,6 +52,10 @@ test('rejects a repeated Skill catalog cursor instead of looping forever', async
       revision: 'sha256:skills',
       items: [],
       nextCursor: 'repeated',
+      resolvedWorkspace: {
+        target: { kind: 'host_path', path: '/repo' },
+        hostCwd: '/repo',
+      },
     };
   });
 

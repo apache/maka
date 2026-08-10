@@ -21,24 +21,32 @@ test('keeps a resolved Skill mutation on one project root', async () => {
           revision: `sha256:${'a'.repeat(64)}`,
           view: 'governance',
           items: [{ kind: 'skill', id: 'writer', ref: 'project:writer' }],
+          workspace: {
+            target: { kind: 'project', projectId: 'project-a' },
+            hostCwd: '/tmp/project-a',
+          },
         };
       },
       mutateSkillCatalog: async ({ context }: { context: { workspace: unknown } }) => {
         mutationContexts.push(context.workspace);
         mutationAttempts += 1;
         if (mutationAttempts === 1) return { kind: 'revision_conflict' };
-        return { kind: 'rejected', reason: 'not_found' };
+        return {
+          kind: 'rejected',
+          reason: 'not_found',
+          resolvedWorkspace: {
+            target: { kind: 'project', projectId: 'project-a' },
+            hostCwd: '/tmp/project-a',
+          },
+        };
       },
     } as never,
     workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
     mainWindowController: {} as never,
-    getCurrentWorkspace: async () => {
+    getCurrentWorkspaceTarget: async () => {
       workspaceReads += 1;
       const suffix = workspaceReads === 1 ? 'a' : 'b';
-      return {
-        target: { kind: 'project', projectId: `project-${suffix}` },
-        hostCwd: `/tmp/project-${suffix}`,
-      };
+      return { kind: 'project', projectId: `project-${suffix}` };
     },
     getDefaultPermissionMode: async () => 'ask',
     openPath: async () => '',
@@ -71,9 +79,9 @@ test('requests the Host-owned invocable projection for existing and new Sessions
     } as never,
     workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
     mainWindowController: {} as never,
-    getCurrentWorkspace: async () => ({
-      target: { kind: 'project', projectId: 'project-a' },
-      hostCwd: '/tmp/project-a',
+    getCurrentWorkspaceTarget: async () => ({
+      kind: 'project',
+      projectId: 'project-a',
     }),
     getDefaultPermissionMode: async () => 'bypass',
     openPath: async () => '',

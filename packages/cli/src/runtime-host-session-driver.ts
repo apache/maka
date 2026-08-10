@@ -32,6 +32,7 @@ import type {
   SessionCatalogItem,
   SessionCatalogProjection,
   SessionUpdateResult,
+  WorkspaceProjection,
   WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import {
@@ -113,8 +114,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
   #sessionId: string | null = null;
-  #cwd: string;
-  #workspace: WorkspaceTarget;
+  #workspace: WorkspaceProjection;
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
@@ -147,8 +147,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
-    this.#cwd = input.cwd;
-    this.#workspace = input.workspace ?? { kind: 'host_path', path: input.cwd };
+    this.#workspace = {
+      target: input.workspace ?? { kind: 'host_path', path: input.cwd },
+      hostCwd: input.cwd,
+    };
     this.#model = input.model;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#permissionMode = input.permissionMode ?? 'ask';
@@ -162,10 +164,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async createSession(input: CreateSessionInput): Promise<SessionSummary> {
     if (this.#sessionId) throw new Error('Cannot create a Session while another is active.');
     if (!input.model) throw new Error('Runtime Host Session creation requires an explicit model');
-    if (input.cwd !== this.#cwd) {
-      this.#workspace = { kind: 'host_path', path: input.cwd };
-    }
-    this.#cwd = input.cwd;
+    this.#workspace = {
+      target: workspaceTargetForCreate(this.#workspace, input),
+      hostCwd: input.cwd,
+    };
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
     this.#thinkingLevel = input.thinkingLevel;
@@ -181,7 +183,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return sessions
       .map((session, index) => ({ session, index }))
       .sort((left, right) => {
-        const cwdDelta = cwdRank(left.session, this.#cwd) - cwdRank(right.session, this.#cwd);
+        const cwdDelta =
+          cwdRank(left.session, this.#workspace.hostCwd) -
+          cwdRank(right.session, this.#workspace.hostCwd);
         return cwdDelta !== 0 ? cwdDelta : left.index - right.index;
       })
       .map(({ session }) => session);
@@ -390,16 +394,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async moveSession(rawCwd: string): Promise<MakaSessionMoveResult> {
     const sessionId = this.#requireSession('move');
-    const nextCwd = await resolveMoveCwd(rawCwd, this.#cwd);
-    const previousCwd = this.#cwd;
+    const nextCwd = await resolveMoveCwd(rawCwd, this.#workspace.hostCwd);
+    const previousCwd = this.#workspace.hostCwd;
     if (nextCwd === previousCwd) {
       return { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
     }
     const oldCwdDirty = await this.#inspectCwdChanges(previousCwd).catch(() => undefined);
     const session = await this.#commitCwdRelocation(sessionId, nextCwd);
-    this.#cwd = session.workspace.hostCwd;
-    this.#workspace = session.workspace.target;
-    return { previousCwd, cwd: this.#cwd, changed: true, oldCwdDirty };
+    this.#workspace = session.workspace;
+    return { previousCwd, cwd: this.#workspace.hostCwd, changed: true, oldCwdDirty };
   }
 
   async switchSession(
@@ -420,7 +423,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
     let relocation: MakaSessionMoveResult | undefined;
     if (options.relocateCwd !== undefined) {
-      const nextCwd = await resolveMoveCwd(options.relocateCwd, this.#cwd);
+      const nextCwd = await resolveMoveCwd(options.relocateCwd, this.#workspace.hostCwd);
       const previousCwd = session.workspace.hostCwd;
       if (nextCwd === previousCwd) {
         relocation = { previousCwd, cwd: nextCwd, changed: false, oldCwdDirty: false };
@@ -448,8 +451,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#channelGeneration += 1;
     this.#sessionId = sessionId;
     await this.#replaceChannel(opened.channel);
-    this.#cwd = session.workspace.hostCwd;
-    this.#workspace = session.workspace.target;
+    this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
     this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
     this.#permissionMode = boundary.kind === 'bypass' ? 'bypass' : 'ask';
@@ -622,7 +624,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,
-        workspace: this.#workspace,
+        workspace: this.#workspace.target,
         name,
         modelTarget: {
           kind: 'explicit',
@@ -638,8 +640,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     );
     this.#sessionGeneration += 1;
     this.#sessionId = sessionId;
-    this.#cwd = session.workspace.hostCwd;
-    this.#workspace = session.workspace.target;
+    this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
     await this.#ensureChannel(sessionId);
     return session;
@@ -940,6 +941,19 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   ): Promise<OperationOutput<K>> {
     return this.#connection.request(operation, input);
   }
+}
+
+function workspaceTargetForCreate(
+  current: WorkspaceProjection,
+  input: Pick<CreateSessionInput, 'cwd' | 'projectId'>,
+): WorkspaceTarget {
+  if (typeof input.projectId === 'string') {
+    return { kind: 'project', projectId: input.projectId };
+  }
+  if (input.projectId === null || input.cwd !== current.hostCwd) {
+    return { kind: 'host_path', path: input.cwd };
+  }
+  return current.target;
 }
 
 interface LoadedSessionConfiguration {

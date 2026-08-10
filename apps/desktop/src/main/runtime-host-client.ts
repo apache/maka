@@ -98,6 +98,7 @@ import {
   type TurnInterruptResult,
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
+  type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
@@ -145,6 +146,7 @@ export interface DesktopSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
   readonly view: SkillCatalogView;
   readonly items: readonly SkillCatalogPageItem[];
+  readonly workspace: WorkspaceProjection;
 }
 
 export interface DesktopPricingMutationInput {
@@ -368,7 +370,17 @@ export class DesktopRuntimeHostClient {
   ): Promise<DesktopSkillCatalogSnapshot> {
     this.#assertOpen();
     try {
-      return await readRuntimeHostSkillCatalog(this.connection, context, view);
+      const snapshot = await readRuntimeHostSkillCatalog(
+        this.connection,
+        context,
+        view,
+      );
+      return {
+        revision: snapshot.revision,
+        view: snapshot.view,
+        items: snapshot.items,
+        workspace: snapshot.resolvedWorkspace,
+      };
     } catch (error) {
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
       throw new DesktopRuntimeHostClientError(

@@ -26,6 +26,62 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('honors explicit Project intent before inheriting the current workspace', async () => {
+    const cases = [
+      { cwd: '/repo', projectId: null, expected: { kind: 'host_path', path: '/repo' } },
+      {
+        cwd: '/repo',
+        projectId: 'project-b',
+        expected: { kind: 'project', projectId: 'project-b' },
+      },
+      {
+        cwd: '/other',
+        projectId: 'project-b',
+        expected: { kind: 'project', projectId: 'project-b' },
+      },
+      { cwd: '/repo', expected: { kind: 'project', projectId: 'project-a' } },
+      { cwd: '/other', expected: { kind: 'host_path', path: '/other' } },
+    ] as const;
+
+    for (const candidate of cases) {
+      const connection = new FakeConnection([
+        new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+      ]);
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: '/repo',
+        workspace: { kind: 'project', projectId: 'project-a' },
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        newId: () => 'session-id',
+      });
+
+      await driver.createSession({
+        cwd: candidate.cwd,
+        ...('projectId' in candidate ? { projectId: candidate.projectId } : {}),
+        backend: 'ai-sdk',
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        permissionMode: 'ask',
+      });
+
+      assert.deepEqual(
+        connection.requests.find(({ operation }) => operation === 'session.create')?.input,
+        {
+          sessionId: 'session-id',
+          workspace: candidate.expected,
+          name: 'New Chat',
+          modelTarget: {
+            kind: 'explicit',
+            connectionSlug: 'openai-main',
+            model: 'gpt-5',
+          },
+          permissionMode: 'ask',
+        },
+      );
+    }
+  });
+
   test('relocates a moved Session through Host authority before attaching', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tui-resume-moved-cwd-'));
     const target = join(root, 'new-worktree');
@@ -1042,6 +1098,16 @@ class FakeConnection {
           workspace: { target: workspace, hostCwd: workspace.path },
         }),
       } as OperationOutput<K>;
+    }
+    if (operation === 'session.create') {
+      const create = input as OperationInput<'session.create'>;
+      return sessionProjection({
+        id: create.sessionId,
+        workspace: {
+          target: create.workspace,
+          hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
+        },
+      }) as OperationOutput<K>;
     }
     const turnInput = input as {
       sessionId?: string;

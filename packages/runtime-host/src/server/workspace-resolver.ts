@@ -1,7 +1,13 @@
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import type { ProjectRecord } from '@maka/core';
-import type { ProjectCatalog } from '@maka/storage';
+import {
+  type ProjectCatalog,
+  ProjectArchivedError,
+  ProjectNotFoundError,
+  ProjectPathMismatchError,
+  ProjectUnavailableError,
+} from '@maka/storage';
 import type { WorkspaceTarget } from '../protocol/index.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
 
@@ -55,7 +61,21 @@ export class HostWorkspaceResolver {
     return this.membership.run(async () => {
       const workspace = await this.#resolve(target);
       if (workspace.projectId !== null) {
-        await this.catalog.touch(workspace.projectId, workspace.cwd);
+        try {
+          await this.catalog.touch(workspace.projectId, workspace.cwd);
+        } catch (error) {
+          if (error instanceof ProjectNotFoundError) {
+            throw new WorkspaceResolutionError('not_found', error.message);
+          }
+          if (
+            error instanceof ProjectArchivedError ||
+            error instanceof ProjectUnavailableError ||
+            error instanceof ProjectPathMismatchError
+          ) {
+            throw new WorkspaceResolutionError('operation_conflict', error.message);
+          }
+          throw error;
+        }
         this.onProjectChanged();
       }
       return operation(workspace);

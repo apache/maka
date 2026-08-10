@@ -127,6 +127,8 @@ Project Catalog 提供 revision-pinned、paginated 的 summary 与 location view
 
 Client 不把 path 与 Project ID 拼在一起，也不自行解析 Host path。Desktop 将所选 Project 保存为按 root 隔离的 Client preference；选择 Project 不修改 Host 全局状态。没有 Host-path authority 的 Client 可以使用已注册 Project，但不能注册、relink、请求 Host 侧 reveal 或提交 Host path。
 
+Skill Catalog 管理属于 Host 文件系统操作。它要求 Host-path authority，并返回该操作实际解析出的 workspace。
+
 ## 生命周期
 
 | 阶段 | Contract |

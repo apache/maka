@@ -20,7 +20,7 @@ import {
   type BotIncomingMessage,
 } from "@maka/runtime";
 import { loadOrCreateRuntimeHostClientInstanceId } from "@maka/runtime-host/client";
-import type { WorkspaceProjection } from "@maka/runtime-host/protocol";
+import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
@@ -262,15 +262,11 @@ const projectManagement: ProjectManagementService = createProjectManagementServi
   },
   selection: projectRoot,
 });
-const currentDesktopWorkspace = async (): Promise<WorkspaceProjection> => {
+const currentDesktopWorkspaceTarget = async (): Promise<WorkspaceTarget> => {
   const current = await projectManagement.current();
-  return {
-    target:
-      typeof current.projectId === "string"
-        ? { kind: "project", projectId: current.projectId }
-        : { kind: "host_path", path: current.path },
-    hostCwd: current.path,
-  };
+  return typeof current.projectId === "string"
+    ? { kind: "project", projectId: current.projectId }
+    : { kind: "host_path", path: current.path };
 };
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshotRevision(),
@@ -445,7 +441,7 @@ owner = await startRuntimeHostDesktopOwner(
     },
     botRegistry,
     resolveBotCreateTarget: async () => ({
-      workspace: (await currentDesktopWorkspace()).target,
+      workspace: await currentDesktopWorkspaceTarget(),
     }),
     resolveSessionCreateProject: async (input) => {
       return resolveDesktopSessionWorkspace(
@@ -664,7 +660,7 @@ function registerHostClientIpc(
     client,
     workspaceRoot,
     mainWindowController,
-    getCurrentWorkspace: currentDesktopWorkspace,
+    getCurrentWorkspaceTarget: currentDesktopWorkspaceTarget,
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),

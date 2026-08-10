@@ -14,6 +14,7 @@ import {
   type SkillCatalogPageItem,
   type SkillCatalogRevision,
   type SkillCatalogView,
+  type WorkspaceProjection,
   type OperationOutput,
   type ProjectCatalogPageItem,
   type ProjectCatalogProject,
@@ -32,6 +33,7 @@ export interface RuntimeHostSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
   readonly view: SkillCatalogView;
   readonly items: readonly SkillCatalogPageItem[];
+  readonly resolvedWorkspace: WorkspaceProjection;
 }
 
 export type RuntimeHostConnectionCatalogEntry = Omit<
@@ -88,6 +90,7 @@ export async function readRuntimeHostSkillCatalog(
   context: SkillCatalogWorkspaceContext,
   view: SkillCatalogView,
 ): Promise<RuntimeHostSkillCatalogSnapshot> {
+  let resolvedWorkspace: WorkspaceProjection | undefined;
   const { first, pages } = await collectStablePages(
     'skill',
     async () => {
@@ -96,7 +99,9 @@ export async function readRuntimeHostSkillCatalog(
         context,
         view,
       });
-      return result.kind === 'page' && result.view === view ? result : null;
+      if (result.kind !== 'page' || result.view !== view) return null;
+      resolvedWorkspace = result.resolvedWorkspace;
+      return result;
     },
     async (revision, cursor) => {
       const result = await connection.request('skill.catalog.query', {
@@ -106,10 +111,30 @@ export async function readRuntimeHostSkillCatalog(
         revision,
         cursor,
       });
-      return result.kind === 'page' && result.view === view ? result : null;
+      return result.kind === 'page' &&
+        result.view === view &&
+        workspaceProjectionsEqual(result.resolvedWorkspace, resolvedWorkspace)
+        ? result
+        : null;
     },
   );
-  return { revision: first.revision, view, items: pages.flatMap((page) => page.items) };
+  return {
+    revision: first.revision,
+    view,
+    items: pages.flatMap((page) => page.items),
+    resolvedWorkspace: first.resolvedWorkspace,
+  };
+}
+
+function workspaceProjectionsEqual(
+  left: WorkspaceProjection,
+  right: WorkspaceProjection | undefined,
+): boolean {
+  if (!right) return false;
+  if (left.hostCwd !== right.hostCwd || left.target.kind !== right.target.kind) return false;
+  return left.target.kind === 'project'
+    ? right.target.kind === 'project' && left.target.projectId === right.target.projectId
+    : right.target.kind === 'host_path' && left.target.path === right.target.path;
 }
 
 export async function readRuntimeHostInvocableSkills(

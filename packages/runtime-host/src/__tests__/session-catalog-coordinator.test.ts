@@ -12,7 +12,7 @@ import {
   type SessionHeader,
 } from '@maka/core';
 import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
-import type { ProjectCatalog } from '@maka/storage';
+import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
 import {
   SessionMetadataVersionConflictError,
   type SessionCatalogRecord,
@@ -415,7 +415,7 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('creation fingerprints and persists the canonical cwd behind a symlink', async () => {
+test('creation persists a canonical cwd while fingerprints retain exact target intent', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-create-cwd-'));
   const target = join(root, 'target');
   const link = join(root, 'link');
@@ -455,10 +455,45 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
     assert.equal(requests.length, 2);
     assert.equal(requests[0]?.input.cwd, await realpath(target));
     assert.equal(requests[1]?.input.cwd, await realpath(target));
-    assert.equal(requests[0]?.requestFingerprint, requests[1]?.requestFingerprint);
+    assert.notEqual(requests[0]?.requestFingerprint, requests[1]?.requestFingerprint);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('exact Project creation retry succeeds after the Project becomes archived', async () => {
+  const fixture = createFixture({
+    projectCatalog: {
+      list: async () => [
+        {
+          id: 'project-1',
+          name: 'Project',
+          locations: [{ path: '/archived', isWorktree: false }],
+          archivedAt: 1,
+          available: true,
+          preferredPath: '/archived',
+        },
+      ],
+    } as never,
+    stores: {
+      probeStableSessionCreate: async () => ({
+        kind: 'existing',
+        record: headerSnapshot(sessionHeader('session-1', ['user-label']), 3),
+      }),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'project', projectId: 'project-1' },
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(fixture.drainRequests(), 0);
 });
 
 test('creation resolves a Project alias and records Host-owned usage', async () => {
@@ -524,6 +559,40 @@ test('creation resolves a Project alias and records Host-owned usage', async () 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('creation reports a Project path lost before usage recording without draining', async () => {
+  const fixture = createFixture({
+    projectCatalog: {
+      list: async () => [
+        {
+          id: 'project-1',
+          name: 'Project',
+          locations: [{ path: '/missing', isWorktree: false }],
+          available: true,
+          preferredPath: '/missing',
+        },
+      ],
+      touch: async () => {
+        throw new ProjectUnavailableError('project-1');
+      },
+    } as never,
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'project', projectId: 'project-1' },
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'operation_conflict', message: 'Project is unavailable: project-1' },
+  });
+  assert.equal(fixture.drainRequests(), 0);
 });
 
 test('Host-path relocation canonicalizes once and commits through Runtime authority', async () => {

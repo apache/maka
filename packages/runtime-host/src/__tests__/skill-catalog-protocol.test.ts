@@ -28,6 +28,10 @@ const CONTEXT = {
     path: process.platform === 'win32' ? 'C:\\workspace\\project' : '/workspace/project',
   },
 };
+const RESOLVED_WORKSPACE = {
+  target: CONTEXT.workspace,
+  hostCwd: CONTEXT.workspace.path,
+};
 
 type IsAssignable<From, To> = [From] extends [To] ? true : false;
 type AssertFalse<Value extends false> = Value;
@@ -117,7 +121,7 @@ describe('Runtime Host Skill catalog protocol', () => {
         context: { workspace: { kind: 'project', projectId: 'project-1' } },
         view: 'governance',
       }),
-      false,
+      true,
     );
     assert.equal(
       SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
@@ -200,9 +204,17 @@ describe('Runtime Host Skill catalog protocol', () => {
 
   test('decodes start and continuation queries with bounded workspace context', () => {
     for (const input of [
-      { kind: 'start', context: CONTEXT, view: 'governance' },
+      {
+        kind: 'start',
+        context: CONTEXT,
+        view: 'governance',
+      },
       { kind: 'start', context: CONTEXT, view: 'bundled' },
-      { kind: 'start', context: CONTEXT, view: 'managed_sources' },
+      {
+        kind: 'start',
+        context: CONTEXT,
+        view: 'managed_sources',
+      },
       {
         kind: 'continue',
         context: CONTEXT,
@@ -393,7 +405,13 @@ describe('Runtime Host Skill catalog protocol', () => {
         true,
       );
 
-      const frame = response('skill.catalog.query', result);
+      const frame = response('skill.catalog.query', {
+        ...result,
+        resolvedWorkspace: {
+          target: { kind: 'host_path', path: projectRoot },
+          hostCwd: projectRoot,
+        },
+      });
       assert.deepEqual(decodeHostFrame(frame), frame);
     } finally {
       await rm(base, { recursive: true, force: true });
@@ -523,15 +541,26 @@ describe('Runtime Host Skill catalog protocol', () => {
 
   test('decodes mutation outcomes, revision conflicts, and typed rejections', () => {
     for (const result of [
-      { kind: 'committed', revision: NEXT_REVISION, entry: governanceItem() },
-      { kind: 'unchanged', revision: REVISION, entry: null },
+      {
+        kind: 'committed',
+        revision: NEXT_REVISION,
+        entry: governanceItem(),
+        resolvedWorkspace: RESOLVED_WORKSPACE,
+      },
+      {
+        kind: 'unchanged',
+        revision: REVISION,
+        entry: null,
+        resolvedWorkspace: RESOLVED_WORKSPACE,
+      },
       {
         kind: 'revision_conflict',
         expectedRevision: REVISION,
         actualRevision: NEXT_REVISION,
+        resolvedWorkspace: RESOLVED_WORKSPACE,
       },
-      { kind: 'rejected', reason: 'blocked_scope' },
-      { kind: 'rejected', reason: 'metadata_error' },
+      { kind: 'rejected', reason: 'blocked_scope', resolvedWorkspace: RESOLVED_WORKSPACE },
+      { kind: 'rejected', reason: 'metadata_error', resolvedWorkspace: RESOLVED_WORKSPACE },
     ]) {
       const frame = response('skill.catalog.mutate', result);
       assert.deepEqual(decodeHostFrame(frame), frame);
@@ -562,6 +591,7 @@ describe('Runtime Host Skill catalog protocol', () => {
       },
       expectedCurrentSha256: REVISION,
       expectedSourceSha256: NEXT_REVISION,
+      resolvedWorkspace: RESOLVED_WORKSPACE,
     };
     const requestFrame = request('skill.catalog.preview-update', {
       context: CONTEXT,
@@ -574,6 +604,7 @@ describe('Runtime Host Skill catalog protocol', () => {
     const metadataErrorFrame = response('skill.catalog.preview-update', {
       kind: 'rejected',
       reason: 'metadata_error',
+      resolvedWorkspace: RESOLVED_WORKSPACE,
     });
     assert.deepEqual(decodeHostFrame(metadataErrorFrame), metadataErrorFrame);
 
@@ -670,6 +701,7 @@ function page(view: 'governance' | 'bundled' | 'managed_sources', items: readonl
     revision: REVISION,
     items,
     nextCursor: null,
+    resolvedWorkspace: RESOLVED_WORKSPACE,
   };
 }
 

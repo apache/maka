@@ -7,11 +7,12 @@ import {
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogManagedUpdateMutation,
-  SkillCatalogMutateResult,
   SkillCatalogMutation,
+  SkillCatalogMutationOutcome,
   SkillCatalogMutationRejectedReason,
   SkillCatalogPreviewUpdateResult,
   WorkspaceProjection,
+  WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type {
   BundledSkillCatalogEntry,
@@ -44,7 +45,7 @@ interface RuntimeHostSkillsIpcDeps {
   readonly client: DesktopRuntimeHostClient;
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
-  readonly getCurrentWorkspace: () => Promise<WorkspaceProjection>;
+  readonly getCurrentWorkspaceTarget: () => Promise<WorkspaceTarget>;
   readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
 }
@@ -57,7 +58,7 @@ interface GovernanceProjection {
 }
 
 type StableSkillMutationResult = Exclude<
-  SkillCatalogMutateResult,
+  SkillCatalogMutationOutcome,
   { readonly kind: 'revision_conflict' }
 >;
 
@@ -72,7 +73,7 @@ export function registerRuntimeHostSkillsIpc(
   handleReconnectableRead(deps.ipcMain, "skills:list", async () => {
     const projection = await loadGovernance(
       deps,
-      await deps.getCurrentWorkspace(),
+      await deps.getCurrentWorkspaceTarget(),
     );
     return projection.items.map((item) =>
       toSkillEntry(item, projection.paths.get(item.ref) ?? ""),
@@ -88,7 +89,7 @@ export function registerRuntimeHostSkillsIpc(
           ? { kind: "session" as const, sessionId }
           : {
               kind: "new_session" as const,
-              context: { workspace: (await deps.getCurrentWorkspace()).target },
+              context: { workspace: await deps.getCurrentWorkspaceTarget() },
               collaborationMode:
                 normalizeNewSessionCollaborationMode(newSessionContext) ??
                 "agent",
@@ -101,9 +102,9 @@ export function registerRuntimeHostSkillsIpc(
   );
 
   handleReconnectableRead(deps.ipcMain, "skills:catalog:list", async () => {
-    const workspace = await deps.getCurrentWorkspace();
+    const workspace = await deps.getCurrentWorkspaceTarget();
     const snapshot = await deps.client.loadSkillCatalog(
-      { workspace: workspace.target },
+      { workspace },
       "bundled",
     );
     return snapshot.items.flatMap((item): BundledSkillCatalogEntry[] =>
@@ -127,9 +128,9 @@ export function registerRuntimeHostSkillsIpc(
   });
 
   handleReconnectableRead(deps.ipcMain, "skills:sources:list", async () => {
-    const workspace = await deps.getCurrentWorkspace();
+    const workspace = await deps.getCurrentWorkspaceTarget();
     const snapshot = await deps.client.loadSkillCatalog(
-      { workspace: workspace.target },
+      { workspace },
       "managed_sources",
     );
     return snapshot.items.flatMap((item): ManagedSkillSourceEntry[] =>
@@ -179,7 +180,7 @@ export function registerRuntimeHostSkillsIpc(
   handleReconnectableRead(deps.ipcMain, "skills:details", async (_event, idOrRef: string) => {
     const projection = await loadGovernance(
       deps,
-      await deps.getCurrentWorkspace(),
+      await deps.getCurrentWorkspaceTarget(),
     );
     const resolved = resolveGovernanceItem(projection.items, idOrRef);
     if (!resolved.ok) return resolved;
@@ -196,9 +197,9 @@ export function registerRuntimeHostSkillsIpc(
     deps.ipcMain,
     "skills:previewUpdate",
     async (_event, idOrRef: string) => {
-      const workspace = await deps.getCurrentWorkspace();
+      const workspaceTarget = await deps.getCurrentWorkspaceTarget();
       for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
-        const projection = await loadGovernance(deps, workspace);
+        const projection = await loadGovernance(deps, workspaceTarget);
         const resolved = resolveGovernanceItem(projection.items, idOrRef);
         if (!resolved.ok) return resolved;
         const result = await deps.client.previewSkillUpdate({
@@ -207,10 +208,15 @@ export function registerRuntimeHostSkillsIpc(
           ref: resolved.item.ref,
         });
         if (result.kind === "revision_conflict") continue;
+        const workspace = result.resolvedWorkspace;
         return projectPreviewResult(
           result,
           resolved.item,
-          projection.paths.get(resolved.item.ref) ?? "",
+          await resolveProjectedPath(
+            deps.workspaceRoot,
+            workspace.hostCwd,
+            resolved.item.ref,
+          ),
         );
       }
       throw new Error(
@@ -321,12 +327,17 @@ export function registerRuntimeHostSkillsIpc(
   deps.ipcMain.handle(
     "skills:open",
     async (_event, idOrRef: string, target: "file" | "directory" = "file") => {
-      const projectRoot = (await deps.getCurrentWorkspace()).hostCwd;
+      const projection = await loadGovernance(
+        deps,
+        await deps.getCurrentWorkspaceTarget(),
+      );
+      const item = resolveGovernanceItem(projection.items, idOrRef);
+      if (!item.ok) return item;
       const resolved = await resolveSkillOpenPath(
         deps.workspaceRoot,
-        idOrRef,
+        item.item.ref,
         target,
-        projectRoot,
+        projection.workspace.hostCwd,
       );
       if (!resolved.ok) return resolved;
       const error = await deps.openPath(resolved.path);
@@ -339,17 +350,17 @@ export function registerRuntimeHostSkillsIpc(
 
 async function loadGovernance(
   deps: RuntimeHostSkillsIpcDeps,
-  workspace: WorkspaceProjection,
+  workspace: WorkspaceTarget,
 ): Promise<GovernanceProjection> {
   const snapshot = await deps.client.loadSkillCatalog(
-    { workspace: workspace.target },
+    { workspace },
     "governance",
   );
   return {
-    workspace,
+    workspace: snapshot.workspace,
     snapshot,
     items: snapshot.items.filter(isGovernanceItem),
-    paths: await loadSkillPaths(deps.workspaceRoot, workspace.hostCwd),
+    paths: await loadSkillPaths(deps.workspaceRoot, snapshot.workspace.hostCwd),
   };
 }
 
@@ -460,13 +471,16 @@ async function mutateResolvedSkillRaw(
   idOrRef: string,
   mutation: (ref: string) => SkillCatalogMutation,
 ): Promise<StableSkillMutation> {
-  const workspace = await deps.getCurrentWorkspace();
+  const workspace = await deps.getCurrentWorkspaceTarget();
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const projection = await loadGovernance(deps, workspace);
     const resolved = resolveGovernanceItem(projection.items, idOrRef);
     if (!resolved.ok) {
       return {
-        result: { kind: "rejected", reason: "not_found" },
+        result: {
+          kind: "rejected",
+          reason: "not_found",
+        },
         workspace: projection.workspace,
       };
     }
@@ -476,7 +490,7 @@ async function mutateResolvedSkillRaw(
       mutation: mutation(resolved.item.ref),
     });
     if (result.kind !== "revision_conflict") {
-      return { result, workspace: projection.workspace };
+      return { result, workspace: result.resolvedWorkspace };
     }
   }
   throw new Error(
@@ -489,18 +503,20 @@ async function mutateSkill(
   view: "governance" | "bundled" | "managed_sources",
   mutation: SkillCatalogMutation,
 ): Promise<StableSkillMutation> {
-  const workspace = await deps.getCurrentWorkspace();
+  const workspace = await deps.getCurrentWorkspaceTarget();
   for (let attempt = 0; attempt < MAX_REVISION_ATTEMPTS; attempt += 1) {
     const snapshot = await deps.client.loadSkillCatalog(
-      { workspace: workspace.target },
+      { workspace },
       view,
     );
     const result = await deps.client.mutateSkillCatalog({
-      context: { workspace: workspace.target },
+      context: { workspace: snapshot.workspace.target },
       expectedRevision: snapshot.revision,
       mutation,
     });
-    if (result.kind !== "revision_conflict") return { result, workspace };
+    if (result.kind !== "revision_conflict") {
+      return { result, workspace: result.resolvedWorkspace };
+    }
   }
   throw new Error(
     "Skill catalog kept changing while Desktop applied a mutation",

@@ -56,11 +56,7 @@ import {
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
-import {
-  type HostWorkspaceResolver,
-  type ResolvedWorkspace,
-  WorkspaceResolutionError,
-} from './workspace-resolver.js';
+import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 type SessionCatalogStores = Pick<
   ExecutionStoresWriter<'interactive'>['sessionStore'],
@@ -235,26 +231,26 @@ export class HostSessionCatalogCoordinator {
 
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
+      const requestFingerprint = createRequestFingerprint(input, prepared);
       try {
+        const probe = await this.#stores.probeStableSessionCreate(
+          input.sessionId,
+          requestFingerprint,
+        );
+        if (probe.kind === 'existing') {
+          return createSuccess(
+            projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
+          );
+        }
+        if (probe.kind === 'conflict') {
+          return createFailure(
+            'operation_conflict',
+            'Session identity belongs to a different create request',
+          );
+        }
         return await this.#workspaceResolver.runWithUsageRecorded(
           input.workspace,
           async (workspace) => {
-            const requestFingerprint = createRequestFingerprint(input, prepared, workspace);
-            const probe = await this.#stores.probeStableSessionCreate(
-              input.sessionId,
-              requestFingerprint,
-            );
-            if (probe.kind === 'existing') {
-              return createSuccess(
-                projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
-              );
-            }
-            if (probe.kind === 'conflict') {
-              return createFailure(
-                'operation_conflict',
-                'Session identity belongs to a different create request',
-              );
-            }
             const [model, policy] = await Promise.all([
               this.#resolveModel(input.modelTarget, input.thinkingLevel),
               this.#readRuntimePolicy(),
@@ -734,14 +730,13 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
 function createRequestFingerprint(
   input: SessionCreateInput,
   prepared: PreparedSessionCreate,
-  workspace: ResolvedWorkspace,
 ): string {
   const identity = [
-    'session.create.v2',
+    'session.create.v3',
     input.sessionId,
-    workspace.target.kind === 'project'
-      ? ['project', workspace.target.projectId]
-      : ['host_path', workspace.target.path],
+    input.workspace.kind === 'project'
+      ? ['project', input.workspace.projectId]
+      : ['host_path', input.workspace.path],
     prepared.name,
     prepared.labels,
     input.modelTarget.kind === 'default'

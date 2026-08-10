@@ -190,6 +190,10 @@ test('canonical model inventory uses the same revision and is deeply immutable',
   if (!query.ok) return;
   assert.equal(query.result.kind, 'page');
   if (query.result.kind !== 'page') return;
+  assert.deepEqual(query.result.resolvedWorkspace, {
+    target: { kind: 'host_path', path: project },
+    hostCwd: project,
+  });
   const model = await coordinator.readCanonicalModelInventory({ projectRoot: project });
   assert.equal(model.revision, query.result.revision);
   assert.equal(Object.isFrozen(model), true);
