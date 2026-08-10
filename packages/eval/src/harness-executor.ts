@@ -168,45 +168,50 @@ async function startTrial(
 ): Promise<RelayState> {
   const credentials = requireCredentials(cell.subject.credentials);
   const token = randomBytes(24).toString('hex');
-  const server = createServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('relay did not bind TCP');
   const trialsRoot = resolve(process.env[options.trialsRootEnv]!);
   await mkdir(trialsRoot, { recursive: true, mode: 0o700 });
   await chmod(trialsRoot, 0o700);
   const trialName = `${safeName(cell.id)}-${randomBytes(6).toString('hex')}`;
   const configPath = join(trialsRoot, `${trialName}.json`);
-  await writeFile(
-    configPath,
-    `${JSON.stringify({
-      task: decodeTask(framework, options, cell),
-      trial_name: trialName,
-      trials_dir: trialsRoot,
-      timeout_multiplier: positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier'),
-      agent: {
-        import_path: 'relay_agent:RelayAgent',
-        kwargs: { relay_host: '127.0.0.1', relay_port: address.port, relay_token: token },
-      },
-      environment: { ...options.environment, mounts: resolveMounts(options.mounts) },
-    })}\n`,
-    { flag: 'wx', mode: 0o600 },
-  );
+  const task = decodeTask(framework, options, cell);
+  const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
+  const environmentConfig = { ...options.environment, mounts: resolveMounts(options.mounts) };
   const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
   const environment: NodeJS.ProcessEnv = { ...process.env, MAKA_EVAL_FRAMEWORK: framework };
   for (const name of cell.subject.credentials) delete environment[name];
   environment.PYTHONPATH = [relayPath, process.env.PYTHONPATH].filter(Boolean).join(sep);
-  const child = spawn(
-    process.env[options.pythonPathEnv]!,
-    [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
-    { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
-  );
-  const abort = () => child.kill('SIGTERM');
-  signal?.addEventListener('abort', abort, { once: true });
-  if (signal?.aborted) abort();
+  const server = createServer();
+  let child: ChildProcess | undefined;
   let connectedSocket: Socket | undefined;
+  let abort: (() => void) | undefined;
   try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('relay did not bind TCP');
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        task,
+        trial_name: trialName,
+        trials_dir: trialsRoot,
+        timeout_multiplier: timeoutMultiplier,
+        agent: {
+          import_path: 'relay_agent:RelayAgent',
+          kwargs: { relay_host: '127.0.0.1', relay_port: address.port, relay_token: token },
+        },
+        environment: environmentConfig,
+      })}\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    child = spawn(
+      process.env[options.pythonPathEnv]!,
+      [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
+      { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
+    );
+    abort = () => child?.kill('SIGTERM');
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     const socket = await Promise.race([
       once(server, 'connection').then(([connected]) => connected as Socket),
       once(child, 'exit').then(([code]) => {
@@ -235,13 +240,13 @@ async function startTrial(
       used: false,
     };
   } catch (error) {
-    child.kill('SIGTERM');
-    await waitForTrial(child);
+    child?.kill('SIGTERM');
+    if (child) await waitForTrial(child);
     connectedSocket?.destroy();
     await closeServer(server);
     throw error;
   } finally {
-    signal?.removeEventListener('abort', abort);
+    if (abort) signal?.removeEventListener('abort', abort);
   }
 }
 

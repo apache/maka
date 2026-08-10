@@ -128,10 +128,12 @@ async function executeCell(
       async ({ context, verify }) => {
         let execution: SubjectExecutionResult;
         try {
-          execution = await subject.execute({
-            cell,
-            context: { ...context, ...(signal ? { signal } : {}) },
-          });
+          execution = decodeSubjectExecution(
+            await subject.execute({
+              cell,
+              context: { ...context, ...(signal ? { signal } : {}) },
+            }),
+          );
         } catch {
           return failure('infra_failed', 'subject execution failed');
         }
@@ -143,14 +145,17 @@ async function executeCell(
           return fromUncertainSubject(execution, signal?.aborted === true);
         }
         try {
-          const verified = await verify(execution);
+          const verified = decodeVerification(await verify(execution));
           return {
             score: verified.score,
             usage: execution.usage,
             costUsd: execution.costUsd,
             durationMs: execution.durationMs,
-            status: execution.status === 'failed' ? 'subject_failed' : verified.status,
-            failureReason: execution.failureReason ?? verified.failureReason,
+            status: settledStatus(execution.status, verified.status),
+            failureReason:
+              verified.status === 'infra_failed'
+                ? verified.failureReason
+                : (execution.failureReason ?? verified.failureReason),
             artifacts: [...execution.artifacts, ...verified.artifacts],
           };
         } catch {
@@ -170,6 +175,97 @@ async function executeCell(
   } catch {
     return failure('infra_failed', 'executor preparation failed');
   }
+}
+
+function decodeSubjectExecution(value: unknown): SubjectExecutionResult {
+  const subject = exactRecord(
+    value,
+    ['usage', 'costUsd', 'durationMs', 'status', 'failureReason', 'artifacts'],
+    ['output'],
+  );
+  if (
+    subject.status !== 'completed' &&
+    subject.status !== 'failed' &&
+    subject.status !== 'infra_failed' &&
+    subject.status !== 'indeterminate'
+  ) {
+    throw new Error('subject status is invalid');
+  }
+  if (subject.output !== undefined && typeof subject.output !== 'string') {
+    throw new Error('subject output is invalid');
+  }
+  const decoded = decodeEvalResult({
+    score: null,
+    usage: subject.usage,
+    costUsd: subject.costUsd,
+    durationMs: subject.durationMs,
+    status: subject.status === 'failed' ? 'subject_failed' : subject.status,
+    failureReason: subject.failureReason,
+    artifacts: subject.artifacts,
+  });
+  return {
+    ...(subject.output === undefined ? {} : { output: subject.output }),
+    usage: decoded.usage,
+    costUsd: decoded.costUsd,
+    durationMs: decoded.durationMs,
+    status: subject.status,
+    failureReason: decoded.failureReason,
+    artifacts: decoded.artifacts,
+  };
+}
+
+function decodeVerification(value: unknown): ExecutorVerification {
+  const verification = exactRecord(value, ['status', 'score', 'failureReason', 'artifacts']);
+  if (
+    verification.status !== 'completed' &&
+    verification.status !== 'subject_failed' &&
+    verification.status !== 'infra_failed'
+  ) {
+    throw new Error('verification status is invalid');
+  }
+  const decoded = decodeEvalResult({
+    score: verification.score,
+    usage: null,
+    costUsd: null,
+    durationMs: 0,
+    status: verification.status,
+    failureReason: verification.failureReason,
+    artifacts: verification.artifacts,
+  });
+  return {
+    status: verification.status,
+    score: decoded.score,
+    failureReason: decoded.failureReason,
+    artifacts: decoded.artifacts,
+  };
+}
+
+function settledStatus(
+  subject: SubjectExecutionResult['status'],
+  verification: ExecutorVerification['status'],
+): EvalResult['status'] {
+  if (verification === 'infra_failed') return 'infra_failed';
+  if (subject === 'failed' || verification === 'subject_failed') return 'subject_failed';
+  return 'completed';
+}
+
+function exactRecord(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('result envelope must be an object');
+  }
+  const record = value as Record<string, unknown>;
+  const allowed = new Set([...required, ...optional]);
+  if (
+    required.some((field) => !Object.hasOwn(record, field)) ||
+    Object.keys(record).some((field) => !allowed.has(field))
+  ) {
+    throw new Error('result envelope fields are invalid');
+  }
+  return record;
 }
 
 function fromUncertainSubject(subject: SubjectExecutionResult, cancelled: boolean): EvalResult {

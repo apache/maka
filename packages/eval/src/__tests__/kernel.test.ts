@@ -179,6 +179,94 @@ test('malformed subject output is recorded as replaceable infrastructure failure
   }
 });
 
+test('verifier infrastructure failure remains replaceable after subject failure', async () => {
+  const store = new MemoryStore();
+  let verifications = 0;
+  const executor: ExperimentExecutor = {
+    kind: 'executor',
+    runAttempt: async (_input, operation) => ({
+      kind: 'settled',
+      value: await operation({
+        context: {
+          cwd: '/workspace',
+          taskInput: 'solve',
+          metadata: {},
+          execute: async () => ({ exitCode: 1, stdout: '' }),
+        },
+        verify: async () => ({
+          status: ++verifications === 1 ? 'infra_failed' : 'completed',
+          score: verifications === 1 ? null : 0,
+          failureReason: verifications === 1 ? 'verifier unavailable' : null,
+          artifacts: [],
+        }),
+      }),
+    }),
+  };
+  const subject: SubjectAdapter = {
+    kind: 'maka',
+    execute: async () => ({
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'failed',
+      failureReason: 'subject failed',
+      artifacts: [],
+    }),
+  };
+  const oneArm = { ...spec(), subjects: [spec().subjects[0]!], repetitions: 1 };
+
+  assert.equal(
+    (await runExperiment({ spec: oneArm, store, executor, subjects: [subject] })).size,
+    0,
+  );
+  const results = await runExperiment({ spec: oneArm, store, executor, subjects: [subject] });
+
+  assert.equal(store.attempts[0]?.result.status, 'infra_failed');
+  assert.equal(results.get('task::1::a')?.result.status, 'subject_failed');
+  assert.equal(verifications, 2);
+});
+
+test('invalid subject status cannot be verified into a completed result', async () => {
+  const store = new MemoryStore();
+  let verifications = 0;
+  const executor: ExperimentExecutor = {
+    kind: 'executor',
+    runAttempt: async (_input, operation) => ({
+      kind: 'settled',
+      value: await operation({
+        context: {
+          cwd: '/workspace',
+          taskInput: 'solve',
+          metadata: {},
+          execute: async () => ({ exitCode: 0, stdout: '' }),
+        },
+        verify: async () => {
+          verifications += 1;
+          return { status: 'completed', score: 1, failureReason: null, artifacts: [] };
+        },
+      }),
+    }),
+  };
+  const subject = {
+    kind: 'maka' as const,
+    execute: async () => ({
+      usage: null,
+      costUsd: null,
+      durationMs: 1,
+      status: 'not-a-status',
+      failureReason: null,
+      artifacts: [],
+    }),
+  } as unknown as SubjectAdapter;
+  const oneArm = { ...spec(), subjects: [spec().subjects[0]!], repetitions: 1 };
+
+  const results = await runExperiment({ spec: oneArm, store, executor, subjects: [subject] });
+
+  assert.equal(results.size, 0);
+  assert.equal(store.attempts[0]?.result.status, 'infra_failed');
+  assert.equal(verifications, 0);
+});
+
 function worker(root: string): Promise<{ stdout: string; code: number | null }> {
   const child = spawn(
     process.execPath,
