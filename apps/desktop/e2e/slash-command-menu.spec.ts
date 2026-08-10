@@ -109,8 +109,10 @@ test('dispatches a staged slash command instead of steering it into a running tu
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill('keep streaming '.repeat(80));
+  const runningPrompt = `running-turn-marker ${'keep streaming '.repeat(80)}`;
+  await composer.fill(runningPrompt);
   await composer.press('Enter');
+  await expect(page.locator('.maka-user-message', { hasText: 'running-turn-marker' })).toBeVisible();
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
   await composer.fill('/compact explain');
