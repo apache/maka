@@ -1034,15 +1034,24 @@ async function assertWindowsFileHasOnlyDefaultStream(
       },
     );
   });
-  for (const line of stdout.split(/\r?\n/u)) {
-    const nameMatch = /^\s*Name\s*:\s*(.+?)\s*$/iu.exec(line);
-    if (!nameMatch) continue;
-    const name = nameMatch[1]!.trim();
-    // Default unnamed data stream only. Named streams (e.g. Zone.Identifier,
-    // or the test's `:unhashed`) are rejected.
-    if (name === ':$DATA' || name === '::$DATA') continue;
-    throw new Error('Managed dependency environment contains an alternate data stream');
+  for (const rawLine of stdout.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // Verbose form: "Name         : :$DATA" or "Name : :unhashed:$DATA"
+    const nameMatch = /^Name\s*:\s*(.+)$/iu.exec(line);
+    if (nameMatch) {
+      if (isDefaultWindowsDataStreamName(nameMatch[1]!.trim())) continue;
+      throw new Error('Managed dependency environment contains an alternate data stream');
+    }
+    // Compact form used by some fsutil builds: ":$DATA" / "Zone.Identifier:$DATA"
+    if (/:\$DATA\b/iu.test(line) && !isDefaultWindowsDataStreamName(line.split(/\s+/u)[0]!)) {
+      throw new Error('Managed dependency environment contains an alternate data stream');
+    }
   }
+}
+
+function isDefaultWindowsDataStreamName(name: string): boolean {
+  return name === ':$DATA' || name === '::$DATA';
 }
 
 function isPathWithin(candidate: string, root: string): boolean {
