@@ -51,6 +51,7 @@ export interface RuntimeHostSessionDomainsIpcHandle {
   sessionDomainChanged(change: SessionDomainChange): void;
   runtimeResourcePtyData(event: ShellRunPtyDataEvent): void;
   agentGraphChanged(event: AgentGraphClientChangedEvent): void;
+  sessionSubscriptionRecovered(sessionId: string): void;
   close(): Promise<void>;
 }
 
@@ -206,35 +207,44 @@ export function registerRuntimeHostSessionDomainsIpc(
     });
   });
 
+  const sessionDomainChanged = (change: SessionDomainChange): void => {
+    switch (change.domain) {
+      case 'task':
+        deps.sendToRenderer?.('tasks:changed', {
+          sessionId: change.sessionId,
+          taskIds: [],
+          at: now(),
+        });
+        break;
+      case 'deep_research':
+        deps.sendToRenderer?.('deepResearch:changed', {
+          sessionId: change.sessionId,
+          ts: now(),
+        });
+        break;
+      case 'plan':
+        deps.sendToRenderer?.('plan-mode:changed', { sessionId: change.sessionId });
+        break;
+      case 'runtime_resource':
+        void refreshRuntimeResources(deps, change.sessionId, change.resources);
+        break;
+    }
+  };
+
   return {
-    sessionDomainChanged(change) {
-      switch (change.domain) {
-        case 'task':
-          deps.sendToRenderer?.('tasks:changed', {
-            sessionId: change.sessionId,
-            taskIds: [],
-            at: now(),
-          });
-          break;
-        case 'deep_research':
-          deps.sendToRenderer?.('deepResearch:changed', {
-            sessionId: change.sessionId,
-            ts: now(),
-          });
-          break;
-        case 'plan':
-          deps.sendToRenderer?.('plan-mode:changed', { sessionId: change.sessionId });
-          break;
-        case 'runtime_resource':
-          void refreshRuntimeResources(deps, change.sessionId, change.resources);
-          break;
-      }
-    },
+    sessionDomainChanged,
     runtimeResourcePtyData(event) {
       deps.sendToRenderer?.('shell-runs:pty-data', event);
     },
     agentGraphChanged(event) {
       deps.sendToRenderer?.('graphs:changed', event);
+    },
+    sessionSubscriptionRecovered(sessionId) {
+      sessionDomainChanged({ sessionId, domain: 'task' });
+      sessionDomainChanged({ sessionId, domain: 'deep_research' });
+      sessionDomainChanged({ sessionId, domain: 'plan' });
+      deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });
+      deps.sendToRenderer?.('shell-runs:resync', { sessionId });
     },
     close: () => shellRuns.close(),
   };

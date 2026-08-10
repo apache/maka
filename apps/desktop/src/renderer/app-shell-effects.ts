@@ -13,7 +13,6 @@ import type {
   UiLocale,
 } from '@maka/core';
 import {
-  ShellRunUpdateBuffer,
   generalizedErrorMessageChinese,
   sessionExpectsEventStream,
   type ShellRunUpdate,
@@ -40,6 +39,7 @@ import type { WindowCommand } from '../preload/bridge-contract.js';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
+  ShellRunHydration,
   type ShellRunUpdatesBySession,
 } from './shell-run-update-state.js';
 
@@ -523,49 +523,57 @@ export function useShellRunUpdates(options: {
     if (!sessionId) return;
 
     let disposed = false;
-    let hydrated = false;
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let retryDelayMs = 250;
-    const pending = new ShellRunUpdateBuffer('desktop.shell-run-hydration-buffer');
+    const hydration = new ShellRunHydration();
     const unsubscribe = window.maka.shellRuns.subscribeUpdates((update) => {
       if (disposed) return;
-      if (!hydrated) {
-        pending.add(update);
-        return;
+      const live = hydration.accept(update);
+      if (live) {
+        options.setShellRunUpdatesBySession((current) =>
+          mergeShellRunNotification(current, sessionId, live),
+        );
       }
-      options.setShellRunUpdatesBySession((current) => mergeShellRunNotification(current, sessionId, update));
     });
-    const hydrate = () => {
+    const hydrate = (epoch: number) => {
       void window.maka.shellRuns
         .list(sessionId)
         .then((updates) => {
-        if (disposed) return;
-        applyUpdates(sessionId, updates);
-        retryDelayMs = 250;
-        const buffered = pending.drain();
-        for (const update of buffered.updates) {
+          if (disposed) return;
+          const buffered = hydration.commit(epoch);
+          if (!buffered) return;
+          applyUpdates(sessionId, updates);
+          retryDelayMs = 250;
+          for (const update of buffered.updates) {
             options.setShellRunUpdatesBySession((current) => mergeShellRunNotification(current, sessionId, update));
-        }
-        if (buffered.overflowed) {
-          hydrate();
-          return;
-        }
-        hydrated = true;
+          }
+          if (buffered.overflowed) hydrate(epoch);
         })
         .catch(() => {
-        if (disposed) return;
-        retryTimer = globalThis.setTimeout(() => {
-          retryTimer = undefined;
-          hydrate();
-        }, retryDelayMs);
-        retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
-      });
+          if (disposed || !hydration.isCurrent(epoch)) return;
+          retryTimer = globalThis.setTimeout(() => {
+            retryTimer = undefined;
+            hydrate(epoch);
+          }, retryDelayMs);
+          retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+        });
     };
-    hydrate();
+    const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
+      if (disposed || event.sessionId !== sessionId) return;
+      const epoch = hydration.begin();
+      retryDelayMs = 250;
+      if (retryTimer !== undefined) {
+        globalThis.clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      hydrate(epoch);
+    });
+    hydrate(hydration.begin());
     return () => {
       disposed = true;
       if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
       unsubscribe();
+      unsubscribeResync();
     };
   }, [options.activeId]);
 }

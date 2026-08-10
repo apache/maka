@@ -535,6 +535,362 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
   await observer.close();
 });
 
+test("retries an initial subscription closed before commit and resyncs once", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const firstTranscript = deferred<StoredMessage[]>();
+  const secondTranscript = deferred<StoredMessage[]>();
+  const recoveredSessions: string[] = [];
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        const first = openCount === 1;
+        return {
+          snapshot: continuitySnapshot(),
+          transcript: first ? firstTranscript.promise : secondTranscript.promise,
+          events: first ? firstEvents : secondEvents,
+          async close() {
+            (first ? firstEvents : secondEvents).end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged() {},
+    emitSubscriptionRecovered: (sessionId) => {
+      recoveredSessions.push(sessionId);
+    },
+  });
+  let observingSettled = false;
+  const observing = observer.observe("session-1", "observer-1", eventTarget(16));
+  void observing.then(
+    () => {
+      observingSettled = true;
+    },
+    () => {
+      observingSettled = true;
+    },
+  );
+  await waitFor(() => firstEvents.nextCount > 0);
+
+  firstTranscript.resolve([]);
+  queueMicrotask(() => {
+    queueMicrotask(() => {
+      firstEvents.push({
+        kind: "subscription.closed",
+        hostEpoch: "host-1",
+        subscriptionId: "subscription-1",
+        sequence: 1,
+        reason: "slow_consumer",
+      });
+    });
+  });
+  await waitFor(() => openCount === 2);
+  assert.equal(observingSettled, false);
+  assert.deepEqual(recoveredSessions, []);
+
+  secondTranscript.resolve([]);
+  await observing;
+  assert.deepEqual(recoveredSessions, ["session-1"]);
+  await observer.close();
+});
+
+test("finishes a watched predecessor after initial catch-up recovery", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const firstTranscript = deferred<StoredMessage[]>();
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  let openCount = 0;
+  let replacementCloseCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return {
+            snapshot: continuitySnapshot(),
+            transcript: firstTranscript.promise,
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          };
+        }
+        return {
+          snapshot: continuitySnapshot({
+            projectionRevision: 2,
+            rootTurn: {
+              sessionId: "session-1",
+              turnId: "turn-2",
+              runId: "run-2",
+              status: "running",
+            },
+          }),
+          transcript: Promise.resolve([
+            {
+              type: "turn_state" as const,
+              id: "terminal-1",
+              turnId: "turn-1",
+              ts: 20,
+              status: "completed" as const,
+              partialOutputRetained: true,
+            },
+          ]),
+          events: secondEvents,
+          async close() {
+            replacementCloseCount += 1;
+            secondEvents.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
+  });
+  const watching = observer.watchTurn("session-1", "turn-1");
+  await waitFor(() => firstEvents.nextCount > 0);
+
+  firstEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    reason: "slow_consumer",
+  });
+  await watching;
+  await waitFor(() => replacementCloseCount === 1);
+
+  assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
+  await observer.close();
+});
+
+test("keeps a joining observer pending across repeated catch-up eviction", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const replacementEvents = new AsyncFrameQueue();
+  const finalEvents = new AsyncFrameQueue();
+  const finalTranscript = deferred<StoredMessage[]>();
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return {
+            snapshot: continuitySnapshot(),
+            transcript: Promise.resolve([]),
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          };
+        }
+        if (openCount === 2) {
+          return {
+            snapshot: continuitySnapshot(),
+            transcript: deferred<StoredMessage[]>().promise,
+            events: replacementEvents,
+            async close() {
+              replacementEvents.end();
+            },
+          };
+        }
+        return {
+          snapshot: continuitySnapshot(),
+          transcript: finalTranscript.promise,
+          events: finalEvents,
+          async close() {
+            finalEvents.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged() {},
+  });
+  const firstTarget = eventTarget(13);
+  const joiningTarget = eventTarget(14);
+  await observer.observe("session-1", "observer-1", firstTarget);
+
+  firstEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    reason: "slow_consumer",
+  });
+  await waitFor(() => openCount === 2 && replacementEvents.nextCount > 0);
+
+  const joining = observer.observe(
+    "session-1",
+    "observer-2",
+    joiningTarget,
+  );
+  let joiningSettled = false;
+  void joining.then(
+    () => {
+      joiningSettled = true;
+    },
+    () => {
+      joiningSettled = true;
+    },
+  );
+  replacementEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-2",
+    sequence: 1,
+    reason: "slow_consumer",
+  });
+  await waitFor(() => openCount === 3);
+  await Promise.resolve();
+  assert.equal(joiningSettled, false);
+  finalTranscript.resolve([
+    {
+      type: "assistant" as const,
+      id: "message-1",
+      turnId: "turn-1",
+      ts: 10,
+      text: "Hello",
+      modelId: "test-model",
+    },
+  ]);
+  await joining;
+
+  assert.equal(firstTarget.events.some((event) => event.type === "error"), false);
+  assert.equal(joiningTarget.events.some((event) => event.type === "error"), false);
+  assert.deepEqual(
+    joiningTarget.events.map((event) =>
+      event.type === "text_delta" ? event.text : event.type,
+    ),
+    ["Hello"],
+  );
+  await observer.close();
+});
+
+test("reconciles terminal, interaction, and sidecar state after subscription recovery", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  const interactionSnapshots: Array<readonly { requestId: string }[]> = [];
+  const recoveredSessions: string[] = [];
+  const firstInteraction = pendingQuestion("interaction-1", "turn-1", "run-1");
+  const secondInteraction = pendingQuestion("interaction-2", "turn-2", "run-2");
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return {
+            snapshot: continuitySnapshot({
+              interactions: { pending: [firstInteraction] },
+            }),
+            transcript: Promise.resolve([]),
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          };
+        }
+        return {
+          snapshot: continuitySnapshot({
+            projectionRevision: 3,
+            rootTurn: {
+              sessionId: "session-1",
+              turnId: "turn-2",
+              runId: "run-2",
+              status: "running",
+            },
+            interactions: { pending: [secondInteraction] },
+          }),
+          transcript: Promise.resolve([
+            {
+              type: "assistant" as const,
+              id: "message-1",
+              turnId: "turn-1",
+              ts: 10,
+              text: "First answer",
+              modelId: "test-model",
+            },
+            {
+              type: "turn_state" as const,
+              id: "terminal-1",
+              turnId: "turn-1",
+              ts: 20,
+              status: "completed" as const,
+              partialOutputRetained: true,
+            },
+            {
+              type: "assistant" as const,
+              id: "message-2",
+              turnId: "turn-2",
+              ts: 30,
+              text: "Second answer",
+              modelId: "test-model",
+            },
+          ]),
+          events: secondEvents,
+          async close() {
+            secondEvents.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged() {},
+    onWatchedTurnFinished: (sessionId, outcome) => {
+      finishedTurns.push([sessionId, outcome]);
+    },
+    emitActiveInteractionsChanged: (_sessionId, interactions) => {
+      interactionSnapshots.push(interactions);
+    },
+    emitSubscriptionRecovered: (sessionId) => {
+      recoveredSessions.push(sessionId);
+    },
+    now: () => 50,
+  });
+  const target = eventTarget(15);
+  await observer.observe("session-1", "observer-1", target);
+  await observer.watchTurn("session-1", "turn-1");
+
+  firstEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 1,
+    reason: "slow_consumer",
+  });
+  await waitFor(() => recoveredSessions.length === 1);
+
+  assert.deepEqual(finishedTurns, [["session-1", "completed"]]);
+  assert.deepEqual(recoveredSessions, ["session-1"]);
+  assert.deepEqual(
+    interactionSnapshots.at(-1)?.map((interaction) => interaction.requestId),
+    ["interaction-2"],
+  );
+  assert.ok(
+    target.events.some(
+      (event) => event.type === "complete" && event.turnId === "turn-1",
+    ),
+  );
+  assert.ok(
+    target.events.some(
+      (event) =>
+        event.type === "text_delta" &&
+        event.turnId === "turn-2" &&
+        event.text === "Second answer",
+    ),
+  );
+  assert.ok(
+    target.events.some(
+      (event) =>
+        event.type === "user_question_request" && event.requestId === "interaction-2",
+    ),
+  );
+  await observer.close();
+});
+
 test("shares one Host subscription and one delivery per renderer target", async () => {
   const events = new AsyncFrameQueue();
   let openCount = 0;
@@ -957,6 +1313,29 @@ function deltaFrame(
       messageId: "message-1",
       startOffset,
       text,
+    },
+  };
+}
+
+function pendingQuestion(interactionId: string, turnId: string, runId: string) {
+  return {
+    schemaVersion: 1 as const,
+    interactionId,
+    sessionId: "session-1",
+    turnId,
+    runId,
+    revision: 1 as const,
+    status: "pending" as const,
+    outcome: null,
+    request: {
+      kind: "question" as const,
+      toolUseId: `tool-${interactionId}`,
+      questions: [
+        {
+          question: "Proceed?",
+          options: [{ label: "Yes", description: "Continue." }],
+        },
+      ],
     },
   };
 }

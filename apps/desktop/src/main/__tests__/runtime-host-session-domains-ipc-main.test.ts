@@ -577,6 +577,31 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
       payload: update,
     },
   ]);
+
+  sent.length = 0;
+  handle.sessionSubscriptionRecovered('session-1');
+  assert.deepEqual(sent, [
+    {
+      channel: 'tasks:changed',
+      payload: { sessionId: 'session-1', taskIds: [], at: 12 },
+    },
+    {
+      channel: 'deepResearch:changed',
+      payload: { sessionId: 'session-1', ts: 12 },
+    },
+    {
+      channel: 'plan-mode:changed',
+      payload: { sessionId: 'session-1' },
+    },
+    {
+      channel: 'graphs:resync',
+      payload: { rootSessionId: 'session-1' },
+    },
+    {
+      channel: 'shell-runs:resync',
+      payload: { sessionId: 'session-1' },
+    },
+  ]);
 });
 
 test('projects embedded and hosted Deep Research into one renderer contract', () => {

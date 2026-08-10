@@ -51,6 +51,11 @@ export interface RuntimeHostSessionObserverDeps {
     sessionId: string,
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
+  emitActiveInteractionsChanged?: (
+    sessionId: string,
+    interactions: readonly ActiveInteractionRequestEvent[],
+  ) => void;
+  emitSubscriptionRecovered?: (sessionId: string) => void;
   recoverConnectionClosed?: boolean;
   now?: () => number;
 }
@@ -65,15 +70,14 @@ interface ObserverTargetGroup {
 interface ObservedSessionState {
   readonly sessionId: string;
   readonly targets: Map<number, ObserverTargetGroup>;
-  readonly pendingFrames: SubscriptionFrame[];
   readonly watchedTurnIds: Set<string>;
   openTask: Promise<void>;
   handle?: DesktopRuntimeHostSession;
+  attempt?: SessionSubscriptionAttempt;
   transcript?: StoredMessage[];
   transcriptConsumed: boolean;
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
-  ready: boolean;
   closing: boolean;
 }
 
@@ -88,6 +92,25 @@ interface SubscriptionFailureIdentity {
   readonly runId?: string;
   readonly reason: string;
   readonly message: string;
+}
+
+interface SessionSubscriptionAttempt {
+  readonly handle: DesktopRuntimeHostSession;
+  readonly pendingFrames: SubscriptionFrame[];
+  readonly failed: Promise<Error>;
+  fail(error: Error): void;
+  failure?: Error;
+  committed: boolean;
+}
+
+interface AcquiredSessionSubscription {
+  readonly attempt: SessionSubscriptionAttempt;
+  readonly snapshot: SessionContinuitySnapshot;
+  readonly transcript: StoredMessage[];
+}
+
+class SessionRemovedSubscriptionError extends Error {
+  readonly name = "SessionRemovedSubscriptionError";
 }
 
 /**
@@ -113,6 +136,11 @@ export class RuntimeHostSessionObserver {
     sessionId: string,
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
+  readonly #emitActiveInteractionsChanged: (
+    sessionId: string,
+    interactions: readonly ActiveInteractionRequestEvent[],
+  ) => void;
+  readonly #emitSubscriptionRecovered: (sessionId: string) => void;
   readonly #recoverConnectionClosed: boolean;
   readonly #now: () => number;
   #closed = false;
@@ -128,6 +156,10 @@ export class RuntimeHostSessionObserver {
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
       deps.onWatchedTurnFinished ?? (() => undefined);
+    this.#emitActiveInteractionsChanged =
+      deps.emitActiveInteractionsChanged ?? (() => undefined);
+    this.#emitSubscriptionRecovered =
+      deps.emitSubscriptionRecovered ?? (() => undefined);
     this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
     this.#now = deps.now ?? Date.now;
   }
@@ -135,10 +167,12 @@ export class RuntimeHostSessionObserver {
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     this.#assertOpen();
     const existing = this.#states.get(sessionId);
-    if (existing && !existing.transcriptConsumed) {
+    if (existing) {
       await existing.openTask;
-      existing.transcriptConsumed = true;
-      return cloneMessages(existing.transcript ?? []);
+      if (!existing.transcriptConsumed) {
+        existing.transcriptConsumed = true;
+        return cloneMessages(existing.transcript ?? []);
+      }
     }
     if (!existing) {
       const state = this.#state(sessionId);
@@ -315,96 +349,119 @@ export class RuntimeHostSessionObserver {
     const state: ObservedSessionState = {
       sessionId,
       targets: new Map(),
-      pendingFrames: [],
       watchedTurnIds: new Set(),
       openTask: Promise.resolve(),
       transcriptConsumed: false,
-      ready: false,
       closing: false,
     };
-    state.openTask = this.#open(state);
     this.#states.set(sessionId, state);
+    state.openTask = this.#open(state);
     return state;
   }
 
   async #open(state: ObservedSessionState): Promise<void> {
     try {
-      await this.#openHandle(state);
+      await this.#establishSubscription(state);
     } catch (error) {
+      if (error instanceof SessionRemovedSubscriptionError) {
+        this.#emitSessionsChanged("deleted", state.sessionId);
+      }
       await this.#closeState(state);
       throw error;
     }
   }
 
-  async #openHandle(state: ObservedSessionState): Promise<void> {
+  async #acquireSubscription(
+    state: ObservedSessionState,
+  ): Promise<AcquiredSessionSubscription> {
     const handle = await this.#client.openSession(state.sessionId);
     if (state.closing) {
       await handle.close();
       throw new Error("Runtime Host Session observer closed while opening");
     }
-    state.handle = handle;
-    state.snapshot = structuredClone(handle.snapshot);
-    void this.#pump(state, handle);
-    state.transcript = await handle.transcript;
-    if (state.closing || state.handle !== handle) {
-      await handle.close();
-      throw new Error("Runtime Host Session observer closed while opening");
+    let fail!: (error: Error) => void;
+    const failed = new Promise<Error>((resolve) => {
+      fail = resolve;
+    });
+    const attempt: SessionSubscriptionAttempt = {
+      handle,
+      pendingFrames: [],
+      failed,
+      fail(error) {
+        if (attempt.failure) return;
+        attempt.failure = error;
+        fail(error);
+      },
+      committed: false,
+    };
+    state.attempt = attempt;
+    void this.#pump(state, attempt);
+    try {
+      const loaded = await Promise.race([
+        handle.transcript.then(
+          (transcript) => ({ kind: "transcript" as const, transcript }),
+          (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
+        ),
+        failed.then((error) => ({ kind: "failure" as const, error })),
+      ]);
+      if (loaded.kind === "failure") throw loaded.error;
+      if (attempt.failure) throw attempt.failure;
+      if (state.closing || state.attempt !== attempt) {
+        throw new Error("Runtime Host Session observer closed while opening");
+      }
+      validatePendingFrames(handle.snapshot, loaded.transcript, attempt.pendingFrames, this.#now);
+      return {
+        attempt,
+        snapshot: structuredClone(handle.snapshot),
+        transcript: loaded.transcript,
+      };
+    } catch (error) {
+      if (state.attempt === attempt) state.attempt = undefined;
+      await handle.close().catch(() => undefined);
+      throw error;
     }
-    state.projector = new RuntimeHostSessionProjector(
-      handle.snapshot,
-      state.transcript,
-      this.#now,
-    );
-    state.ready = true;
-    for (const group of state.targets.values())
-      this.#seedTarget(state, group);
-    for (const frame of state.pendingFrames.splice(0))
-      this.#acceptFrame(state, frame);
   }
 
   async #pump(
     state: ObservedSessionState,
-    handle: DesktopRuntimeHostSession,
+    attempt: SessionSubscriptionAttempt,
   ): Promise<void> {
+    const { handle } = attempt;
     try {
       for await (const frame of handle.events) {
         if (state.closing) return;
-        if (!state.ready) {
-          if (state.pendingFrames.length >= MAX_PENDING_FRAMES) {
-            throw new Error(
-              "Runtime Host Session initial transcript could not keep up with live events",
+        if (frame.kind === "subscription.closed") {
+          throw subscriptionClosedError(frame.reason);
+        }
+        if (!attempt.committed) {
+          if (attempt.pendingFrames.length >= MAX_PENDING_FRAMES) {
+            throw new RuntimeHostSubscriptionError(
+              "slow_consumer",
+              "Runtime Host Session transcript could not keep up with live events",
             );
           }
-          state.pendingFrames.push(frame);
+          attempt.pendingFrames.push(frame);
         } else {
           this.#acceptFrame(state, frame);
         }
       }
-      if (!state.closing) {
-        this.#publishSubscriptionFailure(
-          state,
-          new Error("Runtime Host Session subscription ended unexpectedly"),
-        );
-      }
+      if (!state.closing)
+        throw new Error("Runtime Host Session subscription ended unexpectedly");
     } catch (error) {
       if (state.closing) return;
-      if (
-        state.ready &&
-        state.handle === handle &&
-        isRecoverableSubscriptionFailure(error)
-      ) {
-        this.#recoverSubscription(state, handle, error);
+      const failure = asError(error);
+      if (!attempt.committed) {
+        attempt.fail(failure);
         return;
       }
+      if (state.handle !== handle) return;
       if (
-        this.#recoverConnectionClosed &&
-        error instanceof RuntimeHostSubscriptionError &&
-        error.reason === "connection_closed"
+        isRecoverableSubscriptionFailure(failure)
       ) {
-        void this.#closeState(state);
+        this.#recoverSubscription(state, handle, failure);
         return;
       }
-      this.#publishSubscriptionFailure(state, error);
+      this.#handleTerminalSubscriptionFailure(state, failure);
     }
   }
 
@@ -447,18 +504,6 @@ export class RuntimeHostSessionObserver {
       });
       return;
     }
-    if (frame.kind === "subscription.closed") {
-      if (frame.reason === "session_removed") {
-        this.#emitSessionsChanged("deleted", state.sessionId);
-        void this.#closeState(state);
-      } else {
-        throw new RuntimeHostSubscriptionError(
-          "slow_consumer",
-          "Runtime Host Session subscription closed for a slow consumer",
-        );
-      }
-      return;
-    }
     const update = state.projector?.accept(frame);
     if (!update || !state.projector) return;
     state.snapshot = state.projector.snapshot;
@@ -472,6 +517,9 @@ export class RuntimeHostSessionObserver {
     }
     const previous = update.previousSnapshot;
     if (!previous) return;
+    if (!samePendingInteractions(previous, state.snapshot)) {
+      this.#emitActiveInteractions(state);
+    }
     if (!sameGoal(previous.goal, state.snapshot.goal)) {
       this.#emitSessionsChanged("goal-change", state.sessionId);
     }
@@ -549,6 +597,26 @@ export class RuntimeHostSessionObserver {
     void this.#closeState(state);
   }
 
+  #handleTerminalSubscriptionFailure(
+    state: ObservedSessionState,
+    error: Error,
+  ): void {
+    if (error instanceof SessionRemovedSubscriptionError) {
+      this.#emitSessionsChanged("deleted", state.sessionId);
+      void this.#closeState(state);
+      return;
+    }
+    if (
+      this.#recoverConnectionClosed &&
+      error instanceof RuntimeHostSubscriptionError &&
+      error.reason === "connection_closed"
+    ) {
+      void this.#closeState(state);
+      return;
+    }
+    this.#publishSubscriptionFailure(state, error);
+  }
+
   #recoverSubscription(
     state: ObservedSessionState,
     handle: DesktopRuntimeHostSession,
@@ -556,52 +624,159 @@ export class RuntimeHostSessionObserver {
   ): void {
     const identity = subscriptionFailureIdentity(state, error);
     console.warn("[runtime-host-session-observer] recovering subscription", identity);
-    state.ready = false;
-    state.handle = undefined;
-    state.pendingFrames.length = 0;
-    state.transcript = undefined;
-    state.projector = undefined;
-    for (const group of state.targets.values()) group.seeded = false;
-
-    const recovery = this.#replaceSubscription(state, handle, identity);
+    const recovery = this.#establishSubscription(state, handle, error);
     state.openTask = recovery;
-    void recovery.catch(() => undefined);
+    void recovery.catch((recoveryError: unknown) => {
+      if (state.closing || this.#states.get(state.sessionId) !== state) return;
+      const recovered = subscriptionFailureIdentity(state, recoveryError);
+      console.error(
+        "[runtime-host-session-observer] subscription recovery failed",
+        { failure: identity, recovery: recovered },
+      );
+      this.#handleTerminalSubscriptionFailure(state, asError(recoveryError));
+    });
   }
 
-  async #replaceSubscription(
+  async #establishSubscription(
     state: ObservedSessionState,
-    previous: DesktopRuntimeHostSession,
-    failure: SubscriptionFailureIdentity,
+    failed?: DesktopRuntimeHostSession,
+    initialFailure?: unknown,
   ): Promise<void> {
-    await previous.close().catch(() => undefined);
-    if (state.closing || this.#states.get(state.sessionId) !== state) return;
-    try {
-      await this.#openHandle(state);
-      console.info("[runtime-host-session-observer] subscription recovered", failure);
-      const root = state.snapshot?.rootTurn;
+    let failure =
+      initialFailure === undefined
+        ? undefined
+        : subscriptionFailureIdentity(state, initialFailure);
+    if (failed) await failed.close().catch(() => undefined);
+    while (true) {
+      if (state.closing || this.#states.get(state.sessionId) !== state) {
+        throw new Error("Runtime Host Session observer closed while opening");
+      }
+      let acquired: AcquiredSessionSubscription;
+      try {
+        acquired = await this.#acquireSubscription(state);
+      } catch (error) {
+        if (isRecoverableSubscriptionFailure(error)) {
+          failure ??= subscriptionFailureIdentity(state, error);
+          continue;
+        }
+        throw error;
+      }
+      try {
+        this.#commitSubscription(state, acquired, failure !== undefined);
+      } catch (error) {
+        if (state.attempt === acquired.attempt) state.attempt = undefined;
+        await acquired.attempt.handle.close().catch(() => undefined);
+        if (isRecoverableSubscriptionFailure(error)) {
+          failure ??= subscriptionFailureIdentity(state, error);
+          continue;
+        }
+        throw error;
+      }
+      if (failure) {
+        console.info("[runtime-host-session-observer] subscription recovered", failure);
+      }
+      return;
+    }
+  }
+
+  #commitSubscription(
+    state: ObservedSessionState,
+    acquired: AcquiredSessionSubscription,
+    recovered: boolean,
+  ): void {
+    if (
+      state.closing ||
+      this.#states.get(state.sessionId) !== state ||
+      state.attempt !== acquired.attempt
+    ) {
+      throw new Error("Runtime Host Session observer closed before commit");
+    }
+    if (acquired.attempt.failure) throw acquired.attempt.failure;
+    const previousSnapshot = state.snapshot;
+    const projector = new RuntimeHostSessionProjector(
+      acquired.snapshot,
+      acquired.transcript,
+      this.#now,
+    );
+    const replacement =
+      previousSnapshot
+        ? replacementProjection(
+            previousSnapshot,
+            projector,
+            acquired.transcript,
+          )
+        : undefined;
+
+    state.attempt = undefined;
+    state.handle = acquired.attempt.handle;
+    state.snapshot = structuredClone(acquired.snapshot);
+    state.transcript = acquired.transcript;
+    state.transcriptConsumed = false;
+    state.projector = projector;
+    acquired.attempt.committed = true;
+
+    if (replacement) {
+      for (const event of replacement.terminalEvents) {
+        this.#broadcast(state.sessionId, event);
+      }
+      for (const event of replacement.activeEvents) {
+        this.#broadcast(state.sessionId, event);
+      }
+      for (const group of state.targets.values()) group.seeded = true;
+      for (const turnId of replacement.terminalTurnIds) {
+        this.#finishWatchedTurn(state, turnId, "completed");
+        this.#emitSessionsChanged("turn-status-change", state.sessionId, {
+          turnId,
+        });
+        this.#emitSessionsChanged("message-appended", state.sessionId, {
+          turnId,
+        });
+      }
+      this.#emitActiveInteractions(state);
+      const root = state.snapshot.rootTurn;
       this.#emitSessionsChanged(
         "status-change",
         state.sessionId,
         root ? { turnId: root.turnId } : undefined,
       );
-      if (root) {
+      if (root && !replacement.terminalTurnIds.has(root.turnId)) {
         this.#emitSessionsChanged("message-appended", state.sessionId, {
           turnId: root.turnId,
         });
-        if (isTerminalTurn(root)) {
-          this.#finishWatchedTurn(state, root.turnId, "completed");
-          void this.#closeIfIdle(state);
-        }
       }
-    } catch (error) {
-      if (state.closing || this.#states.get(state.sessionId) !== state) return;
-      const recovery = subscriptionFailureIdentity(state, error);
-      console.error(
-        "[runtime-host-session-observer] subscription recovery failed",
-        { failure, recovery },
-      );
-      this.#publishSubscriptionFailure(state, error);
-      throw error;
+    } else {
+      for (const group of state.targets.values()) this.#seedTarget(state, group);
+    }
+
+    this.#finishPersistedWatchedTurns(state, projector, acquired.transcript);
+
+    if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
+
+    for (const frame of acquired.attempt.pendingFrames.splice(0)) {
+      this.#acceptFrame(state, frame);
+    }
+    void this.#closeIfIdle(state);
+  }
+
+  #emitActiveInteractions(state: ObservedSessionState): void {
+    const interactions = state.snapshot?.interactions.pending.flatMap(
+      (interaction) =>
+        projectRuntimeHostInteractionRequest(interaction, this.#now()),
+    );
+    if (interactions) {
+      this.#emitActiveInteractionsChanged(state.sessionId, interactions);
+    }
+  }
+
+  #finishPersistedWatchedTurns(
+    state: ObservedSessionState,
+    projector: RuntimeHostSessionProjector,
+    transcript: readonly StoredMessage[],
+  ): void {
+    for (const turnId of [...state.watchedTurnIds]) {
+      if (projector.seedStoredTerminal(turnId, transcript).length > 0) {
+        this.#finishWatchedTurn(state, turnId, "completed");
+      }
     }
   }
 
@@ -680,8 +855,15 @@ export class RuntimeHostSessionObserver {
         this.#detachTarget(state, group);
     }
     const handle = state.handle;
+    const attempt = state.attempt;
     state.handle = undefined;
-    await handle?.close().catch(() => undefined);
+    state.attempt = undefined;
+    await Promise.all([
+      handle?.close().catch(() => undefined),
+      attempt && attempt.handle !== handle
+        ? attempt.handle.close().catch(() => undefined)
+        : undefined,
+    ]);
   }
 
   async #removeTarget(
@@ -756,12 +938,118 @@ async function drainFrames(
   }
 }
 
+function validatePendingFrames(
+  snapshot: SessionContinuitySnapshot,
+  transcript: readonly StoredMessage[],
+  frames: readonly SubscriptionFrame[],
+  now: () => number,
+): void {
+  const projector = new RuntimeHostSessionProjector(snapshot, transcript, now);
+  for (const frame of frames) {
+    projector.accept(frame);
+  }
+}
+
+function replacementProjection(
+  previous: SessionContinuitySnapshot,
+  projector: RuntimeHostSessionProjector,
+  transcript: readonly StoredMessage[],
+): {
+  terminalEvents: SessionEvent[];
+  activeEvents: SessionEvent[];
+  terminalTurnIds: Set<string>;
+} {
+  const next = projector.snapshot;
+  const previousRoot = previous.rootTurn;
+  const root = next.rootTurn;
+  const terminalEvents: SessionEvent[] = [];
+  if (previousRoot && !isTerminalTurn(previousRoot)) {
+    if (!root || root.runId !== previousRoot.runId) {
+      const stored = projector.seedStoredTerminal(
+        previousRoot.turnId,
+        transcript,
+      );
+      if (!stored.some(isTerminalSessionEvent)) {
+        throw new RuntimeHostSubscriptionError(
+          "projection_revision_invalid",
+          `Runtime Host replacement omitted the terminal record for Turn ${previousRoot.turnId}`,
+        );
+      }
+      terminalEvents.push(...stored);
+    } else if (isTerminalTurn(root)) {
+      terminalEvents.push(...projector.seedTerminal(root));
+    }
+  }
+  if (
+    root &&
+    isTerminalTurn(root) &&
+    (!previousRoot || previousRoot.runId !== root.runId)
+  ) {
+    terminalEvents.push(...projector.seedTerminal(root));
+  }
+  return {
+    terminalEvents,
+    activeEvents:
+      root && !isTerminalTurn(root) ? projector.seedActive(true) : [],
+    terminalTurnIds: new Set(
+      terminalEvents.filter(isTerminalSessionEvent).map((event) => event.turnId),
+    ),
+  };
+}
+
+function isTerminalSessionEvent(
+  event: SessionEvent,
+): event is Extract<SessionEvent, { type: "complete" | "error" | "abort" }> {
+  return (
+    event.type === "complete" ||
+    event.type === "error" ||
+    event.type === "abort"
+  );
+}
+
+function samePendingInteractions(
+  previous: SessionContinuitySnapshot,
+  next: SessionContinuitySnapshot,
+): boolean {
+  if (previous.interactions.pending.length !== next.interactions.pending.length) {
+    return false;
+  }
+  const revisions = new Map(
+    previous.interactions.pending.map((interaction) => [
+      interaction.interactionId,
+      interaction.revision,
+    ]),
+  );
+  return next.interactions.pending.every(
+    (interaction) =>
+      revisions.get(interaction.interactionId) === interaction.revision,
+  );
+}
+
+function subscriptionClosedError(
+  reason: "slow_consumer" | "session_removed",
+): Error {
+  return reason === "session_removed"
+    ? new SessionRemovedSubscriptionError(
+        "Runtime Host Session was removed while it was observed",
+      )
+    : new RuntimeHostSubscriptionError(
+        "slow_consumer",
+        "Runtime Host Session subscription closed for a slow consumer",
+      );
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 function isRecoverableSubscriptionFailure(error: unknown): boolean {
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
     error.reason === "slow_consumer" ||
     error.reason === "sequence_gap" ||
-    error.reason === "projection_revision_invalid"
+    error.reason === "projection_revision_invalid" ||
+    error.reason === "transcript_expired"
   );
 }
 

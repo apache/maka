@@ -1190,6 +1190,16 @@ function AppShellContent({
       cancelled = true;
     };
   }, [activeId, setInteractionBySession]);
+  useEffect(
+    () =>
+      window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
+        markInteractionChanged(sessionId);
+        setInteractionBySession((current) =>
+          reconcileInteractions(current, sessionId, interactions),
+        );
+      }),
+    [markInteractionChanged, setInteractionBySession],
+  );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
     activeExecutionBoundary,

@@ -307,6 +307,13 @@ export async function createDesktopRuntimeHostCandidate(
       emitSessionDomainChanged: (change) => domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
+      emitActiveInteractionsChanged: (sessionId, interactions) =>
+        deps.sendToRenderer?.('sessions:active-interactions-changed', {
+          sessionId,
+          interactions,
+        }),
+      emitSubscriptionRecovered: (sessionId) =>
+        domains?.sessionSubscriptionRecovered(sessionId),
       onWatchedTurnFinished: (sessionId, outcome) =>
         outcome === "completed"
           ? deps.completeComputerUseTurn(sessionId)
