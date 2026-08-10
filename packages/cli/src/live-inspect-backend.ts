@@ -4,6 +4,7 @@ import {
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import {
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ExecutionInspectResolveInput,
 } from '@maka/runtime-host/protocol';
@@ -116,6 +117,9 @@ function liveHostUnavailableMessage(
   result: Exclude<ConnectRuntimeHostResult, { kind: 'connected' }>,
 ): string {
   if (result.kind === 'incompatible') {
+    if (result.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+      return 'Interactive storage is locked by an older Runtime Host. Stop its owning Maka process, then try again.';
+    }
     return 'Interactive storage is locked by an incompatible Runtime Host';
   }
   if (result.kind === 'draining') {
