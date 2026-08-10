@@ -63,6 +63,10 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
     const owner = element as HTMLElement;
     owner.releasePointerCapture(Number(owner.dataset.e2eCapturedPointer));
   });
+  // Chromium processes a pending pointer-capture override when it dispatches
+  // the next pointer event. Move once after release so this assertion observes
+  // the browser-generated lostpointercapture event deterministically.
+  await page.mouse.move(selectedX + 1, y);
   await expect(turn).toHaveAttribute('data-e2e-lost-pointer-capture', 'true');
   await expect(quoteLayer).toBeVisible();
   await page.mouse.up();
