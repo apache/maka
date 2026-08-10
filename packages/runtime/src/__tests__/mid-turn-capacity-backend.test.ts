@@ -575,6 +575,14 @@ async function acquireTestAuxiliaryCredential(
   });
   return {
     apiKey: lease?.apiKey,
+    ...(lease
+      ? {
+          attribution: {
+            profileId: lease.profileId,
+            selectionReason: lease.selectionReason,
+          },
+        }
+      : {}),
     settle: async (outcome) => {
       events.push({ kind: 'settle', detail: outcome });
       if (!lease) return;

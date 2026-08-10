@@ -3,7 +3,10 @@ import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import { effectiveBaseUrl, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
-import type { ProviderCredentialResolver } from '@maka/core/provider-credential-routing';
+import type {
+  ProviderCredentialResolver,
+  ProviderCredentialSelectionReason,
+} from '@maka/core/provider-credential-routing';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { PermissionMode } from '@maka/core/permission';
@@ -63,6 +66,11 @@ export interface HostAiSdkBackendInput {
   readonly usage: HostExecutionUsageAuthority;
   readonly requestDrain: () => void;
   readonly runtimeCommitSink?: RuntimeCommitSink;
+  /** Test seam for asserting resolver ownership on backend-creation failures. */
+  readonly createCredentialResolver?: (
+    input: HostAiSdkBackendInput,
+    target: ResolvedExecutionTarget,
+  ) => Promise<HostCredentialResolver | undefined>;
   readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
@@ -106,7 +114,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   // keeps the fixed-key fast path byte-for-byte identical.
   let credentialResolver: HostCredentialResolver | undefined;
   try {
-    credentialResolver = await buildCredentialResolver(input, target);
+    credentialResolver = await (input.createCredentialResolver ?? buildCredentialResolver)(input, target);
   } catch (error) {
     // buildCredentialResolver owns its routing store only after creation;
     // a throw inside leaves nothing to dispose, so just propagate.
@@ -549,6 +557,10 @@ async function acquireAuxiliaryHistoryCredential(input: {
   sessionId: string;
 }): Promise<{
   apiKey?: string;
+  attribution?: {
+    profileId: string;
+    selectionReason: ProviderCredentialSelectionReason;
+  };
   settle(outcome: 'success' | 'failure' | 'aborted'): Promise<void>;
   release(): void;
 }> {
@@ -568,6 +580,14 @@ async function acquireAuxiliaryHistoryCredential(input: {
   });
   return {
     apiKey: lease?.apiKey,
+    ...(lease
+      ? {
+          attribution: {
+            profileId: lease.profileId,
+            selectionReason: lease.selectionReason,
+          },
+        }
+      : {}),
     settle: async (outcome) => {
       if (!lease) return;
       if (outcome === 'success') {

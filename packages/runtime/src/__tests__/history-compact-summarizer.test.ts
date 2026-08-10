@@ -145,8 +145,10 @@ describe('buildLlmHistorySummarizer', () => {
         }),
       acquireCredential: async () => ({
         apiKey: 'sk-history-leased',
-        profileId: 'profile-history',
-        selectionReason: 'weighted',
+        attribution: {
+          profileId: 'profile-history',
+          selectionReason: 'weighted',
+        },
         settle: async () => {},
         release: () => {},
       }),

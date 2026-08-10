@@ -2605,6 +2605,7 @@ function backendCreationFixture(input: {
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
+  createCredentialResolver?: HostAiSdkBackendInput['createCredentialResolver'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??

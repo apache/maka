@@ -1,4 +1,5 @@
 import { rawFinishReasonString, type ModelMessage } from './model-protocol.js';
+import type { ProviderCredentialSelectionReason } from '@maka/core/provider-credential-routing';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { toolResultOutput } from './tool-result-output.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
@@ -37,8 +38,16 @@ export interface BuildLlmHistorySummarizerOptions {
    */
   acquireCredential?: () => Promise<{
     apiKey?: string;
-    profileId?: string;
-    selectionReason?: string;
+    /**
+     * Atomic, fail-closed attribution for the canonical record (Gate 2):
+     * profileId + selectionReason ALWAYS travel together, and selectionReason
+     * is narrowed to the formal union. A half-set attribution is a contract
+     * violation and must never reach the tracker.
+     */
+    attribution?: {
+      profileId: string;
+      selectionReason: ProviderCredentialSelectionReason;
+    };
     settle(outcome: 'success' | 'failure' | 'aborted'): Promise<void>;
     release(): void;
   }>;
@@ -109,11 +118,8 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         // the history summarizer routes through the Profile Router, so its
         // ModelCallAttempt must carry credentialProfileId + selectionReason
         // (Gate 2), not just use the leased key.
-        if (providerRequestTracker && (credential?.profileId || credential?.selectionReason)) {
-          providerRequestTracker.setCredentialAttribution({
-            profileId: credential!.profileId!,
-            selectionReason: credential!.selectionReason!,
-          });
+        if (providerRequestTracker && credential?.attribution) {
+          providerRequestTracker.setCredentialAttribution(credential.attribution);
         }
         const ai =
           options.generateText && !providerRequestTracker ? undefined : await loadAiSdkTextModule();
