@@ -991,6 +991,15 @@ export class DesktopRuntimeHostClient {
     return this.connection.queryHostDiagnostics(2_000);
   }
 
+  prepareHostUpgrade(
+    allowInterruptActiveTasks: boolean,
+  ): Promise<OperationOutput<"host.upgrade.prepare">> {
+    return this.#request("host.upgrade.prepare", {
+      expectedHostEpoch: this.connection.hostEpoch,
+      allowInterruptActiveTasks,
+    });
+  }
+
   stopTurn(
     input: OperationInput<"turn.stop">,
   ): Promise<OperationOutput<"turn.stop">> {

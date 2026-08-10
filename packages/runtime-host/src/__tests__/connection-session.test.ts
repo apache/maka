@@ -1237,8 +1237,15 @@ function statusResponse(requestId: string): ResponseFrame {
   };
 }
 
-const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<OperationHandlerMap, 'host.diagnostics.query'> = {
+const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<
+  OperationHandlerMap,
+  'host.diagnostics.query' | 'host.upgrade.prepare'
+> = {
   'host.diagnostics.query': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+  'host.upgrade.prepare': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),

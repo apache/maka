@@ -97,9 +97,11 @@ import { registerRuntimeHostInspectorIpc } from "./runtime-host-inspector-ipc-ma
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { DesktopRuntimeHostCandidateControls } from "./runtime-host-desktop-candidate.js";
 import {
+  RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopOwner,
   type RuntimeHostDesktopOwner,
 } from "./runtime-host-desktop-owner.js";
+import { runtimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
@@ -113,7 +115,6 @@ import {
   updateRuntimeHostSettings,
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
-import { hasRuntimeHostInterruptibleWork } from "./runtime-host-update-activity.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWebSearchIpc } from "./runtime-host-web-search-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
@@ -138,6 +139,7 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
+const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const e2eFixture = resolveDesktopE2eFixture();
 const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const workspaceRoot = join(
@@ -331,11 +333,9 @@ const updateService = createAppUpdateService({
   mockState: updateMockState,
   onStatusChange: (status) =>
     mainWindowController.send("app:updateStatusChanged", status),
-  hasActiveTasks: () => {
-    if (!runtimePolicyClient) {
-      throw new Error("Runtime Host activity is unavailable");
-    }
-    return hasRuntimeHostInterruptibleWork(runtimePolicyClient);
+  prepareInstall: async (input) => {
+    if (!owner) throw new Error("Runtime Host owner is unavailable");
+    return owner.prepareForUpdate(input.allowInterruptActiveTasks);
   },
 });
 const scheduledTasks = createScheduledTaskMainService({
@@ -451,6 +451,7 @@ owner = await startRuntimeHostDesktopOwner(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
+    generation: runtimeHostGeneration,
     candidateEntrypoint: new URL(
       import.meta.resolve(
         isE2e
@@ -553,12 +554,24 @@ owner = await startRuntimeHostDesktopOwner(
     registerClientIpc: registerHostClientIpc,
   },
   {
+    upgradePrompts: runtimeHostUpgradePrompts,
     onFatalError: (error) => {
+      if (error instanceof RuntimeHostUpgradeCancelledError) {
+        app.quit();
+        return;
+      }
       console.error("[runtime-host] fatal:", error);
       app.quit();
     },
   },
-);
+).catch((error: unknown) => {
+  if (error instanceof RuntimeHostUpgradeCancelledError) {
+    app.exit(0);
+    return new Promise<never>(() => undefined);
+  }
+  throw error;
+});
+
 const stopComputerUseSession = (sessionId: string): void => {
   void owner
     ?.stopSession(sessionId)

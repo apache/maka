@@ -16,9 +16,11 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  requireHostGeneration,
   type ClientHello,
   type HostOperationErrorCode,
   type HostHandshakeResult,
+  type HostActivitySnapshot,
   type HostLifecycleState,
   type HostRegistration,
   type HostStatusResult,
@@ -41,6 +43,7 @@ import {
   revokeAccessCredential,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import type { SessionContinuityService } from './session-continuity-service.js';
 import type { ClientCapabilityService } from './client-capability-service.js';
 import type { HostConfigurationChangeService } from './configuration-change-service.js';
@@ -123,8 +126,8 @@ export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
 export type RuntimeHostKernelOptions<K extends StorageRootKind = 'interactive'> =
   RuntimeHostKernelCommonOptions<K> &
     (
-      | { lifecycleMode?: 'ephemeral'; idleGraceMs?: number }
-      | { lifecycleMode: 'service'; idleGraceMs?: never }
+      | { lifecycleMode?: 'ephemeral'; idleGraceMs?: number; generation?: string }
+      | { lifecycleMode: 'service'; idleGraceMs?: never; generation?: never }
     );
 
 type RuntimeHostKernelInternalOptions = RuntimeHostKernelOptions<StorageRootKind>;
@@ -170,6 +173,7 @@ export class RuntimeHostKernel {
 
   private constructor(options: RuntimeHostKernelInternalOptions) {
     this.#lifecycle = normalizeLifecycle(options);
+    if (options.generation !== undefined) requireHostGeneration(options.generation);
     assertDuration(
       options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
       'handshakeTimeoutMs',
@@ -325,7 +329,7 @@ export class RuntimeHostKernel {
       if (!('kind' in frame) || frame.kind !== 'hello') {
         throw new Error('First Runtime Host frame must be a hello');
       }
-      const result = await this.#admitHandshake(frame, transport);
+      const result = await this.#admitHandshake(frame, transport, authority);
       connectionId = result.kind === 'accepted' ? result.connectionId : undefined;
       await transport.write(encodeProtocolMessage(result));
       if (result.kind !== 'accepted') {
@@ -370,6 +374,7 @@ export class RuntimeHostKernel {
   async #admitHandshake(
     hello: ClientHello,
     transport: RuntimeHostMessageTransport,
+    authority: RuntimeHostConnectionAuthority,
   ): Promise<HostHandshakeResult> {
     const admittedState = await this.#readAdmissionState();
     if (!admittedState) {
@@ -384,10 +389,26 @@ export class RuntimeHostKernel {
       { min: hello.protocolMin, max: hello.protocolMax },
       HOST_PROTOCOL,
     );
+    const generationMismatch =
+      this.#lifecycle.kind === 'ephemeral' &&
+      hello.generation !== undefined &&
+      hello.generation !== this.#options.generation;
+    if (generationMismatch && hello.takeover?.expectedHostEpoch === this.hostEpoch) {
+      if (authority.principalKind === 'local_owner' && this.#acceptedTransports.size === 0) {
+        this.#requestDrain();
+        return {
+          kind: 'draining',
+          hostEpoch: this.hostEpoch,
+          compositionId: this.compositionDescriptor.id,
+          compositionRevision: this.compositionDescriptor.revision,
+        };
+      }
+    }
     if (
       selectedProtocol === undefined ||
       hello.compatibilityEpoch !== RUNTIME_HOST_COMPATIBILITY_EPOCH ||
-      hello.compositionId !== this.compositionDescriptor.id
+      hello.compositionId !== this.compositionDescriptor.id ||
+      generationMismatch
     ) {
       return {
         kind: 'incompatible',
@@ -397,11 +418,15 @@ export class RuntimeHostKernel {
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
         compositionId: this.compositionDescriptor.id,
         compositionRevision: this.compositionDescriptor.revision,
+        ...(this.#options.generation === undefined ? {} : { generation: this.#options.generation }),
         state: admittedState,
         replacement:
           this.#lifecycle.kind === 'ephemeral' && this.#isTrueIdle()
             ? 'wait_for_idle_exit'
             : 'blocked_by_residency',
+        ...(generationMismatch && authority.principalKind === 'local_owner'
+          ? { activity: this.#activitySnapshot() }
+          : {}),
       };
     }
     this.#acceptedTransports.add(transport);
@@ -549,6 +574,31 @@ export class RuntimeHostKernel {
             logs: runtimeHostLogBuffer.snapshot(),
           },
         }),
+        'host.upgrade.prepare': async (input) => {
+          if (this.#lifecycle.kind !== 'ephemeral') {
+            return {
+              ok: false,
+              error: {
+                code: 'operation_unavailable',
+                message: 'Runtime Host service lifecycle cannot be replaced by a Client',
+              },
+            };
+          }
+          if (input.expectedHostEpoch !== this.hostEpoch) {
+            return {
+              ok: false,
+              error: {
+                code: 'operation_conflict',
+                message: 'Runtime Host identity changed before upgrade drain',
+              },
+            };
+          }
+          if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity()) {
+            return { ok: true, result: { kind: 'active_tasks' } };
+          }
+          this.#requestDrain();
+          return { ok: true, result: { kind: 'prepared', pid: process.pid } };
+        },
         'access.credential.issue': async (input) =>
           issueAccessCredential(this.#options.accessAuthority, input),
         'access.credential.revoke': async (input) =>
@@ -568,6 +618,20 @@ export class RuntimeHostKernel {
       activeOperations: this.#activeOperations,
       activeResidencies: this.#residencies.activeCount,
     };
+  }
+
+  #activitySnapshot(): HostActivitySnapshot {
+    return {
+      connections: this.#acceptedTransports.size,
+      activeOperations: this.#activeOperations,
+      processUptimeSeconds: Math.max(0, Math.floor(process.uptime())),
+      residencies: this.#residencies.snapshot(),
+    };
+  }
+
+  #hasUpgradeBlockingActivity(): boolean {
+    if (this.#activeCommandOperations > 1) return true;
+    return this.#residencies.snapshot().some(({ label }) => label !== 'process-retention');
   }
 
   #beginCompositionDrain(): void {
@@ -750,6 +814,8 @@ export class RuntimeHostKernel {
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
       compositionId: this.compositionDescriptor.id,
       compositionRevision: this.compositionDescriptor.revision,
+      lifecycleMode: this.#lifecycle.kind,
+      ...(this.#options.generation === undefined ? {} : { generation: this.#options.generation }),
       state: this.#state,
       pid: process.pid,
       createdAt: this.#createdAt,

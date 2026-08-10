@@ -36,6 +36,8 @@ export interface ConnectOrSpawnRuntimeHostInput {
   surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId: string;
+  generation?: string;
+  takeoverHostEpoch?: string;
   clientInstanceId?: string;
   electionDeadlineMs?: number;
   connectTimeoutMs?: number;
@@ -56,8 +58,13 @@ const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
 };
 
 export type ConnectOrSpawnRuntimeHostResult =
-  | { kind: 'connected'; connection: RuntimeHostConnection }
-  | { kind: 'incompatible'; handshake: HostIncompatible }
+  | {
+      kind: 'connected';
+      connection: RuntimeHostConnection;
+      registration: Extract<ConnectRuntimeHostResult, { kind: 'connected' }>['registration'];
+    }
+  | Extract<ConnectRuntimeHostResult, { kind: 'upgrade_required' }>
+  | Extract<ConnectRuntimeHostResult, { kind: 'incompatible' }>
   | {
       kind: 'failed';
       reason: 'composition_mismatch';
@@ -158,6 +165,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       surface: input.surface,
       protocol: input.protocol,
       compositionId: input.compositionId,
+      ...(input.generation === undefined ? {} : { generation: input.generation }),
+      ...(input.takeoverHostEpoch === undefined
+        ? {}
+        : { takeoverHostEpoch: input.takeoverHostEpoch }),
       clientInstanceId,
       connectTimeoutMs: input.connectTimeoutMs,
       handshakeTimeoutMs: input.handshakeTimeoutMs,
@@ -167,12 +178,13 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (result.endpointConnected) sawUnresponsiveEndpoint = true;
       break;
     }
-    if (result.kind === 'connected') return { kind: 'connected', connection: result.connection };
+    if (result.kind === 'connected') return result;
+    if (result.kind === 'upgrade_required') return result;
     if (result.kind === 'unavailable' && result.reason === 'handshake_failed') {
       sawUnresponsiveEndpoint = true;
     }
     if (isBlockingIncompatibility(result)) {
-      return { kind: 'incompatible', handshake: result.handshake };
+      return result;
     }
 
     const now = performance.now();
@@ -184,6 +196,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           rootPath: capability.canonicalPath,
           expectedRootId: capability.rootId,
           entrypoint: input.candidateEntrypoint,
+          ...(input.generation === undefined ? {} : { generation: input.generation }),
           ...(input.legacyConfigurationRoot === undefined
             ? {}
             : { legacyConfigurationRoot: input.legacyConfigurationRoot }),
