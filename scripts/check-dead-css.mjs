@@ -196,6 +196,7 @@ const RESERVED_SCALE_TOKENS = new Set([
   // tokens mirror ICON_SIZE in @maka/ui's icons.tsx for the CSS-clamped
   // sites; a rung with no clamp today (empty, plate) still names its gap.
   // --icon-size is the deprecated alias, kept one release.
+  '--icon-chrome',
   '--icon-empty',
   '--icon-plate',
   '--icon-size',
