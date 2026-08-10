@@ -90,6 +90,7 @@ test('Maka subject delegates one Hosted execution without owning Runtime lifecyc
 
   assert.equal(request?.args[0], '/opt/maka/harbor-maka-subject.js');
   assert.equal(result.status, 'completed');
+  assert.deepEqual(result.artifacts, []);
 });
 
 test('framework timeout remains a verifiable failure for every subject kind', async () => {

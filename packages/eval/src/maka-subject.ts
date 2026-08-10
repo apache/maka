@@ -53,7 +53,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             durationMs: Date.now() - startedAt,
             status: 'indeterminate' as const,
             failureReason: projection.failureReason,
-            artifacts: [{ kind: 'runtime_host_execution', executionId }],
+            artifacts: [],
           };
         }
         if (process.termination === 'cancelled') {
@@ -63,7 +63,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             durationMs: Date.now() - startedAt,
             status: 'indeterminate' as const,
             failureReason: 'Maka subject cancelled',
-            artifacts: [{ kind: 'runtime_host_execution', executionId }],
+            artifacts: [],
           };
         }
         if (process.termination === 'framework_timeout') {
@@ -73,7 +73,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             durationMs: Date.now() - startedAt,
             status: 'failed' as const,
             failureReason: 'Maka subject exceeded the framework timeout',
-            artifacts: [{ kind: 'runtime_host_execution', executionId }],
+            artifacts: [],
           };
         }
         if (process.exitCode !== 0) {
@@ -83,7 +83,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
             durationMs: Date.now() - startedAt,
             status: 'indeterminate' as const,
             failureReason: 'Maka execution shim did not settle cleanly',
-            artifacts: [{ kind: 'runtime_host_execution', executionId }],
+            artifacts: [],
           };
         }
         return {
@@ -92,7 +92,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           durationMs: Date.now() - startedAt,
           status: projection.status === 'completed' ? ('completed' as const) : ('failed' as const),
           failureReason: projection.failureReason ?? null,
-          artifacts: [{ kind: 'runtime_host_execution', executionId }],
+          artifacts: [],
         };
       } catch {
         return {
@@ -101,7 +101,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           durationMs: Date.now() - startedAt,
           status: context.signal?.aborted ? ('indeterminate' as const) : ('infra_failed' as const),
           failureReason: context.signal?.aborted ? 'Maka subject cancelled' : 'Maka subject failed',
-          artifacts: [{ kind: 'runtime_host_execution', executionId }],
+          artifacts: [],
         };
       }
     },
