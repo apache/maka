@@ -21,7 +21,7 @@ describe('external-conversation protocol', () => {
         kind: 'resolve',
         conversationId: 'slack:channel:C1:thread:123.456',
         session: {
-          cwd: '/workspace',
+          workspace: { kind: 'host_path', path: '/workspace' },
           name: 'Slack thread',
           labels: ['bot', 'slack'],
           modelTarget: { kind: 'default' },
@@ -32,7 +32,7 @@ describe('external-conversation protocol', () => {
         kind: 'resolve',
         conversationId: 'slack:channel:C1:thread:123.456',
         session: {
-          cwd: '/workspace',
+          workspace: { kind: 'host_path', path: '/workspace' },
           name: 'Slack thread',
           labels: ['bot', 'slack'],
           modelTarget: { kind: 'default' },
@@ -59,7 +59,7 @@ describe('external-conversation protocol', () => {
         conversationId: 'telegram:chat-1',
         session: {
           sessionId: 'client-selected',
-          cwd: '/workspace',
+          workspace: { kind: 'host_path', path: '/workspace' },
           modelTarget: { kind: 'default' },
         },
       }),
