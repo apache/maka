@@ -82,6 +82,14 @@ interface ObserverRegistration {
   readonly group: ObserverTargetGroup;
 }
 
+interface SubscriptionFailureIdentity {
+  readonly sessionId: string;
+  readonly turnId?: string;
+  readonly runId?: string;
+  readonly reason: string;
+  readonly message: string;
+}
+
 /**
  * Owns the Desktop-side lifetime of Host Session subscriptions.
  *
@@ -321,31 +329,37 @@ export class RuntimeHostSessionObserver {
 
   async #open(state: ObservedSessionState): Promise<void> {
     try {
-      const handle = await this.#client.openSession(state.sessionId);
-      if (state.closing) {
-        await handle.close();
-        throw new Error("Runtime Host Session observer closed while opening");
-      }
-      state.handle = handle;
-      state.snapshot = structuredClone(handle.snapshot);
-      void this.#pump(state, handle);
-      state.transcript = await handle.transcript;
-      if (state.closing)
-        throw new Error("Runtime Host Session observer closed while opening");
-      state.projector = new RuntimeHostSessionProjector(
-        handle.snapshot,
-        state.transcript,
-        this.#now,
-      );
-      state.ready = true;
-      for (const group of state.targets.values())
-        this.#seedTarget(state, group);
-      for (const frame of state.pendingFrames.splice(0))
-        this.#acceptFrame(state, frame);
+      await this.#openHandle(state);
     } catch (error) {
       await this.#closeState(state);
       throw error;
     }
+  }
+
+  async #openHandle(state: ObservedSessionState): Promise<void> {
+    const handle = await this.#client.openSession(state.sessionId);
+    if (state.closing) {
+      await handle.close();
+      throw new Error("Runtime Host Session observer closed while opening");
+    }
+    state.handle = handle;
+    state.snapshot = structuredClone(handle.snapshot);
+    void this.#pump(state, handle);
+    state.transcript = await handle.transcript;
+    if (state.closing || state.handle !== handle) {
+      await handle.close();
+      throw new Error("Runtime Host Session observer closed while opening");
+    }
+    state.projector = new RuntimeHostSessionProjector(
+      handle.snapshot,
+      state.transcript,
+      this.#now,
+    );
+    state.ready = true;
+    for (const group of state.targets.values())
+      this.#seedTarget(state, group);
+    for (const frame of state.pendingFrames.splice(0))
+      this.#acceptFrame(state, frame);
   }
 
   async #pump(
@@ -374,6 +388,14 @@ export class RuntimeHostSessionObserver {
       }
     } catch (error) {
       if (state.closing) return;
+      if (
+        state.ready &&
+        state.handle === handle &&
+        isRecoverableSubscriptionFailure(error)
+      ) {
+        this.#recoverSubscription(state, handle, error);
+        return;
+      }
       if (
         this.#recoverConnectionClosed &&
         error instanceof RuntimeHostSubscriptionError &&
@@ -430,11 +452,9 @@ export class RuntimeHostSessionObserver {
         this.#emitSessionsChanged("deleted", state.sessionId);
         void this.#closeState(state);
       } else {
-        this.#publishSubscriptionFailure(
-          state,
-          new Error(
-            "Runtime Host Session subscription closed for a slow consumer",
-          ),
+        throw new RuntimeHostSubscriptionError(
+          "slow_consumer",
+          "Runtime Host Session subscription closed for a slow consumer",
         );
       }
       return;
@@ -503,6 +523,10 @@ export class RuntimeHostSessionObserver {
     error: unknown,
   ): void {
     const root = state.snapshot?.rootTurn;
+    const reason =
+      error instanceof RuntimeHostSubscriptionError
+        ? error.reason
+        : "subscription_closed";
     if (root && !isTerminalTurn(root)) {
       this.#broadcast(state.sessionId, {
         type: "error",
@@ -510,7 +534,7 @@ export class RuntimeHostSessionObserver {
         turnId: root.turnId,
         ts: this.#now(),
         recoverable: true,
-        reason: "subscription_closed",
+        reason,
         message:
           error instanceof Error
             ? error.message
@@ -523,6 +547,62 @@ export class RuntimeHostSessionObserver {
       root ? { turnId: root.turnId } : undefined,
     );
     void this.#closeState(state);
+  }
+
+  #recoverSubscription(
+    state: ObservedSessionState,
+    handle: DesktopRuntimeHostSession,
+    error: unknown,
+  ): void {
+    const identity = subscriptionFailureIdentity(state, error);
+    console.warn("[runtime-host-session-observer] recovering subscription", identity);
+    state.ready = false;
+    state.handle = undefined;
+    state.pendingFrames.length = 0;
+    state.transcript = undefined;
+    state.projector = undefined;
+    for (const group of state.targets.values()) group.seeded = false;
+
+    const recovery = this.#replaceSubscription(state, handle, identity);
+    state.openTask = recovery;
+    void recovery.catch(() => undefined);
+  }
+
+  async #replaceSubscription(
+    state: ObservedSessionState,
+    previous: DesktopRuntimeHostSession,
+    failure: SubscriptionFailureIdentity,
+  ): Promise<void> {
+    await previous.close().catch(() => undefined);
+    if (state.closing || this.#states.get(state.sessionId) !== state) return;
+    try {
+      await this.#openHandle(state);
+      console.info("[runtime-host-session-observer] subscription recovered", failure);
+      const root = state.snapshot?.rootTurn;
+      this.#emitSessionsChanged(
+        "status-change",
+        state.sessionId,
+        root ? { turnId: root.turnId } : undefined,
+      );
+      if (root) {
+        this.#emitSessionsChanged("message-appended", state.sessionId, {
+          turnId: root.turnId,
+        });
+        if (isTerminalTurn(root)) {
+          this.#finishWatchedTurn(state, root.turnId, "completed");
+          void this.#closeIfIdle(state);
+        }
+      }
+    } catch (error) {
+      if (state.closing || this.#states.get(state.sessionId) !== state) return;
+      const recovery = subscriptionFailureIdentity(state, error);
+      console.error(
+        "[runtime-host-session-observer] subscription recovery failed",
+        { failure, recovery },
+      );
+      this.#publishSubscriptionFailure(state, error);
+      throw error;
+    }
   }
 
   async #loadCurrentTranscript(sessionId: string): Promise<StoredMessage[]> {
@@ -674,4 +754,32 @@ async function drainFrames(
     // closes. Drain bounded frames so transcript pagination cannot be evicted
     // as a slow consumer.
   }
+}
+
+function isRecoverableSubscriptionFailure(error: unknown): boolean {
+  if (!(error instanceof RuntimeHostSubscriptionError)) return false;
+  return (
+    error.reason === "slow_consumer" ||
+    error.reason === "sequence_gap" ||
+    error.reason === "projection_revision_invalid"
+  );
+}
+
+function subscriptionFailureIdentity(
+  state: ObservedSessionState,
+  error: unknown,
+): SubscriptionFailureIdentity {
+  const root = state.snapshot?.rootTurn;
+  return {
+    sessionId: state.sessionId,
+    ...(root ? { turnId: root.turnId, runId: root.runId } : {}),
+    reason:
+      error instanceof RuntimeHostSubscriptionError
+        ? error.reason
+        : "subscription_closed",
+    message:
+      error instanceof Error
+        ? error.message
+        : "Runtime Host Session subscription closed",
+  };
 }

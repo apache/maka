@@ -459,6 +459,82 @@ test("abandons a watched Turn when the Session is removed", async () => {
   await observer.close();
 });
 
+test("reopens an evicted active subscription without a renderer resubscribe", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const sessionChanges: Array<{ reason: string; sessionId: string }> = [];
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        const events = openCount === 1 ? firstEvents : secondEvents;
+        return {
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve(
+            openCount === 1
+              ? []
+              : [
+                  {
+                    type: "assistant" as const,
+                    id: "message-1",
+                    turnId: "turn-1",
+                    ts: 10,
+                    text: "Hello",
+                    modelId: "test-model",
+                  },
+                ],
+          ),
+          events,
+          async close() {
+            events.end();
+          },
+        };
+      },
+    },
+    emitSessionsChanged: (reason, sessionId) =>
+      sessionChanges.push({ reason, sessionId }),
+  });
+  const target = eventTarget(12);
+  await observer.observe("session-1", "observer-1", target);
+
+  firstEvents.push(deltaFrame(1, 0, "Hel"));
+  firstEvents.push({
+    kind: "subscription.closed",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-1",
+    sequence: 2,
+    reason: "slow_consumer",
+  });
+  await waitFor(() => openCount === 2 && target.events.length === 2);
+
+  secondEvents.push(deltaFrame(1, 5, " world"));
+  await waitFor(() => target.events.length === 3);
+  assert.deepEqual(
+    target.events.map((event) => [
+      event.type,
+      "text" in event ? event.text : undefined,
+      "startOffset" in event ? event.startOffset : undefined,
+    ]),
+    [
+      ["text_delta", "Hel", 0],
+      ["text_delta", "Hello", 0],
+      ["text_delta", " world", 5],
+    ],
+  );
+  assert.equal(target.events.some((event) => event.type === "error"), false);
+  assert.ok(
+    sessionChanges.some(
+      (change) =>
+        change.reason === "message-appended" &&
+        change.sessionId === "session-1",
+    ),
+  );
+
+  await observer.unobserve("observer-1");
+  await observer.close();
+});
+
 test("shares one Host subscription and one delivery per renderer target", async () => {
   const events = new AsyncFrameQueue();
   let openCount = 0;
