@@ -46,6 +46,18 @@ export interface RouterProfileProvider {
   ): Promise<RouterCredentialMaterial | null>;
   /** Persist the outcome into the routing Health authority. */
   settleHealth(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void>;
+  /**
+   * Profiles whose circuit is open with the probe time elapsed (RFC 8.3):
+   * candidates for a half-open probe. `claimHalfOpenProbe` atomically admits
+   * exactly one probe per circuit.
+   */
+  probeEligibleProfiles(
+    connectionId: string,
+    profileIds: readonly string[],
+    modelId: string,
+  ): Promise<ReadonlySet<string>>;
+  /** Atomically claim a half-open probe; false when another probe holds it. */
+  claimHalfOpenProbe(connectionId: string, profileId: string, modelId: string): Promise<boolean>;
 }
 
 export interface CreateProviderCredentialRouterOptions {
@@ -112,14 +124,14 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     if (routing.mode !== 'balanced') {
       throw new RouterConfigurationError(`Unsupported routing mode: ${routing.mode}`);
     }
-    const candidates = await this.#balancedCandidates(context, routing);
+    const { candidates, probeReason } = await this.#balancedCandidates(context, routing);
     if (candidates.length === 0) {
       throw new RouterPoolExhaustedError(
         `no eligible credential profile for model ${context.modelId}`,
         {},
       );
     }
-    const binding = this.#selectBinding(context, routing, candidates);
+    const binding = this.#selectBinding(context, routing, candidates, probeReason);
     const material = await this.#provider.resolveCredential(
       context.connectionId,
       binding.profileId,
@@ -184,17 +196,22 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     if (!material) {
       throw new RouterPoolExhaustedError('primary credential is not configured', {});
     }
-    return this.#leaseFromMaterial(
-      context,
-      { profileId, selectionReason: 'legacy_single' },
-      material,
-    );
+    const binding: TurnBindingRecord = {
+      bindingId: createId('binding'),
+      connectionId: context.connectionId,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      profileId,
+      selectionReason: 'legacy_single',
+      lastUsedAt: this.#now(),
+    };
+    return this.#leaseFromMaterial(context, binding, material);
   }
 
   async #balancedCandidates(
     context: ProviderCredentialRouteContext,
     routing: ConnectionCredentialRouting,
-  ): Promise<string[]> {
+  ): Promise<{ readonly candidates: string[]; readonly probeReason: boolean }> {
     const allProfileIds = routing.profiles.map((profile) => profile.profileId);
     const eligible = await this.#provider.getEligibleProfileIds(
       context.connectionId,
@@ -207,18 +224,45 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       // it was excluded by the failover; it is the only candidate admitted.
       const failing = routing.profiles.find((profile) => excluded.has(profile.profileId));
       if (failing && eligible.has(failing.profileId)) {
-        return [failing.profileId];
+        return { candidates: [failing.profileId], probeReason: true };
       }
-      return [];
+      return { candidates: [], probeReason: true };
     }
-    return allProfileIds.filter((profileId) => eligible.has(profileId) && !excluded.has(profileId));
+    const normal = allProfileIds.filter(
+      (profileId) => eligible.has(profileId) && !excluded.has(profileId),
+    );
+    if (normal.length > 0) {
+      return { candidates: normal, probeReason: false };
+    }
+    // Pool exhausted for normal dispatch: admit at most one half-open probe
+    // (RFC 8.3). The provider's claim is atomic per circuit, so concurrent
+    // acquires cannot all probe the same credential. The claimed profile is
+    // dispatched regardless of the eligibility filter (it was excluded only
+    // because its circuit is open — the probe exists to test it).
+    const probeEligible = await this.#provider.probeEligibleProfiles(
+      context.connectionId,
+      allProfileIds.filter((profileId) => !excluded.has(profileId)),
+      context.modelId,
+    );
+    for (const profileId of probeEligible) {
+      if (
+        await this.#provider.claimHalfOpenProbe(context.connectionId, profileId, context.modelId)
+      ) {
+        return { candidates: [profileId], probeReason: true };
+      }
+    }
+    return { candidates: [], probeReason: true };
   }
 
   #selectBinding(
     context: ProviderCredentialRouteContext,
     routing: ConnectionCredentialRouting,
     candidates: readonly string[],
+    probeReason: boolean,
   ): TurnBindingRecord {
+    if (probeReason) {
+      return this.#selectCandidate(context, routing, candidates, 'half_open_probe');
+    }
     if (context.reason === 'account_failover' || context.reason === 'half_open_probe') {
       return this.#selectCandidate(
         context,
@@ -324,12 +368,14 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
 
   #leaseFromMaterial(
     context: ProviderCredentialRouteContext,
-    binding: Pick<ProviderProfileBinding, 'profileId' | 'selectionReason'>,
+    binding: Pick<ProviderProfileBinding, 'profileId' | 'selectionReason' | 'bindingId'>,
     material: RouterCredentialMaterial,
   ): ProviderCredentialLease {
     return {
       leaseId: createId('lease'),
-      bindingId: createId('binding'),
+      // The lease must reference the exact turn binding it was selected by
+      // (RFC 6.2), so diagnostics and health settlement can join lease -> binding.
+      bindingId: binding.bindingId,
       profileId: binding.profileId,
       credentialId: material.credentialId,
       credentialRevision: material.credentialRevision,
@@ -337,6 +383,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       apiKey: material.apiKey,
       ...(material.requestHeaders ? { requestHeaders: material.requestHeaders } : {}),
       ...(material.fetch ? { fetch: material.fetch } : {}),
+      ...(context.modelId ? { modelId: context.modelId } : {}),
     };
   }
 }

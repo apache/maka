@@ -25,10 +25,22 @@ export interface CreateHostCredentialResolverInput {
   /** Non-secret execution basis inputs shared with verification writes. */
   readonly endpoint: string;
   readonly apiProtocol: string | undefined;
+  /** Connection-level request-headers credential identity (digest basis). */
+  readonly requestHeadersCredentialId: string | null;
+  readonly requestHeadersCredentialRevision: number | null;
   readonly requestBodyOverlayJson: string | null;
   readonly authKind: 'api_key' | 'oauth_token' | 'optional_api_key' | 'none';
   readonly routing: ConnectionCredentialRouting;
   readonly now?: () => number;
+}
+
+/**
+ * A composed resolver plus its owned routing-store lease. The caller must call
+ * `dispose()` exactly once when the backend is torn down (RFC P2-8), otherwise
+ * the operational database connection is never released.
+ */
+export interface HostCredentialResolver extends ProviderCredentialResolver {
+  dispose(): void;
 }
 
 /**
@@ -38,18 +50,19 @@ export interface CreateHostCredentialResolverInput {
  * and the routing Health/Verification store.
  *
  * The returned resolver owns a Router with process-local SWRR state and turn
- * bindings; the routing store is process-local too (same `runtime.sqlite`).
+ * bindings; the routing store is process-local too (same `runtime.sqlite`) and
+ * must be disposed with the resolver.
  */
 export function createHostCredentialResolver(
   input: CreateHostCredentialResolverInput,
-): ProviderCredentialResolver {
+): HostCredentialResolver {
   const routingStore = createSqliteProviderCredentialRoutingStore(input.workspaceRoot);
   const digest = executionBasisDigest({
     providerType: input.providerType,
     endpoint: input.endpoint,
     apiProtocol: input.apiProtocol,
-    requestHeadersCredentialId: null,
-    requestHeadersCredentialRevision: null,
+    requestHeadersCredentialId: input.requestHeadersCredentialId,
+    requestHeadersCredentialRevision: input.requestHeadersCredentialRevision,
     requestBodyOverlayJson: input.requestBodyOverlayJson,
   });
   const router = new ProviderCredentialRouter(
@@ -82,10 +95,37 @@ export function createHostCredentialResolver(
           outcome,
           now: input.now ?? Date.now,
         }),
+      probeEligibleProfiles: (connectionId, profileIds, modelId) =>
+        probeEligibleProfiles({
+          connectionId,
+          profileIds,
+          modelId,
+          routing: input.routing,
+          runtimePolicy: input.runtimePolicy,
+          routingStore,
+          digest,
+          authKind: input.authKind,
+        }),
+      claimHalfOpenProbe: (connectionId, profileId, modelId) =>
+        claimHalfOpenProbe({
+          connectionId,
+          profileId,
+          modelId,
+          runtimePolicy: input.runtimePolicy,
+          routingStore,
+          digest,
+          authKind: input.authKind,
+          now: input.now ?? Date.now,
+        }),
     },
     { now: input.now },
   );
-  return router;
+  return {
+    acquireAttempt: (context) => router.acquireAttempt(context),
+    settle: (lease, outcome) => router.settle(lease, outcome),
+    releaseTurn: (sessionId, turnId) => router.releaseTurn(sessionId, turnId),
+    dispose: () => routingStore.dispose(),
+  };
 }
 
 async function filterEligibleProfiles(input: {
@@ -106,14 +146,15 @@ async function filterEligibleProfiles(input: {
     if (!locator) continue;
     const material = await input.runtimePolicy.operations.exportCredentialMaterial(locator);
     if (!material) continue;
-    const health = await input.routingStore.readHealth(
-      input.connectionId,
-      profileId,
-      material.credentialId,
-      material.revision,
-      input.digest,
-    );
-    if (health.some((row) => row.circuitState === 'open' || row.circuitState === 'invalid')) {
+    if (
+      await blockedForModel(
+        input,
+        profileId,
+        material.credentialId,
+        material.revision,
+        input.modelId,
+      )
+    ) {
       continue;
     }
     // Explicit Profile routing requires model-support evidence; unknown is
@@ -136,6 +177,99 @@ async function filterEligibleProfiles(input: {
     eligible.add(profileId);
   }
   return eligible;
+}
+
+/**
+ * P1-5: model-scoped health isolation. A credential is blocked for `modelId`
+ * only when the credential-global row (`model_id=''`) or the current model's
+ * row is open/invalid — a `provider_permission` deny on one model must not
+ * take the whole Profile out of rotation for every model.
+ */
+async function blockedForModel(
+  input: {
+    routingStore: ProviderCredentialRoutingStore;
+    connectionId: string;
+    digest: string;
+  },
+  profileId: string,
+  credentialId: string,
+  credentialRevision: number,
+  modelId: string,
+): Promise<boolean> {
+  const rows = await input.routingStore.readHealth(
+    input.connectionId,
+    profileId,
+    credentialId,
+    credentialRevision,
+    input.digest,
+  );
+  for (const row of rows) {
+    if (row.modelId !== '' && row.modelId !== modelId) continue;
+    if (row.circuitState === 'open' || row.circuitState === 'invalid') return true;
+  }
+  return false;
+}
+
+async function probeEligibleProfiles(input: {
+  connectionId: string;
+  profileIds: readonly string[];
+  modelId: string;
+  routing: ConnectionCredentialRouting;
+  runtimePolicy: RuntimePolicyStoresWriter;
+  routingStore: ProviderCredentialRoutingStore;
+  digest: string;
+  authKind: CreateHostCredentialResolverInput['authKind'];
+}): Promise<ReadonlySet<string>> {
+  const eligible = new Set<string>();
+  const now = Date.now();
+  for (const profileId of input.profileIds) {
+    const profile = input.routing.profiles.find((candidate) => candidate.profileId === profileId);
+    if (!profile?.enabled) continue;
+    const locator = profileLocator(input.connectionId, profileId, input.authKind);
+    if (!locator) continue;
+    const material = await input.runtimePolicy.operations.exportCredentialMaterial(locator);
+    if (!material) continue;
+    const rows = await input.routingStore.readHealth(
+      input.connectionId,
+      profileId,
+      material.credentialId,
+      material.revision,
+      input.digest,
+    );
+    for (const row of rows) {
+      if (row.modelId !== '' && row.modelId !== input.modelId) continue;
+      if (row.circuitState === 'open') {
+        const probeAt = Math.max(row.blockedUntil ?? 0, row.nextProbeAt ?? 0);
+        if (probeAt <= now) eligible.add(profileId);
+      }
+    }
+  }
+  return eligible;
+}
+
+async function claimHalfOpenProbe(input: {
+  connectionId: string;
+  profileId: string;
+  modelId: string;
+  runtimePolicy: RuntimePolicyStoresWriter;
+  routingStore: ProviderCredentialRoutingStore;
+  digest: string;
+  authKind: CreateHostCredentialResolverInput['authKind'];
+  now: () => number;
+}): Promise<boolean> {
+  const locator = profileLocator(input.connectionId, input.profileId, input.authKind);
+  if (!locator) return false;
+  const material = await input.runtimePolicy.operations.exportCredentialMaterial(locator);
+  if (!material) return false;
+  return input.routingStore.claimHalfOpenProbe(
+    input.connectionId,
+    input.profileId,
+    material.credentialId,
+    material.revision,
+    input.digest,
+    input.modelId,
+    input.now(),
+  );
 }
 
 async function resolveProfileCredential(input: {
@@ -164,6 +298,10 @@ async function settleRoutingOutcome(input: {
   now: () => number;
 }): Promise<void> {
   const now = input.now();
+  // P1-5: settle the per-model row (lease.modelId) so a model-scoped
+  // permission failure is isolated and a model success closes only that
+  // model's circuit, never a global billing/usage circuit.
+  const modelId = input.lease.modelId ?? '';
   switch (input.outcome.kind) {
     case 'success':
       await input.routingStore.settleSuccess(
@@ -172,7 +310,7 @@ async function settleRoutingOutcome(input: {
         input.lease.credentialId,
         input.lease.credentialRevision,
         input.digest,
-        '',
+        modelId,
         now,
       );
       return;
@@ -186,7 +324,7 @@ async function settleRoutingOutcome(input: {
         input.lease.credentialId,
         input.lease.credentialRevision,
         input.digest,
-        '',
+        modelId,
         input.outcome.routingHint,
         now,
       );

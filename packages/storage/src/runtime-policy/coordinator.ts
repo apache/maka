@@ -51,6 +51,11 @@ import {
   PROVIDER_DEFAULTS,
   type ProviderType,
 } from '@maka/core/llm-connections';
+import {
+  createSqliteProviderCredentialRoutingStore,
+  executionBasisDigest,
+  type ProviderCredentialRoutingStore,
+} from '../provider-credential-routing-store.js';
 import { deepFreeze } from './codec.js';
 import {
   catalogSnapshot,
@@ -68,6 +73,7 @@ import {
   credentialStatus,
   CredentialVaultDocumentOwner,
   findCredential,
+  type CredentialVaultDocument,
   sameCredentialBasis,
   vaultSnapshot,
 } from './credential-vault-document.js';
@@ -84,6 +90,8 @@ import {
   connectionProfileCredentialLocator,
   connectionRequestHeadersLocator,
   type CredentialStatusQueryResult,
+  type RecordCredentialProfileVerificationInput,
+  type RecordCredentialProfileVerificationResult,
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
@@ -191,6 +199,26 @@ export class RuntimePolicyCoordinator {
   private readonly vault = new CredentialVaultDocumentOwner();
   private readonly tickets = new WeakMap<object, OperationTicketRecord>();
   private onboardingRecoveryRequired = false;
+  /**
+   * Lazily-created routing Health/Verification authority (RFC 8.4). The
+   * interactive policy root is the same directory that hosts runtime.sqlite,
+   * so `root` from the write lane addresses it. One instance per coordinator
+   * (per lease) keeps the operational database lease count bounded.
+   */
+  private routingStore: ProviderCredentialRoutingStore | null = null;
+  private routingStoreRoot: string | null = null;
+
+  private routingStoreFor(root: string): ProviderCredentialRoutingStore {
+    if (this.routingStore && this.routingStoreRoot === root) return this.routingStore;
+    if (this.routingStore && this.routingStoreRoot !== null) {
+      // A different root cannot appear under one lease; fail closed rather
+      // than writing to the wrong authority.
+      throw codecError('invalid_document', 'Routing authority root changed under one coordinator');
+    }
+    this.routingStore = createSqliteProviderCredentialRoutingStore(root);
+    this.routingStoreRoot = root;
+    return this.routingStore;
+  }
 
   constructor(private readonly execute: RootExecutor) {
     this.lane = new SerializedOperationLane(execute);
@@ -225,7 +253,7 @@ export class RuntimePolicyCoordinator {
   getCredentialStatus(rawLocator: CredentialLocator): Promise<CredentialStatusQueryResult> {
     return this.inLane(async (root) => {
       const locator = decodeCredentialInput(() => decodeCredentialLocator(rawLocator));
-      if (locator.scope === 'connection') {
+      if (locator.scope === 'connection' || locator.scope === 'connection_profile') {
         const catalog = await this.catalog.read(root);
         if (!this.validateConnectionCredentialLocator(catalog, locator)) {
           return deepFreeze({ kind: 'connection_not_found' as const });
@@ -519,7 +547,178 @@ export class RuntimePolicyCoordinator {
           reason: 'balanced routing requires the primary profile credential to be configured',
         });
       }
+      // RFC 4.1 activation gate: every enabled model needs at least one
+      // enabled + configured + verified Profile, and at least one enabled
+      // model needs two or more enabled Profiles with current support
+      // evidence. A Profile with credentials but no verification evidence is
+      // not ready: activating would make the first dispatch fail closed with
+      // "no eligible credential profile". Transient cooldown is intentionally
+      // ignored here (the dispatch layer applies health), but missing
+      // verification is not.
+      const store = this.routingStoreFor(root);
+      const digests = new Map<string, string>();
+      for (const modelId of connection.enabledModelIds) {
+        digests.set(
+          modelId,
+          await this.connectionExecutionBasisDigest(root, vault, connection, modelId),
+        );
+      }
+      const verifiedProfileIdsByModel = new Map<string, string[]>();
+      for (const profile of enabledProfiles) {
+        const locator =
+          profile.profileId === connection.connectionId
+            ? connectionCredentialLocator(connection.connectionId, authKind)
+            : connectionProfileCredentialLocator(
+                connection.connectionId,
+                profile.profileId,
+                authKind,
+              );
+        const credential = locator ? findCredential(vault, locator) : undefined;
+        if (!credential) continue;
+        const verification = await store.readProfileVerification(
+          connection.connectionId,
+          profile.profileId,
+        );
+        for (const modelId of connection.enabledModelIds) {
+          const digest = digests.get(modelId)!;
+          const supported = verification.some(
+            (record) =>
+              record.credentialId === credential.credentialId &&
+              record.credentialRevision === credential.revision &&
+              record.executionBasisDigest === digest &&
+              record.modelId === modelId &&
+              record.status === 'supported',
+          );
+          if (supported) {
+            const list = verifiedProfileIdsByModel.get(modelId) ?? [];
+            list.push(profile.profileId);
+            verifiedProfileIdsByModel.set(modelId, list);
+          }
+        }
+      }
+      for (const modelId of connection.enabledModelIds) {
+        if ((verifiedProfileIdsByModel.get(modelId)?.length ?? 0) < 1) {
+          return deepFreeze({
+            kind: 'balanced_activation_rejected' as const,
+            reason: `balanced routing requires enabled model ${modelId} to have a verified profile`,
+          });
+        }
+      }
+      if (![...verifiedProfileIdsByModel.values()].some((profileIds) => profileIds.length >= 2)) {
+        return deepFreeze({
+          kind: 'balanced_activation_rejected' as const,
+          reason:
+            'balanced routing requires at least one enabled model with two or more verified profiles',
+        });
+      }
       return this.catalog.setCredentialRoutingMode(root, decoded);
+    });
+  }
+
+  /**
+   * Record Profile-level verification evidence (RFC 4.5). This is the
+   * production writer for the routing Verification authority; the e2e path
+   * seeds evidence through it before balanced activation. The write is
+   * CAS-checked against the connection/profile revisions and keyed to the
+   * current credential identity/revision + execution basis digest, so a stale
+   * test completion cannot overwrite newer config or authorize an old key.
+   */
+  recordCredentialProfileVerification(
+    input: RecordCredentialProfileVerificationInput,
+  ): Promise<RecordCredentialProfileVerificationResult> {
+    return this.inLane(async (root) => {
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, { connectionId: input.connectionId });
+      if (!connection) {
+        return deepFreeze({ kind: 'connection_not_found' as const });
+      }
+      if (connection.revision !== input.connectionRevision) {
+        return deepFreeze({
+          kind: 'connection_stale' as const,
+          expectedRevision: input.connectionRevision,
+          actualRevision: connection.revision,
+        });
+      }
+      const routing = connection.credentialRouting;
+      const profile = routing?.profiles.find(
+        (candidate) => candidate.profileId === input.profileId,
+      );
+      if (!profile || profile.revision !== input.profileRevision) {
+        return deepFreeze({ kind: 'profile_not_found' as const });
+      }
+      if (!connection.enabledModelIds.includes(input.modelId)) {
+        return deepFreeze({
+          kind: 'invalid_request' as const,
+          reason: 'verification can only be recorded for an enabled model',
+        });
+      }
+      const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+      const locator =
+        input.profileId === connection.connectionId
+          ? connectionCredentialLocator(connection.connectionId, authKind)
+          : connectionProfileCredentialLocator(connection.connectionId, input.profileId, authKind);
+      if (!locator) {
+        return deepFreeze({
+          kind: 'invalid_request' as const,
+          reason: 'provider auth does not support credential profiles',
+        });
+      }
+      const vault = await this.vault.read(root);
+      const credential = findCredential(vault, locator);
+      if (!credential) {
+        return deepFreeze({ kind: 'credential_not_configured' as const });
+      }
+      const digest = await this.connectionExecutionBasisDigest(
+        root,
+        vault,
+        connection,
+        input.modelId,
+      );
+      await this.routingStoreFor(root).upsertVerification({
+        connectionId: connection.connectionId,
+        profileId: input.profileId,
+        credentialId: credential.credentialId,
+        credentialRevision: credential.revision,
+        executionBasisDigest: digest,
+        modelId: input.modelId,
+        status: input.status,
+        source: input.source,
+        evidence: input.evidence,
+        checkedAt: input.checkedAt,
+        ...(input.testSummary ? { testSummary: input.testSummary } : {}),
+      });
+      return deepFreeze({ kind: 'committed' as const });
+    });
+  }
+
+  /**
+   * Versioned, non-secret execution basis digest for one Connection + model
+   * (RFC 8.4). Must match the digest the Host resolver computes so the
+   * activation gate and dispatch eligibility read the same verification rows.
+   */
+  private async connectionExecutionBasisDigest(
+    root: string,
+    vault: CredentialVaultDocument,
+    connection: ConnectionCatalogEntry,
+    modelId: string,
+  ): Promise<string> {
+    const requestHeaders = findCredential(
+      vault,
+      connectionRequestHeadersLocator(connection.connectionId),
+    );
+    const model = connection.models.find((candidate) => candidate.id === modelId);
+    return executionBasisDigest({
+      providerType: connection.providerType,
+      endpoint: effectiveBaseUrl({
+        providerType: connection.providerType,
+        baseUrl: connection.baseUrl,
+      }),
+      apiProtocol: model?.apiProtocol,
+      requestHeadersCredentialId: requestHeaders?.credentialId ?? null,
+      requestHeadersCredentialRevision: requestHeaders?.revision ?? null,
+      requestBodyOverlayJson: connection.requestBodyOverlay
+        ? JSON.stringify(connection.requestBodyOverlay)
+        : null,
     });
   }
 
@@ -545,31 +744,23 @@ export class RuntimePolicyCoordinator {
         );
       }
       let catalog: ConnectionCatalogDocument | null = null;
-      if (locator.scope === 'connection') {
+      if (locator.scope === 'connection' || locator.scope === 'connection_profile') {
         catalog = await this.catalog.read(root);
-        const connection = findConnection(catalog, locator);
-        if (!connection) {
+        if (!this.validateConnectionCredentialLocator(catalog, locator)) {
           return deepFreeze({ kind: 'connection_not_found' as const });
         }
-        const required = connectionCredentialLocator(
-          connection.connectionId,
-          PROVIDER_DEFAULTS[connection.providerType].authKind,
-        );
-        if (locator.kind !== 'request_headers' && (!required || required.kind !== locator.kind)) {
-          throw codecError(
-            'invalid_credential_input',
-            'Connection credential kind does not match the provider auth contract',
-          );
-        }
-        if (
-          authority === 'client' &&
-          locator.kind === 'oauth_token' &&
-          connection.providerType !== 'github-copilot'
-        ) {
-          throw codecError(
-            'invalid_credential_input',
-            'Client-supplied OAuth credentials are only accepted for GitHub Copilot',
-          );
+        if (locator.scope === 'connection' && locator.kind !== 'request_headers') {
+          const connection = findConnection(catalog, locator);
+          if (
+            authority === 'client' &&
+            locator.kind === 'oauth_token' &&
+            connection?.providerType !== 'github-copilot'
+          ) {
+            throw codecError(
+              'invalid_credential_input',
+              'Client-supplied OAuth credentials are only accepted for GitHub Copilot',
+            );
+          }
         }
       }
       const prepared = this.vault.prepareSet(await this.vault.read(root), input);
@@ -764,7 +955,7 @@ export class RuntimePolicyCoordinator {
       const { expected } = decodeCredentialInput(() => normalizeDeleteCredentialInput(rawInput));
       const { locator } = expected;
       let catalog: ConnectionCatalogDocument | null = null;
-      if (locator.scope === 'connection') {
+      if (locator.scope === 'connection' || locator.scope === 'connection_profile') {
         catalog = await this.catalog.read(root);
         if (!this.validateConnectionCredentialLocator(catalog, locator)) {
           return deepFreeze({ kind: 'connection_not_found' as const });
@@ -821,7 +1012,7 @@ export class RuntimePolicyCoordinator {
   ): Promise<RuntimePolicyCredentialMaterial | null> {
     return this.inLane(async (root) => {
       const locator = decodeCredentialInput(() => decodeCredentialLocator(rawLocator));
-      if (locator.scope === 'connection') {
+      if (locator.scope === 'connection' || locator.scope === 'connection_profile') {
         const catalog = await this.catalog.read(root);
         if (!this.validateConnectionCredentialLocator(catalog, locator)) return null;
       }
@@ -1344,20 +1535,53 @@ export class RuntimePolicyCoordinator {
     catalog: ConnectionCatalogDocument,
     locator: CredentialLocator,
   ): boolean {
-    if (locator.scope !== 'connection') return true;
-    const connection = findConnection(catalog, locator);
-    if (!connection) return false;
-    if (locator.kind === 'request_headers') return true;
-    const required = connectionCredentialLocator(
-      connection.connectionId,
-      PROVIDER_DEFAULTS[connection.providerType].authKind,
-    );
-    if (!required || required.kind !== locator.kind) {
-      throw codecError(
-        'invalid_credential_input',
-        'Connection credential kind does not match the provider auth contract',
+    if (locator.scope === 'connection') {
+      const connection = findConnection(catalog, locator);
+      if (!connection) return false;
+      if (locator.kind === 'request_headers') return true;
+      const required = connectionCredentialLocator(
+        connection.connectionId,
+        PROVIDER_DEFAULTS[connection.providerType].authKind,
       );
+      if (!required || required.kind !== locator.kind) {
+        throw codecError(
+          'invalid_credential_input',
+          'Connection credential kind does not match the provider auth contract',
+        );
+      }
+      return true;
     }
+    if (locator.scope === 'connection_profile') {
+      const connection = findConnection(catalog, locator);
+      if (!connection) return false;
+      if (locator.profileId === connection.connectionId) {
+        // The primary Profile identity is reserved for the `connection` scope;
+        // a primary locator smuggled through `connection_profile` would let a
+        // client bypass the primary's kind/OAuth validation.
+        throw codecError(
+          'invalid_credential_input',
+          'Primary profile credentials must use the connection credential locator',
+        );
+      }
+      const routing = connection.credentialRouting;
+      const profile = routing?.profiles.find(
+        (candidate) => candidate.profileId === locator.profileId,
+      );
+      if (!profile) return false;
+      const required = connectionProfileCredentialLocator(
+        connection.connectionId,
+        locator.profileId,
+        PROVIDER_DEFAULTS[connection.providerType].authKind,
+      );
+      if (!required || required.kind !== locator.kind) {
+        throw codecError(
+          'invalid_credential_input',
+          'Connection profile credential kind does not match the provider auth contract',
+        );
+      }
+      return true;
+    }
+    // web_search / network_proxy scopes carry no Connection authority.
     return true;
   }
 
@@ -1366,7 +1590,7 @@ export class RuntimePolicyCoordinator {
     locator: CredentialLocator,
     connectionCatalog: ConnectionCatalogDocument | null,
   ): Promise<boolean> {
-    if (locator.scope === 'connection') {
+    if (locator.scope === 'connection' || locator.scope === 'connection_profile') {
       return this.catalog.clearConnectionLastTest(root, connectionCatalog!, locator.connectionId);
     }
     if (locator.scope !== 'network_proxy') return false;

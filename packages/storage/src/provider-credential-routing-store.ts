@@ -7,7 +7,10 @@ import type {
   ProviderFailureRoutingHint,
   ProviderFailureKind,
 } from '@maka/core/provider-credential-routing';
-import { acquireOperationalStateDatabase } from './operational-state-store.js';
+import {
+  acquireOperationalStateDatabase,
+  type OperationalStateDatabaseLease,
+} from './operational-state-store.js';
 
 /**
  * Versioned, non-secret execution basis digest (RFC section 8.4).
@@ -146,6 +149,12 @@ export interface ProviderCredentialRoutingStore {
    * the current Catalog.
    */
   cleanup(liveProfileKeys: ReadonlySet<string>, now: number): Promise<void>;
+  /**
+   * Release the operational database lease. Every acquired store must be
+   * disposed exactly once (RFC P2-8): the Operational State owner closes its
+   * shared connection only after the last lease is released.
+   */
+  dispose(): void;
 }
 
 export function createSqliteProviderCredentialRoutingStore(
@@ -158,9 +167,15 @@ const CLOSED_HEALTH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 class SqliteProviderCredentialRoutingStore implements ProviderCredentialRoutingStore {
   readonly #database: DatabaseSync;
+  readonly #lease: OperationalStateDatabaseLease;
 
   constructor(workspaceRoot: string) {
-    this.#database = acquireOperationalStateDatabase(workspaceRoot).database;
+    this.#lease = acquireOperationalStateDatabase(workspaceRoot);
+    this.#database = this.#lease.database;
+  }
+
+  dispose(): void {
+    this.#lease.close();
   }
 
   readProfileVerification(
@@ -331,10 +346,6 @@ class SqliteProviderCredentialRoutingStore implements ProviderCredentialRoutingS
     hint: ProviderFailureRoutingHint,
     now: number,
   ): Promise<void> {
-    if (hint.scope !== 'credential' && hint.scope !== 'credential_model') {
-      // connection / unknown scopes never change Profile health.
-      return Promise.resolve();
-    }
     const row = this.#database
       .prepare(
         `SELECT circuit_state, consecutive_failures
@@ -345,13 +356,36 @@ class SqliteProviderCredentialRoutingStore implements ProviderCredentialRoutingS
       .get(connectionId, profileId, credentialId, credentialRevision, basis, modelId) as
       | { circuit_state?: unknown; consecutive_failures?: unknown }
       | undefined;
-
-    const next = computeFailureState(
-      row ? (String(row.circuit_state) as CredentialCircuitState) : 'closed',
+    const circuitState = row
+      ? (String(row.circuit_state) as CredentialCircuitState)
+      : ('closed' as const);
+    // A failed half-open probe must re-open the circuit so a later probe can
+    // retry; leaving it half_open would permanently block new probes (the
+    // claim is single-flight). connection/unknown scopes otherwise never
+    // change Profile health.
+    if (
+      circuitState !== 'half_open' &&
+      hint.scope !== 'credential' &&
+      hint.scope !== 'credential_model'
+    ) {
+      return Promise.resolve();
+    }
+    const computed = computeFailureState(
+      circuitState === 'half_open' ? 'open' : circuitState,
       typeof row?.consecutive_failures === 'number' ? row.consecutive_failures : 0,
       hint,
       now,
     );
+    const next =
+      circuitState === 'half_open'
+        ? {
+            ...computed,
+            circuitState: 'open' as const,
+            // A failed probe re-opens with a fresh bounded cadence so a
+            // persistent credential failure cannot hot-loop probes.
+            nextProbeAt: Math.max(computed.nextProbeAt ?? 0, now + PROBE_CADENCE_MS),
+          }
+        : computed;
     this.#database
       .prepare(
         `INSERT INTO provider_credential_health(

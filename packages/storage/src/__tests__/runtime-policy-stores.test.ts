@@ -2872,6 +2872,31 @@ describe('runtime policy stores', () => {
       routing = snapshot.connections.find((item) => item.connectionId === connection.connectionId)!
         .credentialRouting!;
 
+      // Balanced activation is still rejected while no profile has
+      // verification evidence: credentials alone must never produce a
+      // configuration whose first dispatch is guaranteed to pool-exhaust.
+      const noVerification = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+        mode: 'balanced',
+      });
+      assert.equal(noVerification.kind, 'balanced_activation_rejected');
+
+      // Seed Profile verification through the production writer (RFC 4.5).
+      for (const profile of routing.profiles) {
+        const recorded = await stores.operations.recordCredentialProfileVerification({
+          connectionId: connection.connectionId,
+          connectionRevision: snapshot.revision,
+          profileId: profile.profileId,
+          profileRevision: profile.revision,
+          modelId: 'gpt-5',
+          status: 'supported',
+          source: 'tested',
+          evidence: 'positive_only',
+          checkedAt: 1000,
+        });
+        assert.equal(recorded.kind, 'committed');
+      }
+
       const activated = await stores.operations.setCredentialRoutingMode({
         expected: { connectionId: connection.connectionId, revision: snapshot.revision },
         mode: 'balanced',
@@ -2938,10 +2963,15 @@ describe('runtime policy stores', () => {
       assert.ok(afterRemove.credentialRouting);
       assert.equal(afterRemove.credentialRouting.profiles.length, 1);
       assert.equal(afterRemove.credentialRouting.profiles[0]!.profileId, connection.connectionId);
-      const status = await getCredentialStatus(stores.credentialVault, locator);
+      const status = await stores.credentialVault.getStatus(locator);
       assert.equal(
-        status.configured,
-        false,
+        status.kind,
+        'connection_not_found',
+        'a removed profile locator is no longer a valid credential target',
+      );
+      assert.equal(
+        (await stores.credentialVault.getSnapshot()).entries.length,
+        0,
         'secondary vault credential is deleted on profile removal',
       );
     });
@@ -3141,6 +3171,208 @@ describe('runtime policy stores', () => {
       } finally {
         if (!owner.closed) await owner.close();
       }
+    });
+  });
+
+  test('rejects connection_profile credential writes that bypass Catalog authority', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('authority', 'openai', 'Authority'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      const snapshot = created.snapshot;
+      const routing = snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+
+      // (a) Nonexistent profile on an existing connection -> connection_not_found.
+      const ghost = await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: '00000000-0000-4000-8000-00000000dead',
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      assert.equal(ghost.kind, 'connection_not_found');
+
+      // (b) The primary identity smuggled through the profile scope is rejected.
+      await assert.rejects(
+        stores.credentialVault.set({
+          locator: {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: '[redacted]',
+        }),
+        isStoreError('invalid_credential_input'),
+      );
+
+      // (c) Nonexistent connection -> connection_not_found.
+      const badConnection = await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: '00000000-0000-4000-8000-00000000beef',
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      assert.equal(badConnection.kind, 'connection_not_found');
+
+      // (d) A valid secondary profile credential is accepted.
+      const ok = await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      assert.equal(ok.kind, 'committed');
+
+      // (e) Deleting a ghost profile credential is refused too.
+      const ghostDelete = await stores.credentialVault.delete({
+        expected: {
+          locator: {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: '00000000-0000-4000-8000-00000000dead',
+            kind: 'api_key',
+          },
+          credentialId: '00000000-0000-4000-8000-00000000deed',
+          revision: 1,
+        },
+      });
+      assert.equal(ghostDelete.kind, 'connection_not_found');
+    });
+  });
+
+  test('verification writer is CAS-bound and balanced activation requires current evidence', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('verify', 'openai', 'Verify'),
+      );
+      const created = await stores.operations.createCredentialProfile({
+        expected: connectionBasis(connection),
+        label: 'backup',
+        weight: 1,
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') return;
+      let snapshot = created.snapshot;
+      let routing = snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      )!.credentialRouting!;
+      const secondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+
+      // Configure credentials for both profiles.
+      await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'api_key'),
+        expected: null,
+        secret: '[redacted]',
+      });
+      await stores.credentialVault.set({
+        locator: {
+          scope: 'connection_profile',
+          connectionId: connection.connectionId,
+          profileId: secondary.profileId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: '[redacted]',
+      });
+      const enabled = await stores.operations.setCredentialProfileEnabled({
+        expected: {
+          connectionId: connection.connectionId,
+          connectionRevision: snapshot.revision,
+          profileId: secondary.profileId,
+          profileRevision: secondary.revision,
+        },
+        enabled: true,
+      });
+      assert.equal(enabled.kind, 'committed');
+      if (enabled.kind !== 'committed') return;
+      snapshot = enabled.snapshot;
+      routing = snapshot.connections.find((item) => item.connectionId === connection.connectionId)!
+        .credentialRouting!;
+      const currentSecondary = routing.profiles.find(
+        (profile) => profile.profileId !== connection.connectionId,
+      )!;
+
+      // A stale connection revision is rejected (CAS-bound writer).
+      const stale = await stores.operations.recordCredentialProfileVerification({
+        connectionId: connection.connectionId,
+        connectionRevision: snapshot.revision - 1,
+        profileId: currentSecondary.profileId,
+        profileRevision: currentSecondary.revision,
+        modelId: 'gpt-5',
+        status: 'supported',
+        source: 'tested',
+        evidence: 'positive_only',
+        checkedAt: 1000,
+      });
+      assert.equal(stale.kind, 'connection_stale');
+
+      // Activation is still rejected (only primary has evidence).
+      await stores.operations.recordCredentialProfileVerification({
+        connectionId: connection.connectionId,
+        connectionRevision: snapshot.revision,
+        profileId: connection.connectionId,
+        profileRevision: 1,
+        modelId: 'gpt-5',
+        status: 'supported',
+        source: 'tested',
+        evidence: 'positive_only',
+        checkedAt: 1000,
+      });
+      const onlyPrimary = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+        mode: 'balanced',
+      });
+      assert.equal(onlyPrimary.kind, 'balanced_activation_rejected');
+
+      // Secondary evidence completes the gate.
+      const recorded = await stores.operations.recordCredentialProfileVerification({
+        connectionId: connection.connectionId,
+        connectionRevision: snapshot.revision,
+        profileId: currentSecondary.profileId,
+        profileRevision: currentSecondary.revision,
+        modelId: 'gpt-5',
+        status: 'supported',
+        source: 'tested',
+        evidence: 'positive_only',
+        checkedAt: 1000,
+      });
+      assert.equal(recorded.kind, 'committed');
+      const activated = await stores.operations.setCredentialRoutingMode({
+        expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+        mode: 'balanced',
+      });
+      assert.equal(activated.kind, 'committed');
     });
   });
 });

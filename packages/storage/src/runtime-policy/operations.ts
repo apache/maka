@@ -30,6 +30,39 @@ export type {
   UpdateCredentialProfileInput,
 } from '@maka/core/runtime-policy';
 
+/**
+ * Record rebuildable Profile-level execution evidence (RFC 4.5). This is the
+ * production verification writer that the Profile test/discovery effects will
+ * call; the e2e path uses it to seed evidence before balanced activation.
+ * The write is keyed to the current credential identity/revision and the
+ * execution basis digest, and is CAS-checked against the connection/profile
+ * revisions so a stale test completion cannot overwrite newer config.
+ */
+export interface RecordCredentialProfileVerificationInput {
+  readonly connectionId: string;
+  readonly connectionRevision: number;
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly modelId: string;
+  readonly status: 'supported' | 'denied';
+  readonly source: 'discovered' | 'tested';
+  readonly evidence: 'positive_only' | 'authoritative';
+  readonly checkedAt: number;
+  readonly testSummary?: ConnectionTestSummary;
+}
+
+export type RecordCredentialProfileVerificationResult =
+  | { readonly kind: 'committed' }
+  | { readonly kind: 'connection_not_found' }
+  | {
+      readonly kind: 'connection_stale';
+      readonly expectedRevision: number;
+      readonly actualRevision: number;
+    }
+  | { readonly kind: 'profile_not_found' }
+  | { readonly kind: 'credential_not_configured' }
+  | { readonly kind: 'invalid_request'; readonly reason: string };
+
 declare const operationTicketBrand: unique symbol;
 
 export type ProviderAuthKind = ProviderDefaults['authKind'];
@@ -275,6 +308,9 @@ export interface RuntimePolicyOperationCoordinator {
   setCredentialRoutingMode(
     input: SetCredentialRoutingModeInput,
   ): Promise<CredentialProfileMutationResult>;
+  recordCredentialProfileVerification(
+    input: RecordCredentialProfileVerificationInput,
+  ): Promise<RecordCredentialProfileVerificationResult>;
   beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
     ticket: InteractiveOAuthLoginTicket,

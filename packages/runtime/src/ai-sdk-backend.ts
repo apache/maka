@@ -200,6 +200,7 @@ import {
 } from './provider-request-telemetry.js';
 import type {
   ProviderCredentialLease,
+  ProviderCredentialOutcome,
   ProviderCredentialResolver,
 } from '@maka/core/provider-credential-routing';
 import {
@@ -763,6 +764,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     resolver: ProviderCredentialResolver;
     connectionId: string;
     providerId: string;
+    /** Release the resolver's owned routing-store lease at backend disposal. */
+    dispose?: () => void;
   };
   /** Optional fire-and-forget telemetry hook. Tool implementations remain unaware. */
   recordToolInvocation?: ToolTelemetryRecorder;
@@ -1532,6 +1535,9 @@ export class AiSdkBackend implements AgentBackend {
     }
     const credentialLease = await this.acquireCredentialLease(scope);
     scope.credentialLease = credentialLease;
+    // The step the current lease was acquired for; a new step's first physical
+    // attempt must re-acquire so it never reuses a settled lease/secret.
+    let lastLeaseStep = 0;
     const providerRequestTracker = this.createProviderRequestTracker({
       turnId,
       callKind: 'main',
@@ -1552,6 +1558,7 @@ export class AiSdkBackend implements AgentBackend {
     let model: unknown;
     try {
       model = this.resolveSendModel(credentialLease);
+      this.setTrackerCredentialAttribution(providerRequestTracker, credentialLease);
       trace.modelResolved();
     } catch (err) {
       trace.modelResolveFailed(err);
@@ -2116,6 +2123,17 @@ export class AiSdkBackend implements AgentBackend {
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
           for (;;) {
+            // Per-physical-attempt credential lease (RFC 6.2/9.1): every retry
+            // and every fresh step revalidates Profile enabled/credential
+            // revision/health through the resolver and materializes a fresh
+            // model with the newest secret, so a credential replaced or
+            // Profile disabled between attempts is never reused.
+            if (providerAttempt > 1 || runtimeSteps !== lastLeaseStep) {
+              scope.credentialLease = await this.acquireCredentialLease(scope);
+              model = this.resolveSendModel(scope.credentialLease);
+              this.setTrackerCredentialAttribution(providerRequestTracker, scope.credentialLease);
+              lastLeaseStep = runtimeSteps;
+            }
             providerRequestAbortController = new AbortController();
             watchdogTimeoutState.current = null;
             startWatchdog();
@@ -2381,6 +2399,19 @@ export class AiSdkBackend implements AgentBackend {
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
+
+            // The physical outcome is now decided. Settle the attempt lease
+            // before retry/terminal handling so every dispatched request has
+            // one matching routing outcome.
+            await this.settleAttemptLease(
+              scope,
+              this.attemptCredentialOutcome(
+                scope,
+                providerOutcome.kind !== 'completed',
+                incompleteStreamTerminal,
+                attemptFailure,
+              ),
+            );
 
             if (attemptFailure && !scope.aborted && !midTurnState?.exhaustedDetail) {
               const failure =
@@ -3135,6 +3166,7 @@ export class AiSdkBackend implements AgentBackend {
     if (this.activeTurns.size > 0) await this.stop('user_stop');
     else this.compaction.abortHistoryCompact();
     this.modelAdapter.dispose();
+    this.input.credentialRouting?.dispose?.();
   }
 
   /** Map a completed provider finish reason → our CompleteEvent.stopReason. */
@@ -3217,23 +3249,52 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   /**
-   * Settle the turn's lease when routing is enabled. The PR 3 baseline settles
-   * a completed turn as success and an aborted/errored turn as aborted; the
-   * outcome-driven failure mapping arrives with the PR 0 routing-hint
-   * contract that gates account failover.
+   * Settle one physical attempt's lease with its actual outcome (RFC 6.2:
+   * settle in the same frame as dispatch). Failures are never recorded as
+   * success; without the PR 0 routing-hint contract the failure is reported
+   * with a conservative `unknown` scope so Profile health stays unchanged
+   * (no speculative rotation).
    */
-  private async settleCredentialLease(scope: TurnScope): Promise<void> {
+  private async settleAttemptLease(
+    scope: TurnScope,
+    outcome: ProviderCredentialOutcome,
+  ): Promise<void> {
     const lease = scope.credentialLease;
     const routing = this.input.credentialRouting;
+    scope.credentialLease = undefined;
     if (!lease || !routing) return;
-    try {
-      await routing.resolver.settle(
-        lease,
-        scope.aborted ? { kind: 'aborted' } : { kind: 'success' },
-      );
-    } finally {
-      routing.resolver.releaseTurn(this.sessionId, scope.turnId);
+    await routing.resolver.settle(lease, outcome);
+  }
+
+  /**
+   * Map the physical dispatch outcome to a ProviderCredentialOutcome. The
+   * per-model identity rides on the lease so health settlement keys the
+   * model-scoped row (P1-5).
+   */
+  private attemptCredentialOutcome(
+    scope: TurnScope,
+    sawStreamError: boolean,
+    incompleteStreamTerminal: boolean,
+    attemptFailure: unknown,
+  ): ProviderCredentialOutcome {
+    if (scope.aborted) return { kind: 'aborted' };
+    if (sawStreamError || incompleteStreamTerminal) {
+      const failure = this.modelAdapter.normalizeFailure(attemptFailure);
+      return {
+        kind: 'failure',
+        failure: { kind: failure.kind, retryable: failure.retryable },
+        routingHint: { kind: failure.kind, scope: 'unknown', evidence: 'provider_adapter' },
+      };
     }
+    return { kind: 'success' };
+  }
+
+  /** Point the tracker's next canonical attempt record at the active lease. */
+  private setTrackerCredentialAttribution(
+    tracker: ProviderRequestTracker | undefined,
+    lease: ProviderCredentialLease | undefined,
+  ): void {
+    tracker?.setCredentialAttribution(lease);
   }
 
   private createProviderRequestTracker(input: {
@@ -4499,7 +4560,20 @@ export class AiSdkBackend implements AgentBackend {
   private async cleanupAfterTurn(scope: TurnScope): Promise<void> {
     this.activeTurns.delete(scope);
     this.modelAdapter.endContinuation(scope.turnId);
-    await this.settleCredentialLease(scope);
+    const routing = this.input.credentialRouting;
+    if (routing) {
+      // Safety net: a lease acquired for shaping/first dispatch that never
+      // reached a settled physical attempt (early abort/error) is released
+      // as aborted — never as a fabricated success.
+      if (scope.credentialLease) {
+        try {
+          await routing.resolver.settle(scope.credentialLease, { kind: 'aborted' });
+        } finally {
+          scope.credentialLease = undefined;
+        }
+      }
+      routing.resolver.releaseTurn(this.sessionId, scope.turnId);
+    }
     await scope.toolRuntime.endTurn(scope.aborted ? 'aborted' : 'completed');
   }
 

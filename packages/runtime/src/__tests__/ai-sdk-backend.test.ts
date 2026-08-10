@@ -12960,93 +12960,165 @@ function textCompletionModel(text: string): MockLanguageModelV4 {
   });
 }
 
-
-  test('credential routing seam acquires a lease, materializes with its key, attributes and settles', async () => {
-    const acquireCalls: ProviderCredentialRouteContext[] = [];
-    const settled: Array<{ lease: ProviderCredentialLease; outcomeKind: string }> = [];
-    let released = 0;
-    let attempts: ModelCallAttempt[] = [];
-    let capturedApiKey: string | undefined;
-    const resolver: ProviderCredentialResolver = {
-      acquireAttempt: async (context) => {
-        acquireCalls.push(context);
-        return {
-          leaseId: 'lease-1',
-          bindingId: 'binding-1',
-          profileId: 'profile-b',
-          credentialId: 'cred-b',
-          credentialRevision: 2,
-          selectionReason: 'weighted',
-          apiKey: 'sk-leased-key',
-        };
-      },
-      settle: async (lease, outcome) => {
-        settled.push({ lease, outcomeKind: outcome.kind });
-      },
-      releaseTurn: () => {
-        released += 1;
-      },
-    };
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
-      apiKey: 'sk-fixed-key',
-      modelId: 'gpt-5',
-      modelFactory: (input) => {
-        capturedApiKey = input.apiKey;
-        return model;
-      },
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'openai' },
-      recordModelCallAttempt: (attempt) => {
-        attempts.push(attempt);
-      },
-    });
-
-    await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
-
-    assert.equal(acquireCalls.length, 1, 'one lease is acquired per send');
-    assert.equal(acquireCalls[0]!.connectionId, 'connection-1');
-    assert.equal(acquireCalls[0]!.modelId, 'gpt-5');
-    assert.equal(acquireCalls[0]!.reason, 'initial');
-    assert.equal(capturedApiKey, 'sk-leased-key', 'the model is materialized with the leased key');
-    assert.equal(released, 1, 'the turn binding is released on cleanup');
-    assert.ok(settled.length >= 1, 'the lease is settled on cleanup');
-    assert.equal(settled[0]!.outcomeKind, 'success');
-    assert.equal(settled[0]!.lease.profileId, 'profile-b');
-    const attributed = attempts.filter((attempt) => attempt.credentialProfileId !== undefined);
-    assert.ok(attributed.length > 0, 'ModelCallAttempt carries Credential Profile attribution');
-    assert.equal(attributed[0]!.credentialProfileId, 'profile-b');
-    assert.equal(attributed[0]!.credentialSelectionReason, 'weighted');
+test('credential routing seam acquires a lease, materializes with its key, attributes and settles', async () => {
+  const acquireCalls: ProviderCredentialRouteContext[] = [];
+  const settled: Array<{ lease: ProviderCredentialLease; outcomeKind: string }> = [];
+  let released = 0;
+  let attempts: ModelCallAttempt[] = [];
+  let capturedApiKey: string | undefined;
+  const resolver: ProviderCredentialResolver = {
+    acquireAttempt: async (context) => {
+      acquireCalls.push(context);
+      return {
+        leaseId: 'lease-1',
+        bindingId: 'binding-1',
+        profileId: 'profile-b',
+        credentialId: 'cred-b',
+        credentialRevision: 2,
+        selectionReason: 'weighted',
+        apiKey: 'sk-leased-key',
+      };
+    },
+    settle: async (lease, outcome) => {
+      settled.push({ lease, outcomeKind: outcome.kind });
+    },
+    releaseTurn: () => {
+      released += 1;
+    },
+  };
+  const model = completionModel();
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
+    apiKey: 'sk-fixed-key',
+    modelId: 'gpt-5',
+    modelFactory: (input) => {
+      capturedApiKey = input.apiKey;
+      return model;
+    },
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+    credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'openai' },
+    recordModelCallAttempt: (attempt) => {
+      attempts.push(attempt);
+    },
   });
 
-  test('credential routing is absent: legacy fixed key fast path is unchanged', async () => {
-    let capturedApiKey: string | undefined;
-    const model = completionModel();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
-      apiKey: 'sk-fixed-key',
-      modelId: 'gpt-5',
-      modelFactory: (input) => {
-        capturedApiKey = input.apiKey;
-        return model;
-      },
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
+  await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
-    assert.equal(capturedApiKey, 'sk-fixed-key', 'without routing the construct-time key is used');
+  assert.equal(acquireCalls.length, 1, 'one lease is acquired per send');
+  assert.equal(acquireCalls[0]!.connectionId, 'connection-1');
+  assert.equal(acquireCalls[0]!.modelId, 'gpt-5');
+  assert.equal(acquireCalls[0]!.reason, 'initial');
+  assert.equal(capturedApiKey, 'sk-leased-key', 'the model is materialized with the leased key');
+  assert.equal(released, 1, 'the turn binding is released on cleanup');
+  assert.ok(settled.length >= 1, 'the lease is settled on cleanup');
+  assert.equal(settled[0]!.outcomeKind, 'success');
+  assert.equal(settled[0]!.lease.profileId, 'profile-b');
+  const attributed = attempts.filter((attempt) => attempt.credentialProfileId !== undefined);
+  assert.ok(attributed.length > 0, 'ModelCallAttempt carries Credential Profile attribution');
+  assert.equal(attributed[0]!.credentialProfileId, 'profile-b');
+  assert.equal(attributed[0]!.credentialSelectionReason, 'weighted');
+});
+
+test('credential routing is absent: legacy fixed key fast path is unchanged', async () => {
+  let capturedApiKey: string | undefined;
+  const model = completionModel();
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
+    apiKey: 'sk-fixed-key',
+    modelId: 'gpt-5',
+    modelFactory: (input) => {
+      capturedApiKey = input.apiKey;
+      return model;
+    },
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
   });
+
+  await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+  assert.equal(capturedApiKey, 'sk-fixed-key', 'without routing the construct-time key is used');
+});
+
+test('credential routing settles a failed attempt as failure, never as success', async () => {
+  let calls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('provider unavailable'), {
+          name: 'APICallError',
+          statusCode: 503,
+          responseBody: undefined,
+        });
+      }
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      };
+    },
+  });
+  const settled: Array<{ outcomeKind: string }> = [];
+  let acquireCount = 0;
+  const resolver: ProviderCredentialResolver = {
+    acquireAttempt: async () => {
+      acquireCount += 1;
+      return {
+        leaseId: `lease-${acquireCount}`,
+        bindingId: 'binding-1',
+        profileId: 'profile-a',
+        credentialId: 'cred-a',
+        credentialRevision: 1,
+        selectionReason: 'single_eligible',
+        apiKey: 'sk-leased',
+        modelId: 'gpt-5',
+      };
+    },
+    settle: async (_lease, outcome) => {
+      settled.push({ outcomeKind: outcome.kind });
+    },
+    releaseTurn: () => {},
+  };
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: { ...connection(), slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5' },
+    apiKey: 'sk-fixed-key',
+    modelId: 'gpt-5',
+    modelFactory: () => model,
+    tools: [],
+    newId: idGenerator(),
+    now: monotonicClock(),
+    providerRetrySleep: async () => {},
+    credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'openai' },
+  });
+
+  await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
+  assert.equal(calls, 2, 'the provider failure was retried');
+  assert.equal(acquireCount, 2, 'each physical attempt acquires a fresh lease (P1-4)');
+  // Two attempts: the first failed (conservative unknown scope), the second succeeded.
+  assert.equal(settled.length, 2);
+  assert.equal(settled[0]!.outcomeKind, 'failure', 'a failed attempt must settle as failure');
+  assert.equal(settled[1]!.outcomeKind, 'success', 'the recovered attempt settles as success');
+});
 
 function completionModel(): MockLanguageModelV4 {
   const chunks: LanguageModelV4StreamPart[] = [

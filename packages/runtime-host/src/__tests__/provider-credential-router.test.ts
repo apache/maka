@@ -38,6 +38,8 @@ function routing(profiles: Array<{ id: string; weight: number }>): ConnectionCre
 
 function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
   const settleCalls: ProviderState['settleCalls'] = [];
+  const probeEligible: Set<string> = new Set();
+  const probeClaims: string[] = [];
   const provider: RouterProfileProvider = {
     getRouting: async () => state.routing ?? null,
     getEligibleProfileIds: async (connectionId, profileIds, modelId) =>
@@ -51,8 +53,19 @@ function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
     settleHealth: async (lease, outcome) => {
       settleCalls.push({ profileId: lease.profileId, outcomeKind: outcome.kind });
     },
+    probeEligibleProfiles: async (_c, profileIds) =>
+      new Set<string>(profileIds.filter((id) => probeEligible.has(id))),
+    claimHalfOpenProbe: async (_c, profileId) => {
+      if (probeClaims.includes(profileId)) return false;
+      probeClaims.push(profileId);
+      return true;
+    },
   };
-  return Object.assign(provider, { __settleCalls: settleCalls });
+  return Object.assign(provider, {
+    __settleCalls: settleCalls,
+    __probeEligible: probeEligible,
+    __probeClaims: probeClaims,
+  });
 }
 
 function context(
@@ -345,5 +358,67 @@ describe('ProviderCredentialRouter', () => {
     credentialRevision = 2;
     const second = await router.acquireAttempt(context({ logicalCallId: 'call-2' }));
     assert.equal(second.credentialRevision, 2, 'acquire must re-resolve the newest credential');
+  });
+
+  test('half-open probe is claimed and dispatched when the pool is exhausted', async () => {
+    const provider = createProvider({
+      routing: routing([
+        { id: 'a', weight: 1 },
+        { id: 'b', weight: 1 },
+      ]),
+      eligible: async () => new Set(), // normal dispatch is fully exhausted
+    });
+    const probeEligible = (provider as RouterProfileProvider & { __probeEligible: Set<string> })
+      .__probeEligible;
+    probeEligible.add('a');
+    const router = new ProviderCredentialRouter(provider);
+    const lease = await router.acquireAttempt(context({ turnId: 'turn-probe' }));
+    assert.equal(lease.profileId, 'a');
+    assert.equal(lease.selectionReason, 'half_open_probe', 'a claimed probe is admitted');
+    const claims = (provider as RouterProfileProvider & { __probeClaims: string[] }).__probeClaims;
+    assert.deepEqual(claims, ['a'], 'the probe was atomically claimed');
+  });
+
+  test('a second concurrent half-open probe is refused for the same circuit', async () => {
+    const provider = createProvider({
+      routing: routing([
+        { id: 'a', weight: 1 },
+        { id: 'b', weight: 1 },
+      ]),
+      eligible: async () => new Set(),
+    });
+    const probeEligible = (provider as RouterProfileProvider & { __probeEligible: Set<string> })
+      .__probeEligible;
+    probeEligible.add('a');
+    const router = new ProviderCredentialRouter(provider);
+    await router.acquireAttempt(context({ turnId: 'turn-probe-1' }));
+    // Second acquire: 'a' is still probe-eligible on paper, but the claim is
+    // already held -> no candidate -> pool exhausted (single-flight probe).
+    await assert.rejects(
+      router.acquireAttempt(context({ turnId: 'turn-probe-2' })),
+      (error: unknown) => error instanceof RouterPoolExhaustedError,
+    );
+  });
+
+  test('every lease references the exact turn binding id it was selected by', async () => {
+    const provider = createProvider({
+      routing: routing([
+        { id: 'a', weight: 1 },
+        { id: 'b', weight: 1 },
+      ]),
+    });
+    const router = new ProviderCredentialRouter(provider);
+    const first = await router.acquireAttempt(context());
+    const second = await router.acquireAttempt(context({ logicalCallId: 'call-2' }));
+    // Same turn, sticky binding: both attempts carry the same binding id.
+    assert.equal(first.bindingId, second.bindingId, 'turn attempts share the binding id');
+    // A new turn gets a distinct binding id.
+    const nextTurn = await router.acquireAttempt(
+      context({ sessionId: 'session-1', turnId: 'turn-2' }),
+    );
+    assert.notEqual(nextTurn.bindingId, first.bindingId);
+    // And it is a real id, not a fresh random per lease.
+    assert.equal(typeof first.bindingId, 'string');
+    assert.ok(first.bindingId.length > 0);
   });
 });

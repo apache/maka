@@ -103,6 +103,13 @@ export interface ProviderCredentialLease {
   readonly apiKey: string;
   readonly requestHeaders?: Readonly<Record<string, string>>;
   readonly fetch?: typeof fetch;
+  /**
+   * The model this physical attempt dispatches against. Carried on the lease
+   * so health settlement keys the per-model row (RFC 8.4: `model_id=''` is
+   * the credential-global row, non-empty is credential + model). Absent only
+   * for test seams / legacy callers, which settle as global.
+   */
+  readonly modelId?: string;
 }
 
 export type ProviderCredentialOutcome =

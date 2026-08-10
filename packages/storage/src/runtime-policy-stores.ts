@@ -63,6 +63,8 @@ export type {
   ResolveWebSearchExecutionResult,
   ResolveWebFetchExecutionResult,
   SetCredentialProfileEnabledInput,
+  RecordCredentialProfileVerificationInput,
+  RecordCredentialProfileVerificationResult,
   SetCredentialRoutingModeInput,
   UnavailableProviderActionAvailability,
   UpdateCredentialProfileInput,
@@ -232,6 +234,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       setCredentialProfileEnabled: (input) => coordinator.setCredentialProfileEnabled(input),
       removeCredentialProfile: (input) => coordinator.removeCredentialProfile(input),
       setCredentialRoutingMode: (input) => coordinator.setCredentialRoutingMode(input),
+      recordCredentialProfileVerification: (input) =>
+        coordinator.recordCredentialProfileVerification(input),
       beginInteractiveOAuthLogin: (connectionId) =>
         coordinator.beginInteractiveOAuthLogin(connectionId),
       completeInteractiveOAuthLogin: (ticket, secret) =>

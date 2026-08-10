@@ -43,7 +43,10 @@ import {
   resolveExecutionTarget,
   type ResolvedExecutionTarget,
 } from './execution-model-authority.js';
-import { createHostCredentialResolver } from './provider-credential-resolver-composition.js';
+import {
+  createHostCredentialResolver,
+  type HostCredentialResolver,
+} from './provider-credential-resolver-composition.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
 
@@ -100,7 +103,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   // resolver from the Router (PR 2) + Catalog/Vault/Health. OAuth providers
   // stay on the legacy path until PR 5, and legacy_primary/missing routing
   // keeps the fixed-key fast path byte-for-byte identical.
-  const credentialResolver = buildCredentialResolver(input, target);
+  const credentialResolver = await buildCredentialResolver(input, target);
   const pricingSnapshot = await readDuringBackendCreation(
     () => input.usage.pricing.snapshot(),
     input.context.abortSignal,
@@ -342,6 +345,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
                 resolver: credentialResolver,
                 connectionId: target.connectionId ?? '',
                 providerId: target.connection.providerType,
+                dispose: () => credentialResolver.dispose(),
               },
             }
           : {}),
@@ -466,10 +470,10 @@ export function resolveCollaborationPermissionMode(input: {
  * the connection is in balanced API-key routing mode; otherwise undefined
  * (legacy fast path). OAuth providers stay legacy until PR 5.
  */
-function buildCredentialResolver(
+async function buildCredentialResolver(
   input: HostAiSdkBackendInput,
   target: ResolvedExecutionTarget,
-): ProviderCredentialResolver | undefined {
+): Promise<HostCredentialResolver | undefined> {
   const routing = target.credentialRouting;
   if (!routing || routing.mode !== 'balanced' || !target.connectionId) return undefined;
   const provider = PROVIDER_DEFAULTS[target.connection.providerType];
@@ -477,6 +481,15 @@ function buildCredentialResolver(
     return undefined;
   }
   const model = target.connection.models?.find((candidate) => candidate.id === target.model);
+  // Connection-level request headers are part of the execution basis digest
+  // (RFC 8.4): their credential identity/revision must match what the
+  // coordinator's balanced-activation gate computes, or verification written
+  // at activation would not be visible to dispatch.
+  const requestHeaders = await input.runtimePolicy.operations.exportCredentialMaterial({
+    scope: 'connection',
+    connectionId: target.connectionId,
+    kind: 'request_headers',
+  });
   return createHostCredentialResolver({
     runtimePolicy: input.runtimePolicy,
     workspaceRoot: input.context.workspaceRoot,
@@ -485,6 +498,8 @@ function buildCredentialResolver(
     providerType: target.connection.providerType,
     endpoint: effectiveBaseUrl(target.connection),
     apiProtocol: model?.apiProtocol,
+    requestHeadersCredentialId: requestHeaders?.credentialId ?? null,
+    requestHeadersCredentialRevision: requestHeaders?.revision ?? null,
     requestBodyOverlayJson: target.connection.requestBodyOverlay
       ? JSON.stringify(target.connection.requestBodyOverlay)
       : null,

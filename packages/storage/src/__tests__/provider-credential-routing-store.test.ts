@@ -344,4 +344,60 @@ describe('SqliteProviderCredentialRoutingStore', () => {
       assert.equal((await store.readHealth(CONNECTION, PROFILE, CREDENTIAL, 1, BASIS_A)).length, 0);
     });
   });
+
+  test('a failed half-open probe re-opens the circuit with a fresh cadence', async () => {
+    await withStore(async (store) => {
+      await store.settleFailure(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        hint('rate_limit', 'credential'),
+        2000,
+      );
+      const claimed = await store.claimHalfOpenProbe(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        200_000,
+      );
+      assert.equal(claimed, true);
+      let health = await store.readHealth(CONNECTION, PROFILE, CREDENTIAL, 1, BASIS_A);
+      assert.equal(health[0]!.circuitState, 'half_open');
+      // A failed probe with a conservative (unknown) scope must still re-open
+      // so later probes can retry — never a stuck half_open.
+      await store.settleFailure(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        hint('unknown', 'unknown'),
+        200_001,
+      );
+      health = await store.readHealth(CONNECTION, PROFILE, CREDENTIAL, 1, BASIS_A);
+      assert.equal(health[0]!.circuitState, 'open');
+      assert.ok(
+        health[0]!.nextProbeAt! > 200_001,
+        'a failed probe schedules a fresh probe cadence',
+      );
+      // The circuit can be probed again after the cadence elapses.
+      const retry = await store.claimHalfOpenProbe(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        400_000,
+      );
+      assert.equal(retry, true);
+    });
+  });
 });

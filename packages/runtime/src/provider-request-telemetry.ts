@@ -315,6 +315,28 @@ export class ProviderRequestTracker {
     this.step = step;
   }
 
+  /**
+   * Per-physical-attempt Credential Profile attribution (RFC 12.1). The
+   * dispatcher points this at the active lease right before each dispatch;
+   * the next finalized attempt record carries it, overriding the
+   * send-level accounting default. This keeps ModelCallAttempt attribution
+   * truthful when attempts rotate across Profiles.
+   */
+  private attemptCredentialAttribution:
+    | { readonly profileId: string; readonly reason: ModelCallAttemptCredentialSelectionReason }
+    | undefined;
+
+  setCredentialAttribution(
+    lease: { readonly profileId: string; readonly selectionReason: string } | undefined,
+  ): void {
+    this.attemptCredentialAttribution = lease
+      ? {
+          profileId: lease.profileId,
+          reason: lease.selectionReason as ModelCallAttemptCredentialSelectionReason,
+        }
+      : undefined;
+  }
+
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     await this.input.beforeDispatch?.();
@@ -560,12 +582,17 @@ export class ProviderRequestTracker {
       ...(record.captureArtifactId !== undefined
         ? { captureArtifactId: record.captureArtifactId }
         : {}),
-      ...(accounting.credentialProfileId !== undefined
+      ...(this.attemptCredentialAttribution
         ? {
-            credentialProfileId: accounting.credentialProfileId,
-            credentialSelectionReason: accounting.credentialSelectionReason,
+            credentialProfileId: this.attemptCredentialAttribution.profileId,
+            credentialSelectionReason: this.attemptCredentialAttribution.reason,
           }
-        : {}),
+        : accounting.credentialProfileId !== undefined
+          ? {
+              credentialProfileId: accounting.credentialProfileId,
+              credentialSelectionReason: accounting.credentialSelectionReason,
+            }
+          : {}),
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       latencyMs: record.latencyMs,
