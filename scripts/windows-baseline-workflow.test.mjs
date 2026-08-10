@@ -61,7 +61,10 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   assert.match(workflow, /if: needs\.changes\.outputs\.windows == 'true'/u);
   assert.match(workflow, /windows_runtime: \$\{\{ steps\.plan\.outputs\.windows_runtime \}\}/u);
   assert.match(workflow, /windows_storage: \$\{\{ steps\.plan\.outputs\.windows_storage \}\}/u);
-  assert.match(workflow, /windows_storage_full: \$\{\{ steps\.full\.outputs\.windows_storage_full \}\}/u);
+  assert.match(
+    workflow,
+    /windows_storage_full: \$\{\{ steps\.full\.outputs\.windows_storage_full \}\}/u,
+  );
   assert.match(workflow, /schedule:\n\s+- cron:/u);
   assert.match(workflow, /full_storage:/u);
 
@@ -103,10 +106,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   ]) {
     assert.ok(workflow.includes(command), command);
   }
-  assert.match(
-    workflow,
-    /needs\.changes\.outputs\.windows_storage_full == 'true'/u,
-  );
+  assert.match(workflow, /needs\.changes\.outputs\.windows_storage_full == 'true'/u);
   assert.equal(workflow.match(/needs\.changes\.outputs\.windows_storage == 'true'/gu)?.length, 2);
   assert.equal(workflow.match(/needs\.changes\.outputs\.windows_runtime == 'true'/gu)?.length, 1);
   assert.match(workflow, /Runtime PTY input gate did not run exactly two passing tests/u);
@@ -128,10 +128,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   assert.match(workflow, /residual-processes-after-cleanup\.json/u);
   assert.match(workflow, /\$unreaped\.Count -gt 0/u);
   assert.match(workflow, /\$exitCode = \$LASTEXITCODE/u);
-  assert.match(
-    workflow,
-    /Tee-Object -FilePath "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u,
-  );
+  assert.match(workflow, /Tee-Object -FilePath "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u);
   assert.match(workflow, /name: Run Windows storage path and lock gates/u);
   assert.match(workflow, /\$env:MAKA_STORAGE_STRESS = '1'/u);
   assert.match(workflow, /managed-workspace-crash\.log/u);
