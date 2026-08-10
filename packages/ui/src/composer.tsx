@@ -2117,34 +2117,34 @@ export const Composer = forwardRef<
               ) : null}
             </div>
           )}
-          sendButton={props.streaming && props.followUpMode === undefined && props.onStreamingSubmit ? (
-            <div className="maka-composer-running-actions">
-              <IconButton
-                variant="ghost"
-                type="button"
-                isDisabled={props.stopPending}
-                label={props.stopPending ? copy.stopping : copy.stopLabel}
-                aria-busy={props.stopPending ? 'true' : undefined}
-                data-pending={props.stopPending ? 'true' : undefined}
-                onClick={() => {
-                  if (props.stopPending) return;
-                  void props.onStop();
-                }}
-                icon={<SquareStop size={ICON_SIZE.control} aria-hidden="true" />}
-              />
-              <IconButton
-                variant="primary"
-                type="submit"
-                isDisabled={sendDisabled}
-                label={copy.steerLabel}
-                aria-busy={sendPending ? 'true' : undefined}
-                data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.steerLabel}
-                icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
-              />
-            </div>
-          ) : (
-            props.streaming ? (
+          sendButton={props.streaming && props.followUpMode === undefined ? (
+            props.onStreamingSubmit ? (
+              <div className="maka-composer-running-actions">
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  isDisabled={props.stopPending}
+                  label={props.stopPending ? copy.stopping : copy.stopLabel}
+                  aria-busy={props.stopPending ? 'true' : undefined}
+                  data-pending={props.stopPending ? 'true' : undefined}
+                  onClick={() => {
+                    if (props.stopPending) return;
+                    void props.onStop();
+                  }}
+                  icon={<SquareStop size={ICON_SIZE.control} aria-hidden="true" />}
+                />
+                <IconButton
+                  variant="primary"
+                  type="submit"
+                  isDisabled={sendDisabled}
+                  label={copy.steerLabel}
+                  aria-busy={sendPending ? 'true' : undefined}
+                  data-pending={sendPending ? 'true' : undefined}
+                  tooltip={copy.steerLabel}
+                  icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
+                />
+              </div>
+            ) : (
               <UiButton
                 variant="primary"
                 isDisabled={props.stopPending}
@@ -2156,7 +2156,8 @@ export const Composer = forwardRef<
                 data-pending={props.stopPending ? 'true' : undefined}
                 label={props.stopPending ? copy.stopping : copy.stopLabel}
               />
-            ) : (
+            )
+          ) : (
             <IconButton
               variant="primary"
               type="submit"
@@ -2185,7 +2186,6 @@ export const Composer = forwardRef<
                   : <ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />
               }
             />
-            )
           )}
         />
       </form>

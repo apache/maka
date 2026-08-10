@@ -47,6 +47,8 @@ describe('composer message queue', () => {
     assert.match(markup, /data-value="queue"[\s\S]*?>排队<\/span>/);
     assert.match(markup, /data-value="steer"[\s\S]*?>引导<\/span>/);
     assert.match(markup, /maka-composer-stop-button/);
+    assert.equal(markup.match(/aria-label="停止"/g)?.length, 1);
+    assert.match(markup, /aria-label="排队"/);
     assert.match(markup, /aria-label="立即引导"/);
     assert.match(markup, /aria-label="编辑排队消息"/);
     assert.match(markup, /aria-label="删除排队消息"/);

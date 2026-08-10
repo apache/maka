@@ -866,6 +866,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
   #enqueue(subscriber: Subscriber, frame: SubscriptionFrame): void {
     if (subscriber.phase !== 'open' || subscriber.terminalQueued) return;
+    if (this.#coalesceAssistantDelta(subscriber, frame)) return;
     let encodedBytes: number;
     try {
       encodedBytes = encodeProtocolMessage(frame).byteLength;
@@ -885,6 +886,50 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber.queuedBytes += encodedBytes;
     subscriber.nextSequence += 1;
     if (subscriber.activated) this.#pump(subscriber);
+  }
+
+  #coalesceAssistantDelta(subscriber: Subscriber, frame: SubscriptionFrame): boolean {
+    if (!subscriber.activated || frame.kind !== 'subscription.session_delta') return false;
+    const queued = subscriber.queue.at(-1);
+    if (!queued || (subscriber.pumping && subscriber.queue.length === 1)) return false;
+    const previous = queued.frame;
+    if (
+      previous.kind !== 'subscription.session_delta' ||
+      previous.sessionId !== frame.sessionId ||
+      previous.delta.kind !== frame.delta.kind ||
+      previous.delta.turnId !== frame.delta.turnId ||
+      previous.delta.runId !== frame.delta.runId ||
+      previous.delta.messageId !== frame.delta.messageId ||
+      previous.delta.startOffset + previous.delta.text.length !== frame.delta.startOffset
+    ) {
+      return false;
+    }
+    const text = previous.delta.text + frame.delta.text;
+    if (Buffer.byteLength(text, 'utf8') > SESSION_LIVE_DELTA_MAX_BYTES) return false;
+    const merged: SessionDeltaFrame = {
+      ...previous,
+      delta: {
+        ...previous.delta,
+        text,
+      },
+    };
+    let encodedBytes: number;
+    try {
+      encodedBytes = encodeProtocolMessage(merged).byteLength;
+    } catch {
+      return false;
+    }
+    const nextQueuedBytes = subscriber.queuedBytes - queued.encodedBytes + encodedBytes;
+    if (
+      nextQueuedBytes + terminalFrameByteBudget(subscriber, this.#hostEpoch) >
+      MAX_SUBSCRIBER_QUEUED_BYTES
+    ) {
+      return false;
+    }
+    queued.frame = merged;
+    subscriber.queuedBytes = nextQueuedBytes;
+    queued.encodedBytes = encodedBytes;
+    return true;
   }
 
   #evictSlowSubscriber(subscriber: Subscriber): void {

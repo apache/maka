@@ -641,6 +641,41 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   coordinator.close();
 });
 
+test('coalesces rapid text deltas behind an active slow send without evicting Desktop', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const firstSend = deferred<void>();
+  const sink = new BlockingFirstSink(firstSend.promise);
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  for (let index = 1; index <= 100; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index));
+  }
+  assert.equal(sink.frames.length, 1, 'the first frame remains in flight');
+
+  firstSend.resolve();
+  await waitFor(() => sink.frames.length === 2);
+  assert.deepEqual(
+    sink.frames.map((frame) => frame.kind),
+    ['subscription.session_delta', 'subscription.session_delta'],
+  );
+  const tail = sink.frames[1];
+  assert.equal(tail?.kind, 'subscription.session_delta');
+  if (tail?.kind === 'subscription.session_delta') {
+    assert.equal(tail.sequence, 2);
+    assert.equal(
+      tail.delta.text,
+      Array.from({ length: 99 }, (_, index) => `chunk-${index + 2}`).join(''),
+    );
+  }
+  coordinator.close();
+});
+
 test('removal closes every Session subscriber at the admitted sequence boundary', async () => {
   const admission = new SessionAdmissionGate();
   const coordinator = new SessionContinuityCoordinator(
@@ -988,6 +1023,17 @@ function textCompleteEvent(messageId: string, text: string) {
     messageId,
     text,
   };
+}
+
+class BlockingFirstSink implements SessionContinuityFrameSink {
+  readonly frames: SubscriptionFrame[] = [];
+
+  constructor(private readonly firstSend: Promise<void>) {}
+
+  async send(frame: SubscriptionFrame): Promise<void> {
+    this.frames.push(frame);
+    if (this.frames.length === 1) await this.firstSend;
+  }
 }
 
 async function open(coordinator: SessionContinuityCoordinator, connectionId: string) {

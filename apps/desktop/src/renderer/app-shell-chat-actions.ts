@@ -205,6 +205,7 @@ export function createAppShellChatActions(deps: {
     newChatProjectId,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
+  const messageRefreshRevisionBySession = new Map<string, number>();
 
   function optimisticUserMessage(
     turnId: string,
@@ -546,10 +547,15 @@ export function createAppShellChatActions(deps: {
   }
 
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
+    const revision = (messageRefreshRevisionBySession.get(sessionId) ?? 0) + 1;
+    messageRefreshRevisionBySession.set(sessionId, revision);
     try {
       const result = await readSettledMessages(sessionId, options);
       const next = result.messages;
-      if (activeIdRef.current === sessionId) {
+      if (
+        messageRefreshRevisionBySession.get(sessionId) === revision &&
+        activeIdRef.current === sessionId
+      ) {
         markSessionReadLocally(sessionId, next);
         setMessages(next);
         setMessageLoadErrorBySession((current) => {
@@ -561,7 +567,10 @@ export function createAppShellChatActions(deps: {
       }
       return result.settled;
     } catch (error) {
-      if (activeIdRef.current === sessionId) {
+      if (
+        messageRefreshRevisionBySession.get(sessionId) === revision &&
+        activeIdRef.current === sessionId
+      ) {
         const message = messageRefreshErrorMessage(error, uiLocale);
         setMessageLoadErrorBySession((current) => ({
           ...current,

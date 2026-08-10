@@ -890,7 +890,10 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       await coordinator.acceptRuntimeEvent(
         'slow-session',
         'run-slow-session',
-        connectionTextEvent('slow-session', index),
+        {
+          ...connectionTextEvent('slow-session', index),
+          messageId: `message-${index}`,
+        },
       );
     }
     await withTimeout(writeBlocked.promise, 1_000, 'slow subscription never blocked in-flight');
