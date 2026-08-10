@@ -38,7 +38,6 @@ export interface SelectionQuoteGestureBoundary {
   selectionChanged(): void;
   endPointerSelection(pointerId: number): void;
   cancelPointerSelection(pointerId: number): void;
-  cancelActivePointerSelection(): void;
 }
 
 /**
@@ -73,12 +72,6 @@ export function createSelectionQuoteGestureBoundary(actions: {
     },
     cancelPointerSelection(pointerId) {
       if (pointerId !== activePointerId) return;
-      activePointerId = undefined;
-      changedDuringPointer = false;
-      actions.hideAndCancel();
-    },
-    cancelActivePointerSelection() {
-      if (activePointerId === undefined) return;
       activePointerId = undefined;
       changedDuringPointer = false;
       actions.hideAndCancel();
@@ -264,13 +257,6 @@ export function useMessageSelectionQuote(
       gesture.endPointerSelection(pointerId);
     }
 
-    function onWindowBlur(): void {
-      // Releasing a mouse outside the window need not deliver pointerup back to
-      // the document. Do not leave later keyboard selections behind that drag.
-      clearCaptureOwner();
-      gesture.cancelActivePointerSelection();
-    }
-
     /**
      * Scrolling moves the selection, not the quote, so the layer follows it —
      * up to the edge of the scroller. Past that the anchor is gone and so is
@@ -296,7 +282,6 @@ export function useMessageSelectionQuote(
     document.addEventListener('pointerdown', onPointerDown, { capture: true });
     document.addEventListener('pointerup', onPointerUp, { capture: true });
     document.addEventListener('pointercancel', onPointerCancel, { capture: true });
-    window.addEventListener('blur', onWindowBlur);
     // Capture-phase: scroll does not bubble.
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     return () => {
@@ -306,7 +291,6 @@ export function useMessageSelectionQuote(
       document.removeEventListener('pointerup', onPointerUp, { capture: true });
       document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
       clearCaptureOwner();
-      window.removeEventListener('blur', onWindowBlur);
       document.removeEventListener('scroll', onScroll, { capture: true });
     };
   }, [scrollRef, enabled]);

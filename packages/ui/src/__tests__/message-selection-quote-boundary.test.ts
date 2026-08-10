@@ -33,7 +33,7 @@ test('pointer events cannot resurrect an unchanged or cancelled selection', () =
   boundary.beginPointerSelection(4);
   boundary.selectionChanged();
   boundary.cancelPointerSelection(8);
-  boundary.cancelActivePointerSelection();
+  boundary.cancelPointerSelection(4);
   assert.deepEqual(effects, ['hide', 'hide', 'hide', 'hide']);
 
   boundary.beginPointerSelection(5);
