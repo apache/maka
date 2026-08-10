@@ -18,7 +18,7 @@ test('a ready user submits work, sees validation, and reviews the real project c
   await validationToolRow.press('Enter');
   await expect(page.getByText(/validation: 1 passed, 0 failed/)).toBeVisible();
 
-  await page.getByRole('button', { name: 'Open workbar tab' }).click();
+  await page.getByRole('button', { name: 'Open workbar tools' }).click();
   await page.getByRole('menuitem', { name: /Review/ }).click();
 
   const review = page.getByRole('region', { name: 'Conversation review' });
