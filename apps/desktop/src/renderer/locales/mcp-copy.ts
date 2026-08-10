@@ -39,10 +39,10 @@ export type McpCopy = {
     importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
     modeAria: string; manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
     importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
-    serverId: string; command: string; arguments: string; argumentsPlaceholder: string; argumentsHelp: string;
+    serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
     workingDirectory: string; workingDirectoryPlaceholder: string; environment: string; environmentHelp: string;
     url: string; headers: string; headersHelp: string; saveConnect: string;
-    required: string; invalidUrl: string;
+    required: string; invalidUrl: string; unbalancedQuote: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
   };
 };
@@ -91,12 +91,13 @@ const MCP_COPY = {
       manualSubtitle: '配置保存在当前工作区的 mcp.json。', modeAria: 'MCP 添加方式', manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
       jsonHelp: '支持完整 mcpServers 配置或直接的 server map。未在本次导入中出现的已有 MCP 会保留。', cancel: '取消', importConnect: '导入并连接',
       transportAria: '连接方式', localStdio: '本地 stdio', remoteUrl: '远程 URL',
-      serverId: '服务器 ID', command: '命令', arguments: '参数',
-      argumentsPlaceholder: '每行一个参数\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/folder', argumentsHelp: '每行一个参数，不经过 shell 解析。',
+      serverId: '服务器 ID', command: '命令',
+      commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
+      commandHelp: '完整命令行；含空格的参数用引号包裹，不经过 shell 解析。',
       workingDirectory: '工作目录', workingDirectoryPlaceholder: '可选，例如 /path/to/project',
       environment: '环境变量', environmentHelp: '每行一个 KEY=value；按 MCP 要求填写。', url: 'MCP URL', headers: 'HTTP 请求头', headersHelp: '每行一个 Header=value。',
       saveConnect: '保存并连接',
-      required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。',
+      required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引号未闭合。',
       transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
     },
   },
@@ -143,12 +144,13 @@ const MCP_COPY = {
       manualSubtitle: 'Configuration is saved in mcp.json for the current workspace.', modeAria: 'MCP add method', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
       jsonHelp: 'Supports a complete mcpServers configuration or a server map. Existing MCP servers omitted from this import are preserved.', cancel: 'Cancel', importConnect: 'Import and connect',
       transportAria: 'Connection method', localStdio: 'Local stdio', remoteUrl: 'Remote URL',
-      serverId: 'Server ID', command: 'Command', arguments: 'Arguments',
-      argumentsPlaceholder: 'One argument per line\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/folder', argumentsHelp: 'Each line is a separate argument and does not use shell interpolation.',
+      serverId: 'Server ID', command: 'Command',
+      commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
+      commandHelp: 'Full command line; quote arguments containing spaces. Not interpreted by a shell.',
       workingDirectory: 'Working directory', workingDirectoryPlaceholder: 'Optional, for example /path/to/project',
       environment: 'Environment', environmentHelp: 'One KEY=value entry per line; complete the variables required by this MCP.', url: 'MCP URL', headers: 'HTTP headers', headersHelp: 'One Header=value entry per line.',
       saveConnect: 'Save and connect',
-      required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.',
+      required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
       transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
     },
   },

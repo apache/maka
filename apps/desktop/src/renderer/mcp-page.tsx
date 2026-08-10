@@ -78,6 +78,7 @@ import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import { parseMcpImport } from './mcp-import';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
+import { formatCommandLine, parseCommandLine } from './mcp-command-line';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,
@@ -87,8 +88,7 @@ type Draft = {
   id: string;
   kind: 'stdio' | 'remote';
   enabled: boolean;
-  command: string;
-  args: string;
+  commandLine: string;
   cwd: string;
   env: string;
   url: string;
@@ -648,7 +648,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               }
               if (
                 changedKey !== 'id' &&
-                changedKey !== 'command' &&
+                changedKey !== 'commandLine' &&
                 changedKey !== 'url'
               ) {
                 return current;
@@ -937,14 +937,13 @@ function McpEditorDialog(props: {
               <div className="maka-mcp-primary-fields">
                 <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
                 {props.state.draft.kind === 'stdio' ? (
-                  <TextInput hasAutoFocus={editing} label={props.copy.editor.command} value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
+                  <TextInput hasAutoFocus={editing} label={props.copy.editor.command} description={props.copy.editor.commandHelp} value={props.state.draft.commandLine} onChange={(value) => updateDraft('commandLine', value)} isRequired placeholder={props.copy.editor.commandPlaceholder} status={props.errors.commandLine ? { type: 'error', message: props.errors.commandLine === 'unbalanced-quote' ? props.copy.editor.unbalancedQuote : props.copy.editor.required } : undefined} />
                 ) : (
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
                 )}
               </div>
               {props.state.draft.kind === 'stdio' ? (
                 <>
-                  <TextArea label={props.copy.editor.arguments} description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
                   <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
                   <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                 </>
@@ -978,22 +977,26 @@ function McpEditorDialog(props: {
 }
 
 function emptyDraft(): Draft {
-  return { id: '', kind: 'stdio', enabled: true, command: '', args: '', cwd: '', env: '', url: '', transport: 'auto', headers: '' };
+  return { id: '', kind: 'stdio', enabled: true, commandLine: '', cwd: '', env: '', url: '', transport: 'auto', headers: '' };
 }
 
 function draftFromConfig(id: string, config: McpServerConfig): Draft {
   if (isMcpStdioConfig(config)) {
-    return { ...emptyDraft(), id, enabled: config.enabled !== false, command: config.command, args: (config.args ?? []).join('\n'), cwd: config.cwd ?? '', env: formatMap(config.env) };
+    return { ...emptyDraft(), id, enabled: config.enabled !== false, commandLine: formatCommandLine(config.command, config.args ?? []), cwd: config.cwd ?? '', env: formatMap(config.env) };
   }
   return { ...emptyDraft(), id, kind: 'remote', enabled: config.enabled !== false, url: config.url, transport: config.transport ?? 'auto', headers: formatMap(config.headers) };
 }
 
 function configFromDraft(draft: Draft, copy: McpCopy): McpServerConfig {
   if (draft.kind === 'stdio') {
+    const parsed = parseCommandLine(draft.commandLine);
+    // Validation runs before save, so an unbalanced quote cannot reach here
+    // through the dialog; the throw keeps other callers honest.
+    if (!parsed.ok) throw new Error(copy.editor.unbalancedQuote);
     return {
       enabled: draft.enabled,
-      command: draft.command.trim(),
-      args: draft.args.split(/\r?\n/u).filter((line) => line.length > 0),
+      command: parsed.command,
+      args: parsed.args,
       ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
       env: parseMap(draft.env, copy),
     };
@@ -1014,7 +1017,7 @@ function formatMap(value?: Record<string, string>): string {
 }
 
 function endpointFor(server: McpServerConfig): string {
-  return isMcpStdioConfig(server) ? [server.command, ...(server.args ?? [])].join(' ') : server.url;
+  return isMcpStdioConfig(server) ? formatCommandLine(server.command, server.args ?? []) : server.url;
 }
 
 function replaceStatus(statuses: McpServerStatus[], next: McpServerStatus): McpServerStatus[] {

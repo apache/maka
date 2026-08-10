@@ -1,13 +1,18 @@
+import { parseCommandLine } from './mcp-command-line.js';
+
 export type McpEditorDraft = {
   id: string;
   kind: 'stdio' | 'remote';
-  command: string;
+  commandLine: string;
   url: string;
 };
 
-export type McpEditorValidationCode = 'required' | 'invalid-url';
+export type McpEditorValidationCode =
+  | 'required'
+  | 'invalid-url'
+  | 'unbalanced-quote';
 export type McpEditorErrors = Partial<
-  Record<'id' | 'command' | 'url', McpEditorValidationCode>
+  Record<'id' | 'commandLine' | 'url', McpEditorValidationCode>
 >;
 
 export function validateMcpEditorDraft(
@@ -17,7 +22,12 @@ export function validateMcpEditorDraft(
   if (!draft.id.trim()) errors.id = 'required';
 
   if (draft.kind === 'stdio') {
-    if (!draft.command.trim()) errors.command = 'required';
+    const parsed = parseCommandLine(draft.commandLine);
+    if (!parsed.ok) {
+      errors.commandLine = 'unbalanced-quote';
+    } else if (!parsed.command.trim()) {
+      errors.commandLine = 'required';
+    }
     return errors;
   }
 

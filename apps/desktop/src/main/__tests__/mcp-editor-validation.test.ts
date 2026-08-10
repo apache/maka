@@ -8,19 +8,51 @@ describe('MCP editor validation', () => {
       validateMcpEditorDraft({
         id: ' ',
         kind: 'stdio',
-        command: '',
+        commandLine: '',
         url: '',
       }),
-      { id: 'required', command: 'required' },
+      { id: 'required', commandLine: 'required' },
     );
     assert.deepEqual(
       validateMcpEditorDraft({
         id: '',
         kind: 'remote',
-        command: '',
+        commandLine: '',
         url: ' ',
       }),
       { id: 'required', url: 'required' },
+    );
+  });
+
+  it('accepts a full command line and rejects unbalanced quotes', () => {
+    assert.deepEqual(
+      validateMcpEditorDraft({
+        id: 'filesystem',
+        kind: 'stdio',
+        commandLine: 'npx -y @modelcontextprotocol/server-filesystem "/my folder"',
+        url: '',
+      }),
+      {},
+    );
+    assert.deepEqual(
+      validateMcpEditorDraft({
+        id: 'filesystem',
+        kind: 'stdio',
+        commandLine: 'npx "unterminated',
+        url: '',
+      }),
+      { commandLine: 'unbalanced-quote' },
+    );
+    // Quotes around nothing still parse; an empty command is missing, not
+    // malformed.
+    assert.deepEqual(
+      validateMcpEditorDraft({
+        id: 'filesystem',
+        kind: 'stdio',
+        commandLine: '""',
+        url: '',
+      }),
+      { commandLine: 'required' },
     );
   });
 
@@ -29,7 +61,7 @@ describe('MCP editor validation', () => {
       validateMcpEditorDraft({
         id: 'remote',
         kind: 'remote',
-        command: '',
+        commandLine: '',
         url: 'not a url',
       }),
       { url: 'invalid-url' },
@@ -38,7 +70,7 @@ describe('MCP editor validation', () => {
       validateMcpEditorDraft({
         id: 'remote',
         kind: 'remote',
-        command: '',
+        commandLine: '',
         url: 'file:///tmp/server',
       }),
       { url: 'invalid-url' },
@@ -47,7 +79,7 @@ describe('MCP editor validation', () => {
       validateMcpEditorDraft({
         id: 'remote',
         kind: 'remote',
-        command: '',
+        commandLine: '',
         url: 'https://example.com/mcp',
       }),
       {},
