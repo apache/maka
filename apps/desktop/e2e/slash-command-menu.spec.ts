@@ -114,7 +114,7 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
   await composer.fill('/compact explain');
-  await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '引导' })).toBeVisible();
   await composer.press('Enter');
 
   await composer.fill('/');
