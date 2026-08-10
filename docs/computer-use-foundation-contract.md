@@ -78,12 +78,12 @@
 |---|---|---|---|
 | Frame/window binding、duplicate rejection | PASS | frame state、bound-action、stale/duplicate tests | 在 Runtime slice 保留 focused tests |
 | Capture-local coordinate authority | PASS | window-local transform、scale/geometry、Retina/negative-origin tests | decoy window 下的 cumulative Desktop E2E |
-| WebContent / renderer target | PASS | actual PID + start time、coalition readiness、mirror 去重、10 轮 OOP `isTrusted=true` / 单 down-up | 扩到真实 Electron/Chromium app matrix |
-| Semantic identity refetch | PASS | unique replacement 成功；missing=`element_released`；ambiguous=`element_changed`；全部零误点 | 保留跨 toolkit 录制回归 |
+| WebContent / renderer target | PASS | actual PID + start time、coalition readiness、mirror 去重；精确 pin 的 5 轮 OOP 全部 `skylight_pid`、`isTrusted=true`、单 down-up，30 个 sentinel span 零前台样本 | 扩到真实 Electron/Chromium app matrix |
+| Semantic identity refetch | PASS | renderer frame-only reflow 仅允许同进程世代 unique replacement；missing/ambiguous fail closed；native frame change 继续拒绝；真机全部零误点 | 保留跨 toolkit 录制回归 |
 | Stable AX revision / post-action diff | PASS | DFS stable ID、跨 fresh token 继承、ordered changes、removed ranges、no-change/full fallback；host 显式 observe 保持 full | 增加真实长树 token-saving trajectory 样本 |
 | Modal / multi-window routing | PARTIAL | app→sheet、exact secondary、button/scroll/close 功能矩阵 5/5；精确 pin 的高频 sentinel 捕获 1,738 个 target-frontmost 样本，后台安全未通过 | 修复原生 AX press 的瞬时前台抢占，再重跑同一聚合矩阵 |
 | Occlusion、no foreground/pixel fallback | PASS | coordinate/semantic occlusion 与 fail-closed tests | real-window safety sentinel |
-| Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；slider 业务值/readback=42；scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
+| Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；5 轮 primary oracle=1、slider 业务值/readback=42、scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
 | Per-session queue、generation lease | PARTIAL | session queue/frame claim；lease 修复尚在本地 | concurrent-session 与 intervention-before-dispatch tests |
 | Physical intervention、lock、stop | FAIL | 有状态机原型，无 Desktop production event producer | 真实 host wiring 与 transition tests |
 | Service recovery、unknown outcome | PARTIAL | 本地 service abstraction 与 unit tests | restart reset、attestation、child-crash、cleanup E2E |

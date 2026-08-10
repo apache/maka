@@ -125,8 +125,9 @@ without focusing it or using an always-on-top overlay layer.
 ## Native WebContent Qualification
 
 The executor pinned by `apps/desktop/bundled-tools.json` now carries source
-commit `97ca3c3994da578d246c442f2583b1bb50f1fd12`, including
-`maka-agent/maka-cu#2` and the window-transition follow-up in #3.
+commit `4a9787d2c7f2fbc6a29b33d691916c6b84543661`, including
+`maka-agent/maka-cu#2`, the window-transition follow-up in #3, and the direct
+WebContent frame-reflow fix in #4.
 
 The shared synthetic CUA Lab was run ten consecutive times before integration:
 
@@ -144,6 +145,26 @@ A separate live retained-element probe exercised the three refetch outcomes:
 - unique replacement: action completed once, wrong target `0`;
 - missing replacement: `element_released`, no side effect;
 - ambiguous replacement: `element_changed`, no side effect.
+
+After #4, the exact binary pinned by `apps/desktop/bundled-tools.json`
+(`e457a3143544ba8385c489e5259f206d9450feb1c692eb562413b41b9f38de21`)
+completed a source-bound five-run Web matrix:
+
+- the probe rebuilt clean source commit `4a9787d2c7f2fbc6a29b33d691916c6b84543661`
+  and required the pinned binary bytes to match that build;
+- primary AX click oracle was 1 in every run;
+- every OOP click used `skylight_pid`, produced `MouseEvent.isTrusted=true`,
+  and delivered exactly one host-local mouse down/up pair;
+- slider was 42 and scroll offset was 76 in every run;
+- unique refetch clicked the intended stale target once, while missing refetch
+  had no target or decoy effect;
+- all 30 foreground-sentinel spans recorded zero target-frontmost samples, with
+  at least 92 samples per span and a maximum 80 ms sample gap.
+
+The deterministic source suite separately forces direct WebContent frame-only
+reflow through unique, missing, and ambiguous refetch outcomes, preserves a
+distinct renderer process generation, and confirms that native AX frame changes
+remain fail closed.
 
 This is native executor evidence, not a provider-model qualification cell. A
 future `real-runtime` web scenario must still pass the report contract above.
@@ -190,6 +211,6 @@ The same pin now carries stable AX observation revisions:
 - explicit observe continues to render the complete tree.
 
 This is hermetic protocol/static contract evidence, not a provider-model
-qualification cell. The native source suite passed 323 tests with 26 explicit
+qualification cell. The native source suite passed 326 tests with 26 explicit
 live-test skips, and the host Computer Use suite passed 124 tests. The
 modal/secondary evidence above was run after unlock.
