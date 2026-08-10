@@ -316,16 +316,12 @@ export interface UsageStats {
     requests: number;
     tokens: number;
     costUsd: number;
-    tokensIncomplete?: boolean;
-    costIncomplete?: boolean;
   }>;
   byModel: Array<{
     model: string;
     requests: number;
     tokens: number;
     costUsd: number;
-    tokensIncomplete?: boolean;
-    costIncomplete?: boolean;
   }>;
   byTool: Array<{
     tool: string;

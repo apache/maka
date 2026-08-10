@@ -87,19 +87,8 @@ export function UsageSettingsPage(props: {
     tools: stats?.byTool.length ?? 0,
     pricing: stats?.pricing.length ?? 0,
   };
-  const projectionIncomplete = stats
-    ? stats.provenance.unreadableRecords > 0 || stats.provenance.pendingRepairs > 0
-    : false;
-  const incompleteTokenRequests = stats
-    ? stats.provenance.coverage.usagePartialAttempts
-      + stats.provenance.coverage.usageMissingAttempts
-    : 0;
-  const incompleteCostRequests = stats
-    ? stats.provenance.coverage.unpricedAttempts
-    : 0;
-  const projectionDetail = stats && projectionIncomplete
-    ? copy.incompleteProjection(stats.provenance.unreadableRecords, stats.provenance.pendingRepairs)
-    : undefined;
+  const coverageNotice = stats ? usageCoverageNotice(stats.provenance, copy) : null;
+  const showSummaryOnlyNotice = usageDraft.activeTab === 'requests' && !usageDraft.showDetails;
 
   async function setRange(range: UsageRange) {
     const saved = await updateUsage({ range });
@@ -162,38 +151,21 @@ export function UsageSettingsPage(props: {
         </div>
 
         <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
-          <MetricCard
-            title={copy.totalRequests}
-            value={incompleteMetric(String(stats?.summary.totalRequests ?? 0), projectionIncomplete, copy)}
-            detail={projectionDetail}
-          />
+          <MetricCard title={copy.totalRequests} value={String(stats?.summary.totalRequests ?? 0)} />
           <MetricCard
             title={copy.totalCost}
-            value={incompleteMetric(`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`, incompleteCostRequests > 0 || projectionIncomplete, copy)}
-            detail={copy.joinDetails([
-              incompleteCostRequests > 0 ? copy.incompleteCost(incompleteCostRequests) : copy.costHelp,
-              ...(projectionDetail ? [projectionDetail] : []),
-            ])}
+            value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`}
+            detail={copy.costHelp}
           />
           <MetricCard
             title={copy.totalTokens}
-            value={incompleteMetric(String(stats?.summary.totalTokens ?? 0), incompleteTokenRequests > 0 || projectionIncomplete, copy)}
-            detail={copy.joinDetails([
-              incompleteTokenRequests > 0
-                ? copy.incompleteTokens(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0, incompleteTokenRequests)
-                : copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0),
-              ...(projectionDetail ? [projectionDetail] : []),
-            ])}
+            value={String(stats?.summary.totalTokens ?? 0)}
+            detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)}
           />
           <MetricCard
             title={copy.cacheTokens}
-            value={incompleteMetric(String(stats?.summary.cacheTokens ?? 0), incompleteTokenRequests > 0 || projectionIncomplete, copy)}
-            detail={copy.joinDetails([
-              incompleteTokenRequests > 0
-                ? copy.incompleteCache(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0, incompleteTokenRequests)
-                : copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0),
-              ...(projectionDetail ? [projectionDetail] : []),
-            ])}
+            value={String(stats?.summary.cacheTokens ?? 0)}
+            detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)}
           />
         </div>
       </div>
@@ -214,6 +186,35 @@ export function UsageSettingsPage(props: {
           </TabList>
         </div>
 
+        {coverageNotice ? (
+          <Banner
+            status="info"
+            title={coverageNotice.title}
+            description={coverageNotice.description}
+            endContent={showSummaryOnlyNotice ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void updateUsage({ showDetails: true })}
+                label={copy.showDetails}
+              />
+            ) : undefined}
+          />
+        ) : showSummaryOnlyNotice ? (
+          <Banner
+            status="info"
+            title={copy.summaryOnly}
+            endContent={(
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void updateUsage({ showDetails: true })}
+                label={copy.showDetails}
+              />
+            )}
+          />
+        ) : null}
+
         {usageDraft.activeTab === 'requests' ? (
           <div className="settingsUsageTabPanel">
             <UsageRequestsPanel
@@ -228,7 +229,6 @@ export function UsageSettingsPage(props: {
             copy={copy}
             locale={locale}
             onOpenSession={props.onOpenSession}
-            onEnableDetails={() => void updateUsage({ showDetails: true })}
             onModelFilterChange={(modelFilter) => void updateUsage({ modelFilter })}
             onStatusChange={(status) => void updateUsage({ status })}
             onToggleDetails={(showDetails) => void updateUsage({ showDetails })}
@@ -265,6 +265,46 @@ export function UsageSettingsPage(props: {
   );
 }
 
+/**
+ * Qualify Host-owned totals once at page level: projection and legacy gaps
+ * cannot be attributed to individual renderer buckets without guessing.
+ */
+function usageCoverageNotice(
+  provenance: UsageStats['provenance'],
+  copy: UsageSettingsCopy,
+): { title: string; description: string } | null {
+  const { coverage, legacyRecords, unreadableRecords, pendingRepairs } = provenance;
+  const hasIncompleteCanonicalData = coverage.usagePartialAttempts > 0
+    || coverage.usageMissingAttempts > 0
+    || coverage.unpricedAttempts > 0
+    || unreadableRecords > 0
+    || pendingRepairs > 0;
+  if (!hasIncompleteCanonicalData && legacyRecords === 0) return null;
+
+  const parts: string[] = [];
+  if (coverage.usagePartialAttempts > 0 || coverage.usageMissingAttempts > 0) {
+    parts.push(copy.coverage.token(coverage.usagePartialAttempts, coverage.usageMissingAttempts));
+  }
+  if (coverage.usagePartialAttempts > 0 || coverage.unpricedAttempts > 0) {
+    parts.push(copy.coverage.cost(coverage.usagePartialAttempts, coverage.unpricedAttempts));
+  }
+  if (legacyRecords > 0) parts.push(copy.coverage.legacy(legacyRecords));
+  if (unreadableRecords > 0 || pendingRepairs > 0) {
+    parts.push(copy.coverage.projection(unreadableRecords, pendingRepairs));
+  }
+  if (coverage.usagePartialAttempts > 0
+    || coverage.usageMissingAttempts > 0
+    || coverage.unpricedAttempts > 0) {
+    parts.push(copy.coverage.knownValuesOnly);
+  }
+  if (unreadableRecords > 0 || pendingRepairs > 0) parts.push(copy.coverage.projectionMayOmit);
+
+  return {
+    title: hasIncompleteCanonicalData ? copy.coverage.incompleteTitle : copy.coverage.legacyTitle,
+    description: copy.coverage.description(parts),
+  };
+}
+
 // ── Per-tab panels ─────────────────────────────────────────────────────────
 // Each tab owns its own component so the panel structure (filters, tables,
 // empty states) reads top-to-bottom instead of hiding inside one switch.
@@ -283,20 +323,12 @@ function UsageRequestsPanel(props: {
   copy: UsageSettingsCopy;
   locale: ReturnType<typeof useUiLocale>;
   onOpenSession?(sessionId: string): void;
-  onEnableDetails(): void;
   onModelFilterChange(value: string): void;
   onStatusChange(status: AppSettings['usage']['status']): void;
   onToggleDetails(showDetails: boolean): void;
   onClearFilters(): void;
 }) {
-  if (!props.showDetails) {
-    return (
-      <Banner
-        status="info"
-        title={props.copy.summaryOnly}
-        endContent={<Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />} />
-    );
-  }
+  if (!props.showDetails) return null;
   return (
     <>
       <div className="settingsUsageFilters" role="group" aria-label={props.copy.filtersAria}>
@@ -399,8 +431,8 @@ function UsageProvidersPanel(props: { stats: UsageStats | null; copy: UsageSetti
       rows={(props.stats?.byProvider ?? []).map((row) => [
         row.provider,
         row.requests,
-        incompleteMetric(String(row.tokens), row.tokensIncomplete === true, props.copy),
-        incompleteMetric(`$${row.costUsd.toFixed(2)}`, row.costIncomplete === true, props.copy),
+        row.tokens,
+        `$${row.costUsd.toFixed(2)}`,
       ])}
       empty={{ Icon: Database, title: props.copy.tables.providerEmptyTitle, body: props.copy.tables.providerEmptyBody }}
     />
@@ -420,8 +452,8 @@ function UsageModelsPanel(props: { stats: UsageStats | null; copy: UsageSettings
       rows={(props.stats?.byModel ?? []).map((row) => [
         row.model,
         row.requests,
-        incompleteMetric(String(row.tokens), row.tokensIncomplete === true, props.copy),
-        incompleteMetric(`$${row.costUsd.toFixed(2)}`, row.costIncomplete === true, props.copy),
+        row.tokens,
+        `$${row.costUsd.toFixed(2)}`,
       ])}
       empty={{ Icon: Cpu, title: props.copy.tables.modelEmptyTitle, body: props.copy.tables.modelEmptyBody }}
     />
@@ -498,21 +530,21 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
 }
 
 function usageRequestTokens(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
-  if (row.kind === 'tool') return '-';
+  if (row.kind === 'tool') return copy.tables.notApplicable;
   const total = row.inputTokens + row.outputTokens;
-  if (row.usageBasis === 'missing') return copy.tables.unknown;
+  if (row.usageBasis === 'missing') return copy.tables.notReported;
   if (row.usageBasis === 'partial') return copy.tables.partial(total);
   return total;
 }
 
 function usageRequestCost(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
-  if (row.kind === 'tool') return '-';
-  if (row.costBasis === 'unpriced' || row.costUsd === undefined) return copy.tables.unknown;
-  return `$${row.costUsd.toFixed(2)}`;
-}
-
-function incompleteMetric(value: string, incomplete: boolean, copy: UsageSettingsCopy) {
-  return incomplete ? copy.incompleteValue(value) : value;
+  if (row.kind === 'tool') return copy.tables.notApplicable;
+  if (row.costBasis === 'unpriced') return copy.tables.unpriced;
+  if (row.costUsd === undefined) return copy.tables.notRecorded;
+  const amount = `$${row.costUsd.toFixed(2)}`;
+  return row.usageBasis === 'partial' || row.usageBasis === 'missing'
+    ? copy.tables.partial(amount)
+    : amount;
 }
 
 // ── Usage table mapping ─────────────────────────────────────────────────────
