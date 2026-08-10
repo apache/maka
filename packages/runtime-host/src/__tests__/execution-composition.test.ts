@@ -99,7 +99,7 @@ test('production composition owns external conversation binding and Session crea
           kind: 'resolve',
           conversationId,
           session: {
-            cwd: root,
+            workspace: { kind: 'host_path', path: root },
             name: 'Slack conversation',
             labels: ['bot', 'slack'],
             modelTarget: { kind: 'default' },

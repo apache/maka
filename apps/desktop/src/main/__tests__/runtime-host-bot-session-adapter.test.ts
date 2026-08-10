@@ -228,7 +228,7 @@ test('recovers an older completed Turn from the canonical query and transcript',
         terminalEventId: 'terminal-old',
       }),
     }),
-    resolveCreateTarget: async () => ({ cwd: '/workspace' }),
+    resolveCreateTarget: hostPathCreateTarget,
     emitSessionsChanged() {},
   });
 
@@ -269,7 +269,10 @@ function session(
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: id,
