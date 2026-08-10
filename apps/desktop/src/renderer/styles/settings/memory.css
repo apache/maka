@@ -41,22 +41,6 @@
     color: var(--foreground-secondary);
     font: var(--maka-text-body);
   }
-.settingsMemoryEntryPreviewNotice {
-    display: grid;
-    gap: var(--space-1);
-    padding: var(--space-2-5) var(--space-3);
-    border: var(--border-width-hairline) solid var(--warning-wash-border);
-    border-radius: var(--radius-surface);
-    background: var(--warning-wash);
-  }
-.settingsMemoryEntryPreviewNotice strong {
-    color: var(--foreground);
-    font: var(--maka-text-body);
-  }
-.settingsMemoryEntryPreviewNotice small {
-    color: var(--foreground-secondary);
-    font: var(--maka-text-supporting);
-  }
 .settingsMemorySaveSummary {
     display: grid;
     gap: var(--space-0-5);
@@ -220,14 +204,17 @@
     font: var(--maka-text-label);
   }
 
-.settingsMemoryEntryRow p,
-  .settingsMemoryEntryEmpty {
+.settingsMemoryEntryRow p {
     margin: 0;
     color: var(--foreground-secondary);
     font: var(--maka-text-body);
     white-space: pre-wrap;
     word-break: break-word;
   }
+
+.settingsMemoryEntryEmpty {
+  margin: var(--space-2) 0 0;
+}
 
 .settingsMemoryEntryActions {
   display: flex;
@@ -253,25 +240,6 @@
 .settingsMemoryManualAdd {
   display: grid;
   gap: var(--space-2);
-}
-
-.settingsMemoryDraftWarning {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-2-5) var(--space-3);
-  border: var(--border-width-hairline) solid var(--warning-wash-strong-border);
-  border-radius: var(--radius-surface);
-  background: var(--warning-wash-strong);
-}
-
-.settingsMemoryDraftWarning strong {
-  color: var(--foreground);
-  font: var(--maka-text-body);
-}
-
-.settingsMemoryDraftWarning small {
-  color: var(--foreground-secondary);
-  font: var(--maka-text-supporting);
 }
 
 .settingsMemoryBackupCandidate > span {

@@ -1,6 +1,10 @@
 import { connectOrSpawnRuntimeHostWithDependencies } from '../../client/connect-or-spawn.js';
 import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION, type ClientSurface } from '../../protocol/index.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientSurface,
+} from '../../protocol/index.js';
 
 const [rootPath, surface] = process.argv.slice(2);
 if (!rootPath || !isClientSurface(surface)) {
@@ -8,6 +12,7 @@ if (!rootPath || !isClientSurface(surface)) {
 }
 
 const candidatePids: number[] = [];
+const candidateEntrypoint = new URL('./kernel-candidate.js', import.meta.url);
 const result = await connectOrSpawnRuntimeHostWithDependencies(
   {
     rootPath,
@@ -16,6 +21,8 @@ const result = await connectOrSpawnRuntimeHostWithDependencies(
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
     },
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    candidateEntrypoint,
     electionDeadlineMs: 5_000,
   },
   {
@@ -59,5 +66,5 @@ process.on('message', (message) => {
 process.once('disconnect', close);
 
 function isClientSurface(value: string | undefined): value is ClientSurface {
-  return value === 'desktop' || value === 'tui';
+  return value === 'desktop' || value === 'tui' || value === 'capability-provider';
 }

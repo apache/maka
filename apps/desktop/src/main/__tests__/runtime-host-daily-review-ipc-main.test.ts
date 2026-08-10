@@ -29,7 +29,7 @@ describe("Runtime Host Daily Review IPC", () => {
           nextBeforeArchiveId: null,
         };
       },
-      async mutateDailyReview(input: Record<string, unknown>) {
+      async mutateDailyReview() {
         if (revision === 1) {
           revision = 2;
           return {

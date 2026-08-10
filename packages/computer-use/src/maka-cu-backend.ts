@@ -1214,7 +1214,10 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       capturedAt: snapshot.capturedAt,
       digests: new Map(addressable(snapshot).map((element) => [element.token, element.digest])),
       modelIds: new Map(
-        addressable(snapshot).map((element, index) => [String(index), element.token]),
+        addressable(snapshot).map((element, index) => [
+          String(element.stableId ?? index),
+          element.token,
+        ]),
       ),
       ...(focusedToken && focusedDigest
         ? { focused: { token: focusedToken, digest: focusedDigest } }
@@ -1442,6 +1445,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     // to be able to tell that from a menu that is genuinely empty.
     menuScope?: string,
     query?: string,
+    renderDifference = false,
   ): Promise<CuObservation | CaptureFailure> {
     let screenshot: CuScreenshot | undefined;
     if (snapshot.image) {
@@ -1474,7 +1478,10 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     // `dispatch.element` addresses 文件 > 导出为 PDF… exactly as it addresses a
     // button, and the model never learns there were two arrays.
     const modelIdByToken = new Map(
-      addressable(snapshot).map((element, index) => [element.token, String(index)]),
+      addressable(snapshot).map((element, index) => [
+        element.token,
+        String(element.stableId ?? index),
+      ]),
     );
     const observation: MakaCuObservation = {
       // The protocol's snapshot id IS the observation id: a dispatch quotes it
@@ -1519,6 +1526,24 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       // Reporting the host's own request as a truncation would tell the model
       // the machine had failed to show it something.
       ...(query ? { query } : {}),
+      ...(snapshot.difference
+        ? {
+            difference: {
+              baseObservationId: snapshot.difference.baseSnapshotId,
+              presentation: snapshot.difference.presentation,
+              changes: snapshot.difference.changes.map((change) => ({
+                kind: change.kind,
+                path: change.path,
+                stableId: change.stableId,
+                ...(change.token
+                  ? { elementId: modelIdByToken.get(change.token) ?? String(change.stableId) }
+                  : {}),
+              })),
+              removedStableIdRanges: snapshot.difference.removedStableIdRanges,
+            },
+            ...(renderDifference ? { renderDifference: true } : {}),
+          }
+        : {}),
       // §5.2. Carried, not dropped: `select_text` names a range and this is the
       // only account of what came out of it. Its shape is the protocol's — text
       // and whether it was cut — because a bare string cannot say the second.
@@ -1538,7 +1563,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
         toObservedElement(
           element,
           snapshot.target.bounds,
-          String(index),
+          String(element.stableId ?? index),
           element.parentToken === null ? undefined : modelIdByToken.get(element.parentToken),
         ),
       ),
@@ -1816,7 +1841,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     }
     // Storing the fresh snapshot supersedes the quoted one for this
     // (pid, windowId), which is exactly the frame that was just spent.
-    const observation = await toObservation(result.snapshot, context);
+    const observation = await toObservation(result.snapshot, context, undefined, undefined, true);
     if ('outcome' in observation) return observation;
     return {
       outcome,

@@ -8,10 +8,12 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   createWorkspaceWritePermissionProfile,
+  decodeRunCompositionSnapshot,
   decodeCanonicalToolResultContent,
   type ModelCallKind,
   type RuntimeEvent,
@@ -35,6 +37,9 @@ import {
   buildParentAgentTools,
   SESSION_RECAP_INSTRUCTION,
   createToolResultArchiveCapability,
+  stableHash,
+  toolAvailabilityHash,
+  toolCatalogHash,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -61,9 +66,13 @@ import {
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
-  createHostExecutionModelComposition,
+  resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
+import {
+  createInteractiveRunComposer,
+  createInteractiveRunComposerFactory,
+} from '../server/interactive-run-composer.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -87,6 +96,29 @@ const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const execFileAsync = promisify(execFile);
+
+test('Plan mode preserves bypass while narrowing every managed permission mode', () => {
+  assert.equal(
+    resolveCollaborationPermissionMode({
+      collaborationMode: 'plan',
+      permissionMode: 'bypass',
+    }),
+    'bypass',
+  );
+  for (const permissionMode of ['explore', 'ask', 'execute'] as const) {
+    assert.equal(
+      resolveCollaborationPermissionMode({ collaborationMode: 'plan', permissionMode }),
+      'explore',
+    );
+  }
+  assert.equal(
+    resolveCollaborationPermissionMode({
+      collaborationMode: 'agent',
+      permissionMode: 'bypass',
+    }),
+    'bypass',
+  );
+});
 
 test('backend creation aborts a stalled canonical connection read', async () => {
   const abort = new AbortController();
@@ -130,6 +162,98 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
     name: 'AbortError',
     message: 'Pricing resolution was interrupted',
   });
+});
+
+test('provider dispatch fails closed when the Run Composition commit fails', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          commits += 1;
+          decodeRunCompositionSnapshot(snapshot);
+          throw new Error('Run Composition store unavailable');
+        },
+      }),
+    );
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'composition-invocation',
+      runId: 'composition-run',
+      turnId: 'composition-turn',
+      text: 'This request must not reach the provider.',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(commits, 1);
+    assert.equal(provider.requests.length, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('provider backend executes a minimal Domain Run Composer without Interactive sources', async () => {
+  const provider = await startProvider();
+  let snapshot: unknown;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        createRunComposer: async () => ({
+          composerId: 'test.minimal',
+          composerRevision: '1',
+          tools: [],
+          toolAvailability: { economy: false },
+          resolveSystemPrompt: async () => ({
+            text: 'Minimal Domain system prompt.',
+            sourceRevisions: [],
+          }),
+          turnTailPrompt: async () => '',
+        }),
+        recordRunComposition: async (_runId, value) => {
+          snapshot = value;
+        },
+      }),
+    );
+
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'minimal-domain-invocation',
+      runId: 'minimal-domain-run',
+      turnId: 'minimal-domain-turn',
+      text: 'Execute the minimal Domain Run.',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    const decoded = decodeRunCompositionSnapshot(snapshot);
+    assert.equal(decoded.composerId, 'test.minimal');
+    assert.deepEqual(decoded.sourceRevisions, []);
+    assert.deepEqual(decoded.toolNames, []);
+    assert.equal(decoded.baseSystemPromptHash, stableHash('Minimal Domain system prompt.'));
+    assert.equal(decoded.toolCatalogHash, toolCatalogHash([]));
+    assert.equal(decoded.toolAvailabilityHash, toolAvailabilityHash({ economy: false }));
+    assert.equal(provider.requests.length, 1);
+    assert.ok(events.some((event) => event.type === 'complete'));
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
 });
 
 test('backend abort cannot cancel the authority-owned OAuth refresh used by its successor', async () => {
@@ -352,7 +476,9 @@ test('production backend creation continues after a Session Client Capability is
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
-  const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
+  const provider = coordinator.attachConnection(clientCapabilityConnectionIdentity('provider-a'), {
+    send: async () => undefined,
+  });
   const context: ConnectionContext = {
     hostEpoch: 'backend-creation-epoch',
     connectionId: 'provider-a',
@@ -368,6 +494,7 @@ test('production backend creation continues after a Session Client Capability is
           offerId: 'browser',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Browser',
           tools: [
             {
@@ -418,25 +545,28 @@ test('production backend preserves coordinator Client Capability semantics acros
   let connection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
   try {
-    connection = coordinator.attachConnection('client-capability-provider', {
-      send: async (frame) => {
-        if (frame.kind !== 'client.capability.call') return;
-        calls.push(frame);
-        queueMicrotask(() => {
-          connection?.accept({
-            kind: 'client.capability.accepted',
-            invocationId: frame.invocationId,
+    connection = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity('client-capability-provider'),
+      {
+        send: async (frame) => {
+          if (frame.kind !== 'client.capability.call') return;
+          calls.push(frame);
+          queueMicrotask(() => {
+            connection?.accept({
+              kind: 'client.capability.accepted',
+              invocationId: frame.invocationId,
+            });
+            connection?.accept({
+              kind: 'client.capability.result',
+              invocationId: frame.invocationId,
+              result: {
+                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+              },
+            });
           });
-          connection?.accept({
-            kind: 'client.capability.result',
-            invocationId: frame.invocationId,
-            result: {
-              content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-            },
-          });
-        });
+        },
       },
-    });
+    );
     const context = {
       hostEpoch: 'client-capability-host-epoch',
       connectionId: 'client-capability-provider',
@@ -452,6 +582,7 @@ test('production backend preserves coordinator Client Capability semantics acros
             offerId: 'hosted-browser',
             version: '0',
             affinity: 'session',
+            hostPathAccess: 'cwd',
             label: 'Hosted Browser',
             tools: [
               {
@@ -1058,6 +1189,11 @@ test('production Host executes and durably supervises an Agent Graph over a real
       }),
     );
     assert.equal(finish?.resultIds.length, 1);
+    const rootRun = runs.find((run) => run.runId === initialTerminal.runId);
+    assert.equal(rootRun?.runComposition?.composerId, 'maka.interactive');
+    assert.equal(rootRun?.runComposition?.contextWindow, 32_768);
+    assert.match(rootRun?.runComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(rootRun?.runComposition?.toolNames.includes('view_agent_graph'));
     const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => run.status === 'completed'));
@@ -2075,7 +2211,6 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
       workspaceInstructions: { enabled: false },
     },
   };
-  let policyReads = 0;
   let inventoryReads = 0;
   let inventory: readonly ScannedSkill[] = [skillFixture('old', 'OLD_DESCRIPTION', 'OLD_BODY')];
   const skills = {
@@ -2092,13 +2227,8 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
       body: 'MEMORY_BODY',
     }),
   } as unknown as HostMemoryCoordinator;
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => {
-        policyReads += 1;
-        return policy;
-      },
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: policy,
     skills,
     memory,
     taskLedger: {} as TaskLedgerStore,
@@ -2110,11 +2240,10 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
     workspaceRoot: '/workspace',
   } as const;
 
-  const firstPrompt = await composition.systemPrompt(firstContext);
+  const firstPrompt = (await composition.resolveSystemPrompt(firstContext)).text;
   assert.match(firstPrompt ?? '', /^You are Maka,/);
   assert.match(firstPrompt ?? '', /OLD_DESCRIPTION/);
   assert.match(firstPrompt ?? '', /MEMORY_BODY/);
-  assert.equal(policyReads, 0);
   assert.equal(inventoryReads, 1);
 
   inventory = [skillFixture('new', 'NEW_DESCRIPTION', 'NEW_BODY')];
@@ -2148,10 +2277,96 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   );
   assert.equal(inventoryReads, 1);
 
-  const nextPrompt = await composition.systemPrompt({ ...firstContext, turnId: 'turn-2' });
+  const nextPrompt = (await composition.resolveSystemPrompt({ ...firstContext, turnId: 'turn-2' }))
+    .text;
   assert.match(nextPrompt ?? '', /NEW_DESCRIPTION/);
   assert.doesNotMatch(nextPrompt ?? '', /OLD_DESCRIPTION/);
   assert.equal(inventoryReads, 2);
+});
+
+test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {
+  let policyRevision = 3;
+  let memoryRevision = 'memory-3';
+  let memoryBody = 'MEMORY_THREE';
+  let skillRevision = 'skills-3';
+  let skillDescription = 'SKILL_THREE';
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: policyRevision, policy: createDefaultRuntimePolicy() },
+    skills: {
+      readCanonicalModelInventory: async () => ({
+        revision: skillRevision,
+        inventory: [skillFixture('fixture', skillDescription, 'BODY')],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        bundleRevision: `bundle-${memoryRevision}`,
+        memoryRevision,
+        body: memoryBody,
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+  });
+  const context = {
+    sessionId: 'session',
+    turnId: 'turn-1',
+    cwd: '/workspace',
+    workspaceRoot: '/workspace',
+  } as const;
+
+  const first = await composition.resolveSystemPrompt(context);
+  policyRevision = 4;
+  memoryRevision = 'memory-4';
+  memoryBody = 'MEMORY_FOUR';
+  skillRevision = 'skills-4';
+  skillDescription = 'SKILL_FOUR';
+  const repeated = await composition.resolveSystemPrompt(context);
+  const next = await composition.resolveSystemPrompt({ ...context, turnId: 'turn-2' });
+
+  assert.deepEqual(repeated, first);
+  assert.deepEqual(first.sourceRevisions, [
+    { id: 'memory', revision: 'memory-3' },
+    { id: 'memory-bundle', revision: 'bundle-memory-3' },
+    { id: 'runtime-policy', revision: '3' },
+    { id: 'skill-catalog', revision: 'skills-3' },
+  ]);
+  assert.match(first.text ?? '', /MEMORY_THREE/u);
+  assert.match(first.text ?? '', /SKILL_THREE/u);
+  assert.deepEqual(next.sourceRevisions, [
+    { id: 'memory', revision: 'memory-4' },
+    { id: 'memory-bundle', revision: 'bundle-memory-4' },
+    { id: 'runtime-policy', revision: '3' },
+    { id: 'skill-catalog', revision: 'skills-4' },
+  ]);
+  assert.match(next.text ?? '', /MEMORY_FOUR/u);
+  assert.match(next.text ?? '', /SKILL_FOUR/u);
+
+  const nextComposition = createInteractiveRunComposer({
+    runtimePolicy: { revision: policyRevision, policy: createDefaultRuntimePolicy() },
+    skills: {
+      readCanonicalModelInventory: async () => ({
+        revision: skillRevision,
+        inventory: [skillFixture('fixture', skillDescription, 'BODY')],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        bundleRevision: `bundle-${memoryRevision}`,
+        memoryRevision,
+        body: memoryBody,
+      }),
+    } as unknown as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+  });
+  assert.deepEqual(
+    (await nextComposition.resolveSystemPrompt({ ...context, turnId: 'turn-3' })).sourceRevisions,
+    [
+      { id: 'memory', revision: 'memory-4' },
+      { id: 'memory-bundle', revision: 'bundle-memory-4' },
+      { id: 'runtime-policy', revision: '4' },
+      { id: 'skill-catalog', revision: 'skills-4' },
+    ],
+  );
 });
 
 test('Client Capability tools join the existing load_tools catalog without a parallel loader', () => {
@@ -2162,13 +2377,8 @@ test('Client Capability tools join the existing load_tools catalog without a par
     categoryHint: 'client_capability',
     impl: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
   };
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
@@ -2200,16 +2410,15 @@ test('Client Capability tools join the existing load_tools catalog without a par
 });
 
 test('Side conversations end the Host-owned system prompt with an isolation boundary', async () => {
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {
       readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: null,
+        memoryRevision: null,
       }),
     } as unknown as HostMemoryCoordinator,
     taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
@@ -2217,12 +2426,14 @@ test('Side conversations end the Host-owned system prompt with an isolation boun
   });
 
   const prompt =
-    (await composition.systemPrompt({
-      sessionId: 'side-session',
-      turnId: 'turn-1',
-      cwd: '/workspace',
-      workspaceRoot: '/workspace',
-    })) ?? '';
+    (
+      await composition.resolveSystemPrompt({
+        sessionId: 'side-session',
+        turnId: 'turn-1',
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+      })
+    ).text ?? '';
   assert.match(prompt, /Side conversation boundary/);
   assert.match(prompt, /inherited parent history is reference context only/i);
   assert.equal(
@@ -2245,16 +2456,15 @@ test('Deep Research composition keeps one read-only research surface and prompt'
   const deepResearchStatus = tool('deep_research_status');
   const unsafeDeepResearchTool = tool('deep_research_unsafe_fixture');
   const clientMutation = tool('mcp__opaque__mutate', 'client_capability');
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {
       readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: null,
+        memoryRevision: null,
       }),
     } as unknown as HostMemoryCoordinator,
     taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
@@ -2292,12 +2502,14 @@ test('Deep Research composition keeps one read-only research surface and prompt'
     undefined,
   );
   const prompt =
-    (await composition.systemPrompt({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      cwd: process.cwd(),
-      workspaceRoot: process.cwd(),
-    })) ?? '';
+    (
+      await composition.resolveSystemPrompt({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: process.cwd(),
+        workspaceRoot: process.cwd(),
+      })
+    ).text ?? '';
   assert.match(prompt, /Deep research mode is active/);
   assert.match(prompt, /ExploreAgent/);
   // The Deep Research contract is a trailing assertion that constrains the
@@ -2330,20 +2542,19 @@ test('Plan composition admits only planning tools before approval and execution 
   };
   const store = { readState: async () => pending } as unknown as PlanStore;
   const base = {
-    policy: {
-      getSnapshot: async () => ({ revision: 0, policy: createDefaultRuntimePolicy() }),
-    },
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {
       readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: null,
+        memoryRevision: null,
       }),
     } as unknown as HostMemoryCoordinator,
     taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
   };
-  const planning = createHostExecutionModelComposition({
+  const planning = createInteractiveRunComposer({
     ...base,
     plan: { store, state: pending, mode: 'plan' },
   });
@@ -2352,13 +2563,52 @@ test('Plan composition admits only planning tools before approval and execution 
     'SubmitPlan',
   ]);
   assert.match(
-    (await planning.systemPrompt({
-      sessionId: 'session-1',
-      turnId: 'turn-2',
-      cwd: process.cwd(),
-      workspaceRoot: process.cwd(),
-    })) ?? '',
+    (
+      await planning.resolveSystemPrompt({
+        sessionId: 'session-1',
+        turnId: 'turn-2',
+        cwd: process.cwd(),
+        workspaceRoot: process.cwd(),
+      })
+    ).text ?? '',
     /Collaboration Mode: Plan/,
+  );
+
+  const fullAccessPlanning = createInteractiveRunComposer({
+    ...base,
+    hostTools: [
+      {
+        name: 'PlanningWriteFixture',
+        description: 'Mutating planning fixture',
+        parameters: {},
+        categoryHint: 'file_write',
+        impl: () => null,
+      },
+      {
+        name: 'ExploreAgentFixture',
+        description: 'Delegated planning fixture',
+        parameters: {},
+        categoryHint: 'subagent',
+        impl: () => null,
+      },
+    ],
+    plan: { store, state: pending, mode: 'plan', permissionMode: 'bypass' },
+  });
+  assert.ok(fullAccessPlanning.tools.some((tool) => tool.name === 'PlanningWriteFixture'));
+  assert.equal(
+    fullAccessPlanning.tools.some((tool) => tool.name === 'ExploreAgentFixture'),
+    false,
+  );
+  assert.match(
+    (
+      await fullAccessPlanning.resolveSystemPrompt({
+        sessionId: 'session-1',
+        turnId: 'turn-full-access',
+        cwd: process.cwd(),
+        workspaceRoot: process.cwd(),
+      })
+    ).text ?? '',
+    /Full access is active/,
   );
 
   const execution = {
@@ -2375,6 +2625,33 @@ test('Plan composition admits only planning tools before approval and execution 
     startedAt: 2,
     updatedAt: 2,
   };
+  const interrupted: PlanSessionState = {
+    ...pending,
+    storeVersion: 2,
+    proposals: [{ ...proposal, status: 'approved' }],
+    executions: [
+      {
+        ...execution,
+        status: 'interrupted',
+        interruptedAt: 3,
+        interruptionReason: 'User requested replanning',
+        updatedAt: 3,
+      },
+    ],
+  };
+  const fullAccessReplanning = createInteractiveRunComposer({
+    ...base,
+    plan: { store, state: interrupted, mode: 'plan', permissionMode: 'bypass' },
+  });
+  const replanningTail = await fullAccessReplanning.turnTailPrompt({
+    sessionId: 'session-1',
+    turnId: 'turn-full-access-replanning',
+    cwd: process.cwd(),
+    workspaceRoot: process.cwd(),
+  });
+  assert.match(replanningTail, /Full access remains active/);
+  assert.doesNotMatch(replanningTail, /Do not resume execution or modify files/);
+
   const active: PlanSessionState = {
     ...pending,
     storeVersion: 2,
@@ -2382,7 +2659,7 @@ test('Plan composition admits only planning tools before approval and execution 
     executions: [execution],
     activeExecutionId: execution.executionId,
   };
-  const executing = createHostExecutionModelComposition({
+  const executing = createInteractiveRunComposer({
     ...base,
     parentAgentTools: buildParentAgentTools(),
     plan: { store, state: active, mode: 'agent' },
@@ -2406,13 +2683,8 @@ test('Plan composition admits only planning tools before approval and execution 
 
 test('Host model composition routes managed file tools through its filesystem worker', async () => {
   let workerInput: FilesystemWorkerExecuteInput | undefined;
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
@@ -2474,13 +2746,8 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     parameters: {},
     impl: async () => 'automation',
   };
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
@@ -2511,13 +2778,8 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
 
 test('root model composition defers the canonical parent-agent tool group', () => {
   const parentAgentTools = buildParentAgentTools();
-  const composition = createHostExecutionModelComposition({
-    policy: {
-      getSnapshot: async () => ({
-        revision: 0,
-        policy: createDefaultRuntimePolicy(),
-      }),
-    },
+  const composition = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
@@ -2686,8 +2948,48 @@ function backendCreationFixture(input: {
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
+  recordRunComposition?: BackendFactoryContext['recordRunComposition'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
+  createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
 }): HostAiSdkBackendInput {
+  const runtimePolicy =
+    input.runtimePolicy ??
+    ({
+      operations: {
+        resolveExecutionConnection: input.resolveExecutionConnection,
+      },
+      runtimePolicy: {
+        getSnapshot: async () => ({
+          revision: 0,
+          policy: createDefaultRuntimePolicy(),
+        }),
+      },
+    } as unknown as RuntimePolicyStoresWriter);
+  const createRunComposer =
+    input.createRunComposer ??
+    createInteractiveRunComposerFactory({
+      skills: {
+        readCanonicalModelInventory: async () => ({
+          revision: 'skills-fixture',
+          projectRoot: '/workspace',
+          inventory: [],
+          diagnostics: [],
+          discoveryDiagnostics: [],
+        }),
+      } as unknown as HostSkillCatalogCoordinator,
+      memory: {
+        readPromptProjection: async () => ({
+          policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+          bundleRevision: null,
+          memoryRevision: null,
+          body: '',
+        }),
+      } as unknown as HostMemoryCoordinator,
+      taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+      clientCapabilities: {
+        snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
+      } as unknown as HostClientCapabilityCoordinator,
+    });
   return {
     context: {
       sessionId: 'backend-creation-session',
@@ -2704,38 +3006,16 @@ function backendCreationFixture(input: {
         ? { loadTurnRuntimeEvents: input.loadTurnRuntimeEvents }
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
+      ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
       store: {
         appendMessage: async () => undefined,
         readExecutionBoundary: async () => input.executionBoundary,
       },
     } as unknown as BackendFactoryContext,
-    runtimePolicy: input.runtimePolicy ?? {
-      operations: {
-        resolveExecutionConnection: input.resolveExecutionConnection,
-      },
-      runtimePolicy: {
-        getSnapshot: async () => ({
-          revision: 0,
-          policy: createDefaultRuntimePolicy(),
-        }),
-      },
-    },
+    runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
-    skills: {
-      readCanonicalModelInventory: async () => ({ inventory: [] }),
-    },
-    memory: {
-      readPromptProjection: async () => ({
-        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
-        bundleRevision: null,
-        memoryRevision: null,
-        body: '',
-      }),
-    },
-    taskLedger: {
-      list: async () => [],
-    },
+    createRunComposer,
     artifacts: {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
@@ -2755,9 +3035,6 @@ function backendCreationFixture(input: {
       },
     },
     requestDrain: () => undefined,
-    clientCapabilities: {
-      snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
-    },
     ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
     ...(input.createFetchTransport ? { createFetchTransport: input.createFetchTransport } : {}),
   } as unknown as HostAiSdkBackendInput;

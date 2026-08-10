@@ -45,6 +45,7 @@ export interface BuildMcpToolsOptions {
   callTimeoutMs?: number;
   categoryHint?: ToolCategory;
   recoveryMode?: ToolRecoveryMode;
+  executionLocation?: 'host' | 'remote';
 }
 
 export function buildMcpTools(
@@ -80,6 +81,7 @@ export function buildMcpTools(
       impl: async (args: unknown, context) => {
         // Managed network authority applies equally to Direct and nested CodeMode dispatch.
         if (
+          options.executionLocation !== 'remote' &&
           context.executionBoundary?.kind === 'managed' &&
           context.executionBoundary.profile.network.kind !== 'enabled'
         ) {

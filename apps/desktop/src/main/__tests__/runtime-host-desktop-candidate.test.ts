@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
 import type {
@@ -13,6 +14,8 @@ import type {
   OperationInput,
   OperationKey,
   SessionCatalogProjection,
+  SessionContinuitySnapshot,
+  SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
@@ -21,6 +24,7 @@ import {
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
 } from '../runtime-host-desktop-candidate.js';
+import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 
 test('owns one complete Desktop candidate generation and can restart cleanly', async () => {
   const ipc = ipcHarness();
@@ -63,9 +67,10 @@ test('tears down the whole candidate when the Host connection closes', async () 
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, deps(ipc));
 
   host.disconnect();
+  await Promise.resolve();
+  assert.equal(ipc.size, 0);
   await candidate.closed;
 
-  assert.equal(ipc.size, 0);
   assert.equal(host.closeCalls, 1);
 });
 
@@ -311,10 +316,136 @@ test('does not release or report a Revision the Host retained during cleanup', a
   await candidate.close();
 });
 
+test('resyncs Goal, exact interaction, and sidecar state after candidate replacement', async () => {
+  const ref = 'maka://runtime/background-tasks/shell-1';
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('first-observer', {
+    subscriptionSnapshot: continuitySnapshot({
+      interactions: { pending: [pendingQuestion()] },
+    }),
+    runtimeResourcePty: ptySnapshot(ref, 'before replacement'),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  assert.ok(
+    firstIpc.sender.sent.some(
+      ({ payload }) =>
+        (payload as { type?: unknown }).type === 'user_question_request',
+    ),
+  );
+  assert.equal(
+    (
+      (await firstIpc.invoke('shell-runs:attach', {
+        sessionId: 'session-1',
+        ref,
+      })) as { buffer: string }
+    ).buffer,
+    'before replacement',
+  );
+  await firstCandidate.close();
+
+  const secondIpc = ipcHarness();
+  const resyncs: Array<{ channel: string; payload: unknown }> = [];
+  const sessionChanges: Array<{ reason: string; sessionId?: string }> = [];
+  let terminalReattach: Promise<unknown> | undefined;
+  const secondHost = connectionHarness('second-observer', {
+    subscriptionSnapshot: continuitySnapshot({ interactions: { pending: [] } }),
+    runtimeResourcePty: ptySnapshot(ref, 'after replacement'),
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    secondHost.connection,
+    {
+      ...deps(secondIpc),
+      emitSessionsChanged: (reason, sessionId) =>
+        sessionChanges.push({ reason, sessionId }),
+      sendToRenderer: (channel, payload) => {
+        resyncs.push({ channel, payload });
+        if (channel === 'shell-runs:resync') {
+          terminalReattach ??= secondIpc.invoke('shell-runs:attach', {
+            sessionId: 'session-1',
+            ref,
+          });
+        }
+      },
+    },
+    observations,
+  );
+
+  assert.ok(
+    resyncs.some(
+      ({ channel, payload }) =>
+        channel === 'graphs:resync' &&
+        (payload as { rootSessionId?: unknown }).rootSessionId === 'session-1',
+    ),
+  );
+  assert.ok(
+    sessionChanges.some(
+      ({ reason, sessionId }) =>
+        reason === 'goal-change' && sessionId === 'session-1',
+    ),
+  );
+  assert.ok(
+    resyncs.some(
+      ({ channel, payload }) =>
+        channel === 'shell-runs:resync' &&
+        (payload as { sessionId?: unknown }).sessionId === 'session-1',
+    ),
+  );
+  assert.ok(
+    resyncs.some(
+      ({ channel, payload }) =>
+        channel === 'sessions:active-interactions-changed' &&
+        (payload as { sessionId?: unknown }).sessionId === 'session-1' &&
+        Array.isArray((payload as { interactions?: unknown }).interactions) &&
+        (payload as { interactions: unknown[] }).interactions.length === 0,
+    ),
+  );
+  assert.ok(terminalReattach);
+  assert.equal(
+    ((await terminalReattach) as { buffer: string }).buffer,
+    'after replacement',
+  );
+  assert.equal(secondHost.runtimeResourceControllerAcquires, 1);
+
+  secondHost.pushSubscriptionFrame({
+    kind: 'subscription.runtime_resource_pty_data',
+    hostEpoch: 'host-second-observer',
+    subscriptionId: 'subscription-second-observer',
+    sequence: 1,
+    sessionId: 'session-1',
+    ref,
+    ptySequence: 5,
+    data: ' live',
+  });
+  await waitFor(() =>
+    resyncs.some(
+      ({ channel, payload }) =>
+        channel === 'shell-runs:pty-data' &&
+        (payload as { sequence?: unknown }).sequence === 5 &&
+        (payload as { data?: unknown }).data === ' live',
+    ),
+  );
+
+  await secondCandidate.close();
+  await observations.close();
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
+  const sender = Object.assign(new EventEmitter(), {
+    id: 1,
+    sent: [] as Array<{ channel: string; payload: unknown }>,
+    send(channel: string, payload: unknown): void {
+      sender.sent.push({ channel, payload });
+    },
+  });
   return {
     handle(channel: string, handler: IpcHandler): void {
       if (handlers.has(channel)) throw new Error(`duplicate handler: ${channel}`);
@@ -326,7 +457,7 @@ function ipcHarness() {
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = handlers.get(channel);
       assert.ok(handler, `missing handler: ${channel}`);
-      return handler({ sender: { id: 1 } } as never, ...args);
+      return handler({ sender } as never, ...args);
     },
     get channels(): string[] {
       return [...handlers.keys()].sort();
@@ -334,6 +465,7 @@ function ipcHarness() {
     get size(): number {
       return handlers.size;
     },
+    sender,
   };
 }
 
@@ -385,7 +517,11 @@ function nativeTool(): MakaTool {
 
 function connectionHarness(
   label: string,
-  options: { revisionAbandon?: 'abandoned' | 'retained' } = {},
+  options: {
+    revisionAbandon?: 'abandoned' | 'retained';
+    subscriptionSnapshot?: SessionContinuitySnapshot;
+    runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
+  } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
   const closed = new Promise<void>((resolve) => {
@@ -401,6 +537,8 @@ function connectionHarness(
   let capabilityUnregistrations = 0;
   let closeCalls = 0;
   let startTurnCalls = 0;
+  let runtimeResourceControllerAcquires = 0;
+  let activeSubscriptionFrames: AsyncFrameQueue | undefined;
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
@@ -459,6 +597,23 @@ function connectionHarness(
           nextCursor: null,
         };
       }
+      if (
+        operation === 'runtime.resource.controller.acquire' &&
+        options.runtimeResourcePty
+      ) {
+        runtimeResourceControllerAcquires += 1;
+        return {
+          controllerId: (input as { controllerId: string }).controllerId,
+          nextSequence: options.runtimeResourcePty.sequence + 1,
+          pty: options.runtimeResourcePty,
+        };
+      }
+      if (operation === 'runtime.resource.controller.release') {
+        return {
+          controllerId: (input as { controllerId: string }).controllerId,
+          released: true,
+        };
+      }
       if (operation === 'session.execution_boundary.query') {
         return { kind: 'managed', access: 'read_only', revision: 1 };
       }
@@ -473,24 +628,19 @@ function connectionHarness(
       throw new Error(`Unexpected operation: ${operation}`);
     },
     openSessionSubscription: async ({ sessionId }: { sessionId: string }) => {
-      let resolveSubscriptionClosed: (() => void) | undefined;
-      const subscriptionClosed = new Promise<void>((resolve) => {
-        resolveSubscriptionClosed = resolve;
-      });
-      const closeSubscription = () => resolveSubscriptionClosed?.();
+      const subscriptionFrames = new AsyncFrameQueue();
+      activeSubscriptionFrames = subscriptionFrames;
+      const closeSubscription = () => subscriptionFrames.end();
       closeSubscriptions.add(closeSubscription);
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
-        snapshot: {
+        snapshot: options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
         },
         loadTranscript: async () => [],
-        async *[Symbol.asyncIterator]() {
-          await subscriptionClosed;
-          yield { kind: 'subscription.closed', reason: 'connection_closed' };
-        },
+        [Symbol.asyncIterator]: () => subscriptionFrames[Symbol.asyncIterator](),
         close: async () => closeSubscription(),
       };
     },
@@ -521,6 +671,10 @@ function connectionHarness(
       });
     },
     disconnect: () => resolveClosed?.(),
+    pushSubscriptionFrame: (frame: SubscriptionFrame) => {
+      assert.ok(activeSubscriptionFrames);
+      activeSubscriptionFrames.push(frame);
+    },
     get capabilityRegistrations() {
       return capabilityRegistrations;
     },
@@ -533,7 +687,117 @@ function connectionHarness(
     get startTurnCalls() {
       return startTurnCalls;
     },
+    get runtimeResourceControllerAcquires() {
+      return runtimeResourceControllerAcquires;
+    },
   };
+}
+
+function continuitySnapshot(
+  overrides: Partial<SessionContinuitySnapshot> = {},
+): SessionContinuitySnapshot {
+  return {
+    schemaVersion: 3,
+    session: {
+      sessionId: 'session-1',
+      metadataRevision: 1,
+      status: 'running',
+      createdAt: 1,
+      lastUsedAt: 1,
+      isArchived: false,
+    },
+    projectionRevision: 1,
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+    },
+    goal: null,
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 0,
+      steering: [],
+      followup: [],
+    },
+    interactions: { pending: [] },
+    ...overrides,
+  };
+}
+
+function pendingQuestion() {
+  return {
+    schemaVersion: 1 as const,
+    interactionId: 'interaction-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    outcome: null,
+    request: {
+      kind: 'question' as const,
+      toolUseId: 'tool-interaction-1',
+      questions: [
+        {
+          question: 'Proceed?',
+          options: [{ label: 'Yes', description: 'Continue.' }],
+        },
+      ],
+    },
+  };
+}
+
+function ptySnapshot(ref: string, buffer: string) {
+  return {
+    sessionId: 'session-1',
+    ref,
+    sequence: 4,
+    buffer,
+    size: { cols: 80, rows: 24 },
+  };
+}
+
+class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
+  readonly #frames: SubscriptionFrame[] = [];
+  readonly #waiters: Array<
+    (result: IteratorResult<SubscriptionFrame>) => void
+  > = [];
+  #ended = false;
+
+  push(frame: SubscriptionFrame): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) waiter({ value: frame, done: false });
+    else this.#frames.push(frame);
+  }
+
+  end(): void {
+    this.#ended = true;
+    for (const waiter of this.#waiters.splice(0)) {
+      waiter({ value: undefined, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
+    return {
+      next: () => {
+        const frame = this.#frames.shift();
+        if (frame) return Promise.resolve({ value: frame, done: false });
+        if (this.#ended) {
+          return Promise.resolve({ value: undefined, done: true });
+        }
+        return new Promise((resolve) => this.#waiters.push(resolve));
+      },
+    };
+  }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('Timed out waiting for candidate state');
 }
 
 function capabilityFrame(sessionId: string): ClientCapabilityCallFrame {

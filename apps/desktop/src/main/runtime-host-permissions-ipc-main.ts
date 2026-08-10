@@ -1,4 +1,3 @@
-import type { ipcMain as electronIpcMain } from "electron";
 import {
   buildHealthSnapshot,
   healthSignalFromCapability,
@@ -16,13 +15,17 @@ import {
 import { openSystemPermissionPane, requestPermissionAccess } from "./permissions-actions.js";
 import { permissionSnapshotE2eFixture } from "./permission-snapshot-e2e-fixture.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 
 type ComputerUseCapabilityInput = NonNullable<
   Parameters<typeof buildCapabilitySnapshotCollection>[0]["computerUse"]
 >;
 
 interface RuntimeHostPermissionsIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly getSettings: () => Promise<AppSettings>;
   readonly listConnections: () => Promise<LlmConnection[]>;
@@ -45,7 +48,7 @@ export function registerRuntimeHostPermissionsIpc(
     "permissions:requestAccess",
     (_event, permissionId: unknown) => requestPermissionAccess(permissionId),
   );
-  deps.ipcMain.handle("capabilities:getSnapshot", async () => {
+  handleReconnectableRead(deps.ipcMain, "capabilities:getSnapshot", async () => {
     const snapshot = permissions();
     return buildCapabilitySnapshotCollection({
       settings: await deps.getSettings(),
@@ -55,7 +58,7 @@ export function registerRuntimeHostPermissionsIpc(
       now: snapshot.checkedAt,
     });
   });
-  deps.ipcMain.handle("health:getSnapshot", async () => {
+  handleReconnectableRead(deps.ipcMain, "health:getSnapshot", async () => {
     const now = Date.now();
     const permissionSnapshot = permissions(now);
     const [settings, connections] = await Promise.all([

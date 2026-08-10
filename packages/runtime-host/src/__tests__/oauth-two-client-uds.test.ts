@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -53,7 +54,7 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 60_000,
-      compositionFactory: async (context) => {
+      composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
           activation,
@@ -64,7 +65,7 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
           activation,
           clientCapabilities,
           isProviderEnabled: (provider) => isOAuthEnrollmentProviderEnabled(provider, {}),
-          acquireResidency: context.acquireResidency,
+          acquireResidency: () => context.acquireResidency('oauth'),
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
           exchangeCode: async () => ({
@@ -93,7 +94,7 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
             await clientCapabilities.close();
           },
         };
-      },
+      }),
     });
     first = await connectClient(root, 'desktop');
     second = await connectClient(root, 'tui');
@@ -196,7 +197,7 @@ async function assertProviderDisabledOverUds(
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 60_000,
-      compositionFactory: async (context) => {
+      composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
           activation,
@@ -208,7 +209,7 @@ async function assertProviderDisabledOverUds(
           clientCapabilities,
           isProviderEnabled: (candidate) =>
             isOAuthEnrollmentProviderEnabled(candidate, environment),
-          acquireResidency: context.acquireResidency,
+          acquireResidency: () => context.acquireResidency('oauth'),
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
           exchangeCode: async () => {
@@ -233,7 +234,7 @@ async function assertProviderDisabledOverUds(
             await clientCapabilities.close();
           },
         };
-      },
+      }),
     });
     client = await connectClient(root, 'desktop');
     let presentations = 0;

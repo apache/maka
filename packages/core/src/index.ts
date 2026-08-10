@@ -13,6 +13,7 @@ export * from './orchestration.js';
 export * from './tool-mode.js';
 export * from './swarm-command.js';
 export * from './graph-command.js';
+export * from './slash-command-catalog.js';
 export * from './plan.js';
 export * from './agent-graph-control.js';
 export * from './agent-graph-schedule.js';
@@ -423,6 +424,17 @@ export {
   isEmittedAgentRunEventType,
   isSessionInlineRun,
 } from './agent-run.js';
+
+export type {
+  RunCompositionSnapshot,
+  RunCompositionSnapshotInput,
+  RunCompositionSourceRevision,
+} from './run-composition.js';
+export {
+  createRunCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+  RUN_COMPOSITION_SCHEMA_VERSION,
+} from './run-composition.js';
 
 // model-call-attempt.ts
 export type {
@@ -1410,6 +1422,7 @@ export type {
   ModelDiscoveryResult,
   ModelDiscoverySource,
   ModelInfo,
+  ApplyPatchProtocol,
   ProviderCategory,
   ProviderCatalogGroup,
   ProviderDefaults,

@@ -32,21 +32,22 @@ describe('Host Agent Graph coordinator', () => {
     let listener: AgentGraphClientChangedListener | undefined;
     let unsubscribed = false;
     const invalidations: unknown[] = [];
+    const authority = {
+      getSnapshot: async () => snapshot,
+      inspectOperator: async () => inspection,
+      subscribeAll: (candidate: AgentGraphClientChangedListener) => {
+        listener = candidate;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    } satisfies GraphAuthority;
     const coordinator = new HostAgentGraphCoordinator({
-      authority: {
-        getSnapshot: async () => snapshot,
-        inspectOperator: async () => inspection,
-        stop: async (rootSessionId) => {
-          stoppedRoot = rootSessionId;
-        },
-        subscribeAll: (candidate) => {
-          listener = candidate;
-          return () => {
-            unsubscribed = true;
-          };
-        },
-      } satisfies GraphAuthority,
+      authority,
       continuity: { enqueueAgentGraphChanged: (event) => invalidations.push(event) },
+      stopExecution: async (rootSessionId) => {
+        stoppedRoot = rootSessionId;
+      },
     });
 
     const queried = await coordinator.handlers['agent.graph.query'](
@@ -110,18 +111,18 @@ describe('Host Agent Graph coordinator', () => {
       inspectOperator: async () => {
         throw new AgentGraphClientOperationError('not_found', 'Agent graph operator was not found');
       },
-      stop: async () => {
-        throw new AgentGraphClientOperationError(
-          'session_archived',
-          'Archived Sessions cannot supervise an agent graph',
-        );
-      },
       subscribeAll: () => () => undefined,
     } satisfies GraphAuthority;
 
     const child = new HostAgentGraphCoordinator({
       authority,
       continuity: { enqueueAgentGraphChanged: () => undefined },
+      stopExecution: async () => {
+        throw new AgentGraphClientOperationError(
+          'session_archived',
+          'Archived Sessions cannot supervise an agent graph',
+        );
+      },
     });
     const childQuery = await child.handlers['agent.graph.query'](
       { rootSessionId: 'root-1' },
@@ -270,7 +271,7 @@ describe('Host Agent Graph coordinator', () => {
 
 type GraphAuthority = Pick<
   AgentGraphCoordinator,
-  'getSnapshot' | 'inspectOperator' | 'stop' | 'subscribeAll'
+  'getSnapshot' | 'inspectOperator' | 'subscribeAll'
 >;
 
 function graphSnapshot(): RuntimeAgentGraphClientSnapshot {

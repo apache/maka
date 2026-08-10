@@ -85,6 +85,8 @@ describe('builtin file tools use the sandboxed worker', () => {
               return { kind: 'read', content: 'worker-content' };
             case 'write':
               return { kind: 'write', ok: true, path: input.operation.path, bytes: 7 };
+            case 'apply_patch':
+              return { kind: 'apply_patch', ok: true, path: input.operation.path };
             case 'edit':
               return {
                 kind: 'edit',
@@ -118,6 +120,16 @@ describe('builtin file tools use the sandboxed worker', () => {
     });
 
     await runTool(tools, 'Read', { path: 'read.txt' }, cwd);
+    await writeFile(join(cwd, 'patch.txt'), 'old\n', 'utf8');
+    await runTool(
+      tools,
+      'apply_patch',
+      {
+        callId: 'patch-1',
+        operation: { type: 'update_file', path: 'patch.txt', diff: '@@\n-old\n+new\n' },
+      },
+      cwd,
+    );
     await runTool(tools, 'Write', { path: 'write.txt', content: 'content' }, cwd);
     await runTool(tools, 'Edit', { path: 'edit.txt', old_string: 'a', new_string: 'b' }, cwd);
     await runTool(tools, 'FormatJson', { path: 'data.json' }, cwd);
@@ -126,7 +138,7 @@ describe('builtin file tools use the sandboxed worker', () => {
 
     assert.deepEqual(
       calls.map((call) => call.operation.kind),
-      ['read', 'write', 'edit', 'format_json', 'glob', 'grep'],
+      ['read', 'apply_patch', 'write', 'edit', 'format_json', 'glob', 'grep'],
     );
     assert.equal(
       calls.every((call) => call.executionBoundary?.kind === 'managed'),

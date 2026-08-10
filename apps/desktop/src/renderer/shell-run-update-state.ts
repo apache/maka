@@ -1,6 +1,7 @@
 import {
   mergeShellRunUpdate,
   projectShellRunUpdateForSession,
+  ShellRunUpdateBuffer,
   type ShellRunUpdate,
 } from '@maka/core';
 
@@ -42,4 +43,34 @@ export function mergeShellRunNotification(
       update,
     ),
   );
+}
+
+export class ShellRunHydration {
+  readonly #pending = new ShellRunUpdateBuffer('desktop.shell-run-hydration-buffer');
+  #epoch = 0;
+  #hydrated = false;
+
+  begin(): number {
+    this.#epoch += 1;
+    this.#hydrated = false;
+    this.#pending.clear();
+    return this.#epoch;
+  }
+
+  isCurrent(epoch: number): boolean {
+    return epoch === this.#epoch;
+  }
+
+  accept(update: ShellRunUpdate): ShellRunUpdate | undefined {
+    if (this.#hydrated) return update;
+    this.#pending.add(update);
+    return undefined;
+  }
+
+  commit(epoch: number): { updates: ShellRunUpdate[]; overflowed: boolean } | undefined {
+    if (!this.isCurrent(epoch)) return undefined;
+    const pending = this.#pending.drain();
+    this.#hydrated = !pending.overflowed;
+    return pending;
+  }
 }

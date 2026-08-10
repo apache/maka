@@ -64,16 +64,39 @@
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
 .maka-quote-chip-text {
   font: var(--maka-text-supporting);
- min-width: 0; flex: 1; border: 0; padding: 0; color: var(--foreground-secondary); background: transparent; text-align: left; }
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  height: auto;
+  border: 0;
+  padding: 0;
+  color: var(--foreground-secondary);
+  background: transparent;
+  text-align: left;
+  box-shadow: none;
+}
+.maka-quote-chip-text-body {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
 .maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
-.maka-quote-chip-remove { width: 16px; height: 16px; border-radius: 50%; }
-.maka-quote-chip-remove > svg { width: var(--icon-meta); height: var(--icon-meta); }
+.maka-quote-chip-remove {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  border-radius: 50%;
+  padding: 0;
+}
+.maka-quote-chip-remove > svg,
+.maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
 .maka-task-ledger-empty {
-  font: var(--maka-text-body);
- margin: 0; color: var(--muted-foreground); }
+  margin: 0;
+}
 
 /* The meta row holds two different kinds of thing, so it gets two different
    rules. The time is content — a fact about the message — and stays put; gating
@@ -110,6 +133,15 @@
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+.maka-subagent-session-label,
+.maka-subagent-session-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.maka-subagent-session-label { width: 100%; min-width: 0; }
+.maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
+.maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
 .maka-turn-status {
@@ -303,7 +335,7 @@
   background: var(--background);
 }
 .maka-mermaid-toolbar {
-  min-height: 40px;
+  min-height: 36px;
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: var(--foreground-3);

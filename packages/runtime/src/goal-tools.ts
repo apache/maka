@@ -132,6 +132,7 @@ export interface GoalToolsDeps {
    * again. `GOAL_AUTHORITY_GONE` tells the model the door does not reopen.
    */
   isAvailable?: () => boolean;
+  flush?: (sessionId: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -199,7 +200,7 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
           'Optional token budget; the goal stops (budget_limited) once this many tokens are spent working toward it.',
         ),
     }),
-    impl: (input, ctx) => {
+    impl: async (input, ctx) => {
       if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       const existing = deps.goalManager.get(ctx.sessionId);
       if (existing && !TERMINAL_GOAL_STATUSES.has(existing.status)) {
@@ -224,6 +225,7 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
         return `Goal not set: ${declineAdvice(cause, GOAL_SET_TOOL_NAME)}`;
       }
+      await deps.flush?.(ctx.sessionId);
       const limits = [
         `max ${goal.maxIterations} turns`,
         `stall after ${goal.blockCap} no-progress turns`,
@@ -245,7 +247,7 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
     displayName: 'Goal Clear',
     description: 'Clear the active goal, stopping autonomous execution after the current turn.',
     parameters: z.object({}),
-    impl: (_input, ctx) => {
+    impl: async (_input, ctx) => {
       if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || TERMINAL_GOAL_STATUSES.has(current.status)) {
@@ -259,6 +261,7 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
         return `Goal not cleared: ${declineAdvice(cause, GOAL_CLEAR_TOOL_NAME)}`;
       }
+      await deps.flush?.(ctx.sessionId);
       return `Goal cleared: "${goal.condition}" after ${goal.iterations} turn(s).`;
     },
   };
@@ -271,7 +274,7 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
     description:
       'Pause the active goal. Autonomous continuation stops until GoalResume is called; state is preserved.',
     parameters: z.object({}),
-    impl: (_input, ctx) => {
+    impl: async (_input, ctx) => {
       if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || (current.status !== 'active' && current.status !== 'waiting')) {
@@ -285,6 +288,7 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
         return `Goal not paused: ${declineAdvice(cause, GOAL_PAUSE_TOOL_NAME)}`;
       }
+      await deps.flush?.(ctx.sessionId);
       return `Goal paused: "${goal.condition}" at turn ${goal.iterations}. Use GoalResume to continue.`;
     },
   };
@@ -296,7 +300,7 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
     displayName: 'Goal Resume',
     description: 'Resume a paused goal, re-enabling autonomous continuation.',
     parameters: z.object({}),
-    impl: (_input, ctx) => {
+    impl: async (_input, ctx) => {
       if (deps.isAvailable?.() === false) return GOAL_AUTHORITY_GONE;
       if (deps.goalManager.get(ctx.sessionId)?.status !== 'paused') {
         return 'No paused goal to resume.';
@@ -309,6 +313,7 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
         const cause = standing.kind === 'declined' ? standing.reason : 'goal_changed';
         return `Goal not resumed: ${declineAdvice(cause, GOAL_RESUME_TOOL_NAME)}`;
       }
+      await deps.flush?.(ctx.sessionId);
       return `Goal resumed: "${goal.condition}". Autonomous continuation re-enabled.`;
     },
   };
@@ -320,7 +325,8 @@ function buildGoalStatusTool(deps: GoalToolsDeps): MakaTool<Record<string, never
     displayName: 'Goal Status',
     description: 'Check the current goal status for this session.',
     parameters: z.object({}),
-    impl: (_input, ctx) => {
+    impl: async (_input, ctx) => {
+      await deps.flush?.(ctx.sessionId);
       const goal = deps.goalManager.get(ctx.sessionId);
       if (!goal) return 'No goal set for this session.';
       return formatGoal(goal, deps);

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 4;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 5;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -79,6 +79,18 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS workflow_daily_review_archives_order
       ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_goal_authority (
+      session_id TEXT PRIMARY KEY,
+      authority_revision INTEGER NOT NULL CHECK (authority_revision >= 0),
+      goal_id TEXT NOT NULL,
+      goal_revision INTEGER NOT NULL CHECK (goal_revision >= 0),
+      status TEXT NOT NULL,
+      record_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS workflow_goal_authority_status
+      ON workflow_goal_authority(status, session_id);
   `);
 
   const cleanupColumns = new Set(

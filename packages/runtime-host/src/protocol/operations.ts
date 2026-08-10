@@ -1,4 +1,5 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
+import { ACCESS_AUTHORITY_OPERATION_SPECS } from './access-authority.js';
 import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
 import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
@@ -19,6 +20,7 @@ import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
+import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
   type HostOperationError,
@@ -117,6 +119,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './access-authority.js';
 export * from './configuration.js';
 export * from './deep-research.js';
 export * from './daily-review.js';
@@ -129,6 +132,7 @@ export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
+export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './session-catalog.js';
@@ -142,6 +146,7 @@ export * from './web-search.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  ACCESS_AUTHORITY_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
@@ -155,6 +160,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   RUNTIME_RESOURCE_OPERATION_SPECS,
   AUTOMATION_OPERATION_SPECS,
   PLAN_OPERATION_SPECS,
+  PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
@@ -188,7 +194,7 @@ type InferErrorCode<Spec> =
 export type OperationInput<K extends OperationKey> = InferInput<OperationSpecMap[K]>;
 export type OperationOutput<K extends OperationKey> = InferOutput<OperationSpecMap[K]>;
 export type OperationError<K extends OperationKey> = HostOperationError<
-  InferErrorCode<OperationSpecMap[K]>
+  InferErrorCode<OperationSpecMap[K]> | 'unauthorized'
 >;
 
 export type RequestFrameFor<K extends OperationKey> = {
@@ -254,6 +260,15 @@ export function isOperationKey(value: unknown): value is OperationKey {
   return typeof value === 'string' && Object.hasOwn(HOST_OPERATION_SPECS, value);
 }
 
+export function operationUsesHostPaths(frame: RequestFrame): boolean {
+  const spec = HOST_OPERATION_SPECS[frame.operation] as OperationSpec<
+    unknown,
+    unknown,
+    HostOperationErrorCode
+  >;
+  return spec.usesHostPaths?.(frame.input) ?? false;
+}
+
 function omitResponseIdentity(record: Record<string, unknown>): Record<string, unknown> {
   if (record.ok === true) {
     requireExactRecord(record, 'operation response', ['requestId', 'operation', 'ok', 'result']);
@@ -271,7 +286,10 @@ function decodeOperationError<C extends HostOperationErrorCode>(
   allowedCodes: readonly C[],
 ): HostOperationError<C> {
   const record = requireExactRecord(value, 'operation error', ['code', 'message']);
-  if (typeof record.code !== 'string' || !allowedCodes.includes(record.code as C)) {
+  if (
+    typeof record.code !== 'string' ||
+    (record.code !== 'unauthorized' && !allowedCodes.includes(record.code as C))
+  ) {
     throw invalidProtocolFrame('Operation returned an undeclared error code');
   }
   return {

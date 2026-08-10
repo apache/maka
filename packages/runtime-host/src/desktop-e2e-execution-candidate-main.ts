@@ -1,6 +1,11 @@
 #!/usr/bin/env node
-import { FakeBackend } from '@maka/runtime';
-import { parseRuntimeHostCandidateArguments } from './candidate-cli.js';
+import type { BackendCompactHistoryInput, BackendCompactHistoryResult } from '@maka/core';
+import {
+  buildHistoryCompactCheckpoint,
+  FakeBackend,
+  type BackendFactoryContext,
+} from '@maka/runtime';
+import { parseInteractiveRuntimeHostCandidateArguments } from './candidate-cli.js';
 import { startExecutionRuntimeHostCandidate } from './server/execution-candidate.js';
 import { createExecutionRuntimeHostComposition } from './server/execution-composition.js';
 import { runRuntimeHostProcessLifecycle } from './server/process-lifecycle.js';
@@ -8,7 +13,28 @@ import { installRuntimeHostLogCapture } from './process-diagnostics.js';
 
 installRuntimeHostLogCapture();
 
-const options = parseRuntimeHostCandidateArguments(process.argv.slice(2));
+/** The desktop E2E backend mirrors the one control capability exercised by the slash menu. */
+class DesktopE2eBackend extends FakeBackend {
+  constructor(private readonly backendContext: BackendFactoryContext) {
+    super(backendContext);
+  }
+
+  async compactHistory(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult> {
+    const recordCheckpoint = this.backendContext.recordHistoryCompactCheckpoint;
+    if (!recordCheckpoint) {
+      throw new Error('Desktop E2E compaction requires a checkpoint recorder');
+    }
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: this.sessionId,
+      coveredRuntimeEvents: input.runtimeContext,
+      summary: 'Deterministic Desktop E2E context checkpoint.',
+    });
+    await recordCheckpoint(checkpoint, input.turnId);
+    return {};
+  }
+}
+
+const options = parseInteractiveRuntimeHostCandidateArguments(process.argv.slice(2));
 const result = await startExecutionRuntimeHostCandidate(
   {
     ...options,
@@ -26,7 +52,7 @@ const result = await startExecutionRuntimeHostCandidate(
           bootstrapRuntimePolicy: false,
         },
         {
-          primaryBackendFactory: (backendContext) => new FakeBackend(backendContext),
+          primaryBackendFactory: (backendContext) => new DesktopE2eBackend(backendContext),
           oauthAuthorization: {
             startCodexAuthorization: async () => ({
               deviceAuthId: 'desktop-e2e-device-authorization',

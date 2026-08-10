@@ -1,21 +1,40 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import {
+  changedFilesBetween,
+  formatGitHubOutputs,
+  loadWorkspaceGraph,
+  planTests,
+} from './ci-test-plan.mjs';
 
 const graph = loadWorkspaceGraph();
 
 test('impact planning distinguishes docs, UI, and backend changes', () => {
   const docs = planTests(['README.md', 'docs/testing.md'], { graph });
   assert.equal(docs.code, false);
+  assert.equal(docs.windows, false);
   assert.deepEqual(docs.workspaces, []);
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
+  assert.equal(ui.windows, true);
+  assert.equal(ui.windowsRuntime, false);
+  assert.equal(ui.windowsStorage, false);
   // Product UI is mounted by the catalog. Runtime export and render changes can
   // break Storybook even when its story files themselves are unchanged.
   assert.equal(ui.storybook, true);
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
+
+  // Unit-only packages/ui edits still run workspace tests, but must not force
+  // cold Electron e2e or Storybook build+Chromium smoke.
+  const uiUnitOnly = planTests(['packages/ui/src/__tests__/tool-activity-presentation.test.ts'], {
+    graph,
+  });
+  assert.equal(uiUnitOnly.e2e, false);
+  assert.equal(uiUnitOnly.storybook, false);
+  assert.ok(uiUnitOnly.workspaces.includes('packages/ui'));
+  assert.equal(planTests(['packages/ui/src/composer.tsx'], { graph }).e2e, true);
 
   // Renderer code is mounted by product stories; main-process and e2e files are not.
   assert.equal(
@@ -26,6 +45,7 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   );
   assert.equal(planTests(['apps/desktop/src/main/main.ts'], { graph }).storybook, false);
   assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).storybook, false);
+  assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).e2e, true);
 
   // Catalog + harness changes build and render the catalog without paying for
   // workspace tests or real-window Electron E2E.
@@ -62,11 +82,79 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   assert.equal(alignment.storybook, false);
 
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
+  assert.equal(backend.windowsRuntime, true);
+  // session-store is Linux-covered SQLite catalog work — not a Windows gate trigger.
+  assert.equal(backend.windowsStorage, false);
   assert.equal(backend.e2e, false);
   assert.equal(backend.storybook, false);
   for (const workspace of ['packages/storage', 'packages/runtime', 'apps/desktop']) {
     assert.ok(backend.workspaces.includes(workspace));
   }
+});
+
+test('Windows planning runs workflow changes fully and helper changes narrowly', () => {
+  const workflow = planTests(['.github/workflows/windows-baseline.yml'], { graph });
+  assert.equal(workflow.windows, true);
+  assert.equal(workflow.windowsRuntime, true);
+  assert.equal(workflow.windowsStorage, true);
+
+  for (const path of [
+    'scripts/windows-baseline-workflow.test.mjs',
+    'scripts/windows-process-identity.ps1',
+    'scripts/windows-smoke.mjs',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.windows, true, path);
+    assert.equal(plan.windowsRuntime, false, path);
+    assert.equal(plan.windowsStorage, false, path);
+  }
+});
+
+test('Windows storage gates open only for path/lock/crash-sensitive storage files', () => {
+  for (const path of [
+    'packages/storage/src/root-authority.ts',
+    'packages/storage/src/managed-dependency-environment.ts',
+    'packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts',
+    'packages/storage/src/__tests__/managed-workspace-baseline.test.ts',
+    'packages/storage/package.json',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.windowsStorage, true, path);
+  }
+  for (const path of [
+    'packages/storage/src/session-store.ts',
+    'packages/storage/src/connection-store.ts',
+    'packages/storage/src/__tests__/session-store.test.ts',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.windowsStorage, false, path);
+  }
+});
+
+test('cross-surface renames retain both paths for impact planning', () => {
+  let invocation;
+  const files = changedFilesBetween('base-sha', 'head-sha', (command, args, options) => {
+    invocation = { command, args, options };
+    return 'packages/storage/src/legacy.ts\napps/desktop/src/main/replacement.ts\n';
+  });
+
+  assert.deepEqual(files, [
+    'packages/storage/src/legacy.ts',
+    'apps/desktop/src/main/replacement.ts',
+  ]);
+  assert.deepEqual(invocation.args, [
+    'diff',
+    '--no-renames',
+    '--name-only',
+    '--diff-filter=ACMRD',
+    'base-sha',
+    'head-sha',
+  ]);
+
+  const plan = planTests(files, { graph });
+  assert.equal(plan.windows, true);
+  // legacy.ts is not a Windows-sensitive storage path.
+  assert.equal(plan.windowsStorage, false);
 });
 
 test('stress and specialized script checks run only for their owning surfaces', () => {
@@ -181,6 +269,9 @@ test('heavy workspaces are projected onto dedicated CI lanes', () => {
   assert.ok(outputs.includes('runtime_host=true'));
   assert.ok(outputs.includes('headless=false'));
   assert.ok(outputs.includes('standard_workspaces=packages/cli,apps/desktop'));
+  assert.ok(outputs.includes('windows=true'));
+  assert.ok(outputs.includes('windows_runtime=false'));
+  assert.ok(outputs.includes('windows_storage=false'));
 });
 
 test('global and unknown production changes fail safe to the complete suite', () => {

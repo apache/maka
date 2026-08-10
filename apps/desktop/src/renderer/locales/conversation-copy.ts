@@ -73,6 +73,7 @@ export interface DesktopConversationCopy {
     sideChat: string;
     sideChatNumbered(index: number): string;
     openTab: string;
+    openTools: string;
     closeTab(label: string): string;
     tabMenu(label: string): string;
     moveLeft: string;
@@ -99,34 +100,21 @@ export interface DesktopConversationCopy {
     empty: string;
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
-    sourceLabel: string;
-    branchSource: string;
-    unstagedSource: string;
-    stagedSource: string;
-    lastTurnSource: string;
     notGitRepository: string;
     workspaceUnavailable: string;
     unbornRepository: string;
     gitFailed: string;
     invalidBaseBranch: string;
     truncated: string;
-    stageFile: string;
-    unstageFile: string;
-    mutationFailed: string;
-    snapshotChanged: string;
-    revertFile: string;
-    revertTitle: string;
-    revertDescription(path: string): string;
-    revertConfirm: string;
-    cancel: string;
     showMore(remaining: number): string;
-    summary(files: number, additions: number, deletions: number): string;
-    comparison(base: string, current: string): string;
-    workingTree(branch: string): string;
+    hiddenLines(count: number): string;
+    changedFiles(count: number): string;
+    addedLines(count: number): string;
+    deletedLines(count: number): string;
+    added(count: number): string;
+    deleted(count: number): string;
     loadFailed: string;
     retry: string;
-    refresh: string;
-    diffCount(count: number): string;
   };
   terminalPanel: {
     ariaLabel: string;
@@ -373,7 +361,7 @@ const COPY = {
     workbar: {
       ariaLabel: '会话工作栏',
       sectionsAriaLabel: '会话工作栏标签',
-      review: '审阅',
+      review: '变更',
       terminal: '终端',
       terminalNumbered: (index) => `终端 ${index}`,
       tasks: '任务',
@@ -383,6 +371,7 @@ const COPY = {
       sideChat: '侧边对话',
       sideChatNumbered: (index) => `侧边对话 ${index}`,
       openTab: '打开工作栏标签',
+      openTools: '打开工具',
       closeTab: (label) => `关闭${label}`,
       tabMenu: (label) => `${label}标签菜单`,
       moveLeft: '向左移动',
@@ -395,7 +384,7 @@ const COPY = {
       closeOthers: '关闭其他标签',
       closeToRight: '关闭右侧标签',
       launcher: {
-        review: '审阅当前会话产生的文件差异',
+        review: '查看当前 Git 工作区变化',
         terminal: '查看当前会话的终端运行和实时输出',
         tasks: '查看和维护当前会话的任务台账',
         browser: '打开内置浏览器并保留当前页面',
@@ -405,39 +394,24 @@ const COPY = {
       },
     },
     reviewPanel: {
-      ariaLabel: '会话审阅',
-      empty: '当前会话还没有文件差异',
-      emptyHelp: '这个会话还没有可回顾的更改。',
-      sourceLabel: '审阅来源',
-      branchSource: '分支',
-      unstagedSource: '未暂存',
-      stagedSource: '已暂存',
-      lastTurnSource: '上一轮',
+      ariaLabel: 'Git 变更',
+      empty: '当前 Git 工作区没有变化',
+      emptyHelp: '提交、暂存或修改文件后，变化会显示在这里。',
       notGitRepository: '当前会话目录不是 Git 仓库',
       workspaceUnavailable: '当前会话目录已不可用',
       unbornRepository: 'Git 仓库还没有可比较的提交',
       gitFailed: '无法读取 Git 工作区变化',
       invalidBaseBranch: '选择的比较分支已不可用',
       truncated: '变化过多，仅显示前一部分文件',
-      stageFile: '暂存文件',
-      unstageFile: '取消暂存文件',
-      mutationFailed: '无法更新 Git 暂存区',
-      snapshotChanged: 'Git 变化已更新，请重试',
-      revertFile: '还原文件',
-      revertTitle: '还原未暂存变化？',
-      revertDescription: (path) =>
-        `${path} 的未暂存变化会被移除；未跟踪文件会被删除。`,
-      revertConfirm: '确认还原',
-      cancel: '取消',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
-      summary: (files, additions, deletions) =>
-        `${files} 个文件 · +${additions} · -${deletions}`,
-      comparison: (base, current) => `${current} 相对 ${base}`,
-      workingTree: (branch) => `${branch} 工作区`,
-      loadFailed: '无法读取会话差异',
+      hiddenLines: (count) => `另有 ${count} 行未显示`,
+      changedFiles: (count) => `${count} 个文件有变更`,
+      addedLines: (count) => `新增 ${count} 行`,
+      deletedLines: (count) => `删除 ${count} 行`,
+      added: (count) => `新增 ${count}`,
+      deleted: (count) => `删除 ${count}`,
+      loadFailed: '无法读取 Git 变化',
       retry: '重试',
-      refresh: '刷新审阅',
-      diffCount: (count) => `${count} 个差异`,
     },
     terminalPanel: {
       ariaLabel: '会话终端',
@@ -570,7 +544,7 @@ const COPY = {
     workbar: {
       ariaLabel: 'Conversation workbar',
       sectionsAriaLabel: 'Conversation workbar tabs',
-      review: 'Review',
+      review: 'Changes',
       terminal: 'Terminal',
       terminalNumbered: (index) => `Terminal ${index}`,
       tasks: 'Tasks',
@@ -580,6 +554,7 @@ const COPY = {
       sideChat: 'Side chat',
       sideChatNumbered: (index) => `Side chat ${index}`,
       openTab: 'Open workbar tab',
+      openTools: 'Open tools',
       closeTab: (label) => `Close ${label}`,
       tabMenu: (label) => `${label} tab menu`,
       moveLeft: 'Move left',
@@ -592,7 +567,7 @@ const COPY = {
       closeOthers: 'Close other tabs',
       closeToRight: 'Close tabs to the right',
       launcher: {
-        review: 'Review file diffs produced by this conversation',
+        review: 'View changes in the current Git workspace',
         terminal: 'Inspect terminal runs and live output for this conversation',
         tasks: 'View and maintain the task ledger for this conversation',
         browser: 'Open the embedded browser and keep the current page',
@@ -602,40 +577,26 @@ const COPY = {
       },
     },
     reviewPanel: {
-      ariaLabel: 'Conversation review',
-      empty: 'No file diffs in this conversation yet',
-      emptyHelp: 'No changes to review for this session yet.',
-      sourceLabel: 'Review source',
-      branchSource: 'Branch',
-      unstagedSource: 'Unstaged',
-      stagedSource: 'Staged',
-      lastTurnSource: 'Last turn',
+      ariaLabel: 'Git changes',
+      empty: 'No changes in the current Git workspace',
+      emptyHelp: 'Committed, staged, and modified files appear here.',
       notGitRepository: 'This conversation directory is not a Git repository',
       workspaceUnavailable: 'This conversation directory is unavailable',
       unbornRepository: 'This Git repository has no commit to compare yet',
       gitFailed: 'Could not read Git workspace changes',
       invalidBaseBranch: 'The selected comparison branch is unavailable',
       truncated: 'Too many changes; showing the first files only',
-      stageFile: 'Stage file',
-      unstageFile: 'Unstage file',
-      mutationFailed: 'Could not update the Git index',
-      snapshotChanged: 'Git changes were refreshed; try again',
-      revertFile: 'Revert file',
-      revertTitle: 'Revert unstaged changes?',
-      revertDescription: (path) =>
-        `Unstaged changes in ${path} will be removed; untracked files will be deleted.`,
-      revertConfirm: 'Revert',
-      cancel: 'Cancel',
       showMore: (remaining) =>
         `Show ${Math.min(20, remaining)} more file${Math.min(20, remaining) === 1 ? '' : 's'}`,
-      summary: (files, additions, deletions) =>
-        `${files} file${files === 1 ? '' : 's'} · +${additions} · -${deletions}`,
-      comparison: (base, current) => `${current} compared with ${base}`,
-      workingTree: (branch) => `${branch} working tree`,
-      loadFailed: 'Could not read conversation diffs',
+      hiddenLines: (count) =>
+        `${count} more line${count === 1 ? '' : 's'} not shown`,
+      changedFiles: (count) => `${count} changed file${count === 1 ? '' : 's'}`,
+      addedLines: (count) => `${count} line${count === 1 ? '' : 's'} added`,
+      deletedLines: (count) => `${count} line${count === 1 ? '' : 's'} deleted`,
+      added: (count) => `${count} added`,
+      deleted: (count) => `${count} deleted`,
+      loadFailed: 'Could not read Git changes',
       retry: 'Retry',
-      refresh: 'Refresh review',
-      diffCount: (count) => `${count} diff${count === 1 ? '' : 's'}`,
     },
     terminalPanel: {
       ariaLabel: 'Conversation terminal',

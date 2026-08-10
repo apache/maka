@@ -86,6 +86,409 @@ import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 
+describe('AiSdkBackend ApplyPatch routing', () => {
+  test('advertises apply_patch only to supported native OpenAI models', async () => {
+    for (const [providerType, modelId, expected] of [
+      ['openai', 'gpt-5.4', true],
+      ['openai', 'gpt-5', false],
+      ['anthropic', connection().defaultModel, false],
+    ] as const) {
+      const model = completionModel();
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection:
+          providerType === 'openai'
+            ? { ...connection(), slug: 'openai', providerType }
+            : connection(),
+        apiKey: 'sk-test',
+        modelId,
+        modelFactory: () => model,
+        tools: [
+          nativeApplyPatchTool(),
+          testTool('Write', z.object({})),
+          testTool('Edit', z.object({})),
+        ],
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+      await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+      const names = modelToolNames(model);
+      assert.equal(names.includes('apply_patch'), expected);
+      assert.equal(names.includes('Write'), !expected);
+      assert.equal(names.includes('Edit'), !expected);
+    }
+  });
+
+  test('replaces Write and Edit with freeform apply_patch for declared DeepSeek V4 Flash', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'sk-test',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [
+        nativeApplyPatchTool(),
+        testTool('Write', z.object({})),
+        testTool('Edit', z.object({})),
+      ],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+
+    const names = modelToolNames(model);
+    assert.equal(names.includes('apply_patch'), true);
+    assert.equal(names.includes('Write'), false);
+    assert.equal(names.includes('Edit'), false);
+  });
+
+  test('replays a durable apply_patch failure as native provider JSON', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch it',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'call-1',
+              name: 'apply_patch',
+              args: {
+                callId: 'call-1',
+                operation: { type: 'update_file', path: 'file.txt', diff: '@@' },
+              },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: { status: 'failed', output: 'diff rejected' },
+              isError: true,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'tool')
+      ?.content.find((part) => part.type === 'tool-result');
+    assert.deepEqual(toolResult?.output, {
+      type: 'json',
+      value: { status: 'failed', output: 'diff rejected' },
+    });
+  });
+
+  test('replays a durable DeepSeek freeform apply_patch result as plain text', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'sk-test',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch it',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'call-1',
+              name: 'apply_patch',
+              args: {
+                callId: 'call-1',
+                operation: {
+                  type: 'update_file',
+                  path: 'file.txt',
+                  diff: '@@\n-before\n+after',
+                },
+              },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: { status: 'completed', output: 'Applied 1 file operation.' },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'tool')
+      ?.content.find((part) => part.type === 'tool-result');
+    const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .find((message) => message.role === 'assistant')
+      ?.content.find((part) => part.type === 'tool-call');
+    assert.equal(
+      toolCall?.input,
+      '*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch',
+    );
+    assert.deepEqual(toolResult?.output, {
+      type: 'text',
+      value: 'Applied 1 file operation.',
+    });
+  });
+
+  test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: added.txt',
+      '+hello',
+      '*** Delete File: removed.txt',
+      '*** End Patch',
+    ].join('\n');
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch both files',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'function_call', id: 'call-1', name: 'apply_patch', args: patch },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: {
+                status: 'completed',
+                applied: [
+                  { type: 'create_file', path: 'added.txt' },
+                  { type: 'delete_file', path: 'removed.txt' },
+                ],
+                output: 'Applied 2 file operations.',
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const replayText = prompt
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .find((part) => part.type === 'text' && part.text.includes('added.txt'));
+    assert.equal(
+      replayText?.text,
+      'ApplyPatch completed 2 file operations: create_file added.txt, delete_file removed.txt.',
+    );
+    assert.equal(
+      prompt.some((message) =>
+        message.content.some(
+          (part) => part.type === 'tool-call' && part.toolName === 'apply_patch',
+        ),
+      ),
+      false,
+    );
+  });
+
+  test('preserves every multi-file ApplyPatch fact from one provider step', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const firstPatch = [
+      '*** Begin Patch',
+      '*** Add File: first.txt',
+      '+first',
+      '*** Delete File: old-first.txt',
+      '*** End Patch',
+    ].join('\n');
+    const secondPatch = [
+      '*** Begin Patch',
+      '*** Add File: second.txt',
+      '+second',
+      '*** Delete File: old-second.txt',
+      '*** End Patch',
+    ].join('\n');
+    const call = (id: string, args: string) =>
+      runtimeEvent({
+        id: `rt-${id}`,
+        turnId: 'turn-previous',
+        role: 'model',
+        author: 'agent',
+        refs: { stepId: 'patch-step' },
+        content: { kind: 'function_call', id, name: 'apply_patch', args },
+      });
+    const result = (id: string, applied: Array<{ type: string; path: string }>) =>
+      runtimeEvent({
+        id: `rt-${id}-result`,
+        turnId: 'turn-previous',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id,
+          name: 'apply_patch',
+          result: { status: 'completed', applied, output: 'Applied 2 file operations.' },
+        },
+      });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-previous',
+            role: 'user',
+            author: 'user',
+            text: 'patch both pairs',
+          }),
+          call('call-1', firstPatch),
+          call('call-2', secondPatch),
+          result('call-1', [
+            { type: 'create_file', path: 'first.txt' },
+            { type: 'delete_file', path: 'old-first.txt' },
+          ]),
+          result('call-2', [
+            { type: 'create_file', path: 'second.txt' },
+            { type: 'delete_file', path: 'old-second.txt' },
+          ]),
+          runtimeEvent({
+            id: 'rt-step-text',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'patch-step' },
+            content: { kind: 'text', text: 'Both patches finished.' },
+          }),
+        ],
+      }),
+    );
+
+    const replayFacts = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'text' && part.text.startsWith('ApplyPatch completed'))
+      .map((part) => part.text);
+    assert.deepEqual(replayFacts, [
+      'ApplyPatch completed 2 file operations: create_file first.txt, delete_file old-first.txt.',
+      'ApplyPatch completed 2 file operations: create_file second.txt, delete_file old-second.txt.',
+    ]);
+  });
+});
+
 describe('AiSdkBackend Memory Extraction triggers', () => {
   test('exposes explicitly unsupported Memory triggers on the native OpenAI Responses lane', async () => {
     const model = completionModel();
@@ -7429,27 +7832,41 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(events.at(-1)?.type, 'complete');
   });
 
-  test('does not call a truncated provider stream a finished turn', async () => {
-    // The upstream cut the SSE connection mid-answer: chunks arrived, no
-    // `finish` frame did. The stream then ends without yielding an error and
-    // without throwing, so every guard that watches for a thrown failure sees
-    // nothing. Reporting `end_turn` here tells the caller the model said its
-    // piece when the connection simply died — a benchmark cell recorded
-    // `status: completed` on exactly this shape while the agent was still
-    // mid-task.
-    const durable = durableTurnHarness('turn-truncated', 'analyse the image');
+  test('retries an output-free truncated provider stream once and recovers', async () => {
+    const durable = durableTurnHarness('turn-truncated-retry', 'analyse the image');
+    let calls = 0;
     const model = new MockLanguageModelV4({
-      doStream: async () => ({
-        stream: simulateReadableStream({
-          chunks: [
-            { type: 'stream-start', warnings: [] },
-            { type: 'text-start', id: 'text-1' },
-            { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
-          ],
-          initialDelayInMs: null,
-          chunkDelayInMs: null,
-        }),
-      }),
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'other', raw: undefined },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
     });
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -7463,6 +7880,120 @@ describe('AiSdkBackend usage telemetry', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('classifies an exhausted output-free truncated stream as provider unavailable', async () => {
+    const durable = durableTurnHarness('turn-truncated-exhausted', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'other', raw: undefined },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+
+    assert.equal(calls, 2);
+    assert.equal(error?.reason, 'provider_unavailable');
+    assert.equal(error?.message, 'Provider stream ended without finishing (other)');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('does not retry a truncated provider stream after partial output', async () => {
+    // The upstream cut the SSE connection mid-answer: chunks arrived, no
+    // `finish` frame did. The stream then ends without yielding an error and
+    // without throwing, so every guard that watches for a thrown failure sees
+    // nothing. Reporting `end_turn` here tells the caller the model said its
+    // piece when the connection simply died — a benchmark cell recorded
+    // `status: completed` on exactly this shape while the agent was still
+    // mid-task.
+    const durable = durableTurnHarness('turn-truncated', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
     });
 
     const events = await drainDurably(backend.send(durable.input()), durable);
@@ -7477,6 +8008,11 @@ describe('AiSdkBackend usage telemetry', () => {
       'error',
       'a stream that never delivered a finish frame did not end the turn',
     );
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
     // And it must say so. A failed terminal whose only trace is the stop reason
     // leaves the session's lastError empty and the request ledger reading
     // `success` — the same silence that let the benchmark cell pass unnoticed.
@@ -7484,6 +8020,10 @@ describe('AiSdkBackend usage telemetry', () => {
       events.some((event) => event.type === 'error'),
       'a failed terminal must be accompanied by an error event',
     );
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+    assert.equal(error?.reason, 'provider_unavailable');
   });
 
   test('says which failed terminal a content filter is', async () => {
@@ -15680,6 +16220,16 @@ function testTool(name: string, parameters: unknown): MakaTool {
     description: `${name} description`,
     parameters,
     impl: async () => ({ ok: true }),
+  };
+}
+
+function nativeApplyPatchTool(): MakaTool {
+  return {
+    name: 'apply_patch',
+    description: 'Apply one patch operation',
+    parameters: z.object({}),
+    providerTool: { kind: 'openai-apply-patch' },
+    impl: async () => ({ status: 'completed' }),
   };
 }
 

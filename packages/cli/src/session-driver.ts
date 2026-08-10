@@ -100,7 +100,12 @@ export interface MakaSessionDriver {
     listener: (sessionId: string, requestId: string) => void,
   ): () => void;
   subscribeTranscriptReplacements?(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void;
   startNewSession(): void;
   stop(): Promise<void>;
@@ -109,6 +114,8 @@ export interface MakaSessionDriver {
   getOrchestrationMode?(): OrchestrationMode;
   getPermissionMode?(): PermissionMode;
 }
+
+export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect';
 
 export type SessionResumeAvailability = { available: true } | { available: false; reason: string };
 

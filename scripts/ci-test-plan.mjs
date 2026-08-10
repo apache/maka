@@ -24,6 +24,29 @@ const TYPECHECK_ONLY_FILES = new Set([
   'tsconfig.lib.json',
 ]);
 
+const WINDOWS_BASELINE_FILES = new Set([
+  '.github/workflows/windows-baseline.yml',
+  'scripts/windows-baseline-workflow.test.mjs',
+  'scripts/windows-process-identity.ps1',
+  'scripts/windows-smoke.mjs',
+  'scripts/windows-smoke.test.mjs',
+]);
+
+/**
+ * Storage seams that exercise Windows-specific path, lock, crash, or NTFS
+ * behavior. Catalog/session SQLite unit changes stay on Linux; only these
+ * paths open the Windows storage gate lane.
+ */
+const WINDOWS_STORAGE_SENSITIVE_PATH =
+  /(^|\/)(root-authority|managed-dependency-environment|managed-workspace|git-workspace-service|git-worktree|workspace-root|workspace-identity|marker-file|write-queue|artifact-writer-lock|sqlite-recovery-concurrency|sqlite-runtime-crash|sqlite-long-term-memory-crash)([./_-]|$)/u;
+
+export function isWindowsStorageSensitivePath(path) {
+  const normalized = normalizePath(path);
+  if (normalized === 'packages/storage/package.json') return true;
+  if (!normalized.startsWith('packages/storage/')) return false;
+  return WINDOWS_STORAGE_SENSITIVE_PATH.test(normalized);
+}
+
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host', 'packages/headless']);
 
 // Scripts the Electron e2e job runs. Editing one of these changes what that
@@ -49,14 +72,49 @@ function isStorybookCatalogPath(path) {
   return false;
 }
 
+/** Unit / contract tests under src — not the Storybook catalog mount surface. */
+function isPackageTestPath(path) {
+  if (path.includes('/__tests__/')) return true;
+  if (/\.test\.(ts|tsx|js|mjs)$/.test(path)) return true;
+  return false;
+}
+
+/**
+ * Product UI that product stories import. Test files under packages/ui/src
+ * only need the unit lane — forcing Storybook (~2m wall with Chromium +
+ * build-storybook) on every presentation unit edit was pure wall-clock waste.
+ */
+function isUiProductSourcePath(path) {
+  if (path === 'packages/ui/src' || path.startsWith('packages/ui/src/')) {
+    return !isPackageTestPath(path);
+  }
+  return false;
+}
+
 function isStorybookPath(path) {
   if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
-  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/'))
-    return true;
+  if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
+    // Renderer unit tests do not change Storybook mount code.
+    return !isPackageTestPath(path);
+  }
   if (isStorybookCatalogPath(path)) return true;
-  // packages/ui ships both the primitives mounted by product stories and its
-  // own story tree (see .storybook/main.ts).
-  if (path === 'packages/ui/src' || path.startsWith('packages/ui/src/')) return true;
+  // packages/ui product sources (not __tests__) ship into the catalog.
+  if (isUiProductSourcePath(path)) return true;
+  return false;
+}
+
+/**
+ * Electron e2e should pay cold install/boot only when the real window surface
+ * or e2e driver changed — not when only packages/ui unit tests changed.
+ */
+function isE2eProductPath(path) {
+  if (E2E_DRIVING_SCRIPTS.has(path)) return true;
+  if (path === 'apps/desktop' || path.startsWith('apps/desktop/')) {
+    // Storybook catalog under desktop never needs a real Electron window.
+    if (isStorybookCatalogPath(path)) return false;
+    return true;
+  }
+  if (isUiProductSourcePath(path)) return true;
   return false;
 }
 
@@ -184,6 +242,9 @@ export function planTests(changedFiles, options = {}) {
       // every unrelated merge into a 10K-chunk pressure run.
       storageStress: false,
       storybook: true,
+      windows: true,
+      windowsRuntime: true,
+      windowsStorage: true,
       workspaces,
       ...workspaceLanes(workspaces),
     };
@@ -243,19 +304,21 @@ export function planTests(changedFiles, options = {}) {
 
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
   const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
+  const windowsBaselineChanged = files.includes('.github/workflows/windows-baseline.yml');
+  const windows = code || files.some((path) => WINDOWS_BASELINE_FILES.has(path));
+  const windowsRuntime = windowsBaselineChanged || workspaces.includes('packages/runtime');
+  // Not every packages/storage edit needs Windows: reverse-dep closure would
+  // also open this lane for any desktop/runtime consumer of storage. Gate on
+  // path/lock/crash-sensitive files only.
+  const windowsStorage =
+    windowsBaselineChanged || files.some((path) => isWindowsStorageSensitivePath(path));
 
   return {
     code,
-    // Electron E2E + alignment audit. Direct desktop/ui only — a storage or
-    // runtime change must not drag cold Electron boots.
-    //
-    // Scripts that DRIVE the suite belong here too. `scripts/**` only sets
-    // scriptMode, so without this a change to the auditor itself was verified
-    // by its unit tests and never by the run it orchestrates.
-    e2e:
-      directWorkspaces.has('apps/desktop') ||
-      directWorkspaces.has('packages/ui') ||
-      files.some((path) => E2E_DRIVING_SCRIPTS.has(path)),
+    // Electron E2E + alignment audit (same job). Product desktop/ui sources and
+    // e2e drivers only — a storage/runtime change must not drag cold Electron
+    // boots, and packages/ui unit-test-only PRs must not either.
+    e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
@@ -268,6 +331,9 @@ export function planTests(changedFiles, options = {}) {
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
     // isStorybookPath.
     storybook: files.some((path) => isStorybookPath(path)),
+    windows,
+    windowsRuntime,
+    windowsStorage,
     workspaces,
     ...workspaceLanes(workspaces),
   };
@@ -285,6 +351,9 @@ export function formatGitHubOutputs(plan) {
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `unit=${plan.workspaces.length > 0}`,
+    `windows=${plan.windows}`,
+    `windows_runtime=${plan.windowsRuntime}`,
+    `windows_storage=${plan.windowsStorage}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,
     `workspaces=${plan.workspaces.join(',')}`,
   ].join('\n');
@@ -305,20 +374,18 @@ function parseArgs(args) {
   return parsed;
 }
 
+export function changedFilesBetween(base, head, exec = execFileSync) {
+  return exec('git', ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRD', base, head], {
+    cwd: defaultRepoRoot,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter(Boolean);
+}
+
 function main(args) {
   const parsed = parseArgs(args);
-  const changedFiles = parsed.forceFull
-    ? []
-    : execFileSync(
-        'git',
-        ['diff', '--name-only', '--diff-filter=ACMRD', parsed.base, parsed.head],
-        {
-          cwd: defaultRepoRoot,
-          encoding: 'utf8',
-        },
-      )
-        .split('\n')
-        .filter(Boolean);
+  const changedFiles = parsed.forceFull ? [] : changedFilesBetween(parsed.base, parsed.head);
   const plan = planTests(changedFiles, { forceFull: parsed.forceFull });
   process.stdout.write(`${formatGitHubOutputs(plan)}\n`);
   process.stderr.write(

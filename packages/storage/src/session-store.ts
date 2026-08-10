@@ -182,6 +182,8 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore {
+  /** Complete one-time storage migrations before direct cross-domain transactions. */
+  ready(): Promise<void>;
   /** Atomically create a Session from already-converted Maka raw messages. */
   createImportedSession(
     input: CreateSessionInput,
@@ -343,6 +345,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
     }
   }
 
+  ready(): Promise<void> {
+    return this.ensureReady();
+  }
+
   async create(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -369,7 +375,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
     const canonicalMessages = messages.map((message) =>
       decodeStoredMessageForRecovery(JSON.parse(JSON.stringify(message)) as unknown),
     );
-    const header = buildSessionHeader(this.workspaceRoot, input);
+    const header: SessionHeader = {
+      ...buildSessionHeader(this.workspaceRoot, input),
+      transcriptLedgerVersion: 0,
+    };
     const outcome = await this.metadata.importSession(
       header,
       canonicalMessages,
@@ -990,6 +999,9 @@ export function normalizeSessionHeader(
     isPermissionMode(header.permissionMode) &&
     isCollaborationMode(header.collaborationMode) &&
     isOrchestrationMode(header.orchestrationMode) &&
+    (header.transcriptLedgerVersion === undefined ||
+      header.transcriptLedgerVersion === 0 ||
+      header.transcriptLedgerVersion === 1) &&
     header.schemaVersion === 1;
   if (!valid) {
     throw new Error(`Invalid session header for session ${sessionId}: malformed fields`);

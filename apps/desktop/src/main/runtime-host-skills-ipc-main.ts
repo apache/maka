@@ -1,4 +1,4 @@
-import type { ipcMain as electronIpcMain } from "electron";
+import type { ChatDefaultPermissionMode } from "@maka/core";
 import {
   resolveSkillDiscoveryPaths,
   scanSkillsWithDiagnostics,
@@ -29,17 +29,22 @@ import type {
   DesktopSkillCatalogSnapshot,
 } from "./runtime-host-client.js";
 import { resolveSkillOpenPath } from "./skill-open-path.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 
 const MAX_REVISION_ATTEMPTS = 3;
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
 interface RuntimeHostSkillsIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly getCurrentProjectRoot: () => Promise<string>;
+  readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
 }
 
@@ -63,7 +68,7 @@ interface StableSkillMutation {
 export function registerRuntimeHostSkillsIpc(
   deps: RuntimeHostSkillsIpcDeps,
 ): void {
-  deps.ipcMain.handle("skills:list", async () => {
+  handleReconnectableRead(deps.ipcMain, "skills:list", async () => {
     const projection = await loadGovernance(
       deps,
       await deps.getCurrentProjectRoot(),
@@ -73,7 +78,8 @@ export function registerRuntimeHostSkillsIpc(
     );
   });
 
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "skills:listInvocable",
     async (_event, sessionId?: unknown, newSessionContext?: unknown) => {
       const target =
@@ -85,6 +91,7 @@ export function registerRuntimeHostSkillsIpc(
               collaborationMode:
                 normalizeNewSessionCollaborationMode(newSessionContext) ??
                 "agent",
+              permissionMode: await deps.getDefaultPermissionMode(),
             };
       return (await deps.client.listInvocableSkills(target)).map(
         (item): InvocableSkillEntry => ({ ...item }),
@@ -92,7 +99,7 @@ export function registerRuntimeHostSkillsIpc(
     },
   );
 
-  deps.ipcMain.handle("skills:catalog:list", async () => {
+  handleReconnectableRead(deps.ipcMain, "skills:catalog:list", async () => {
     const projectRoot = await deps.getCurrentProjectRoot();
     const snapshot = await deps.client.loadSkillCatalog(
       { projectRoot },
@@ -118,7 +125,7 @@ export function registerRuntimeHostSkillsIpc(
     return installSkill(deps, "bundled", id);
   });
 
-  deps.ipcMain.handle("skills:sources:list", async () => {
+  handleReconnectableRead(deps.ipcMain, "skills:sources:list", async () => {
     const projectRoot = await deps.getCurrentProjectRoot();
     const snapshot = await deps.client.loadSkillCatalog(
       { projectRoot },
@@ -168,7 +175,7 @@ export function registerRuntimeHostSkillsIpc(
     },
   );
 
-  deps.ipcMain.handle("skills:details", async (_event, idOrRef: string) => {
+  handleReconnectableRead(deps.ipcMain, "skills:details", async (_event, idOrRef: string) => {
     const projection = await loadGovernance(
       deps,
       await deps.getCurrentProjectRoot(),
@@ -184,7 +191,8 @@ export function registerRuntimeHostSkillsIpc(
     };
   });
 
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "skills:previewUpdate",
     async (_event, idOrRef: string) => {
       const projectRoot = await deps.getCurrentProjectRoot();

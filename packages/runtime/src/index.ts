@@ -17,6 +17,8 @@ export {
 export { RuntimeContextCompactError } from './runtime-kernel.js';
 export type { ModelMessage, JSONValue } from './model-protocol.js';
 export { ProviderPrefixModelCallUnavailableError } from './tool-free-model-call.js';
+export { stableHash, toolCatalogHash } from './request-shape.js';
+export { toolAvailabilityHash } from './tool-availability.js';
 export {
   buildNativeWebSearchTool,
   NATIVE_WEB_SEARCH_TOOL_NAME,
@@ -1639,10 +1641,12 @@ export {
   GoalContinuationCoordinator,
   GOAL_WAIT_BACKOFF_BASE_MS,
   GOAL_WAIT_BACKOFF_MAX_MS,
+  volatileGoalDurability,
 } from './goal-continuation.js';
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
+  GoalDurabilityPort,
   GoalControlDecline,
   GoalControlStanding,
   GoalObservedTurnStart,

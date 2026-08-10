@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 
 const signingEnvironment = {
   CSC_LINK: 'base64-certificate',
@@ -9,6 +12,35 @@ const signingEnvironment = {
   APPLE_API_KEY_ID: 'TESTKEY',
   APPLE_API_ISSUER: '00000000-0000-0000-0000-000000000000',
 };
+
+test('the packaged filesystem worker smoke uses the runtime protocol version', async () => {
+  const { smokePackagedFilesystemWorker } = await import(
+    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
+  );
+  const workingDirectory = await mkdtemp(join(tmpdir(), 'maka-filesystem-worker-smoke-'));
+
+  try {
+    await smokePackagedFilesystemWorker('/tmp/Maka', '/tmp/filesystem-worker.js', {
+      workingDirectory,
+      run: async (_command, _args, options) => {
+        const request = JSON.parse(options.input);
+        assert.equal(request.version, FILESYSTEM_WORKER_PROTOCOL_VERSION);
+        await writeFile(request.operation.path, request.operation.content, 'utf8');
+        return {
+          stdout: JSON.stringify({
+            version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+            requestId: request.requestId,
+            ok: true,
+            result: { kind: 'write', ok: true, path: request.operation.path, bytes: 25 },
+          }),
+          stderr: '',
+        };
+      },
+    });
+  } finally {
+    await rm(workingDirectory, { recursive: true, force: true });
+  }
+});
 
 test('release tooling fails closed on unsupported hosts, signing, and architecture', async () => {
   const desktopManifest = JSON.parse(

@@ -21,6 +21,7 @@ export function buildSqliteSessionCatalogPageQuery(
   where.push(
     "COALESCE(json_extract(metadata.payload_json, '$.conversationCopy.state'), '') <> 'preparing'",
   );
+  where.push("COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), 1) <> 0");
   if (filter.labelSlug !== undefined) {
     where.push('selected_label.label = ?');
     parameters.push(filter.labelSlug);

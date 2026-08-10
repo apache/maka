@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
 import {
   deriveTurnRecords,
   SIDE_CONVERSATION_SESSION_LABEL,
@@ -24,8 +24,13 @@ import {
   normalizeSessionSendCommand,
   normalizeUserQuestionResponse,
 } from "./permission-response-guard.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
@@ -55,6 +60,10 @@ type RuntimeHostSessionExecutionClient = Pick<
 export interface RuntimeHostSessionExecutionIpcDeps {
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
+  observations: Pick<
+    RuntimeHostSessionObservationRegistry,
+    "observe" | "unobserve"
+  >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -86,7 +95,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
  */
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
-  ipcMain: Pick<IpcMain, "handle">,
+  ipcMain: ReconnectableReadIpcMain,
 ): (sessionId: string) => Promise<void> {
   const observedCopyOwners = new Set<string>();
   const bindCopyOwner = (event: IpcMainInvokeEvent): string => {
@@ -112,7 +121,7 @@ export function registerRuntimeHostSessionExecutionIpc(
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, "Session");
       const normalizedObserverId = requiredId(observerId, "Session observer");
-      await deps.observer.observe(
+      await deps.observations.observe(
         normalizedSessionId,
         normalizedObserverId,
         event.sender as RuntimeHostSessionObserverTarget,
@@ -120,7 +129,9 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
   ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
-    await deps.observer.unobserve(requiredId(observerId, "Session observer"));
+    await deps.observations.unobserve(
+      requiredId(observerId, "Session observer"),
+    );
   });
   ipcMain.handle("sessions:readMessages", async (_event, sessionId: string) => {
     const messages = await deps.observer.readMessages(sessionId);
@@ -132,14 +143,16 @@ export function registerRuntimeHostSessionExecutionIpc(
     }
     return messages;
   });
-  ipcMain.handle("sessions:listTurns", async (_event, sessionId: string) =>
+  handleReconnectableRead(ipcMain, "sessions:listTurns", async (_event, sessionId: string) =>
     deriveTurnRecords(await deps.observer.readMessages(sessionId)),
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     "sessions:readExecutionBoundary",
     (_event, sessionId: string) => deps.client.readExecutionBoundary(sessionId),
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     "sessions:listActiveInteractions",
     async (_event, sessionId: string) => [
       ...(deps.e2eInteractions?.list(sessionId) ?? []),

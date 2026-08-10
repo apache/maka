@@ -11,6 +11,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { SessionTerminalHydration } from './session-terminal-hydration';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -58,9 +59,7 @@ export function SessionTerminalPanel(props: {
 
     lastSizeRef.current = '';
     let disposed = false;
-    let attached = false;
-    let lastSequence = 0;
-    const pending: Array<{ sequence: number; data: string }> = [];
+    const hydration = new SessionTerminalHydration();
     const terminal = new Terminal({
       allowTransparency: true,
       cursorBlink: true,
@@ -80,13 +79,8 @@ export function SessionTerminalPanel(props: {
     fitRef.current = fit;
 
     const writeEvent = (event: { sequence: number; data: string }) => {
-      if (event.sequence <= lastSequence) return;
-      if (!attached) {
-        pending.push(event);
-        return;
-      }
-      lastSequence = event.sequence;
-      terminal.write(event.data);
+      const live = hydration.accept(event);
+      if (live) terminal.write(live.data);
     };
     const unsubscribe = window.maka.shellRuns.subscribePtyData((event) => {
       if (
@@ -97,6 +91,39 @@ export function SessionTerminalPanel(props: {
         return;
       }
       writeEvent(event);
+    });
+    const hydrate = (epoch: number) => {
+      void window.maka.shellRuns
+        .attach({ sessionId: props.sessionId, ref: props.terminalRef! })
+        .then((snapshot) => {
+          if (disposed || !hydration.isCurrent(epoch)) return;
+          if (!snapshot) {
+            setError(copy.loadFailed);
+            return;
+          }
+          const committed = hydration.commit(epoch, snapshot);
+          if (!committed) return;
+          terminal.reset();
+          if (committed.snapshot.buffer) terminal.write(committed.snapshot.buffer);
+          for (const event of committed.replay) terminal.write(event.data);
+          setError(null);
+          requestAnimationFrame(() => {
+            resize();
+            if (activeRef.current) terminal.focus();
+          });
+        })
+        .catch((nextError) => {
+          if (disposed || !hydration.isCurrent(epoch)) return;
+          setError(
+            locale === 'zh'
+              ? generalizedErrorMessageChinese(nextError, copy.loadFailed)
+              : generalizedErrorMessage(nextError, copy.loadFailed),
+          );
+        });
+    };
+    const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
+      if (disposed || event.sessionId !== props.sessionId) return;
+      hydrate(hydration.begin());
     });
     const inputSubscription = terminal.onData((input) => {
       if (!input || disposed) return;
@@ -135,41 +162,13 @@ export function SessionTerminalPanel(props: {
     observer.observe(host);
 
     setError(null);
-    void window.maka.shellRuns
-      .attach({ sessionId: props.sessionId, ref: props.terminalRef })
-      .then((snapshot) => {
-        if (disposed) return;
-        if (!snapshot) {
-          setError(copy.loadFailed);
-          return;
-        }
-        terminal.reset();
-        if (snapshot.buffer) terminal.write(snapshot.buffer);
-        lastSequence = snapshot.sequence;
-        attached = true;
-        pending
-          .filter((event) => event.sequence > lastSequence)
-          .sort((left, right) => left.sequence - right.sequence)
-          .forEach(writeEvent);
-        pending.length = 0;
-        requestAnimationFrame(() => {
-          resize();
-          if (activeRef.current) terminal.focus();
-        });
-      })
-      .catch((nextError) => {
-        if (disposed) return;
-        setError(
-          locale === 'zh'
-            ? generalizedErrorMessageChinese(nextError, copy.loadFailed)
-            : generalizedErrorMessage(nextError, copy.loadFailed),
-        );
-      });
+    hydrate(hydration.begin());
 
     return () => {
       disposed = true;
       observer.disconnect();
       unsubscribe();
+      unsubscribeResync();
       inputSubscription.dispose();
       void window.maka.shellRuns
         .detach({ sessionId: props.sessionId, ref: props.terminalRef! })

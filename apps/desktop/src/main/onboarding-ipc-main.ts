@@ -1,9 +1,13 @@
 import { ipcMain } from 'electron';
 import type { createOnboardingService } from './onboarding-service.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 
 export interface OnboardingIpcDeps {
   onboardingService: ReturnType<typeof createOnboardingService>;
-  ipcMain?: Pick<typeof ipcMain, 'handle'>;
+  ipcMain?: ReconnectableReadIpcMain;
 }
 
 export function registerOnboardingIpc(deps: OnboardingIpcDeps): void {
@@ -12,7 +16,9 @@ export function registerOnboardingIpc(deps: OnboardingIpcDeps): void {
   // these on app load and whenever `sessions:changed` /
   // `connections:changed` / settings change events fire. No push from
   // main.
-  target.handle('onboarding:getSnapshot', async () => deps.onboardingService.getSnapshot());
+  handleReconnectableRead(target, 'onboarding:getSnapshot', async () =>
+    deps.onboardingService.getSnapshot(),
+  );
   target.handle('onboarding:setMilestone', async (_event, id: unknown, status: unknown) => {
     // Service throws INVALID_MILESTONE_ID / INVALID_MILESTONE_STATUS
     // for bad inputs; let the error propagate so the renderer sees

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
+import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 
 export type MakaCliCommand =
   | { kind: 'tui'; resumeSessionId?: string; resumeCwd?: string }
@@ -11,6 +12,7 @@ export type MakaCliCommand =
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'inspect'; args: string[] }
+  | RuntimeHostCliCommand
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
   | { kind: 'error'; message: string; exitCode: number };
@@ -43,6 +45,7 @@ export function parseMakaCliArgs(argv: string[], version: string): MakaCliComman
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
   if (first === 'inspect') return { kind: 'inspect', args: argv.slice(1) };
+  if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
   return {
     kind: 'error',
     message: `Unexpected argument: ${first ?? ''}`,
@@ -96,12 +99,41 @@ function helpText(): string {
     '  maka -p ...       Alias for maka run',
     '  maka eval ...     Run evaluation and autonomous task commands',
     '  maka inspect ...  Inspect Session, AgentRun, or TaskRun evidence',
+    '  maka runtime-host serve [options]  Run a Runtime Host service',
+    '  maka runtime-host access issue --principal <id> --grant <operation>',
+    '  maka runtime-host access issue --kind capability-provider --principal <id>',
+    '  maka runtime-host access revoke --credential <id>',
+    '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
     '',
     'Options:',
     '  -h, --help        Show help',
     '  -v, --version     Show version',
     '  --resume <session-id>  Reopen a previous session in the TUI',
     '  --resume <id> --cwd <path>  Reopen a session after its directory moved',
+    '',
+    'Runtime Host service options:',
+    '  --root <path>                 Select the canonical data root',
+    '  --websocket-port <port>       Enable an authenticated WebSocket listener',
+    '  --websocket-host <host>       Bind host (default: 127.0.0.1)',
+    '  --websocket-path <path>       Upgrade path (default: /runtime-host)',
+    '  --tls-certificate <path>      TLS certificate for WSS',
+    '  --tls-private-key <path>      TLS private key for WSS',
+    '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
+    '',
+    'Runtime Host access issue options:',
+    '  --root <path>                 Select the canonical data root',
+    '  --kind <kind>                 remote-owner or capability-provider',
+    '  --principal <id>              Name the authenticated Client principal',
+    '  --grant <operation>           Grant one exact operation (repeatable)',
+    '  --publish-client-capabilities Allow Client Capability publication',
+    '  --allow-host-paths            Allow operations that submit Host paths',
+    '',
+    'Runtime Host capability provider options:',
+    '  --url <ws-url>                Connect to an authenticated Runtime Host WebSocket',
+    '  --mcp-config <path>           Publish tools from an MCP configuration file',
+    '  --expected-root <root-id>     Pin the canonical Runtime Host root identity',
+    '  --credential-env <name>       Read the access credential from this environment variable',
+    '  --client-identity <path>      Persist the provider Client instance identity here',
   ].join('\n');
 }
 
@@ -129,6 +161,43 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
     case 'inspect': {
       const { runMakaInspectCli } = await import('./inspect-command.js');
       return runMakaInspectCli(command.args);
+    }
+    case 'runtime-host-serve': {
+      const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+      return runRuntimeHostServiceCli({
+        rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        ...(command.websocket ? { websocket: command.websocket } : {}),
+      });
+    }
+    case 'runtime-host-access-issue': {
+      const { runRuntimeHostAccessIssueCli } = await import('./runtime-host-access-command.js');
+      return runRuntimeHostAccessIssueCli({
+        rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        principalKind: command.principalKind,
+        principalId: command.principalId,
+        operationGrants: command.operationGrants,
+        canPublishClientCapabilities: command.canPublishClientCapabilities,
+        canUseHostPaths: command.canUseHostPaths,
+      });
+    }
+    case 'runtime-host-access-revoke': {
+      const { runRuntimeHostAccessRevokeCli } = await import('./runtime-host-access-command.js');
+      return runRuntimeHostAccessRevokeCli({
+        rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        credentialId: command.credentialId,
+      });
+    }
+    case 'runtime-host-capability-provider-serve': {
+      const { runRuntimeHostCapabilityProviderCli } = await import(
+        './runtime-host-capability-provider-command.js'
+      );
+      return runRuntimeHostCapabilityProviderCli({
+        url: command.url,
+        mcpConfigPath: command.mcpConfigPath,
+        expectedRootId: command.expectedRootId,
+        ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
+        ...(command.clientIdentityPath ? { clientIdentityPath: command.clientIdentityPath } : {}),
+      });
     }
     case 'help':
       process.stdout.write(`${command.text}\n`);

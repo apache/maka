@@ -2,6 +2,7 @@ import {
   AUTOMATION_CRON_EXPRESSION_LIMIT,
   AUTOMATION_CRON_EXPRESSION_MAX_BYTES as CORE_AUTOMATION_CRON_EXPRESSION_MAX_BYTES,
   AUTOMATION_LAST_ERROR_LIMIT,
+  AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS,
   AUTOMATION_NAME_LIMIT,
   AUTOMATION_NAME_MAX_BYTES as CORE_AUTOMATION_NAME_MAX_BYTES,
   AUTOMATION_PROMPT_LIMIT,
@@ -10,6 +11,7 @@ import {
   type AutomationKind,
   type AutomationSchedule,
   type AutomationStatus,
+  type AutomationWaitingState,
 } from '@maka/core/automation';
 import {
   requireCount,
@@ -29,6 +31,7 @@ export const AUTOMATION_NAME_MAX_BYTES = CORE_AUTOMATION_NAME_MAX_BYTES;
 export const AUTOMATION_PROMPT_MAX_BYTES = CORE_AUTOMATION_PROMPT_MAX_BYTES;
 export const AUTOMATION_CRON_EXPRESSION_MAX_BYTES = CORE_AUTOMATION_CRON_EXPRESSION_MAX_BYTES;
 export const AUTOMATION_MAX_FIRES = 10_000;
+export const AUTOMATION_MAX_CAPABILITY_REQUIREMENTS = AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -67,6 +70,7 @@ export interface AutomationProjection {
   readonly durable: boolean;
   readonly deferredFireCount: number;
   readonly firePending: boolean;
+  readonly waiting: AutomationWaitingState | null;
 }
 
 export type AutomationQueryInput =
@@ -109,6 +113,7 @@ export type AutomationMutateInput =
       readonly schedule: AutomationSchedule;
       readonly maxFires?: number;
       readonly durable?: boolean;
+      readonly requiredCapabilityGroups?: readonly string[];
     }
   | {
       readonly kind: 'delete' | 'pause' | 'resume';
@@ -255,7 +260,7 @@ export function decodeAutomationMutateInput(value: unknown): AutomationMutateInp
       record,
       'Automation create input',
       ['kind', 'sessionId', 'automationKind', 'name', 'prompt', 'schedule'],
-      ['maxFires', 'durable'],
+      ['maxFires', 'durable', 'requiredCapabilityGroups'],
     );
     if (input.automationKind !== 'heartbeat' && input.automationKind !== 'cron') {
       throw invalidProtocolFrame('Invalid Automation kind');
@@ -268,6 +273,7 @@ export function decodeAutomationMutateInput(value: unknown): AutomationMutateInp
     if (!(input.durable === undefined || typeof input.durable === 'boolean')) {
       throw invalidProtocolFrame('Invalid durable flag');
     }
+    const requiredCapabilityGroups = decodeRequiredCapabilityGroups(input.requiredCapabilityGroups);
     return {
       kind: 'create',
       sessionId: requireEntityId(input.sessionId, 'sessionId'),
@@ -282,6 +288,7 @@ export function decodeAutomationMutateInput(value: unknown): AutomationMutateInp
       schedule: decodeAutomationSchedule(input.schedule),
       ...(maxFires === undefined ? {} : { maxFires }),
       ...(input.durable === undefined ? {} : { durable: input.durable }),
+      ...(requiredCapabilityGroups === undefined ? {} : { requiredCapabilityGroups }),
     };
   }
   if (record.kind === 'delete' || record.kind === 'pause' || record.kind === 'resume') {
@@ -297,6 +304,18 @@ export function decodeAutomationMutateInput(value: unknown): AutomationMutateInp
     };
   }
   throw invalidProtocolFrame('Invalid Automation mutation kind');
+}
+
+function decodeRequiredCapabilityGroups(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > AUTOMATION_MAX_CAPABILITY_REQUIREMENTS) {
+    throw invalidProtocolFrame('Invalid Automation required capability groups');
+  }
+  const groups = value.map((group) => requireEntityId(group, 'capability group id'));
+  if (new Set(groups).size !== groups.length) {
+    throw invalidProtocolFrame('Duplicate Automation required capability group');
+  }
+  return groups;
 }
 
 export function decodeAutomationMutateResult(value: unknown): AutomationMutateResult {
@@ -347,6 +366,7 @@ export function decodeAutomationProjection(value: unknown): AutomationProjection
     'durable',
     'deferredFireCount',
     'firePending',
+    'waiting',
   ]);
   if (record.kind !== 'heartbeat' && record.kind !== 'cron') {
     throw invalidProtocolFrame('Invalid Automation projection kind');
@@ -386,6 +406,27 @@ export function decodeAutomationProjection(value: unknown): AutomationProjection
     durable: record.durable,
     deferredFireCount: requireCount(record.deferredFireCount, 'deferredFireCount'),
     firePending: record.firePending,
+    waiting: record.waiting === null ? null : decodeAutomationWaitingState(record.waiting),
+  };
+}
+
+function decodeAutomationWaitingState(value: unknown): AutomationWaitingState {
+  const record = requireExactRecord(value, 'Automation waiting state', [
+    'reason',
+    'since',
+    'message',
+  ]);
+  if (record.reason !== 'client_capability_provider_unavailable') {
+    throw invalidProtocolFrame('Invalid Automation waiting reason');
+  }
+  return {
+    reason: record.reason,
+    since: requireCount(record.since, 'Automation waiting since'),
+    message: requireAutomationText(
+      record.message,
+      'Automation waiting message',
+      AUTOMATION_LAST_ERROR_LIMIT,
+    ),
   };
 }
 

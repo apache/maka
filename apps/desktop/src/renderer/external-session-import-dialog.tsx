@@ -4,7 +4,9 @@ import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Item } from '@astryxdesign/core/Item';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import {
@@ -226,24 +228,24 @@ export function ExternalSessionImportDialog(props: {
                 {copy.description}
               </Text>
 
-              {adapterIds.length > 0 && (
+              {adapterIds.length > 0 && adapterId !== null && (
                 <div className="maka-external-session-import-source">
-                  <Text type="label" size="sm">
-                    {copy.sourceLabel}
-                  </Text>
-                  <div role="group" aria-label={copy.sourceLabel} className="maka-external-session-import-source-list">
+                  <SegmentedControl
+                    className="maka-external-session-import-source-list"
+                    label={copy.sourceLabel}
+                    value={adapterId}
+                    layout="fill"
+                    size="sm"
+                    onChange={(value) => setAdapterId(value)}
+                  >
                     {adapterIds.map((id) => (
-                      <button
+                      <SegmentedControlItem
                         key={id}
-                        type="button"
-                        className="maka-external-session-import-source-button"
-                        aria-pressed={id === adapterId}
-                        onClick={() => setAdapterId(id)}
-                      >
-                        {sourceLabel(id, copy.codex)}
-                      </button>
+                        value={id}
+                        label={sourceLabel(id, copy.codex)}
+                      />
                     ))}
-                  </div>
+                  </SegmentedControl>
                 </div>
               )}
 
@@ -275,7 +277,6 @@ export function ExternalSessionImportDialog(props: {
               )}
 
               {noSource && (
-                /* Section-local absence (DESIGN.md §10 tier 1): title only. */
                 <EmptyState isCompact title={copy.unavailableTitle} />
               )}
 
@@ -314,45 +315,35 @@ export function ExternalSessionImportDialog(props: {
               )}
 
               {catalogEmpty && (
-                /* Section-local absence (DESIGN.md §10 tier 1): title only. */
                 <EmptyState isCompact title={copy.emptyTitle} />
               )}
 
               {catalog.sessions.length > 0 && (
                 <div
                   className="maka-external-session-import-list"
-                  role="list"
+                  role="group"
                   aria-label={copy.title}
                   aria-busy={loadingMore || undefined}
                 >
                   {catalog.sessions.map((session) => {
                     const timestamp = session.updatedAt ?? session.createdAt;
+                    const meta = [
+                      session.cwd,
+                      timestamp !== undefined ? dateFormatter.format(timestamp) : null,
+                      session.archived ? copy.archived : null,
+                    ].filter(Boolean).join(' · ');
                     return (
-                      <button
+                      <Item
                         key={session.id}
-                        type="button"
-                        aria-pressed={selectedId === session.id}
                         className="maka-external-session-import-row"
+                        label={session.name}
+                        description={meta}
+                        isSelected={selectedId === session.id}
                         onClick={() => {
                           setSelectedId(session.id);
                           setImportError(null);
                         }}
-                      >
-                        <span className="maka-external-session-import-row-heading">
-                          <span className="maka-external-session-import-row-name">{session.name}</span>
-                          {session.archived && (
-                            <span className="maka-external-session-import-row-badge">{copy.archived}</span>
-                          )}
-                        </span>
-                        <span className="maka-external-session-import-row-meta">
-                          <span className="maka-external-session-import-row-cwd">{session.cwd}</span>
-                          {timestamp !== undefined && (
-                            <time dateTime={new Date(timestamp).toISOString()}>
-                              {dateFormatter.format(timestamp)}
-                            </time>
-                          )}
-                        </span>
-                      </button>
+                      />
                     );
                   })}
                 </div>

@@ -3,12 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile, realpath, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import type { ProjectLocation, ProjectRecord } from '@maka/core';
+import type { ProjectLocation, ProjectRecord, SessionHeader } from '@maka/core';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
+import { normalizeSessionHeader } from './session-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core';
 
@@ -26,33 +27,44 @@ export class ProjectPathMismatchError extends Error {
   }
 }
 
-export function isProjectPathMismatchError(error: unknown): error is ProjectPathMismatchError {
-  return error instanceof ProjectPathMismatchError;
-}
-
-/**
- * The catalog changed underneath a relink while its `beforeCommit` callback was
- * still reassigning sessions, so the merge the caller was told to prepare is no
- * longer the merge that would be committed. Relink is already retryable — its
- * callback throwing leaves the catalog untouched — so failing here hands the
- * decision back rather than committing a half-true one.
- */
-export class ProjectRelinkContentionError extends Error {
-  readonly name = 'ProjectRelinkContentionError';
-  readonly code = 'project_relink_contention';
+export class ProjectNotFoundError extends Error {
+  readonly name = 'ProjectNotFoundError';
+  readonly code = 'project_not_found';
 
   constructor(readonly projectId: string) {
-    super(`Project changed while relinking, retry: ${projectId}`);
+    super(`No such project: ${projectId}`);
   }
 }
 
-export interface ProjectRelinkContext {
-  projectId: string;
-  projectAliases: string[];
-  destinationPath: string;
-  previousLocations: ProjectLocation[];
-  conflictingProjectId?: string;
-  conflictingProjectAliases?: string[];
+export class ProjectArchivedError extends Error {
+  readonly name = 'ProjectArchivedError';
+  readonly code = 'project_archived';
+
+  constructor(readonly projectId: string) {
+    super(`Project is archived: ${projectId}`);
+  }
+}
+
+export class ProjectUnavailableError extends Error {
+  readonly name = 'ProjectUnavailableError';
+  readonly code = 'project_unavailable';
+
+  constructor(readonly projectId: string) {
+    super(`Project is unavailable: ${projectId}`);
+  }
+}
+
+export class ProjectPathConflictError extends Error {
+  readonly name = 'ProjectPathConflictError';
+  readonly code = 'project_path_conflict';
+
+  constructor(readonly conflictingProjectId: string) {
+    super(`Project path already belongs to project: ${conflictingProjectId}`);
+  }
+}
+
+export function isProjectPathMismatchError(error: unknown): error is ProjectPathMismatchError {
+  return error instanceof ProjectPathMismatchError;
 }
 
 export interface ProjectCatalog {
@@ -67,11 +79,11 @@ export interface ProjectCatalog {
   resolveHistoricalPath(path: string, usedAt?: number): Promise<ProjectRecord>;
   select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
-  relink(
+  relink(projectId: string, path: string): Promise<ProjectRecord>;
+  relinkWithSessions(
     projectId: string,
     path: string,
-    beforeCommit?: (context: ProjectRelinkContext) => Promise<void>,
-  ): Promise<ProjectRecord>;
+  ): Promise<{ project: ProjectRecord; updatedSessionIds: readonly string[] }>;
   rename(projectId: string, name: string): Promise<ProjectRecord>;
   archive(projectId: string): Promise<ProjectRecord>;
   restore(projectId: string): Promise<ProjectRecord>;
@@ -105,6 +117,7 @@ export function createProjectCatalog(
     createId?: () => string;
     /** Report a `projects.json` that could not be imported; the catalog still opens. */
     onLegacyImportFailure?: (error: unknown) => void;
+    relinkFailpoint?: (stage: 'after_session_updates') => void;
   } = {},
 ): ProjectCatalog {
   return new SqliteProjectCatalog(
@@ -113,6 +126,7 @@ export function createProjectCatalog(
     deps.now ?? Date.now,
     deps.createId ?? randomUUID,
     deps.onLegacyImportFailure ?? (() => {}),
+    deps.relinkFailpoint,
   );
 }
 
@@ -137,6 +151,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     private readonly now: () => number,
     private readonly createId: () => string,
     private readonly onLegacyImportFailure: (error: unknown) => void,
+    private readonly relinkFailpoint?: (stage: 'after_session_updates') => void,
   ) {}
 
   close(): void {
@@ -231,7 +246,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
       // Probing the filesystem cannot happen inside the write transaction, so
       // availability is decided first and the choice is re-validated under it.
       const existing = findProjectById((await this.read()).projects, projectId);
-      if (!existing) throw new Error(`No such project: ${projectId}`);
+      if (!existing) throw new ProjectNotFoundError(projectId);
       const availablePaths = new Set(
         (
           await Promise.all(
@@ -243,14 +258,14 @@ class SqliteProjectCatalog implements ProjectCatalog {
       );
       [selected, selectedPath] = await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         if (project.archivedAt !== undefined) {
-          throw new Error(`Project is archived: ${projectId}`);
+          throw new ProjectArchivedError(projectId);
         }
         const location = project.locations
           .filter((item) => availablePaths.has(item.path))
           .sort((a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path))[0];
-        if (!location) throw new Error(`Project is unavailable: ${projectId}`);
+        if (!location) throw new ProjectUnavailableError(projectId);
         const timestamp = this.now();
         location.lastUsedAt = timestamp;
         project.lastUsedAt = timestamp;
@@ -270,7 +285,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
       : undefined;
     const touched = await this.mutate((file) => {
       const project = findProjectById(file.projects, projectId);
-      if (!project) throw new Error(`No such project: ${projectId}`);
+      if (!project) throw new ProjectNotFoundError(projectId);
       const location = resolvedPath
         ? project.locations.find((item) => item.path === resolvedPath)
         : [...project.locations].sort(
@@ -287,78 +302,59 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(touched);
   }
 
-  async relink(
-    projectId: string,
-    path: string,
-    beforeCommit?: (context: ProjectRelinkContext) => Promise<void>,
-  ): Promise<ProjectRecord> {
+  async relink(projectId: string, path: string): Promise<ProjectRecord> {
     const resolved = await resolveProjectLocation({ path });
     const timestamp = this.now();
-    let relinked: PersistedProject | undefined;
     const locationPath =
       resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
-    await this.withQueue(async () => {
-      // `beforeCommit` reassigns the sessions of the project being merged away,
-      // so it cannot run inside the write transaction. It is shown the state it
-      // will act on, and the commit below refuses to proceed if that state no
-      // longer holds: re-deriving instead would leave the catalog consistent
-      // while the sessions the callback already moved point at the wrong owner.
-      const preview = await this.read();
-      const previewProject = findProjectById(preview.projects, projectId);
-      if (!previewProject) throw new Error(`No such project: ${projectId}`);
-      const previewConflict = preview.projects.find(
-        (item) => item.id !== previewProject.id && item.identity === resolved.identity,
+    const relinked = await this.mutate((file) => {
+      const project = findProjectById(file.projects, projectId);
+      if (!project) throw new ProjectNotFoundError(projectId);
+      const conflict = file.projects.find(
+        (item) => item.id !== project.id && item.identity === resolved.identity,
       );
-      if (previewConflict && !beforeCommit) {
-        throw new Error(`Project path already belongs to project: ${previewConflict.id}`);
-      }
-      await beforeCommit?.({
-        projectId: previewProject.id,
-        projectAliases: [...(previewProject.aliases ?? [])],
-        destinationPath: locationPath,
-        previousLocations: previewProject.locations.map((location) => ({ ...location })),
-        ...(previewConflict
-          ? {
-              conflictingProjectId: previewConflict.id,
-              conflictingProjectAliases: [...(previewConflict.aliases ?? [])],
-            }
-          : {}),
-      });
-      relinked = await this.mutate((file) => {
+      if (conflict) throw new ProjectPathConflictError(conflict.id);
+      return applyRelink(file, project, undefined, resolved, locationPath, timestamp);
+    });
+    return this.present(relinked);
+  }
+
+  async relinkWithSessions(
+    projectId: string,
+    path: string,
+  ): Promise<{ project: ProjectRecord; updatedSessionIds: readonly string[] }> {
+    const resolved = await resolveProjectLocation({ path });
+    const timestamp = this.now();
+    const locationPath =
+      resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
+    let committed:
+      | { readonly project: PersistedProject; readonly updatedSessionIds: readonly string[] }
+      | undefined;
+    await this.withQueue(async () => {
+      await this.importLegacyCatalogOnce();
+      committed = this.lease.transaction('write', () => {
+        const file = this.selectCatalog();
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         const conflict = file.projects.find(
           (item) => item.id !== project.id && item.identity === resolved.identity,
         );
-        if (conflict && !beforeCommit) {
-          throw new Error(`Project path already belongs to project: ${conflict.id}`);
-        }
-        if (conflict?.id !== previewConflict?.id) {
-          throw new ProjectRelinkContentionError(projectId);
-        }
-        if (conflict) {
-          project.aliases = [
-            ...new Set([...(project.aliases ?? []), conflict.id, ...(conflict.aliases ?? [])]),
-          ];
-          file.projects = file.projects.filter((item) => item.id !== conflict.id);
-        }
-        project.identity = resolved.identity;
-        project.locations = [
-          {
-            path: locationPath,
-            isWorktree: resolved.git?.isWorktree ?? false,
-            lastUsedAt: timestamp,
-          },
-          ...(conflict?.locations
-            .filter((location) => location.path !== locationPath)
-            .map((location) => ({ ...location })) ?? []),
-        ];
-        project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
-        return project;
+        const context = relinkContext(project, conflict, locationPath);
+        const updatedSessionIds = reassignProjectSessions(this.lease, context, timestamp);
+        this.relinkFailpoint?.('after_session_updates');
+        const relinked = applyRelink(file, project, conflict, resolved, locationPath, timestamp);
+        this.replaceCatalog(normalizeProjectCatalogFile(file));
+        return {
+          project: relinked,
+          updatedSessionIds,
+        };
       });
     });
-    if (!relinked) throw new Error(`Failed to relink project: ${projectId}`);
-    return this.present(relinked);
+    if (!committed) throw new Error(`Failed to relink project and Sessions: ${projectId}`);
+    return {
+      project: await this.present(committed.project),
+      updatedSessionIds: committed.updatedSessionIds,
+    };
   }
 
   async rename(projectId: string, name: string): Promise<ProjectRecord> {
@@ -367,7 +363,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(
       await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         project.name = trimmed;
         return project;
       }),
@@ -378,7 +374,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(
       await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         project.archivedAt = this.now();
         return project;
       }),
@@ -389,7 +385,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return this.present(
       await this.mutate((file) => {
         const project = findProjectById(file.projects, projectId);
-        if (!project) throw new Error(`No such project: ${projectId}`);
+        if (!project) throw new ProjectNotFoundError(projectId);
         delete project.archivedAt;
         return project;
       }),
@@ -666,6 +662,119 @@ function findProjectById(
   return projects.find(
     (project) => project.id === projectId || project.aliases?.includes(projectId),
   );
+}
+
+interface ProjectSessionReassignment {
+  readonly projectId: string;
+  readonly projectAliases: readonly string[];
+  readonly destinationPath: string;
+  readonly previousLocations: readonly ProjectLocation[];
+  readonly conflictingProjectId?: string;
+  readonly conflictingProjectAliases?: readonly string[];
+}
+
+function relinkContext(
+  project: PersistedProject,
+  conflict: PersistedProject | undefined,
+  destinationPath: string,
+): ProjectSessionReassignment {
+  return {
+    projectId: project.id,
+    projectAliases: [...(project.aliases ?? [])],
+    destinationPath,
+    previousLocations: project.locations.map((location) => ({ ...location })),
+    ...(conflict
+      ? {
+          conflictingProjectId: conflict.id,
+          conflictingProjectAliases: [...(conflict.aliases ?? [])],
+        }
+      : {}),
+  };
+}
+
+function applyRelink(
+  file: ProjectCatalogFile,
+  project: PersistedProject,
+  conflict: PersistedProject | undefined,
+  resolved: ResolvedProjectLocation,
+  locationPath: string,
+  timestamp: number,
+): PersistedProject {
+  if (conflict) {
+    project.aliases = [
+      ...new Set([...(project.aliases ?? []), conflict.id, ...(conflict.aliases ?? [])]),
+    ];
+    file.projects = file.projects.filter((item) => item.id !== conflict.id);
+  }
+  project.identity = resolved.identity;
+  project.locations = [
+    {
+      path: locationPath,
+      isWorktree: resolved.git?.isWorktree ?? false,
+      lastUsedAt: timestamp,
+    },
+    ...(conflict?.locations
+      .filter((location) => location.path !== locationPath)
+      .map((location) => ({ ...location })) ?? []),
+  ];
+  project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
+  return project;
+}
+
+function reassignProjectSessions(
+  lease: OperationalStateDatabaseLease,
+  context: ProjectSessionReassignment,
+  committedAt: number,
+): readonly string[] {
+  const survivingIds = new Set([context.projectId, ...context.projectAliases]);
+  const conflictingIds = new Set([
+    ...(context.conflictingProjectId ? [context.conflictingProjectId] : []),
+    ...(context.conflictingProjectAliases ?? []),
+  ]);
+  const rows = lease.database
+    .prepare(
+      `SELECT session_id, payload_json, metadata_version
+       FROM session_metadata
+       ORDER BY session_id`,
+    )
+    .all() as Array<{
+    session_id: string;
+    payload_json: string;
+    metadata_version: number;
+  }>;
+  const update = lease.database.prepare(
+    `UPDATE session_metadata
+     SET payload_json = ?, metadata_version = ?, committed_at = ?
+     WHERE session_id = ? AND metadata_version = ?`,
+  );
+  const updatedSessionIds: string[] = [];
+  for (const row of rows) {
+    const header = normalizeSessionHeader(
+      JSON.parse(row.payload_json) as SessionHeader,
+      row.session_id,
+    );
+    let patch: Pick<SessionHeader, 'cwd' | 'projectId'> | undefined;
+    if (header.projectId && survivingIds.has(header.projectId)) {
+      patch = { cwd: context.destinationPath, projectId: context.projectId };
+    } else if (header.projectId && conflictingIds.has(header.projectId)) {
+      patch = { cwd: header.cwd, projectId: context.projectId };
+    }
+    if (!patch) continue;
+    const next = normalizeSessionHeader({ ...header, ...patch }, row.session_id);
+    const nextVersion = row.metadata_version + 1;
+    const result = update.run(
+      JSON.stringify(next),
+      nextVersion,
+      committedAt,
+      row.session_id,
+      row.metadata_version,
+    );
+    if (result.changes !== 1) {
+      throw new Error(`Session metadata compare-and-set failed: ${row.session_id}`);
+    }
+    updatedSessionIds.push(row.session_id);
+  }
+  return updatedSessionIds;
 }
 
 function normalizeProjectLocation(value: unknown): PersistedProjectLocation {

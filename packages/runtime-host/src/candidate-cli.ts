@@ -1,9 +1,9 @@
-import type { RuntimeHostCandidateOptions } from './server/candidate.js';
+import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
 import { isAbsolute } from 'node:path';
 
-export function parseRuntimeHostCandidateArguments(
+export function parseInteractiveRuntimeHostCandidateArguments(
   args: readonly string[],
-): RuntimeHostCandidateOptions {
+): InteractiveRuntimeHostCandidateOptions {
   const allowedKeys = new Set([
     'root',
     'expected-root-id',

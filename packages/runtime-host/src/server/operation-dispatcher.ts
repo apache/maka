@@ -12,12 +12,13 @@ import {
   type ResponseFrameFor,
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
+import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
 
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
   surface: ClientSurface;
-  principal: 'local_os_user';
+  principal: string;
   acquireResidency(): OperationResidency;
 }
 
@@ -34,7 +35,10 @@ export type OperationHandlerMap = {
   [K in OperationKey]: OperationHandler<K>;
 };
 
-export type DomainOperationKey = Exclude<OperationKey, keyof typeof HOST_BOOTSTRAP_OPERATION_SPECS>;
+export type HostCoreOperationKey =
+  | keyof typeof HOST_BOOTSTRAP_OPERATION_SPECS
+  | keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS;
+export type DomainOperationKey = Exclude<OperationKey, HostCoreOperationKey>;
 export type TurnOperationKey = Extract<
   OperationKey,
   | 'turn.start'
@@ -98,6 +102,7 @@ export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resourc
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
+export type ProjectCatalogOperationKey = Extract<OperationKey, `project.catalog.${string}`>;
 export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
 export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${string}`>;
 export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`>;
@@ -156,11 +161,19 @@ export type ClientCapabilityOperationHandlerMap = Pick<
 >;
 export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
 export type PlanOperationHandlerMap = Pick<OperationHandlerMap, PlanOperationKey>;
+export type ProjectCatalogOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ProjectCatalogOperationKey
+>;
 export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
+export type AccessAuthorityOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS
+>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]
@@ -191,7 +204,12 @@ export function composeOperationHandlers(
 export function createUnavailableDomainOperationHandlers(): DomainOperationHandlerMap {
   const handlers: Partial<DomainOperationHandlerMap> = {};
   for (const operation of Object.keys(HOST_OPERATION_SPECS) as OperationKey[]) {
-    if (Object.hasOwn(HOST_BOOTSTRAP_OPERATION_SPECS, operation)) continue;
+    if (
+      Object.hasOwn(HOST_BOOTSTRAP_OPERATION_SPECS, operation) ||
+      Object.hasOwn(ACCESS_AUTHORITY_OPERATION_SPECS, operation)
+    ) {
+      continue;
+    }
     const errors = HOST_OPERATION_SPECS[operation].errors as readonly HostOperationErrorCode[];
     if (!errors.includes('operation_unavailable')) {
       throw new Error(`${operation} does not declare operation_unavailable`);
@@ -207,6 +225,25 @@ export function createUnavailableDomainOperationHandlers(): DomainOperationHandl
     });
   }
   return handlers as DomainOperationHandlerMap;
+}
+
+export function createUnavailableAccessAuthorityOperationHandlers(): AccessAuthorityOperationHandlerMap {
+  return {
+    'access.credential.issue': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+  };
 }
 
 export async function dispatchOperation(
@@ -228,7 +265,7 @@ export function operationFailureResponse(
 ): ResponseFrame {
   const declaredErrors = HOST_OPERATION_SPECS[request.operation]
     .errors as readonly HostOperationErrorCode[];
-  if (!declaredErrors.includes(code)) {
+  if (code !== 'unauthorized' && !declaredErrors.includes(code)) {
     throw new Error(`${request.operation} does not declare ${code}`);
   }
   return {

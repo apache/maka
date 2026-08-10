@@ -15,7 +15,9 @@ export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
 
-export type ProviderRuntimeAdapter =
+export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
+
+type ProviderRuntimeAdapterDefinition =
   | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
   | { kind: 'claude-subscription' }
   | { kind: 'openai'; apiProtocol?: 'openai-chat' | 'openai-responses' }
@@ -33,6 +35,11 @@ export type ProviderRuntimeAdapter =
       replayAssistantReasoningDetails?: true;
     }
   | { kind: 'unavailable' };
+
+export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
+  /** Provider wire contract for ApplyPatch. Model support is resolved separately. */
+  readonly applyPatchProtocol?: ApplyPatchProtocol;
+};
 
 export type ProviderModelDiscovery =
   | {
@@ -784,7 +791,7 @@ const providerRegistry = {
     fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-5'],
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai' },
+    runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -828,6 +835,7 @@ const providerRegistry = {
       kind: 'openai-compatible',
       name: 'provider',
       supportsOpenAiResponses: true,
+      applyPatchProtocol: 'codex-v4a-freeform',
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',

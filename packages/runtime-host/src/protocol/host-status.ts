@@ -19,6 +19,8 @@ export const HOST_DIAGNOSTIC_LOG_MAX_ENTRY_BYTES = 10 * 1024;
 
 export interface HostStatusResult {
   hostEpoch: string;
+  compositionId: string;
+  compositionRevision: string;
   state: HostLifecycleState;
   connections: number;
   activeOperations: number;
@@ -26,6 +28,8 @@ export interface HostStatusResult {
 }
 
 export interface HostDiagnosticsResult extends HostStatusResult {
+  compositionModules: readonly string[];
+  residencies: readonly { label: string; count: number }[];
   protocolVersion: number;
   compatibilityEpoch: number;
   pid: number;
@@ -62,6 +66,8 @@ function decodeEmptyHostInput(value: unknown, label: string): HostStatusInput {
 function decodeHostStatusResult(value: unknown): HostStatusResult {
   const record = requireExactRecord(value, 'host.status result', [
     'hostEpoch',
+    'compositionId',
+    'compositionRevision',
     'state',
     'connections',
     'activeOperations',
@@ -78,10 +84,14 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
   );
   const record = requireExactRecord(value, 'host.diagnostics.query result', [
     'hostEpoch',
+    'compositionId',
+    'compositionRevision',
     'state',
     'connections',
     'activeOperations',
     'activeResidencies',
+    'compositionModules',
+    'residencies',
     'protocolVersion',
     'compatibilityEpoch',
     'pid',
@@ -95,8 +105,24 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
   if (!Array.isArray(record.logs) || record.logs.length > HOST_DIAGNOSTIC_LOG_MAX_ENTRIES) {
     throw invalidProtocolFrame('Invalid Runtime Host diagnostic logs');
   }
+  if (!Array.isArray(record.compositionModules) || record.compositionModules.length > 64) {
+    throw invalidProtocolFrame('Invalid Runtime Host composition modules');
+  }
+  if (!Array.isArray(record.residencies) || record.residencies.length > 128) {
+    throw invalidProtocolFrame('Invalid Runtime Host residencies');
+  }
   return {
     ...decodeHostStatusFields(record),
+    compositionModules: record.compositionModules.map((moduleId) =>
+      requireString(moduleId, 'Runtime Host composition module id', 64),
+    ),
+    residencies: record.residencies.map((value) => {
+      const residency = requireExactRecord(value, 'Runtime Host residency', ['label', 'count']);
+      return {
+        label: requireString(residency.label, 'Runtime Host residency label', 128),
+        count: requireCount(residency.count, 'Runtime Host residency count'),
+      };
+    }),
     protocolVersion: requireCount(record.protocolVersion, 'Runtime Host protocol version'),
     compatibilityEpoch: requireCount(record.compatibilityEpoch, 'Runtime Host compatibility epoch'),
     pid: requireCount(record.pid, 'Runtime Host pid'),
@@ -118,6 +144,12 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
 function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResult {
   return {
     hostEpoch: requireId(record.hostEpoch, 'hostEpoch'),
+    compositionId: requireString(record.compositionId, 'Runtime Host composition id', 128),
+    compositionRevision: requireString(
+      record.compositionRevision,
+      'Runtime Host composition revision',
+      128,
+    ),
     state: requireHostLifecycleState(record.state),
     connections: requireCount(record.connections, 'connections'),
     activeOperations: requireCount(record.activeOperations, 'activeOperations'),

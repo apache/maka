@@ -7,6 +7,7 @@ import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core';
 import type { TraceTotals } from '@maka/core/session-trace';
@@ -195,14 +196,9 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           role="status"
           aria-live="polite"
           className="maka-inspector-status"
-          /* With nothing to trace the region IS the panel, so it takes the
-             leftover height and centres its empty state the way every other
-             workbar tab does. */
           data-empty={model.empty || undefined}
         >
           {model.empty && !snapshot.loading && !snapshot.error && (
-            /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty,
-               so it carries icon and description, not the compact form. */
             <EmptyState
               title={copy.empty}
               description={copy.emptyHelp}
@@ -222,19 +218,14 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 <Heading level={3} className="maka-inspector-section-title">
                   {copy.overview.timelineTab}
                 </Heading>
-                {/* The failure count IS the failure filter. A count is a fact
-                    the reader wanted anyway, so it earns its place before it
-                    is asked to be a control, and it costs a word where a
-                    Switch cost a track, a label and a wrapped line. */}
                 {failedTurns > 0 && (
-                  <button
-                    type="button"
+                  <ToggleButton
                     className="maka-inspector-failed-filter"
-                    aria-pressed={filter.failedOnly ?? false}
-                    onClick={() => setFilter({ ...filter, failedOnly: !filter.failedOnly })}
-                  >
-                    {copy.filterFailedOnly(failedTurns)}
-                  </button>
+                    size="sm"
+                    label={copy.filterFailedOnly(failedTurns)}
+                    isPressed={filter.failedOnly ?? false}
+                    onPressedChange={(pressed) => setFilter({ ...filter, failedOnly: pressed })}
+                  />
                 )}
                 <TextInput
                   size="sm"
@@ -248,15 +239,8 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 />
               </div>
 
-              {/* What the filter is doing, beside the rows it did it to. A
-                  persistent live region rather than a conditional one: a
-                  container that mounts and unmounts is not announced, and this
-                  message changes as the reader types. */}
               <div role="status" aria-live="polite" className="maka-inspector-status">
                 {model.filtered && model.turns.length === 0 && (
-                  /* Filter empty (DESIGN.md §10 tier 1): a filter no-match
-                     always carries the clear action — the reader caused this
-                     state and must be able to exit it. */
                   <EmptyState
                     isCompact
                     title={copy.noMatches}

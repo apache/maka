@@ -94,6 +94,7 @@ import type {
   ModelFinishReason,
   ModelMessage,
   ReasoningPart,
+  ModelFailure,
   ModelToolSet,
   NormalizedUsage,
   ModelFailureKind,
@@ -207,7 +208,14 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses } from './model-runtime.js';
+import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import {
+  applyPatchReplayFactText,
+  freeformApplyPatchResultText,
+  normalizeApplyPatchReplayInput,
+  routeApplyPatchTools,
+  type ApplyPatchProfile,
+} from './apply-patch-profile.js';
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
@@ -231,6 +239,7 @@ import {
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
+  isHistoryCompactContentEvent,
   replaceHistoryCompactReplayBlocks,
 } from './history-compact.js';
 import { selectSynthesisCacheForReplay } from './synthesis-cache.js';
@@ -249,7 +258,11 @@ export {
   formatSyntheticToolErrorText,
 } from './tool-runtime.js';
 export { normalizeAiSdkUsage } from './model-adapter.js';
-export type { ModelFactory, ModelFactoryInput, RepairableAiSdkToolCall } from './model-adapter.js';
+export type {
+  ModelFactory,
+  ModelFactoryInput,
+  RepairableAiSdkToolCall,
+} from './model-adapter.js';
 export type { RunTraceEvent, RunTraceRecorder } from './run-trace.js';
 
 const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
@@ -266,14 +279,22 @@ function providerToolResultContent(
   input?: unknown,
 ): ToolResultContent {
   if (output === undefined) {
-    return { kind: 'text', text: `${toolName} completed without a structured result.` };
+    return {
+      kind: 'text',
+      text: `${toolName} completed without a structured result.`,
+    };
   }
   if (toolName !== 'WebSearch') {
     return { kind: 'json', value: output };
   }
   const queryFromInput = providerWebSearchQuery(input);
   if (Array.isArray(output)) {
-    const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+    const rows: Array<{
+      title: string;
+      url: string;
+      snippet: string;
+      source: string;
+    }> = [];
     for (const result of output) {
       if (
         !result ||
@@ -301,7 +322,12 @@ function providerToolResultContent(
         // Provider source rows are untrusted; malformed URLs are dropped.
       }
     }
-    return { kind: 'web_search', provider: 'model', query: queryFromInput, rows };
+    return {
+      kind: 'web_search',
+      provider: 'model',
+      query: queryFromInput,
+      rows,
+    };
   }
   if (!output || typeof output !== 'object') return { kind: 'json', value: output };
   const providerError = output as { type?: unknown; errorCode?: unknown };
@@ -325,14 +351,23 @@ function providerToolResultContent(
   const sources = (output as { sources?: unknown }).sources;
   let query = queryFromInput;
   if (action && typeof action === 'object') {
-    const value = action as { type?: unknown; query?: unknown; queries?: unknown };
+    const value = action as {
+      type?: unknown;
+      query?: unknown;
+      queries?: unknown;
+    };
     if (Array.isArray(value.queries)) {
       query = value.queries.filter((item): item is string => typeof item === 'string').join(' | ');
     } else if (typeof value.query === 'string') {
       query = value.query;
     }
   }
-  const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+  const rows: Array<{
+    title: string;
+    url: string;
+    snippet: string;
+    source: string;
+  }> = [];
   if (Array.isArray(sources)) {
     for (const source of sources) {
       if (
@@ -770,6 +805,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * called rather than producing spend nothing recorded.
    */
   assertModelCallAccountingReady?: () => void;
+  /** Durable gate for every provider call attributed to an AgentRun. */
+  beforeRunProviderDispatch?: (input: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }) => void | Promise<void>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -795,6 +836,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 export interface SystemPromptContext {
   sessionId: string;
   turnId: string;
+  runId?: string;
   cwd: string;
   workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
@@ -822,8 +864,38 @@ function toolResultText(text: string): ToolResultOutput {
   return { type: 'content', value: [{ type: 'text', text }] };
 }
 
+function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutput {
+  const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+  const message =
+    output.type === 'text' || output.type === 'error-text'
+      ? output.value
+      : typeof record?.output === 'string'
+        ? record.output
+        : typeof record?.text === 'string'
+          ? record.text
+          : typeof record?.error === 'string'
+            ? record.error
+            : undefined;
+  return {
+    type: 'json',
+    value: { status: 'failed', ...(message ? { output: message } : {}) },
+  };
+}
+
+function freeformApplyPatchOutput(output: ToolResultOutput): ToolResultOutput {
+  if (output.type === 'text' || output.type === 'error-text') return output;
+  const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+  const text = record ? freeformApplyPatchResultText(record) : freeformApplyPatchResultText(value);
+  return output.type === 'error-json'
+    ? { type: 'error-text', value: text }
+    : { type: 'text', value: text };
+}
+
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
+const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -847,6 +919,19 @@ function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
     default:
       return 'unknown';
   }
+}
+
+function isIncompleteProviderFinishReason(reason: ModelFinishReason | undefined): boolean {
+  return reason === undefined || reason === 'other' || reason === 'unknown';
+}
+
+function incompleteProviderStreamFailure(reason: ModelFinishReason | undefined): ModelFailure {
+  return {
+    type: 'model_failure',
+    kind: 'provider_unavailable',
+    retryable: false,
+    message: `Provider stream ended without finishing (${reason ?? 'missing'})`,
+  };
 }
 
 function sleepForProviderRetry(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -956,6 +1041,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly applyPatchProfile: ApplyPatchProfile | null;
 
   /**
    * Every `send()` currently in flight on this backend.
@@ -1038,10 +1124,13 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
+    this.applyPatchProfile = runtime.applyPatchProfile;
+    const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
       // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...input.tools, ...memoryTools], input.toolResultArchive),
+      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
@@ -1573,10 +1662,15 @@ export class AiSdkBackend implements AgentBackend {
 
     // --- Background pump: streamText → stream → normalize → queue ---
     const pumpDone: Promise<void> = (async () => {
-      const watchdogState: { current: StreamWatchdog | null } = { current: null };
+      const watchdogState: { current: StreamWatchdog | null } = {
+        current: null,
+      };
       let providerRequestAbortController = new AbortController();
       const watchdogTimeoutState: {
-        current: { readonly phase: StreamWatchdogPhase; readonly error: Error } | null;
+        current: {
+          readonly phase: StreamWatchdogPhase;
+          readonly error: Error;
+        } | null;
       } = { current: null };
       const currentWatchdogTimeout = () => watchdogTimeoutState.current;
       const consumeWatchdogTimeout = () => {
@@ -1647,7 +1741,33 @@ export class AiSdkBackend implements AgentBackend {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
-          const replayPlan = buildRuntimeEventModelReplayPlan(turnEvents, {
+          const projectionCheckpoint = midTurnState?.projectionCheckpoint;
+          const rawProjectionEvents = projectionCheckpoint
+            ? [
+                ...midTurnState.priorContentEvents,
+                ...turnEvents.filter(isHistoryCompactContentEvent),
+              ]
+            : turnEvents;
+          let replayEvents = rawProjectionEvents;
+          if (projectionCheckpoint) {
+            const checkpointMatch = matchHistoryCompactCheckpointPrefix(
+              projectionCheckpoint,
+              rawProjectionEvents,
+            );
+            if (checkpointMatch.reason) {
+              throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
+            }
+            replayEvents = projectHistoryCompactCheckpointReplay(
+              projectionCheckpoint,
+              checkpointMatch.coveredRuntimeEvents,
+              checkpointMatch.successorRuntimeEvents,
+            );
+            // The checkpoint was capacity-validated before it was persisted.
+            // Do not re-run that gate against a later, larger successor tail:
+            // the active-step shaper must see that growth so it can roll the
+            // checkpoint forward instead of resurrecting raw history.
+          }
+          const replayPlan = buildRuntimeEventModelReplayPlan(replayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
               ...turnEvents,
@@ -1681,7 +1801,9 @@ export class AiSdkBackend implements AgentBackend {
             scope.imageBudget,
             settledModelOutputs,
           );
-          return [...priorReplay.messages, ...currentTurnMessages];
+          return projectionCheckpoint
+            ? currentTurnMessages
+            : [...priorReplay.messages, ...currentTurnMessages];
         };
         const activeCompactionHeadAnchor =
           messages[messages.length - 1]?.role === 'user'
@@ -1764,10 +1886,14 @@ export class AiSdkBackend implements AgentBackend {
           requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
           requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
           ...(turnDiagnostics.requestShape.toolSchemaChangeReason !== undefined
-            ? { toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason }
+            ? {
+                toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason,
+              }
             : {}),
           ...(turnDiagnostics.requestShape.toolAvailability !== undefined
-            ? { toolAvailability: turnDiagnostics.requestShape.toolAvailability }
+            ? {
+                toolAvailability: turnDiagnostics.requestShape.toolAvailability,
+              }
             : {}),
           promptSegments: turnDiagnostics.promptSegments,
           ...(priorReplay.contextBudget ? { contextBudget: priorReplay.contextBudget } : {}),
@@ -1836,7 +1962,9 @@ export class AiSdkBackend implements AgentBackend {
                       decision: 'unchanged',
                       boundaryKind: 'historyCompact',
                       reason: 'mid_turn_capacity_precedence',
-                      skippedReasonCounts: { mid_turn_capacity_precedence: 1 },
+                      skippedReasonCounts: {
+                        mid_turn_capacity_precedence: 1,
+                      },
                     }),
                   );
                   return undefined;
@@ -1950,6 +2078,7 @@ export class AiSdkBackend implements AgentBackend {
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
+          let incompleteStreamRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
@@ -1966,6 +2095,7 @@ export class AiSdkBackend implements AgentBackend {
             let attemptSawToolActivity = false;
             let attemptSawContinuationMetadata = false;
             let attemptReachedStepBoundary = false;
+            let attemptStreamedFinishReason: ModelFinishReason | undefined;
             const attemptHasNoObservableOutput = () =>
               !attemptSawText &&
               !attemptSawThinking &&
@@ -2034,36 +2164,48 @@ export class AiSdkBackend implements AgentBackend {
                   sawStreamError = true;
                   break;
                 }
-                if (event.kind === 'finish' || event.kind === 'step-finish') {
+                const incompleteFinish =
+                  (event.kind === 'finish' || event.kind === 'step-finish') &&
+                  isIncompleteProviderFinishReason(event.finishReason);
+                if (
+                  (event.kind === 'finish' || event.kind === 'step-finish') &&
+                  !incompleteFinish
+                ) {
                   attemptReachedStepBoundary = true;
                 }
                 if (event.kind === 'step-finish') {
-                  // Step boundary: AI SDK 7 delimits steps with `finish-step`
-                  // (and `step-finish` for legacy replay fixtures); the adapter
-                  // reduces both to this event. A duplicate boundary is harmless:
-                  // the second flush no-ops (accumulators already cleared) and one
-                  // extra id rotation just discards an unused id.
-                  runtimeSteps += 1;
-                  const stepUsage = event.usage;
-                  providerStepUsage = stepUsage;
-                  if (!stepUsage) sawUnusableStepUsage = true;
-                  // Fail closed: reset on every step boundary so a missing final
-                  // step's usage does not leave a stale value from an earlier step.
-                  lastStepInputTokens = stepUsage?.inputTokens;
-                  if (stepUsage) {
-                    completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                    this.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                      this.cumulativeUsageCheckpoint,
-                      stepUsage,
-                    );
-                    await this.input.recordUsageCheckpoint?.({
-                      ...this.cumulativeUsageCheckpoint,
-                      costUsd: this.computeTokenUsageCostUsd(this.cumulativeUsageCheckpoint),
-                    });
+                  // AI SDK can synthesize `finish-step(other)` when the provider
+                  // stream reaches EOF without a terminal frame. That is not a
+                  // completed model step and must not consume the step budget or
+                  // checkpoint imaginary usage before the safe retry below.
+                  if (!incompleteFinish) {
+                    // Step boundary: AI SDK 7 delimits steps with `finish-step`
+                    // (and `step-finish` for legacy replay fixtures); the adapter
+                    // reduces both to this event. A duplicate boundary is harmless:
+                    // the second flush no-ops (accumulators already cleared) and one
+                    // extra id rotation just discards an unused id.
+                    runtimeSteps += 1;
+                    const stepUsage = event.usage;
+                    providerStepUsage = stepUsage;
+                    if (!stepUsage) sawUnusableStepUsage = true;
+                    // Fail closed: reset on every step boundary so a missing final
+                    // step's usage does not leave a stale value from an earlier step.
+                    lastStepInputTokens = stepUsage?.inputTokens;
+                    if (stepUsage) {
+                      completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+                      this.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+                        this.cumulativeUsageCheckpoint,
+                        stepUsage,
+                      );
+                      await this.input.recordUsageCheckpoint?.({
+                        ...this.cumulativeUsageCheckpoint,
+                        costUsd: this.computeTokenUsageCostUsd(this.cumulativeUsageCheckpoint),
+                      });
+                    }
                   }
                 }
                 if (event.kind === 'finish' || event.kind === 'step-finish') {
-                  streamedFinishReason = event.finishReason ?? streamedFinishReason;
+                  attemptStreamedFinishReason = event.finishReason ?? attemptStreamedFinishReason;
                 }
                 if (event.kind === 'text-start') {
                   stepTextPartStartOffset = stepText.length;
@@ -2186,7 +2328,7 @@ export class AiSdkBackend implements AgentBackend {
                     ),
                   } satisfies ToolResultEvent);
                   providerToolInputs.delete(event.toolCallId);
-                } else if (event.kind === 'step-finish') {
+                } else if (event.kind === 'step-finish' && !incompleteFinish) {
                   // The step's text/thinking deltas are all in (the stream is
                   // drained in order), so flush this step's AssistantMessage and
                   // rotate to a fresh id for the next step. Tool settlement
@@ -2218,6 +2360,25 @@ export class AiSdkBackend implements AgentBackend {
               sawStreamError = true;
             }
 
+            let incompleteStreamTerminal = false;
+            let incompleteStreamHasNoObservableOutput = false;
+            if (!sawStreamError) {
+              const settledFinishReason =
+                attemptStreamedFinishReason ?? (await result.finishReason.catch(() => undefined));
+              if (isIncompleteProviderFinishReason(settledFinishReason)) {
+                streamFailure = incompleteProviderStreamFailure(settledFinishReason);
+                sawStreamError = true;
+                incompleteStreamTerminal = true;
+                incompleteStreamHasNoObservableOutput =
+                  !attemptSawText &&
+                  !attemptSawThinking &&
+                  !attemptSawToolActivity &&
+                  !attemptSawContinuationMetadata;
+              } else {
+                streamedFinishReason = settledFinishReason;
+              }
+            }
+
             if (sawStreamError && !scope.aborted) {
               const attemptFailure = settledWatchdogTimeout?.error ?? streamFailure;
               if (scope.loopStopRequested) throw attemptFailure;
@@ -2232,6 +2393,7 @@ export class AiSdkBackend implements AgentBackend {
                       retryAlreadyUsed: overflowRetryUsed,
                       midTurnState,
                       turnId,
+                      stepNumber: runtimeSteps,
                       currentMessages: attemptMessages,
                       providerTools,
                       activeTools: activeToolsForRequest,
@@ -2266,11 +2428,15 @@ export class AiSdkBackend implements AgentBackend {
                 settledWatchdogTimeout?.phase === 'idle' &&
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
                 attemptCanRecoverFromIdleTimeout();
+              const incompleteStreamRecovery =
+                incompleteStreamTerminal &&
+                incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
+                incompleteStreamHasNoObservableOutput;
               if (
-                (failure.retryable || idleWatchdogRecovery) &&
+                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                (attemptHasNoObservableOutput() || idleWatchdogRecovery)
+                (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
               ) {
                 if (idleWatchdogRecovery) {
                   idleWatchdogRetryCount += 1;
@@ -2279,14 +2445,16 @@ export class AiSdkBackend implements AgentBackend {
                     currentStepMessageId = this.newId();
                   }
                 }
+                if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
-                const maxAttempts = idleWatchdogRecovery
-                  ? nextAttempt
-                  : MAX_PROVIDER_ATTEMPTS_PER_STEP;
+                const maxAttempts =
+                  idleWatchdogRecovery || incompleteStreamRecovery
+                    ? nextAttempt
+                    : MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
                 queue.push({
                   type: 'provider_retry',
@@ -2387,7 +2555,9 @@ export class AiSdkBackend implements AgentBackend {
                   // store refuses it. One refusal took every tool-calling turn
                   // with it.
                   ...(toolCall.providerOptions !== undefined
-                    ? { providerOptions: stripUndefinedDeep(toolCall.providerOptions) }
+                    ? {
+                        providerOptions: stripUndefinedDeep(toolCall.providerOptions),
+                      }
                     : {}),
                   input:
                     requestedTool !== undefined
@@ -2632,11 +2802,10 @@ export class AiSdkBackend implements AgentBackend {
           // Two different things arrive here and the message says which: the
           // provider stopping the stream on its own policy, and a stop nothing
           // named at all.
-          const err = new Error(
+          const err =
             finishReason === 'content-filter'
-              ? 'Provider stopped the stream on a content filter'
-              : `Provider stream ended without finishing (${finishReason})`,
-          );
+              ? new Error('Provider stopped the stream on a content filter')
+              : incompleteProviderStreamFailure(finishReason);
           streamStatus = 'error';
           streamErrorClass = this.modelAdapter.classifyError(err);
           queue.push(this.makeErrorEvent(turnId, err));
@@ -2770,10 +2939,14 @@ export class AiSdkBackend implements AgentBackend {
                 requestShapeHash: requestShapeForTelemetry.requestShapeHash,
                 requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
                 ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
-                  ? { toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason }
+                  ? {
+                      toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason,
+                    }
                   : {}),
                 ...(requestShapeForTelemetry.toolAvailability !== undefined
-                  ? { toolAvailability: requestShapeForTelemetry.toolAvailability }
+                  ? {
+                      toolAvailability: requestShapeForTelemetry.toolAvailability,
+                    }
                   : {}),
               }
             : {}),
@@ -3040,7 +3213,18 @@ export class AiSdkBackend implements AgentBackend {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
     });
-    if (!persistCapture && !accounting) return undefined;
+    const runId = input.runId;
+    const beforeRunProviderDispatch = this.input.beforeRunProviderDispatch;
+    const beforeDispatch =
+      runId && beforeRunProviderDispatch
+        ? () =>
+            beforeRunProviderDispatch({
+              sessionId: this.sessionId,
+              turnId: input.turnId,
+              runId,
+            })
+        : undefined;
+    if (!persistCapture && !accounting && !beforeDispatch) return undefined;
     return new ProviderRequestTracker({
       traceId: this.newId(),
       turnId: input.turnId,
@@ -3049,6 +3233,7 @@ export class AiSdkBackend implements AgentBackend {
       newId: this.newId,
       ...(persistCapture ? { persistCapture } : {}),
       recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(beforeDispatch ? { beforeDispatch } : {}),
       ...(accounting ? { accounting } : {}),
     });
   }
@@ -3387,7 +3572,9 @@ export class AiSdkBackend implements AgentBackend {
               buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
             {
               synthesisCacheWriteSkipped: 1,
-              synthesisCacheWriteSkippedReasonCounts: { [evidenceRequestReason]: 1 },
+              synthesisCacheWriteSkippedReasonCounts: {
+                [evidenceRequestReason]: 1,
+              },
             },
           );
         } else {
@@ -3547,6 +3734,11 @@ export class AiSdkBackend implements AgentBackend {
     };
     let bufferedCalls: ToolCallItem[] = [];
     const results = new Map<string, ToolResultItem>();
+    const downgradedApplyPatchCalls = new Map<string, ToolCallItem>();
+    const replayFactsByStep = new Map<
+      string,
+      Array<{ readonly text: string; readonly eventIds: readonly string[] }>
+    >();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, TextItem>();
 
@@ -3606,14 +3798,24 @@ export class AiSdkBackend implements AgentBackend {
     // back — the plan flags them as `unmatched_tool_result` (a non-blocking
     // diagnostic precisely so this drop path is reachable; see
     // hasBlockingReplayDiagnostics).
-    const materializeReplayToolResult = async (result: ToolResultItem): Promise<ToolResultOutput> =>
-      settledModelOutputs?.get(result.toolCallId) ??
-      (await this.materializeToolResultOutput(
-        budget,
-        result.output,
-        result.isError,
-        `runtime-event:${result.eventId}:tool-result`,
-      ));
+    const materializeReplayToolResult = async (
+      result: ToolResultItem,
+      toolName: string,
+    ): Promise<ToolResultOutput> => {
+      const output =
+        settledModelOutputs?.get(result.toolCallId) ??
+        (await this.materializeToolResultOutput(
+          budget,
+          result.output,
+          result.isError,
+          `runtime-event:${result.eventId}:tool-result`,
+        ));
+      if (toolName !== 'apply_patch') return output;
+      if (this.applyPatchProfile?.kind === 'codex-v4a-freeform') {
+        return freeformApplyPatchOutput(output);
+      }
+      return result.isError ? nativeApplyPatchFailureOutput(output) : output;
+    };
     const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {
       for (const call of calls) {
         const result = results.get(call.toolCallId);
@@ -3627,7 +3829,7 @@ export class AiSdkBackend implements AgentBackend {
                 type: 'tool-result',
                 toolCallId: result.toolCallId,
                 toolName: result.toolName,
-                output: await materializeReplayToolResult(result),
+                output: await materializeReplayToolResult(result, call.toolName),
               },
             ],
           },
@@ -3647,6 +3849,9 @@ export class AiSdkBackend implements AgentBackend {
         ...(reasoning ?? []).map((item) => item.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
+        ...(text?.stepId
+          ? (replayFactsByStep.get(text.stepId)?.flatMap((fact) => fact.eventIds) ?? [])
+          : []),
       ];
       const replayReasoning = reasoning
         ?.map(reasoningReplay)
@@ -3676,7 +3881,7 @@ export class AiSdkBackend implements AgentBackend {
           type: 'tool-result',
           toolCallId: result.toolCallId,
           toolName: result.toolName,
-          output: await materializeReplayToolResult(result),
+          output: await materializeReplayToolResult(result, call.toolName),
         });
       }
       if (text && text.content.length > 0) {
@@ -3685,6 +3890,13 @@ export class AiSdkBackend implements AgentBackend {
           text: text.content,
           ...(text.providerOptions !== undefined ? { providerOptions: text.providerOptions } : {}),
         });
+      }
+      const replayFacts = text?.stepId ? replayFactsByStep.get(text.stepId) : undefined;
+      if (replayFacts) {
+        for (const replayFact of replayFacts) {
+          content.push({ type: 'text', text: replayFact.text });
+        }
+        replayFactsByStep.delete(text!.stepId!);
       }
       for (const call of calls) {
         if (call.providerExecuted === true) continue;
@@ -3764,11 +3976,68 @@ export class AiSdkBackend implements AgentBackend {
     for (const item of plan.items) {
       switch (item.kind) {
         case 'tool_call':
-          bufferedCalls.push(item);
+          if (item.toolName !== 'apply_patch') {
+            bufferedCalls.push(item);
+            break;
+          }
+          {
+            const replayInput = normalizeApplyPatchReplayInput(
+              this.applyPatchProfile,
+              item.toolCallId,
+              item.input,
+            );
+            if (replayInput !== null) {
+              bufferedCalls.push({
+                ...item,
+                input: replayInput,
+                ...(replayInput !== item.input ? { providerOptions: undefined } : {}),
+              });
+            } else {
+              downgradedApplyPatchCalls.set(item.toolCallId, item);
+            }
+          }
           break;
-        case 'tool_result':
-          results.set(item.toolCallId, item);
+        case 'tool_result': {
+          const downgradedCall = downgradedApplyPatchCalls.get(item.toolCallId);
+          if (!downgradedCall) {
+            results.set(item.toolCallId, item);
+            break;
+          }
+          downgradedApplyPatchCalls.delete(item.toolCallId);
+          const replayFact = applyPatchReplayFactText(
+            downgradedCall.input,
+            item.output,
+            item.isError,
+          );
+          if (!replayFact) break;
+          if (downgradedCall.stepId) {
+            const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
+            replayFactsByStep.set(downgradedCall.stepId, [
+              ...stepFacts,
+              {
+                text: replayFact,
+                eventIds: [downgradedCall.eventId, item.eventId],
+              },
+            ]);
+            if (!textByStep.has(downgradedCall.stepId)) {
+              textByStep.set(downgradedCall.stepId, {
+                kind: 'text',
+                role: 'assistant',
+                content: '',
+                stepId: downgradedCall.stepId,
+                eventId: downgradedCall.eventId,
+                ts: downgradedCall.ts,
+              });
+            }
+          } else {
+            await flushPendingSteps();
+            push({ role: 'assistant', content: [{ type: 'text', text: replayFact }] }, [
+              downgradedCall.eventId,
+              item.eventId,
+            ]);
+          }
           break;
+        }
         case 'thinking':
           if (item.stepId !== undefined) {
             const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
@@ -4014,7 +4283,11 @@ export class AiSdkBackend implements AgentBackend {
     }
     const parts: Array<
       | { type: 'text'; text: string }
-      | { type: 'file'; data: { type: 'data'; data: Uint8Array }; mediaType: string }
+      | {
+          type: 'file';
+          data: { type: 'data'; data: Uint8Array };
+          mediaType: string;
+        }
     > = [{ type: 'text', text: textContent }];
     let omittedByBudget = 0;
     for (const [index, image] of images.entries()) {
@@ -4081,7 +4354,10 @@ export class AiSdkBackend implements AgentBackend {
         { type: 'text', text: 'Image read successfully.' },
         {
           type: 'file',
-          data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+          data: {
+            type: 'data',
+            data: Buffer.from(read.bytes).toString('base64'),
+          },
           mediaType: output.mimeType,
         },
       ],
@@ -4112,6 +4388,7 @@ export class AiSdkBackend implements AgentBackend {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
+        ...(scope.runId ? { runId: scope.runId } : {}),
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>

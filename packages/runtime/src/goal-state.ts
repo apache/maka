@@ -1,13 +1,13 @@
 /**
- * Goal execution state — session-scoped, in-memory.
+ * Goal execution state for one Runtime Host epoch.
  *
  * A goal is a long-running objective the agent works toward autonomously across
  * turns. After each turn, an external evaluator (CC-style) judges whether the
  * condition is met; if not, the system auto-continues.
  *
- * PERSISTENCE: this phase owns only in-process state. A restart clears every
- * Goal; persisted snapshots and restart recovery require a separate lifecycle
- * boundary and are deliberately deferred.
+ * The manager owns synchronous lifecycle transitions. Runtime Host owns the
+ * durable Goal authority, restores it before serving, and persists every
+ * accepted transition through `onChange`.
  *
  * Lifecycle (Codex-inspired):
  *   active → waiting → active
@@ -20,6 +20,10 @@
 import {
   GOAL_CONDITION_TEXT_LIMIT,
   GOAL_REASON_TEXT_LIMIT,
+  sameGoalControlLease,
+  type GoalCheckpoint,
+  type GoalControlLease,
+  type GoalState,
   type GoalStatus,
   type GoalTextLimit,
 } from '@maka/core/goal';
@@ -27,6 +31,9 @@ import {
 export {
   GOAL_CONDITION_TEXT_LIMIT,
   GOAL_REASON_TEXT_LIMIT,
+  type GoalCheckpoint,
+  type GoalControlLease,
+  type GoalState,
   type GoalStatus,
   type GoalTextLimit,
 } from '@maka/core/goal';
@@ -40,55 +47,6 @@ export const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set<GoalStatu
   'budget_limited',
   'max_iterations',
 ]);
-
-export interface GoalState {
-  readonly id: string;
-  readonly revision: number;
-  readonly sessionId: string;
-  readonly condition: string;
-  readonly status: GoalStatus;
-  readonly setAt: number;
-  readonly iterations: number;
-  readonly maxIterations: number;
-  /** Consecutive turns with no progress (drives the block cap → stalled). */
-  readonly consecutiveNoProgress: number;
-  /** Force-stop after this many consecutive no-progress turns (CC's 8). */
-  readonly blockCap: number;
-  /**
-   * Optional working-turn token budget; goal → budget_limited when exceeded.
-   * Evaluator calls are usage-metered separately and do not spend this budget.
-   */
-  readonly tokenBudget?: number;
-  /** Token count observed when the goal was set (baseline for spend). */
-  readonly tokensAtStart: number;
-  /** Latest observed token count (used to compute spend). */
-  readonly tokensNow: number;
-  /**
-   * True until the first real token observation. The baseline captured at set
-   * time can be stale/0 (the model calls GoalSet before any continuation has
-   * observed the session's token count), so the first settlement re-baselines
-   * to measure only tokens the goal itself spends.
-   */
-  readonly tokensBaselinePending: boolean;
-  readonly lastReason?: string;
-  readonly achievedAt?: number;
-  readonly pausedAt?: number;
-}
-
-/** Immutable identity of the Goal snapshot an asynchronous operation observed. */
-export interface GoalCheckpoint {
-  readonly goalId: string;
-  readonly revision: number;
-}
-
-/**
- * Opaque in-process ownership token for externally queued Goal evidence.
- * Ordinary turn settlements retain the lease; explicit lifecycle control
- * replaces it so queued work cannot cross a pause/resume ABA boundary.
- */
-export interface GoalControlLease {
-  readonly goalId: string;
-}
 
 export function goalCheckpoint(goal: Pick<GoalState, 'id' | 'revision'>): GoalCheckpoint {
   return Object.freeze({ goalId: goal.id, revision: goal.revision });
@@ -136,7 +94,7 @@ export interface GoalManagerDeps {
    * visible indicator and a clear affordance. This is a best-effort observer:
    * failures cannot roll back an already committed state transition.
    */
-  onChange?: (goal: GoalState, previous?: GoalStatus) => void;
+  onChange?: (goal: GoalState, controlLease: GoalControlLease, previous?: GoalStatus) => void;
 }
 
 export const DEFAULT_MAX_ITERATIONS = 50;
@@ -186,9 +144,9 @@ export class GoalManager {
 
   constructor(private readonly deps: GoalManagerDeps) {}
 
-  private emit(goal: GoalState, previous?: GoalStatus): void {
+  private emit(record: GoalRecord, previous?: GoalStatus): void {
     try {
-      this.deps.onChange?.(goal, previous);
+      this.deps.onChange?.(record.state, record.controlLease, previous);
     } catch {
       // State and control leases are already committed. A host notification
       // must not make the caller observe failure after that point.
@@ -212,9 +170,9 @@ export class GoalManager {
     });
     record.state = committed;
     if (options?.renewControlLease) {
-      record.controlLease = createControlLease(committed.id);
+      record.controlLease = createControlLease(committed.id, record.controlLease.generation + 1);
     }
-    this.emit(committed, previous);
+    this.emit(record, previous);
     return committed;
   }
 
@@ -258,7 +216,7 @@ export class GoalManager {
       controlLease: createControlLease(goal.id),
     };
     this.goals.set(sessionId, goalRecord);
-    this.emit(goal);
+    this.emit(goalRecord);
     return { kind: 'created', goal };
   }
 
@@ -275,8 +233,21 @@ export class GoalManager {
     return this.goals.get(sessionId)?.controlLease;
   }
 
+  restore(goal: GoalState, controlLease: GoalControlLease): void {
+    if (goal.sessionId.length === 0 || goal.id !== controlLease.goalId) {
+      throw new Error('Durable Goal identity is invalid');
+    }
+    if (this.goals.has(goal.sessionId)) {
+      throw new Error(`Session ${goal.sessionId} already has a restored Goal`);
+    }
+    this.goals.set(goal.sessionId, {
+      state: Object.freeze({ ...goal }),
+      controlLease: Object.freeze({ ...controlLease }),
+    });
+  }
+
   matchesControlLease(sessionId: string, lease: GoalControlLease): boolean {
-    return this.goals.get(sessionId)?.controlLease === lease;
+    return sameGoalControlLease(this.goals.get(sessionId)?.controlLease, lease);
   }
 
   matchesActive(sessionId: string, checkpoint: GoalCheckpoint): boolean {
@@ -423,10 +394,7 @@ export class GoalManager {
   }
 
   remove(sessionId: string): boolean {
-    const record = this.goals.get(sessionId);
-    const deleted = this.goals.delete(sessionId);
-    if (record && deleted) this.emit(record.state, record.state.status);
-    return deleted;
+    return this.goals.delete(sessionId);
   }
 
   dispose(): void {
@@ -434,6 +402,6 @@ export class GoalManager {
   }
 }
 
-function createControlLease(goalId: string): GoalControlLease {
-  return Object.freeze({ goalId });
+function createControlLease(goalId: string, generation = 0): GoalControlLease {
+  return Object.freeze({ goalId, generation });
 }

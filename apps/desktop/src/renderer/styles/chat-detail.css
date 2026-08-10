@@ -202,13 +202,16 @@
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  min-height: 0;
   height: 100%;
   padding: 0 var(--space-1) 0 var(--space-3);
   border: 0;
+  border-radius: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
   font: var(--maka-text-supporting);
+  box-shadow: none;
 }
 
 .maka-workbar-tab[data-active] .maka-workbar-tab-select {
@@ -270,79 +273,7 @@
 }
 
 .maka-workbar-launcher-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
   width: min(100%, 360px);
-}
-
-.maka-workbar-launcher-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  min-height: 40px;
-  padding: var(--space-1) var(--space-3);
-  border: 0;
-  border-radius: var(--radius-element);
-  background: transparent;
-  color: var(--foreground);
-  cursor: pointer;
-  text-align: left;
-}
-
-.maka-workbar-launcher-row:hover,
-.maka-workbar-launcher-row:focus-visible {
-  background: var(--color-overlay-hover);
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
-
-.maka-workbar-launcher-row:active {
-  transform: scale(0.98);
-}
-
-.maka-workbar-launcher-row[data-secondary]:first-of-type,
-.maka-workbar-launcher-row:not([data-secondary])
-  + .maka-workbar-launcher-row[data-secondary] {
-  margin-top: var(--space-2);
-  padding-top: calc(var(--space-2) + var(--space-1));
-  border-top: var(--border-width-hairline) solid var(--border);
-  border-radius: 0 0 var(--radius-element) var(--radius-element);
-}
-
-.maka-workbar-launcher-row:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.maka-workbar-launcher-icon {
-  display: inline-grid;
-  place-items: center;
-  color: var(--foreground-secondary);
-}
-
-.maka-workbar-launcher-icon > svg {
-  width: var(--icon-chrome);
-  height: var(--icon-chrome);
-}
-
-.maka-workbar-launcher-label {
-  overflow: hidden;
-  font: var(--maka-text-supporting);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-workbar-launcher-shortcut {
-  padding: 2px var(--space-2);
-  border: 0;
-  border-radius: var(--radius-full);
-  background: var(--card-bg);
-  color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
-  white-space: nowrap;
 }
 
 /* Session trace (#1625): a read-only causal timeline in the workbar.
@@ -364,50 +295,54 @@
   overflow-y: auto;
 }
 
-.maka-session-review-panel > .astryx-toolbar {
-  position: sticky;
-  z-index: 1;
-  top: 0;
-  background: var(--agents-content-area-bg);
-}
-
-.maka-session-review-toolbar {
-  min-width: 0;
-}
-
-.maka-session-review-source {
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.maka-session-review-source::-webkit-scrollbar {
-  display: none;
-}
-
-.maka-session-review-summary {
-  display: flex;
-  min-height: 30px;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1) var(--space-3);
-  padding: var(--space-1) var(--space-3);
-  border-bottom: 1px solid var(--border);
-  color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
+.maka-session-review-file-stats {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .maka-session-review-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-surface);
+  padding-inline: var(--space-3);
+}
+
+.maka-session-review-loading-list {
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-surface);
+}
+
+.maka-session-review-file-trigger {
+  min-width: 0;
+  flex: 1;
+}
+
+.maka-session-review-file-path {
+  min-width: 0;
+  flex: 1;
+}
+
+.maka-session-review-additions {
+  color: var(--success);
+}
+
+.maka-session-review-deletions {
+  color: var(--destructive);
+}
+
+.maka-session-review-diff {
+  max-height: 360px;
+  overflow: auto;
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
 }
 
 .maka-session-review-more {
   display: flex;
   justify-content: center;
+  border-top: var(--border-width-hairline) solid var(--border-soft);
   padding-block: var(--space-2);
 }
 
@@ -921,11 +856,16 @@
 
 .maka-browser-toolbar {
   flex: 0 0 auto;
+  /* Band chrome only — Astryx Toolbar owns the row; start slot stretches. */
+  border-bottom: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-browser-toolbar-start {
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: var(--space-1);
-  padding: var(--space-1-5) var(--space-2);
-  border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
 .maka-browser-address-field {
@@ -986,7 +926,7 @@
   font: var(--maka-text-supporting);
   width: 100%;
   justify-content: flex-start;
-  min-height: 42px;
+  min-height: 36px;
   padding: var(--space-1-5) var(--space-2);
   margin: 0;
   border: var(--border-width-hairline) solid transparent;
@@ -1237,11 +1177,6 @@
   color: var(--foreground-secondary);
 }
 
-.maka-artifact-preview-unsupported-title {
-  font: var(--maka-text-heading-4);
-  color: var(--foreground);
-}
-
 .maka-artifact-preview-unsupported-body {
   font: var(--maka-text-body);
   margin: 0;
@@ -1325,15 +1260,6 @@
   background: oklch(from var(--info) l c h / 0.08);
   border-color: oklch(from var(--info) l c h / 0.22);
   color: var(--info-text);
-}
-
-.maka-artifact-preview-fail-title {
-  font: var(--maka-text-heading-4);
-}
-
-.maka-artifact-preview-fail-body {
-  font: var(--maka-text-supporting);
-  margin: 0;
 }
 
 /* Narrow windows place the single workbar below the conversation. */

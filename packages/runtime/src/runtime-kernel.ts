@@ -2295,9 +2295,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // here stays that way, because the stream that would have finalized it is
     // exactly the one the stop could not wake.
     //
-    // Embedded owners only. A Hosted Run's terminal fact belongs to the Host's
-    // own terminal authority (#1359, #1996), which also parks provider-
-    // indeterminate Runs a stop must not resolve on its behalf.
+    // Without a Host interaction authority, Runtime owns terminal settlement.
+    // A Hosted Run's terminal fact belongs to the Host, which also parks
+    // provider-indeterminate Runs that a stop must not resolve on its behalf.
     for (const target of stoppedRuns.values()) {
       if (!this.deps.interactionAuthority) {
         try {
@@ -2793,6 +2793,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'recordProviderRequestCapture'
     | 'recordProviderRequestAttempt'
     | 'recordModelCallAttempt'
+    | 'recordRunComposition'
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadTurnRuntimeEvents'
@@ -2825,6 +2826,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
             recordModelCallAttempt: (attempt) => {
               const run = resolveActive()?.activeRuns.get(attempt.runId);
               return run?.recordModelCallAttempt(attempt) ?? Promise.resolve();
+            },
+            recordRunComposition: (runId, snapshot) => {
+              const run = resolveActive()?.activeRuns.get(runId);
+              if (!run) {
+                return Promise.reject(new Error('No active AgentRun for Run Composition'));
+              }
+              return run.recordRunComposition(snapshot);
             },
             loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
             recordHistoryCompactCheckpoint: (

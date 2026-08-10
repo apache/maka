@@ -45,7 +45,7 @@ export class RuntimeHostSessionProjector {
     this.#now = now;
     this.#transcriptIds = new Set(transcript.map((message) => message.id));
     const root = snapshot.rootTurn;
-    if (!root || isRuntimeHostTerminalTurn(root)) return;
+    if (!root) return;
     for (const message of transcript) {
       if (message.type !== 'assistant' || message.turnId !== root.turnId) continue;
       if (message.thinking?.text) {
@@ -110,6 +110,71 @@ export class RuntimeHostSessionProjector {
 
   seedTerminal(turn: RuntimeHostTerminalTurn): SessionEvent[] {
     return this.#terminalEvents(turn);
+  }
+
+  seedStoredTerminal(turnId: string, transcript: readonly StoredMessage[]): SessionEvent[] {
+    const terminal = [...transcript]
+      .reverse()
+      .find(
+        (message): message is Extract<StoredMessage, { type: 'turn_state' }> =>
+          message.type === 'turn_state' &&
+          message.turnId === turnId &&
+          message.status !== 'running',
+      );
+    if (!terminal) return [];
+    const events: SessionEvent[] = [];
+    for (const message of transcript) {
+      if (message.type !== 'assistant' || message.turnId !== turnId) continue;
+      if (message.thinking?.text) {
+        events.push({
+          type: 'thinking_complete',
+          id: `${terminal.id}:thinking:${message.id}`,
+          turnId,
+          messageId: message.id,
+          ts: terminal.ts,
+          text: message.thinking.text,
+        });
+      }
+      if (message.text) {
+        events.push({
+          type: 'text_complete',
+          id: `${terminal.id}:text:${message.id}`,
+          turnId,
+          messageId: message.id,
+          ts: terminal.ts,
+          text: message.text,
+        });
+      }
+    }
+    if (terminal.status === 'completed') {
+      events.push({
+        type: 'complete',
+        id: terminal.id,
+        turnId,
+        ts: terminal.ts,
+        stopReason: 'end_turn',
+      });
+    } else if (terminal.status === 'failed') {
+      const reason = terminal.errorClass ?? 'runtime_error';
+      events.push({
+        type: 'error',
+        id: terminal.id,
+        turnId,
+        ts: terminal.ts,
+        recoverable: false,
+        reason,
+        message: `Turn failed: ${reason}`,
+      });
+    } else {
+      events.push({
+        type: 'abort',
+        id: terminal.id,
+        turnId,
+        ts: terminal.ts,
+        reason: abortReason(terminal.abortSource ?? ''),
+      });
+    }
+    return events;
   }
 
   accept(frame: SubscriptionFrame): RuntimeHostProjectionUpdate {

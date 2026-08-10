@@ -56,12 +56,11 @@ as an MCP server.
 | Filtering `AXPress` out of an element's advertised action list, because pressing is what `click` does | not yet landed — waits on `trycua/cua#2622` exposing per-element AX actions | Their `meaningfulActions`. |
 | The permission-onboarding pattern: anchor a guidance panel to the System Settings window, track it, and distinguish grants that need an app relaunch | not yet landed — for the `feat/permission-onboarding` work | Their `open-codex-computer-use/apps/OpenComputerUse/Sources/OpenComputerUse/PermissionOnboardingApp.swift`. |
 | Archiving side-by-side tool captures in-repo as evidence | practice, not code | Worth adopting for Maka's own Codex comparisons. |
+| Private SkyLight synthetic-focus/background click recipe | Maka's `maka-cu` executor, pinned in `apps/desktop/bundled-tools.json` | Derived independently from the same MIT cua-driver/yabai recipe; the executor keeps its attribution and notice. The WebContent path uses the host window and a single private post rather than the general dual-post compatibility route. |
 
-Not taken, recorded so the decision is not re-litigated: their `SkyLightSPI` /
-`SkyClickSimulation` synthetic-focus click. Their own comment states the recipe
-is derived from cua-driver and yabai. Maka read the same recipe rather than
-that code — which is why removing the cua-driver binary from this tree changes
-nothing here: what was borrowed was a published recipe, not the artifact.
+Removing the cua-driver binary from this tree changes nothing about that path:
+what was borrowed was a published recipe, not the artifact or proprietary Codex
+implementation.
 
 ## 3. Observed, not licensed
 
@@ -78,6 +77,8 @@ descriptions of what a build did on a given date, and are dated for that reason.
 | The agent cursor: shape, hotspot, motion thresholds, spring constants, and the candidate-path scoring function | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
 | Overlay level policy — an occluded target raises the cursor rather than hiding it | same file, and `apps/desktop/src/main/computer-use/cursor-overlay-window.ts` |
 | The observation text shape | `packages/runtime/src/computer-use-tools.ts`, corroborated by the archived capture in §2 |
+| OOP WebContent targeting, retained-element unique refetch, and renderer-generation fencing | Reimplemented in the pinned `maka-cu` source; this repository records the exact source commit and binary digest in `apps/desktop/bundled-tools.json` |
+| Stable AX ids across revisions, ordered no-change/remove/insert/update presentation, and full-tree fallback | Reimplemented in the pinned `maka-cu` source and `packages/runtime/src/computer-use-observation-text.ts`; the complete current tree remains authoritative and dispatch still uses fresh snapshot tokens |
 
 Where Maka deliberately diverges, the divergence is stated at the point of
 divergence rather than here, so it is read by whoever is changing that code.

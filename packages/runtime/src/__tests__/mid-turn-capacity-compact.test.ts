@@ -182,6 +182,26 @@ describe('plan mid-turn capacity compaction', () => {
     assert.equal(ids.at(-1), 'res-b');
   });
 
+  test('step-0 recovery folds prior history without covering the current user anchor', async () => {
+    const events = longTurnEvents();
+    const result = await planMidTurnCapacityCompaction(
+      planInput({ phase: 'pre_turn', orderedEvents: events }),
+    );
+    assert.equal(result.decision, 'compacted');
+    if (result.decision !== 'compacted') return;
+
+    assert.equal(result.checkpoint.phase, undefined);
+    assert.deepEqual(
+      result.coveredRuntimeEvents.map((event) => event.id),
+      ['prior-0', 'prior-1'],
+    );
+    assert.deepEqual(
+      result.replacementEvents.slice(1).map((event) => event.id),
+      events.slice(2).map((event) => event.id),
+    );
+    assert.deepEqual(result.replacementEvents[1], events[2]);
+  });
+
   test('persisted checkpoint replay-validates against the same ledger prefix (recovery)', async () => {
     const events = longTurnEvents();
     const result = await planMidTurnCapacityCompaction(planInput({ orderedEvents: events }));

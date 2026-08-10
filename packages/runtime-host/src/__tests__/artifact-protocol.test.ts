@@ -13,9 +13,9 @@ import {
   decodeClientFrame,
   decodeHostFrame,
   encodeArtifactQueryResult,
-  encodeProtocolFrame,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
 import { encodeArtifactProjection } from '../protocol/artifact.js';
@@ -66,7 +66,7 @@ describe('Artifact protocol', () => {
     );
   });
 
-  test('bounds sequential Artifact read chunks below the frame limit', () => {
+  test('bounds sequential Artifact read chunks below the message limit', () => {
     const bytes = Buffer.alloc(ARTIFACT_READ_CHUNK_MAX_BYTES, 9);
     assert.doesNotThrow(() =>
       response('artifact.query', {
@@ -107,7 +107,7 @@ describe('Artifact protocol', () => {
     );
   });
 
-  test('bounds chunked attachment publication below the frame limit', () => {
+  test('bounds chunked attachment publication below the message limit', () => {
     const bytes = Buffer.alloc(ARTIFACT_INGEST_CHUNK_MAX_BYTES, 7);
     const digest = `sha256:${'a'.repeat(64)}`;
     assert.doesNotThrow(() =>
@@ -169,7 +169,7 @@ describe('Artifact protocol', () => {
         uploadId: 'upload-1',
       }),
     );
-    const frame = encodeProtocolFrame({
+    const frame = encodeProtocolMessage({
       requestId: 'artifact-ingest-chunk',
       operation: 'artifact.ingest',
       input: {
@@ -180,7 +180,7 @@ describe('Artifact protocol', () => {
         chunkBase64: bytes.toString('base64'),
       },
     });
-    assert.ok(frame.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
+    assert.ok(frame.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
 
     for (const chunkBase64 of [
       Buffer.alloc(ARTIFACT_INGEST_CHUNK_MAX_BYTES + 1).toString('base64'),
@@ -368,12 +368,12 @@ describe('Artifact protocol', () => {
       Buffer.byteLength(JSON.stringify(maximumBinary), 'utf8') <= ARTIFACT_RESULT_MAX_BYTES,
     );
     assert.ok(
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: 'artifact-binary',
         operation: 'artifact.query',
         ok: true,
         result: maximumBinary,
-      }).byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
+      }).byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
     );
   });
 

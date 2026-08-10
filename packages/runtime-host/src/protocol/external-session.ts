@@ -8,7 +8,7 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-catalog.js';
 
 export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
@@ -73,17 +73,20 @@ export const EXTERNAL_SESSION_OPERATION_SPECS = {
     decodeInput: decodeExternalSessionSourceQueryInput,
     decodeOutput: decodeExternalSessionSourceQueryResult,
   }),
-  'external-session.catalog.query': defineOperation<
+  'external-session.catalog.query': defineHostPathOperation<
     ExternalSessionCatalogQueryInput,
     ExternalSessionCatalogQueryResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodeExternalSessionCatalogQueryInput,
-    decodeOutput: decodeExternalSessionCatalogQueryResult,
-  }),
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodeExternalSessionCatalogQueryInput,
+      decodeOutput: decodeExternalSessionCatalogQueryResult,
+    },
+    (input) => input.cwd !== undefined,
+  ),
   'external-session.import': defineOperation<
     ExternalSessionImportInput,
     ExternalSessionImportResult,

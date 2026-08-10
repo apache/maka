@@ -69,6 +69,7 @@ const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
 
 function panelProps(input: {
   sessions: SessionSummary[];
+  selection?: SessionListPanelProps['selection'];
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
@@ -78,7 +79,7 @@ function panelProps(input: {
   worktreeSessionIds?: SessionListPanelProps['worktreeSessionIds'];
 }): SessionListPanelProps {
   return {
-    selection: { section: 'sessions', filter: 'chats' },
+    selection: input.selection ?? { section: 'sessions', filter: 'chats' },
     sessions: input.sessions,
     ...(input.activeId ? { activeId: input.activeId } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
@@ -245,6 +246,29 @@ export const ConversationStates: Story = {
         streamingSessionIds: new Set(['status-running']),
         staleSessionIds: new Set(['status-blocked']),
       })} />
+    </StoryFrame>
+  ),
+};
+
+// Real path: after choosing Archived in the rail, an archived conversation
+// remains discoverable so its existing row-menu restore action is reachable.
+export const ArchivedConversations: Story = {
+  render: () => (
+    <StoryFrame>
+      <SessionListPanel
+        {...panelProps({
+          selection: { section: 'sessions', filter: 'archived' },
+          sessions: [
+            makeSession({
+              id: 'archived-release-notes',
+              name: '旧版本发布记录',
+              status: 'archived',
+              lastMessageAt: NOW - 8 * 24 * 60 * 60 * 1000,
+            }),
+          ],
+          activeId: 'archived-release-notes',
+        })}
+      />
     </StoryFrame>
   ),
 };

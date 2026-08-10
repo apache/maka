@@ -19,11 +19,11 @@ import {
   decodeHostFrame,
   decodeUsageQueryInput,
   encodePricingQueryResult,
-  encodeProtocolFrame,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
   PRICING_PAGE_MAX_BYTES,
   PRICING_PAGE_MAX_ITEMS,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RuntimeHostProtocolError,
   USAGE_PAGE_MAX_BYTES,
   USAGE_PAGE_MAX_ITEMS,
@@ -559,7 +559,7 @@ describe('Usage/Pricing protocol', () => {
     );
   });
 
-  test('bounds a page of maximum-length CJK pricing items below the frame limit', () => {
+  test('bounds a page of maximum-length CJK pricing items below the message limit', () => {
     const cjkEntries = Array.from({ length: PRICING_PAGE_MAX_ITEMS }, (_, index) =>
       customPricingConfigEntry(maximumCjkPricing(index)),
     ).sort((left, right) => comparePricingModelKeys(left.pricing.modelKey, right.pricing.modelKey));
@@ -577,12 +577,12 @@ describe('Usage/Pricing protocol', () => {
     const pageBytes = Buffer.byteLength(JSON.stringify(maximumPage), 'utf8');
     assert.ok(pageBytes <= PRICING_PAGE_MAX_BYTES);
     assert.ok(
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: 'maximum-cjk-pricing-page',
         operation: 'pricing.query',
         ok: true,
         result: maximumPage,
-      }).byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
+      }).byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
     );
     assert.throws(
       () =>
@@ -758,7 +758,7 @@ async function queryUsageRows(
   );
   const frame = decodeHostFrame(
     JSON.parse(
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: `usage-${source}-identity-query`,
         operation: 'usage.query',
         ...outcome,
@@ -786,7 +786,7 @@ async function queryUsageBuckets(
   );
   const frame = decodeHostFrame(
     JSON.parse(
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: 'usage-bucket-identity-query',
         operation: 'usage.query',
         ...outcome,

@@ -129,6 +129,8 @@ test('recovers and records Session copy cleanup through the Runtime Host catalog
     ipc,
   );
 
+  assert.equal(recoveries, 1);
+  await ipc.invoke('sessions:list');
   await ipc.invoke('sessions:list');
   await ipc.invoke('sessions:cleanupSessionCopy', 'copy-cleanup');
   await ipc.invoke('sessions:abandonSessionCopy', 'copy-abandon');

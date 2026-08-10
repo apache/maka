@@ -1,14 +1,3 @@
-/* Astryx convergence (task #136): the Claude subscription card was the last
-   user of the hand-rolled `.settingsConnectionRow[data-status]` recipe (9
-   tinted variants), the quota rows, and the paste panel — it now composes
-   Card / Banner / HStack / VStack / ProgressBar / FieldStatus, so those rules
-   are retired. What remains is the inline-meta helper the Web Search page
-   still uses. */
-
-.settingsConnectionMeta {
-    font: var(--maka-text-supporting);
-    margin: 0;
-    display: flex;
-    gap: var(--space-3);
-    color: var(--muted-foreground);
-  }
+/* Astryx convergence: connection-list / Claude card chrome moved to Banner,
+   Card, StatusDot, ProgressBar. File kept as an import seam so settings.css
+   does not thrash while the last hand-rolled helpers are retired. */

@@ -110,6 +110,11 @@ export interface AgentGraphCoordinatorInput {
   onError?(rootSessionId: string, error: unknown): void | Promise<void>;
 }
 
+export interface AgentGraphExecutionStopInput {
+  stopSupervisor(): Promise<void>;
+  withSupervisorWakesSuppressed(operation: () => Promise<void>): Promise<void>;
+}
+
 interface GraphDriver {
   rootSessionId: string;
   graphId: string;
@@ -501,6 +506,30 @@ export class AgentGraphCoordinator {
   async stop(rootSessionId: string): Promise<void> {
     await this.#assertRootSupervisor(rootSessionId);
     const driver = this.#driver(rootSessionId);
+    return this.#stopGraph(driver);
+  }
+
+  /** Stop the validated root supervisor and its graph under one wake fence. */
+  async stopExecution(rootSessionId: string, input: AgentGraphExecutionStopInput): Promise<void> {
+    await this.#assertRootSupervisor(rootSessionId);
+    const driver = this.#driver(rootSessionId);
+    await input.withSupervisorWakesSuppressed(async () => {
+      const failures: unknown[] = [];
+      try {
+        await input.stopSupervisor();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await this.#stopGraph(driver);
+      } catch (error) {
+        failures.push(error);
+      }
+      throwCollectedFailures(`Failed to stop agent graph execution ${driver.graphId}`, failures);
+    });
+  }
+
+  #stopGraph(driver: GraphDriver): Promise<void> {
     if (driver.stopTask) return driver.stopTask;
     const stopTask = this.#stopDriver(driver).finally(() => {
       if (driver.stopTask === stopTask) driver.stopTask = undefined;

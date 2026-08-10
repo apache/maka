@@ -3,8 +3,8 @@ import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  encodeProtocolFrame,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  encodeProtocolMessage,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
   SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
@@ -806,7 +806,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (subscriber.phase !== 'open' || subscriber.terminalQueued) return;
     let encodedBytes: number;
     try {
-      encodedBytes = encodeProtocolFrame(frame).byteLength;
+      encodedBytes = encodeProtocolMessage(frame).byteLength;
     } catch {
       this.#evictSlowSubscriber(subscriber);
       return;
@@ -841,7 +841,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
     subscriber.nextSequence += 1;
     subscriber.terminalQueued = true;
-    const encodedBytes = encodeProtocolFrame(frame).byteLength;
+    const encodedBytes = encodeProtocolMessage(frame).byteLength;
     if (inFlight) {
       subscriber.queue.push(inFlight);
       subscriber.queuedBytes += inFlight.encodedBytes;
@@ -914,7 +914,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       sequence: subscriber.nextSequence,
       reason: 'session_removed',
     };
-    const encodedBytes = encodeProtocolFrame(frame).byteLength;
+    const encodedBytes = encodeProtocolMessage(frame).byteLength;
     if (
       subscriber.queue.length >= MAX_SUBSCRIBER_QUEUED_FRAMES ||
       subscriber.queuedBytes + encodedBytes > MAX_SUBSCRIBER_QUEUED_BYTES
@@ -1072,7 +1072,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 }
 
 function slowConsumerFrameBytes(subscriber: Subscriber, hostEpoch: string): number {
-  return encodeProtocolFrame({
+  return encodeProtocolMessage({
     kind: 'subscription.closed',
     hostEpoch,
     subscriptionId: subscriber.subscriptionId,
@@ -1137,7 +1137,7 @@ function transcriptSubscriptionNotFound(): OperationOutcome<'session.transcript.
 function terminalFrameByteBudget(subscriber: Subscriber, hostEpoch: string): number {
   return Math.max(
     slowConsumerFrameBytes(subscriber, hostEpoch),
-    encodeProtocolFrame({
+    encodeProtocolMessage({
       kind: 'subscription.closed',
       hostEpoch,
       subscriptionId: subscriber.subscriptionId,
@@ -1180,7 +1180,7 @@ function isTerminalTurn(turn: TurnSnapshot): boolean {
 }
 
 function wireTextByteLimit(frame: SessionDeltaFrame): number {
-  return RUNTIME_HOST_MAX_FRAME_BYTES - encodeProtocolFrame(frame).byteLength;
+  return RUNTIME_HOST_MAX_MESSAGE_BYTES - encodeProtocolMessage(frame).byteLength;
 }
 
 function jsonStringContentBytes(value: string): number {

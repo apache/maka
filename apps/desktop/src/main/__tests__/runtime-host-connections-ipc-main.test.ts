@@ -7,6 +7,133 @@ import {
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
 
+test('registers pure Connection reads for replacement-Host retry', () => {
+  const reads = new Set<string>();
+  const effects = new Set<string>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel) => {
+        effects.add(channel);
+      },
+      handleReconnectableRead: (channel) => {
+        reads.add(channel);
+      },
+    },
+    client: {} as never,
+    emitConnectionListChanged() {},
+  });
+
+  assert.deepEqual([...reads].sort(), [
+    'connections:getDefault',
+    'connections:getRequestHeaders',
+    'connections:hasSecret',
+    'connections:list',
+  ]);
+  assert.ok(effects.has('connections:create'));
+  assert.ok(effects.has('connections:test'));
+});
+
+test('retries connection delete after a stale revision instead of failing permanently', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let revision = 1;
+  let removals = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        revision,
+        defaultTarget: null,
+        connections: [
+          {
+            connectionId: 'connection-1',
+            revision,
+            slug: 'openrouter',
+            name: 'OpenRouter',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://openrouter.ai/api/v1',
+            enabled: true,
+            enabledModelIds: ['model-1'],
+            models: [{ id: 'model-1' }],
+          },
+        ],
+      }),
+      removeConnection: async (expected: { connectionId: string; revision: number }) => {
+        removals += 1;
+        if (expected.revision === 1) {
+          revision = 2;
+          return { kind: 'connection_stale' };
+        }
+        assert.equal(expected.revision, 2);
+        return { kind: 'committed', catalogRevision: 3 };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await handlers.get('connections:delete')?.({}, 'openrouter');
+  assert.equal(removals, 2);
+});
+
+test('treats a missing connection as a successful delete without calling remove', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let removals = 0;
+  let listChanged = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        revision: 1,
+        defaultTarget: null,
+        connections: [],
+      }),
+      removeConnection: async () => {
+        removals += 1;
+        return { kind: 'committed', catalogRevision: 2 };
+      },
+    } as never,
+    emitConnectionListChanged() {
+      listChanged += 1;
+    },
+  });
+
+  await handlers.get('connections:delete')?.({}, 'already-gone');
+  assert.equal(removals, 0);
+  assert.equal(listChanged, 1);
+});
+
+test('rejects invalid connection slug input instead of treating it as already deleted', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        revision: 1,
+        defaultTarget: null,
+        connections: [],
+      }),
+      removeConnection: async () => ({ kind: 'committed', catalogRevision: 2 }),
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await assert.rejects(
+    async () => handlers.get('connections:delete')?.({}, 42),
+    /Invalid connection slug|connection slug/i,
+  );
+});
+
 test('reports an existing but unconfigured credential as missing', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   registerRuntimeHostConnectionsIpc({

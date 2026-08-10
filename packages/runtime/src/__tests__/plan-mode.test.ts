@@ -112,6 +112,36 @@ describe('Plan Mode tool surface', () => {
     );
   });
 
+  test('restores mutating tools for full access without enabling autonomous workflows', () => {
+    const selected = selectCollaborationTools({
+      mode: 'plan',
+      hasActiveExecution: false,
+      fullAccess: true,
+      tools: [
+        tool('Read', 'read'),
+        tool('Write', 'file_write'),
+        tool('Bash', 'shell_unsafe'),
+        tool('Browser', 'browser'),
+        tool('CustomTool'),
+        tool('Automation'),
+        tool('GoalSet'),
+        tool('ExploreAgent', 'subagent'),
+        tool('AskUserQuestion'),
+        tool('SubmitPlan'),
+        tool('update_plan'),
+      ],
+    });
+    assert.deepEqual(
+      selected.map((tool) => tool.name),
+      ['Read', 'Write', 'Bash', 'Browser', 'CustomTool', 'AskUserQuestion', 'SubmitPlan'],
+    );
+
+    const prompt = renderPlanModePrompt({ fullAccess: true });
+    assert.match(prompt, /Full access is active/);
+    assert.doesNotMatch(prompt, /do not modify files/);
+    assert.match(prompt, /planning workflow active/);
+  });
+
   test('active execution exposes progress controls and removes subagents', () => {
     const selected = selectCollaborationTools({
       mode: 'agent',
@@ -131,45 +161,53 @@ describe('Plan Mode tool surface', () => {
   });
 
   test('injects interrupted progress as replanning context without resuming execution', () => {
-    const prompt = renderInterruptedPlanContext({
-      proposal: {
-        planId: 'plan-1',
-        proposalId: 'proposal-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        revision: 1,
-        title: 'Original plan',
-        steps: [{ id: 'inspect', title: 'Inspect code', description: 'Inspect' }],
-        status: 'approved',
-        submittedAt: 1,
-      },
-      execution: {
-        executionId: 'execution-1',
-        planId: 'plan-1',
-        proposalId: 'proposal-1',
-        sessionId: 'session-1',
-        status: 'interrupted',
-        steps: [
-          {
-            id: 'inspect',
-            title: 'Inspect code',
-            description: 'Inspect',
-            status: 'completed',
-            updatedAt: 2,
-          },
-        ],
-        startedAt: 1,
-        updatedAt: 2,
-        interruptedAt: 2,
-        interruptionReason: 'User stopped execution',
-      },
-    });
+    const proposal = {
+      planId: 'plan-1',
+      proposalId: 'proposal-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      revision: 1,
+      title: 'Original plan',
+      steps: [{ id: 'inspect', title: 'Inspect code', description: 'Inspect' }],
+      status: 'approved' as const,
+      submittedAt: 1,
+    };
+    const execution = {
+      executionId: 'execution-1',
+      planId: 'plan-1',
+      proposalId: 'proposal-1',
+      sessionId: 'session-1',
+      status: 'interrupted' as const,
+      steps: [
+        {
+          id: 'inspect',
+          title: 'Inspect code',
+          description: 'Inspect',
+          status: 'completed' as const,
+          updatedAt: 2,
+        },
+      ],
+      startedAt: 1,
+      updatedAt: 2,
+      interruptedAt: 2,
+      interruptionReason: 'User stopped execution',
+    };
+    const prompt = renderInterruptedPlanContext({ proposal, execution });
 
     assert.match(prompt, /Interrupted execution ID: execution-1/);
     assert.match(prompt, /<title>Inspect code<\/title>/);
     assert.match(prompt, /<description>Inspect<\/description>/);
     assert.match(prompt, /<status>completed<\/status>/);
     assert.match(prompt, /Do not resume execution or modify files/);
+
+    const fullAccessPrompt = renderInterruptedPlanContext({
+      proposal,
+      execution,
+      fullAccess: true,
+    });
+    assert.match(fullAccessPrompt, /Do not resume the interrupted execution automatically/);
+    assert.match(fullAccessPrompt, /Full access remains active/);
+    assert.doesNotMatch(fullAccessPrompt, /Do not resume execution or modify files/);
   });
 
   test('requires execution progress updates at step boundaries', () => {

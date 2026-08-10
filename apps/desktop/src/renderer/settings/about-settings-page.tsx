@@ -9,11 +9,13 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
 import { SettingsActions, SettingsPage, SettingsSection } from './settings-section';
 import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
+import { aboutUpdateStatusDetail } from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
@@ -35,10 +37,14 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingEnvSummary, setCopyingEnvSummary] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const envSummaryCopyGuard = useActionGuard<'copy'>();
+  const checkUpdateGuard = useActionGuard<'check'>();
   const aboutPageMountedRef = useMountedRef();
   const toast = useToast();
   const envSummaryHelpId = useId();
+  const updateHelpId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +66,23 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       cancelled = true;
     };
   }, [copy.loadFailed, locale, toast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.maka.app
+      .updateStatus()
+      .then((status) => {
+        if (!cancelled) setUpdateStatus(status);
+      })
+      .catch(() => undefined);
+    const unsubscribe = window.maka.app.subscribeUpdateStatus((status) => {
+      if (!cancelled) setUpdateStatus(status);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   if (!info && !infoError) {
     return (
@@ -87,6 +110,25 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   }
 
   const platformPretty = PLATFORM_LABEL[info.platform] ?? info.platform;
+
+  async function checkForUpdates() {
+    if (!checkUpdateGuard.begin('check')) return;
+    setCheckingUpdate(true);
+    try {
+      const status = await window.maka.app.checkForUpdates();
+      if (aboutPageMountedRef.current) setUpdateStatus(status);
+      if (status.state === 'error') {
+        toast.error(copy.updateCheckFailed, copy.updateCheckFailedDetail(status.message));
+      }
+    } catch (error) {
+      if (aboutPageMountedRef.current) {
+        toast.error(copy.updateCheckFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      checkUpdateGuard.finish();
+      if (aboutPageMountedRef.current) setCheckingUpdate(false);
+    }
+  }
 
   async function copyEnvSummary() {
     if (!info) return;
@@ -192,6 +234,29 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           />
         </SettingsSection>
       )}
+      <SettingsSection title={copy.updatesTitle}>
+        <SettingRow
+          title={copy.checkForUpdates}
+          detail={aboutUpdateStatusDetail(updateStatus, copy, {
+            isDevBuild: info.buildMode === 'dev',
+          })}
+          action={(
+            <Button
+              variant="secondary"
+              size="sm"
+              isDisabled={checkingUpdate || info.buildMode === 'dev'}
+              aria-describedby={updateHelpId}
+              onClick={() => void checkForUpdates()}
+              label={checkingUpdate || updateStatus?.state === 'checking'
+                ? copy.checkingForUpdates
+                : copy.checkForUpdates}
+            />
+          )}
+        />
+        <p id={updateHelpId}>
+          {info.buildMode === 'dev' ? copy.updateDevBuildHelp : copy.updateHelp}
+        </p>
+      </SettingsSection>
       <SettingsSection title={sharedCopy.groups.buildInfo}>
         <SettingsActions>
           <Button variant="primary" isDisabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()} label={copyingEnvSummary ? copy.copying : copy.copyEnvironment} />

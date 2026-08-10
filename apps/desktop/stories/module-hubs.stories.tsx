@@ -591,7 +591,6 @@ function ModuleSurface(props: {
         <AppShellWorkspaceTopActions
           workbarAvailable={false}
           workbarCollapsed
-          onOpenWorkbarLauncher={noop}
           onToggleWorkbar={noop}
         />
         <ToastProvider>{props.children}</ToastProvider>
@@ -790,7 +789,9 @@ export const ExtensionsSkillsInspector: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → 技能, with a long installed list.
+// Real path: sidebar → 扩展 → 技能, long installed list (visual catalog only).
+// Do not pin scroll geometry / Astryx List a11y in play — those are vendor DOM
+// contracts, not product journeys.
 export const ExtensionsSkillsScrollContainment: Story = {
   render: () => <ExtensionsSkillsSurface skills={LONG_LIST_SKILLS} />,
 };

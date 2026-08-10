@@ -1,56 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from '@astryxdesign/core/SegmentedControl';
+import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
-import { Toolbar } from '@astryxdesign/core/Toolbar';
+import { Skeleton } from '@astryxdesign/core/Skeleton';
+import { Text } from '@astryxdesign/core/Text';
 import {
-  countDiffLineStats,
+  displayRedactSecrets,
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
-  type GitReviewMutationAction,
   type GitReviewReadResult,
-  type GitReviewSource,
-  type StoredMessage,
 } from '@maka/core';
-import { ToolResultPreview, useToast, useUiLocale } from '@maka/ui';
-import {
-  ICON_SIZE,
-  Check,
-  GitBranch,
-  Minus,
-  Plus,
-  RotateCcw,
-  RotateCw,
-} from '@maka/ui/icons';
+import { DiffCodePreview, useUiLocale } from '@maka/ui';
+import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 
-type ReviewSource = GitReviewSource | 'last-turn';
 const REVIEW_FILE_PAGE_SIZE = 20;
+const REVIEW_DIFF_LINE_CAP = 500;
+const REVIEW_SKELETON_ROWS = [0, 1, 2, 3] as const;
 
-type FileDiffMessage = Extract<StoredMessage, { type: 'tool_result' }> & {
-  content: Extract<
-    Extract<StoredMessage, { type: 'tool_result' }>['content'],
-    { kind: 'file_diff' }
-  >;
-};
-
-function fileDiffMessages(messages: readonly StoredMessage[]): FileDiffMessage[] {
-  return messages.filter(
-    (message): message is FileDiffMessage =>
-      message.type === 'tool_result' && message.content.kind === 'file_diff',
-  );
-}
-
-function latestFileDiffTurn(messages: readonly StoredMessage[]): FileDiffMessage[] {
-  const diffs = fileDiffMessages(messages);
-  const turnId = diffs.at(-1)?.turnId;
-  return turnId ? diffs.filter((message) => message.turnId === turnId) : [];
+function boundedDiff(diff: string) {
+  const lines = displayRedactSecrets(diff).split('\n');
+  if (lines.length <= REVIEW_DIFF_LINE_CAP) {
+    return { body: lines.join('\n'), hiddenLines: 0 };
+  }
+  return {
+    body: lines.slice(0, REVIEW_DIFF_LINE_CAP).join('\n'),
+    hiddenLines: lines.length - REVIEW_DIFF_LINE_CAP,
+  };
 }
 
 export function SessionReviewPanel(props: {
@@ -58,14 +37,9 @@ export function SessionReviewPanel(props: {
   active: boolean;
 }) {
   const locale = useUiLocale();
-  const toast = useToast();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
-  const [source, setSource] = useState<ReviewSource>('branch');
-  const [baseBranch, setBaseBranch] = useState<string | undefined>(undefined);
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [pendingPath, setPendingPath] = useState<string | null>(null);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
   const revisionRef = useRef(0);
@@ -75,27 +49,12 @@ export function SessionReviewPanel(props: {
     setLoading(true);
     setError(null);
     try {
-      const nextMessages = await window.maka.sessions.readMessages(props.sessionId);
-      const nextGit =
-        source === 'last-turn'
-          ? null
-          : await window.maka.gitReview.read({
-              sessionId: props.sessionId,
-              source,
-              ...(source === 'branch' && baseBranch ? { baseBranch } : {}),
-            });
+      const nextGit = await window.maka.gitReview.read({
+        sessionId: props.sessionId,
+        source: 'branch',
+      });
       if (revision !== revisionRef.current) return;
-      setMessages(nextMessages);
       setGitResult(nextGit);
-      if (
-        source === 'branch' &&
-        nextGit?.ok === false &&
-        (nextGit.reason === 'not_git_repository' ||
-          nextGit.reason === 'workspace_unavailable') &&
-        latestFileDiffTurn(nextMessages).length > 0
-      ) {
-        setSource('last-turn');
-      }
     } catch (nextError) {
       if (revision === revisionRef.current) {
         setError(
@@ -107,11 +66,7 @@ export function SessionReviewPanel(props: {
     } finally {
       if (revision === revisionRef.current) setLoading(false);
     }
-  }, [baseBranch, copy.loadFailed, locale, props.sessionId, source]);
-
-  useEffect(() => {
-    setBaseBranch(undefined);
-  }, [props.sessionId]);
+  }, [copy.loadFailed, locale, props.sessionId]);
 
   useEffect(() => {
     if (!props.active) return;
@@ -124,283 +79,224 @@ export function SessionReviewPanel(props: {
         timer = window.setTimeout(() => void load(), 250);
       },
     );
+    const refreshAfterExternalChange = () => {
+      if (document.visibilityState === 'hidden') return;
+      void load();
+    };
+    window.addEventListener('focus', refreshAfterExternalChange);
+    document.addEventListener('visibilitychange', refreshAfterExternalChange);
     void load();
     return () => {
       revisionRef.current += 1;
       if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('focus', refreshAfterExternalChange);
+      document.removeEventListener('visibilitychange', refreshAfterExternalChange);
       unsubscribe();
     };
   }, [load, props.active, props.sessionId]);
 
-  const lastTurnDiffs = useMemo(
-    () => latestFileDiffTurn(messages).reverse(),
-    [messages],
-  );
   const gitSnapshot = gitResult?.ok ? gitResult.snapshot : null;
   const gitFiles = gitSnapshot?.files ?? [];
   const visibleGitFiles = gitFiles.slice(0, visibleFileCount);
   const remainingGitFiles = Math.max(0, gitFiles.length - visibleGitFiles.length);
-  const stats =
-    source === 'last-turn'
-      ? lastTurnDiffs.reduce(
-          (total, message) => {
-            const next = countDiffLineStats(message.content.diff);
-            return {
-              files: total.files + 1,
-              additions: total.additions + next.additions,
-              deletions: total.deletions + next.deletions,
-            };
-          },
-          { files: 0, additions: 0, deletions: 0 },
-        )
-      : {
-          files: gitFiles.length,
-          additions: gitSnapshot?.additions ?? 0,
-          deletions: gitSnapshot?.deletions ?? 0,
-        };
+  const stats = {
+    files: gitFiles.length,
+    additions: gitSnapshot?.additions ?? 0,
+    deletions: gitSnapshot?.deletions ?? 0,
+  };
   const sourceError =
-    source === 'last-turn' || gitResult?.ok !== false
+    gitResult?.ok !== false
       ? null
       : gitResult.reason === 'not_git_repository'
         ? copy.notGitRepository
         : gitResult.reason === 'workspace_unavailable'
           ? copy.workspaceUnavailable
-        : gitResult.reason === 'unborn_repository'
-          ? copy.unbornRepository
-          : gitResult.reason === 'invalid_base_branch'
-            ? copy.invalidBaseBranch
-          : copy.gitFailed;
-  const comparison =
-    source === 'branch' &&
-    gitSnapshot?.baseBranch &&
-    gitSnapshot.currentBranch
-      ? gitSnapshot.baseBranch === gitSnapshot.currentBranch
-        ? copy.workingTree(gitSnapshot.currentBranch)
-        : copy.comparison(gitSnapshot.baseBranch, gitSnapshot.currentBranch)
-      : null;
-  const mutationSource =
-    source === 'unstaged' || source === 'staged' ? source : null;
-  const mutationAction =
-    mutationSource === 'unstaged'
-      ? ('stage' as const)
-      : mutationSource === 'staged'
-        ? ('unstage' as const)
-        : null;
-  const empty =
-    !loading &&
-    !error &&
-    !sourceError &&
-    (source === 'last-turn' ? lastTurnDiffs.length === 0 : gitFiles.length === 0);
-
-  const mutateFile = async (
-    path: string,
-    action: GitReviewMutationAction | null = mutationAction,
-  ) => {
-    if (!gitSnapshot || !mutationSource || !action || pendingPath) return;
-    setPendingPath(path);
-    setError(null);
-    try {
-      const result = await window.maka.gitReview.mutate({
-        sessionId: props.sessionId,
-        source: mutationSource,
-        revision: gitSnapshot.revision,
-        path,
-        action,
-      });
-      if (!result.ok) {
-        if (result.reason === 'stale_snapshot') {
-          await load();
-          setError(copy.snapshotChanged);
-        } else {
-          setError(copy.mutationFailed);
-        }
-        return;
-      }
-      setGitResult(result.review);
-    } catch (nextError) {
-      setError(
-        locale === 'zh'
-          ? generalizedErrorMessageChinese(nextError, copy.mutationFailed)
-          : generalizedErrorMessage(nextError, copy.mutationFailed),
-      );
-    } finally {
-      setPendingPath(null);
-    }
-  };
-
-  const revertFile = async (path: string) => {
-    const confirmed = await toast.confirm({
-      title: copy.revertTitle,
-      description: copy.revertDescription(path),
-      confirmLabel: copy.revertConfirm,
-      cancelLabel: copy.cancel,
-      destructive: true,
-    });
-    if (confirmed) await mutateFile(path, 'revert');
-  };
-
+          : gitResult.reason === 'unborn_repository'
+            ? copy.unbornRepository
+            : gitResult.reason === 'invalid_base_branch'
+              ? copy.invalidBaseBranch
+              : copy.gitFailed;
+  const empty = !loading && !error && !sourceError && gitFiles.length === 0;
   useEffect(() => {
     setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
-  }, [gitSnapshot?.revision, source]);
+  }, [gitSnapshot?.revision]);
 
   return (
     <Section
       variant="transparent"
-      padding={0}
+      padding={4}
       className="maka-session-review-panel"
+      role="region"
       aria-label={copy.ariaLabel}
       aria-busy={loading || undefined}
     >
-      <Toolbar
-        size="sm"
-        label={copy.ariaLabel}
-        className="maka-session-review-toolbar"
-        startContent={
-          <div className="maka-session-review-source">
-            <SegmentedControl
-              value={source}
-              onChange={(value) => setSource(value as ReviewSource)}
-              label={copy.sourceLabel}
-              size="sm"
-            >
-              <SegmentedControlItem value="branch" label={copy.branchSource} />
-              <SegmentedControlItem value="unstaged" label={copy.unstagedSource} />
-              <SegmentedControlItem value="staged" label={copy.stagedSource} />
-              <SegmentedControlItem value="last-turn" label={copy.lastTurnSource} />
-            </SegmentedControl>
-          </div>
-        }
-        endContent={
-          <Button
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            label={copy.refresh}
-            icon={<RotateCw size={ICON_SIZE.control} aria-hidden />}
-            isLoading={loading}
-            onClick={() => void load()}
-          />
-        }
-      />
-      <div className="maka-session-review-summary">
-        <span>{copy.summary(stats.files, stats.additions, stats.deletions)}</span>
-        {source === 'branch' &&
-        gitSnapshot &&
-        gitSnapshot.baseBranchOptions.length > 0 ? (
-          <DropdownMenu
-            button={{
-              label: comparison ?? copy.branchSource,
-              variant: 'ghost',
-              size: 'sm',
-            }}
-            alignment="end"
-            items={gitSnapshot.baseBranchOptions.map((branch) => ({
-              label: branch,
-              icon:
-                branch === gitSnapshot.baseBranch ? (
-                  <Check size={ICON_SIZE.control} aria-hidden />
-                ) : undefined,
-              onClick: () => setBaseBranch(branch),
-            }))}
-          />
-        ) : comparison ? (
-          <span>{comparison}</span>
+      <VStack gap={3} align="stretch" width="100%">
+        {loading && gitResult === null ? (
+          <VStack
+            gap={2}
+            align="stretch"
+            aria-hidden="true"
+          >
+            <Skeleton width="42%" height={16} radius="rounded" index={0} />
+            <div className="maka-session-review-loading-list">
+              {REVIEW_SKELETON_ROWS.map((index) => (
+                <Skeleton key={index} width="100%" height={36} radius={0} index={index + 1} />
+              ))}
+            </div>
+          </VStack>
         ) : null}
-      </div>
-      {error ? (
-        <Banner
-          status="error"
-          title={error}
-          endContent={
-            <Button variant="ghost" size="sm" label={copy.retry} onClick={() => void load()} />
-          }
-        />
-      ) : null}
-      {/* A source that cannot be read is a failure, not an absence — it takes
-          the same Banner the load error above does, not an EmptyState. */}
-      {sourceError ? <Banner status="error" title={sourceError} /> : null}
-      {gitSnapshot?.truncated ? (
-        <Banner status="info" title={copy.truncated} />
-      ) : null}
-      {empty ? (
-        /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
-           carries icon and description, not the compact form. */
-        <EmptyState
-          icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
-          title={copy.empty}
-          description={copy.emptyHelp}
-        />
-      ) : null}
-      {source === 'last-turn' && lastTurnDiffs.length > 0 ? (
-        <div className="maka-session-review-list">
-          {lastTurnDiffs.map((message) => (
-            <ToolResultPreview key={message.id} content={message.content} />
-          ))}
-        </div>
-      ) : null}
-      {source !== 'last-turn' && gitFiles.length > 0 ? (
-        <div className="maka-session-review-list">
-          {visibleGitFiles.map((file) => (
-            <ToolResultPreview
-              key={`${gitSnapshot?.revision}:${file.path}`}
-              fileDiffActions={
-                mutationAction ? (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      isIconOnly
-                      label={
-                        mutationAction === 'stage'
-                          ? copy.stageFile
-                          : copy.unstageFile
-                      }
-                      icon={
-                        mutationAction === 'stage'
-                          ? <Plus size={ICON_SIZE.control} aria-hidden />
-                          : <Minus size={ICON_SIZE.control} aria-hidden />
-                      }
-                      isLoading={pendingPath === file.path}
-                      isDisabled={pendingPath !== null}
-                      onClick={() => void mutateFile(file.path)}
-                    />
-                    {mutationAction === 'stage' ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        isIconOnly
-                        label={copy.revertFile}
-                        icon={<RotateCcw size={ICON_SIZE.control} aria-hidden />}
-                        isDisabled={pendingPath !== null}
-                        onClick={() => void revertFile(file.path)}
-                      />
-                    ) : null}
-                  </>
-                ) : undefined
-              }
-              content={{
-                kind: 'file_diff',
-                paths: [file.path],
-                diff: file.diff,
-              }}
-            />
-          ))}
-          {remainingGitFiles > 0 ? (
-            <div className="maka-session-review-more">
+        {gitSnapshot && gitFiles.length > 0 ? (
+          <VStack gap={1} align="start" className="maka-session-review-summary">
+            <Text type="label">{copy.changedFiles(stats.files)}</Text>
+            <HStack gap={3} align="center">
+              <Text
+                type="supporting"
+                hasTabularNumbers
+                className="maka-session-review-additions"
+              >
+                {copy.addedLines(stats.additions)}
+              </Text>
+              <Text
+                type="supporting"
+                hasTabularNumbers
+                className="maka-session-review-deletions"
+              >
+                {copy.deletedLines(stats.deletions)}
+              </Text>
+            </HStack>
+          </VStack>
+        ) : null}
+        {error ? (
+          <Banner
+            status="error"
+            title={error}
+            endContent={
+              <Button variant="ghost" size="sm" label={copy.retry} onClick={() => void load()} />
+            }
+          />
+        ) : null}
+        {/* A source that cannot be read is a failure, not an absence — it takes
+            the same Banner the load error above does, not an EmptyState. */}
+        {sourceError ? (
+          <Banner
+            status="error"
+            title={sourceError}
+            endContent={
               <Button
                 variant="ghost"
                 size="sm"
-                label={copy.showMore(remainingGitFiles)}
-                onClick={() =>
-                  setVisibleFileCount((current) =>
-                    Math.min(gitFiles.length, current + REVIEW_FILE_PAGE_SIZE),
-                  )
-                }
+                label={copy.retry}
+                isLoading={loading}
+                onClick={() => void load()}
               />
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+            }
+          />
+        ) : null}
+        {gitSnapshot?.truncated ? (
+          <Banner status="info" title={copy.truncated} />
+        ) : null}
+        {empty ? (
+          /* Panel empty (DESIGN.md §10 tier 2): the whole panel is empty, so it
+             carries icon and description, not the compact form. */
+          <EmptyState
+            icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
+            title={copy.empty}
+            description={copy.emptyHelp}
+          />
+        ) : null}
+        {gitFiles.length > 0 ? (
+          <div className="maka-session-review-list">
+            <CollapsibleGroup
+              key={gitSnapshot?.revision}
+              type="single"
+              hasDividers
+              density="compact"
+              role="list"
+              aria-label={copy.changedFiles(gitFiles.length)}
+            >
+              {visibleGitFiles.map((file) => {
+                const preview = boundedDiff(file.diff);
+                return (
+                  <Collapsible
+                    key={`${gitSnapshot?.revision}:${file.path}`}
+                    value={file.path}
+                    className="maka-session-review-file"
+                    role="listitem"
+                    trigger={
+                      <HStack
+                        as="span"
+                        gap={2}
+                        align="center"
+                        justify="between"
+                        width="100%"
+                        className="maka-session-review-file-trigger"
+                      >
+                        <Text
+                          type="code"
+                          maxLines={1}
+                          className="maka-session-review-file-path"
+                        >
+                          {file.path}
+                        </Text>
+                        <HStack
+                          as="span"
+                          gap={2}
+                          align="center"
+                          className="maka-session-review-file-stats"
+                        >
+                          {file.additions > 0 ? (
+                            <Text
+                              type="supporting"
+                              hasTabularNumbers
+                              className="maka-session-review-additions"
+                            >
+                              {copy.added(file.additions)}
+                            </Text>
+                          ) : null}
+                          {file.deletions > 0 ? (
+                            <Text
+                              type="supporting"
+                              hasTabularNumbers
+                              className="maka-session-review-deletions"
+                            >
+                              {copy.deleted(file.deletions)}
+                            </Text>
+                          ) : null}
+                        </HStack>
+                      </HStack>
+                    }
+                  >
+                    <DiffCodePreview
+                      diff={preview.body}
+                      paths={[file.path]}
+                      className="maka-session-review-diff"
+                    />
+                    {preview.hiddenLines > 0 ? (
+                      <Text type="supporting" color="secondary" display="block">
+                        {copy.hiddenLines(preview.hiddenLines)}
+                      </Text>
+                    ) : null}
+                  </Collapsible>
+                );
+              })}
+            </CollapsibleGroup>
+            {remainingGitFiles > 0 ? (
+              <div className="maka-session-review-more">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={copy.showMore(remainingGitFiles)}
+                  onClick={() =>
+                    setVisibleFileCount((current) =>
+                      Math.min(gitFiles.length, current + REVIEW_FILE_PAGE_SIZE),
+                    )
+                  }
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </VStack>
     </Section>
   );
 }

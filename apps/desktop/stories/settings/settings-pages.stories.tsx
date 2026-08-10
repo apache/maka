@@ -619,6 +619,10 @@ const makaBridge = {
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
     }),
     openPath: async () => ({ ok: true as const, opened: '/Users/storybook' }),
+    // About mounts update status + subscribe on open (Settings → 关于).
+    updateStatus: async () => ({ state: 'idle' as const, currentVersion: '0.9.0-dev' }),
+    subscribeUpdateStatus: () => () => undefined,
+    checkForUpdates: async () => ({ state: 'not-available' as const, currentVersion: '0.9.0-dev' }),
   },
   ...makeMemoryBridgeChannels(emptyMemoryState),
   webSearch: {

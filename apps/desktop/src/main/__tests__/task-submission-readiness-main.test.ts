@@ -42,11 +42,11 @@ test('keeps credential lookup failure unknown instead of inventing a repair fail
   assert.equal(snapshot.blockers[0]?.blockerCode, 'model_credentials_unknown');
 });
 
-test('reports a closed runtime even when model catalog resolution rejects', async () => {
+test('reports a closed runtime when model catalog resolution is unavailable', async () => {
   const service = createDesktopTaskSubmissionReadinessService({
     workspaceRoot: '/workspace',
     runtimeState: () => ({ state: 'unavailable', checkedAt: 90 }),
-    resolveModelTarget: async () => { throw new Error('catalog closed'); },
+    resolveModelTarget: async () => ({ kind: 'unknown' }),
     inspectWorkspace: async (cwd) => cwd === '/missing' ? 'unavailable' : 'ready',
     now: () => 100,
   });

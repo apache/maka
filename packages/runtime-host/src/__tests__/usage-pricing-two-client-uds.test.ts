@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { lstat, mkdtemp, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -457,7 +458,7 @@ describe('production Usage/Pricing UDS', () => {
       host = await RuntimeHostKernel.start({
         owner: firstOwner,
         idleGraceMs: 30_000,
-        compositionFactory: createExecutionRuntimeHostComposition,
+        composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
       });
       firstOwner = undefined;
       preHostUsageStores = undefined;
@@ -652,7 +653,7 @@ describe('production Usage/Pricing UDS', () => {
       successor = await RuntimeHostKernel.start({
         owner: successorOwner,
         idleGraceMs: 30_000,
-        compositionFactory: createExecutionRuntimeHostComposition,
+        composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
       });
       successorOwner = undefined;
       const [desktopAfterRestart, tuiAfterRestart] = await Promise.all([

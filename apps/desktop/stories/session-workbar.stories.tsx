@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ArtifactRecord, Task } from '@maka/core';
+import type { ArtifactRecord, GitReviewSnapshot, SessionSummary, Task } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import { ToastProvider } from '@maka/ui';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
@@ -34,6 +34,21 @@ import { withScopedMakaBridge } from './maka-bridge';
 
 const SESSION_ID = 'session-workbar';
 const NOW = Date.UTC(2026, 6, 31, 10, 30, 0);
+const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
+  id: SESSION_ID,
+  name: '工作栏组件审查',
+  isFlagged: false,
+  isArchived: false,
+  labels: [],
+  hasUnread: false,
+  status: 'active',
+  lastMessageAt: NOW,
+  backend: 'ai-sdk',
+  llmConnectionSlug: 'anthropic-main',
+  connectionLocked: false,
+  model: 'claude-sonnet-4-5',
+  permissionMode: 'ask',
+};
 
 // The record-file row reads `app:info`'s operationalStateDatabasePath (the
 // exact path main resolves). The short one is what a default workspace looks
@@ -135,6 +150,65 @@ const artifactText: Record<string, string> = {
     '+    <Card variant="transparent" padding={0} height="100%">',
   ].join('\n'),
   'artifact-notes': '# Conversation review\n\n- Long transcript\n- Narrow viewport',
+};
+
+const gitReviewFiles: GitReviewSnapshot['files'] = [
+  {
+    path: 'apps/desktop/src/renderer/session-review-panel.tsx',
+    status: 'modified',
+    additions: 28,
+    deletions: 94,
+    diff: [
+      'diff --git a/apps/desktop/src/renderer/session-review-panel.tsx b/apps/desktop/src/renderer/session-review-panel.tsx',
+      '--- a/apps/desktop/src/renderer/session-review-panel.tsx',
+      '+++ b/apps/desktop/src/renderer/session-review-panel.tsx',
+      '@@ -30,8 +30,6 @@',
+      "-type ReviewSource = GitReviewSource | 'last-turn';",
+      '+const REVIEW_FILE_PAGE_SIZE = 20;',
+      '-const [messages, setMessages] = useState<StoredMessage[]>([]);',
+      "+source: 'branch',",
+    ].join('\n'),
+  },
+  {
+    path: 'apps/desktop/src/renderer/locales/conversation-copy.ts',
+    status: 'modified',
+    additions: 17,
+    deletions: 4,
+    diff: [
+      'diff --git a/apps/desktop/src/renderer/locales/conversation-copy.ts b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '--- a/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '+++ b/apps/desktop/src/renderer/locales/conversation-copy.ts',
+      '@@ -372,1 +372,1 @@',
+      "-      review: '审阅',",
+      "+      review: '变更',",
+    ].join('\n'),
+  },
+  {
+    path: 'apps/desktop/src/main/git-review-main.ts',
+    status: 'modified',
+    additions: 18,
+    deletions: 0,
+    diff: [
+      'diff --git a/apps/desktop/src/main/git-review-main.ts b/apps/desktop/src/main/git-review-main.ts',
+      '--- a/apps/desktop/src/main/git-review-main.ts',
+      '+++ b/apps/desktop/src/main/git-review-main.ts',
+      '@@ -56,1 +56,4 @@',
+      "+const branchComparison = await runGit(repositoryRoot, ['merge-base', baseBranch, 'HEAD']);",
+    ].join('\n'),
+  },
+];
+
+const gitReviewSnapshot: GitReviewSnapshot = {
+  source: 'branch',
+  repositoryRoot: '/Users/reviewer/maka-agent',
+  currentBranch: 'feat/git-authoritative-changes',
+  baseBranch: 'main',
+  baseBranchOptions: ['main', 'release/0.1'],
+  revision: 'storybook-git-review',
+  additions: gitReviewFiles.reduce((total, file) => total + file.additions, 0),
+  deletions: gitReviewFiles.reduce((total, file) => total + file.deletions, 0),
+  truncated: false,
+  files: gitReviewFiles,
 };
 
 const populatedTrace: SessionTrace = {
@@ -431,16 +505,25 @@ function bridge(options: {
           ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
           : { ok: true, data: options.trace ?? emptyTrace },
     },
+    gitReview: {
+      read: async () => ({
+        ok: true,
+        snapshot: gitReviewSnapshot,
+      }),
+    },
     sessions: { subscribeEvents: unsubscribe },
   });
 }
 
 /** The column AppShell hands the workbar, at the width it restores by default. */
-function Workbar(props: { tab: 'tasks' | 'files' | 'inspector' }) {
-  const tabsState = openStaticSessionWorkbarTab(
-    createSessionWorkbarTabsState(),
-    props.tab,
-  );
+function Workbar(props: {
+  tab?: 'review' | 'tasks' | 'files' | 'inspector';
+  sourceSession?: SessionSummary;
+}) {
+  const emptyTabsState = createSessionWorkbarTabsState();
+  const tabsState = props.tab
+    ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
+    : emptyTabsState;
   return (
     <div style={{ height: 720, display: 'flex', justifyContent: 'flex-end' }}>
       <ToastProvider>
@@ -460,6 +543,7 @@ function Workbar(props: { tab: 'tasks' | 'files' | 'inspector' }) {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
+          sourceSession={props.sourceSession}
         />
       </ToastProvider>
     </div>
@@ -474,6 +558,21 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
+
+// Real path: sidebar → a session → expand an empty workbar. The picker is the
+// workbar's empty content, composed entirely from Astryx List primitives.
+export const ToolPicker: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} />,
+};
+
+// Real path: 会话工作栏 → 变更, showing the live branch comparison from the
+// session cwd. The panel is Git-backed; no message or tool-result fixture is
+// involved in this story.
+export const Changes: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" />,
+};
 
 // Real path: sidebar → a session → 展开会话工作栏, landing on the tab the app
 // restored. Tasks is the default: an in-progress root, a child claimed and

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { basename, dirname, join, normalize, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { build } from 'esbuild';
 
@@ -17,7 +17,7 @@ const candidateEntrypoint = join(
   'runtime-host-desktop-candidate.ts',
 );
 
-test('the Desktop Host candidate cannot reach an embedded Runtime owner', async () => {
+test('the Desktop Host candidate stays on the Runtime Host client boundary', async () => {
   const result = await build({
     absWorkingDir: repositoryRoot,
     entryPoints: [candidateEntrypoint],

@@ -123,6 +123,27 @@ describe('McpClientManager stdio E2E', () => {
     assert.deepEqual(status?.stderrTail, ['fixture startup failed: deliberate diagnostic']);
   });
 
+  test('excludes credential keys case-insensitively from a real stdio child', async () => {
+    const key = 'XDG_MAKA_PROVIDER_CREDENTIAL';
+    const previous = process.env[key];
+    process.env[key] = 'provider-secret';
+    const manager = new McpClientManager({
+      excludedStdioEnvironmentKeys: ['xdg_maka_provider_credential'],
+    });
+    managers.push(manager);
+    try {
+      await manager.sync(fixtureConfig(['--environment']));
+      const result = await manager.callTool('fixture', 'environment', { names: [key] });
+      assert.deepEqual(
+        JSON.parse(result.content[0]?.type === 'text' ? result.content[0].text : ''),
+        { [key]: null },
+      );
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
   test('cancels an in-flight installation connect without leaving tools visible', async () => {
     const manager = createManager();
     const sync = manager.sync(fixtureConfig(['--slow-start']));

@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -28,7 +29,7 @@ import {
 } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
-test('unknown Client Capability loads, invokes, chunks, and disconnects over real UDS', async () => {
+test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-client-capability-'));
   const root = join(base, 'root');
   let host: RuntimeHostKernel | undefined;
@@ -44,7 +45,7 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 60_000,
-      compositionFactory: async () => {
+      composition: defineInteractiveRuntimeHostComposition(async () => {
         coordinator = new HostClientCapabilityCoordinator({
           activation: new RuntimePolicyActivationGate(),
           onModelToolsChanged: () => undefined,
@@ -62,12 +63,13 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
           recover: async () => undefined,
           close: async () => coordinator?.close(),
         };
-      },
+      }),
     });
 
     const connected = await connectRuntimeHost({
       rootPath: root,
       surface: 'desktop',
+      clientInstanceId: 'desktop-installation-a',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -90,6 +92,7 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
             offerId: 'bypassed',
             version: '0',
             affinity: 'call',
+            hostPathAccess: 'cwd',
             label: 'Bypassed',
             tools: [
               {
@@ -113,6 +116,7 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
           offerId: 'fixture_unknown',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Unknown fixture',
           description: 'A capability the Host source does not enumerate.',
           tools: [
@@ -230,6 +234,40 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
       (error: unknown) =>
         error instanceof ClientCapabilityInvocationError && error.code === 'capability_lost',
     );
+
+    const reconnected = await connectRuntimeHost({
+      rootPath: root,
+      surface: 'desktop',
+      clientInstanceId: 'desktop-installation-a',
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+    });
+    assert.equal(reconnected.kind, 'connected');
+    if (reconnected.kind !== 'connected') return;
+    client = reconnected.connection;
+    await client.replaceClientCapabilities({
+      offers: provider.offers,
+      call: async (frame, { accept }) => {
+        await accept();
+        return {
+          content: [{ type: 'text', text: `reconnected:${String(frame.arguments.prefix)}` }],
+        };
+      },
+    });
+    assert.deepEqual(await coordinator.bindSession('session-uds', client.connectionId), {
+      ok: true,
+    });
+    snapshot.release();
+    snapshot = coordinator.snapshotForSession('session-uds');
+    const reconnectedTool = snapshot?.tools.find(
+      (candidate) => candidate.name === mcpProxyToolName('fixture_unknown', 'make_unknown_payload'),
+    );
+    assert.ok(reconnectedTool);
+    assert.deepEqual(await reconnectedTool.impl({ prefix: 'from-uds' }, toolContext), {
+      content: [{ type: 'text', text: 'reconnected:from-uds' }],
+    });
   } finally {
     snapshot?.release();
     await client?.close().catch(() => undefined);

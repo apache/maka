@@ -47,6 +47,10 @@ const ALLOW = new Map([
     'Runtime Host reconnect exhaustion is fatal before the Desktop can present an in-app error; no credentials or provider payloads.',
   ],
   [
+    'apps/desktop/src/main/runtime-host-session-observer.ts',
+    'bounded Session subscription recovery diagnostics contain only Session/Turn/Run identities and internal failure metadata.',
+  ],
+  [
     'apps/desktop/src/main/startup-step.ts',
     'names a startup step that has not come back, before any window exists to show it in; a step name and no secrets.',
   ],

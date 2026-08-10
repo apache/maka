@@ -8,13 +8,12 @@ import {
   decodeHostRegistration,
   decodeSessionMessageQueueProjection,
   decodeSessionContinuitySnapshot,
-  encodeProtocolFrame,
+  encodeProtocolMessage,
   HOST_OPERATION_SPECS,
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_MAX_ENTRIES,
   negotiateProtocol,
-  ProtocolFrameDecoder,
-  RUNTIME_HOST_MAX_FRAME_BYTES,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -46,10 +45,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps the experimental protocol at v0 with the declared authority operations', () => {
+  test('declares the current protocol and closed authority operation set', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 10);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 14);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
+      'access.credential.issue',
+      'access.credential.revoke',
       'agent.graph.operator.query',
       'agent.graph.query',
       'agent.graph.stop',
@@ -103,6 +104,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'plan.turn.start',
       'pricing.mutate',
       'pricing.query',
+      'project.catalog.mutate',
+      'project.catalog.query',
       'queue.retract',
       'runtime.policy.mutate',
       'runtime.policy.query',
@@ -407,7 +410,7 @@ describe('Runtime Host bootstrap protocol', () => {
     }
   });
 
-  test('enforces UTF-8 snapshot, live field, and whole-frame byte bounds', () => {
+  test('enforces UTF-8 snapshot, live field, and whole-message byte bounds', () => {
     const snapshot = continuitySnapshot('epoch-1');
     assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) < SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES);
     assert.throws(
@@ -470,7 +473,7 @@ describe('Runtime Host bootstrap protocol', () => {
       () =>
         decodeHostFrame({
           ...frame,
-          privatePadding: 'x'.repeat(RUNTIME_HOST_MAX_FRAME_BYTES),
+          privatePadding: 'x'.repeat(RUNTIME_HOST_MAX_MESSAGE_BYTES),
         }),
       isInvalidFrame,
     );
@@ -544,7 +547,7 @@ describe('Runtime Host bootstrap protocol', () => {
       }),
     );
     assert.doesNotThrow(() =>
-      encodeProtocolFrame({
+      encodeProtocolMessage({
         requestId: 'credential-export',
         operation: 'configuration.credentials.export',
         ok: true,
@@ -646,14 +649,12 @@ describe('Runtime Host bootstrap protocol', () => {
         },
       };
 
-      const encoded = encodeProtocolFrame(frame);
+      const encoded = encodeProtocolMessage(frame);
       assert.ok(
-        encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
-        `${label} envelope exceeds the protocol frame limit`,
+        encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES,
+        `${label} envelope exceeds the protocol message limit`,
       );
-      const decodedFrames = new ProtocolFrameDecoder().push(encoded);
-      assert.equal(decodedFrames.length, 1);
-      const decoded = decodeHostFrame(decodedFrames[0]);
+      const decoded = decodeHostFrame(JSON.parse(encoded.toString('utf8')));
       assert.ok('kind' in decoded);
       if (!('kind' in decoded)) continue;
       assert.equal(decoded.kind, 'subscription.session_event');
@@ -704,36 +705,9 @@ describe('Runtime Host bootstrap protocol', () => {
 
     const canonical = decodeHostFrame(frame);
     assert.ok(Buffer.byteLength(`${JSON.stringify(canonical)}\n`, 'utf8') > 64 * 1024);
-    const encoded = encodeProtocolFrame(canonical);
-    assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
-    const [decoded] = new ProtocolFrameDecoder().push(encoded);
-    assert.deepEqual(decodeHostFrame(decoded), canonical);
-  });
-
-  test('decodes split UTF-8 and multiple newline-delimited frames without an unbounded tail', () => {
-    const decoder = new ProtocolFrameDecoder();
-    const wire = Buffer.from(
-      `${JSON.stringify({ kind: 'hello', clientInstanceId: '客户端', surface: 'tui', protocolMin: RUNTIME_HOST_PROTOCOL_VERSION, protocolMax: RUNTIME_HOST_PROTOCOL_VERSION, compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH })}\n` +
-        `${JSON.stringify({ requestId: 'status-1', operation: 'host.status', input: {} })}\n`,
-    );
-    const split = wire.indexOf(Buffer.from('端')) + 1;
-    assert.deepEqual(decoder.push(wire.subarray(0, split)), []);
-    const frames = decoder.push(wire.subarray(split));
-    assert.equal(frames.length, 2);
-    assert.deepEqual(decodeClientFrame(frames[0]), {
-      kind: 'hello',
-      clientInstanceId: '客户端',
-      surface: 'tui',
-      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
-    });
-    assert.deepEqual(decodeClientFrame(frames[1]), {
-      requestId: 'status-1',
-      operation: 'host.status',
-      input: {},
-    });
-    decoder.end();
+    const encoded = encodeProtocolMessage(canonical);
+    assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_MESSAGE_BYTES);
+    assert.deepEqual(decodeHostFrame(JSON.parse(encoded.toString('utf8'))), canonical);
   });
 
   test('accepts protocol v0 in handshakes and Host registration while rejecting negatives', () => {
@@ -745,6 +719,7 @@ describe('Runtime Host bootstrap protocol', () => {
         protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
         protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
       }),
       {
         kind: 'hello',
@@ -753,14 +728,18 @@ describe('Runtime Host bootstrap protocol', () => {
         protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
         protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
       },
     );
     const accepted = {
       kind: 'accepted' as const,
+      rootId: 'a'.repeat(64),
       hostEpoch: 'epoch-1',
       connectionId: 'connection-1',
       selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready' as const,
     };
     assert.deepEqual(decodeHostFrame(accepted), accepted);
@@ -774,6 +753,8 @@ describe('Runtime Host bootstrap protocol', () => {
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready' as const,
       pid: 42,
       createdAt: '2026-07-23T00:00:00.000Z',
@@ -791,6 +772,7 @@ describe('Runtime Host bootstrap protocol', () => {
       isInvalidFrame,
     );
     assert.throws(() => decodeHostFrame({ ...accepted, selectedProtocol: -1 }), isInvalidFrame);
+    assert.throws(() => decodeHostFrame({ ...accepted, rootId: 'not-a-root' }), isInvalidFrame);
     assert.throws(
       () => decodeHostRegistration({ ...registration, protocolMin: -1 }),
       isInvalidFrame,
@@ -1038,7 +1020,7 @@ describe('Runtime Host bootstrap protocol', () => {
         maxSteps: 4,
       },
     };
-    const start = decodeClientFrame(JSON.parse(encodeProtocolFrame(startWire).toString('utf8')));
+    const start = decodeClientFrame(JSON.parse(encodeProtocolMessage(startWire).toString('utf8')));
     assert.deepEqual(start, {
       requestId: 'start-request-1',
       operation: 'turn.start',
@@ -1064,7 +1046,7 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(
-      decodeClientFrame(JSON.parse(encodeProtocolFrame(submitWire).toString('utf8'))),
+      decodeClientFrame(JSON.parse(encodeProtocolMessage(submitWire).toString('utf8'))),
       submitWire,
     );
     assert.throws(
@@ -1210,7 +1192,7 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(response), response);
-    assert.ok(encodeProtocolFrame(response).byteLength < RUNTIME_HOST_MAX_FRAME_BYTES);
+    assert.ok(encodeProtocolMessage(response).byteLength < RUNTIME_HOST_MAX_MESSAGE_BYTES);
 
     const request = 'r'.repeat(TURN_SKILL_ID_MAX_LENGTH);
     const id = 'i'.repeat(81);
@@ -1360,7 +1342,7 @@ describe('Runtime Host bootstrap protocol', () => {
       operation: 'turn.message.submit',
       input,
     });
-    assert.ok(encodeProtocolFrame(frame).byteLength < RUNTIME_HOST_MAX_FRAME_BYTES);
+    assert.ok(encodeProtocolMessage(frame).byteLength < RUNTIME_HOST_MAX_MESSAGE_BYTES);
     assert.throws(
       () =>
         decodeClientFrame({
@@ -1521,6 +1503,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.doesNotThrow(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'].decodeOutput({
         hostEpoch: 'epoch-1',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        compositionModules: ['interactive'],
+        residencies: [{ label: 'hosted-execution', count: 1 }],
         state: 'ready',
         connections: 1,
         activeOperations: 0,
@@ -1558,10 +1544,24 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('rejects a frame before buffering more than the byte cap', () => {
-    const decoder = new ProtocolFrameDecoder();
+  test('bounds encoded protocol messages', () => {
+    const empty = {
+      kind: 'draining',
+      hostEpoch: '',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+    } as const;
+    const overhead = Buffer.byteLength(JSON.stringify(empty), 'utf8');
+    const value = {
+      ...empty,
+      hostEpoch: 'x'.repeat(RUNTIME_HOST_MAX_MESSAGE_BYTES - overhead),
+    };
+    const message = encodeProtocolMessage(value);
+
+    assert.equal(message.byteLength, RUNTIME_HOST_MAX_MESSAGE_BYTES);
+    assert.notEqual(message.at(-1), 0x0a);
     assert.throws(
-      () => decoder.push(Buffer.alloc(RUNTIME_HOST_MAX_FRAME_BYTES + 1, 0x61)),
+      () => encodeProtocolMessage({ ...value, hostEpoch: `${value.hostEpoch}x` }),
       (error: unknown) =>
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );

@@ -36,6 +36,7 @@ test('keeps a resolved Skill mutation on one project root', async () => {
       rootReads += 1;
       return rootReads === 1 ? '/tmp/project-a' : '/tmp/project-b';
     },
+    getDefaultPermissionMode: async () => 'ask',
     openPath: async () => '',
   });
 
@@ -64,6 +65,7 @@ test('requests the Host-owned invocable projection for existing and new Sessions
     workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
     mainWindowController: {} as never,
     getCurrentProjectRoot: async () => '/tmp/project-a',
+    getDefaultPermissionMode: async () => 'bypass',
     openPath: async () => '',
   });
 
@@ -79,6 +81,7 @@ test('requests the Host-owned invocable projection for existing and new Sessions
       kind: 'new_session',
       context: { projectRoot: '/tmp/project-a' },
       collaborationMode: 'plan',
+      permissionMode: 'bypass',
     },
   ]);
 });

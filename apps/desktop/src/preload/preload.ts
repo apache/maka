@@ -100,7 +100,6 @@ import type {
 } from '@maka/core';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type {
-  AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
@@ -198,16 +197,26 @@ const makaBridge = {
     },
     subscribe(
       rootSessionId: string,
-      handler: (event: AgentGraphClientChangedEvent) => void,
+      handler: () => void,
     ): () => void {
-      const listener = (
+      const changedListener = (
         _event: Electron.IpcRendererEvent,
-        payload: AgentGraphClientChangedEvent,
+        payload: { rootSessionId: string },
       ) => {
-        if (payload.rootSessionId === rootSessionId) handler(payload);
+        if (payload.rootSessionId === rootSessionId) handler();
       };
-      ipcRenderer.on('graphs:changed', listener);
-      return () => ipcRenderer.off('graphs:changed', listener);
+      const resyncListener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { rootSessionId: string },
+      ) => {
+        if (payload.rootSessionId === rootSessionId) handler();
+      };
+      ipcRenderer.on('graphs:changed', changedListener);
+      ipcRenderer.on('graphs:resync', resyncListener);
+      return () => {
+        ipcRenderer.off('graphs:changed', changedListener);
+        ipcRenderer.off('graphs:resync', resyncListener);
+      };
     },
   },
   sessions: {
@@ -281,6 +290,19 @@ const makaBridge = {
     },
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]> {
       return ipcRenderer.invoke('sessions:listActiveInteractions', sessionId);
+    },
+    subscribeActiveInteractions(
+      handler: (event: {
+        sessionId: string;
+        interactions: ActiveInteractionRequestEvent[];
+      }) => void,
+    ): () => void {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { sessionId: string; interactions: ActiveInteractionRequestEvent[] },
+      ) => handler(payload);
+      ipcRenderer.on('sessions:active-interactions-changed', listener);
+      return () => ipcRenderer.off('sessions:active-interactions-changed', listener);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);
@@ -427,6 +449,11 @@ const makaBridge = {
     list(): Promise<ProjectRecord[]> {
       return ipcRenderer.invoke('projects:list');
     },
+    subscribeChanges(handler: () => void): () => void {
+      const listener = () => handler();
+      ipcRenderer.on('projects:changed', listener);
+      return () => ipcRenderer.off('projects:changed', listener);
+    },
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     > {
@@ -501,6 +528,12 @@ const makaBridge = {
         handler(payload);
       ipcRenderer.on('shell-runs:pty-data', listener);
       return () => ipcRenderer.off('shell-runs:pty-data', listener);
+    },
+    subscribeResync(handler: (event: { sessionId: string }) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) =>
+        handler(payload);
+      ipcRenderer.on('shell-runs:resync', listener);
+      return () => ipcRenderer.off('shell-runs:resync', listener);
     },
   },
   gitReview: {
@@ -1139,6 +1172,9 @@ const makaBridge = {
     },
     updateStatus(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:updateStatus');
+    },
+    checkForUpdates(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:checkForUpdates');
     },
     retryUpdateDownload(): Promise<AppUpdateStatus> {
       return ipcRenderer.invoke('app:retryUpdateDownload');

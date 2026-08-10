@@ -226,6 +226,9 @@ async function invokeNativeTool(
   invocation: AbortController,
   usedSessionIds: Set<string>,
 ): Promise<ClientCapabilityCallResult> {
+  if (frame.cwd === undefined) {
+    throw new Error("Desktop native capability requires Host cwd context");
+  }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
   const parameters = requireZodSchema(binding.tool);
@@ -270,6 +273,7 @@ function capabilityOffer(group: DesktopCapabilityGroup): ClientCapabilityOffer {
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
     affinity: "session",
+    hostPathAccess: "cwd",
     label: group.label,
     description: group.description,
     tools: Object.freeze(

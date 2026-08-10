@@ -105,6 +105,7 @@ import type {
   RootExecutionDescriptor,
   RuntimeEvent,
   RuntimeEventStore,
+  RunCompositionSnapshot,
   RuntimeContinuationAuthorityStore,
   ToolBoundaryProtocol,
   SubagentWorkspaceBinding,
@@ -743,6 +744,8 @@ export interface BackendFactoryContext {
    * the metering source of truth (#1679).
    */
   recordModelCallAttempt?: (attempt: ModelCallAttempt) => Promise<void>;
+  /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
+  recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,
@@ -894,6 +897,7 @@ export type RuntimeContinuationLifecycleEvent =
 export class SessionManager {
   private readonly runtimeKernel: RuntimeKernelLike;
   private readonly runtimeLedgerRepair?: RuntimeLedgerRepair;
+  private readonly preparedTranscriptLedgers = new Set<string>();
   private readonly runtimeCommitSink?: RuntimeCommitSink;
   private readonly activeHostedLinkedChildSessions = new Set<string>();
   private readonly childSessionSpawns = new Map<
@@ -2087,6 +2091,13 @@ export class SessionManager {
     input: UserMessageInput,
     options: TurnStartOptions = {},
   ): AsyncIterable<SessionEvent> {
+    const repair = input.agentId ? undefined : this.runtimeLedgerRepair;
+    const admitTurn = repair
+      ? async () => {
+          await this.ensureTranscriptLedger(sessionId, repair, 'compatibility');
+          return (await options.admitTurn?.()) ?? 'admitted';
+        }
+      : options.admitTurn;
     const sourceText = sessionTitleSource(input);
     const onRunStarted = this.deps.generateSessionTitle
       ? async (runId: string, header: SessionHeader) => {
@@ -2101,7 +2112,7 @@ export class SessionManager {
           }
         }
       : options.onRunStarted;
-    yield* this.runtimeKernel.startTurn(sessionId, input, { ...options, onRunStarted });
+    yield* this.runtimeKernel.startTurn(sessionId, input, { ...options, admitTurn, onRunStarted });
   }
 
   private async generateTitleInBackground(
@@ -2506,11 +2517,15 @@ export class SessionManager {
     const definition = resolvedPreset
       ? requireBuiltinAgentDefinitionByProfile(resolvedPreset.profile)
       : requireBuiltinAgentDefinition(input.agentId!);
+    const availableChildTools = await this.childToolsForSession(input.source.sessionId);
     assertAgentDefinitionRunnable({
       definition,
-      tools: await this.childToolsForSession(input.source.sessionId),
+      tools: availableChildTools,
       worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
     });
+    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
+      (tool) => tool.name,
+    );
     const childPermissionMode =
       parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
 
@@ -2535,7 +2550,7 @@ export class SessionManager {
         profile: definition.profile,
         workspace: definition.contract.workspace,
         permissionMode: childPermissionMode,
-        toolNames: [...definition.tools],
+        toolNames: resolvedToolNames,
         categoryPolicy: {},
         systemPrompt: definition.systemPrompt,
         ...(resolvedPreset
@@ -2610,7 +2625,7 @@ export class SessionManager {
           profile: definition.profile,
           ...(resolvedPreset ? { presetId: resolvedPreset.id } : {}),
           systemPrompt: definition.systemPrompt,
-          toolNames: [...definition.tools],
+          toolNames: resolvedToolNames,
           categoryPolicy: {},
         },
         subagentSpawn: {
@@ -3097,6 +3112,9 @@ export class SessionManager {
       tools: availableChildTools,
       worktreeChildExecutorAvailable: await this.isWorktreeChildExecutorAvailable(parentHeader),
     });
+    const resolvedToolNames = buildToolsForAgentDefinition(availableChildTools, definition).map(
+      (tool) => tool.name,
+    );
 
     const proposedTurnId = input.turnId ?? this.deps.newId();
     const proposedRunId = input.runId ?? this.deps.newId();
@@ -3138,7 +3156,7 @@ export class SessionManager {
           profile: definition.profile,
           ...(input.resolvedPreset ? { presetId: input.resolvedPreset.id } : {}),
           systemPrompt: definition.systemPrompt,
-          toolNames: [...definition.tools],
+          toolNames: resolvedToolNames,
           categoryPolicy: {},
         },
         subagentSpawn: {
@@ -5562,6 +5580,29 @@ export class SessionManager {
     return (
       (await this.runtimeLedgerRepair?.repairMissingTerminalFactOnce(sessionId, runId)) ?? false
     );
+  }
+
+  async prepareImportedSessionHistory(sessionId: string): Promise<void> {
+    const repair = this.runtimeLedgerRepair;
+    if (!repair) throw new Error('Imported Session history requires canonical Runtime stores');
+    await this.ensureTranscriptLedger(sessionId, repair, 'import');
+  }
+
+  private async ensureTranscriptLedger(
+    sessionId: string,
+    repair: RuntimeLedgerRepair,
+    source: 'compatibility' | 'import',
+  ): Promise<void> {
+    if (this.preparedTranscriptLedgers.has(sessionId)) return;
+    const header = await this.deps.store.readHeader(sessionId);
+    if (header.transcriptLedgerVersion === 0 && source !== 'import') {
+      throw new Error('Imported Session history is still being prepared');
+    }
+    if (header.transcriptLedgerVersion !== 1) {
+      await repair.materializeTranscriptLedger(header);
+      await this.updateHeader(sessionId, { transcriptLedgerVersion: 1 });
+    }
+    this.preparedTranscriptLedgers.add(sessionId);
   }
 
   private async prepareConversationRuntimeLedgerClone(

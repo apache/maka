@@ -9,7 +9,7 @@ export interface DetachedCandidateInput {
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   executable?: string;
-  entrypoint?: string | URL;
+  entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -27,9 +27,8 @@ export function launchDetachedRuntimeHostCandidate(
   input: DetachedCandidateInput,
 ): DetachedCandidateLaunch {
   const executable = input.executable ?? process.execPath;
-  const entrypoint = input.entrypoint ?? new URL('../candidate-main.js', import.meta.url);
   const args = [
-    typeof entrypoint === 'string' ? entrypoint : fileURLToPath(entrypoint),
+    typeof input.entrypoint === 'string' ? input.entrypoint : fileURLToPath(input.entrypoint),
     '--root',
     input.rootPath,
     '--expected-root-id',

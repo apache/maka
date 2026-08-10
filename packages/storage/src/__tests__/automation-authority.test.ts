@@ -42,7 +42,10 @@ describe('interactive Automation authority', () => {
         assert.equal(committed.snapshot.revision, 1);
 
         automation.name = 'mutated after commit';
-        assert.equal((await second.read()).automations[0]?.name, 'daily summary');
+        const persisted = (await second.read()).automations[0];
+        assert.equal(persisted?.name, 'daily summary');
+        assert.deepEqual(persisted?.capabilityRequirements, [capabilityRequirement()]);
+        assert.equal(persisted?.waiting?.reason, 'client_capability_provider_unavailable');
 
         assert.deepEqual(
           await second.commit({ expectedRevision: 0, automations: [], pendingFires: [] }),
@@ -220,6 +223,12 @@ function definitionWithPendingFire(): AutomationDefinition {
     nextFireAt: 120_002,
     lastFireAt: 60_002,
     fireCount: 1,
+    capabilityRequirements: [capabilityRequirement()],
+    waiting: {
+      reason: 'client_capability_provider_unavailable',
+      since: 60_002,
+      message: 'Capability provider is offline',
+    },
   };
 }
 
@@ -238,6 +247,7 @@ function pendingFire(): AutomationPendingFire {
     status: 'admitted',
     admittedAt: 60_002,
     updatedAt: 60_002,
+    capabilityRequirements: [capabilityRequirement()],
     execution: {
       cwd: '/workspace',
       backend: 'ai-sdk',
@@ -247,6 +257,14 @@ function pendingFire(): AutomationPendingFire {
       orchestrationMode: 'default',
     },
   };
+}
+
+function capabilityRequirement() {
+  return {
+    principalId: 'automation-provider',
+    clientInstanceId: 'provider-instance',
+    contractId: 'provider-contract',
+  } as const;
 }
 
 async function withWriter(

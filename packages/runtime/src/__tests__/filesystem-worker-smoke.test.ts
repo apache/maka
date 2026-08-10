@@ -62,6 +62,38 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     );
   });
 
+  test('creates a nested patch file inside the workspace', async () => {
+    const target = join(workspace, 'nested', 'created.txt');
+
+    await client.execute({
+      operation: {
+        kind: 'apply_patch',
+        path: target,
+        action: 'create',
+        diff: '+created\n',
+      },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    assert.equal(await readFile(target, 'utf8'), 'created');
+  });
+
+  test('deletes an entry through the absolute macOS path alias', async () => {
+    const target = join(workspace, 'aliased.txt');
+    const aliasedTarget = target.replace(/^\/private(?=\/)/, '');
+    assert.notEqual(aliasedTarget, target);
+    await writeFile(target, 'delete me', 'utf8');
+
+    await client.execute({
+      operation: { kind: 'apply_patch', path: aliasedTarget, action: 'delete' },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' });
+  });
+
   test('applies one exact boundary expansion without opening a sibling path', async () => {
     const allowedPath = join(outside, 'allowed.txt');
     const siblingPath = join(outside, 'sibling.txt');

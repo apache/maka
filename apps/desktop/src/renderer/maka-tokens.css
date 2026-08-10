@@ -264,8 +264,6 @@
   --destructive-wash-border: oklch(from var(--destructive) l c h / 0.24);
   --info-wash:               oklch(from var(--info)        l c h / 0.08);
   --info-wash-border:        oklch(from var(--info)        l c h / 0.24);
-  --warning-wash-strong:            oklch(from var(--warning)     l c h / 0.12);
-  --warning-wash-strong-border:     oklch(from var(--warning)     l c h / 0.40);
   --destructive-wash-strong:        oklch(from var(--destructive) l c h / 0.12);
   --destructive-wash-strong-border: oklch(from var(--destructive) l c h / 0.40);
 

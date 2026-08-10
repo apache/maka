@@ -1,11 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   connectOrSpawnRuntimeHost,
+  createRuntimeHostReconnectingConnection,
   readRuntimeHostConnectionCatalog,
+  RuntimeHostPermanentReconnectError,
+  waitForRuntimeHostReady,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { RUNTIME_HOST_PROTOCOL_VERSION, type ClientSurface } from '@maka/runtime-host/protocol';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientSurface,
+} from '@maka/runtime-host/protocol';
 
 export interface RuntimeHostCliConnectionContext {
   readonly connection: RuntimeHostConnection;
@@ -40,26 +49,47 @@ export async function connectRuntimeHostCli(
     ),
     ...overrides,
   };
-  const connected = await deps.connectOrSpawn({
+  const clientInstanceId = randomUUID();
+  const connectInput = {
     rootPath: input.rootPath,
     surface: input.surface,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+    clientInstanceId,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: deps.executionCandidateEntrypoint,
     ...(input.legacyConfigurationRoot
       ? { legacyConfigurationRoot: input.legacyConfigurationRoot }
       : {}),
+  } as const;
+  const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
+    const connected = await deps.connectOrSpawn({ ...connectInput, ...(signal ? { signal } : {}) });
+    if (connected.kind === 'incompatible') {
+      if (connected.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+        throw new RuntimeHostPermanentReconnectError(
+          'An older Maka Runtime Host is still running and is incompatible with this build. Stop the previous Maka Desktop or CLI process, then try again.',
+        );
+      }
+      throw new RuntimeHostPermanentReconnectError(
+        `Runtime Host protocol is incompatible (Host ${connected.handshake.protocolMin}-${connected.handshake.protocolMax}, CLI ${RUNTIME_HOST_PROTOCOL_VERSION})`,
+      );
+    }
+    if (connected.kind === 'failed') {
+      throw new Error(`Runtime Host startup failed: ${connected.reason}`);
+    }
+    try {
+      await waitForRuntimeHostReady(connected.connection, 45_000, signal);
+      return connected.connection;
+    } catch (error) {
+      await connected.connection.close().catch(() => undefined);
+      throw error;
+    }
+  };
+  const initialConnection = await connect();
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection,
+    connect,
   });
-  if (connected.kind === 'incompatible') {
-    throw new Error(
-      `Runtime Host protocol is incompatible (Host ${connected.handshake.protocolMin}-${connected.handshake.protocolMax}, CLI ${RUNTIME_HOST_PROTOCOL_VERSION})`,
-    );
-  }
-  if (connected.kind === 'failed') {
-    throw new Error(`Runtime Host startup failed: ${connected.reason}`);
-  }
-  const connection = connected.connection;
   try {
-    await waitForReady(connection);
     return {
       connection,
       catalog: await deps.readConnectionCatalog(connection),
@@ -97,16 +127,4 @@ export function resolveRuntimeHostCliTarget(
     throw new Error(`Runtime Host model is unavailable for ${connection.slug}: ${model ?? ''}`);
   }
   return { connection, model };
-}
-
-async function waitForReady(connection: RuntimeHostConnection): Promise<void> {
-  const deadline = Date.now() + 45_000;
-  while (true) {
-    const status = await connection.status(Math.max(1, deadline - Date.now()));
-    if (status.state === 'ready') return;
-    if (status.state === 'draining') throw new Error('Runtime Host drained before becoming ready');
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('Runtime Host did not become ready before the deadline');
-    await new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining)));
-  }
 }

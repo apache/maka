@@ -20,12 +20,13 @@ import type {
   SessionContinuitySnapshot,
   SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
-import type {
-  DesktopRuntimeHostClient,
-  DesktopRuntimeHostSession,
-} from "./runtime-host-client.js";
-
-const MAX_PENDING_FRAMES = 512;
+import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
+import {
+  type PreparedSessionSubscription,
+  RuntimeHostSessionSubscriptionOwner,
+  SessionRemovedSubscriptionError,
+} from "./runtime-host-session-subscription-owner.js";
 
 type SessionObserverClient = Pick<DesktopRuntimeHostClient, "openSession">;
 
@@ -50,6 +51,12 @@ export interface RuntimeHostSessionObserverDeps {
     sessionId: string,
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
+  emitActiveInteractionsChanged?: (
+    sessionId: string,
+    interactions: readonly ActiveInteractionRequestEvent[],
+  ) => void;
+  emitSubscriptionRecovered?: (sessionId: string) => void;
+  recoverConnectionClosed?: boolean;
   now?: () => number;
 }
 
@@ -63,15 +70,12 @@ interface ObserverTargetGroup {
 interface ObservedSessionState {
   readonly sessionId: string;
   readonly targets: Map<number, ObserverTargetGroup>;
-  readonly pendingFrames: SubscriptionFrame[];
   readonly watchedTurnIds: Set<string>;
-  openTask: Promise<void>;
-  handle?: DesktopRuntimeHostSession;
+  readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
   transcript?: StoredMessage[];
   transcriptConsumed: boolean;
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
-  ready: boolean;
   closing: boolean;
 }
 
@@ -80,13 +84,19 @@ interface ObserverRegistration {
   readonly group: ObserverTargetGroup;
 }
 
+interface SubscriptionFailureIdentity {
+  readonly sessionId: string;
+  readonly turnId?: string;
+  readonly runId?: string;
+  readonly reason: string;
+  readonly message: string;
+}
+
 /**
- * Owns the Desktop-side lifetime of Host Session subscriptions.
+ * Projects an owned Host Session subscription into Desktop observers.
  *
- * The initial transcript and the following frames come from one atomic Host
- * subscription. The observer seeds the live projection from the active
- * transcript, then applies offset-bearing deltas, so joining mid-Turn neither
- * loses the already-generated prefix nor renders it twice.
+ * SessionSubscriptionOwner keeps replacement and catch-up atomic. This class
+ * owns only renderer targets and the resulting Desktop projection.
  */
 export class RuntimeHostSessionObserver {
   readonly #states = new Map<string, ObservedSessionState>();
@@ -103,6 +113,12 @@ export class RuntimeHostSessionObserver {
     sessionId: string,
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
+  readonly #emitActiveInteractionsChanged: (
+    sessionId: string,
+    interactions: readonly ActiveInteractionRequestEvent[],
+  ) => void;
+  readonly #emitSubscriptionRecovered: (sessionId: string) => void;
+  readonly #recoverConnectionClosed: boolean;
   readonly #now: () => number;
   #closed = false;
 
@@ -117,20 +133,27 @@ export class RuntimeHostSessionObserver {
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
       deps.onWatchedTurnFinished ?? (() => undefined);
+    this.#emitActiveInteractionsChanged =
+      deps.emitActiveInteractionsChanged ?? (() => undefined);
+    this.#emitSubscriptionRecovered =
+      deps.emitSubscriptionRecovered ?? (() => undefined);
+    this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
     this.#now = deps.now ?? Date.now;
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     this.#assertOpen();
     const existing = this.#states.get(sessionId);
-    if (existing && !existing.transcriptConsumed) {
-      await existing.openTask;
-      existing.transcriptConsumed = true;
-      return cloneMessages(existing.transcript ?? []);
+    if (existing) {
+      await existing.subscriptionOwner.waitUntilReady();
+      if (!existing.transcriptConsumed) {
+        existing.transcriptConsumed = true;
+        return cloneMessages(existing.transcript ?? []);
+      }
     }
     if (!existing) {
       const state = this.#state(sessionId);
-      await state.openTask;
+      await state.subscriptionOwner.waitUntilReady();
       state.transcriptConsumed = true;
       const transcript = cloneMessages(state.transcript ?? []);
       void this.#closeIfIdle(state);
@@ -143,7 +166,7 @@ export class RuntimeHostSessionObserver {
     this.#assertOpen();
     const existing = this.#states.get(sessionId);
     if (existing) {
-      await existing.openTask;
+      await existing.subscriptionOwner.waitUntilReady();
       if (existing.snapshot) return structuredClone(existing.snapshot);
     }
     const handle = await this.#client.openSession(sessionId);
@@ -188,7 +211,7 @@ export class RuntimeHostSessionObserver {
     group.observerIds.add(observerId);
     this.#observers.set(observerId, { state, group });
     try {
-      await state.openTask;
+      await state.subscriptionOwner.waitUntilReady();
       this.#seedTarget(state, group);
     } catch (error) {
       this.#detachObserver(observerId);
@@ -205,7 +228,7 @@ export class RuntimeHostSessionObserver {
     this.#assertOpen();
     const state = this.#state(sessionId);
     state.watchedTurnIds.add(turnId);
-    await state.openTask;
+    await state.subscriptionOwner.waitUntilReady();
     const root = state.snapshot?.rootTurn;
     if (root && root.turnId === turnId && isTerminalTurn(root)) {
       this.#finishWatchedTurn(state, turnId, "completed");
@@ -300,77 +323,49 @@ export class RuntimeHostSessionObserver {
   #state(sessionId: string): ObservedSessionState {
     const existing = this.#states.get(sessionId);
     if (existing) return existing;
-    const state: ObservedSessionState = {
+    let state!: ObservedSessionState;
+    const subscriptionOwner = new RuntimeHostSessionSubscriptionOwner({
+      client: this.#client,
+      sessionId,
+      now: this.#now,
+      commit: (subscription, recovered) =>
+        this.#commitSubscription(state, subscription, recovered),
+      acceptFrame: (frame) => this.#acceptFrame(state, frame),
+      recoveryStarted: (error) => {
+        console.warn(
+          "[runtime-host-session-observer] recovering subscription",
+          subscriptionFailureIdentity(state, error),
+        );
+      },
+      recoveryCompleted: (error) => {
+        console.info(
+          "[runtime-host-session-observer] subscription recovered",
+          subscriptionFailureIdentity(state, error),
+        );
+      },
+      recoveryFailed: (initialError, error) => {
+        console.error(
+          "[runtime-host-session-observer] subscription recovery failed",
+          {
+            failure: subscriptionFailureIdentity(state, initialError),
+            recovery: subscriptionFailureIdentity(state, error),
+          },
+        );
+      },
+      terminalFailure: (error) =>
+        this.#handleTerminalSubscriptionFailure(state, error),
+    });
+    state = {
       sessionId,
       targets: new Map(),
-      pendingFrames: [],
       watchedTurnIds: new Set(),
-      openTask: Promise.resolve(),
+      subscriptionOwner,
       transcriptConsumed: false,
-      ready: false,
       closing: false,
     };
-    state.openTask = this.#open(state);
     this.#states.set(sessionId, state);
+    subscriptionOwner.start();
     return state;
-  }
-
-  async #open(state: ObservedSessionState): Promise<void> {
-    try {
-      const handle = await this.#client.openSession(state.sessionId);
-      if (state.closing) {
-        await handle.close();
-        throw new Error("Runtime Host Session observer closed while opening");
-      }
-      state.handle = handle;
-      state.snapshot = structuredClone(handle.snapshot);
-      void this.#pump(state, handle);
-      state.transcript = await handle.transcript;
-      if (state.closing)
-        throw new Error("Runtime Host Session observer closed while opening");
-      state.projector = new RuntimeHostSessionProjector(
-        handle.snapshot,
-        state.transcript,
-        this.#now,
-      );
-      state.ready = true;
-      for (const group of state.targets.values())
-        this.#seedTarget(state, group);
-      for (const frame of state.pendingFrames.splice(0))
-        this.#acceptFrame(state, frame);
-    } catch (error) {
-      await this.#closeState(state);
-      throw error;
-    }
-  }
-
-  async #pump(
-    state: ObservedSessionState,
-    handle: DesktopRuntimeHostSession,
-  ): Promise<void> {
-    try {
-      for await (const frame of handle.events) {
-        if (state.closing) return;
-        if (!state.ready) {
-          if (state.pendingFrames.length >= MAX_PENDING_FRAMES) {
-            throw new Error(
-              "Runtime Host Session initial transcript could not keep up with live events",
-            );
-          }
-          state.pendingFrames.push(frame);
-        } else {
-          this.#acceptFrame(state, frame);
-        }
-      }
-      if (!state.closing) {
-        this.#publishSubscriptionFailure(
-          state,
-          new Error("Runtime Host Session subscription ended unexpectedly"),
-        );
-      }
-    } catch (error) {
-      if (!state.closing) this.#publishSubscriptionFailure(state, error);
-    }
   }
 
   #seedTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {
@@ -412,20 +407,6 @@ export class RuntimeHostSessionObserver {
       });
       return;
     }
-    if (frame.kind === "subscription.closed") {
-      if (frame.reason === "session_removed") {
-        this.#emitSessionsChanged("deleted", state.sessionId);
-        void this.#closeState(state);
-      } else {
-        this.#publishSubscriptionFailure(
-          state,
-          new Error(
-            "Runtime Host Session subscription closed for a slow consumer",
-          ),
-        );
-      }
-      return;
-    }
     const update = state.projector?.accept(frame);
     if (!update || !state.projector) return;
     state.snapshot = state.projector.snapshot;
@@ -439,6 +420,9 @@ export class RuntimeHostSessionObserver {
     }
     const previous = update.previousSnapshot;
     if (!previous) return;
+    if (!samePendingInteractions(previous, state.snapshot)) {
+      this.#emitActiveInteractions(state);
+    }
     if (!sameGoal(previous.goal, state.snapshot.goal)) {
       this.#emitSessionsChanged("goal-change", state.sessionId);
     }
@@ -490,6 +474,10 @@ export class RuntimeHostSessionObserver {
     error: unknown,
   ): void {
     const root = state.snapshot?.rootTurn;
+    const reason =
+      error instanceof RuntimeHostSubscriptionError
+        ? error.reason
+        : "subscription_closed";
     if (root && !isTerminalTurn(root)) {
       this.#broadcast(state.sessionId, {
         type: "error",
@@ -497,7 +485,7 @@ export class RuntimeHostSessionObserver {
         turnId: root.turnId,
         ts: this.#now(),
         recoverable: true,
-        reason: "subscription_closed",
+        reason,
         message:
           error instanceof Error
             ? error.message
@@ -510,6 +498,125 @@ export class RuntimeHostSessionObserver {
       root ? { turnId: root.turnId } : undefined,
     );
     void this.#closeState(state);
+  }
+
+  #handleTerminalSubscriptionFailure(
+    state: ObservedSessionState,
+    error: Error,
+  ): void {
+    if (error instanceof SessionRemovedSubscriptionError) {
+      this.#emitSessionsChanged("deleted", state.sessionId);
+      void this.#closeState(state);
+      return;
+    }
+    if (
+      this.#recoverConnectionClosed &&
+      error instanceof RuntimeHostSubscriptionError &&
+      error.reason === "connection_closed"
+    ) {
+      void this.#closeState(state);
+      return;
+    }
+    this.#publishSubscriptionFailure(state, error);
+  }
+
+  #commitSubscription(
+    state: ObservedSessionState,
+    subscription: PreparedSessionSubscription,
+    recovered: boolean,
+  ): void {
+    if (state.closing || this.#states.get(state.sessionId) !== state) {
+      throw new Error("Runtime Host Session observer closed before commit");
+    }
+    const previousSnapshot = state.snapshot;
+    const projector = new RuntimeHostSessionProjector(
+      subscription.snapshot,
+      subscription.transcript,
+      this.#now,
+    );
+    const replacement =
+      previousSnapshot
+        ? replacementProjection(
+            previousSnapshot,
+            projector,
+            subscription.transcript,
+          )
+        : undefined;
+    const goalChanged = previousSnapshot
+      ? !sameGoal(previousSnapshot.goal, subscription.snapshot.goal)
+      : false;
+
+    state.snapshot = structuredClone(subscription.snapshot);
+    state.transcript = subscription.transcript;
+    state.transcriptConsumed = false;
+    state.projector = projector;
+
+    if (replacement) {
+      for (const event of replacement.terminalEvents) {
+        this.#broadcast(state.sessionId, event);
+      }
+      for (const event of replacement.activeEvents) {
+        this.#broadcast(state.sessionId, event);
+      }
+      for (const group of state.targets.values()) group.seeded = true;
+      for (const turnId of replacement.terminalTurnIds) {
+        this.#finishWatchedTurn(state, turnId, "completed");
+        this.#emitSessionsChanged("turn-status-change", state.sessionId, {
+          turnId,
+        });
+        this.#emitSessionsChanged("message-appended", state.sessionId, {
+          turnId,
+        });
+      }
+      this.#emitActiveInteractions(state);
+      if (goalChanged) {
+        this.#emitSessionsChanged("goal-change", state.sessionId);
+      }
+      const root = state.snapshot.rootTurn;
+      this.#emitSessionsChanged(
+        "status-change",
+        state.sessionId,
+        root ? { turnId: root.turnId } : undefined,
+      );
+      if (root && !replacement.terminalTurnIds.has(root.turnId)) {
+        this.#emitSessionsChanged("message-appended", state.sessionId, {
+          turnId: root.turnId,
+        });
+      }
+    } else {
+      for (const group of state.targets.values()) this.#seedTarget(state, group);
+    }
+
+    this.#finishPersistedWatchedTurns(
+      state,
+      projector,
+      subscription.transcript,
+    );
+
+    if (recovered) this.#emitSubscriptionRecovered(state.sessionId);
+    void this.#closeIfIdle(state);
+  }
+
+  #emitActiveInteractions(state: ObservedSessionState): void {
+    const interactions = state.snapshot?.interactions.pending.flatMap(
+      (interaction) =>
+        projectRuntimeHostInteractionRequest(interaction, this.#now()),
+    );
+    if (interactions) {
+      this.#emitActiveInteractionsChanged(state.sessionId, interactions);
+    }
+  }
+
+  #finishPersistedWatchedTurns(
+    state: ObservedSessionState,
+    projector: RuntimeHostSessionProjector,
+    transcript: readonly StoredMessage[],
+  ): void {
+    for (const turnId of [...state.watchedTurnIds]) {
+      if (projector.seedStoredTerminal(turnId, transcript).length > 0) {
+        this.#finishWatchedTurn(state, turnId, "completed");
+      }
+    }
   }
 
   async #loadCurrentTranscript(sessionId: string): Promise<StoredMessage[]> {
@@ -586,9 +693,7 @@ export class RuntimeHostSessionObserver {
       for (const group of state.targets.values())
         this.#detachTarget(state, group);
     }
-    const handle = state.handle;
-    state.handle = undefined;
-    await handle?.close().catch(() => undefined);
+    await state.subscriptionOwner.close();
   }
 
   async #removeTarget(
@@ -661,4 +766,99 @@ async function drainFrames(
     // closes. Drain bounded frames so transcript pagination cannot be evicted
     // as a slow consumer.
   }
+}
+
+function replacementProjection(
+  previous: SessionContinuitySnapshot,
+  projector: RuntimeHostSessionProjector,
+  transcript: readonly StoredMessage[],
+): {
+  terminalEvents: SessionEvent[];
+  activeEvents: SessionEvent[];
+  terminalTurnIds: Set<string>;
+} {
+  const next = projector.snapshot;
+  const previousRoot = previous.rootTurn;
+  const root = next.rootTurn;
+  const terminalEvents: SessionEvent[] = [];
+  if (previousRoot && !isTerminalTurn(previousRoot)) {
+    if (!root || root.runId !== previousRoot.runId) {
+      const stored = projector.seedStoredTerminal(
+        previousRoot.turnId,
+        transcript,
+      );
+      if (!stored.some(isTerminalSessionEvent)) {
+        throw new RuntimeHostSubscriptionError(
+          "projection_revision_invalid",
+          `Runtime Host replacement omitted the terminal record for Turn ${previousRoot.turnId}`,
+        );
+      }
+      terminalEvents.push(...stored);
+    } else if (isTerminalTurn(root)) {
+      terminalEvents.push(...projector.seedTerminal(root));
+    }
+  }
+  if (
+    root &&
+    isTerminalTurn(root) &&
+    (!previousRoot || previousRoot.runId !== root.runId)
+  ) {
+    terminalEvents.push(...projector.seedTerminal(root));
+  }
+  return {
+    terminalEvents,
+    activeEvents:
+      root && !isTerminalTurn(root) ? projector.seedActive(true) : [],
+    terminalTurnIds: new Set(
+      terminalEvents.filter(isTerminalSessionEvent).map((event) => event.turnId),
+    ),
+  };
+}
+
+function isTerminalSessionEvent(
+  event: SessionEvent,
+): event is Extract<SessionEvent, { type: "complete" | "error" | "abort" }> {
+  return (
+    event.type === "complete" ||
+    event.type === "error" ||
+    event.type === "abort"
+  );
+}
+
+function samePendingInteractions(
+  previous: SessionContinuitySnapshot,
+  next: SessionContinuitySnapshot,
+): boolean {
+  if (previous.interactions.pending.length !== next.interactions.pending.length) {
+    return false;
+  }
+  const revisions = new Map(
+    previous.interactions.pending.map((interaction) => [
+      interaction.interactionId,
+      interaction.revision,
+    ]),
+  );
+  return next.interactions.pending.every(
+    (interaction) =>
+      revisions.get(interaction.interactionId) === interaction.revision,
+  );
+}
+
+function subscriptionFailureIdentity(
+  state: ObservedSessionState,
+  error: unknown,
+): SubscriptionFailureIdentity {
+  const root = state.snapshot?.rootTurn;
+  return {
+    sessionId: state.sessionId,
+    ...(root ? { turnId: root.turnId, runId: root.runId } : {}),
+    reason:
+      error instanceof RuntimeHostSubscriptionError
+        ? error.reason
+        : "subscription_closed",
+    message:
+      error instanceof Error
+        ? error.message
+        : "Runtime Host Session subscription closed",
+  };
 }

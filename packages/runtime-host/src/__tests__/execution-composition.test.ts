@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -257,7 +257,69 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
   });
 });
 
-test('production execution composition owns claimed graph activation retry and exact abort', async () => {
+test('new Full Access Plan Skill previews use the mutating tool surface', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const skillDirectory = join(root, '.agents', 'skills', 'write-preview');
+    await mkdir(skillDirectory, { recursive: true });
+    await writeFile(
+      join(skillDirectory, 'SKILL.md'),
+      [
+        '---',
+        'name: Write Preview',
+        'description: Requires the Write tool.',
+        'required-tools: [Write]',
+        '---',
+        '# Write Preview',
+        '',
+      ].join('\n'),
+    );
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const connection = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'new-session-skill-client',
+        surface: 'desktop' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      const query = (permissionMode: 'ask' | 'bypass') =>
+        composition.handlers['skill.catalog.invocable.query'](
+          {
+            kind: 'start',
+            target: {
+              kind: 'new_session',
+              context: { projectRoot: root },
+              collaborationMode: 'plan',
+              permissionMode,
+            },
+          },
+          connection,
+        );
+
+      const managed = await query('ask');
+      assert.equal(managed.ok, true);
+      if (!managed.ok || managed.result.kind !== 'page') return;
+      assert.equal(
+        managed.result.items.some((item) => item.id === 'write-preview'),
+        false,
+      );
+
+      const fullAccess = await query('bypass');
+      assert.equal(fullAccess.ok, true);
+      if (!fullAccess.ok || fullAccess.result.kind !== 'page') return;
+      assert.equal(
+        fullAccess.result.items.some((item) => item.id === 'write-preview'),
+        true,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production composition validates graph stop before aborting a claimed child', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const claims = createAgentGraphControlStore(root);
@@ -354,6 +416,30 @@ test('production execution composition owns claimed graph activation retry and e
         onReady: ready,
       });
       await started;
+      const clientContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'graph-stop-client',
+        surface: 'tui' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      const invalidStop = await composition.handlers['agent.graph.stop'](
+        { rootSessionId: abortedClaim.targetSessionId },
+        clientContext,
+      );
+      assert.equal(invalidStop.ok, false);
+      if (invalidStop.ok) return;
+      assert.equal(invalidStop.error.code, 'operation_conflict');
+      const stillActive = await composition.handlers['turn.query'](
+        {
+          sessionId: abortedClaim.targetSessionId,
+          turnId: abortedClaim.targetTurnId,
+        },
+        clientContext,
+      );
+      assert.equal(stillActive.ok, true);
+      if (!stillActive.ok) return;
+      assert.equal(['completed', 'failed', 'cancelled'].includes(stillActive.result.status), false);
       abort.abort();
       const aborted = await aborting;
       assert.equal(aborted.status, 'cancelled');

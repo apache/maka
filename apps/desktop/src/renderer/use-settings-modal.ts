@@ -20,11 +20,20 @@ export function useSettingsModal() {
   const [settingsConnectionDetailSlug, setSettingsConnectionDetailSlug] = useState<string | undefined>(undefined);
   const [settingsCreateProviderType, setSettingsCreateProviderType] = useState<ProviderType | undefined>(undefined);
 
+  function showSettings() {
+    // macOS menu commands do not move DOM focus before opening Settings.
+    // Settle blur-owned edits before the obscured shell unmounts them.
+    if (!settingsOpen && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    setSettingsOpen(true);
+  }
+
   function openSettings() {
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(undefined);
-    setSettingsOpen(true);
+    showSettings();
   }
 
   function openSettingsSection(section: SettingsSection) {
@@ -33,7 +42,7 @@ export function useSettingsModal() {
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(undefined);
-    setSettingsOpen(true);
+    showSettings();
   }
 
   function openProviderCatalog() {
@@ -42,7 +51,7 @@ export function useSettingsModal() {
     setSettingsProviderCatalogOpen(true);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(undefined);
-    setSettingsOpen(true);
+    showSettings();
   }
 
   /** Open Settings → 模型 with a specific connection's detail sheet expanded. */
@@ -52,7 +61,7 @@ export function useSettingsModal() {
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(slug);
     setSettingsCreateProviderType(undefined);
-    setSettingsOpen(true);
+    showSettings();
   }
 
   /** Open Settings → 模型 with the create-connection dialog for this provider expanded. */
@@ -62,7 +71,7 @@ export function useSettingsModal() {
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(providerType);
-    setSettingsOpen(true);
+    showSettings();
   }
 
   return {

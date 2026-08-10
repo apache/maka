@@ -13,15 +13,15 @@ import type {
   PlanReminder,
   QuoteRef,
   SessionSummary,
+  SlashCommandIdForSurface,
   UiLocale,
   UiLocalePreference,
 } from '@maka/core';
 import {
   collapseSessionRevisions,
   isLinkedSubagentSession,
-  parseGraphCommand,
-  parseSwarmCommand,
   resolveUiLocale,
+  slashCommandsForSurface,
 } from '@maka/core';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
@@ -29,6 +29,7 @@ import {
   DailyReviewPage,
   ChatSurfaceLayout,
   type ComposerHandle,
+  type ComposerSendMetadata,
   type ComposerSlashCommandOption,
   type MakaUriDest,
   MakaUriContext,
@@ -52,10 +53,16 @@ import {
   getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
-import { MessageCircleQuestion } from '@maka/ui/icons';
+import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
+import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
+import {
+  deriveTaskReadinessNotice,
+  isTaskSubmissionHardBlocked,
+  resolveTaskReadinessModelTarget,
+} from './task-readiness-notice';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -79,10 +86,8 @@ import {
   removeStagedCompanionQuote,
   stageCompanionQuote,
 } from './quote-companion-panel-state';
-import {
-  parseSideChatCommand,
-  sideChatTitleFromPrompt,
-} from './side-chat-command';
+import { sideChatTitleFromPrompt } from './side-chat-command';
+import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
   applyCompanionForkVisibilityEvent,
   reconcileCompanionForkVisibility,
@@ -243,6 +248,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
             surface: 'toast',
             title: input.title,
             ...(input.description ? { description: input.description } : {}),
+            ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
             rendererUserAgent: navigator.userAgent,
             rendererLocale: navigator.language,
           })
@@ -730,6 +736,9 @@ function AppShellContent({
   // live in useShellChatModel (pure derivation of the snapshot + active session);
   // openSettingsSection is injected so the notice can wrap the derived click
   // target.
+  const activeSessionSendOutcome = activeSession
+    ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
+    : undefined;
   const {
     chatModelChoices,
     activeConnection,
@@ -750,9 +759,7 @@ function AppShellContent({
     uiLocale,
     connections,
     snapshotChoices: onboarding.snapshot?.chatModelChoices,
-    sessionSendOutcome: activeSession
-      ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
-      : undefined,
+    sessionSendOutcome: activeSessionSendOutcome,
     defaultConnection,
     activationCandidate: onboardingActivationCandidate,
     activeSession,
@@ -1183,6 +1190,16 @@ function AppShellContent({
       cancelled = true;
     };
   }, [activeId, setInteractionBySession]);
+  useEffect(
+    () =>
+      window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
+        markInteractionChanged(sessionId);
+        setInteractionBySession((current) =>
+          reconcileInteractions(current, sessionId, interactions),
+        );
+      }),
+    [markInteractionChanged, setInteractionBySession],
+  );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
     activeExecutionBoundary,
@@ -1322,11 +1339,6 @@ function AppShellContent({
     pinWorkbarTab,
     openWorkbarLauncher,
   } = useShellLayout();
-  const revealWorkbarLauncher = useCallback(() => {
-    setWorkbarCollapsed(false);
-    openWorkbarLauncher('right');
-  }, [openWorkbarLauncher, setWorkbarCollapsed]);
-
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeIdRef.current;
@@ -1364,25 +1376,42 @@ function AppShellContent({
     (initialPrompt?: string) => openNewSideConversation('right', initialPrompt),
     [openNewSideConversation],
   );
-  const openSideConversationRef = useRef(openSideConversation);
-  openSideConversationRef.current = openSideConversation;
-  const sideChatSlashCommands = useMemo<
-    readonly ComposerSlashCommandOption[]
-  >(
-    () =>
-      activeId
-        ? [
-            {
-              id: 'side',
-              name: workbarCopy.sideChat,
-              description: workbarCopy.launcher.sideChat,
-              keywords: ['side', 'btw', '侧聊', '追问'],
-              Icon: MessageCircleQuestion,
-              onSelect: () => openSideConversationRef.current(),
-            },
-          ]
-        : [],
-    [activeId, workbarCopy],
+  const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
+    () => {
+      const streaming = turnActive || activeStreamingLive;
+      const availableCommands = slashCommandsForSurface('desktop').filter(
+        ({ id, session }) =>
+          (session === 'none' || Boolean(activeId))
+          && !(streaming && id === 'compact'),
+      );
+      const presentation: Record<
+        SlashCommandIdForSurface<'desktop'>,
+        Omit<ComposerSlashCommandOption, 'id'>
+      > = {
+        compact: {
+          ...shellCopy.slashCommands.compact,
+          keywords: ['compact', 'context', '压缩', '上下文'],
+          Icon: Minimize2,
+        },
+        side: {
+          ...shellCopy.slashCommands.side,
+          keywords: ['side', 'btw', '侧聊', '追问'],
+          Icon: MessageCircleQuestion,
+        },
+        swarm: {
+          ...shellCopy.slashCommands.swarm,
+          keywords: ['swarm', 'multi-agent', '多智能体'],
+          Icon: Network,
+        },
+        graph: {
+          ...shellCopy.slashCommands.graph,
+          keywords: ['graph', 'agent graph', '智能体图'],
+          Icon: GitBranch,
+        },
+      };
+      return availableCommands.map(({ id }) => ({ id, ...presentation[id] }));
+    },
+    [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
   );
   const openSideConversationWithQuote = useCallback(
     (quote: QuoteRef) => {
@@ -1578,17 +1607,17 @@ function AppShellContent({
   const toggleWorkbar = useCallback(() => {
     if (workbarCollapsed) {
       setWorkbarCollapsed(false);
-      if (workbarPanelsState.right.tabs.length === 0) {
-        openWorkbarLauncher('right');
+      if (workbarPanelsState.right.activeTabId) {
+        activateWorkbarTab('right', workbarPanelsState.right.activeTabId);
       }
       return;
     }
     setWorkbarCollapsed(true);
   }, [
-    openWorkbarLauncher,
+    activateWorkbarTab,
     setWorkbarCollapsed,
     workbarCollapsed,
-    workbarPanelsState.right.tabs.length,
+    workbarPanelsState.right.activeTabId,
   ]);
 
   // Side chats survive a panel collapse. They are cleaned up only when their
@@ -1716,6 +1745,20 @@ function AppShellContent({
     },
     onSelectNoProject: selectNoProject,
   };
+  const taskReadinessRequest = {
+    ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
+    cwd: activeSession?.cwd ?? projectInfo?.projectPath,
+  };
+  const taskReadiness = useTaskSubmissionReadiness(
+    taskReadinessRequest,
+    onboarding.snapshot,
+  );
+  const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
+  const ignoreTaskReadinessModelTarget =
+    activeSession !== undefined && activeSessionSendOutcome?.kind !== 'blocked';
+  const taskSubmissionHardBlocked = isTaskSubmissionHardBlocked(taskReadiness.snapshot, {
+    ignoreModelTarget: ignoreTaskReadinessModelTarget,
+  });
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
@@ -1764,6 +1807,9 @@ function AppShellContent({
     projectPath: projectInfo?.projectPath,
     newSessionModel: newChatModel,
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
+    // Refresh only; Desktop Main re-reads the authoritative default before
+    // constructing the Runtime Host preview target.
+    newSessionPermissionMode: defaultPermissionMode,
   });
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
@@ -1796,6 +1842,7 @@ function AppShellContent({
     activeIdRef,
     addPendingSessionAction,
     captureComposerImportOwner,
+    checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -1859,17 +1906,22 @@ function AppShellContent({
     upsertSessionSummary,
   });
 
+  async function taskSubmissionReadyAtSend(): Promise<boolean> {
+    const snapshot = await taskReadiness.checkNow();
+    return !isTaskSubmissionHardBlocked(snapshot, {
+      ignoreModelTarget: ignoreTaskReadinessModelTarget,
+    });
+  }
+
   async function sendWithAttachments(
     text: string,
-    metadata?: { workspaceFileReferences?: readonly WorkspaceFileReferencePosition[] },
+    metadata?: ComposerSendMetadata,
   ): Promise<boolean | void> {
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
       revision && activeIdRef.current === revision.draftSessionId,
     );
-    const sideChatCommand = parseSideChatCommand(text);
-    const swarmCommand = parseSwarmCommand(text);
-    const graphCommand = parseGraphCommand(text);
+    const slashCommand = parseDesktopSlashCommand(text);
     if (
       revisionSend &&
       revision &&
@@ -1886,13 +1938,13 @@ function AppShellContent({
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
-      if (text.trim() === '/compact' || sideChatCommand || swarmCommand || graphCommand) {
+      if (slashCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
       if (!(await prepareRevisionSend(text))) return false;
     }
-    if (text.trim() === '/compact') {
+    if (slashCommand?.kind === 'compact') {
       const sessionId = activeIdRef.current;
       if (!sessionId) return true;
       try {
@@ -1911,7 +1963,7 @@ function AppShellContent({
         return false;
       }
     }
-    if (sideChatCommand) {
+    if (slashCommand?.kind === 'side') {
       if (!activeIdRef.current) {
         toastApi.info(
           shellCopy.sideChatUnavailableTitle,
@@ -1930,10 +1982,11 @@ function AppShellContent({
         );
         return false;
       }
-      openSideConversation(sideChatCommand.prompt || undefined);
+      openSideConversation(slashCommand.command.prompt || undefined);
       return true;
     }
-    if (swarmCommand) {
+    if (slashCommand?.kind === 'swarm') {
+      const swarmCommand = slashCommand.command;
       if (swarmCommand.kind === 'status') {
         const active = activeIdRef.current
           ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
@@ -1975,7 +2028,8 @@ function AppShellContent({
       if (ok !== false && quotes) clearQuotes();
       return ok;
     }
-    if (graphCommand) {
+    if (slashCommand?.kind === 'graph') {
+      const graphCommand = slashCommand.command;
       if (graphCommand.kind === 'status') {
         const active = activeIdRef.current
           ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
@@ -2061,6 +2115,15 @@ function AppShellContent({
     }
   }
 
+  function submitWhileStreaming(
+    text: string,
+    metadata?: ComposerSendMetadata,
+  ): Promise<boolean | void> {
+    return parseDesktopSlashCommand(text)
+      ? sendWithAttachments(text, metadata)
+      : steerWithText(text);
+  }
+
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
@@ -2111,11 +2174,12 @@ function AppShellContent({
   }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || externalImportOpen;
+  const shellObscured = hasModalOpen || settingsOpen;
 
   useEffect(() => {
     const handleWorkbarShortcut = (event: KeyboardEvent) => {
       if (
-        hasModalOpen ||
+        shellObscured ||
         navSelectionRef.current.section !== 'sessions' ||
         !activeId
       ) {
@@ -2149,7 +2213,7 @@ function AppShellContent({
     };
     window.addEventListener('keydown', handleWorkbarShortcut, true);
     return () => window.removeEventListener('keydown', handleWorkbarShortcut, true);
-  }, [activeId, hasModalOpen, requestOpenWorkbarTab]);
+  }, [activeId, requestOpenWorkbarTab, shellObscured]);
 
   useAppShellNavRefSync({
     navSelection,
@@ -2462,51 +2526,56 @@ function AppShellContent({
           one frame-level hit-test surface. */}
       <header
         className="maka-window-titlebar"
-        aria-hidden={hasModalOpen ? 'true' : undefined}
+        aria-hidden={shellObscured ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
       >
-        <AppShellTopbarActions
-          sidebarCollapsed={sessionListCollapsed}
-          onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
-          sidebarToggleHidden={settingsOpen}
-          onOpenSearchModal={() => setSearchModalOpen(true)}
-        />
-        {/* Only a session has an identity to state. The other views name
-            themselves in the nav column they are selected from, and the
-            new-task surface still shows its project in the composer's
-            WorkspacePicker — which stops rendering at the exact moment this
-            takes over, when the first message creates the session. */}
-        {/* `activeSessionForView`, not `activeSession`: opening or creating a
-            session runs a few hundred ms on a placeholder record while the real
-            summary loads, and the name this replaced (the context layer's) was
-            showing through that window. Hung on the real record alone, 新任务
-            was named nowhere for the length of it. */}
-        {navSelection.section === 'sessions' && activeSessionForView && (
-          <TitlebarSessionIdentity
-            /* Keyed by session: the open rename is local state and the field is
-               uncontrolled, so a switch that left the instance mounted would
-               carry one session's half-typed name — and its commit — onto the
-               next one. A remount ties the edit to the session it belongs to. */
-            key={activeSessionForView.id}
-            sessionName={activeSessionForView.name}
-            onRenameSession={(name) => {
-              void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
-            }}
-            project={
-              titlebarProjectName
-                ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
-                : undefined
-            }
-            parentSession={titlebarParentSession}
-          />
-        )}
-        {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-          <AppShellWorkspaceTopActions
-            workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-            workbarCollapsed={workbarCollapsed}
-            onOpenWorkbarLauncher={revealWorkbarLauncher}
-            onToggleWorkbar={toggleWorkbar}
-          />
+        {/* Settings owns the full window chrome. Keep this empty header mounted
+            as the frameless window's drag authority, but remove every control
+            and identity belonging to the obscured session shell. */}
+        {!settingsOpen && (
+          <>
+            <AppShellTopbarActions
+              sidebarCollapsed={sessionListCollapsed}
+              onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
+              onOpenSearchModal={() => setSearchModalOpen(true)}
+            />
+            {/* Only a session has an identity to state. The other views name
+                themselves in the nav column they are selected from, and the
+                new-task surface still shows its project in the composer's
+                WorkspacePicker — which stops rendering at the exact moment this
+                takes over, when the first message creates the session. */}
+            {/* `activeSessionForView`, not `activeSession`: opening or creating a
+                session runs a few hundred ms on a placeholder record while the real
+                summary loads, and the name this replaced (the context layer's) was
+                showing through that window. Hung on the real record alone, 新任务
+                was named nowhere for the length of it. */}
+            {navSelection.section === 'sessions' && activeSessionForView && (
+              <TitlebarSessionIdentity
+                /* Keyed by session: the open rename is local state and the field is
+                   uncontrolled, so a switch that left the instance mounted would
+                   carry one session's half-typed name — and its commit — onto the
+                   next one. A remount ties the edit to the session it belongs to. */
+                key={activeSessionForView.id}
+                sessionName={activeSessionForView.name}
+                onRenameSession={(name) => {
+                  void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
+                }}
+                project={
+                  titlebarProjectName
+                    ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
+                    : undefined
+                }
+                parentSession={titlebarParentSession}
+              />
+            )}
+            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+              <AppShellWorkspaceTopActions
+                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+                workbarCollapsed={workbarCollapsed}
+                onToggleWorkbar={toggleWorkbar}
+              />
+            )}
+          </>
         )}
       </header>
       <AstryxAppShell
@@ -2519,8 +2588,8 @@ function AppShellContent({
         height="fill"
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
-        aria-hidden={hasModalOpen ? 'true' : undefined}
-        inert={hasModalOpen ? true : undefined}
+        aria-hidden={shellObscured ? 'true' : undefined}
+        inert={shellObscured ? true : undefined}
         sideNav={
           <SessionListPanel
             collapseHandleRef={sessionSideNavHandleRef}
@@ -2680,7 +2749,7 @@ function AppShellContent({
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendWithAttachments}
-                  onSteer={steerWithText}
+                  onStreamingSubmit={submitWhileStreaming}
                   onStop={stop}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
@@ -2693,7 +2762,7 @@ function AppShellContent({
                       : undefined
                   }
                   mentionSkills={mentionSkills}
-                  slashCommands={sideChatSlashCommands}
+                  slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
@@ -2735,7 +2804,9 @@ function AppShellContent({
                   onOpenModelSettings={() => openSettingsSection('models')}
                   noModelConnection={connections.length === 0}
                   sendBlocked={
-                    Boolean(workspaceReadinessRecovery) || sessionHealthNotice?.tone === 'destructive'
+                    Boolean(workspaceReadinessRecovery) ||
+                    sessionHealthNotice?.tone === 'destructive' ||
+                    taskSubmissionHardBlocked
                   }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
@@ -2916,6 +2987,16 @@ function AppShellContent({
                 }}
                 sessionHealthNotice={sessionHealthNotice}
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
+                taskReadinessNotice={taskReadinessNotice}
+                onTaskReadinessAction={
+                  taskReadinessNotice?.action === 'workspace_picker'
+                    ? activeSession
+                      ? openNewTaskSurface
+                      : () => {
+                          void addProject();
+                        }
+                    : taskReadiness.refresh
+                }
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 isOnboardingLoading={isOnboardingLoading}
@@ -2953,7 +3034,7 @@ function AppShellContent({
                 activeId={activeId}
                 rightCollapsed={workbarCollapsed}
                 bottomOpen={bottomPanelOpen}
-                hidden={hasModalOpen}
+                hidden={shellObscured}
                 rightWidth={workbarWidth}
                 bottomHeight={bottomPanelHeight}
                 onDismissPanel={(placement) => {
@@ -3016,7 +3097,7 @@ function AppShellContent({
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
       </AstryxAppShell>
-      {!hasModalOpen && !settingsOpen && (
+      {!shellObscured && (
         <CustomPetCompanion
           activityState={petActivityState}
           completionNonce={petCompletionNonce}

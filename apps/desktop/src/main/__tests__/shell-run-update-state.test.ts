@@ -4,6 +4,7 @@ import type { ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core';
 import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
+  ShellRunHydration,
 } from '../../renderer/shell-run-update-state.js';
 
 test('ShellRun update state rejects a stale hydration result after a newer notification', () => {
@@ -75,6 +76,20 @@ test('ShellRun update state applies ownership changes at the same revision', () 
     sourceSessionId: 'parent',
   });
   assert.equal(next.branch?.bash?.result.revision, 3);
+});
+
+test('ShellRun hydration ignores an old read and replays updates after the resync boundary', () => {
+  const hydration = new ShellRunHydration();
+  const oldEpoch = hydration.begin();
+  hydration.accept(update(2));
+
+  const currentEpoch = hydration.begin();
+  hydration.accept(update(4));
+  const current = hydration.commit(currentEpoch);
+  assert.deepEqual(current?.updates.map((entry) => entry.result.revision), [4]);
+  assert.equal(hydration.commit(oldEpoch), undefined);
+
+  assert.equal(hydration.accept(update(5))?.result.revision, 5);
 });
 
 function update(revision: number): ShellRunUpdate {

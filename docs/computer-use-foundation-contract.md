@@ -10,6 +10,7 @@
 - `codex-computer-use-lab/docs/13-policy-error-state-machine.md`：policy → approval → fresh observation → action，以及 intervention/lock/blocked URL 状态；
 - `codex-computer-use-lab/docs/16-service-process-lifecycle-and-retention.md`：exact executable ownership、client/idle lifecycle、connection-loss cleanup；
 - `codex-computer-use-lab/docs/19-electron-presentation-and-mcp-event-contract.md`：presentation 与 native action transport 分离。
+- `codex-computer-use-lab/docs/22-native-ax-diff-refetch-and-instance-isolation.md`：stable AX revision ids、ordered difference、no-change 与 full fallback。
 
 上述文件位于独立逆向实验仓库。本文只记录由 Maka 测试锁定的合同，
 不把外部路径声明为本仓库内链接。
@@ -18,6 +19,8 @@
 
 1. Observation authority
    - 每个可执行 observation 具有唯一 `frameId + epoch`、截图尺寸、`pid + windowId`、capture-local 坐标信息，以及适用时的 Electron page identity。
+   - 同一窗口跨 revision 的模型 element id 可以稳定，但它只是 presentation identity；每次 dispatch 仍必须解析到 fresh snapshot 的 opaque token。
+   - WebContent/renderer 元素同时绑定 host process generation 与 actual input-owner generation；唯一真实 WebContent 元素会遮蔽同框叶子 mirror，歧义 mirror 不删除。
    - 坐标只能在产生它的截图/窗口 frame 内解释。dispatch 禁止重新选择当前全局坐标下的最高 z-order 窗口。
    - 新 observation、turn/session 结束、abort、user stop、service loss 和明确 intervention 使旧 action claim 与 keyboard ownership 失效。
 
@@ -31,6 +34,7 @@
    - semantic action 优先按稳定 token refetch；否则仅允许唯一且 identity-preserving 的匹配。缺失、歧义、越界、遮挡或 page 变化必须失败。
    - 无关 AX/DOM 内容变化不能合成 `user_intervened`。物理介入和 terminal host state 必须来自明确事件。
    - drag/zoom 两端必须属于同一个 bound window。
+   - WebContent click 只有在 host/window 与 renderer generation 都验证后才能走 `skylight_pid`；失败不得退回 AX mirror 或 JavaScript click。
 
 4. Execution ownership
    - maka-cu 是唯一 native executor；window/page discovery、semantic preparation、input dispatch 和 effect readback 均留在该边界内。
@@ -39,7 +43,8 @@
    - child process 在未知 action outcome 下退出时必须 re-observe，禁止自动重放。
 
 5. Postcondition
-   - mutation 成功后旧 observation 被消费并返回 fresh full observation；可获得视觉状态时向模型返回新截图。
+   - mutation 成功后旧 observation 被消费并返回 fresh authoritative observation；完整当前元素树保留在 observation 内，可获得视觉状态时向模型返回新截图。
+   - immediate post-action model text 可以使用 executor 声明的 no-change/difference/full presentation；显式 observe 仍显示完整树，差分不得成为重建当前状态的唯一来源。
    - transport success 不等于 business success。`verified:true` 必须由 action-specific effect/readback 支撑。
    - `supported:true, ok:false` 为本次 terminal failure；仅 side-effect-free 的 `supported:false` 可进行一次显式允许的 fallback。
    - retry 基于 fresh observation 和新 claim，禁止重试旧 coordinate/fingerprint。
@@ -73,10 +78,12 @@
 |---|---|---|---|
 | Frame/window binding、duplicate rejection | PASS | frame state、bound-action、stale/duplicate tests | 在 Runtime slice 保留 focused tests |
 | Capture-local coordinate authority | PASS | window-local transform、scale/geometry、Retina/negative-origin tests | decoy window 下的 cumulative Desktop E2E |
-| Page identity、driver-only executor | PARTIAL | PID-owned CDP/page resolution，无 direct executor bypass | document replacement test；填充 `documentFingerprint` |
-| Semantic identity refetch | PARTIAL | unique refetch、missing/ambiguous rejection | token mismatch 不得接受 replacement control |
+| WebContent / renderer target | PASS | actual PID + start time、coalition readiness、mirror 去重；精确 pin 的 5 轮 OOP 全部 `skylight_pid`、`isTrusted=true`、单 down-up，30 个 sentinel span 零前台样本 | 扩到真实 Electron/Chromium app matrix |
+| Semantic identity refetch | PASS | renderer frame-only reflow 仅允许同进程世代 unique replacement；missing/ambiguous fail closed；native frame change 继续拒绝；真机全部零误点 | 保留跨 toolkit 录制回归 |
+| Stable AX revision / post-action diff | PASS | DFS stable ID、跨 fresh token 继承、ordered changes、removed ranges、no-change/full fallback；host 显式 observe 保持 full | 增加真实长树 token-saving trajectory 样本 |
+| Modal / multi-window routing | PARTIAL | app→sheet、exact secondary、button/scroll/close 功能矩阵 5/5；精确 pin 的高频 sentinel 捕获 1,738 个 target-frontmost 样本，后台安全未通过 | 修复原生 AX press 的瞬时前台抢占，再重跑同一聚合矩阵 |
 | Occlusion、no foreground/pixel fallback | PASS | coordinate/semantic occlusion 与 fail-closed tests | real-window safety sentinel |
-| Fresh postcondition、effect verification | PARTIAL | mutation 后要求 fresh observation，部分 readback | 所有 advertised mutation 的 cross-layer tests |
+| Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；5 轮 primary oracle=1、slider 业务值/readback=42、scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
 | Per-session queue、generation lease | PARTIAL | session queue/frame claim；lease 修复尚在本地 | concurrent-session 与 intervention-before-dispatch tests |
 | Physical intervention、lock、stop | FAIL | 有状态机原型，无 Desktop production event producer | 真实 host wiring 与 transition tests |
 | Service recovery、unknown outcome | PARTIAL | 本地 service abstraction 与 unit tests | restart reset、attestation、child-crash、cleanup E2E |
@@ -130,6 +137,20 @@ run loop 的进程里**永不刷新**。执行器因此看不见任何在它之�
 
 教训：在无 run loop 的进程里，AppKit 的任何"当前状态"访问器都要按缓存对待，改用
 `proc_listpids` / 窗口服务这类每次真查的接口。
+
+### WebContent 不是把事件 PID 改掉
+
+WKWebView 的 AX 树和 XPC process 不是同时出现的。只按进程名找 WebContent 会撞到别的
+应用，只把 `CGEvent.postToPid` 改投 renderer 又完全没有事件。当前闭环分三层：
+
+- XNU resource + jetsam coalition 只负责证明 host 到 WebContent 的唯一归属，并触发
+  一次 250ms bounded re-observe；
+- observation 只删除同框、同语义、唯一且为叶子的 host mirror；
+- event 仍绑定 host `CGWindowID`，通过单通道 private SkyLight 交给 WindowServer 做
+  renderer hop；actual PID/start time 是元素身份和 restart fence。
+
+教训：OOP targeting 是 process identity、window identity 和 event routing 的联合
+问题，不是一个 PID 字段。
 
 ### 上限要有时钟，截断要说出来
 

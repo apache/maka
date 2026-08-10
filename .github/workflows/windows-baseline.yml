@@ -5,7 +5,15 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Nightly full storage suite (PR/push keep curated OS-sensitive gates only).
+  schedule:
+    - cron: '17 6 * * *'
   workflow_dispatch:
+    inputs:
+      full_storage:
+        description: 'Run full packages/storage suite on Windows (slow, evidence lane)'
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-baseline-${{ github.ref }}
@@ -15,7 +23,47 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.plan.outputs.windows }}
+      windows_runtime: ${{ steps.plan.outputs.windows_runtime }}
+      windows_storage: ${{ steps.plan.outputs.windows_storage }}
+      # Full suite is never selected by path plan — only schedule / dispatch.
+      windows_storage_full: ${{ steps.full.outputs.windows_storage_full }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: plan
+        name: Select affected Windows surfaces
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
+        run: |
+          # schedule / manual dispatch have no meaningful PR base; use full
+          # surface selection so the job still runs install+smoke+gates.
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
+          elif [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
+          else
+            node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
+      - id: full
+        name: Decide full storage suite
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "windows_storage_full=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_storage }}" == "true" ]]; then
+            echo "windows_storage_full=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "windows_storage_full=false" >> "$GITHUB_OUTPUT"
+          fi
+
   windows_baseline:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     name: windows_baseline (non-blocking)
     runs-on: windows-latest
     timeout-minutes: 45
@@ -101,18 +149,22 @@ jobs:
 
       - id: smoke
         name: Run CLI and Electron startup smoke
-        if: always() && steps.install.outcome == 'success'
+        if: always() && steps.build.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
-          npm.cmd run smoke:windows *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
+          npm.cmd --workspace @maka/desktop run build:smoke *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke-build.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke-build.log"
+          if ($exitCode -ne 0) { exit $exitCode }
+          npm.cmd run smoke:windows:dist *> "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
           $exitCode = $LASTEXITCODE
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/smoke.log"
           exit $exitCode
 
       - id: runtime_pty_input
         name: Run Runtime PTY input gates
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_runtime == 'true'
         continue-on-error: true
         timeout-minutes: 5
         shell: pwsh
@@ -127,20 +179,38 @@ jobs:
           }
           exit $exitCode
 
+      # Full packages/storage test:dist is ~10 minutes on windows-latest and
+      # mostly duplicates the Linux unit lane. Baseline keeps process/path/
+      # lock/crash-sensitive gates here; crash-recovery patterns stay in the
+      # dedicated step below. Bump concurrency carefully — several suites spawn
+      # child processes and fight for disk under high fan-out.
       - id: storage
-        name: Capture storage test baseline
-        if: always() && steps.build.outcome == 'success'
+        name: Run Windows storage path and lock gates
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
         continue-on-error: true
+        timeout-minutes: 12
         shell: pwsh
         run: |
-          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
-          $exitCode = $LASTEXITCODE
-          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
-          exit $exitCode
+          $storageGates = @(
+            'packages/storage/dist/__tests__/root-authority.test.js',
+            'packages/storage/dist/__tests__/sqlite-recovery-concurrency.test.js',
+            'packages/storage/dist/__tests__/sqlite-runtime-crash.test.js',
+            'packages/storage/dist/__tests__/sqlite-long-term-memory-crash.test.js',
+            'packages/storage/dist/__tests__/artifact-writer-lock.test.js',
+            'packages/storage/dist/__tests__/write-queue.test.js',
+            'packages/storage/dist/__tests__/marker-file.test.js',
+            'packages/storage/dist/__tests__/workspace-root.test.js',
+            'packages/storage/dist/__tests__/managed-workspace-owner.test.js',
+            'packages/storage/dist/__tests__/workspace-identity.test.js'
+          )
+          node.exe --test --test-concurrency=2 --test-force-exit --test-timeout=60000 `
+            @storageGates `
+            2>&1 | Tee-Object -FilePath "$env:WINDOWS_BASELINE_LOG_DIR/storage.log"
+          exit $LASTEXITCODE
 
       - id: managed_workspace_crash
         name: Run managed workspace crash recovery gates
-        if: always() && steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage == 'true'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -148,6 +218,21 @@ jobs:
           node.exe --test --test-concurrency=1 --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" packages/storage/dist/__tests__/managed-workspace-baseline.test.js packages/storage/dist/__tests__/git-workspace-service.test.js *> "$env:WINDOWS_BASELINE_LOG_DIR/managed-workspace-crash.log"
           $exitCode = $LASTEXITCODE
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/managed-workspace-crash.log"
+          exit $exitCode
+
+      # Full suite is evidence-only: nightly + manual dispatch. Do not run on
+      # ordinary PRs — Linux unit already covers the package, and the full
+      # Windows wall clock is ~10 minutes.
+      - id: storage_full
+        name: Capture full storage suite baseline
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage_full == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage-full.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage-full.log"
           exit $exitCode
 
       - id: processes
@@ -251,9 +336,10 @@ jobs:
           | Skip inventory | ${{ steps.inventory.outcome }} |
           | Script tests | ${{ steps.scripts.outcome }} |
           | CLI / Electron smoke | ${{ steps.smoke.outcome }} |
-          | Storage suite | ${{ steps.storage.outcome }} |
+          | Storage path/lock gates | ${{ steps.storage.outcome }} |
           | Runtime PTY input | ${{ steps.runtime_pty_input.outcome }} |
           | Managed workspace crash recovery | ${{ steps.managed_workspace_crash.outcome }} |
+          | Full storage suite (nightly/manual) | ${{ steps.storage_full.outcome }} |
           | Residual processes | ${{ steps.processes.outcome }} |
 
           Download the `windows-baseline` artifact for complete logs.

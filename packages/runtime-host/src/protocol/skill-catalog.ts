@@ -1,6 +1,7 @@
+import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
 import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation } from './operation-spec.js';
 
 export const SKILL_CATALOG_PAGE_MAX_ITEMS = 128;
 export const SKILL_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
@@ -95,6 +96,7 @@ export type SkillCatalogInvocableTarget =
       readonly kind: 'new_session';
       readonly context: SkillCatalogLocalContext;
       readonly collaborationMode: 'agent' | 'plan';
+      readonly permissionMode: PermissionMode;
     };
 
 export interface SkillCatalogInvocableItem {
@@ -308,7 +310,7 @@ export interface SkillCatalogRevisionConflict {
 }
 
 export const SKILL_CATALOG_OPERATION_SPECS = {
-  'skill.catalog.query': defineOperation<
+  'skill.catalog.query': defineHostPathOperation<
     SkillCatalogQueryInput,
     SkillCatalogQueryResult,
     (typeof QUERY_ERRORS)[number]
@@ -319,18 +321,21 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     decodeInput: decodeQueryInput,
     decodeOutput: decodeQueryResult,
   }),
-  'skill.catalog.invocable.query': defineOperation<
+  'skill.catalog.invocable.query': defineHostPathOperation<
     SkillCatalogInvocableQueryInput,
     SkillCatalogInvocableQueryResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodeInvocableQueryInput,
-    decodeOutput: decodeInvocableQueryResult,
-  }),
-  'skill.catalog.mutate': defineOperation<
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodeInvocableQueryInput,
+      decodeOutput: decodeInvocableQueryResult,
+    },
+    (input) => input.target.kind === 'new_session',
+  ),
+  'skill.catalog.mutate': defineHostPathOperation<
     SkillCatalogMutateInput,
     SkillCatalogMutateResult,
     (typeof MUTATION_ERRORS)[number]
@@ -341,7 +346,7 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     decodeInput: decodeMutateInput,
     decodeOutput: decodeMutateResult,
   }),
-  'skill.catalog.preview-update': defineOperation<
+  'skill.catalog.preview-update': defineHostPathOperation<
     SkillCatalogPreviewUpdateInput,
     SkillCatalogPreviewUpdateResult,
     (typeof QUERY_ERRORS)[number]
@@ -818,14 +823,19 @@ function invocableTarget(value: unknown): SkillCatalogInvocableTarget {
       'kind',
       'context',
       'collaborationMode',
+      'permissionMode',
     ]);
     if (fresh.collaborationMode !== 'agent' && fresh.collaborationMode !== 'plan') {
       throw invalidProtocolFrame('Invalid invocable Skill collaboration mode');
+    }
+    if (!isPermissionMode(fresh.permissionMode)) {
+      throw invalidProtocolFrame('Invalid invocable Skill permission mode');
     }
     return {
       kind: 'new_session',
       context: localContext(fresh.context),
       collaborationMode: fresh.collaborationMode,
+      permissionMode: fresh.permissionMode,
     };
   }
   throw invalidProtocolFrame('Invalid invocable skill catalog target');

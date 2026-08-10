@@ -23,7 +23,7 @@ type RefBox<T> = { current: T };
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(title: string, description?: string, diagnosticDetails?: string): void;
 };
 
 export interface AppShellSessionEventHandlers {
@@ -160,7 +160,11 @@ export function createAppShellSessionEventHandlers(options: {
             showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
           } else {
             const copy = getDesktopConversationCopy(uiLocale).actions;
-            toastApi.error(copy.conversationErrorTitle, sessionEventErrorMessage(event, uiLocale));
+            toastApi.error(
+              copy.conversationErrorTitle,
+              sessionEventErrorMessage(event, uiLocale),
+              sessionEventDiagnosticDetails(sessionId, event),
+            );
           }
         }
         notifyRunEnded?.({ kind: 'errored', sessionId, body: sessionEventErrorMessage(event, uiLocale) });
@@ -190,4 +194,22 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   return { handleEvent, reconcilePersistedMessages, settleAssistantStreaming };
+}
+
+function sessionEventDiagnosticDetails(
+  sessionId: string,
+  event: Extract<SessionEvent, { type: 'error' }>,
+): string {
+  return [
+    `Session: ${sessionId}`,
+    `Turn: ${event.turnId}`,
+    `Event: ${event.id}`,
+    `Reason: ${event.reason ?? '<none>'}`,
+    `Code: ${event.code ?? '<none>'}`,
+    `Recoverable: ${event.recoverable}`,
+    `Message: ${event.message}`,
+    ...(event.details === undefined
+      ? []
+      : [`Details: ${JSON.stringify(event.details)}`]),
+  ].join('\n');
 }

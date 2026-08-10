@@ -95,7 +95,6 @@ import type {
   McpTestResult,
 } from '@maka/core/mcp';
 import type {
-  AgentGraphClientChangedEvent,
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
@@ -284,7 +283,7 @@ export interface MakaBridge {
     stop(rootSessionId: string): Promise<void>;
     subscribe(
       rootSessionId: string,
-      handler: (event: AgentGraphClientChangedEvent) => void,
+      handler: () => void,
     ): () => void;
   };
   sessions: {
@@ -326,6 +325,12 @@ export interface MakaBridge {
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
+    subscribeActiveInteractions(
+      handler: (event: {
+        sessionId: string;
+        interactions: ActiveInteractionRequestEvent[];
+      }) => void,
+    ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
@@ -391,6 +396,7 @@ export interface MakaBridge {
   };
   projects: {
     list(): Promise<ProjectRecord[]>;
+    subscribeChanges(handler: () => void): () => void;
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
@@ -426,6 +432,7 @@ export interface MakaBridge {
     }): Promise<ShellRunUpdate | null>;
     subscribeUpdates(handler: (update: ShellRunUpdate) => void): () => void;
     subscribePtyData(handler: (event: ShellRunPtyDataEvent) => void): () => void;
+    subscribeResync(handler: (event: { sessionId: string }) => void): () => void;
   };
   gitReview: {
     read(input: {
@@ -772,6 +779,7 @@ export interface MakaBridge {
     }>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
+    checkForUpdates(): Promise<AppUpdateStatus>;
     retryUpdateDownload(): Promise<AppUpdateStatus>;
     installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
     sessionProjectInfo(sessionId: string): Promise<{
