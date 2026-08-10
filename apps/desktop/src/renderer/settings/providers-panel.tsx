@@ -70,15 +70,13 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   bridge: ConnectionsBridge;
   initialPage?: 'connections' | 'catalog';
   /**
-   * When set, open this connection's detail once the list has loaded. Used by
-   * the `oauth-relogin` e2e fixture so the re-login affordance is captured; a
-   * real user reaches the same page by clicking the connection row.
+   * When set, open this connection's detail once the list has loaded.
    */
   initialConnectionSlug?: string;
   /**
    * When set, land straight on this provider's setup once the panel has
-   * loaded — the first-run hero's path. One-shot: the caller retires the
-   * request via onInitialCreateProviderConsumed.
+   * loaded. One-shot: the caller retires the request via
+   * onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
   /** Called once the setup level has been entered. */

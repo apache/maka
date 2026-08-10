@@ -4,7 +4,6 @@ import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import {
   type ConnectionEvent,
-  type SandboxBoundaryResponse,
   type SessionChangedEvent,
   type SessionChangedReason,
   resolveSystemUiLocale,
@@ -47,9 +46,7 @@ import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-a
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
 import {
-  getE2eFixtureState,
   resolveE2eFixture,
-  retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
@@ -142,9 +139,7 @@ const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceI
   join(userDataDir, "runtime-host-client.json"),
 );
 const e2eFixture = resolveDesktopE2eFixture();
-const useBotOnboardingFixture =
-  e2eFixture?.scenario === "settings-bots" ||
-  e2eFixture?.scenario === "settings-bots-onboarding";
+const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const workspaceRoot = join(
   userDataDir,
   "workspaces",
@@ -242,11 +237,7 @@ const projectRoot = createProjectRootController({
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
 const attachmentApprovals = createAttachmentApprovalRegistry();
-const oauthPresentation = new RuntimeHostOAuthPresentation(
-  e2eFixture?.scenario === "oauth-relogin"
-    ? async () => undefined
-    : (url) => shell.openExternal(url),
-);
+const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openExternal(url));
 let owner: RuntimeHostDesktopOwner | undefined;
 let runtimePolicyClient: DesktopRuntimeHostClient | undefined;
 const projectCatalog = createRuntimeHostProjectCatalog(() => {
@@ -548,34 +539,6 @@ owner = await startRuntimeHostDesktopOwner(
     emitModeChanged: (sessionId) =>
       emitSessionsChanged("mode-change", sessionId),
     completeComputerUseTurn,
-    ...(e2eFixture
-      ? {
-          e2eInteractions: {
-            list: (sessionId: string) => {
-              const request = getE2eFixtureState(e2eFixture)
-                ?.sandboxBoundaryBySession?.[sessionId];
-              return request ? [request] : [];
-            },
-            respondToSandboxBoundary: async (
-              sessionId: string,
-              response: SandboxBoundaryResponse,
-            ) => {
-              const request = getE2eFixtureState(e2eFixture)
-                ?.sandboxBoundaryBySession?.[sessionId];
-              if (request?.requestId !== response.requestId) {
-                return { handled: false as const };
-              }
-              retireE2eFixtureSandboxBoundaryRequest(response.requestId);
-              return {
-                handled: true as const,
-                ...(response.decision === "allow"
-                  ? { permissionMode: "ask" as const }
-                  : {}),
-              };
-            },
-          },
-        }
-      : {}),
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,

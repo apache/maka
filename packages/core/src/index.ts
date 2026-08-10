@@ -872,7 +872,6 @@ export {
 
 // e2e-fixture.ts
 export type {
-  E2eFixtureLiveTool,
   E2eFixtureScenario,
   E2eFixtureState,
 } from './e2e-fixture.js';

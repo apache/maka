@@ -67,17 +67,6 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
       updatedAt: now - 4 * 60_000,
     },
     {
-      slug: 'relay-fallback',
-      name: 'Fallback Relay Fixture',
-      providerType: 'openai-compatible',
-      baseUrl: 'https://relay.example.test/v1',
-      defaultModel: 'relay-static-model',
-      enabled: true,
-      modelSource: 'fallback',
-      createdAt: now - 3_500_000,
-      updatedAt: now - 3_500_000,
-    },
-    {
       slug: 'empty-fetched',
       name: 'Fetched Empty Fixture',
       providerType: 'openai-compatible',
@@ -93,61 +82,8 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
       createdAt: now - 3_400_000,
       updatedAt: now - 15 * 60_000,
     },
-    {
-      slug: 'needs-reauth',
-      name: 'Needs Reauth Fixture',
-      providerType: 'anthropic',
-      defaultModel: 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      models: [model('claude-sonnet-4-5-20250929', { vision: true, reasoning: true, functionCalling: true }, 200_000)],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 3 * 3_600_000,
-      lastTestStatus: 'needs_reauth',
-      lastTestAt: new Date(now - 10 * 60_000).toISOString(),
-      lastTestMessage: '鉴权失败',
-      createdAt: now - 3_300_000,
-      updatedAt: now - 10 * 60_000,
-    },
-    {
-      slug: 'broken-provider',
-      name: 'Broken Provider Fixture',
-      providerType: 'openai',
-      defaultModel: 'gpt-4o-mini',
-      enabled: true,
-      models: [model('gpt-4o-mini', { vision: true, functionCalling: true }, 128_000)],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 4 * 3_600_000,
-      lastTestStatus: 'error',
-      lastTestAt: new Date(now - 8 * 60_000).toISOString(),
-      lastTestMessage: '模型服务返回错误',
-      createdAt: now - 3_200_000,
-      updatedAt: now - 8 * 60_000,
-    },
   ];
-  if (scenario === 'oauth-relogin') {
-    // A openai-codex (OAuth) connection whose last test came back
-    // needs_reauth. Its detail sheet must offer an inline 登录 / 重新登录
-    // button (driven by the shared OAuth login flow) instead of the old dead
-    // prose. Credential presence for OAuth connections is resolved through the
-    // subscription token store (empty here), so the button reads 登录; the
-    // hasSecret===true → 重新登录 label is pinned by the detail-sheet contract.
-    connections.push({
-      slug: 'codex-subscription',
-      name: 'OpenAI Codex Fixture',
-      providerType: 'openai-codex',
-      defaultModel: 'gpt-5.5',
-      enabled: true,
-      models: [model('gpt-5.5', { reasoning: true, functionCalling: true }, 200_000)],
-      modelSource: 'fetched',
-      modelsFetchedAt: now - 6 * 60_000,
-      lastTestStatus: 'needs_reauth',
-      lastTestAt: new Date(now - 6 * 60_000).toISOString(),
-      lastTestMessage: '需要重新登录',
-      createdAt: now - 3_100_000,
-      updatedAt: now - 6 * 60_000,
-    });
-  }
-  const focusSlug = connectionFocusSlug(scenario);
+  const focusSlug = scenario === 'fetched-empty' ? 'empty-fetched' : null;
   const ordered = focusSlug
     ? [
         ...connections.filter((connection) => connection.slug === focusSlug),
@@ -158,21 +94,6 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
     defaultSlug: focusSlug ?? 'zai-live',
     connections: ordered,
   });
-}
-
-function connectionFocusSlug(scenario: E2eFixtureScenario): string | null {
-  switch (scenario) {
-    case 'fallback-source':
-      return 'relay-fallback';
-    case 'fetched-empty':
-      return 'empty-fetched';
-    case 'oauth-relogin':
-      return 'codex-subscription';
-    case 'connection-error':
-      return 'broken-provider';
-    default:
-      return null;
-  }
 }
 
 function model(

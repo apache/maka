@@ -1813,16 +1813,10 @@ function AppShellContent({
   });
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
-    openPalette,
-    composerRef,
     openSettingsSection,
-    openConnectionDetail,
     refreshSessions,
     setActiveId,
-    setLiveBrowserSessionIds,
-    setLiveTurnBySession,
     setNavSelection,
-    setInteractionBySession,
     setSearchModalOpen,
     setSessionListCollapsed,
     setWorkbarCollapsed,

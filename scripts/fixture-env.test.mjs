@@ -26,7 +26,7 @@ test('fixture launch state comes only from explicit arguments', () => {
   setEnv('X_API_SECRET', 'secret-value');
 
   const env = buildFixtureEnv('/tmp/data', '/tmp/data/home', {
-    scenario: 'first-run',
+    scenario: 'fetched-empty',
     theme: 'light',
     timezone: 'UTC',
   });

@@ -9,8 +9,6 @@ export {
   normalizeSessionHeader,
   projectSessionCatalogMessages,
 } from './session-store.js';
-export { importLegacySessionsOnce } from './legacy-session-import.js';
-export type { LegacySessionImportResult } from './legacy-session-import.js';
 export type {
   CreateStableSessionRequest,
   CreateStableSessionResult,
