@@ -1057,6 +1057,8 @@ describe('non-serving Runtime Host kernel', () => {
         rootPath: paths.root,
         surface: 'desktop',
         protocol: CURRENT_PROTOCOL,
+        compositionId: KERNEL_COMPOSITION.descriptor.id,
+        candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
         requiredHostCapabilities: ['managed_workspace_inspection_v1'],
         electionDeadlineMs: 1_000,
       });
