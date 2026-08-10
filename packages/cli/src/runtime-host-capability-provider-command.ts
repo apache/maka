@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
+import type {
+  McpBoundTool,
+  McpCallResult,
+  McpToolBinding,
+  McpToolDescriptor,
+} from '@maka/core/mcp';
 import { McpClientManager } from '@maka/mcp';
 import { normalizeMcpConfig } from '@maka/storage';
 import {
@@ -63,9 +68,9 @@ export async function runRuntimeHostCapabilityProviderCli(
   await manager.sync(config);
 
   let service: Awaited<ReturnType<typeof startRuntimeHostCapabilityProviderService>> | undefined;
-  let publishedRevision = manager.toolSnapshotRevision();
+  let publishedRevision = manager.toolSnapshot().revision;
   const disposeChanges = manager.onChange(() => {
-    const revision = manager.toolSnapshotRevision();
+    const revision = manager.toolSnapshot().revision;
     if (revision === publishedRevision) return;
     publishedRevision = revision;
     void service?.refresh().catch(reportRefreshFailure);
@@ -102,7 +107,7 @@ export async function runRuntimeHostCapabilityProviderCli(
     await runRuntimeHostProcessLifecycle(service, {
       onReady: () => {
         process.stdout.write(
-          `Runtime Host capability provider is connected (${manager.tools().length} MCP tools)\n`,
+          `Runtime Host capability provider is connected (${manager.toolSnapshot().tools.length} MCP tools)\n`,
         );
       },
     });
@@ -166,13 +171,15 @@ async function connectRemoteCapabilityProvider(input: {
 }
 
 export function createMcpCapabilityProvider(
-  manager: Pick<McpClientManager, 'statuses' | 'bindTool'>,
+  manager: Pick<McpClientManager, 'toolSnapshot' | 'callTool'>,
 ): ClientCapabilityProvider | undefined {
-  const connected = manager
-    .statuses()
-    .filter((status) => status.state === 'connected' && status.tools.length > 0)
-    .sort((left, right) => left.serverId.localeCompare(right.serverId));
-  const toolCount = connected.reduce((sum, status) => sum + status.tools.length, 0);
+  const toolSnapshot = manager.toolSnapshot();
+  const tools = [...toolSnapshot.tools].sort(
+    (left, right) =>
+      left.descriptor.serverId.localeCompare(right.descriptor.serverId) ||
+      left.descriptor.name.localeCompare(right.descriptor.name),
+  );
+  const toolCount = tools.length;
   if (toolCount === 0) return undefined;
   if (toolCount > CLIENT_CAPABILITY_MAX_TOOLS) {
     throw new Error(
@@ -182,29 +189,28 @@ export function createMcpCapabilityProvider(
 
   const projectedIdentities = new Set<string>();
   const projected: Array<{
-    readonly source: McpToolDescriptor;
+    readonly source: McpBoundTool;
     readonly descriptor: ReturnType<typeof projectMcpTool>;
   }> = [];
-  for (const status of connected) {
-    const tools = [...status.tools].sort((left, right) => left.name.localeCompare(right.name));
-    const wireServerId = capabilityEntityId(status.serverId);
-    for (const tool of tools) {
-      const descriptor = projectMcpTool(tool, wireServerId);
-      const identity = `${descriptor.serverId}\0${descriptor.name}`;
-      if (projectedIdentities.has(identity)) {
-        throw new Error('MCP tools collide after Client Capability identity normalization');
-      }
-      projectedIdentities.add(identity);
-      projected.push({ source: tool, descriptor });
+  for (const source of tools) {
+    const descriptor = projectMcpTool(
+      source.descriptor,
+      capabilityEntityId(source.descriptor.serverId),
+    );
+    const identity = `${descriptor.serverId}\0${descriptor.name}`;
+    if (projectedIdentities.has(identity)) {
+      throw new Error('MCP tools collide after Client Capability identity normalization');
     }
+    projectedIdentities.add(identity);
+    projected.push({ source, descriptor });
   }
 
-  const bindings = new Map<string, ReturnType<Pick<McpClientManager, 'bindTool'>['bindTool']>>();
+  const bindings = new Map<string, McpToolBinding>();
   const offers: ClientCapabilityOffer[] = [];
   for (let offset = 0; offset < projected.length; offset += CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER) {
     const chunk = projected.slice(offset, offset + CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER);
     const offerId = mcpOfferId(chunk, offset / CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER);
-    const servers = new Set(chunk.map(({ source }) => source.serverId));
+    const servers = new Set(chunk.map(({ source }) => source.descriptor.serverId));
     offers.push({
       offerId,
       version: CAPABILITY_VERSION,
@@ -212,7 +218,7 @@ export function createMcpCapabilityProvider(
       hostPathAccess: 'none',
       label:
         servers.size === 1
-          ? `MCP: ${chunk[0]?.source.serverId ?? 'tools'}`.slice(0, 128)
+          ? `MCP: ${chunk[0]?.source.descriptor.serverId ?? 'tools'}`.slice(0, 128)
           : `MCP tools (${servers.size} servers)`,
       description: 'Use tools provided by connected MCP servers.',
       tools: chunk.map(({ descriptor }) => descriptor),
@@ -220,7 +226,7 @@ export function createMcpCapabilityProvider(
     for (const { source, descriptor } of chunk) {
       bindings.set(
         capabilityBindingKey(offerId, descriptor.serverId, descriptor.name),
-        manager.bindTool(source.serverId, source.name),
+        source.binding,
       );
     }
   }
@@ -232,12 +238,14 @@ export function createMcpCapabilityProvider(
   return {
     offers: () => canonical.offers,
     call: async (frame, options) => {
-      const call = bindings.get(
+      const binding = bindings.get(
         capabilityBindingKey(frame.offerId, frame.serverId, frame.toolName),
       );
-      if (!call) throw new Error('MCP capability is not part of the published snapshot');
+      if (!binding) throw new Error('MCP capability is not part of the published snapshot');
       await options.accept();
-      return projectMcpResult(await call(frame.arguments, { signal: options.signal }));
+      return projectMcpResult(
+        await manager.callTool(binding, frame.arguments, { signal: options.signal }),
+      );
     },
   };
 }
@@ -268,13 +276,14 @@ function projectMcpResult(result: McpCallResult): ClientCapabilityCallResult {
   };
 }
 
-function mcpOfferId(
-  tools: readonly { readonly source: McpToolDescriptor }[],
-  chunk: number,
-): string {
+function mcpOfferId(tools: readonly { readonly source: McpBoundTool }[], chunk: number): string {
   const hash = createHash('sha256').update(`mcp-capability-offer-v0\0${chunk}`);
   for (const { source } of tools)
-    hash.update('\0').update(source.serverId).update('\0').update(source.name);
+    hash
+      .update('\0')
+      .update(source.descriptor.serverId)
+      .update('\0')
+      .update(source.descriptor.name);
   return `mcp_${hash.digest('hex').slice(0, 24)}_${chunk}`;
 }
 
