@@ -68,6 +68,16 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
   // the browser-generated lostpointercapture event deterministically.
   await page.mouse.move(selectedX + 1, y);
   await expect(turn).toHaveAttribute('data-e2e-lost-pointer-capture', 'true');
+  // Losing capture may settle or cancel the in-flight drag (for example, a
+  // simultaneous window blur cancels it). Either way it must release the
+  // pointer gate so the next real Selection change can settle normally.
+  await reply.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
   await expect(quoteLayer).toBeVisible();
   await page.mouse.up();
 
