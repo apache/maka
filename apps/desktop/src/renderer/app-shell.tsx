@@ -1686,16 +1686,22 @@ function AppShellContent({
   // store. Re-merge them whenever the scheduled-tasks page is open so a cron
   // created in chat appears without a manual refresh. Poll while the page is
   // foregrounded because the host does not yet push automation-catalog events.
+  //
+  // `refreshPlanReminders` is recreated every render (module-data helpers are
+  // not memoized). Hold it in a ref so this effect only re-runs when the
+  // surface becomes active — otherwise list → setState → re-render loops.
+  const refreshPlanRemindersRef = useRef(refreshPlanReminders);
+  refreshPlanRemindersRef.current = refreshPlanReminders;
   const planRemindersSurfaceActive =
     navSelection.section === 'automations' && navSelection.module === 'plan-reminders';
   useEffect(() => {
     if (!planRemindersSurfaceActive) return;
-    void refreshPlanReminders({ shouldShowError: isAutomationsSurfaceActive });
+    void refreshPlanRemindersRef.current({ shouldShowError: isAutomationsSurfaceActive });
     const timer = window.setInterval(() => {
-      void refreshPlanReminders({ shouldShowError: () => false });
+      void refreshPlanRemindersRef.current({ shouldShowError: () => false });
     }, 12_000);
     return () => window.clearInterval(timer);
-  }, [planRemindersSurfaceActive, refreshPlanReminders]);
+  }, [planRemindersSurfaceActive]);
 
   // 保持系统唤醒 capability for the 定时任务 page: reads/writes
   // settings.system.keepSystemAwake over the existing settings bridge. When

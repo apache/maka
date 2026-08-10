@@ -1,6 +1,5 @@
 import { ipcMain } from "electron";
 import {
-  isAgentAutomationPlanReminder,
   mergePlanRemindersWithAgentAutomations,
   parseAgentAutomationReminderId,
   type WorkspacePrivacyContext,
@@ -87,17 +86,11 @@ export function registerPlanReminderIpc(deps: PlanReminderIpcDeps): void {
 async function rejectAgentAutomationMutation(
   id: string,
   verb: string,
-  deps: PlanReminderIpcDeps,
+  _deps: PlanReminderIpcDeps,
 ): Promise<void> {
+  void _deps;
   if (!parseAgentAutomationReminderId(id)) return;
-  // Look up the live merged row so the error can mention the agent title.
-  const rows = await deps.planReminders.list().catch(() => []);
-  const row = rows.find((entry) => entry.id === id);
-  if (row && isAgentAutomationPlanReminder(row)) {
-    throw new Error(
-      `Cannot ${verb} agent automation "${row.title}" through the plan-reminder editor. Pause, resume, or delete it instead.`,
-    );
-  }
+  // Agent rows are never in the plan-reminder store — id prefix is enough.
   throw new Error(
     `Cannot ${verb} an agent automation through the plan-reminder editor. Pause, resume, or delete it instead.`,
   );
@@ -109,6 +102,7 @@ async function mutateAgentAutomationEnabled(
   automationId: string,
   enabled: boolean,
 ) {
+  void reminderId;
   const client = deps.runtimeHostClient;
   if (!client) throw new Error("Runtime Host is not available for agent automations.");
   const automations = await listAgentAutomationsForScheduledTasks(client, {
@@ -128,9 +122,10 @@ async function mutateAgentAutomationEnabled(
   if (!enabled && automation.status !== "active") {
     throw new Error("Only active agent automations can be paused.");
   }
+  const sessionId = await resolveAutomationManageSessionId(client, automation.sessionId);
   const result = await client.mutateAutomation({
     kind: enabled ? "resume" : "pause",
-    sessionId: automation.sessionId,
+    sessionId,
     automationId,
   });
   if (result.kind !== "committed" || !result.automation) {
@@ -156,12 +151,33 @@ async function deleteAgentAutomation(
   });
   const automation = automations.find((entry) => entry.id === automationId);
   if (!automation) throw new Error(`No such agent automation: ${automationId}`);
+  const sessionId = await resolveAutomationManageSessionId(client, automation.sessionId);
   const result = await client.mutateAutomation({
     kind: "delete",
-    sessionId: automation.sessionId,
+    sessionId,
     automationId,
   });
   if (result.kind === "rejected") {
     throw new Error(`Agent automation delete rejected: ${result.reason}`);
   }
+}
+
+/**
+ * Durable automations remain manageable from any session, but the host still
+ * requires a real session id on the mutate call. Prefer the creator when it
+ * still exists; otherwise any live session; otherwise any archived one.
+ */
+async function resolveAutomationManageSessionId(
+  client: AgentAutomationListClient,
+  preferredSessionId: string,
+): Promise<string> {
+  const sessions = await client.listSessions().catch(() => []);
+  if (sessions.some((session) => session.id === preferredSessionId)) {
+    return preferredSessionId;
+  }
+  const live = sessions.find((session) => !session.isArchived);
+  if (live) return live.id;
+  if (sessions[0]) return sessions[0].id;
+  // Last resort: creator id (host will surface not_found if it is truly gone).
+  return preferredSessionId;
 }
