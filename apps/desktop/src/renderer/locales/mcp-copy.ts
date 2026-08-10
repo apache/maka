@@ -24,12 +24,14 @@ export type McpCopy = {
     load: string; install(name: string): string; cancelInstall(name: string): string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
     importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
+    login: string; logout: string; serverBusy: string;
   };
   toast: {
     templateInstalled(name: string): string; templateInstalledDetail: string; installed(name: string): string;
     installedDetail: string; installCancelled(name: string): string; saved: string; savedDetail: string;
     imported: string; importedDetail(count: number): string; connectionOk: string; toolLatency(count: number, latencyMs: number): string;
     connectionFailed: string; removed: string;
+    loginOk(id: string): string; loggedOut(id: string): string;
   };
   remove: { title(id: string): string; description: string; confirm: string; cancel: string };
   page: {
@@ -46,15 +48,17 @@ export type McpCopy = {
     toolsLabel: string; statusLabel: string; protocolLabel: string;
     negotiatedProtocol(era: 'legacy' | 'modern', revision: string): string;
     inspectorOpened(id: string): string;
+    needsAuthTitle: string; needsAuthBody: string;
   };
   card: {
     macOnly: string; manage: string; cancellingAria(name: string): string; cancelAria(name: string): string; installAria(name: string): string;
     cancelling: string; cancel: string; install: string;
   };
   row: {
-    testing: string; test: string; edit: string;
+    test: string; edit: string;
     delete: string; tools(count: number): string;
-    disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string;
+    disabled: string; disconnected: string; connecting: string; connected: string; failed: string;
+    needsAuth: string; login: string; cancelLogin: string; logout: string;
   };
   editor: {
     importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
@@ -62,8 +66,9 @@ export type McpCopy = {
     importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
     workingDirectory: string; workingDirectoryPlaceholder: string; environment: string; environmentHelp: string;
-    url: string; headers: string; headersHelp: string; saveConnect: string;
-    required: string; invalidUrl: string; unbalancedQuote: string;
+    url: string; urlCredentials: string; headers: string; headersHelp: string;
+    headersOAuthHelp: string; oauthAuthorizationConflict: string; saveConnect: string;
+    required: string; invalidUrl: string; insecureUrl: string; unbalancedQuote: string; duplicateId: string; advanced: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
     protocolLabel: string; protocolLegacy: string; protocolAuto: string; protocolModern: string;
     protocolHelp: string; sseProtocolHelp: string;
@@ -78,6 +83,8 @@ const MCP_COPY = {
       mapLine: (line) => `第 ${line} 行应为 KEY=value`, importObject: 'MCP JSON 必须是 object',
       importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1 和 2`, importServersObject: 'mcpServers 必须是 object',
       importProtocolVersion: '含 protocol 的 MCP 配置必须显式使用 version 2',
+      login: 'MCP 登录失败', logout: 'MCP 退出登录失败',
+      serverBusy: '该 server 正在执行其他操作（例如登录），请等它完成后再保存。',
     },
     toast: {
       templateInstalled: (name) => `${name} 模板已安装`, templateInstalledDetail: '请在「已安装」中完成凭据配置，再启用连接。',
@@ -85,6 +92,7 @@ const MCP_COPY = {
       saved: 'MCP 已保存', savedDetail: '新工具会从下一次 agent turn 开始生效。', imported: '已导入 MCP',
       importedDetail: (count) => `本次导入 ${count} 个 server。`, connectionOk: 'MCP 连接正常',
       toolLatency: (count, latencyMs) => `${count} 个工具 · ${latencyMs} ms`, connectionFailed: 'MCP 连接失败', removed: 'MCP 已删除',
+      loginOk: (id) => `${id} 已完成登录`, loggedOut: (id) => `已退出 ${id} 的登录`,
     },
     remove: { title: (id) => `删除 MCP「${id}」？`, description: '它提供的工具会从下一次 agent turn 中移除，配置无法自动恢复。', confirm: '删除', cancel: '取消' },
     page: {
@@ -102,15 +110,17 @@ const MCP_COPY = {
       toolsLabel: '工具', statusLabel: '状态', protocolLabel: 'MCP 协议',
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? '现代' : '传统'} · ${revision}`,
       inspectorOpened: (id) => `已打开 ${id} 的详情`,
+      needsAuthTitle: '需要登录', needsAuthBody: '该服务器要求浏览器授权。点击「登录」会打开系统浏览器完成授权，凭据保存在本机。',
     },
     card: {
       macOnly: '仅 macOS', manage: '管理', cancellingAria: (name) => `正在取消安装 ${name}`, cancelAria: (name) => `取消安装 ${name}`, installAria: (name) => `安装 ${name}`,
       cancelling: '正在取消…', cancel: '取消安装', install: '安装',
     },
     row: {
-      testing: '测试中…', test: '测试', edit: '编辑',
+      test: '测试', edit: '编辑',
       delete: '删除', tools: (count) => `${count} 个工具`,
-      disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败',
+      disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: '已连接', failed: '连接失败',
+      needsAuth: '需要登录', login: '登录', cancelLogin: '取消登录', logout: '退出登录',
     },
     editor: {
       importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP', importSubtitle: '粘贴 mcpServers 配置，同名 server 会被更新。',
@@ -121,9 +131,13 @@ const MCP_COPY = {
       commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
       commandHelp: '完整命令行；含空格的参数用引号包裹，不经过 shell 解析。',
       workingDirectory: '工作目录', workingDirectoryPlaceholder: '可选，例如 /path/to/project',
-      environment: '环境变量', environmentHelp: '每行一个 KEY=value；按 MCP 要求填写。', url: 'MCP URL', headers: 'HTTP 请求头', headersHelp: '每行一个 Header=value。',
+      environment: '环境变量', environmentHelp: '每行一个 KEY=value；按 MCP 要求填写。', url: 'MCP URL',
+      urlCredentials: 'URL 不能包含内嵌凭据（user:pass@），请改用请求头配置。',
+      headers: 'HTTP 请求头', headersHelp: '每行一个 Header=value。',
+      headersOAuthHelp: '每行一个 Header=value。该服务器使用 OAuth 登录，Authorization 由登录管理，不能在此配置。',
+      oauthAuthorizationConflict: '该服务器使用 OAuth 登录：Authorization 请求头由登录流程管理，请移除此行。',
       saveConnect: '保存并连接',
-      required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引号未闭合。',
+      required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', insecureUrl: '非本机地址需使用 HTTPS。', unbalancedQuote: '引号未闭合。', duplicateId: '已存在同名服务器；换一个 ID，或编辑现有配置。', advanced: '高级设置',
       transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
       protocolLabel: '协议偏好', protocolLegacy: '传统', protocolAuto: '自动协商', protocolModern: '仅 2026-07-28',
       protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。',
@@ -136,6 +150,8 @@ const MCP_COPY = {
       mapLine: (line) => `Line ${line} must use KEY=value`, importObject: 'MCP JSON must be an object',
       importVersion: (version) => `Unsupported MCP config version ${version}; versions 1 and 2 are supported`, importServersObject: 'mcpServers must be an object',
       importProtocolVersion: 'MCP configurations containing protocol must explicitly use version 2',
+      login: 'MCP login failed', logout: 'MCP logout failed',
+      serverBusy: 'Another operation (such as a login) owns this server — wait for it to finish before saving.',
     },
     toast: {
       templateInstalled: (name) => `${name} template installed`, templateInstalledDetail: 'Finish configuring credentials under Installed before enabling the connection.',
@@ -143,6 +159,7 @@ const MCP_COPY = {
       saved: 'MCP saved', savedDetail: 'New tools take effect from the next agent turn.', imported: 'MCP imported', importedDetail: (count) => `Imported ${count} ${count === 1 ? 'server' : 'servers'}.`,
       connectionOk: 'MCP connection healthy', toolLatency: (count, latencyMs) => `${count} ${count === 1 ? 'tool' : 'tools'} · ${latencyMs} ms`,
       connectionFailed: 'MCP connection failed', removed: 'MCP deleted',
+      loginOk: (id) => `${id} login complete`, loggedOut: (id) => `Logged out of ${id}`,
     },
     remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools will be removed from the next agent turn, and the configuration cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
     page: {
@@ -160,15 +177,17 @@ const MCP_COPY = {
       toolsLabel: 'Tools', statusLabel: 'Status', protocolLabel: 'MCP protocol',
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
       inspectorOpened: (id) => `${id} details opened`,
+      needsAuthTitle: 'Login required', needsAuthBody: 'This server requires browser authorization. Log in opens your system browser; credentials are stored on this machine.',
     },
     card: {
       macOnly: 'macOS only', manage: 'Manage', cancellingAria: (name) => `Cancelling installation of ${name}`, cancelAria: (name) => `Cancel installation of ${name}`, installAria: (name) => `Install ${name}`,
       cancelling: 'Cancelling…', cancel: 'Cancel installation', install: 'Install',
     },
     row: {
-      testing: 'Testing…', test: 'Test', edit: 'Edit',
+      test: 'Test', edit: 'Edit',
       delete: 'Delete', tools: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
-      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
+      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: 'Connected', failed: 'Connection failed',
+      needsAuth: 'Login required', login: 'Log in', cancelLogin: 'Cancel login', logout: 'Log out',
     },
     editor: {
       importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste an mcpServers configuration; servers with matching names will be updated.',
@@ -179,9 +198,12 @@ const MCP_COPY = {
       commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
       commandHelp: 'Full command line; quote arguments containing spaces. Not interpreted by a shell.',
       workingDirectory: 'Working directory', workingDirectoryPlaceholder: 'Optional, for example /path/to/project',
-      environment: 'Environment', environmentHelp: 'One KEY=value entry per line; complete the variables required by this MCP.', url: 'MCP URL', headers: 'HTTP headers', headersHelp: 'One Header=value entry per line.',
+      environment: 'Environment', environmentHelp: 'One KEY=value entry per line; complete the variables required by this MCP.', url: 'MCP URL',
+      urlCredentials: 'The URL must not embed credentials (user:pass@); configure headers instead.', headers: 'HTTP headers', headersHelp: 'One Header=value entry per line.',
+      headersOAuthHelp: 'One Header=value entry per line. This server signs in with OAuth; Authorization is managed by the login and cannot be configured here.',
+      oauthAuthorizationConflict: 'This server signs in with OAuth: the Authorization header is managed by the login flow — remove this line.',
       saveConnect: 'Save and connect',
-      required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
+      required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', insecureUrl: 'Use HTTPS for non-local addresses.', unbalancedQuote: 'Unclosed quote.', duplicateId: 'A server with this ID already exists; choose another ID or edit the existing one.', advanced: 'Advanced settings',
       transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
       protocolLabel: 'Protocol preference', protocolLegacy: 'Legacy', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
       protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.',

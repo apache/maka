@@ -530,6 +530,10 @@ const withConfiguredMcpBridge = withScopedMakaBridge({
   runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => configuredMcpConfig,
+    add: async () => ({ status: 'added' as const, config: configuredMcpConfig }),
+    login: async () => configuredMcpStatuses[0],
+    cancelLogin: async () => false,
+    logout: async () => configuredMcpStatuses[0],
     listStatuses: async () => configuredMcpStatuses,
     setConfig: async () => configuredMcpConfig,
     upsert: async () => configuredMcpConfig,
@@ -545,6 +549,10 @@ const withEditorMcpBridge = withScopedMakaBridge({
   runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => editorMcpConfig,
+    add: async () => ({ status: 'added' as const, config: editorMcpConfig }),
+    login: async () => editorMcpStatus,
+    cancelLogin: async () => false,
+    logout: async () => editorMcpStatus,
     listStatuses: async () => [editorMcpStatus],
     setConfig: async () => editorMcpConfig,
     upsert: async () => editorMcpConfig,
@@ -560,6 +568,10 @@ const withEmptyMcpBridge = withScopedMakaBridge({
   runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    add: async () => ({ status: 'added' as const, config: ({ version: MCP_CONFIG_VERSION, mcpServers: {} }) }),
+    login: async () => configuredMcpStatuses[0],
+    cancelLogin: async () => false,
+    logout: async () => configuredMcpStatuses[0],
     listStatuses: async () => [],
     setConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
     upsert: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
@@ -571,10 +583,60 @@ const withEmptyMcpBridge = withScopedMakaBridge({
   },
 });
 
+const oauthMcpConfig: McpConfigFile = {
+  version: MCP_CONFIG_VERSION,
+  mcpServers: {
+    notion: { url: 'https://mcp.notion.com/mcp', transport: 'streamable-http' },
+    linear: { url: 'https://mcp.linear.app/mcp', transport: 'streamable-http' },
+  },
+};
+
+const oauthMcpStatuses: McpServerStatus[] = [
+  {
+    serverId: 'notion',
+    state: 'needs-auth',
+    transport: 'streamable-http',
+    toolCount: 0,
+    tools: [],
+    updatedAt: NOW,
+  },
+  {
+    serverId: 'linear',
+    state: 'connected',
+    transport: 'streamable-http',
+    authenticated: true,
+    toolCount: 1,
+    tools: [{ serverId: 'linear', name: 'search_issues', inputSchema: { type: 'object' } }],
+    updatedAt: NOW,
+  },
+];
+
+const withOAuthMcpBridge = withScopedMakaBridge({
+  mcp: {
+    getConfig: async () => oauthMcpConfig,
+    add: async () => ({ status: 'added' as const, config: oauthMcpConfig }),
+    login: async () => oauthMcpStatuses[1],
+    cancelLogin: async () => false,
+    logout: async () => oauthMcpStatuses[0],
+    listStatuses: async () => oauthMcpStatuses,
+    setConfig: async () => oauthMcpConfig,
+    upsert: async () => oauthMcpConfig,
+    install: async () => oauthMcpConfig,
+    remove: async () => oauthMcpConfig,
+    cancelInstall: async () => oauthMcpConfig,
+    test: async () => ({ ok: true, status: oauthMcpStatuses[1], latencyMs: 42 }),
+    subscribeChanges: () => () => {},
+  },
+});
+
 const withFailedMcpBridge = withScopedMakaBridge({
   runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => failedMcpConfig,
+    add: async () => ({ status: 'added' as const, config: failedMcpConfig }),
+    login: async () => failedMcpStatuses[0],
+    cancelLogin: async () => false,
+    logout: async () => failedMcpStatuses[0],
     listStatuses: async () => failedMcpStatuses,
     setConfig: async () => failedMcpConfig,
     upsert: async () => failedMcpConfig,
@@ -864,6 +926,48 @@ export const ExtensionsMcpConfigured: Story = {
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
+  },
+};
+
+// Real path: a remote OAuth server answering 401 — the row shows 需要登录,
+// and its inspector leads with 登录 plus the explanation banner.
+export const ExtensionsMcpNeedsAuth: Story = {
+  decorators: [withOAuthMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const installed = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '已安装',
+    );
+    installed.click();
+    await waitForStoryText(canvasElement, 'notion');
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('notion') === true,
+    );
+    row.click();
+    await waitForStoryText(canvasElement, '需要登录');
+    await waitForStoryText(canvasElement, '登录');
+  },
+};
+
+// Real path: an authorized remote server — the inspector offers 退出登录.
+export const ExtensionsMcpAuthenticated: Story = {
+  decorators: [withOAuthMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const installed = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '已安装',
+    );
+    installed.click();
+    await waitForStoryText(canvasElement, 'linear');
+    const row = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('linear') === true,
+    );
+    row.click();
+    await waitForStoryText(canvasElement, '退出登录');
   },
 };
 

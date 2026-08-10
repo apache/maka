@@ -87,10 +87,20 @@
   overflow-wrap: anywhere;
 }
 
+/* A large server advertises dozens of tools; the list stays a scannable
+   block instead of swallowing the inspector. */
 .maka-mcp-tool-list {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1-5);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* DESIGN.md §9 counters: quieter than the label; size and tabular figures
+   come from the Text role props at the call site, not from CSS axes. */
+.maka-mcp-tool-count {
+  color: var(--muted-foreground);
 }
 
 .maka-mcp-tool-list code {
@@ -114,14 +124,15 @@
 }
 
 
-.maka-mcp-editor-choice {
+/* The add-method / transport mode switches: one quiet toolbar-height row.
+   No banding — these are small controls, not sections. */
+.maka-mcp-editor-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border-bottom: var(--border-width-hairline) solid var(--border);
-  background: var(--muted);
-}
-
-.maka-mcp-choice-icon {
-  margin-inline-start: var(--space-1);
 }
 
 .maka-mcp-manual-form,
@@ -144,13 +155,10 @@
   padding: var(--space-4);
 }
 
-.maka-mcp-primary-fields {
-  min-width: 0;
+.maka-mcp-advanced-fields {
   display: grid;
-  /* The second column holds a full command line or URL; the first is a short
-     slug. Equal halves squeezed the field that actually carries content. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: var(--space-3);
+  padding-block: var(--space-2) var(--space-1);
 }
 
 .maka-mcp-json-field {

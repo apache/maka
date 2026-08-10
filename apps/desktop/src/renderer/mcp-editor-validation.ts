@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isNonLoopbackCleartextHttp } from '@maka/core/mcp';
 import { parseCommandLine } from './mcp-command-line.js';
 
 export type McpEditorDraft = {
@@ -24,21 +25,38 @@ export type McpEditorDraft = {
   kind: 'stdio' | 'remote';
   commandLine: string;
   url: string;
+  headers: string;
 };
 
 export type McpEditorValidationCode =
   | 'required'
   | 'invalid-url'
-  | 'unbalanced-quote';
+  | 'insecure-url'
+  | 'url-credentials'
+  | 'unbalanced-quote'
+  | 'duplicate-id'
+  | 'oauth-authorization-conflict';
 export type McpEditorErrors = Partial<
-  Record<'id' | 'commandLine' | 'url', McpEditorValidationCode>
+  Record<'id' | 'commandLine' | 'url' | 'headers', McpEditorValidationCode>
 >;
 
 export function validateMcpEditorDraft(
   draft: McpEditorDraft,
+  options: {
+    /** Server ids that would be silently overwritten by an upsert. Passed
+     * only in add mode — an edit legitimately writes over its own id. */
+    existingIds?: readonly string[];
+    /** Whether the draft carries an (invisible, opaquely round-tripped)
+     * oauth block. The store rejects an Authorization header alongside it;
+     * the dialog mirrors that rule as a field error instead of letting the
+     * save bounce off main as a raw untranslated toast. */
+    hasOAuth?: boolean;
+  } = {},
 ): McpEditorErrors {
   const errors: McpEditorErrors = {};
-  if (!draft.id.trim()) errors.id = 'required';
+  const id = draft.id.trim();
+  if (!id) errors.id = 'required';
+  else if (options.existingIds?.includes(id)) errors.id = 'duplicate-id';
 
   if (draft.kind === 'stdio') {
     const parsed = parseCommandLine(draft.commandLine);
@@ -59,9 +77,25 @@ export function validateMcpEditorDraft(
     const url = new URL(value);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       errors.url = 'invalid-url';
+    } else if (isNonLoopbackCleartextHttp(url)) {
+      // The store enforces the same shared rule; validating here puts the
+      // error on the URL field instead of an opaque save toast.
+      errors.url = 'insecure-url';
+    } else if (url.username || url.password) {
+      // Mirrors the store's embedded-credentials rejection for the same
+      // reason: live on the field, not a generic save-failure toast.
+      errors.url = 'url-credentials';
     }
   } catch {
     errors.url = 'invalid-url';
+  }
+  if (
+    options.hasOAuth &&
+    draft.headers
+      .split(/\r?\n/u)
+      .some((line) => line.split('=')[0]?.trim().toLowerCase() === 'authorization')
+  ) {
+    errors.headers = 'oauth-authorization-conflict';
   }
   return errors;
 }
