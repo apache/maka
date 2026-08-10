@@ -110,6 +110,13 @@ export interface ProviderCredentialLease {
    * for test seams / legacy callers, which settle as global.
    */
   readonly modelId?: string;
+  /**
+   * The exact health-circuit row this attempt is bound to. Set only for
+   * half-open probe leases: the probe claims a specific circuit (global
+   * `model_id=''` or one model row) and must settle success/failure/abort
+   * back onto that same row, regardless of the dispatched model.
+   */
+  readonly healthCircuitModelId?: string;
 }
 
 export type ProviderCredentialOutcome =

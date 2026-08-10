@@ -38,7 +38,7 @@ function routing(profiles: Array<{ id: string; weight: number }>): ConnectionCre
 
 function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
   const settleCalls: ProviderState['settleCalls'] = [];
-  const probeEligible: Set<string> = new Set();
+  const probeEligible: Map<string, string> = new Map();
   const probeClaims: string[] = [];
   const provider: RouterProfileProvider = {
     getRouting: async () => state.routing ?? null,
@@ -54,7 +54,9 @@ function createProvider(state: Partial<ProviderState>): RouterProfileProvider {
       settleCalls.push({ profileId: lease.profileId, outcomeKind: outcome.kind });
     },
     probeEligibleProfiles: async (_c, profileIds) =>
-      new Set<string>(profileIds.filter((id) => probeEligible.has(id))),
+      new Map<string, string>(
+        profileIds.filter((id) => probeEligible.has(id)).map((id) => [id, probeEligible.get(id)!]),
+      ),
     claimHalfOpenProbe: async (_c, profileId) => {
       if (probeClaims.includes(profileId)) return false;
       probeClaims.push(profileId);
@@ -368,9 +370,10 @@ describe('ProviderCredentialRouter', () => {
       ]),
       eligible: async () => new Set(), // normal dispatch is fully exhausted
     });
-    const probeEligible = (provider as RouterProfileProvider & { __probeEligible: Set<string> })
-      .__probeEligible;
-    probeEligible.add('a');
+    const probeEligible = (
+      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+    ).__probeEligible;
+    probeEligible.set('a', '');
     const router = new ProviderCredentialRouter(provider);
     const lease = await router.acquireAttempt(context({ turnId: 'turn-probe' }));
     assert.equal(lease.profileId, 'a');
@@ -387,9 +390,10 @@ describe('ProviderCredentialRouter', () => {
       ]),
       eligible: async () => new Set(),
     });
-    const probeEligible = (provider as RouterProfileProvider & { __probeEligible: Set<string> })
-      .__probeEligible;
-    probeEligible.add('a');
+    const probeEligible = (
+      provider as RouterProfileProvider & { __probeEligible: Map<string, string> }
+    ).__probeEligible;
+    probeEligible.set('a', '');
     const router = new ProviderCredentialRouter(provider);
     await router.acquireAttempt(context({ turnId: 'turn-probe-1' }));
     // Second acquire: 'a' is still probe-eligible on paper, but the claim is

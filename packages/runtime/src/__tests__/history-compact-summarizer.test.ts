@@ -259,4 +259,106 @@ describe('buildLlmHistorySummarizer', () => {
     expect(serialized).toContain('NEWLY_EVICTED_RAW');
     expect(serialized.includes('ALREADY_SUMMARIZED_RAW')).toBe(false);
   });
+
+  test('acquires a credential lease, materializes with its key, settles the real outcome and releases', async () => {
+    const settled: string[] = [];
+    let released = 0;
+    let capturedApiKey: string | undefined;
+    let modelCalls = 0;
+    const generateText: AiSdkGenerateTextLike = async () => {
+      modelCalls += 1;
+      return { text: '## Goal\nOK' };
+    };
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: (apiKey) => {
+        capturedApiKey = apiKey;
+        return 'leased-model';
+      },
+      generateText,
+      acquireCredential: async () => ({
+        apiKey: 'sk-aux-leased',
+        settle: async (outcome) => {
+          settled.push(outcome);
+        },
+        release: () => {
+          released += 1;
+        },
+      }),
+    });
+
+    const events: RuntimeEvent[] = [
+      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } }),
+      ev({ role: 'model', author: 'agent', content: { kind: 'text', text: 'hello' } }),
+    ];
+    const result = await summarize(inputWith(events));
+
+    expect(result).toBe('## Goal\nOK');
+    expect(modelCalls).toBe(1);
+    expect(capturedApiKey).toBe('sk-aux-leased');
+    expect(settled).toEqual(['success']);
+    expect(released).toBe(1);
+  });
+
+  test('settles a provider failure as failure and still releases the lease', async () => {
+    const settled: string[] = [];
+    let released = 0;
+    const generateText: AiSdkGenerateTextLike = async () => {
+      throw Object.assign(new Error('boom'), { name: 'APICallError' });
+    };
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'model',
+      generateText,
+      acquireCredential: async () => ({
+        apiKey: 'sk-aux-leased',
+        settle: async (outcome) => {
+          settled.push(outcome);
+        },
+        release: () => {
+          released += 1;
+        },
+      }),
+    });
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      /provider_error/,
+    );
+    expect(settled).toEqual(['failure']);
+    expect(released).toBe(1);
+  });
+
+  test('an aborted summarization settles as aborted and releases', async () => {
+    const settled: string[] = [];
+    let released = 0;
+    const controller = new AbortController();
+    controller.abort();
+    const generateText: AiSdkGenerateTextLike = async () => {
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    };
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'model',
+      generateText,
+      acquireCredential: async () => ({
+        apiKey: 'sk-aux-leased',
+        settle: async (outcome) => {
+          settled.push(outcome);
+        },
+        release: () => {
+          released += 1;
+        },
+      }),
+    });
+    await assert.rejects(
+      summarize(
+        inputWith(
+          [ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })],
+          controller.signal,
+        ),
+      ),
+      /provider_error/,
+    );
+    expect(settled).toEqual(['aborted']);
+    expect(released).toBe(1);
+  });
 });

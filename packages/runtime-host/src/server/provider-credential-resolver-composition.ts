@@ -105,12 +105,13 @@ export function createHostCredentialResolver(
           routingStore,
           digest,
           authKind: input.authKind,
+          now: input.now ?? Date.now,
         }),
-      claimHalfOpenProbe: (connectionId, profileId, modelId) =>
+      claimHalfOpenProbe: (connectionId, profileId, circuitModelId) =>
         claimHalfOpenProbe({
           connectionId,
           profileId,
-          modelId,
+          circuitModelId,
           runtimePolicy: input.runtimePolicy,
           routingStore,
           digest,
@@ -219,9 +220,10 @@ async function probeEligibleProfiles(input: {
   routingStore: ProviderCredentialRoutingStore;
   digest: string;
   authKind: CreateHostCredentialResolverInput['authKind'];
-}): Promise<ReadonlySet<string>> {
-  const eligible = new Set<string>();
-  const now = Date.now();
+  now: () => number;
+}): Promise<ReadonlyMap<string, string>> {
+  const eligible = new Map<string, string>();
+  const now = input.now();
   for (const profileId of input.profileIds) {
     const profile = input.routing.profiles.find((candidate) => candidate.profileId === profileId);
     if (!profile?.enabled) continue;
@@ -240,7 +242,10 @@ async function probeEligibleProfiles(input: {
       if (row.modelId !== '' && row.modelId !== input.modelId) continue;
       if (row.circuitState === 'open') {
         const probeAt = Math.max(row.blockedUntil ?? 0, row.nextProbeAt ?? 0);
-        if (probeAt <= now) eligible.add(profileId);
+        // The map value is the exact circuit row key (`''` for the global
+        // row, otherwise the model id) so the claim and the probe's settle
+        // land on the same row (RFC 8.4).
+        if (probeAt <= now) eligible.set(profileId, row.modelId);
       }
     }
   }
@@ -250,7 +255,7 @@ async function probeEligibleProfiles(input: {
 async function claimHalfOpenProbe(input: {
   connectionId: string;
   profileId: string;
-  modelId: string;
+  circuitModelId: string;
   runtimePolicy: RuntimePolicyStoresWriter;
   routingStore: ProviderCredentialRoutingStore;
   digest: string;
@@ -267,7 +272,7 @@ async function claimHalfOpenProbe(input: {
     material.credentialId,
     material.revision,
     input.digest,
-    input.modelId,
+    input.circuitModelId,
     input.now(),
   );
 }
@@ -298,24 +303,46 @@ async function settleRoutingOutcome(input: {
   now: () => number;
 }): Promise<void> {
   const now = input.now();
-  // P1-5: settle the per-model row (lease.modelId) so a model-scoped
-  // permission failure is isolated and a model success closes only that
-  // model's circuit, never a global billing/usage circuit.
-  const modelId = input.lease.modelId ?? '';
+  // The health row to settle. A probe lease pins the exact circuit row it
+  // claimed (`healthCircuitModelId`); otherwise the row follows the failure
+  // scope (RFC 8.4): `credential` failures belong to the credential-global
+  // row (`model_id=''`) so the whole Profile is blocked, while
+  // `credential_model` failures belong to the current model row only.
+  const healthModelId =
+    input.lease.healthCircuitModelId ??
+    (input.outcome.kind === 'failure' && input.outcome.routingHint.scope === 'credential'
+      ? ''
+      : (input.lease.modelId ?? ''));
   switch (input.outcome.kind) {
     case 'success':
+      // A probe success closes the claimed circuit row; a normal success
+      // closes the current model row. A normal model success never closes a
+      // credential-global billing/usage circuit (RFC 8.4).
       await input.routingStore.settleSuccess(
         input.connectionId,
         input.lease.profileId,
         input.lease.credentialId,
         input.lease.credentialRevision,
         input.digest,
-        modelId,
+        healthModelId,
         now,
       );
       return;
     case 'aborted':
-      // An abort does not change Profile health.
+      // A normal abort does not change Profile health. A claimed half-open
+      // probe that was cancelled must NOT stay half_open (that would block
+      // every future probe): it is re-opened with a conservative cadence.
+      if (input.lease.healthCircuitModelId !== undefined) {
+        await input.routingStore.settleProbeAborted(
+          input.connectionId,
+          input.lease.profileId,
+          input.lease.credentialId,
+          input.lease.credentialRevision,
+          input.digest,
+          input.lease.healthCircuitModelId,
+          now,
+        );
+      }
       return;
     case 'failure':
       await input.routingStore.settleFailure(
@@ -324,7 +351,7 @@ async function settleRoutingOutcome(input: {
         input.lease.credentialId,
         input.lease.credentialRevision,
         input.digest,
-        modelId,
+        healthModelId,
         input.outcome.routingHint,
         now,
       );

@@ -400,4 +400,43 @@ describe('SqliteProviderCredentialRoutingStore', () => {
       assert.equal(retry, true);
     });
   });
+
+  test('an aborted probe re-opens the circuit with a conservative cadence', async () => {
+    await withStore(async (store) => {
+      await store.settleFailure(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        hint('rate_limit', 'credential'),
+        2000,
+      );
+      const claimed = await store.claimHalfOpenProbe(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        200_000,
+      );
+      assert.equal(claimed, true);
+      await store.settleProbeAborted(CONNECTION, PROFILE, CREDENTIAL, 1, BASIS_A, 'gpt-5', 200_001);
+      const health = await store.readHealth(CONNECTION, PROFILE, CREDENTIAL, 1, BASIS_A);
+      assert.equal(health[0]!.circuitState, 'open');
+      assert.ok(health[0]!.nextProbeAt! > 200_001, 'an aborted probe schedules a fresh cadence');
+      const retry = await store.claimHalfOpenProbe(
+        CONNECTION,
+        PROFILE,
+        CREDENTIAL,
+        1,
+        BASIS_A,
+        'gpt-5',
+        400_000,
+      );
+      assert.equal(retry, true);
+    });
+  });
 });

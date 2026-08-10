@@ -23,11 +23,21 @@ export type AiSdkGenerateTextLike = (
 
 export interface BuildLlmHistorySummarizerOptions {
   /** Resolve the AI SDK model used for summarization. Reuses the session model. */
-  resolveModel: () => unknown;
+  resolveModel: (apiKey?: string) => unknown;
   /** Session provider settings, including the selected reasoning level. */
   providerOptions?: Record<string, unknown>;
   /** Injectable `generateText` for tests; defaults to the real AI SDK export. */
   generateText?: AiSdkGenerateTextLike;
+  /**
+   * Optional Credential Profile lease for this auxiliary summarizer call
+   * (RFC 6.3/9.1): acquired before materializing, settled with the real
+   * outcome, and always released. Absent keeps the legacy fixed-key path.
+   */
+  acquireCredential?: () => Promise<{
+    apiKey?: string;
+    settle(outcome: 'success' | 'failure' | 'aborted'): Promise<void>;
+    release(): void;
+  }>;
 }
 
 // Conversation-summarization prompt (sectioned, modelled on pi/opencode):
@@ -67,50 +77,57 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
     const newlyFoldedRuntimeEvents =
       input.newlyFoldedRuntimeEvents ?? input.source.foldedRuntimeEvents;
     if (newlyFoldedRuntimeEvents.length === 0) return input.previousCheckpoint?.summary;
+    const credential = options.acquireCredential ? await options.acquireCredential() : undefined;
     try {
-      const plan = buildRuntimeEventModelReplayPlan(newlyFoldedRuntimeEvents);
-      const messages = replayPlanItemsToModelMessages(plan.items);
-      if (input.previousCheckpoint) {
-        messages.unshift({
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Previous continuation summary:\n${input.previousCheckpoint.summary}\n\nUpdate it using the newer conversation events that follow.`,
-            },
-          ],
+      try {
+        const plan = buildRuntimeEventModelReplayPlan(newlyFoldedRuntimeEvents);
+        const messages = replayPlanItemsToModelMessages(plan.items);
+        if (input.previousCheckpoint) {
+          messages.unshift({
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Previous continuation summary:\n${input.previousCheckpoint.summary}\n\nUpdate it using the newer conversation events that follow.`,
+              },
+            ],
+          });
+        }
+        // Handed over whole by the backend, which owns every input a tracker
+        // needs — including the run, which no summarizer wiring can know (#1679).
+        const providerRequestTracker = input.providerRequestTracker;
+        const ai =
+          options.generateText && !providerRequestTracker ? undefined : await loadAiSdkTextModule();
+        const generateText = options.generateText ?? ai!.generateText;
+        const model = providerRequestTracker
+          ? withProviderGenerateTracking({
+              model: options.resolveModel(credential?.apiKey),
+              wrapLanguageModel: ai!.wrapLanguageModel,
+              tracker: providerRequestTracker,
+              ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+            })
+          : options.resolveModel(credential?.apiKey);
+        const result = await generateText({
+          model,
+          instructions: SUMMARIZATION_SYSTEM_PROMPT,
+          messages,
+          ...(options.providerOptions !== undefined
+            ? { providerOptions: options.providerOptions }
+            : {}),
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
+        await credential?.settle('success');
+        if (rawFinishReasonString(result.finishReason) === 'length') {
+          throw new HistoryCompactSummarizerError('output_length');
+        }
+        return result.text;
+      } catch (error) {
+        await credential?.settle(input.abortSignal?.aborted ? 'aborted' : 'failure');
+        if (error instanceof HistoryCompactSummarizerError) throw error;
+        throw new HistoryCompactSummarizerError('provider_error', { cause: error });
       }
-      // Handed over whole by the backend, which owns every input a tracker
-      // needs — including the run, which no summarizer wiring can know (#1679).
-      const providerRequestTracker = input.providerRequestTracker;
-      const ai =
-        options.generateText && !providerRequestTracker ? undefined : await loadAiSdkTextModule();
-      const generateText = options.generateText ?? ai!.generateText;
-      const model = providerRequestTracker
-        ? withProviderGenerateTracking({
-            model: options.resolveModel(),
-            wrapLanguageModel: ai!.wrapLanguageModel,
-            tracker: providerRequestTracker,
-            ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-          })
-        : options.resolveModel();
-      const result = await generateText({
-        model,
-        instructions: SUMMARIZATION_SYSTEM_PROMPT,
-        messages,
-        ...(options.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
-          : {}),
-        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-      });
-      if (rawFinishReasonString(result.finishReason) === 'length') {
-        throw new HistoryCompactSummarizerError('output_length');
-      }
-      return result.text;
-    } catch (error) {
-      if (error instanceof HistoryCompactSummarizerError) throw error;
-      throw new HistoryCompactSummarizerError('provider_error', { cause: error });
+    } finally {
+      credential?.release();
     }
   };
 }

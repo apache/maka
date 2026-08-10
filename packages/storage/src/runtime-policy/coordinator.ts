@@ -238,6 +238,19 @@ export class RuntimePolicyCoordinator {
     });
   }
 
+  /**
+   * Release the lazily-created routing authority lease (RFC P2-8). Called by
+   * the writer facade on host shutdown so the operational database connection
+   * is not leaked by Profile management operations.
+   */
+  dispose(): void {
+    if (this.routingStore) {
+      this.routingStore.dispose();
+      this.routingStore = null;
+      this.routingStoreRoot = null;
+    }
+  }
+
   getPolicySnapshot() {
     return this.inLane(async (root) => policySnapshot(await this.policy.read(root)));
   }

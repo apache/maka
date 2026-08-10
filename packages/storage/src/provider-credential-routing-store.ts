@@ -138,6 +138,21 @@ export interface ProviderCredentialRoutingStore {
     modelId: string,
     now: number,
   ): Promise<boolean>;
+  /**
+   * Settle a claimed half-open probe that never reached a provider outcome
+   * (user stop, backend dispose, cancellation). The circuit must NOT stay
+   * half_open — that would permanently block future probes. It is re-opened
+   * with a conservative probe cadence so a later acquire can retry.
+   */
+  settleProbeAborted(
+    connectionId: string,
+    profileId: string,
+    credentialId: string,
+    credentialRevision: number,
+    executionBasisDigest: string,
+    modelId: string,
+    now: number,
+  ): Promise<void>;
   /** Delete every verification and health row for a Connection. */
   deleteConnection(connectionId: string): Promise<void>;
   /** Delete every verification and health row for one Profile. */
@@ -481,6 +496,39 @@ class SqliteProviderCredentialRoutingStore implements ProviderCredentialRoutingS
       this.#database.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  settleProbeAborted(
+    connectionId: string,
+    profileId: string,
+    credentialId: string,
+    credentialRevision: number,
+    basis: string,
+    modelId: string,
+    now: number,
+  ): Promise<void> {
+    this.#database
+      .prepare(
+        `UPDATE provider_credential_health
+         SET circuit_state = 'open',
+             blocked_until = NULL,
+             next_probe_at = ?,
+             updated_at = ?
+         WHERE connection_id = ? AND profile_id = ? AND credential_id = ?
+           AND credential_revision = ? AND execution_basis_digest = ? AND model_id = ?
+           AND circuit_state = 'half_open'`,
+      )
+      .run(
+        now + PROBE_CADENCE_MS,
+        now,
+        connectionId,
+        profileId,
+        credentialId,
+        credentialRevision,
+        basis,
+        modelId,
+      );
+    return Promise.resolve();
   }
 
   deleteConnection(connectionId: string): Promise<void> {

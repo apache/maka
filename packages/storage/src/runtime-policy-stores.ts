@@ -125,6 +125,11 @@ export interface RuntimePolicyStoresWriter {
   readonly connectionCatalog: Readonly<ConnectionCatalogWriter>;
   readonly credentialVault: Readonly<CredentialVaultWriter>;
   readonly operations: Readonly<OperationCoordinator>;
+  /**
+   * Release coordinator-owned authorities (e.g. the routing store lease).
+   * Called once on shutdown, after all operations have drained.
+   */
+  dispose(): void;
 }
 
 export function authenticateRuntimePolicyStoresReader(
@@ -199,6 +204,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     kind: 'interactive',
     access: 'write',
     [writerBrand]: true,
+    dispose: () => coordinator.dispose(),
     runtimePolicy: {
       getSnapshot: () => coordinator.getPolicySnapshot(),
       mutate: (input) => coordinator.mutatePolicy(input),

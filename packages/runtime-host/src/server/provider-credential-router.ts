@@ -55,9 +55,13 @@ export interface RouterProfileProvider {
     connectionId: string,
     profileIds: readonly string[],
     modelId: string,
-  ): Promise<ReadonlySet<string>>;
+  ): Promise<ReadonlyMap<string, string>>;
   /** Atomically claim a half-open probe; false when another probe holds it. */
-  claimHalfOpenProbe(connectionId: string, profileId: string, modelId: string): Promise<boolean>;
+  claimHalfOpenProbe(
+    connectionId: string,
+    profileId: string,
+    circuitModelId: string,
+  ): Promise<boolean>;
 }
 
 export interface CreateProviderCredentialRouterOptions {
@@ -124,7 +128,10 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     if (routing.mode !== 'balanced') {
       throw new RouterConfigurationError(`Unsupported routing mode: ${routing.mode}`);
     }
-    const { candidates, probeReason } = await this.#balancedCandidates(context, routing);
+    const { candidates, probeReason, probeCircuitModelId } = await this.#balancedCandidates(
+      context,
+      routing,
+    );
     if (candidates.length === 0) {
       throw new RouterPoolExhaustedError(
         `no eligible credential profile for model ${context.modelId}`,
@@ -158,9 +165,9 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
           {},
         );
       }
-      return this.#leaseFromMaterial(context, reselected, fresh);
+      return this.#leaseFromMaterial(context, reselected, fresh, probeCircuitModelId);
     }
-    return this.#leaseFromMaterial(context, binding, material);
+    return this.#leaseFromMaterial(context, binding, material, probeCircuitModelId);
   }
 
   async settle(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void> {
@@ -211,7 +218,11 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
   async #balancedCandidates(
     context: ProviderCredentialRouteContext,
     routing: ConnectionCredentialRouting,
-  ): Promise<{ readonly candidates: string[]; readonly probeReason: boolean }> {
+  ): Promise<{
+    readonly candidates: string[];
+    readonly probeReason: boolean;
+    readonly probeCircuitModelId?: string;
+  }> {
     const allProfileIds = routing.profiles.map((profile) => profile.profileId);
     const eligible = await this.#provider.getEligibleProfileIds(
       context.connectionId,
@@ -244,11 +255,15 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       allProfileIds.filter((profileId) => !excluded.has(profileId)),
       context.modelId,
     );
-    for (const profileId of probeEligible) {
+    for (const [profileId, circuitModelId] of probeEligible) {
       if (
-        await this.#provider.claimHalfOpenProbe(context.connectionId, profileId, context.modelId)
+        await this.#provider.claimHalfOpenProbe(context.connectionId, profileId, circuitModelId)
       ) {
-        return { candidates: [profileId], probeReason: true };
+        return {
+          candidates: [profileId],
+          probeReason: true,
+          probeCircuitModelId: circuitModelId,
+        };
       }
     }
     return { candidates: [], probeReason: true };
@@ -370,6 +385,7 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
     context: ProviderCredentialRouteContext,
     binding: Pick<ProviderProfileBinding, 'profileId' | 'selectionReason' | 'bindingId'>,
     material: RouterCredentialMaterial,
+    probeCircuitModelId?: string,
   ): ProviderCredentialLease {
     return {
       leaseId: createId('lease'),
@@ -384,6 +400,8 @@ export class ProviderCredentialRouter implements ProviderCredentialResolver {
       ...(material.requestHeaders ? { requestHeaders: material.requestHeaders } : {}),
       ...(material.fetch ? { fetch: material.fetch } : {}),
       ...(context.modelId ? { modelId: context.modelId } : {}),
+      // A probe lease carries the claimed circuit row so settle lands on it.
+      ...(probeCircuitModelId !== undefined ? { healthCircuitModelId: probeCircuitModelId } : {}),
     };
   }
 }

@@ -10,6 +10,10 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
+import type {
+  ProviderCredentialLease,
+  ProviderCredentialResolver,
+} from '@maka/core/provider-credential-routing';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import {
   AiSdkFlow,
@@ -62,6 +66,7 @@ interface MidTurnFixture {
   }>;
   /** JSON of each summarizer call's folded runtime events (coverage evidence). */
   summarizedSources: string[];
+  auxiliaryLeaseEvents: Array<{ kind: 'acquire' | 'settle' | 'release'; detail?: string }>;
   persist: (event: SessionEvent) => void;
 }
 
@@ -94,6 +99,12 @@ interface MidTurnFixtureOptions {
   meteredSummarizer?: boolean;
   /** Override the checkpoint recorder (e.g. to simulate a write failure). */
   record?: (checkpoint: HistoryCompactCheckpoint) => void;
+  /** Exercise the Profile-router lease lifecycle for the summarizer. */
+  credentialRouting?: {
+    resolver: ProviderCredentialResolver;
+    connectionId: string;
+    providerId: string;
+  };
   /** Payload size for each text prior, or for the tool result in a tool-heavy prior. */
   priorChars?: number;
   priorShape?: 'text' | 'tool_heavy';
@@ -297,8 +308,16 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       warnings: [],
     },
   });
+  const auxiliaryLeaseEvents: Array<{ kind: 'acquire' | 'settle' | 'release'; detail?: string }> =
+    [];
   const meteredSummarize = buildLlmHistorySummarizer({
     resolveModel: () => summarizerModel,
+    ...(options.credentialRouting
+      ? {
+          acquireCredential: () =>
+            acquireTestAuxiliaryCredential(options.credentialRouting!, auxiliaryLeaseEvents),
+        }
+      : {}),
   });
 
   const backend = createTestAiSdkBackend({
@@ -469,7 +488,55 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     messages,
     llmCalls,
     summarizedSources,
+    auxiliaryLeaseEvents,
     persist,
+  };
+}
+
+async function acquireTestAuxiliaryCredential(
+  routing: { resolver: ProviderCredentialResolver; connectionId: string; providerId: string },
+  events: Array<{ kind: 'acquire' | 'settle' | 'release'; detail?: string }>,
+): Promise<{
+  apiKey?: string;
+  settle(outcome: 'success' | 'failure' | 'aborted'): Promise<void>;
+  release(): void;
+}> {
+  const auxiliaryTurnId = `aux:history:session-1`;
+  events.push({ kind: 'acquire' });
+  const lease: ProviderCredentialLease | undefined = await routing.resolver.acquireAttempt({
+    connectionId: routing.connectionId,
+    connectionSlug: 'anthropic-main',
+    providerId: routing.providerId,
+    modelId: 'mock-model-id',
+    sessionId: 'session-1',
+    turnId: auxiliaryTurnId,
+    logicalCallId: auxiliaryTurnId,
+    callKind: 'history_compact',
+    excludedProfileIds: new Set(),
+    reason: 'initial',
+    signal: new AbortController().signal,
+  });
+  return {
+    apiKey: lease?.apiKey,
+    settle: async (outcome) => {
+      events.push({ kind: 'settle', detail: outcome });
+      if (!lease) return;
+      if (outcome === 'success') {
+        await routing.resolver.settle(lease, { kind: 'success' });
+      } else if (outcome === 'aborted') {
+        await routing.resolver.settle(lease, { kind: 'aborted' });
+      } else {
+        await routing.resolver.settle(lease, {
+          kind: 'failure',
+          failure: { kind: 'unknown', retryable: false },
+          routingHint: { kind: 'unknown', scope: 'unknown', evidence: 'provider_adapter' },
+        });
+      }
+    },
+    release: () => {
+      events.push({ kind: 'release' });
+      routing.resolver.releaseTurn('session-1', auxiliaryTurnId);
+    },
   };
 }
 
@@ -605,6 +672,59 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       true,
       'and the send it interrupts still records its own',
     );
+  });
+
+  test('a mid-turn compaction drives the Profile-router lease lifecycle', async () => {
+    const leaseEvents: Array<{ kind: string; detail?: string }> = [];
+    const settled: Array<{ profileId: string; outcomeKind: string }> = [];
+    let released = 0;
+    const resolver: ProviderCredentialResolver = {
+      acquireAttempt: async () => ({
+        leaseId: 'aux-lease-1',
+        bindingId: 'aux-binding-1',
+        profileId: 'profile-aux',
+        credentialId: 'cred-aux',
+        credentialRevision: 1,
+        selectionReason: 'single_eligible',
+        apiKey: 'sk-aux',
+        modelId: 'mock-model-id',
+      }),
+      settle: async (lease, outcome) => {
+        settled.push({ profileId: lease.profileId, outcomeKind: outcome.kind });
+      },
+      releaseTurn: () => {
+        released += 1;
+      },
+    };
+    const fixture = buildFixture({
+      meteredSummarizer: true,
+      credentialRouting: {
+        resolver,
+        connectionId: 'connection-1',
+        providerId: 'anthropic',
+      },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1, 'the compaction actually summarized');
+    // The summarizer acquired a lease, settled success, and released it.
+    assert.ok(
+      fixture.auxiliaryLeaseEvents.some((event) => event.kind === 'acquire'),
+      'an auxiliary lease was acquired',
+    );
+    assert.ok(
+      fixture.auxiliaryLeaseEvents.some(
+        (event) => event.kind === 'settle' && event.detail === 'success',
+      ),
+      'the auxiliary lease settled success',
+    );
+    assert.ok(
+      fixture.auxiliaryLeaseEvents.some((event) => event.kind === 'release'),
+      'the auxiliary lease was released',
+    );
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0]!.outcomeKind, 'success');
+    assert.equal(released, 1);
   });
 
   test('recovery re-projection with ctx.branch replays the checkpoint without the raw span', async () => {

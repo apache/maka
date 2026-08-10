@@ -103,7 +103,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   // resolver from the Router (PR 2) + Catalog/Vault/Health. OAuth providers
   // stay on the legacy path until PR 5, and legacy_primary/missing routing
   // keeps the fixed-key fast path byte-for-byte identical.
-  const credentialResolver = await buildCredentialResolver(input, target);
+  let credentialResolver: HostCredentialResolver | undefined;
+  try {
+    credentialResolver = await buildCredentialResolver(input, target);
+  } catch (error) {
+    // buildCredentialResolver owns its routing store only after creation;
+    // a throw inside leaves nothing to dispose, so just propagate.
+    throw error;
+  }
   const pricingSnapshot = await readDuringBackendCreation(
     () => input.usage.pricing.snapshot(),
     input.context.abortSignal,
@@ -160,7 +167,11 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       input.context.abortSignal,
     );
   } catch (error) {
-    await transport.close();
+    try {
+      await transport.close();
+    } finally {
+      credentialResolver?.dispose();
+    }
     throw error;
   }
   const modelFactory = (
@@ -373,13 +384,26 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           : {}),
         loadHistoryCompactCheckpoint: input.context.loadHistoryCompactCheckpoint,
         summarizeHistoryCompact: buildLlmHistorySummarizer({
-          resolveModel: () =>
+          resolveModel: (leasedApiKey) =>
             modelFactory({
               connection: target.connection,
-              apiKey,
+              apiKey: leasedApiKey ?? apiKey,
               modelId: target.model,
             }),
           providerOptions,
+          ...(credentialResolver
+            ? {
+                acquireCredential: () =>
+                  acquireAuxiliaryHistoryCredential({
+                    resolver: credentialResolver,
+                    connectionId: target.connectionId ?? '',
+                    connectionSlug: target.connection.slug,
+                    providerId: target.connection.providerType,
+                    modelId: target.model,
+                    sessionId: input.context.sessionId,
+                  }),
+              }
+            : {}),
         }),
         recordHistoryCompactCheckpoint: input.context.recordHistoryCompactCheckpoint,
         loadTurnRuntimeEvents: input.context.loadTurnRuntimeEvents,
@@ -430,6 +454,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       await transport.close();
     } finally {
       modelComposition.release?.();
+      credentialResolver?.dispose();
     }
     throw error;
   }
@@ -506,4 +531,60 @@ async function buildCredentialResolver(
     authKind: provider.authKind,
     routing,
   });
+}
+
+/**
+ * Acquire a Credential Profile lease for the host history summarizer (RFC
+ * 6.3/9.1). The summarizer runs outside the turn pump, so it binds on a
+ * synthetic auxiliary turn id, settles with the real outcome, and releases
+ * in a finally.
+ */
+async function acquireAuxiliaryHistoryCredential(input: {
+  resolver: HostCredentialResolver;
+  connectionId: string;
+  connectionSlug: string;
+  providerId: string;
+  modelId: string;
+  sessionId: string;
+}): Promise<{
+  apiKey?: string;
+  settle(outcome: 'success' | 'failure' | 'aborted'): Promise<void>;
+  release(): void;
+}> {
+  const auxiliaryTurnId = `aux:history:${input.sessionId}`;
+  const lease = await input.resolver.acquireAttempt({
+    connectionId: input.connectionId,
+    connectionSlug: input.connectionSlug,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    sessionId: input.sessionId,
+    turnId: auxiliaryTurnId,
+    logicalCallId: auxiliaryTurnId,
+    callKind: 'history_compact',
+    excludedProfileIds: new Set(),
+    reason: 'initial',
+    signal: new AbortController().signal,
+  });
+  return {
+    apiKey: lease?.apiKey,
+    settle: async (outcome) => {
+      if (!lease) return;
+      if (outcome === 'success') {
+        await input.resolver.settle(lease, { kind: 'success' });
+        return;
+      }
+      if (outcome === 'aborted') {
+        await input.resolver.settle(lease, { kind: 'aborted' });
+        return;
+      }
+      await input.resolver.settle(lease, {
+        kind: 'failure',
+        failure: { kind: 'unknown', retryable: false },
+        routingHint: { kind: 'unknown', scope: 'unknown', evidence: 'provider_adapter' },
+      });
+    },
+    release: () => {
+      input.resolver.releaseTurn(input.sessionId, auxiliaryTurnId);
+    },
+  };
 }

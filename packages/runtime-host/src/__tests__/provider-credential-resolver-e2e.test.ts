@@ -334,6 +334,306 @@ describe('Provider Credential resolver end-to-end', () => {
       }
     });
   });
+
+  test('credential-scoped failure blocks every model on the global row', async () => {
+    await withInteractiveRoot(async ({ root }) => {
+      const owner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(stores, 0, {
+          slug: 'e2e-cred',
+          name: 'E2E Cred',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['gpt-5', 'gpt-4o'],
+        });
+        const created = await stores.operations.createCredentialProfile({
+          expected: connectionBasis(connection),
+          label: 'backup',
+          weight: 1,
+        });
+        assert.equal(created.kind, 'committed');
+        if (created.kind !== 'committed') return;
+        let snapshot = created.snapshot;
+        let routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        const secondary = routing.profiles.find(
+          (profile) => profile.profileId !== connection.connectionId,
+        )!;
+        await stores.credentialVault.set({
+          locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+          expected: null,
+          secret: 'sk-primary',
+        });
+        await stores.credentialVault.set({
+          locator: {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: secondary.profileId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: 'sk-secondary',
+        });
+        const enabled = await stores.operations.setCredentialProfileEnabled({
+          expected: {
+            connectionId: connection.connectionId,
+            connectionRevision: snapshot.revision,
+            profileId: secondary.profileId,
+            profileRevision: secondary.revision,
+          },
+          enabled: true,
+        });
+        assert.equal(enabled.kind, 'committed');
+        if (enabled.kind !== 'committed') return;
+        snapshot = enabled.snapshot;
+        routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        for (const modelId of ['gpt-5', 'gpt-4o']) {
+          for (const profile of routing.profiles) {
+            const recorded = await stores.operations.recordCredentialProfileVerification({
+              connectionId: connection.connectionId,
+              connectionRevision: snapshot.revision,
+              profileId: profile.profileId,
+              profileRevision: profile.revision,
+              modelId,
+              status: 'supported',
+              source: 'tested',
+              evidence: 'positive_only',
+              checkedAt: 1000,
+            });
+            assert.equal(recorded.kind, 'committed');
+          }
+        }
+        const activated = await stores.operations.setCredentialRoutingMode({
+          expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+          mode: 'balanced',
+        });
+        assert.equal(activated.kind, 'committed');
+        if (activated.kind !== 'committed') return;
+        routing = activated.snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+        const resolver = createHostCredentialResolver({
+          runtimePolicy: stores,
+          workspaceRoot: root,
+          connectionId: connection.connectionId,
+          connectionSlug: connection.slug,
+          providerType: connection.providerType,
+          endpoint: PROVIDER_DEFAULTS[connection.providerType].baseUrl,
+          apiProtocol: undefined,
+          requestHeadersCredentialId: null,
+          requestHeadersCredentialRevision: null,
+          requestBodyOverlayJson: null,
+          authKind,
+          routing,
+        });
+        try {
+          // One profile hits a credential-scoped auth failure: it must write
+          // the GLOBAL row (model_id=''), blocking that profile for EVERY model.
+          const first = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-cred', 'turn-1'),
+          );
+          await resolver.settle(first, {
+            kind: 'failure',
+            failure: { kind: 'auth', retryable: false },
+            routingHint: { kind: 'auth', scope: 'credential', evidence: 'status' },
+          });
+          const deniedProfile = first.profileId;
+
+          // gpt-5 must route away from the denied profile.
+          const second = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-cred', 'turn-2'),
+          );
+          assert.notEqual(second.profileId, deniedProfile);
+          await resolver.settle(second, { kind: 'success' });
+
+          // gpt-4o must ALSO route away: the deny is credential-global.
+          const otherModel = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-4o', 'session-cred', 'turn-3'),
+          );
+          assert.notEqual(
+            otherModel.profileId,
+            deniedProfile,
+            'a credential-scoped failure blocks the profile for all models',
+          );
+          await resolver.settle(otherModel, { kind: 'success' });
+        } finally {
+          resolver.dispose();
+        }
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
+
+  test('a half-open probe claims and settles the exact global circuit row', async () => {
+    await withInteractiveRoot(async ({ root }) => {
+      const owner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(stores, 0, {
+          slug: 'e2e-probe',
+          name: 'E2E Probe',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['gpt-5'],
+        });
+        const created = await stores.operations.createCredentialProfile({
+          expected: connectionBasis(connection),
+          label: 'backup',
+          weight: 1,
+        });
+        assert.equal(created.kind, 'committed');
+        if (created.kind !== 'committed') return;
+        let snapshot = created.snapshot;
+        let routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        const secondary = routing.profiles.find(
+          (profile) => profile.profileId !== connection.connectionId,
+        )!;
+        await stores.credentialVault.set({
+          locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+          expected: null,
+          secret: 'sk-primary',
+        });
+        await stores.credentialVault.set({
+          locator: {
+            scope: 'connection_profile',
+            connectionId: connection.connectionId,
+            profileId: secondary.profileId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: 'sk-secondary',
+        });
+        const enabled = await stores.operations.setCredentialProfileEnabled({
+          expected: {
+            connectionId: connection.connectionId,
+            connectionRevision: snapshot.revision,
+            profileId: secondary.profileId,
+            profileRevision: secondary.revision,
+          },
+          enabled: true,
+        });
+        assert.equal(enabled.kind, 'committed');
+        if (enabled.kind !== 'committed') return;
+        snapshot = enabled.snapshot;
+        routing = snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        for (const profile of routing.profiles) {
+          const recorded = await stores.operations.recordCredentialProfileVerification({
+            connectionId: connection.connectionId,
+            connectionRevision: snapshot.revision,
+            profileId: profile.profileId,
+            profileRevision: profile.revision,
+            modelId: 'gpt-5',
+            status: 'supported',
+            source: 'tested',
+            evidence: 'positive_only',
+            checkedAt: 1000,
+          });
+          assert.equal(recorded.kind, 'committed');
+        }
+        const activated = await stores.operations.setCredentialRoutingMode({
+          expected: { connectionId: connection.connectionId, revision: snapshot.revision },
+          mode: 'balanced',
+        });
+        assert.equal(activated.kind, 'committed');
+        if (activated.kind !== 'committed') return;
+        routing = activated.snapshot.connections.find(
+          (item) => item.connectionId === connection.connectionId,
+        )!.credentialRouting!;
+        const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+        let fakeNow = 1_000;
+        const resolver = createHostCredentialResolver({
+          runtimePolicy: stores,
+          workspaceRoot: root,
+          connectionId: connection.connectionId,
+          connectionSlug: connection.slug,
+          providerType: connection.providerType,
+          endpoint: PROVIDER_DEFAULTS[connection.providerType].baseUrl,
+          apiProtocol: undefined,
+          requestHeadersCredentialId: null,
+          requestHeadersCredentialRevision: null,
+          requestBodyOverlayJson: null,
+          authKind,
+          routing,
+          now: () => fakeNow,
+        });
+        try {
+          // Both profiles hit a credential-scoped failure -> both GLOBAL rows open.
+          const a = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-probe', 'turn-1'),
+          );
+          await resolver.settle(a, {
+            kind: 'failure',
+            failure: { kind: 'rate_limit', retryable: true },
+            routingHint: { kind: 'rate_limit', scope: 'credential', evidence: 'status' },
+          });
+          const b = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-probe', 'turn-2'),
+          );
+          await resolver.settle(b, {
+            kind: 'failure',
+            failure: { kind: 'rate_limit', retryable: true },
+            routingHint: { kind: 'rate_limit', scope: 'credential', evidence: 'status' },
+          });
+          assert.notEqual(a.profileId, b.profileId, 'both profiles were exercised');
+
+          // Cooldown not elapsed yet -> pool exhausted without a probe candidate.
+          await assert.rejects(
+            resolver.acquireAttempt(
+              balancedContext(connection, 'gpt-5', 'session-probe', 'turn-3'),
+            ),
+            /no eligible credential profile/,
+          );
+
+          // Advance the clock: the Router claims a half-open probe on the exact
+          // GLOBAL circuit row (model_id='') and the lease carries that key.
+          fakeNow = 200_000;
+          const probe = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-probe', 'turn-4'),
+          );
+          assert.equal(probe.selectionReason, 'half_open_probe');
+          assert.equal(
+            probe.healthCircuitModelId,
+            '',
+            'the probe carries the exact global circuit key it claimed',
+          );
+
+          // Probe success closes the global row -> the profile recovers.
+          await resolver.settle(probe, { kind: 'success' });
+          const recovered = await resolver.acquireAttempt(
+            balancedContext(connection, 'gpt-5', 'session-probe', 'turn-5'),
+          );
+          assert.equal(
+            recovered.profileId,
+            probe.profileId,
+            'a probe success closes the circuit for that profile',
+          );
+          await resolver.settle(recovered, { kind: 'success' });
+        } finally {
+          resolver.dispose();
+        }
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
+    });
+  });
 });
 
 function balancedContext(

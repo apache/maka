@@ -2,6 +2,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
+import type { ProviderCredentialResolver } from '@maka/core/provider-credential-routing';
 import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
 import type {
@@ -140,6 +141,18 @@ export interface AiSdkCompactionCapabilities {
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
+  /**
+   * Optional Credential Profile routing (RFC 9.1). When present, auxiliary
+   * summarizer calls (semantic compact's standalone summarizer model) acquire
+   * a per-call lease, materialize with the leased key, attribute their
+   * attempts, and settle/release — instead of reusing the fixed construct-time
+   * key captured in this contract.
+   */
+  credentialRouting?: {
+    resolver: ProviderCredentialResolver;
+    connectionId: string;
+    providerId: string;
+  };
   /** Optional prior-history budget. Keeps whole turns to preserve tool-call/result pairs. */
   contextBudget?: ContextBudgetPolicy;
   /**
