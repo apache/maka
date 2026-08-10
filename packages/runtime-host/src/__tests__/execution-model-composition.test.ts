@@ -114,6 +114,90 @@ test('backend creation aborts a stalled canonical connection read', async () => 
   });
 });
 
+test('unified ownership guard releases transport and capabilities when a late creation step throws', async () => {
+  // The guard covers failures AFTER createFetchTransport succeeds but BEFORE
+  // HostAiSdkBackend takes ownership — here a client-capability snapshot that
+  // throws. The already-created transport must be closed and the resolver
+  // (none in this fixture) and capability lease released, instead of leaking.
+  let transportCloses = 0;
+  let capabilityReleases = 0;
+  const creating = createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      createFetchTransport: () => {
+        let closed = false;
+        return {
+          fetch: (() => async () => new Response()) as unknown as typeof fetch,
+          close: async () => {
+            closed = true;
+            transportCloses += 1;
+          },
+        };
+      },
+      snapshotClientCapabilities: () => {
+        const snapshot = {};
+        return Object.assign(snapshot, {
+          release: () => {
+            capabilityReleases += 1;
+          },
+        });
+      },
+    }),
+  );
+  // Force snapshotForSession to throw by making the fixture's snapshot throw:
+  // recreate with a throwing snapshot.
+  void creating;
+  const throwing = createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      createFetchTransport: () => ({
+        fetch: (() => async () => new Response()) as unknown as typeof fetch,
+        close: async () => {
+          transportCloses += 1;
+        },
+      }),
+      snapshotClientCapabilities: () => {
+        throw new Error('capability snapshot failed');
+      },
+    }),
+  );
+
+  await assert.rejects(throwing, /capability snapshot failed/);
+  assert.equal(
+    transportCloses,
+    1,
+    'the ownership guard closes a transport created before the failure',
+  );
+  assert.equal(
+    capabilityReleases,
+    0,
+    'no capability was acquired when snapshotForSession itself threw',
+  );
+});
+
+test('unified ownership guard rejects on a synchronous transport creation failure', async () => {
+  // createFetchTransport itself throws synchronously: the guard must not hang
+  // and must not double-close anything (no transport was created).
+  let transportCloses = 0;
+  const creating = createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      createFetchTransport: () => {
+        throw new Error('transport factory exploded');
+      },
+    }),
+  );
+
+  await assert.rejects(creating, /transport factory exploded/);
+  assert.equal(transportCloses, 0, 'nothing to close when transport creation itself failed');
+});
+
 test('backend creation aborts a stalled pricing snapshot read', async () => {
   const abort = new AbortController();
   let markPricingStarted!: () => void;

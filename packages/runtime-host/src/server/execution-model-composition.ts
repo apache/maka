@@ -132,9 +132,10 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     credentialResolver?.dispose();
     throw error;
   }
-  const transport = createFetchTransport(
-    toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
-  );
+  let transport: ProxiedFetchTransport | undefined;
+  let modelComposition: HostRunComposer | undefined;
+  try {
+    transport = createFetchTransport(toRuntimePolicyProxy(target.networkProxy, target.proxySecret));
   let apiKey = target.apiKey;
   let modelFetch: typeof fetch = transport.fetch;
   const oauthBinding = target.oauthBinding;
@@ -155,8 +156,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         fetchFn: transport.fetch,
       });
     } catch (error) {
-      credentialResolver?.dispose();
-      await transport.close();
       throw error;
     }
   }
@@ -166,8 +165,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     input.context.header.thinkingLevel,
   );
   const contextWindow = resolveSelectedModelContextWindow(target.connection, target.model);
-  let modelComposition: HostRunComposer;
-  try {
     modelComposition = await readDuringBackendCreation(
       async () =>
         await input.createRunComposer({
@@ -179,14 +176,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         }),
       input.context.abortSignal,
     );
-  } catch (error) {
-    try {
-      await transport.close();
-    } finally {
-      credentialResolver?.dispose();
-    }
-    throw error;
-  }
   const modelFactory = (
     modelInput: Parameters<typeof getAIModel>[0],
   ): ReturnType<typeof getAIModel> =>
@@ -323,7 +312,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       }
     : undefined;
 
-  try {
     return new HostAiSdkBackend(
       {
         sessionId: input.context.sessionId,
@@ -460,13 +448,13 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         now: Date.now,
       },
       transport.close,
-      () => modelComposition.release?.(),
+      () => modelComposition?.release?.(),
     );
   } catch (error) {
     try {
-      await transport.close();
+      await transport?.close();
     } finally {
-      modelComposition.release?.();
+      modelComposition?.release?.();
       credentialResolver?.dispose();
     }
     throw error;

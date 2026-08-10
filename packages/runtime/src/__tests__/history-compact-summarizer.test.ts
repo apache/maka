@@ -127,6 +127,69 @@ describe('buildLlmHistorySummarizer', () => {
     assert.equal(attempt.costUsd, undefined);
   });
 
+  test('attributes the leased Credential Profile to the canonical history-compact record', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    let now = 100;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () =>
+        new MockLanguageModelV4({
+          doGenerate: {
+            content: [{ type: 'text', text: '## Goal\nX' }],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 3, text: 3, reasoning: 0 },
+            },
+            warnings: [],
+          },
+        }),
+      acquireCredential: async () => ({
+        apiKey: 'sk-history-leased',
+        profileId: 'profile-history',
+        selectionReason: 'weighted',
+        settle: async () => {},
+        release: () => {},
+      }),
+    });
+    const tracker = new ProviderRequestTracker({
+      traceId: 'trace-id',
+      turnId: 'turn-1',
+      now: () => {
+        now += 10;
+        return now;
+      },
+      newId: () => 'trace-id',
+      persistCapture: async () => ({ artifactId: 'artifact-1' }),
+      recordAttempt: () => {},
+      accounting: {
+        sessionId: 'sess-1',
+        resolveRunId: () => 'run-1',
+        connectionSlug: 'connection',
+        providerId: 'provider',
+        callKind: 'history_compact',
+        record: (attempt: ModelCallAttempt) => {
+          recorded.push(attempt);
+        },
+      },
+    });
+    await summarize({
+      ...inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      providerRequestTracker: tracker,
+    });
+
+    assert.equal(recorded.length, 1, 'one canonical history-compact record');
+    assert.equal(
+      recorded[0]!.credentialProfileId,
+      'profile-history',
+      'the canonical record carries the leased profile id',
+    );
+    assert.equal(
+      recorded[0]!.credentialSelectionReason,
+      'weighted',
+      'the canonical record carries the selection reason',
+    );
+  });
+
   test('produces schema-valid tool-result messages (toolName + wrapped output) and does not fall back', async () => {
     const seen: Array<{ messages: unknown[] }> = [];
     const generateText: AiSdkGenerateTextLike = async (opts) => {

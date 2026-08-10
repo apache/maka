@@ -97,6 +97,8 @@ interface MidTurnFixtureOptions {
   midTurnOff?: boolean;
   /** Give the fixture model a doGenerate so the semantic summarizer can dispatch. */
   semanticSummarizerCapable?: boolean;
+  /** Throw from modelFactory when the semantic summarizer's leased key arrives. */
+  modelFactoryThrowsForLeaseKey?: boolean;
   /**
    * Override the semantic-compact policy (defaults to a tiny window that only
    * competes with the capacity hook). A dispatchable policy lets a test drive
@@ -379,6 +381,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     modelId: 'mock-model-id',
     modelFactory: (factoryInput) => {
       fixture.modelFactoryKeys.push(factoryInput.apiKey);
+      if (options.modelFactoryThrowsForLeaseKey && factoryInput.apiKey === 'sk-semantic') {
+        throw new Error('model factory exploded for leased key');
+      }
       return model;
     },
     tools: [
@@ -1103,6 +1108,76 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
     assert.ok(settled.includes('success'), 'the auxiliary lease settled success');
     assert.ok(released >= semanticAcquired, 'every auxiliary lease was released');
+  });
+
+  test('a model materialization failure still settles and releases the acquired lease', async () => {
+    const settled: string[] = [];
+    let acquired = 0;
+    let released = 0;
+    const resolver: ProviderCredentialResolver = {
+      acquireAttempt: async (context) => {
+        if (context.turnId.startsWith('aux:semantic_compact')) {
+          acquired += 1;
+          return {
+            leaseId: 'semantic-lease-1',
+            bindingId: 'semantic-binding-1',
+            profileId: 'profile-semantic',
+            credentialId: 'cred-semantic',
+            credentialRevision: 1,
+            selectionReason: 'single_eligible',
+            apiKey: 'sk-semantic',
+            modelId: context.modelId,
+          };
+        }
+        return {
+          leaseId: 'main-lease-1',
+          bindingId: 'main-binding-1',
+          profileId: 'profile-main',
+          credentialId: 'cred-main',
+          credentialRevision: 1,
+          selectionReason: 'single_eligible',
+          apiKey: 'sk-main',
+          modelId: context.modelId,
+        };
+      },
+      settle: async (lease, outcome) => {
+        if (lease.profileId === 'profile-semantic') settled.push(outcome.kind);
+      },
+      releaseTurn: () => {
+        released += 1;
+      },
+    };
+    const fixture = buildFixture({
+      semanticCompact: true,
+      historyCompactOff: true,
+      midTurnOff: true,
+      semanticSummarizerCapable: true,
+      modelFactoryThrowsForLeaseKey: true,
+      semanticPolicy: {
+        enabled: true,
+        mode: 'replace',
+        minStepNumber: 2,
+        maxActiveEstimatedTokens: 1,
+        minNewPrefixEstimatedTokens: 1,
+        minSafePrefixEstimatedTokens: 1,
+        maxAcceptedProjectionEstimatedTokens: 2048,
+        minSavingsTokens: 1,
+        minSavingsRatio: 0,
+      },
+      credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'anthropic' },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.ok(acquired >= 1, 'the semantic summarizer acquired a lease before materialization');
+    // The model factory threw synchronously AFTER the lease was acquired: the
+    // lease must still settle (as failure — the dispatch never happened) and
+    // the synthetic turn binding must be released, never leaking.
+    assert.ok(settled.length >= 1, 'the acquired lease was settled despite the throw');
+    assert.ok(
+      settled.every((outcome) => outcome !== 'success'),
+      'a failed materialization must never settle as success',
+    );
+    assert.ok(released >= acquired, 'every acquired auxiliary lease was released');
   });
 
   test('a compaction run that never dispatches a provider request never settles a lease', async () => {

@@ -32,9 +32,13 @@ export interface BuildLlmHistorySummarizerOptions {
    * Optional Credential Profile lease for this auxiliary summarizer call
    * (RFC 6.3/9.1): acquired before materializing, settled with the real
    * outcome, and always released. Absent keeps the legacy fixed-key path.
+   * `profileId` + `selectionReason` are the real lease's attribution, so the
+   * canonical history_compact ModelCallAttempt can carry them (Gate 2).
    */
   acquireCredential?: () => Promise<{
     apiKey?: string;
+    profileId?: string;
+    selectionReason?: string;
     settle(outcome: 'success' | 'failure' | 'aborted'): Promise<void>;
     release(): void;
   }>;
@@ -101,6 +105,16 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         // Handed over whole by the backend, which owns every input a tracker
         // needs — including the run, which no summarizer wiring can know (#1679).
         const providerRequestTracker = input.providerRequestTracker;
+        // Attribute the real lease to the canonical record BEFORE dispatch:
+        // the history summarizer routes through the Profile Router, so its
+        // ModelCallAttempt must carry credentialProfileId + selectionReason
+        // (Gate 2), not just use the leased key.
+        if (providerRequestTracker && (credential?.profileId || credential?.selectionReason)) {
+          providerRequestTracker.setCredentialAttribution({
+            profileId: credential!.profileId!,
+            selectionReason: credential!.selectionReason!,
+          });
+        }
         const ai =
           options.generateText && !providerRequestTracker ? undefined : await loadAiSdkTextModule();
         const generateText = options.generateText ?? ai!.generateText;

@@ -1128,21 +1128,25 @@ export class AiSdkCompaction {
             summarizerModelId,
             request.abortSignal,
           );
-          const tracker = resolveSummaryTracker();
-          tracker?.setStep(options.stepNumber);
-          if (tracker && auxiliaryLease) {
-            tracker.setCredentialAttribution(auxiliaryLease);
-          }
-          const summarizerModel =
-            auxiliaryLease || policy.summarizerModel
-              ? this.input.modelFactory({
-                  connection: this.input.connection,
-                  apiKey: auxiliaryLease?.apiKey ?? this.input.apiKey,
-                  modelId: summarizerModelId,
-                })
-              : model;
           let auxiliaryOutcome: ProviderCredentialOutcome = { kind: 'success' };
+          // Tracker attribution, model materialization and the actual dispatch
+          // all live inside the lease's protection frame: a synchronous model
+          // factory throw (bad provider/model config) still settles a claimed
+          // half-open probe conservatively and releases the turn binding.
           try {
+            const tracker = resolveSummaryTracker();
+            tracker?.setStep(options.stepNumber);
+            if (tracker && auxiliaryLease) {
+              tracker.setCredentialAttribution(auxiliaryLease);
+            }
+            const summarizerModel =
+              auxiliaryLease || policy.summarizerModel
+                ? this.input.modelFactory({
+                    connection: this.input.connection,
+                    apiKey: auxiliaryLease?.apiKey ?? this.input.apiKey,
+                    modelId: summarizerModelId,
+                  })
+                : model;
             return await this.modelAdapter.generateCompactSummary({
               model: summarizerModel,
               system: request.system,
