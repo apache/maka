@@ -413,7 +413,7 @@ test('restarts transcript loading after an expired snapshot', async () => {
   );
 });
 
-test('forces a same-v0 pre-epoch Host through its incompatible replacement path', async () => {
+test('routes a legacy Host through incompatible replacement', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-legacy-epoch-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'root'),

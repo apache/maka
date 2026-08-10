@@ -12,7 +12,7 @@ import type {
 } from '../runtime-host-desktop-candidate.js';
 import { startRuntimeHostDesktopOwner } from '../runtime-host-desktop-owner.js';
 
-test('replaces a disconnected generation without falling back to embedded Runtime', { timeout: 10_000 }, async () => {
+test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
   const first = candidateHarness({ delayDisconnect: true });
   const second = candidateHarness();
   const queue = [ready(first.candidate), ready(second.candidate)];

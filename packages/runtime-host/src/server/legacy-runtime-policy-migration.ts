@@ -407,7 +407,7 @@ async function readJournal(path: string): Promise<MigrationJournal | null> {
   }
   const value = JSON.parse(contents) as Partial<MigrationJournal>;
   if (value.version !== 1 || value.state !== 'importing') {
-    throw new Error('Invalid Runtime Host M5 migration journal');
+    throw new Error('Invalid Runtime Host migration journal');
   }
   return { version: 1, state: 'importing' };
 }

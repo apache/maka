@@ -782,10 +782,8 @@ export async function resolveExecutionTarget(
     );
   }
 
-  // Relay profiles ride the connection as a first-class field, so every
-  // downstream seam (buildProviderOptions variant gate, declared vision,
-  // declared context window) reads the host path identically to the
-  // embedded one.
+  // Relay profiles are part of the canonical connection so provider options
+  // and declared model capabilities derive from the same policy snapshot.
   const connection: RuntimeExecutionConnection = {
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,

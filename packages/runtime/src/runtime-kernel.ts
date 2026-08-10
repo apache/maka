@@ -2295,9 +2295,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // here stays that way, because the stream that would have finalized it is
     // exactly the one the stop could not wake.
     //
-    // Embedded owners only. A Hosted Run's terminal fact belongs to the Host's
-    // own terminal authority (#1359, #1996), which also parks provider-
-    // indeterminate Runs a stop must not resolve on its behalf.
+    // Without a Host interaction authority, Runtime owns terminal settlement.
+    // A Hosted Run's terminal fact belongs to the Host, which also parks
+    // provider-indeterminate Runs that a stop must not resolve on its behalf.
     for (const target of stoppedRuns.values()) {
       if (!this.deps.interactionAuthority) {
         try {

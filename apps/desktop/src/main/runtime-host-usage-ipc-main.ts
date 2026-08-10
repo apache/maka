@@ -8,7 +8,6 @@ import type {
   UsageGroupBy,
   UsageQuery,
 } from "@maka/core/usage-stats/types";
-import type { UsageQueryResult } from "@maka/runtime-host/protocol";
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,

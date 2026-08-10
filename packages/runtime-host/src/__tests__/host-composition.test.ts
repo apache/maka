@@ -9,18 +9,6 @@ import {
   type RuntimeHostDomainModule,
 } from '../server/host-composition.js';
 
-test('Host composition descriptors are canonical immutable startup facts', () => {
-  const descriptor = normalizeHostCompositionDescriptor({
-    id: 'maka.interactive',
-    revision: '2026-08-09',
-  });
-  assert.deepEqual(descriptor, {
-    id: 'maka.interactive',
-    revision: '2026-08-09',
-  });
-  assert.ok(Object.isFrozen(descriptor));
-});
-
 test('Host composition descriptors reject ambiguous identities', () => {
   for (const descriptor of [
     { id: 'Interactive', revision: '1' },

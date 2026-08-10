@@ -45,7 +45,7 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps the experimental protocol at v0 with the declared authority operations', () => {
+  test('declares the current protocol and closed authority operation set', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
     assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 14);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [

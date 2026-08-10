@@ -59,12 +59,8 @@ export * from './task-ledger.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
-// The wire version remains v0 before the first release. This independent epoch
-// lets a new Client retire a stale same-version Host whose closed schema is no
-// longer safe to use.
-// 13: trusted capability-provider Clients and Automation waiting state changed
-// the closed schema.
-// 14: composition identity became part of Host startup and handshake authority.
+// Increment when the same protocol version no longer guarantees safe Client-Host
+// interoperability. Mismatches are rejected before domain commands are admitted.
 export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 14 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
@@ -100,7 +96,6 @@ export interface ClientHello {
   surface: ClientSurface;
   protocolMin: number;
   protocolMax: number;
-  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
   compatibilityEpoch: number;
   compositionId: string;
 }
@@ -111,7 +106,6 @@ export interface HostAccepted {
   hostEpoch: string;
   connectionId: string;
   selectedProtocol: number;
-  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
   compatibilityEpoch: number;
   compositionId: string;
   compositionRevision: string;
@@ -123,7 +117,6 @@ export interface HostIncompatible {
   hostEpoch: string;
   protocolMin: number;
   protocolMax: number;
-  /** A missing pre-epoch v0 wire field is decoded as epoch 0. */
   compatibilityEpoch: number;
   compositionId: string;
   compositionRevision: string;
@@ -158,7 +151,6 @@ export interface HostRegistration {
   endpoint: string;
   protocolMin: number;
   protocolMax: number;
-  /** A missing pre-epoch v0 registration field is decoded as epoch 0. */
   compatibilityEpoch: number;
   compositionId: string;
   compositionRevision: string;
@@ -351,6 +343,7 @@ function decodeCompositionRevision(value: unknown): string {
 }
 
 function decodeCompatibilityEpoch(value: unknown): number {
+  // Epoch 0 represents peers and registrations that do not publish this field.
   return value === undefined ? 0 : requireCompatibilityEpoch(value);
 }
 
