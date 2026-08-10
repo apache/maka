@@ -1537,16 +1537,16 @@ export const Composer = forwardRef<
               <div className="maka-composer-queue-paused">
                 <span>{copy.queuePaused}</span>
                 {props.onQueueMutation ? (
-                  <button
-                    type="button"
+                  <UiButton
+                    variant="ghost"
+                    size="sm"
                     className="maka-composer-queue-resume"
-                    disabled={queueMutationPending}
+                    label={copy.resumeQueue}
+                    isDisabled={queueMutationPending}
                     onClick={() => {
                       void mutateQueue({ kind: 'resume' });
                     }}
-                  >
-                    {copy.resumeQueue}
-                  </button>
+                  />
                 ) : null}
               </div>
             ) : null}
@@ -2297,17 +2297,17 @@ function SortableQueueRow(props: {
       data-dragging={isDragging || undefined}
       style={style}
     >
-      <button
+      <IconButton
         ref={setActivatorNodeRef}
-        type="button"
+        variant="ghost"
+        size="sm"
         className="maka-composer-queue-grip"
-        aria-label={props.dragLabel}
-        disabled={props.dragDisabled}
+        label={props.dragLabel}
+        icon={<GripVertical size={14} aria-hidden="true" />}
+        isDisabled={props.dragDisabled}
         {...attributes}
         {...listeners}
-      >
-        <GripVertical size={14} aria-hidden="true" />
-      </button>
+      />
       {props.children}
     </div>
   );

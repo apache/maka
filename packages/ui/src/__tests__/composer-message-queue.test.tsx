@@ -91,6 +91,9 @@ describe('composer message queue', () => {
     );
 
     assert.match(markup, /由于你中断了当前响应，队列已暂停/);
-    assert.match(markup, />继续<\/button>/);
+    assert.match(
+      markup,
+      /<button[^>]*maka-composer-queue-resume[^>]*>[\s\S]*?继续[\s\S]*?<\/button>/,
+    );
   });
 });

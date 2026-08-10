@@ -481,42 +481,14 @@
 
 .maka-composer-queue-resume {
   flex: 0 0 auto;
-  min-height: var(--h-control-sm);
-  padding: 0 var(--space-2);
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
   color: var(--accent);
-  font: var(--maka-text-label);
-  transition:
-    background-color var(--duration-fast) var(--ease-out-strong),
-    transform var(--duration-fast) var(--ease-out-strong);
-}
-
-.maka-composer-queue-resume:active:not(:disabled) {
-  transform: scale(0.96);
-}
-
-.maka-composer-queue-resume:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-composer-queue-resume:disabled {
-  opacity: var(--opacity-disabled);
-}
-
-@media (hover: hover) {
-  .maka-composer-queue-resume:hover:not(:disabled) {
-    background: var(--state-hover-bg);
-  }
 }
 
 .maka-composer-queue-row {
   min-width: 0;
   min-height: var(--h-control-sm);
   display: grid;
-  grid-template-columns: 14px 16px auto minmax(0, 1fr) auto;
+  grid-template-columns: var(--h-control-sm) 16px auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-1);
   padding: 0 var(--space-1);
@@ -525,13 +497,6 @@
 }
 
 .maka-composer-queue-grip {
-  width: 14px;
-  height: var(--h-control-sm);
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  background: transparent;
   color: var(--muted-foreground);
   opacity: 0.45;
   cursor: grab;
@@ -540,11 +505,6 @@
 
 .maka-composer-queue-grip:active {
   cursor: grabbing;
-}
-
-.maka-composer-queue-grip:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
 }
 
 .maka-composer-queue-row[data-dragging="true"] {

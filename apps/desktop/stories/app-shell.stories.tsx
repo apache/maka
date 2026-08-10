@@ -619,10 +619,14 @@ function InteractiveQueueShell({ paused = false }: { paused?: boolean }) {
   );
 }
 
+// Real path: send a message, leave Queue selected, then submit follow-ups while
+// the current turn is still running.
 export const QueuedFollowUps: Story = {
   render: () => <InteractiveQueueShell />,
 };
 
+// Real path: queue follow-ups during a running turn, then stop that turn before
+// the queued messages are delivered.
 export const PausedFollowUps: Story = {
   render: () => <InteractiveQueueShell paused />,
 };
