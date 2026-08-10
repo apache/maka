@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
 import type { QuotaSnapshot } from '@maka/core';
 import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime';
 import {
@@ -17,6 +16,10 @@ import {
   type RuntimeHostAccountConnectionClient,
 } from './runtime-host-account-connection.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import type {
   OAuthExternalPresentation,
   RuntimeHostOAuthPresentation,
@@ -57,7 +60,7 @@ type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
 >;
 
 export interface RuntimeHostOAuthIpcDeps {
-  readonly ipcMain: Pick<IpcMain, 'handle'>;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: OAuthClient;
   readonly presentation: RuntimeHostOAuthPresentation;
   readonly emitConnectionListChanged: () => void;
@@ -163,7 +166,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       }
       return { ok: true as const };
     });
-    deps.ipcMain.handle(channel('get-account-state'), async () => {
+    handleReconnectableRead(deps.ipcMain, channel('get-account-state'), async () => {
       const connection = findRuntimeHostAccountConnection(
         await deps.client.loadConnectionCatalog(),
         provider,
@@ -227,7 +230,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
   registerUnavailableAntigravityIpc(deps.ipcMain);
 }
 
-function registerUnavailableAntigravityIpc(ipcMain: Pick<IpcMain, 'handle'>): void {
+function registerUnavailableAntigravityIpc(ipcMain: ReconnectableReadIpcMain): void {
   const prefix = 'antigravity-subscription';
   const unavailable = () =>
     actionFailure(

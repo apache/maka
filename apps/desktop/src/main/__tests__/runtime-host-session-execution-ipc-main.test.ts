@@ -917,8 +917,6 @@ function observerWithTranscript(
   });
 }
 
-async function* emptyEvents(): AsyncIterable<never> {}
-
 async function* waitForEnd(done: Promise<void>): AsyncIterable<never> {
   await done;
 }

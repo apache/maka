@@ -45,9 +45,9 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps the experimental protocol at v0 with the declared authority operations', () => {
+  test('declares the current protocol and closed authority operation set', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 12);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 14);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'access.credential.issue',
       'access.credential.revoke',
@@ -719,6 +719,7 @@ describe('Runtime Host bootstrap protocol', () => {
         protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
         protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
       }),
       {
         kind: 'hello',
@@ -727,6 +728,7 @@ describe('Runtime Host bootstrap protocol', () => {
         protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
         protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
       },
     );
     const accepted = {
@@ -736,6 +738,8 @@ describe('Runtime Host bootstrap protocol', () => {
       connectionId: 'connection-1',
       selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready' as const,
     };
     assert.deepEqual(decodeHostFrame(accepted), accepted);
@@ -749,6 +753,8 @@ describe('Runtime Host bootstrap protocol', () => {
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
       state: 'ready' as const,
       pid: 42,
       createdAt: '2026-07-23T00:00:00.000Z',
@@ -766,6 +772,7 @@ describe('Runtime Host bootstrap protocol', () => {
       isInvalidFrame,
     );
     assert.throws(() => decodeHostFrame({ ...accepted, selectedProtocol: -1 }), isInvalidFrame);
+    assert.throws(() => decodeHostFrame({ ...accepted, rootId: 'not-a-root' }), isInvalidFrame);
     assert.throws(
       () => decodeHostRegistration({ ...registration, protocolMin: -1 }),
       isInvalidFrame,
@@ -1496,6 +1503,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.doesNotThrow(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'].decodeOutput({
         hostEpoch: 'epoch-1',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        compositionModules: ['interactive'],
+        residencies: [{ label: 'hosted-execution', count: 1 }],
         state: 'ready',
         connections: 1,
         activeOperations: 0,
@@ -1534,7 +1545,12 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('bounds encoded protocol messages', () => {
-    const empty = { kind: 'draining', hostEpoch: '' } as const;
+    const empty = {
+      kind: 'draining',
+      hostEpoch: '',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+    } as const;
     const overhead = Buffer.byteLength(JSON.stringify(empty), 'utf8');
     const value = {
       ...empty,

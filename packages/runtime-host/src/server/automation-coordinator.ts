@@ -13,7 +13,6 @@ import {
   settleAutomationAttempt,
   type AutomationToolAuthority,
   type MakaTool,
-  type RuntimeHostedRootAuthority,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -39,6 +38,7 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { AutomationOperationHandlerMap } from './operation-dispatcher.js';
+import type { AutomationClientCapabilityAuthority } from './client-capability-service.js';
 import { AutomationAuthorityInvariantError } from './automation-errors.js';
 import {
   assertFireRunIdentity,
@@ -47,6 +47,7 @@ import {
   HostAutomationFireCoordinator,
 } from './automation-fire-coordinator.js';
 import { runtimeHostAutomationSessionUnavailableReason } from './host-session-availability.js';
+import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 
 type AutomationSessions = Pick<
@@ -55,7 +56,7 @@ type AutomationSessions = Pick<
 >;
 type AutomationRuns = Pick<ExecutionAgentRunWriter, 'readRun'>;
 type AutomationRuntime = Pick<SessionManager, 'sendMessage'>;
-type AutomationRoot = Pick<RuntimeHostedRootAuthority, 'executeRoot'>;
+type AutomationRoot = Pick<HostedExecutionAuthority, 'admit' | 'reconcile' | 'subscribe'>;
 
 export interface HostAutomationCoordinatorInput {
   readonly store: InteractiveAutomationAuthorityWriter;
@@ -64,6 +65,7 @@ export interface HostAutomationCoordinatorInput {
   readonly runtime: AutomationRuntime;
   readonly root: AutomationRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly clientCapabilities: AutomationClientCapabilityAuthority;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
@@ -112,6 +114,7 @@ class AutomationMutationFailure extends Error {
       | 'session_archived'
       | 'session_busy'
       | 'session_unavailable'
+      | 'capability_unavailable'
       | 'host_not_ready'
       | 'host_draining',
     message: string,
@@ -135,6 +138,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   readonly #sessions: AutomationSessions;
   readonly #requestDrain: () => void;
   readonly #sessionAdmission: SessionAdmissionGate;
+  readonly #clientCapabilities: HostAutomationCoordinatorInput['clientCapabilities'];
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #manager: AutomationManager;
@@ -152,6 +156,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     this.#sessions = input.sessions;
     this.#requestDrain = input.requestDrain;
     this.#sessionAdmission = input.sessionAdmission;
+    this.#clientCapabilities = input.clientCapabilities;
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
     this.#manager = new AutomationManager({
@@ -166,10 +171,15 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         listDueAutomations: (now) => this.#listDueAutomations(now),
         recordDeferredFire: (automationId, expectedSchedule, skip) =>
           this.#recordDeferredFire(automationId, expectedSchedule, skip),
+        recordPrerequisiteWaiting: (automationId, expectedSchedule, waiting) =>
+          this.#recordPrerequisiteWaiting(automationId, expectedSchedule, waiting),
         admitFire: (automationId, expectedSchedule) =>
           this.#admitFire(automationId, expectedSchedule),
         assertPendingFire: (fire) => this.#assertPendingFire(fire),
-        recordFireDeferred: (fire) => this.#recordFireDeferred(fire),
+        recordFireDeferred: (fire, transientDeferredSince) =>
+          this.#recordFireDeferred(fire, transientDeferredSince),
+        recordFirePrerequisiteWaiting: (fire, waiting) =>
+          this.#recordFirePrerequisiteWaiting(fire, waiting),
         failFire: (fire, error) => this.#failFire(fire, error),
         markFireRunning: (fire) => this.#markFireRunning(fire),
         settleFire: (fire, run) => this.#settleFire(fire, run),
@@ -185,6 +195,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       runtime: input.runtime,
       root: input.root,
       runtimePolicy: input.runtimePolicy,
+      clientCapabilities: input.clientCapabilities,
       isSessionActive: input.isSessionActive,
       acquireResidency: input.acquireResidency,
       requestDrain: input.requestDrain,
@@ -283,6 +294,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     schedule: AutomationDefinition['schedule'];
     maxFires?: number;
     durable?: boolean;
+    requiredCapabilityGroups?: readonly string[];
   }): Promise<AutomationDefinition | { error: string }> {
     try {
       return (await this.#create(input)).automation;
@@ -401,6 +413,9 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
             schedule: input.schedule,
             ...(input.maxFires === undefined ? {} : { maxFires: input.maxFires }),
             ...(input.durable === undefined ? {} : { durable: input.durable }),
+            ...(input.requiredCapabilityGroups === undefined
+              ? {}
+              : { requiredCapabilityGroups: input.requiredCapabilityGroups }),
           });
           revision = committed.revision;
           automation = projectAutomation(committed.automation, committed.firePending);
@@ -445,7 +460,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         if (failure.kind === 'session_busy') {
           return mutationFailure('session_busy', failure.message);
         }
-        if (failure.kind === 'session_unavailable') {
+        if (failure.kind === 'session_unavailable' || failure.kind === 'capability_unavailable') {
           return mutationFailure('operation_unavailable', failure.message);
         }
         return mutationSuccess({ kind: 'rejected', reason: failure.kind });
@@ -462,6 +477,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     schedule: AutomationDefinition['schedule'];
     maxFires?: number;
     durable?: boolean;
+    requiredCapabilityGroups?: readonly string[];
   }): Promise<CommittedAutomation> {
     return this.#exclusive(async () => {
       this.#assertWritable();
@@ -470,9 +486,27 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (unavailableReason) {
         throw new AutomationMutationFailure('session_unavailable', unavailableReason);
       }
+      const resolvedRequirements = await this.#clientCapabilities.requirementsForAutomation(
+        input.sessionId,
+        input.requiredCapabilityGroups ?? [],
+      );
+      if (!resolvedRequirements.ok) {
+        throw new AutomationMutationFailure('capability_unavailable', resolvedRequirements.message);
+      }
+      const capabilityRequirements = resolvedRequirements.requirements;
       const execution = input.kind === 'cron' ? executionTemplateFromHeader(header) : undefined;
       const before = this.#snapshot();
-      const result = this.#manager.create({ ...input, ...(execution ? { execution } : {}) });
+      const result = this.#manager.create({
+        kind: input.kind,
+        name: input.name,
+        prompt: input.prompt,
+        sessionId: input.sessionId,
+        schedule: input.schedule,
+        ...(input.maxFires === undefined ? {} : { maxFires: input.maxFires }),
+        ...(input.durable === undefined ? {} : { durable: input.durable }),
+        ...(execution ? { execution } : {}),
+        ...(capabilityRequirements.length > 0 ? { capabilityRequirements } : {}),
+      });
       if ('error' in result) {
         const kind = result.error.includes('Invalid cron') ? 'invalid_schedule' : 'limit_reached';
         throw new AutomationMutationFailure(kind, result.error);
@@ -649,6 +683,29 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     });
   }
 
+  #recordPrerequisiteWaiting(
+    automationId: string,
+    expectedSchedule: number | null,
+    waiting: NonNullable<AutomationDefinition['waiting']>,
+  ): Promise<boolean> {
+    return this.#exclusive(async () => {
+      const automation = this.#manager.get(automationId);
+      if (
+        !automation ||
+        automation.status !== 'active' ||
+        automation.nextFireAt !== expectedSchedule ||
+        this.#pendingFires.has(automationId)
+      ) {
+        return false;
+      }
+      const before = this.#snapshot();
+      if (this.#manager.recordPrerequisiteWaiting(automationId, waiting)) {
+        await this.#commitOrRestore(before);
+      }
+      return true;
+    });
+  }
+
   async #admitFire(
     automationId: string,
     expectedSchedule: number | null,
@@ -725,6 +782,9 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         status: 'admitted',
         admittedAt,
         updatedAt: admittedAt,
+        ...(started.capabilityRequirements && started.capabilityRequirements.length > 0
+          ? { capabilityRequirements: structuredClone(started.capabilityRequirements) }
+          : {}),
         ...(started.execution ? { execution: structuredClone(started.execution) } : {}),
       };
       this.#pendingFires.set(automationId, fire);
@@ -742,7 +802,10 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     });
   }
 
-  async #recordFireDeferred(fire: AutomationPendingFire): Promise<void> {
+  async #recordFireDeferred(
+    fire: AutomationPendingFire,
+    transientDeferredSince: number,
+  ): Promise<void> {
     await this.#exclusive(async () => {
       const current = this.#pendingFires.get(fire.automationId);
       if (!current || current.id !== fire.id) return;
@@ -750,6 +813,26 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       this.#manager.recordAdmittedFireDeferred(fire.automationId);
       this.#pendingFires.set(fire.automationId, {
         ...current,
+        transientDeferredSince: current.transientDeferredSince ?? transientDeferredSince,
+        updatedAt: Math.max(current.updatedAt, this.#now()),
+      });
+      await this.#commitOrRestore(before);
+    });
+  }
+
+  async #recordFirePrerequisiteWaiting(
+    fire: AutomationPendingFire,
+    waiting: NonNullable<AutomationDefinition['waiting']>,
+  ): Promise<void> {
+    await this.#exclusive(async () => {
+      const current = this.#pendingFires.get(fire.automationId);
+      if (!current || current.id !== fire.id) return;
+      const before = this.#snapshot();
+      const waitingChanged = this.#manager.recordPrerequisiteWaiting(fire.automationId, waiting);
+      if (!waitingChanged && current.transientDeferredSince === undefined) return;
+      this.#pendingFires.set(fire.automationId, {
+        ...current,
+        transientDeferredSince: undefined,
         updatedAt: Math.max(current.updatedAt, this.#now()),
       });
       await this.#commitOrRestore(before);
@@ -782,8 +865,10 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       if (current.status === 'running') return;
       const before = this.#snapshot();
       const now = this.#now();
+      this.#manager.clearWaiting(fire.automationId);
       this.#pendingFires.set(fire.automationId, {
         ...current,
+        transientDeferredSince: undefined,
         status: 'running',
         startedAt: now,
         updatedAt: now,
@@ -928,6 +1013,7 @@ function projectAutomation(
     durable: automation.durable === true,
     deferredFireCount: automation.deferredFireCount ?? 0,
     firePending,
+    waiting: automation.waiting ? structuredClone(automation.waiting) : null,
   };
 }
 

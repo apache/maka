@@ -50,6 +50,10 @@ export {
   type ConnectOrSpawnRuntimeHostResult,
 } from './connect-or-spawn.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
+export {
+  startRuntimeHostCapabilityProviderService,
+  type RuntimeHostCapabilityProviderService,
+} from './capability-provider-service.js';
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {

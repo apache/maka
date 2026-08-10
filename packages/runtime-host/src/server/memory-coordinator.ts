@@ -50,7 +50,6 @@ const MAX_STAGED_UPLOAD_BYTES = 1024 * 1024;
 const UPLOAD_TTL_MS = 5 * 60 * 1000;
 
 export interface HostMemoryPromptProjection {
-  readonly policy: RuntimePolicySnapshot;
   readonly bundleRevision: MemoryRevision | null;
   readonly memoryRevision: MemoryRevision | null;
   readonly body?: string;
@@ -135,16 +134,17 @@ export class HostMemoryCoordinator {
     this.#uploads.releaseConnection(connectionId);
   }
 
-  readPromptProjection(sessionId: string): Promise<HostMemoryPromptProjection> {
+  readPromptProjection(
+    sessionId: string,
+    policy: RuntimePolicySnapshot,
+  ): Promise<HostMemoryPromptProjection> {
     return this.#activation.runReadActivation(async () => {
-      const policy = await this.#runtimePolicyStores.runtimePolicy.getSnapshot();
       if (
         policy.policy.privacy.incognitoActive ||
         !policy.policy.memory.enabled ||
         !policy.policy.memory.agentReadEnabled
       ) {
         return {
-          policy,
           bundleRevision: null,
           memoryRevision: null,
         };
@@ -152,7 +152,6 @@ export class HostMemoryCoordinator {
       const snapshot = await this.#store.read();
       if (snapshot.memory.kind !== 'document') {
         return {
-          policy,
           bundleRevision: snapshot.revision,
           memoryRevision: snapshot.memory.revision,
         };
@@ -160,7 +159,6 @@ export class HostMemoryCoordinator {
       const content = decodeDocument(snapshot.memory);
       const body = buildLocalMemoryPromptBody(content, { sessionId });
       return {
-        policy,
         bundleRevision: snapshot.revision,
         memoryRevision: snapshot.memory.revision,
         ...(body ? { body } : {}),

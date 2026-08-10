@@ -1,4 +1,3 @@
-import type { ipcMain as electronIpcMain } from "electron";
 import { tryResult } from "@maka/core/result";
 import {
   normalizePricingConfig,
@@ -9,11 +8,15 @@ import type {
   UsageGroupBy,
   UsageQuery,
 } from "@maka/core/usage-stats/types";
-import type { UsageQueryResult } from "@maka/runtime-host/protocol";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+  tryReconnectableReadResult,
+} from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
 interface RuntimeHostUsageIpcDeps {
-  readonly ipcMain: Pick<typeof electronIpcMain, "handle">;
+  readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
   readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
@@ -33,31 +36,36 @@ export function registerRuntimeHostUsageIpc(
     return result;
   };
 
-  deps.ipcMain.handle("usage:summary", (_event, query: UsageQuery) =>
-    tryResult(async () => {
-      const result = await deps.client.queryUsage({
-        kind: "summary",
-        query: toLlmQuery(query),
-      });
-      if (result.kind !== "summary") throw invalidUsageProjection();
-      return { ...result.summary, provenance: result.provenance };
-    }, "USAGE_SUMMARY_FAILED"),
+  handleReconnectableRead(
+    deps.ipcMain,
+    "usage:summary",
+    (_event, query: UsageQuery) =>
+      tryReconnectableReadResult(async () => {
+        const result = await deps.client.queryUsage({
+          kind: "summary",
+          query: toLlmQuery(query),
+        });
+        if (result.kind !== "summary") throw invalidUsageProjection();
+        return { ...result.summary, provenance: result.provenance };
+      }, "USAGE_SUMMARY_FAILED"),
   );
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "usage:buckets",
     (_event, query: UsageQuery & { groupBy: UsageGroupBy }) =>
-      tryResult(
+      tryReconnectableReadResult(
         () => loadAllBuckets(deps.client, query),
         "USAGE_BUCKETS_FAILED",
       ),
   );
-  deps.ipcMain.handle(
+  handleReconnectableRead(
+    deps.ipcMain,
     "usage:logs",
     (
       _event,
       query: UsageQuery & { offset?: number; limit?: number },
     ) =>
-      tryResult(async () => {
+      tryReconnectableReadResult(async () => {
         const result = await deps.client.queryUsage({
           kind: "logs",
           source: "llm",
@@ -74,8 +82,8 @@ export function registerRuntimeHostUsageIpc(
         };
       }, "USAGE_LOGS_FAILED"),
   );
-  deps.ipcMain.handle("usage:pricing:list", () =>
-    tryResult(async () => {
+  handleReconnectableRead(deps.ipcMain, "usage:pricing:list", () =>
+    tryReconnectableReadResult(async () => {
       const snapshot = await deps.client.loadPricingSnapshot();
       return snapshot.entries
         .filter((entry) => entry.source === "custom")

@@ -104,4 +104,26 @@ describe('update check on window focus', () => {
 
     assert.equal(harness.checks.length, 0);
   });
+
+  test('manual checkForUpdatesNow ignores the focus throttle', async () => {
+    const harness = createHarness({ start: 1_000 });
+    harness.service.start();
+
+    await harness.service.checkForUpdatesOnFocus();
+    harness.advance(1_000);
+    await harness.service.checkForUpdatesNow();
+
+    // Focus is throttled for 15 minutes; the About button must still check.
+    assert.equal(harness.checks.length, 2);
+  });
+
+  test('manual checkForUpdatesNow works before start for packaged builds', async () => {
+    // The user can open Settings → About before the first scheduled check
+    // arms; a manual click must not depend on start().
+    const harness = createHarness({ start: 1_000 });
+
+    await harness.service.checkForUpdatesNow();
+
+    assert.equal(harness.checks.length, 1);
+  });
 });

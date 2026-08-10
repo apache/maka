@@ -16,22 +16,81 @@ export type RuntimeHostCliCommand =
   | {
       kind: 'runtime-host-access-issue';
       rootPath?: string;
+      principalKind: 'remote_owner' | 'capability_provider';
       principalId: string;
       operationGrants: string[];
       canPublishClientCapabilities: boolean;
       canUseHostPaths: boolean;
     }
   | { kind: 'runtime-host-access-revoke'; rootPath?: string; credentialId: string }
+  | {
+      kind: 'runtime-host-capability-provider-serve';
+      url: string;
+      mcpConfigPath: string;
+      expectedRootId: string;
+      credentialEnv?: string;
+      clientIdentityPath?: string;
+    }
   | RuntimeHostCliError;
 
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
   if (argv[0] === 'access') return parseAccessCommand(argv.slice(1));
+  if (argv[0] === 'capability-provider') {
+    return parseCapabilityProviderCommand(argv.slice(1));
+  }
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the serve or access command',
+      : 'runtime-host requires the serve, access, or capability-provider command',
   );
+}
+
+function parseCapabilityProviderCommand(argv: string[]): RuntimeHostCliCommand {
+  if (argv[0] !== 'serve') {
+    return error(
+      argv[0]
+        ? `Unexpected runtime-host capability-provider command: ${argv[0]}`
+        : 'runtime-host capability-provider requires the serve command',
+    );
+  }
+  let url: string | undefined;
+  let mcpConfigPath: string | undefined;
+  let expectedRootId: string | undefined;
+  let credentialEnv: string | undefined;
+  let clientIdentityPath: string | undefined;
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (
+      argument === '--url' ||
+      argument === '--mcp-config' ||
+      argument === '--expected-root' ||
+      argument === '--credential-env' ||
+      argument === '--client-identity'
+    ) {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      if (argument === '--url') url = parsed;
+      if (argument === '--mcp-config') mcpConfigPath = parsed;
+      if (argument === '--expected-root') expectedRootId = parsed;
+      if (argument === '--credential-env') credentialEnv = parsed;
+      if (argument === '--client-identity') clientIdentityPath = parsed;
+      index += 1;
+      continue;
+    }
+    return error(`Unexpected argument: ${argument ?? ''}`);
+  }
+  if (!url) return error('--url is required');
+  if (!mcpConfigPath) return error('--mcp-config is required');
+  if (!expectedRootId) return error('--expected-root is required');
+  return {
+    kind: 'runtime-host-capability-provider-serve',
+    url,
+    mcpConfigPath,
+    expectedRootId,
+    ...(credentialEnv ? { credentialEnv } : {}),
+    ...(clientIdentityPath ? { clientIdentityPath } : {}),
+  };
 }
 
 function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
@@ -133,6 +192,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   }
   let rootPath: string | undefined;
   let principalId: string | undefined;
+  let principalKind: 'remote_owner' | 'capability_provider' = 'remote_owner';
+  let principalKindSpecified = false;
   let credentialId: string | undefined;
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
@@ -149,6 +210,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     }
     if (
       argument === '--root' ||
+      argument === '--kind' ||
       argument === '--principal' ||
       argument === '--grant' ||
       argument === '--credential'
@@ -156,6 +218,13 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--root') rootPath = parsed;
+      if (argument === '--kind') {
+        if (parsed !== 'remote-owner' && parsed !== 'capability-provider') {
+          return error('--kind must be remote-owner or capability-provider');
+        }
+        principalKind = parsed === 'remote-owner' ? 'remote_owner' : 'capability_provider';
+        principalKindSpecified = true;
+      }
       if (argument === '--principal') principalId = parsed;
       if (argument === '--grant') operationGrants.push(parsed);
       if (argument === '--credential') credentialId = parsed;
@@ -166,11 +235,25 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (action === 'issue') {
     if (!principalId) return error('--principal is required');
-    if (operationGrants.length === 0) return error('At least one --grant is required');
     if (credentialId) return error('--credential is only valid for access revoke');
+    if (principalKind === 'capability_provider') {
+      const requiredGrants = ['client.capability.replace', 'client.capability.unregister'];
+      if (canUseHostPaths) return error('A capability provider cannot use Host paths');
+      if (operationGrants.length === 0) operationGrants.push(...requiredGrants);
+      if (
+        operationGrants.length !== requiredGrants.length ||
+        requiredGrants.some((grant) => !operationGrants.includes(grant))
+      ) {
+        return error('A capability provider may grant only Client Capability publication');
+      }
+      canPublishClientCapabilities = true;
+    } else if (operationGrants.length === 0) {
+      return error('At least one --grant is required');
+    }
     return {
       kind: 'runtime-host-access-issue',
       ...(rootPath ? { rootPath } : {}),
+      principalKind,
       principalId,
       operationGrants,
       canPublishClientCapabilities,
@@ -180,6 +263,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   if (!credentialId) return error('--credential is required');
   if (
     principalId ||
+    principalKindSpecified ||
     operationGrants.length > 0 ||
     canPublishClientCapabilities ||
     canUseHostPaths

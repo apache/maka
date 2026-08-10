@@ -16,6 +16,7 @@
 //
 //   node scripts/prepare-maka-cu.mjs
 //   MAKA_CU_SOURCE=/path/to/maka-cu node scripts/prepare-maka-cu.mjs
+//   MAKA_CU_SOURCE_BRANCH=maka/base node scripts/prepare-maka-cu.mjs
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -32,6 +33,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveMakaCuSourceBranch } from './prepare-maka-cu-provenance.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(repoRoot, 'apps', 'desktop', 'bundled-tools.json');
@@ -70,6 +72,29 @@ function assertMachO(path) {
 
 function git(source, args) {
   return execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
+}
+
+function sourceBranch(source) {
+  const currentBranch = git(source, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const remoteBranches = git(source, [
+    'for-each-ref',
+    '--points-at',
+    'HEAD',
+    '--format=%(refname:short)',
+    'refs/remotes',
+  ]).split('\n');
+  try {
+    return resolveMakaCuSourceBranch({
+      currentBranch,
+      remoteBranches,
+      explicitBranch: process.env.MAKA_CU_SOURCE_BRANCH,
+    });
+  } catch (error) {
+    fail(
+      `${error instanceof Error ? error.message : String(error)}. ` +
+        'Set MAKA_CU_SOURCE_BRANCH to the source branch this commit belongs to.',
+    );
+  }
 }
 
 const source = sourcePath();
@@ -186,7 +211,7 @@ const distributionReady =
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 manifest.makaCu = {
   repo: 'maka-agent/maka-cu',
-  branch: git(source, ['rev-parse', '--abbrev-ref', 'HEAD']),
+  branch: sourceBranch(source),
   commit: git(source, ['rev-parse', 'HEAD']),
   expectedProtocolVersion: 'maka.cu/2',
   binaryName: 'maka-cu',

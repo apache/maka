@@ -319,7 +319,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
   });
 });
 
-test('production execution composition owns claimed graph activation retry and exact abort', async () => {
+test('production composition validates graph stop before aborting a claimed child', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const claims = createAgentGraphControlStore(root);
@@ -416,6 +416,30 @@ test('production execution composition owns claimed graph activation retry and e
         onReady: ready,
       });
       await started;
+      const clientContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'graph-stop-client',
+        surface: 'tui' as const,
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      const invalidStop = await composition.handlers['agent.graph.stop'](
+        { rootSessionId: abortedClaim.targetSessionId },
+        clientContext,
+      );
+      assert.equal(invalidStop.ok, false);
+      if (invalidStop.ok) return;
+      assert.equal(invalidStop.error.code, 'operation_conflict');
+      const stillActive = await composition.handlers['turn.query'](
+        {
+          sessionId: abortedClaim.targetSessionId,
+          turnId: abortedClaim.targetTurnId,
+        },
+        clientContext,
+      );
+      assert.equal(stillActive.ok, true);
+      if (!stillActive.ok) return;
+      assert.equal(['completed', 'failed', 'cancelled'].includes(stillActive.result.status), false);
       abort.abort();
       const aborted = await aborting;
       assert.equal(aborted.status, 'cancelled');

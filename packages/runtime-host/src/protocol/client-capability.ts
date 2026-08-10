@@ -7,7 +7,7 @@ import {
   requireString,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
 export interface ClientCapabilityToolAnnotations {
   readonly title?: string;
@@ -51,6 +51,7 @@ export interface ClientCapabilityCallResult {
 }
 
 export type ClientCapabilityAffinity = 'call' | 'turn' | 'session';
+export type ClientCapabilityHostPathAccess = 'none' | 'cwd';
 
 export const CLIENT_CAPABILITY_MAX_OFFERS = 32;
 export const CLIENT_CAPABILITY_MAX_SERVICES = 32;
@@ -79,6 +80,7 @@ export interface ClientCapabilityOffer {
   readonly offerId: string;
   readonly version: string;
   readonly affinity: ClientCapabilityAffinity;
+  readonly hostPathAccess: ClientCapabilityHostPathAccess;
   readonly label: string;
   readonly description?: string;
   readonly tools: readonly ClientCapabilityToolDescriptor[];
@@ -120,7 +122,7 @@ export interface ClientCapabilityCallFrame {
   readonly sessionId: string;
   readonly turnId: string;
   readonly toolCallId: string;
-  readonly cwd: string;
+  readonly cwd?: string;
 }
 
 export interface ClientCapabilityServiceCallFrame {
@@ -207,17 +209,20 @@ export type ClientCapabilityClientFrame =
   | ClientCapabilityResultChunkFrame;
 
 export const CLIENT_CAPABILITY_OPERATION_SPECS = {
-  'client.capability.replace': defineOperation<
+  'client.capability.replace': defineHostPathOperation<
     ClientCapabilityReplaceInput,
     ClientCapabilityReplaceResult,
     (typeof CLIENT_CAPABILITY_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: CLIENT_CAPABILITY_ERRORS,
-    decodeInput: decodeClientCapabilityReplaceInput,
-    decodeOutput: decodeClientCapabilityReplaceResult,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: CLIENT_CAPABILITY_ERRORS,
+      decodeInput: decodeClientCapabilityReplaceInput,
+      decodeOutput: decodeClientCapabilityReplaceResult,
+    },
+    (input) => input.offers.some((offer) => offer.hostPathAccess === 'cwd'),
+  ),
   'client.capability.unregister': defineOperation<
     ClientCapabilityUnregisterInput,
     ClientCapabilityUnregisterResult,
@@ -430,19 +435,23 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
   const frame = requireRecord(value, 'Client Capability Host frame');
   switch (frame.kind) {
     case 'client.capability.call': {
-      assertExactKeys(frame, 'Client Capability call frame', [
-        'kind',
-        'invocationId',
-        'registrationId',
-        'offerId',
-        'serverId',
-        'toolName',
-        'arguments',
-        'sessionId',
-        'turnId',
-        'toolCallId',
-        'cwd',
-      ]);
+      assertOptionalExactKeys(
+        frame,
+        'Client Capability call frame',
+        [
+          'kind',
+          'invocationId',
+          'registrationId',
+          'offerId',
+          'serverId',
+          'toolName',
+          'arguments',
+          'sessionId',
+          'turnId',
+          'toolCallId',
+        ],
+        ['cwd'],
+      );
       const argumentsValue = decodeJsonRecord(frame.arguments, 'arguments');
       if (jsonByteLength(argumentsValue) > 40 * 1024) {
         throw invalidProtocolFrame('Client Capability arguments are too large');
@@ -458,7 +467,7 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
         sessionId: requireEntityId(frame.sessionId, 'sessionId'),
         turnId: requireEntityId(frame.turnId, 'turnId'),
         toolCallId: requireEntityId(frame.toolCallId, 'toolCallId'),
-        cwd: requireString(frame.cwd, 'cwd', 4_096),
+        ...(frame.cwd === undefined ? {} : { cwd: requireString(frame.cwd, 'cwd', 4_096) }),
       };
     }
     case 'client.capability.service_call': {
@@ -532,7 +541,7 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
   assertOptionalExactKeys(
     record,
     'Client Capability offer',
-    ['offerId', 'version', 'affinity', 'label', 'tools'],
+    ['offerId', 'version', 'affinity', 'hostPathAccess', 'label', 'tools'],
     ['description'],
   );
   if (
@@ -546,6 +555,7 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
     offerId: requireEntityId(record.offerId, 'offerId'),
     version: requireString(record.version, 'version', 64),
     affinity: decodeClientCapabilityAffinity(record.affinity),
+    hostPathAccess: decodeClientCapabilityHostPathAccess(record.hostPathAccess),
     label: requireString(record.label, 'label', 128),
     ...(record.description === undefined
       ? {}
@@ -570,6 +580,11 @@ function decodeClientCapabilityServiceOffer(value: unknown): ClientCapabilitySer
 function decodeClientCapabilityAffinity(value: unknown): ClientCapabilityAffinity {
   if (value === 'call' || value === 'turn' || value === 'session') return value;
   throw invalidProtocolFrame('Invalid Client Capability affinity');
+}
+
+function decodeClientCapabilityHostPathAccess(value: unknown): ClientCapabilityHostPathAccess {
+  if (value === 'none' || value === 'cwd') return value;
+  throw invalidProtocolFrame('Invalid Client Capability Host path access');
 }
 
 function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {

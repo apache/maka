@@ -226,6 +226,21 @@ describe('runThreadSearch', () => {
     assert.equal(messageHit.url, undefined);
   });
 
+  it('skips a transcript that its dependency could not read', async () => {
+    const entries = {
+      s1: { session: session({ id: 's1' }), messages: [] },
+    };
+    const deps = makeDeps(entries);
+
+    assert.deepEqual(
+      await runThreadSearch(
+        { source: 'thread', query: 'diagnostic', limit: 5 },
+        { ...deps, readMessages: async () => null },
+      ),
+      [],
+    );
+  });
+
   it('blocks active or unverifiable privacy state before scanning', async () => {
     for (const privacyPayload of [
       { incognitoActive: true },

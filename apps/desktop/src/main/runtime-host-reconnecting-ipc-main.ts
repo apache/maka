@@ -1,9 +1,9 @@
 import type { IpcMain } from "electron";
 import {
-  RuntimeHostOperationError,
-  RuntimeHostRequestInterruptedError,
-} from "@maka/runtime-host/client";
-import type { IpcHandler, ReconnectableReadIpcMain } from "./ipc-reconnect-policy.js";
+  isReconnectableReadFailure,
+  type IpcHandler,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 
 interface HandlerWaiter {
   readonly resolve: (handler: IpcHandler) => void;
@@ -114,13 +114,4 @@ export class RuntimeHostReconnectingIpcMain
       slot.waiters.add({ resolve, reject });
     });
   }
-}
-
-function isReconnectableReadFailure(error: unknown): boolean {
-  return (
-    (error instanceof RuntimeHostOperationError &&
-      error.code === "host_draining") ||
-    (error instanceof RuntimeHostRequestInterruptedError &&
-      error.reason === "connection_lost")
-  );
 }

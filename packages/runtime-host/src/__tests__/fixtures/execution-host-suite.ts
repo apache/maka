@@ -1127,6 +1127,7 @@ export async function sendStartWithoutReadingResponse(
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: 'maka.interactive',
   });
   const handshake = decodeHostFrame(await transport.read(2_000));
   assert.ok('kind' in handshake);

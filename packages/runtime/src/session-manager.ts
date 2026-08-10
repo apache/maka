@@ -105,6 +105,7 @@ import type {
   RootExecutionDescriptor,
   RuntimeEvent,
   RuntimeEventStore,
+  RunCompositionSnapshot,
   RuntimeContinuationAuthorityStore,
   ToolBoundaryProtocol,
   SubagentWorkspaceBinding,
@@ -743,6 +744,8 @@ export interface BackendFactoryContext {
    * the metering source of truth (#1679).
    */
   recordModelCallAttempt?: (attempt: ModelCallAttempt) => Promise<void>;
+  /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
+  recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,

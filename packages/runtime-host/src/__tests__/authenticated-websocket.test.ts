@@ -11,7 +11,10 @@ import {
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+} from '../protocol/index.js';
 import {
   openRuntimeHostAccessAuthority,
   startExecutionRuntimeHostService,
@@ -39,6 +42,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       await connectRuntimeHost({ rootPath: root, surface: 'desktop', protocol: PROTOCOL }),
     );
     const issued = await local.request('access.credential.issue', {
+      principalKind: 'remote_owner',
       principalId: 'remote-device',
       operationGrants: [
         'session.catalog.query',
@@ -62,6 +66,8 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       connectRemoteRuntimeHost({
         url: `${url}?route=forbidden`,
         credential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
         surface: 'tui',
         protocol: PROTOCOL,
       }),
@@ -72,15 +78,39 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       url,
       credential,
       expectedRootId: 'f'.repeat(64),
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.deepEqual(wrongRoot, { kind: 'unavailable', reason: 'root_mismatch' });
 
+    const wrongComposition = await connectRemoteRuntimeHost({
+      url,
+      credential,
+      expectedRootId: capability.rootId,
+      compositionId: 'test.other',
+      surface: 'tui',
+      protocol: PROTOCOL,
+    });
+    assert.equal(wrongComposition.kind, 'incompatible');
+    if (wrongComposition.kind === 'incompatible') {
+      assert.equal(wrongComposition.handshake.hostEpoch, host.hostEpoch);
+      assert.equal(
+        wrongComposition.handshake.compositionId,
+        INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      );
+      assert.equal(
+        wrongComposition.handshake.compositionRevision,
+        host.compositionDescriptor.revision,
+      );
+      assert.equal(wrongComposition.handshake.replacement, 'blocked_by_residency');
+    }
+
     const connected = await connectRemoteRuntimeHost({
       url,
       credential,
       expectedRootId: capability.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       surface: 'tui',
       protocol: PROTOCOL,
     });
@@ -159,6 +189,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
             offerId: 'test',
             version: '1',
             affinity: 'call',
+            hostPathAccess: 'cwd',
             label: 'Test',
             tools: [
               {
@@ -173,6 +204,73 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
     );
+    const providerIssued = await local.request('access.credential.issue', {
+      principalKind: 'capability_provider',
+      principalId: 'remote-provider',
+      operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+    });
+    const providerCredential = await consumeAccessCredentialDelivery(
+      root,
+      providerIssued.deliveryId,
+      providerIssued.credentialId,
+    );
+    const providerConnected = await connectRemoteRuntimeHost({
+      url,
+      credential: providerCredential,
+      expectedRootId: capability.rootId,
+      surface: 'capability-provider',
+      protocol: PROTOCOL,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      clientInstanceId: 'remote-provider-instance',
+    });
+    assert.equal(providerConnected.kind, 'connected');
+    if (providerConnected.kind !== 'connected') assert.fail('Capability provider did not connect');
+    try {
+      await providerConnected.connection.replaceClientCapabilities({
+        offers: () => [
+          {
+            offerId: 'path-independent',
+            version: '1',
+            affinity: 'session',
+            hostPathAccess: 'none',
+            label: 'Path independent',
+            tools: [
+              {
+                serverId: 'remote',
+                name: 'inspect',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      });
+      await assert.rejects(
+        providerConnected.connection.replaceClientCapabilities({
+          offers: () => [
+            {
+              offerId: 'host-path',
+              version: '1',
+              affinity: 'session',
+              hostPathAccess: 'cwd',
+              label: 'Host path',
+              tools: [
+                {
+                  serverId: 'remote',
+                  name: 'inspect_path',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        }),
+        (error: unknown) =>
+          error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+      );
+    } finally {
+      await providerConnected.connection.close();
+    }
     assert.equal(
       (
         await remote.request('session.catalog.query', {
@@ -194,6 +292,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         url,
         credential,
         expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
         surface: 'tui',
         protocol: PROTOCOL,
       }),
@@ -218,6 +317,7 @@ test('access credentials persist only as hashes and stay revoked after reload', 
     );
     const authority = await openRuntimeHostAccessAuthority(directory);
     const issued = await authority.issue({
+      principalKind: 'remote_owner',
       principalId: 'device-1',
       operationGrants: ['session.catalog.query'],
       canPublishClientCapabilities: false,
@@ -229,6 +329,17 @@ test('access credentials persist only as hashes and stay revoked after reload', 
       issued.credentialId,
     );
     assert.equal(authority.authenticate(credential)?.principalId, 'device-1');
+    assert.equal(authority.authenticate(credential)?.principalKind, 'remote_owner');
+    await assert.rejects(
+      authority.issue({
+        principalKind: 'capability_provider',
+        principalId: 'overprivileged-provider',
+        operationGrants: ['session.catalog.query'],
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+      }),
+      /may grant only Client Capability publication/u,
+    );
     assert.doesNotMatch(
       await readFile(join(directory, 'runtime-host-access.json'), 'utf8'),
       new RegExp(credential, 'u'),

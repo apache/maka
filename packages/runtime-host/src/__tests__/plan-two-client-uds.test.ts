@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -61,7 +62,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
     [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
@@ -111,7 +112,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
     tui = await connect(root, 'tui');

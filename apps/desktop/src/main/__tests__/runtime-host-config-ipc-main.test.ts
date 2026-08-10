@@ -34,7 +34,7 @@ function fakeClient(existing: ConnectionCatalogEntry) {
       return snapshot(connections);
     },
     async updateConnection(
-      expected: { connectionId: string; revision: number },
+      _expected: { connectionId: string; revision: number },
       patch: Record<string, unknown>,
     ) {
       updatePatches.push(patch);

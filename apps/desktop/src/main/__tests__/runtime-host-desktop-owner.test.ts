@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+} from '@maka/runtime-host/protocol';
 import type {
   DesktopRuntimeHostCandidate,
   DesktopRuntimeHostCandidateStartInput,
@@ -8,7 +12,7 @@ import type {
 } from '../runtime-host-desktop-candidate.js';
 import { startRuntimeHostDesktopOwner } from '../runtime-host-desktop-owner.js';
 
-test('replaces a disconnected generation without falling back to embedded Runtime', { timeout: 10_000 }, async () => {
+test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
   const first = candidateHarness({ delayDisconnect: true });
   const second = candidateHarness();
   const queue = [ready(first.candidate), ready(second.candidate)];
@@ -102,18 +106,7 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
     startCandidate: async () =>
       first.closeCalls === 0
         ? ready(first.candidate)
-        : {
-            kind: 'incompatible',
-            handshake: {
-              kind: 'incompatible',
-              hostEpoch: 'replacement-host',
-              protocolMin: 1,
-              protocolMax: 1,
-              compatibilityEpoch: 1,
-              state: 'ready',
-              replacement: 'wait_for_idle_exit',
-            },
-          },
+        : incompatibleHost('wait_for_idle_exit'),
     onFatalError: reportFatal,
   });
 
@@ -122,6 +115,42 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
   assert.match(fatal.message, /incompatible/);
   await owner.close();
 });
+
+test('explains how to retire an older Host during startup', async () => {
+  await assert.rejects(
+    startRuntimeHostDesktopOwner({} as DesktopRuntimeHostCandidateStartInput, {
+      startCandidate: async () => incompatibleHost('blocked_by_residency'),
+      onFatalError: () => undefined,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        'An older Maka process is still running and is incompatible with this build. Fully quit the previous Maka Desktop process, then start Maka again.',
+      );
+      return true;
+    },
+  );
+});
+
+function incompatibleHost(
+  replacement: 'wait_for_idle_exit' | 'blocked_by_residency',
+): DesktopRuntimeHostCandidateStartResult {
+  return {
+    kind: 'incompatible',
+    handshake: {
+      kind: 'incompatible',
+      hostEpoch: 'older-host',
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      compositionRevision: 'legacy',
+      protocolMin: 0,
+      protocolMax: 0,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+      state: 'ready',
+      replacement,
+    },
+  };
+}
 
 function candidateHarness(options: { delayDisconnect?: boolean } = {}) {
   let resolveClosed: (() => void) | undefined;

@@ -76,6 +76,7 @@ export class RuntimeHostConnectionSession {
   #continuity: SessionContinuityConnection | undefined;
   #clientCapabilityService: ClientCapabilityService | undefined;
   #clientCapabilities: ClientCapabilityConnection | undefined;
+  #clientCapabilityCloseTask: Promise<void> | undefined;
   #configurationChanges: ConfigurationChangeConnection | undefined;
   #projectCatalogChanges: ProjectCatalogChangeConnection | undefined;
   #sessionCatalogChanges: SessionCatalogChangeConnection | undefined;
@@ -101,7 +102,11 @@ export class RuntimeHostConnectionSession {
     } finally {
       this.#teardown();
       await Promise.allSettled(this.#requests.values());
-      await Promise.all([this.#writer.settled(), this.#options.transport.closed]);
+      await Promise.all([
+        this.#writer.settled(),
+        this.#options.transport.closed,
+        this.#clientCapabilityCloseTask?.catch(() => undefined),
+      ]);
     }
   }
 
@@ -268,6 +273,7 @@ export class RuntimeHostConnectionSession {
           connectionId: this.#options.connection.connectionId,
           principalId: this.#options.connection.authority.principalId,
           clientInstanceId: this.#options.connection.clientInstanceId,
+          principalKind: this.#options.connection.authority.principalKind,
         },
         {
           send: (frame) => {
@@ -284,9 +290,12 @@ export class RuntimeHostConnectionSession {
   }
 
   #detachClientCapabilities(): void {
-    void this.#clientCapabilities?.close();
+    const connection = this.#clientCapabilities;
     this.#clientCapabilities = undefined;
     this.#clientCapabilityService = undefined;
+    if (!connection || this.#clientCapabilityCloseTask) return;
+    this.#clientCapabilityCloseTask = Promise.resolve().then(() => connection.close());
+    void this.#clientCapabilityCloseTask.catch(() => undefined);
   }
 
   #attachConfigurationChanges(): void {

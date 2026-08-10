@@ -5,6 +5,10 @@ import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from "@maka/runtime-host/client";
+import {
+  readWithFallback,
+  tryReconnectableReadResult,
+} from "../ipc-reconnect-policy.js";
 import { RuntimeHostReconnectingIpcMain } from "../runtime-host-reconnecting-ipc-main.js";
 
 test("holds an invocation across a Runtime Host candidate replacement", async () => {
@@ -72,6 +76,70 @@ test("does not replay a command IPC handler after a draining rejection", async (
   await assert.rejects(() => ipc.invoke("sessions:send"), /draining/);
   assert.equal(calls, 1);
   router.close();
+});
+
+test("does not replay Host commands through a read-marked IPC boundary", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const failures = [
+    new RuntimeHostRequestInterruptedError(
+      "turn.start",
+      "command",
+      "dispatched",
+      "connection_lost",
+    ),
+    new RuntimeHostOperationError(
+      "turn.start",
+      "host_draining",
+      "Runtime Host is draining",
+    ),
+  ];
+  for (const [index, failure] of failures.entries()) {
+    const channel = `mixed:handler:${index}`;
+    router.handleReconnectableRead(channel, async () => {
+      throw failure;
+    });
+    await assert.rejects(() => ipc.invoke(channel), failure);
+  }
+  router.close();
+});
+
+test("read adapters project ordinary failures without hiding reconnectable failures", async () => {
+  assert.equal(
+    await readWithFallback(async () => {
+      throw new Error("credential unavailable");
+    }, false),
+    false,
+  );
+  const result = await tryReconnectableReadResult(async () => {
+    throw new Error("trace unavailable");
+  }, "TRACE_FAILED");
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "TRACE_FAILED");
+    assert.equal(result.error.message, "trace unavailable");
+    assert.ok(result.error.details instanceof Error);
+  }
+
+  const failure = new RuntimeHostOperationError(
+    "session.transcript.query",
+    "host_draining",
+    "Runtime Host is draining",
+  );
+  await assert.rejects(
+    () =>
+      readWithFallback(async () => {
+        throw failure;
+      }, null),
+    failure,
+  );
+  await assert.rejects(
+    () =>
+      tryReconnectableReadResult(async () => {
+        throw failure;
+      }, "TRACE_FAILED"),
+    failure,
+  );
 });
 
 type IpcHandler = Parameters<IpcMain["handle"]>[1];

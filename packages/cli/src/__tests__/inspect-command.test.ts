@@ -281,6 +281,8 @@ describe('inspect CLI storage authority boundary', () => {
             protocolMin: 0,
             protocolMax: 0,
             compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+            compositionId: 'maka.interactive',
+            compositionRevision: '1',
             state: 'ready',
             pid: 1,
             createdAt: new Date(0).toISOString(),

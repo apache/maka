@@ -18,6 +18,7 @@ import {
 } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION, type ClientSurface } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import { RuntimeHostKernel } from '../server/index.js';
 
 const PROTOCOL = {
@@ -46,7 +47,7 @@ test('two UDS clients converge on one Host-owned Project Catalog', {
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     const [desktop, tui] = await Promise.all([
       connectClient(dataRoot, 'desktop'),

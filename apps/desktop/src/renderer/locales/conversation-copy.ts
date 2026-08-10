@@ -73,6 +73,7 @@ export interface DesktopConversationCopy {
     sideChat: string;
     sideChatNumbered(index: number): string;
     openTab: string;
+    openTools: string;
     closeTab(label: string): string;
     tabMenu(label: string): string;
     moveLeft: string;
@@ -370,6 +371,7 @@ const COPY = {
       sideChat: '侧边对话',
       sideChatNumbered: (index) => `侧边对话 ${index}`,
       openTab: '打开工作栏标签',
+      openTools: '打开工具',
       closeTab: (label) => `关闭${label}`,
       tabMenu: (label) => `${label}标签菜单`,
       moveLeft: '向左移动',
@@ -552,6 +554,7 @@ const COPY = {
       sideChat: 'Side chat',
       sideChatNumbered: (index) => `Side chat ${index}`,
       openTab: 'Open workbar tab',
+      openTools: 'Open tools',
       closeTab: (label) => `Close ${label}`,
       tabMenu: (label) => `${label} tab menu`,
       moveLeft: 'Move left',

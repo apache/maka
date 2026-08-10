@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import {
   deriveTurnRecords,
@@ -26,6 +26,10 @@ import {
   normalizeSessionSendCommand,
   normalizeUserQuestionResponse,
 } from "./permission-response-guard.js";
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
 import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
@@ -93,7 +97,7 @@ export interface RuntimeHostSessionExecutionIpcDeps {
  */
 export function registerRuntimeHostSessionExecutionIpc(
   deps: RuntimeHostSessionExecutionIpcDeps,
-  ipcMain: Pick<IpcMain, "handle">,
+  ipcMain: ReconnectableReadIpcMain,
 ): (sessionId: string) => Promise<void> {
   const observedCopyOwners = new Set<string>();
   const bindCopyOwner = (event: IpcMainInvokeEvent): string => {
@@ -141,14 +145,16 @@ export function registerRuntimeHostSessionExecutionIpc(
     }
     return messages;
   });
-  ipcMain.handle("sessions:listTurns", async (_event, sessionId: string) =>
+  handleReconnectableRead(ipcMain, "sessions:listTurns", async (_event, sessionId: string) =>
     deriveTurnRecords(await deps.observer.readMessages(sessionId)),
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     "sessions:readExecutionBoundary",
     (_event, sessionId: string) => deps.client.readExecutionBoundary(sessionId),
   );
-  ipcMain.handle(
+  handleReconnectableRead(
+    ipcMain,
     "sessions:listActiveInteractions",
     async (_event, sessionId: string) => [
       ...(deps.e2eInteractions?.list(sessionId) ?? []),

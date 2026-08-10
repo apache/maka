@@ -147,7 +147,7 @@ test('keeps an established Runtime Host policy authoritative over legacy files',
   });
 });
 
-test('moves M4 subagent presets into an established Runtime Host policy', async () => {
+test('imports legacy subagent presets into an established Runtime Host policy', async () => {
   await withMigrationRoot(async ({ root, legacyConfigurationRoot, stores }) => {
     const { subagents: _subagents, ...versionOnePolicy } = createDefaultRuntimePolicy();
     await writeFile(
@@ -159,9 +159,9 @@ test('moves M4 subagent presets into an established Runtime Host policy', async 
       subagents: {
         presets: [
           {
-            id: 'm4-reader',
-            name: 'M4 reader',
-            description: 'Preserve the configured subagent across the M5 cutover',
+            id: 'legacy-reader',
+            name: 'Legacy reader',
+            description: 'Preserve the configured subagent during policy migration',
             profile: 'local_read',
             connectionSlug: 'openrouter',
             model: 'openrouter/free',
@@ -177,7 +177,7 @@ test('moves M4 subagent presets into an established Runtime Host policy', async 
     assert.equal(policy.revision, 4);
     assert.deepEqual(
       policy.policy.subagents.presets.map(({ id }) => id),
-      ['m4-reader'],
+      ['legacy-reader'],
     );
   });
 });

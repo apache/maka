@@ -22,7 +22,13 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => {
   if (!params?.cursor) {
     return {
-      tools: [tool('echo', 'Echo text', true), tool('rich', 'Return rich content', true)],
+      tools: [
+        tool('echo', 'Echo text', true),
+        tool('rich', 'Return rich content', true),
+        ...(process.argv.includes('--environment')
+          ? [tool('environment', 'Read selected environment variables', true)]
+          : []),
+      ],
       nextCursor: 'page-2',
     };
   }
@@ -66,6 +72,23 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   if (params.name === 'slow') {
     await new Promise((resolve) => setTimeout(resolve, 30_000));
     return { content: [{ type: 'text', text: 'too late' }] };
+  }
+  if (params.name === 'environment') {
+    const names = Array.isArray(params.arguments?.names) ? params.arguments.names : [];
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            Object.fromEntries(
+              names
+                .filter((name): name is string => typeof name === 'string')
+                .map((name) => [name, process.env[name] ?? null]),
+            ),
+          ),
+        },
+      ],
+    };
   }
   return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
 });

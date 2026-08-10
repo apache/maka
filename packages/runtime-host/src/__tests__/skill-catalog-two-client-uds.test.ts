@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -69,7 +70,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: createExecutionRuntimeHostComposition,
+      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     endpoint = host.endpoint;
 

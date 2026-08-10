@@ -5,7 +5,7 @@ import {
   FakeBackend,
   type BackendFactoryContext,
 } from '@maka/runtime';
-import { parseRuntimeHostCandidateArguments } from './candidate-cli.js';
+import { parseInteractiveRuntimeHostCandidateArguments } from './candidate-cli.js';
 import { startExecutionRuntimeHostCandidate } from './server/execution-candidate.js';
 import { createExecutionRuntimeHostComposition } from './server/execution-composition.js';
 import { runRuntimeHostProcessLifecycle } from './server/process-lifecycle.js';
@@ -34,7 +34,7 @@ class DesktopE2eBackend extends FakeBackend {
   }
 }
 
-const options = parseRuntimeHostCandidateArguments(process.argv.slice(2));
+const options = parseInteractiveRuntimeHostCandidateArguments(process.argv.slice(2));
 const result = await startExecutionRuntimeHostCandidate(
   {
     ...options,

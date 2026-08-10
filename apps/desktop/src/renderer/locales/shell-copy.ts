@@ -361,7 +361,6 @@ type ShellCopy = {
     expandSidebar: string;
     collapseSidebar: string;
     newTask: string;
-    openWorkbarLauncher: string;
     expandWorkbar: string;
     collapseWorkbar: string;
     workspaceActions: string;
@@ -1041,7 +1040,6 @@ const SHELL_COPY_BY_LOCALE = {
       expandSidebar: '展开侧边栏',
       collapseSidebar: '收起侧边栏',
       newTask: '新任务',
-      openWorkbarLauncher: '打开工作栏工具',
       expandWorkbar: '展开会话工作栏',
       collapseWorkbar: '收起会话工作栏',
       workspaceActions: '工作区辅助操作',
@@ -1552,7 +1550,6 @@ const SHELL_COPY_BY_LOCALE = {
       expandSidebar: 'Expand sidebar',
       collapseSidebar: 'Collapse sidebar',
       newTask: 'New task',
-      openWorkbarLauncher: 'Open workbar tools',
       expandWorkbar: 'Expand conversation workbar',
       collapseWorkbar: 'Collapse conversation workbar',
       workspaceActions: 'Workspace actions',

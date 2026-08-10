@@ -1,4 +1,3 @@
-import type { IpcMain } from 'electron';
 import type { SessionChangedReason } from '@maka/core';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type {
@@ -12,6 +11,10 @@ import {
   decodeExternalSessionImportInput,
 } from '@maka/runtime-host/protocol';
 import type { ExternalSessionImportIpcResult } from '../preload/external-session-import-result.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 
 type ExternalSessionClient = {
@@ -32,10 +35,12 @@ export interface RuntimeHostExternalSessionsIpcDeps {
 
 export function registerRuntimeHostExternalSessionsIpc(
   deps: RuntimeHostExternalSessionsIpcDeps,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: ReconnectableReadIpcMain,
 ): void {
-  ipcMain.handle('external-sessions:listSources', () => deps.client.listExternalSessionSources());
-  ipcMain.handle('external-sessions:list', (_event, input: unknown) =>
+  handleReconnectableRead(ipcMain, 'external-sessions:listSources', () =>
+    deps.client.listExternalSessionSources(),
+  );
+  handleReconnectableRead(ipcMain, 'external-sessions:list', (_event, input: unknown) =>
     deps.client.listExternalSessions(decodeExternalSessionCatalogQueryInput(input)),
   );
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {

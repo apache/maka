@@ -133,6 +133,18 @@ export interface CuObservedElement {
   };
 }
 
+export interface CuObservationDifference {
+  baseObservationId: string;
+  presentation: 'no-change' | 'difference' | 'full';
+  changes: Array<{
+    kind: 'remove' | 'insert' | 'update';
+    path: number[];
+    stableId: number;
+    elementId?: string;
+  }>;
+  removedStableIdRanges: Array<{ start: number; end: number }>;
+}
+
 export interface CuObservation {
   observationId: string;
   /**
@@ -163,6 +175,9 @@ export interface CuObservation {
    * all 1,200 elements under a header that said nothing about a query.
    */
   query?: string;
+  difference?: CuObservationDifference;
+  /** Post-action observations may render only their declared difference. */
+  renderDifference?: boolean;
   appId: string;
   pid: number;
   windowId: number;

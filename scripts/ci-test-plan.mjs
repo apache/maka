@@ -32,6 +32,21 @@ const WINDOWS_BASELINE_FILES = new Set([
   'scripts/windows-smoke.test.mjs',
 ]);
 
+/**
+ * Storage seams that exercise Windows-specific path, lock, crash, or NTFS
+ * behavior. Catalog/session SQLite unit changes stay on Linux; only these
+ * paths open the Windows storage gate lane.
+ */
+const WINDOWS_STORAGE_SENSITIVE_PATH =
+  /(^|\/)(root-authority|managed-dependency-environment|managed-workspace|git-workspace-service|git-worktree|workspace-root|workspace-identity|marker-file|write-queue|artifact-writer-lock|sqlite-recovery-concurrency|sqlite-runtime-crash|sqlite-long-term-memory-crash)([./_-]|$)/u;
+
+export function isWindowsStorageSensitivePath(path) {
+  const normalized = normalizePath(path);
+  if (normalized === 'packages/storage/package.json') return true;
+  if (!normalized.startsWith('packages/storage/')) return false;
+  return WINDOWS_STORAGE_SENSITIVE_PATH.test(normalized);
+}
+
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host', 'packages/headless']);
 
 // Scripts the Electron e2e job runs. Editing one of these changes what that
@@ -292,7 +307,11 @@ export function planTests(changedFiles, options = {}) {
   const windowsBaselineChanged = files.includes('.github/workflows/windows-baseline.yml');
   const windows = code || files.some((path) => WINDOWS_BASELINE_FILES.has(path));
   const windowsRuntime = windowsBaselineChanged || workspaces.includes('packages/runtime');
-  const windowsStorage = windowsBaselineChanged || workspaces.includes('packages/storage');
+  // Not every packages/storage edit needs Windows: reverse-dep closure would
+  // also open this lane for any desktop/runtime consumer of storage. Gate on
+  // path/lock/crash-sensitive files only.
+  const windowsStorage =
+    windowsBaselineChanged || files.some((path) => isWindowsStorageSensitivePath(path));
 
   return {
     code,

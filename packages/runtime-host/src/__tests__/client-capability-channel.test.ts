@@ -12,6 +12,7 @@ test('Client Capability channel closes a provider after its final registration i
         offerId: 'fixture',
         version: '0',
         affinity: 'call',
+        hostPathAccess: 'cwd',
         label: 'Fixture',
         tools: [
           {

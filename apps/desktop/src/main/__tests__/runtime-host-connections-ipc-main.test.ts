@@ -7,6 +7,32 @@ import {
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
 
+test('registers pure Connection reads for replacement-Host retry', () => {
+  const reads = new Set<string>();
+  const effects = new Set<string>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel) => {
+        effects.add(channel);
+      },
+      handleReconnectableRead: (channel) => {
+        reads.add(channel);
+      },
+    },
+    client: {} as never,
+    emitConnectionListChanged() {},
+  });
+
+  assert.deepEqual([...reads].sort(), [
+    'connections:getDefault',
+    'connections:getRequestHeaders',
+    'connections:hasSecret',
+    'connections:list',
+  ]);
+  assert.ok(effects.has('connections:create'));
+  assert.ok(effects.has('connections:test'));
+});
+
 test('retries connection delete after a stale revision instead of failing permanently', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let revision = 1;

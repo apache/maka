@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { IpcMain } from 'electron';
 import type { ShellRunUpdate } from '@maka/core';
 import type { ShellRunPtySnapshot } from '@maka/runtime';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserverTarget } from './runtime-host-session-observer.js';
 
@@ -30,7 +33,7 @@ export function registerRuntimeHostShellRunsIpc(
       unobserve(observerId: string): Promise<void>;
     };
   },
-  ipcMain: Pick<IpcMain, 'handle'>,
+  ipcMain: ReconnectableReadIpcMain,
 ): { close(): Promise<void> } {
   const newId = deps.newId ?? randomUUID;
   const controllers = new RuntimeResourceControllers(
@@ -39,7 +42,7 @@ export function registerRuntimeHostShellRunsIpc(
     deps.sessionObserver,
   );
 
-  ipcMain.handle('shell-runs:list', (_event, sessionId: unknown) =>
+  handleReconnectableRead(ipcMain, 'shell-runs:list', (_event, sessionId: unknown) =>
     deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
   );
   ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {

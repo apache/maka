@@ -258,7 +258,11 @@ export {
   formatSyntheticToolErrorText,
 } from './tool-runtime.js';
 export { normalizeAiSdkUsage } from './model-adapter.js';
-export type { ModelFactory, ModelFactoryInput, RepairableAiSdkToolCall } from './model-adapter.js';
+export type {
+  ModelFactory,
+  ModelFactoryInput,
+  RepairableAiSdkToolCall,
+} from './model-adapter.js';
 export type { RunTraceEvent, RunTraceRecorder } from './run-trace.js';
 
 const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
@@ -275,14 +279,22 @@ function providerToolResultContent(
   input?: unknown,
 ): ToolResultContent {
   if (output === undefined) {
-    return { kind: 'text', text: `${toolName} completed without a structured result.` };
+    return {
+      kind: 'text',
+      text: `${toolName} completed without a structured result.`,
+    };
   }
   if (toolName !== 'WebSearch') {
     return { kind: 'json', value: output };
   }
   const queryFromInput = providerWebSearchQuery(input);
   if (Array.isArray(output)) {
-    const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+    const rows: Array<{
+      title: string;
+      url: string;
+      snippet: string;
+      source: string;
+    }> = [];
     for (const result of output) {
       if (
         !result ||
@@ -310,7 +322,12 @@ function providerToolResultContent(
         // Provider source rows are untrusted; malformed URLs are dropped.
       }
     }
-    return { kind: 'web_search', provider: 'model', query: queryFromInput, rows };
+    return {
+      kind: 'web_search',
+      provider: 'model',
+      query: queryFromInput,
+      rows,
+    };
   }
   if (!output || typeof output !== 'object') return { kind: 'json', value: output };
   const providerError = output as { type?: unknown; errorCode?: unknown };
@@ -334,14 +351,23 @@ function providerToolResultContent(
   const sources = (output as { sources?: unknown }).sources;
   let query = queryFromInput;
   if (action && typeof action === 'object') {
-    const value = action as { type?: unknown; query?: unknown; queries?: unknown };
+    const value = action as {
+      type?: unknown;
+      query?: unknown;
+      queries?: unknown;
+    };
     if (Array.isArray(value.queries)) {
       query = value.queries.filter((item): item is string => typeof item === 'string').join(' | ');
     } else if (typeof value.query === 'string') {
       query = value.query;
     }
   }
-  const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+  const rows: Array<{
+    title: string;
+    url: string;
+    snippet: string;
+    source: string;
+  }> = [];
   if (Array.isArray(sources)) {
     for (const source of sources) {
       if (
@@ -779,6 +805,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * called rather than producing spend nothing recorded.
    */
   assertModelCallAccountingReady?: () => void;
+  /** Durable gate for every provider call attributed to an AgentRun. */
+  beforeRunProviderDispatch?: (input: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }) => void | Promise<void>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -804,6 +836,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 export interface SystemPromptContext {
   sessionId: string;
   turnId: string;
+  runId?: string;
   cwd: string;
   workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
@@ -1629,10 +1662,15 @@ export class AiSdkBackend implements AgentBackend {
 
     // --- Background pump: streamText → stream → normalize → queue ---
     const pumpDone: Promise<void> = (async () => {
-      const watchdogState: { current: StreamWatchdog | null } = { current: null };
+      const watchdogState: { current: StreamWatchdog | null } = {
+        current: null,
+      };
       let providerRequestAbortController = new AbortController();
       const watchdogTimeoutState: {
-        current: { readonly phase: StreamWatchdogPhase; readonly error: Error } | null;
+        current: {
+          readonly phase: StreamWatchdogPhase;
+          readonly error: Error;
+        } | null;
       } = { current: null };
       const currentWatchdogTimeout = () => watchdogTimeoutState.current;
       const consumeWatchdogTimeout = () => {
@@ -1848,10 +1886,14 @@ export class AiSdkBackend implements AgentBackend {
           requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
           requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
           ...(turnDiagnostics.requestShape.toolSchemaChangeReason !== undefined
-            ? { toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason }
+            ? {
+                toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason,
+              }
             : {}),
           ...(turnDiagnostics.requestShape.toolAvailability !== undefined
-            ? { toolAvailability: turnDiagnostics.requestShape.toolAvailability }
+            ? {
+                toolAvailability: turnDiagnostics.requestShape.toolAvailability,
+              }
             : {}),
           promptSegments: turnDiagnostics.promptSegments,
           ...(priorReplay.contextBudget ? { contextBudget: priorReplay.contextBudget } : {}),
@@ -1920,7 +1962,9 @@ export class AiSdkBackend implements AgentBackend {
                       decision: 'unchanged',
                       boundaryKind: 'historyCompact',
                       reason: 'mid_turn_capacity_precedence',
-                      skippedReasonCounts: { mid_turn_capacity_precedence: 1 },
+                      skippedReasonCounts: {
+                        mid_turn_capacity_precedence: 1,
+                      },
                     }),
                   );
                   return undefined;
@@ -2511,7 +2555,9 @@ export class AiSdkBackend implements AgentBackend {
                   // store refuses it. One refusal took every tool-calling turn
                   // with it.
                   ...(toolCall.providerOptions !== undefined
-                    ? { providerOptions: stripUndefinedDeep(toolCall.providerOptions) }
+                    ? {
+                        providerOptions: stripUndefinedDeep(toolCall.providerOptions),
+                      }
                     : {}),
                   input:
                     requestedTool !== undefined
@@ -2893,10 +2939,14 @@ export class AiSdkBackend implements AgentBackend {
                 requestShapeHash: requestShapeForTelemetry.requestShapeHash,
                 requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
                 ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
-                  ? { toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason }
+                  ? {
+                      toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason,
+                    }
                   : {}),
                 ...(requestShapeForTelemetry.toolAvailability !== undefined
-                  ? { toolAvailability: requestShapeForTelemetry.toolAvailability }
+                  ? {
+                      toolAvailability: requestShapeForTelemetry.toolAvailability,
+                    }
                   : {}),
               }
             : {}),
@@ -3163,7 +3213,18 @@ export class AiSdkBackend implements AgentBackend {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
     });
-    if (!persistCapture && !accounting) return undefined;
+    const runId = input.runId;
+    const beforeRunProviderDispatch = this.input.beforeRunProviderDispatch;
+    const beforeDispatch =
+      runId && beforeRunProviderDispatch
+        ? () =>
+            beforeRunProviderDispatch({
+              sessionId: this.sessionId,
+              turnId: input.turnId,
+              runId,
+            })
+        : undefined;
+    if (!persistCapture && !accounting && !beforeDispatch) return undefined;
     return new ProviderRequestTracker({
       traceId: this.newId(),
       turnId: input.turnId,
@@ -3172,6 +3233,7 @@ export class AiSdkBackend implements AgentBackend {
       newId: this.newId,
       ...(persistCapture ? { persistCapture } : {}),
       recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(beforeDispatch ? { beforeDispatch } : {}),
       ...(accounting ? { accounting } : {}),
     });
   }
@@ -3510,7 +3572,9 @@ export class AiSdkBackend implements AgentBackend {
               buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
             {
               synthesisCacheWriteSkipped: 1,
-              synthesisCacheWriteSkippedReasonCounts: { [evidenceRequestReason]: 1 },
+              synthesisCacheWriteSkippedReasonCounts: {
+                [evidenceRequestReason]: 1,
+              },
             },
           );
         } else {
@@ -4219,7 +4283,11 @@ export class AiSdkBackend implements AgentBackend {
     }
     const parts: Array<
       | { type: 'text'; text: string }
-      | { type: 'file'; data: { type: 'data'; data: Uint8Array }; mediaType: string }
+      | {
+          type: 'file';
+          data: { type: 'data'; data: Uint8Array };
+          mediaType: string;
+        }
     > = [{ type: 'text', text: textContent }];
     let omittedByBudget = 0;
     for (const [index, image] of images.entries()) {
@@ -4286,7 +4354,10 @@ export class AiSdkBackend implements AgentBackend {
         { type: 'text', text: 'Image read successfully.' },
         {
           type: 'file',
-          data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+          data: {
+            type: 'data',
+            data: Buffer.from(read.bytes).toString('base64'),
+          },
           mediaType: output.mimeType,
         },
       ],
@@ -4317,6 +4388,7 @@ export class AiSdkBackend implements AgentBackend {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
+        ...(scope.runId ? { runId: scope.runId } : {}),
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>

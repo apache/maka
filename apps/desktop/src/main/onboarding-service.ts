@@ -19,9 +19,8 @@
  *      normalizeSettings on read)
  *   5. `deriveOnboardingState()` from @maka/core
  *
- * The service NEVER throws credential errors to the renderer; a
- * failed credential lookup is treated as "no credential" with a
- * generalized dev-safe log line.
+ * Credential adapters project ordinary read failures to `false` and
+ * propagate connection failures before they reach this service.
  *
  * Milestone input validation lives here too: setMilestone arguments
  * are checked against the closed enum + status union before reaching
@@ -109,21 +108,8 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       // latency on cold open.
       const secretEntries = await Promise.all(
         connections.map(async (connection) => {
-          try {
-            const hasSecret = await deps.hasCredential(connection);
-            return [connection.slug, hasSecret] as const;
-          } catch (error) {
-            // @kenji + @xuan PR110b gate: credential errors must NOT
-            // leak to the renderer. Log a generalized dev-safe line
-            // and treat the connection as having no secret. The user
-            // ends up on `needs_connection_credentials` for that
-            // slug, which is the right user-facing fix path anyway.
-            console.warn(
-              `[onboarding] failed to read credential for ${connection.slug}; treating as missing.`,
-              describeErrorClass(error),
-            );
-            return [connection.slug, false] as const;
-          }
+          const hasSecret = await deps.hasCredential(connection);
+          return [connection.slug, hasSecret] as const;
         }),
       );
       const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
@@ -257,11 +243,6 @@ function isOnboardingMilestoneId(value: string): value is OnboardingMilestoneId 
  * suitable for dev logs. We never log the underlying error message
  * because it might contain credential bytes / paths / etc.
  */
-function describeErrorClass(error: unknown): string {
-  if (error instanceof Error && error.name) return error.name;
-  return 'unknown';
-}
-
 /**
  * Bind helpers that wire the live `SettingsStore` + `ConnectionStore`
  * + credential store to `OnboardingServiceDeps`. Exposed separately so
@@ -303,6 +284,16 @@ export function bindOnboardingDeps(input: {
     getMilestones: async () => (await input.settingsStore.get()).onboarding.milestones,
     upsertMilestone: (id, status) => input.settingsStore.upsertOnboardingMilestone(id, status),
     clearMilestone: (id) => input.settingsStore.clearOnboardingMilestone(id),
-    hasCredential: (connection) => input.hasCredential(connection),
+    hasCredential: async (connection) => {
+      try {
+        return await input.hasCredential(connection);
+      } catch (error) {
+        console.warn(
+          `[onboarding] failed to read credential for ${connection.slug}; treating as missing.`,
+          error instanceof Error && error.name ? error.name : 'unknown',
+        );
+        return false;
+      }
+    },
   };
 }

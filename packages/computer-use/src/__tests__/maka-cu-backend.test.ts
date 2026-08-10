@@ -73,6 +73,7 @@ const MALFORMED = process.env.MAKACU_MOCK_MALFORMED || '';
 const LAUNCH_ERROR = process.env.MAKACU_MOCK_LAUNCH_ERROR || '';
 const HANG_OBSERVE = process.env.MAKACU_MOCK_HANG_OBSERVE === '1';
 const TRUNCATED = process.env.MAKACU_MOCK_TRUNCATED === '1';
+let DIFFERENCE_PRESENTATION = '';
 const LAUNCH_TOOK_FOREGROUND = process.env.MAKACU_MOCK_LAUNCH_FOREGROUND === '1';
 const WINDOW_ORIGIN_Y = Number(process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y || '25');
 const SELECTED_TEXT = process.env.MAKACU_MOCK_SELECTED_TEXT || '';
@@ -114,6 +115,7 @@ function writeImage(name) {
 function element(index, label, focused) {
   return {
     token: 'el_' + index,
+    ...(DIFFERENCE_PRESENTATION ? { stableId: index === 1 ? 10 : 12 } : {}),
     parentToken: index === 1 ? null : (MALFORMED === 'numeric_parent' ? 7 : 'el_1'),
     depth: index === 1 ? 0 : 1,
     role: index === 1 ? 'AXWindow' : 'AXButton',
@@ -131,6 +133,7 @@ function element(index, label, focused) {
     truncated: [],
   };
 }
+let previousSnapshotId = '';
 function snapshot(includeImage) {
   snapshotSeq += 1;
   const id = 'snap_' + NONCE + '_' + snapshotSeq;
@@ -162,6 +165,22 @@ function snapshot(includeImage) {
     elements: [element(1, 'Fixture Window', false), element(2, 'Send', true)],
     truncated: { elements: TRUNCATED, depth: false },
   };
+  if (DIFFERENCE_PRESENTATION && previousSnapshotId) {
+    shot.difference = {
+      baseSnapshotId: previousSnapshotId,
+      presentation: DIFFERENCE_PRESENTATION,
+      changes: DIFFERENCE_PRESENTATION === 'difference'
+        ? [
+            { kind: 'remove', path: [0, 0], stableId: 7, token: null },
+            { kind: 'update', path: [0, 1], stableId: 12, token: 'el_2' },
+          ]
+        : [],
+      removedStableIdRanges: DIFFERENCE_PRESENTATION === 'difference'
+        ? [{ start: 7, end: 8 }]
+        : [],
+    };
+  }
+  previousSnapshotId = id;
   if (MALFORMED === 'no_displays') delete shot.displays;
   if (MALFORMED === 'no_obscuring') shot.obscuringRects = null;
   return shot;
@@ -205,6 +224,8 @@ function handle(msg) {
         return;
       }
       imageDir = params.imageDir;
+      const differenceMatch = /-difference-(no-change|difference|full)$/.exec(imageDir);
+      DIFFERENCE_PRESENTATION = differenceMatch ? differenceMatch[1] : '';
       ok(id, {
         protocol: PROTOCOL,
         executor: { name: 'maka-cu-mock', version: '0.0.1', commit: 'testing' },
@@ -365,6 +386,7 @@ function makeBackend(
     launchError?: string;
     hangObserve?: boolean;
     truncated?: boolean;
+    differencePresentation?: 'no-change' | 'difference' | 'full';
     timeoutMs?: number;
     launchTookForeground?: boolean;
     windowOriginY?: number;
@@ -375,7 +397,12 @@ function makeBackend(
   } = {},
 ): { backend: ReturnType<typeof createMakaCuBackend>; logPath: string; imageDir: string } {
   const logPath = join(workDir, 'log-' + randomUUID() + '.ndjson');
-  const imageDir = join(workDir, 'images-' + randomUUID());
+  const imageDir = join(
+    workDir,
+    'images-' +
+      randomUUID() +
+      (opts.differencePresentation ? `-difference-${opts.differencePresentation}` : ''),
+  );
   process.env.MAKACU_MOCK_LOG = logPath;
   process.env.MAKACU_MOCK_PROTOCOL = opts.protocol ?? 'maka.cu/2';
   process.env.MAKACU_MOCK_DISPATCH_ERROR = opts.dispatchError ?? '';
@@ -566,6 +593,50 @@ describe('maka-cu backend', () => {
     assert.equal(received(records, 'session.begin').length, 1);
     // §7.4 bounds reach the host even though CuObservation has no field for them.
     assert.equal(traces.find((event) => event.type === 'observe')?.truncatedElements, false);
+  });
+
+  it('uses stable ids while an explicit observation still renders the full tree', async () => {
+    const { backend } = makeBackend({ differencePresentation: 'no-change' });
+    const first = await observeFixture(backend);
+    assert.deepEqual(
+      first.elements.map((element) => element.elementId),
+      ['10', '12'],
+    );
+    assert.equal(first.difference, undefined);
+
+    const second = await observeFixture(backend);
+    assert.equal(second.difference?.baseObservationId, first.observationId);
+    assert.equal(second.difference?.presentation, 'no-change');
+    assert.equal(second.renderDifference, undefined);
+  });
+
+  it('renders the declared difference only on the observation returned by an action', async () => {
+    const { backend } = makeBackend({ differencePresentation: 'difference' });
+    const observation = await observeFixture(backend);
+    const button = observation.elements.find((element) => element.role === 'AXButton');
+    assert.equal(button?.elementId, '12');
+
+    const result = await backend.runSemantic!(
+      {
+        type: 'click_element',
+        observationId: observation.observationId,
+        elementId: button!.elementId,
+      },
+      signal(),
+      RUN_CONTEXT,
+    );
+
+    assert.equal(result.outcome.ok, true);
+    assert.equal(result.observation?.renderDifference, true);
+    assert.deepEqual(result.observation?.difference, {
+      baseObservationId: observation.observationId,
+      presentation: 'difference',
+      changes: [
+        { kind: 'remove', path: [0, 0], stableId: 7 },
+        { kind: 'update', path: [0, 1], stableId: 12, elementId: '12' },
+      ],
+      removedStableIdRanges: [{ start: 7, end: 8 }],
+    });
   });
 
   it('echoes the element digest and returns the frame that superseded the quoted one', async () => {

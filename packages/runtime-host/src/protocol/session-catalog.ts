@@ -23,7 +23,7 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
-import { defineOperation } from './operation-spec.js';
+import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
 export type { SessionSubagentProjection } from '@maka/core/session';
 
@@ -263,7 +263,7 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     decodeInput: decodeSessionCatalogQueryInput,
     decodeOutput: decodeSessionCatalogQueryResult,
   }),
-  'session.create': defineOperation<
+  'session.create': defineHostPathOperation<
     SessionCreateInput,
     SessionCatalogItem,
     (typeof CREATE_ERRORS)[number]
@@ -299,7 +299,7 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     decodeOutput: decodeSessionUpdateResult,
     assertOutputForInput: assertUpdateOutputIdentity,
   }),
-  'session.cwd.relocate': defineOperation<
+  'session.cwd.relocate': defineHostPathOperation<
     SessionCwdRelocateInput,
     SessionUpdateResult,
     (typeof CONFIGURATION_UPDATE_ERRORS)[number]

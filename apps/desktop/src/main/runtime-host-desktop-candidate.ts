@@ -1,5 +1,6 @@
 import type { IpcMain } from "electron";
 import type {
+  ActiveInteractionRequestEvent,
   CreateSessionRequestInput,
   SessionChangedEvent,
   SessionChangedReason,
@@ -12,7 +13,10 @@ import {
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
 } from "@maka/runtime-host/client";
-import { RUNTIME_HOST_PROTOCOL_VERSION } from "@maka/runtime-host/protocol";
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+} from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
 import {
   createBotIncomingMainService,
@@ -86,7 +90,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   }) => SessionCopyCleanupAuthority;
   readonly registerClientIpc?: (
     client: DesktopRuntimeHostClient,
-    ipcMain: Pick<IpcMain, "handle">,
+    ipcMain: ReconnectableReadIpcMain,
     controls: DesktopRuntimeHostCandidateControls,
   ) => void | (() => void | Promise<void>);
 }
@@ -101,7 +105,7 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly electionDeadlineMs?: number;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
-  readonly candidateEntrypoint?: string | URL;
+  readonly candidateEntrypoint: string | URL;
   readonly signal?: AbortSignal;
 }
 
@@ -297,6 +301,15 @@ export async function createDesktopRuntimeHostCandidate(
   let capabilitiesRegistered = false;
   try {
     let domains: RuntimeHostSessionDomainsIpcHandle | undefined;
+    const emitActiveInteractionsChanged = (
+      sessionId: string,
+      interactions: readonly ActiveInteractionRequestEvent[],
+    ): void => {
+      deps.sendToRenderer?.('sessions:active-interactions-changed', {
+        sessionId,
+        interactions,
+      });
+    };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       emitSessionsChanged: (reason, sessionId, extra) =>
@@ -304,6 +317,9 @@ export async function createDesktopRuntimeHostCandidate(
       emitSessionDomainChanged: (change) => domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
+      emitActiveInteractionsChanged,
+      emitSubscriptionRecovered: (sessionId) =>
+        domains?.sessionSubscriptionRecovered(sessionId),
       onWatchedTurnFinished: (sessionId, outcome) =>
         outcome === "completed"
           ? deps.completeComputerUseTurn(sessionId)
@@ -341,6 +357,12 @@ export async function createDesktopRuntimeHostCandidate(
     observationsAttached = true;
     for (const sessionId of restoredSessionIds) {
       deps.emitSessionsChanged("message-appended", sessionId);
+      deps.emitSessionsChanged("goal-change", sessionId);
+      domains.sessionSubscriptionRecovered(sessionId);
+      emitActiveInteractionsChanged(
+        sessionId,
+        sessionObserver.listActiveInteractions(sessionId) ?? [],
+      );
     }
     const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
       void sessionObserver
@@ -497,6 +519,8 @@ function connectInput(
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
     },
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    candidateEntrypoint: input.candidateEntrypoint,
     ...(input.clientInstanceId === undefined
       ? {}
       : { clientInstanceId: input.clientInstanceId }),
@@ -509,9 +533,6 @@ function connectInput(
     ...(input.handshakeTimeoutMs === undefined
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-    ...(input.candidateEntrypoint === undefined
-      ? {}
-      : { candidateEntrypoint: input.candidateEntrypoint }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
 }

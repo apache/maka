@@ -703,6 +703,72 @@ describe('Agent Graph supervisor wake delivery', () => {
       store.close();
     }
   });
+
+  test('overlapping client stops keep one Session wake suppressed until both settle', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const started = deferred();
+    const firstStopEntered = deferred();
+    const secondStopEntered = deferred();
+    const releaseFirstStop = deferred();
+    const releaseSecondStop = deferred();
+    let snapshotVersion = 'snapshot-1';
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot({ snapshotVersion }),
+      startTurn: async (_sessionId, input, _activity, abortSignal) => {
+        turns += 1;
+        if (turns === 1) {
+          started.resolve();
+          await new Promise<void>((resolve) => {
+            if (abortSignal.aborted) resolve();
+            else abortSignal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          return { kind: 'aborted', turnId: input.turnId };
+        }
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await started.promise;
+      const firstStop = coordinator.runWithSessionWakesSuppressed('root-session', async () => {
+        firstStopEntered.resolve();
+        await releaseFirstStop.promise;
+      });
+      await firstStopEntered.promise;
+      const secondStop = coordinator.runWithSessionWakesSuppressed('root-session', async () => {
+        secondStopEntered.resolve();
+        await releaseSecondStop.promise;
+      });
+      await secondStopEntered.promise;
+      releaseFirstStop.resolve();
+      await firstStop;
+
+      const stopped = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(stopped?.status, 'superseded');
+      assert.equal(stopped?.attemptCount, 1);
+      assert.equal(turns, 1);
+
+      snapshotVersion = 'snapshot-2';
+      assert.equal(coordinator.notify('root-session', reconciliation()), undefined);
+      releaseSecondStop.resolve();
+      await secondStop;
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 2);
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-2'))?.status,
+        'delivered',
+      );
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
 });
 
 async function createRunningAttempt(

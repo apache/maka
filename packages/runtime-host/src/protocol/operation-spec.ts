@@ -28,6 +28,7 @@ export interface OperationSpec<Input, Output, ErrorCode extends HostOperationErr
   mode: OperationMode;
   availability: OperationAvailability;
   errors: readonly ErrorCode[];
+  usesHostPaths?(input: Input): boolean;
   decodeInput(value: unknown): Input;
   decodeOutput(value: unknown): Output;
   assertOutputForInput?(input: Input, output: Output): void;
@@ -66,6 +67,13 @@ export function defineOperation<Input, Output, ErrorCode extends HostOperationEr
     throw new Error('Every Runtime Host operation must declare internal_failure');
   }
   return spec;
+}
+
+export function defineHostPathOperation<Input, Output, ErrorCode extends HostOperationErrorCode>(
+  spec: Omit<OperationSpec<Input, Output, ErrorCode>, 'usesHostPaths'>,
+  usesHostPaths: (input: Input) => boolean = () => true,
+): OperationSpec<Input, Output, ErrorCode> {
+  return defineOperation({ ...spec, usesHostPaths });
 }
 
 export function composeOperationSpecMaps<const Maps extends OperationSpecMaps>(

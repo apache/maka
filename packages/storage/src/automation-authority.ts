@@ -4,14 +4,17 @@ import { isThinkingLevel } from '@maka/core/model-thinking';
 import {
   AUTOMATION_CRON_EXPRESSION_LIMIT,
   AUTOMATION_LAST_ERROR_LIMIT,
+  AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS,
   AUTOMATION_NAME_LIMIT,
   AUTOMATION_PROMPT_LIMIT,
   isAutomationTextWithinLimit,
   type AutomationAuthoritySnapshot,
+  type AutomationClientCapabilityRequirement,
   type AutomationDefinition,
   type AutomationExecutionTemplate,
   type AutomationPendingFire,
   type AutomationSchedule,
+  type AutomationWaitingState,
 } from '@maka/core/automation';
 import {
   acquireOperationalStateDatabase,
@@ -47,6 +50,8 @@ const DEFINITION_KEYS = new Set([
   'consecutiveFailures',
   'durable',
   'deferredFireCount',
+  'capabilityRequirements',
+  'waiting',
   'execution',
 ]);
 const PENDING_FIRE_KEYS = new Set([
@@ -63,7 +68,9 @@ const PENDING_FIRE_KEYS = new Set([
   'status',
   'admittedAt',
   'updatedAt',
+  'transientDeferredSince',
   'startedAt',
+  'capabilityRequirements',
   'execution',
 ]);
 
@@ -363,7 +370,9 @@ function assertSnapshotRelationships(
       automation.lastFireAt > fire.admittedAt ||
       (automation.kind === 'heartbeat' && automation.sessionId !== fire.targetSessionId) ||
       (automation.kind === 'cron' &&
-        JSON.stringify(automation.execution) !== JSON.stringify(fire.execution))
+        JSON.stringify(automation.execution) !== JSON.stringify(fire.execution)) ||
+      JSON.stringify(automation.capabilityRequirements ?? []) !==
+        JSON.stringify(fire.capabilityRequirements ?? [])
     ) {
       throw new Error(`Pending Automation fire contradicts its definition: ${fire.id}`);
     }
@@ -377,6 +386,8 @@ function normalizeAutomationDefinition(value: unknown): AutomationDefinition {
   const schedule = normalizeSchedule(value.schedule);
   const execution =
     value.execution === undefined ? undefined : normalizeExecutionTemplate(value.execution);
+  const capabilityRequirements = normalizeCapabilityRequirements(value.capabilityRequirements);
+  const waiting = value.waiting === undefined ? undefined : normalizeWaitingState(value.waiting);
   if (!isId(value.id) || !isId(value.sessionId)) throw new Error('Invalid Automation identity');
   if (value.kind !== 'heartbeat' && value.kind !== 'cron') {
     throw new Error('Invalid Automation kind');
@@ -433,6 +444,8 @@ function normalizeAutomationDefinition(value: unknown): AutomationDefinition {
     ...(value.deferredFireCount === undefined
       ? {}
       : { deferredFireCount: value.deferredFireCount }),
+    ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
+    ...(waiting ? { waiting } : {}),
     ...(execution ? { execution } : {}),
   } satisfies AutomationDefinition);
 }
@@ -462,11 +475,24 @@ function normalizePendingFire(value: unknown): AutomationPendingFire {
   }
   const startedAt =
     value.startedAt === undefined ? undefined : requireNonnegativeInteger(value.startedAt);
+  const transientDeferredSince =
+    value.transientDeferredSince === undefined
+      ? undefined
+      : requireNonnegativeInteger(value.transientDeferredSince);
   if ((value.status === 'running') !== (startedAt !== undefined)) {
     throw new Error('Pending Automation fire start state is inconsistent');
   }
+  if (
+    transientDeferredSince !== undefined &&
+    (value.status === 'running' ||
+      transientDeferredSince < value.admittedAt ||
+      transientDeferredSince > value.updatedAt)
+  ) {
+    throw new Error('Pending Automation fire deferral state is inconsistent');
+  }
   const execution =
     value.execution === undefined ? undefined : normalizeExecutionTemplate(value.execution);
+  const capabilityRequirements = normalizeCapabilityRequirements(value.capabilityRequirements);
   if ((value.automationKind === 'cron') !== (execution !== undefined)) {
     throw new Error('Pending cron fire must freeze its execution template');
   }
@@ -484,9 +510,60 @@ function normalizePendingFire(value: unknown): AutomationPendingFire {
     status: value.status,
     admittedAt: value.admittedAt,
     updatedAt: value.updatedAt,
+    ...(transientDeferredSince === undefined ? {} : { transientDeferredSince }),
     ...(startedAt === undefined ? {} : { startedAt }),
+    ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
     ...(execution ? { execution } : {}),
   } satisfies AutomationPendingFire);
+}
+
+function normalizeCapabilityRequirements(value: unknown): AutomationClientCapabilityRequirement[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS) {
+    throw new Error('Invalid Automation Client Capability requirements');
+  }
+  const requirements = value.map((entry) => {
+    if (
+      !isRecord(entry) ||
+      !hasOnlyKeys(entry, new Set(['principalId', 'clientInstanceId', 'contractId'])) ||
+      typeof entry.principalId !== 'string' ||
+      !/^[A-Za-z0-9_.:-]{1,128}$/.test(entry.principalId) ||
+      !isId(entry.clientInstanceId) ||
+      !isId(entry.contractId)
+    ) {
+      throw new Error('Invalid Automation Client Capability requirement');
+    }
+    return {
+      principalId: entry.principalId,
+      clientInstanceId: entry.clientInstanceId,
+      contractId: entry.contractId,
+    };
+  });
+  const identities = requirements.map(
+    (requirement) =>
+      `${requirement.principalId}\0${requirement.clientInstanceId}\0${requirement.contractId}`,
+  );
+  if (new Set(identities).size !== identities.length) {
+    throw new Error('Duplicate Automation Client Capability requirement');
+  }
+  return requirements;
+}
+
+function normalizeWaitingState(value: unknown): AutomationWaitingState {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, new Set(['reason', 'since', 'message'])) ||
+    value.reason !== 'client_capability_provider_unavailable' ||
+    !isNonnegativeInteger(value.since) ||
+    !isAutomationTextWithinLimit(value.message, AUTOMATION_LAST_ERROR_LIMIT)
+  ) {
+    throw new Error('Invalid Automation waiting state');
+  }
+  return {
+    reason: value.reason,
+    since: value.since,
+    message: value.message,
+  };
 }
 
 function normalizeSchedule(value: unknown): AutomationSchedule {

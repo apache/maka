@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseRuntimeHostCandidateArguments } from '../candidate-cli.js';
+import { parseInteractiveRuntimeHostCandidateArguments } from '../candidate-cli.js';
 
 test('accepts an absolute legacy configuration root for the elected Candidate', () => {
   assert.deepEqual(
-    parseRuntimeHostCandidateArguments([
+    parseInteractiveRuntimeHostCandidateArguments([
       '--root',
       '/runtime-host-root',
       '--expected-root-id',
@@ -22,7 +22,7 @@ test('accepts an absolute legacy configuration root for the elected Candidate', 
   );
   assert.throws(
     () =>
-      parseRuntimeHostCandidateArguments([
+      parseInteractiveRuntimeHostCandidateArguments([
         '--root',
         '/runtime-host-root',
         '--expected-root-id',

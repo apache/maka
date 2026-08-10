@@ -1,7 +1,7 @@
-import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 import {
-  createExecutionRuntimeHostCompositionFactory,
+  createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
 } from './execution-composition-factory.js';
 import { RuntimeHostKernel } from './host-kernel.js';
@@ -37,12 +37,9 @@ export async function startExecutionRuntimeHostService(
   options: ExecutionRuntimeHostServiceOptions,
   dependencies: ExecutionRuntimeHostServiceDependencies = {},
 ): Promise<RuntimeHostKernel> {
-  const compositionFactory = await createExecutionRuntimeHostCompositionFactory(
-    options,
-    dependencies,
-  );
+  const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
   const capability = await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
+  const owner = await tryAcquireStateRootOwner(capability);
   if (!owner) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
   try {
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
@@ -51,7 +48,7 @@ export async function startExecutionRuntimeHostService(
       lifecycleMode: 'service',
       handshakeTimeoutMs: options.handshakeTimeoutMs,
       shutdownGraceMs: options.shutdownGraceMs,
-      compositionFactory,
+      composition,
       accessAuthority,
       ...(options.websocket
         ? {

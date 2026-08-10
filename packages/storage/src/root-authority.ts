@@ -84,23 +84,26 @@ export interface StorageRootIdentityRepairCandidate<K extends StorageRootKind = 
   readonly [repairBrand]: true;
 }
 
-export interface InteractiveRootOwner {
-  readonly capability: StorageRootCapability<'interactive'>;
-  readonly lease: StorageRootLease<'interactive', 'write'>;
+export interface StateRootOwner<K extends StorageRootKind = StorageRootKind> {
+  readonly capability: StorageRootCapability<K>;
+  readonly lease: StorageRootLease<K, 'write'>;
   readonly controlDirectory: string;
   readonly lockPath: string;
   readonly closed: boolean;
   close(): Promise<void>;
 }
 
-export interface InteractiveRootReader {
-  readonly capability: StorageRootCapability<'interactive'>;
-  readonly lease: StorageRootLease<'interactive', 'read'>;
+export interface StateRootReader<K extends StorageRootKind = StorageRootKind> {
+  readonly capability: StorageRootCapability<K>;
+  readonly lease: StorageRootLease<K, 'read'>;
   readonly controlDirectory: string;
   readonly lockPath: string;
   readonly closed: boolean;
   close(): Promise<void>;
 }
+
+export type InteractiveRootOwner = StateRootOwner<'interactive'>;
+export type InteractiveRootReader = StateRootReader<'interactive'>;
 
 interface RootIdentity {
   dev: bigint;
@@ -140,7 +143,7 @@ interface StorageRootIdentityRepairRecord<K extends StorageRootKind = StorageRoo
 
 const capabilities = new WeakMap<object, CapabilityRecord>();
 const leases = new WeakMap<object, LeaseRecord>();
-const interactiveRootLocks = new WeakMap<object, { access: StorageRootAccess }>();
+const stateRootLocks = new WeakMap<object, { kind: StorageRootKind; access: StorageRootAccess }>();
 const storageRootIdentityRepairs = new WeakMap<object, StorageRootIdentityRepairRecord>();
 
 export type StorageRootAuthorityErrorCode =
@@ -490,10 +493,14 @@ export function resolveRootControlNamespace(): string {
 export async function tryAcquireInteractiveRootOwner(
   capability: StorageRootCapability<'interactive'>,
 ): Promise<InteractiveRootOwner | undefined> {
-  return withAuthorityFailure(
-    'lock_failed',
-    'Unable to acquire the interactive storage root owner lock',
-    () => acquireInteractiveRootLock(capability, 'write'),
+  return tryAcquireStateRootOwner(capability);
+}
+
+export async function tryAcquireStateRootOwner<K extends StorageRootKind>(
+  capability: StorageRootCapability<K>,
+): Promise<StateRootOwner<K> | undefined> {
+  return withAuthorityFailure('lock_failed', 'Unable to acquire the storage root owner lock', () =>
+    acquireStateRootLock(capability, 'write'),
   );
 }
 
@@ -599,7 +606,7 @@ export async function tryAcquireInteractiveRootReader(
   return withAuthorityFailure(
     'lock_failed',
     'Unable to acquire the interactive storage root reader lock',
-    () => acquireInteractiveRootLock(capability, 'read'),
+    () => acquireStateRootLock(capability, 'read'),
   );
 }
 
@@ -657,38 +664,53 @@ export async function assertStorageRootCapability<K extends StorageRootKind>(
 }
 
 export async function assertInteractiveRootOwner(owner: InteractiveRootOwner): Promise<void> {
-  const authenticOwner = authenticateInteractiveRootOwner(owner);
-  const capabilityRecord = requireCapability(authenticOwner.capability, 'interactive');
-  requireLease(authenticOwner.lease, 'interactive', 'write');
+  return assertStateRootOwner(owner, 'interactive');
+}
+
+export async function assertStateRootOwner<K extends StorageRootKind>(
+  owner: StateRootOwner<K>,
+  expectedKind: K,
+): Promise<void> {
+  const authenticOwner = authenticateStateRootOwner(owner, expectedKind);
+  const capabilityRecord = requireCapability(authenticOwner.capability, expectedKind);
+  requireLease(authenticOwner.lease, expectedKind, 'write');
   await assertRootIdentity(capabilityRecord);
-  requireLease(authenticOwner.lease, 'interactive', 'write');
+  requireLease(authenticOwner.lease, expectedKind, 'write');
 }
 
 export function authenticateInteractiveRootOwner(
   owner: InteractiveRootOwner,
 ): InteractiveRootOwner {
-  if (interactiveRootLocks.get(owner)?.access !== 'write') {
+  return authenticateStateRootOwner(owner, 'interactive');
+}
+
+export function authenticateStateRootOwner<K extends StorageRootKind>(
+  owner: StateRootOwner<K>,
+  expectedKind: K,
+): StateRootOwner<K> {
+  const record = stateRootLocks.get(owner);
+  if (record?.kind !== expectedKind || record.access !== 'write') {
     throw new StorageRootAuthorityError(
       'invalid_owner',
-      'Expected an authentic interactive storage root owner',
+      `Expected an authentic ${expectedKind} storage root owner`,
     );
   }
   return owner;
 }
 
-function acquireInteractiveRootLock(
-  capability: StorageRootCapability<'interactive'>,
+function acquireStateRootLock<K extends StorageRootKind>(
+  capability: StorageRootCapability<K>,
   access: 'write',
-): Promise<InteractiveRootOwner | undefined>;
-function acquireInteractiveRootLock(
-  capability: StorageRootCapability<'interactive'>,
+): Promise<StateRootOwner<K> | undefined>;
+function acquireStateRootLock<K extends StorageRootKind>(
+  capability: StorageRootCapability<K>,
   access: 'read',
-): Promise<InteractiveRootReader | undefined>;
-async function acquireInteractiveRootLock(
-  capability: StorageRootCapability<'interactive'>,
+): Promise<StateRootReader<K> | undefined>;
+async function acquireStateRootLock<K extends StorageRootKind>(
+  capability: StorageRootCapability<K>,
   access: StorageRootAccess,
-): Promise<InteractiveRootOwner | InteractiveRootReader | undefined> {
-  const capabilityRecord = requireCapability(capability, 'interactive');
+): Promise<StateRootOwner<K> | StateRootReader<K> | undefined> {
+  const capabilityRecord = requireCapability(capability, capability.kind);
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
   const lockPath = join(controlDirectory, 'owner.lock');
   const existingLock = await lstatPathIfPresent(lockPath);
@@ -750,7 +772,7 @@ async function acquireInteractiveRootLock(
     active = false;
     closePromise = withAuthorityFailure(
       'lock_failed',
-      'Unable to close the interactive storage root lock',
+      'Unable to close the storage root lock',
       async () => {
         await waitForOperations();
         releaseLock(handle);
@@ -759,7 +781,7 @@ async function acquireInteractiveRootLock(
     );
     return closePromise;
   };
-  return createInteractiveRootLock(
+  return createStateRootLock(
     capability,
     capabilityRecord,
     access,
@@ -771,16 +793,16 @@ async function acquireInteractiveRootLock(
   );
 }
 
-function createInteractiveRootLock(
-  capability: StorageRootCapability<'interactive'>,
-  capabilityRecord: CapabilityRecord<'interactive'>,
+function createStateRootLock<K extends StorageRootKind>(
+  capability: StorageRootCapability<K>,
+  capabilityRecord: CapabilityRecord<K>,
   access: StorageRootAccess,
   controlDirectory: string,
   lockPath: string,
   isActive: () => boolean,
   beginOperation: () => () => void,
   close: () => Promise<void>,
-): InteractiveRootOwner | InteractiveRootReader {
+): StateRootOwner<K> | StateRootReader<K> {
   const lock = Object.freeze({
     capability,
     lease: createLease(capabilityRecord, access, isActive, beginOperation),
@@ -790,8 +812,8 @@ function createInteractiveRootLock(
       return !isActive();
     },
     close,
-  }) as InteractiveRootOwner | InteractiveRootReader;
-  interactiveRootLocks.set(lock, { access });
+  }) as StateRootOwner<K> | StateRootReader<K>;
+  stateRootLocks.set(lock, { kind: capabilityRecord.kind, access });
   return lock;
 }
 

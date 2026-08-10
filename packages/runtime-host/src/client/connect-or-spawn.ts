@@ -3,9 +3,11 @@ import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
+import { readStateRootCompositionBinding } from '@maka/storage/state-root-composition';
 import { performance } from 'node:perf_hooks';
 import {
   requireClientInstanceId,
+  requireHostCompositionId,
   validateProtocolRange,
   type ClientSurface,
   type HostIncompatible,
@@ -27,11 +29,12 @@ export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
   surface: ClientSurface;
   protocol: ProtocolRange;
+  compositionId: string;
   clientInstanceId?: string;
   electionDeadlineMs?: number;
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
-  candidateEntrypoint?: string | URL;
+  candidateEntrypoint: string | URL;
   legacyConfigurationRoot?: string;
   signal?: AbortSignal;
 }
@@ -49,6 +52,11 @@ const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
 export type ConnectOrSpawnRuntimeHostResult =
   | { kind: 'connected'; connection: RuntimeHostConnection }
   | { kind: 'incompatible'; handshake: HostIncompatible }
+  | {
+      kind: 'failed';
+      reason: 'composition_mismatch';
+      requiredCompositionId: string;
+    }
   | { kind: 'failed'; reason: 'startup_timeout' | 'host_unresponsive' };
 
 export async function connectOrSpawnRuntimeHost(
@@ -66,11 +74,20 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     throw new RangeError('electionDeadlineMs must be an integer between 1 and 120000');
   }
   validateProtocolRange(input.protocol);
+  requireHostCompositionId(input.compositionId);
   requireOptionalTimeout(input.connectTimeoutMs, 'connectTimeoutMs', 1);
   requireOptionalTimeout(input.handshakeTimeoutMs, 'handshakeTimeoutMs', 1);
   input.signal?.throwIfAborted();
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
   const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
+  const composition = await readStateRootCompositionBinding(capability.canonicalPath);
+  if (composition && composition.compositionId !== input.compositionId) {
+    return {
+      kind: 'failed',
+      reason: 'composition_mismatch',
+      requiredCompositionId: composition.compositionId,
+    };
+  }
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
   // Root authority initialization must settle before the bounded election window begins.
   const startedAt = performance.now();
@@ -86,6 +103,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       controlDirectory,
       surface: input.surface,
       protocol: input.protocol,
+      compositionId: input.compositionId,
       clientInstanceId,
       connectTimeoutMs: input.connectTimeoutMs,
       handshakeTimeoutMs: input.handshakeTimeoutMs,
@@ -111,9 +129,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         const launch = dependencies.launchCandidate({
           rootPath: capability.canonicalPath,
           expectedRootId: capability.rootId,
-          ...(input.candidateEntrypoint === undefined
-            ? {}
-            : { entrypoint: input.candidateEntrypoint }),
+          entrypoint: input.candidateEntrypoint,
           ...(input.legacyConfigurationRoot === undefined
             ? {}
             : { legacyConfigurationRoot: input.legacyConfigurationRoot }),

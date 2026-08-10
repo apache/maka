@@ -101,7 +101,9 @@ function helpText(): string {
     '  maka inspect ...  Inspect Session, AgentRun, or TaskRun evidence',
     '  maka runtime-host serve [options]  Run a Runtime Host service',
     '  maka runtime-host access issue --principal <id> --grant <operation>',
+    '  maka runtime-host access issue --kind capability-provider --principal <id>',
     '  maka runtime-host access revoke --credential <id>',
+    '  maka runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>',
     '',
     'Options:',
     '  -h, --help        Show help',
@@ -120,10 +122,18 @@ function helpText(): string {
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
+    '  --kind <kind>                 remote-owner or capability-provider',
     '  --principal <id>              Name the authenticated Client principal',
     '  --grant <operation>           Grant one exact operation (repeatable)',
     '  --publish-client-capabilities Allow Client Capability publication',
     '  --allow-host-paths            Allow operations that submit Host paths',
+    '',
+    'Runtime Host capability provider options:',
+    '  --url <ws-url>                Connect to an authenticated Runtime Host WebSocket',
+    '  --mcp-config <path>           Publish tools from an MCP configuration file',
+    '  --expected-root <root-id>     Pin the canonical Runtime Host root identity',
+    '  --credential-env <name>       Read the access credential from this environment variable',
+    '  --client-identity <path>      Persist the provider Client instance identity here',
   ].join('\n');
 }
 
@@ -163,6 +173,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       const { runRuntimeHostAccessIssueCli } = await import('./runtime-host-access-command.js');
       return runRuntimeHostAccessIssueCli({
         rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
+        principalKind: command.principalKind,
         principalId: command.principalId,
         operationGrants: command.operationGrants,
         canPublishClientCapabilities: command.canPublishClientCapabilities,
@@ -174,6 +185,18 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       return runRuntimeHostAccessRevokeCli({
         rootPath: command.rootPath ?? resolveMakaWorkspaceRoot(),
         credentialId: command.credentialId,
+      });
+    }
+    case 'runtime-host-capability-provider-serve': {
+      const { runRuntimeHostCapabilityProviderCli } = await import(
+        './runtime-host-capability-provider-command.js'
+      );
+      return runRuntimeHostCapabilityProviderCli({
+        url: command.url,
+        mcpConfigPath: command.mcpConfigPath,
+        expectedRootId: command.expectedRootId,
+        ...(command.credentialEnv ? { credentialEnv: command.credentialEnv } : {}),
+        ...(command.clientIdentityPath ? { clientIdentityPath: command.clientIdentityPath } : {}),
       });
     }
     case 'help':

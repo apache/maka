@@ -260,6 +260,15 @@ export function isOperationKey(value: unknown): value is OperationKey {
   return typeof value === 'string' && Object.hasOwn(HOST_OPERATION_SPECS, value);
 }
 
+export function operationUsesHostPaths(frame: RequestFrame): boolean {
+  const spec = HOST_OPERATION_SPECS[frame.operation] as OperationSpec<
+    unknown,
+    unknown,
+    HostOperationErrorCode
+  >;
+  return spec.usesHostPaths?.(frame.input) ?? false;
+}
+
 function omitResponseIdentity(record: Record<string, unknown>): Record<string, unknown> {
   if (record.ok === true) {
     requireExactRecord(record, 'operation response', ['requestId', 'operation', 'ok', 'result']);

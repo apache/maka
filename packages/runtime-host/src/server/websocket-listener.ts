@@ -61,12 +61,16 @@ export async function startRuntimeHostWebSocketListener(
       return;
     }
     const credential = readBearerCredential(request.headers.authorization);
-    const authority = credential ? options.accessAuthority.authenticate(credential) : undefined;
-    if (!authority) {
+    if (!credential || !options.accessAuthority.authenticate(credential)) {
       rejectUpgrade(socket, 401, 'Unauthorized');
       return;
     }
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      const authority = options.accessAuthority.authenticate(credential);
+      if (!authority) {
+        webSocket.terminate();
+        return;
+      }
       const transport = new WebSocketTransport(webSocket);
       transports.add(transport);
       void transport.closed.then(() => transports.delete(transport));

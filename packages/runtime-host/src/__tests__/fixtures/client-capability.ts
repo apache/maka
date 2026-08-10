@@ -4,6 +4,7 @@ export function clientCapabilityConnectionIdentity(
   connectionId: string,
   clientInstanceId = connectionId,
   principalId = 'test-principal',
+  principalKind: ClientCapabilityConnectionIdentity['principalKind'] = 'local_owner',
 ): ClientCapabilityConnectionIdentity {
-  return { connectionId, principalId, clientInstanceId };
+  return { connectionId, principalId, clientInstanceId, principalKind };
 }

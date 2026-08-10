@@ -238,7 +238,10 @@ export interface SessionConfigurationMetadataUpdate {
   };
   readonly lifecycle:
     | { readonly kind: 'preserve' }
-    | { readonly kind: 'clear_connection_block'; readonly statusUpdatedAt: number };
+    | {
+        readonly kind: 'clear_connection_block';
+        readonly statusUpdatedAt: number;
+      };
 }
 
 export interface IdempotentAgentGraphOperatorMetadataResult
@@ -399,7 +402,8 @@ export class SqliteSessionMetadataStore {
       const boundary = this.readCurrentExecutionBoundarySync(input.sessionId);
       const createdAt = this.now();
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO sandbox_boundary_log(
             session_id,
             entry_id,
@@ -413,7 +417,8 @@ export class SqliteSessionMetadataStore {
             turn_id,
             run_id
           ) VALUES (?, ?, 'expansion_request', ?, 'pending', ?, ?, ?, ?, ?, ?)
-        `)
+        `,
+        )
         .run(
           input.sessionId,
           `request:${input.requestId}`,
@@ -451,12 +456,14 @@ export class SqliteSessionMetadataStore {
       if (!record) throw new SessionNotFoundError(sessionId);
       this.ensureGenesisExecutionBoundary(record.header);
       const rows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
           FROM sandbox_boundary_log
           WHERE session_id = ? AND status = 'pending'
           ORDER BY created_at, entry_id
-        `)
+        `,
+        )
         .all(sessionId) as unknown as SandboxBoundaryRequestRow[];
       return rows.map(decodeSandboxBoundaryRequestRow);
     });
@@ -476,7 +483,8 @@ export class SqliteSessionMetadataStore {
       const record = this.readRecordSync(sessionId);
       if (!record) throw new SessionNotFoundError(sessionId);
       const rows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
           FROM sandbox_boundary_log
           WHERE session_id = ?
@@ -484,7 +492,8 @@ export class SqliteSessionMetadataStore {
             AND status = 'denied'
             AND outcome_reason = ?
           ORDER BY created_at, entry_id
-        `)
+        `,
+        )
         .all(
           sessionId,
           SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
@@ -709,13 +718,15 @@ export class SqliteSessionMetadataStore {
       const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
       if (probe.kind !== 'absent') return probe;
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT OR IGNORE INTO session_create_claims(
             session_id,
             request_fingerprint,
             claimed_at
           ) VALUES (?, ?, ?)
-        `)
+        `,
+        )
         .run(sessionId, requestFingerprint, this.now());
       return this.probeStableSessionCreateSync(sessionId, requestFingerprint);
     });
@@ -753,11 +764,13 @@ export class SqliteSessionMetadataStore {
       if (probe.kind !== 'absent') return probe;
       const committedAt = this.now();
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO session_create_claims(session_id, request_fingerprint, claimed_at)
           VALUES (?, ?, ?)
           ON CONFLICT(session_id) DO NOTHING
-        `)
+        `,
+        )
         .run(normalized.id, requestFingerprint, committedAt);
       return {
         kind: 'created' as const,
@@ -914,7 +927,8 @@ export class SqliteSessionMetadataStore {
         provisionedAt,
       };
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO agent_graph_operator_provisions(
             graph_id,
             work_id,
@@ -927,7 +941,8 @@ export class SqliteSessionMetadataStore {
             payload_json,
             provisioned_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
+        `,
+        )
         .run(
           provision.graphId,
           provision.workId,
@@ -961,7 +976,8 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           metadata.session_id,
           metadata.payload_json,
@@ -980,7 +996,8 @@ export class SqliteSessionMetadataStore {
             json_extract(metadata.payload_json, '$.transcriptLedgerVersion'),
             1
           ) <> 0
-      `)
+      `,
+      )
       .get(sessionId) as SessionMetadataCatalogRow | undefined;
     if (!row) throw new SessionNotFoundError(sessionId);
     return decodeCatalogRecord(row);
@@ -1014,15 +1031,18 @@ export class SqliteSessionMetadataStore {
     const rows =
       sessionId === undefined
         ? this.db
-            .prepare(`
+            .prepare(
+              `
               SELECT session_id AS sessionId
               FROM session_metadata_tombstones
               WHERE cleanup_pending = 1
               ORDER BY session_id
-            `)
+            `,
+            )
             .all()
         : this.db
-            .prepare(`
+            .prepare(
+              `
               SELECT pending.session_id AS sessionId
               FROM session_metadata_tombstones target
               JOIN session_metadata_tombstones pending
@@ -1030,7 +1050,8 @@ export class SqliteSessionMetadataStore {
               WHERE target.session_id = ?
                 AND pending.cleanup_pending = 1
               ORDER BY pending.session_id
-            `)
+            `,
+            )
             .all(sessionId);
     return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
   }
@@ -1039,7 +1060,8 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     return this.transaction(() => {
       const rows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT
             child.session_id,
             child.payload_json,
@@ -1059,7 +1081,8 @@ export class SqliteSessionMetadataStore {
             ON live_parent.session_id = child.subagent_parent_session_id
           WHERE live_parent.session_id IS NULL
           ORDER BY child.session_id
-        `)
+        `,
+        )
         .all() as unknown as OrphanedAgentGraphOperatorRow[];
       const deletedAt = this.now();
       const reconciled: string[] = [];
@@ -1087,7 +1110,8 @@ export class SqliteSessionMetadataStore {
           );
         }
         this.db
-          .prepare(`
+          .prepare(
+            `
             INSERT INTO session_metadata_tombstones(
               session_id,
               deleted_at,
@@ -1095,19 +1119,23 @@ export class SqliteSessionMetadataStore {
               cleanup_pending
             )
             VALUES (?, ?, ?, 1)
-          `)
+          `,
+          )
           .run(row.session_id, deletedAt, row.retirement_unit_id);
         this.db
-          .prepare(`
+          .prepare(
+            `
             UPDATE session_metadata_tombstones
             SET cleanup_pending = 1
             WHERE session_id = ?
-          `)
+          `,
+          )
           .run(row.parent_session_id);
         reconciled.push(row.session_id);
       }
       this.db
-        .prepare(`
+        .prepare(
+          `
           WITH graph_roots(root_session_id) AS (
             SELECT root_session_id
             FROM agent_graph_client_projections
@@ -1123,7 +1151,8 @@ export class SqliteSessionMetadataStore {
           WHERE cleanup_pending = 0
             AND session_id IN (SELECT root_session_id FROM graph_roots)
             AND session_id NOT IN (SELECT session_id FROM session_metadata)
-        `)
+        `,
+        )
         .run();
       return reconciled;
     });
@@ -1139,12 +1168,14 @@ export class SqliteSessionMetadataStore {
       if (batch.length === 0) continue;
       const placeholders = batch.map(() => '?').join(', ');
       const rows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT session_id AS sessionId
           FROM session_metadata_tombstones
           WHERE session_id IN (${placeholders})
           ORDER BY session_id
-        `)
+        `,
+        )
         .all(...batch) as unknown as Array<{ readonly sessionId: string }>;
       tombstoned.push(...rows.map((row) => row.sessionId));
     }
@@ -1156,11 +1187,13 @@ export class SqliteSessionMetadataStore {
     assertSafeSessionId(sessionId);
     this.transaction(() => {
       this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE session_metadata_tombstones
           SET cleanup_pending = 0
           WHERE session_id = ?
-        `)
+        `,
+        )
         .run(sessionId);
     });
   }
@@ -1169,14 +1202,16 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     const { where, parameters } = buildSessionListPredicate(filter);
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT session_id, payload_json, metadata_version, committed_at
         FROM session_metadata metadata
         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
         ORDER BY
           COALESCE(last_message_at, last_used_at, created_at) DESC,
           session_id ASC
-      `)
+      `,
+      )
       .all(...parameters) as unknown as SessionMetadataRow[];
     return rows.map(decodeRecord);
   }
@@ -1199,7 +1234,8 @@ export class SqliteSessionMetadataStore {
     // spawned, and their working directory is often a throwaway worktree that
     // must never become one of the user's project locations.
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           session_id AS id,
           json_extract(payload_json, '$.cwd') AS cwd,
@@ -1209,15 +1245,28 @@ export class SqliteSessionMetadataStore {
         WHERE json_type(payload_json, '$.projectId') IS NULL
           AND subagent_parent_session_id IS NULL
         ORDER BY used_at, session_id
-      `)
-      .all() as Array<{ id?: unknown; cwd?: unknown; used_at?: unknown; revision?: unknown }>;
+      `,
+      )
+      .all() as Array<{
+      id?: unknown;
+      cwd?: unknown;
+      used_at?: unknown;
+      revision?: unknown;
+    }>;
     return rows.flatMap((row) =>
       typeof row.id === 'string' &&
       typeof row.cwd === 'string' &&
       row.cwd.length > 0 &&
       typeof row.used_at === 'number' &&
       typeof row.revision === 'number'
-        ? [{ id: row.id, cwd: row.cwd, usedAt: row.used_at, revision: row.revision }]
+        ? [
+            {
+              id: row.id,
+              cwd: row.cwd,
+              usedAt: row.used_at,
+              revision: row.revision,
+            },
+          ]
         : [],
     );
   }
@@ -1402,13 +1451,15 @@ export class SqliteSessionMetadataStore {
     }
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT record_json
         FROM session_messages
         WHERE session_id = ?
         ORDER BY sequence DESC
         LIMIT ?
-      `)
+      `,
+      )
       .all(sessionId, limit) as Array<{ record_json?: unknown }>;
     return rows
       .reverse()
@@ -1419,11 +1470,13 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     this.transaction(() => {
       const result = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE session_catalog_state
           SET pending_writes = pending_writes + 1
           WHERE scope = 'catalog'
-        `)
+        `,
+        )
         .run();
       if (result.changes !== 1) throw new Error('Session catalog revision state is unavailable');
     });
@@ -1464,11 +1517,13 @@ export class SqliteSessionMetadataStore {
         this.updateCatalogProjectionSync(sessionId, projection, true);
       }
       const result = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE session_catalog_state
           SET pending_writes = 0
           WHERE scope = 'catalog'
-        `)
+        `,
+        )
         .run();
       if (result.changes !== 1) throw new Error('Session catalog revision state is unavailable');
     });
@@ -1533,14 +1588,16 @@ export class SqliteSessionMetadataStore {
         return { state: previousState, previousState, changed: false };
       }
       const changed = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_intent_claims
           SET admission_status = 'executing',
               admission_updated_at = ?
           WHERE graph_id = ?
             AND intent_id = ?
             AND admission_status = 'claimed'
-        `)
+        `,
+        )
         .run(this.now(), graphId, intentId).changes;
       if (changed !== 1) {
         throw new AgentGraphIntentClaimConflictError(
@@ -1568,7 +1625,8 @@ export class SqliteSessionMetadataStore {
         return { state: 'cancelled', previousState, changed: false };
       }
       const changed = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_intent_claims
           SET admission_status = 'cancelled',
               admission_updated_at = ?,
@@ -1576,7 +1634,8 @@ export class SqliteSessionMetadataStore {
           WHERE graph_id = ?
             AND intent_id = ?
             AND admission_status = ?
-        `)
+        `,
+        )
         .run(this.now(), reason, graphId, intentId, previousState).changes;
       if (changed !== 1) {
         throw new AgentGraphIntentClaimConflictError(
@@ -1601,7 +1660,8 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     if (graphId !== undefined) assertGraphLookupIdentity(graphId, 'graph id');
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           schema_version AS schemaVersion,
           claim_id AS claimId,
@@ -1617,7 +1677,8 @@ export class SqliteSessionMetadataStore {
         FROM agent_graph_intent_claims
         ${graphId === undefined ? '' : 'WHERE graph_id = ?'}
         ORDER BY graph_id ASC, claimed_at ASC, intent_id ASC
-      `)
+      `,
+      )
       .all(...(graphId === undefined ? [] : [graphId])) as unknown as AgentGraphIntentClaim[];
     return rows.map(decodeAgentGraphIntentClaim);
   }
@@ -1657,7 +1718,8 @@ export class SqliteSessionMetadataStore {
         committedAt: this.now(),
       };
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO agent_graph_schedule_updates(
             graph_id,
             revision,
@@ -1672,7 +1734,8 @@ export class SqliteSessionMetadataStore {
             payload_json,
             committed_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
+        `,
+        )
         .run(
           update.graphId,
           update.revision,
@@ -1696,12 +1759,14 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertGraphLookupIdentity(graphId, 'id');
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT payload_json AS payloadJson
         FROM agent_graph_schedule_updates
         WHERE graph_id = ?
         ORDER BY revision ASC
-      `)
+      `,
+      )
       .all(graphId) as unknown as AgentGraphScheduleUpdateRow[];
     return rows.map(decodeAgentGraphScheduleUpdateRow);
   }
@@ -1726,7 +1791,8 @@ export class SqliteSessionMetadataStore {
       }
       const now = this.now();
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO agent_graph_supervisor_wakes(
             graph_id,
             wake_id,
@@ -1738,7 +1804,8 @@ export class SqliteSessionMetadataStore {
             created_at,
             updated_at
           ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-        `)
+        `,
+        )
         .run(
           request.graphId,
           request.wakeId,
@@ -1775,7 +1842,8 @@ export class SqliteSessionMetadataStore {
       }
       const now = this.now();
       const updated = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_supervisor_wakes
           SET status = 'running',
               attempt_count = attempt_count + 1,
@@ -1786,7 +1854,8 @@ export class SqliteSessionMetadataStore {
           WHERE graph_id = ?
             AND wake_id = ?
             AND status IN ('pending', 'retryable_failed')
-        `)
+        `,
+        )
         .run(request.attemptId, request.turnId, now, request.graphId, request.wakeId);
       if (updated.changes !== 1) {
         return {
@@ -1795,7 +1864,8 @@ export class SqliteSessionMetadataStore {
         };
       }
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO agent_graph_supervisor_wake_attempts(
             graph_id,
             wake_id,
@@ -1804,7 +1874,8 @@ export class SqliteSessionMetadataStore {
             status,
             started_at
           ) VALUES (?, ?, ?, ?, 'running', ?)
-        `)
+        `,
+        )
         .run(request.graphId, request.wakeId, request.attemptId, request.turnId, now);
       return {
         wake: this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId),
@@ -1852,11 +1923,13 @@ export class SqliteSessionMetadataStore {
           : undefined;
       const completedAt = request.status === 'waiting_permission' ? null : now;
       this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_supervisor_wake_attempts
           SET status = ?, failure_reason = ?, completed_at = ?
           WHERE graph_id = ? AND wake_id = ? AND attempt_id = ? AND status = ?
-        `)
+        `,
+        )
         .run(
           request.status,
           failureReason ?? null,
@@ -1867,11 +1940,13 @@ export class SqliteSessionMetadataStore {
           attempt.status,
         );
       this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_supervisor_wakes
           SET status = ?, failure_reason = ?, updated_at = ?
           WHERE graph_id = ? AND wake_id = ? AND current_attempt_id = ? AND status = ?
-        `)
+        `,
+        )
         .run(
           request.status,
           failureReason ?? null,
@@ -1901,7 +1976,8 @@ export class SqliteSessionMetadataStore {
       const now = this.now();
       const placeholders = sessionIds.map(() => '?').join(', ');
       this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_supervisor_wake_attempts
           SET status = 'superseded', failure_reason = ?, completed_at = ?
           WHERE status IN ('running', 'waiting_permission')
@@ -1912,15 +1988,18 @@ export class SqliteSessionMetadataStore {
                 AND wakes.wake_id = agent_graph_supervisor_wake_attempts.wake_id
                 AND wakes.root_session_id IN (${placeholders})
             )
-        `)
+        `,
+        )
         .run(request.reason, now, ...sessionIds);
       const updated = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_supervisor_wakes
           SET status = 'superseded', failure_reason = ?, updated_at = ?
           WHERE root_session_id IN (${placeholders})
             AND status IN ('pending', 'running', 'waiting_permission', 'retryable_failed')
-        `)
+        `,
+        )
         .run(request.reason, now, ...sessionIds);
       return Number(updated.changes);
     });
@@ -1944,7 +2023,8 @@ export class SqliteSessionMetadataStore {
     assertGraphLookupIdentity(graphId, 'graph id');
     assertGraphLookupIdentity(wakeId, 'supervisor wake id');
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           graph_id AS graphId,
           wake_id AS wakeId,
@@ -1957,7 +2037,8 @@ export class SqliteSessionMetadataStore {
         FROM agent_graph_supervisor_wake_attempts
         WHERE graph_id = ? AND wake_id = ?
         ORDER BY started_at ASC, attempt_id ASC
-      `)
+      `,
+      )
       .all(graphId, wakeId) as unknown as AgentGraphSupervisorWakeAttemptRow[];
     return rows.map(decodeAgentGraphSupervisorWakeAttemptRow);
   }
@@ -1965,7 +2046,8 @@ export class SqliteSessionMetadataStore {
   async listRetryableAgentGraphSupervisorWakes(): Promise<AgentGraphSupervisorWakeRecord[]> {
     this.assertOpen();
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           schema_version AS schemaVersion,
           graph_id AS graphId,
@@ -1982,7 +2064,8 @@ export class SqliteSessionMetadataStore {
         FROM agent_graph_supervisor_wakes
         WHERE status = 'retryable_failed'
         ORDER BY updated_at ASC, graph_id ASC, wake_id ASC
-      `)
+      `,
+      )
       .all() as unknown as AgentGraphSupervisorWakeRow[];
     return rows.map(decodeAgentGraphSupervisorWakeRow);
   }
@@ -1990,7 +2073,8 @@ export class SqliteSessionMetadataStore {
   async listUnsettledAgentGraphSupervisorWakes(): Promise<AgentGraphSupervisorWakeRecord[]> {
     this.assertOpen();
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           schema_version AS schemaVersion,
           graph_id AS graphId,
@@ -2007,7 +2091,8 @@ export class SqliteSessionMetadataStore {
         FROM agent_graph_supervisor_wakes
         WHERE status IN ('running', 'waiting_permission')
         ORDER BY updated_at ASC, graph_id ASC, wake_id ASC
-      `)
+      `,
+      )
       .all() as unknown as AgentGraphSupervisorWakeRow[];
     return rows.map(decodeAgentGraphSupervisorWakeRow);
   }
@@ -2017,13 +2102,15 @@ export class SqliteSessionMetadataStore {
     return this.transaction(() => {
       const now = this.now();
       const recovered = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE agent_graph_supervisor_wakes
           SET status = 'retryable_failed',
               failure_reason = 'host_restart',
               updated_at = ?
           WHERE status = 'pending'
-        `)
+        `,
+        )
         .run(now).changes;
       return Number(recovered);
     });
@@ -2033,12 +2120,14 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertGraphLookupIdentity(graphId, 'graph id');
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT payload_json AS payloadJson
         FROM agent_graph_operator_provisions
         WHERE graph_id = ?
         ORDER BY provisioned_at ASC, operator_id ASC
-      `)
+      `,
+      )
       .all(graphId) as unknown as AgentGraphOperatorProvisionRow[];
     return rows.map((row) =>
       decodeAgentGraphOperatorProvision(JSON.parse(row.payloadJson) as unknown),
@@ -2066,27 +2155,32 @@ export class SqliteSessionMetadataStore {
     return this.readTransaction(() => {
       const scheduleUpdates = (
         this.db
-          .prepare(`
+          .prepare(
+            `
             SELECT payload_json AS payloadJson
             FROM agent_graph_schedule_updates
             WHERE graph_id = ?
             ORDER BY revision ASC
-          `)
+          `,
+          )
           .all(graphId) as unknown as AgentGraphScheduleUpdateRow[]
       ).map(decodeAgentGraphScheduleUpdateRow);
       const operatorProvisions = (
         this.db
-          .prepare(`
+          .prepare(
+            `
             SELECT payload_json AS payloadJson
             FROM agent_graph_operator_provisions
             WHERE graph_id = ?
             ORDER BY provisioned_at ASC, operator_id ASC
-          `)
+          `,
+          )
           .all(graphId) as unknown as AgentGraphOperatorProvisionRow[]
       ).map((row) => decodeAgentGraphOperatorProvision(JSON.parse(row.payloadJson) as unknown));
       const intentClaims = (
         this.db
-          .prepare(`
+          .prepare(
+            `
             SELECT
               schema_version AS schemaVersion,
               claim_id AS claimId,
@@ -2102,12 +2196,14 @@ export class SqliteSessionMetadataStore {
             FROM agent_graph_intent_claims
             WHERE graph_id = ?
             ORDER BY claimed_at ASC, intent_id ASC
-          `)
+          `,
+          )
           .all(graphId) as unknown as AgentGraphIntentClaim[]
       ).map(decodeAgentGraphIntentClaim);
       const intentAdmissions = (
         this.db
-          .prepare(`
+          .prepare(
+            `
             SELECT
               graph_id AS graphId,
               intent_id AS intentId,
@@ -2117,11 +2213,13 @@ export class SqliteSessionMetadataStore {
             FROM agent_graph_intent_claims
             WHERE graph_id = ?
             ORDER BY claimed_at ASC, intent_id ASC
-          `)
+          `,
+          )
           .all(graphId) as unknown as AgentGraphIntentAdmissionSnapshotRow[]
       ).map(decodeAgentGraphIntentAdmissionSnapshotRow);
       const wakeRows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT
             schema_version AS schemaVersion,
             graph_id AS graphId,
@@ -2138,10 +2236,12 @@ export class SqliteSessionMetadataStore {
           FROM agent_graph_supervisor_wakes
           WHERE graph_id = ?
           ORDER BY created_at ASC, wake_id ASC
-        `)
+        `,
+        )
         .all(graphId) as unknown as AgentGraphSupervisorWakeRow[];
       const attemptRows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT
             graph_id AS graphId,
             wake_id AS wakeId,
@@ -2154,7 +2254,8 @@ export class SqliteSessionMetadataStore {
           FROM agent_graph_supervisor_wake_attempts
           WHERE graph_id = ?
           ORDER BY started_at ASC, attempt_id ASC
-        `)
+        `,
+        )
         .all(graphId) as unknown as AgentGraphSupervisorWakeAttemptRow[];
       const attemptsByWake = new Map<string, AgentGraphSupervisorWakeAttemptRecord[]>();
       for (const row of attemptRows) {
@@ -2196,7 +2297,8 @@ export class SqliteSessionMetadataStore {
         throw new SessionNotFoundError(request.rootSessionId);
       }
       const current = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT
             schema_version AS schemaVersion,
             graph_id AS graphId,
@@ -2206,7 +2308,8 @@ export class SqliteSessionMetadataStore {
             materialized_at AS materializedAt
           FROM agent_graph_client_projections
           WHERE graph_id = ?
-        `)
+        `,
+        )
         .get(request.graphId) as AgentGraphClientProjectionRow | undefined;
       if (
         request.expectedSnapshotVersion === null
@@ -2248,7 +2351,8 @@ export class SqliteSessionMetadataStore {
       const materializedAt = this.now();
       const snapshotPayloadJson = encodeProjectionPayload(request.snapshot, 'snapshot');
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO agent_graph_client_projections(
             graph_id,
             root_session_id,
@@ -2263,7 +2367,8 @@ export class SqliteSessionMetadataStore {
             snapshot_version = excluded.snapshot_version,
             payload_json = excluded.payload_json,
             materialized_at = excluded.materialized_at
-        `)
+        `,
+        )
         .run(
           request.graphId,
           request.rootSessionId,
@@ -2369,7 +2474,8 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertGraphLookupIdentity(graphId, 'graph id');
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           schema_version AS schemaVersion,
           graph_id AS graphId,
@@ -2379,7 +2485,8 @@ export class SqliteSessionMetadataStore {
           materialized_at AS materializedAt
         FROM agent_graph_client_projections
         WHERE graph_id = ?
-      `)
+      `,
+      )
       .get(graphId) as AgentGraphClientProjectionRow | undefined;
     return row ? decodeAgentGraphClientProjectionRow(row) : undefined;
   }
@@ -2392,7 +2499,8 @@ export class SqliteSessionMetadataStore {
     assertGraphLookupIdentity(graphId, 'graph id');
     assertGraphLookupIdentity(operatorId, 'operator id');
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           graph_id AS graphId,
           operator_id AS operatorId,
@@ -2401,7 +2509,8 @@ export class SqliteSessionMetadataStore {
           materialized_at AS materializedAt
         FROM agent_graph_client_operator_projections
         WHERE graph_id = ? AND operator_id = ?
-      `)
+      `,
+      )
       .get(graphId, operatorId) as AgentGraphClientOperatorProjectionRow | undefined;
     return row ? decodeAgentGraphClientOperatorProjectionRow(row) : undefined;
   }
@@ -2414,7 +2523,8 @@ export class SqliteSessionMetadataStore {
     assertGraphLookupIdentity(graphId, 'graph id');
     assertGraphLookupIdentity(operatorId, 'operator id');
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           graph.schema_version AS projectionSchemaVersion,
           graph.graph_id AS projectionGraphId,
@@ -2432,7 +2542,8 @@ export class SqliteSessionMetadataStore {
           ON operator.graph_id = graph.graph_id
           AND operator.operator_id = ?
         WHERE graph.graph_id = ?
-      `)
+      `,
+      )
       .get(operatorId, graphId) as AgentGraphClientProjectionWithOperatorRow | undefined;
     if (!row) return undefined;
     const projection = decodeAgentGraphClientProjectionRow({
@@ -2472,11 +2583,13 @@ export class SqliteSessionMetadataStore {
       assertGraphEventTime(input.before.eventTime);
       assertGraphLookupIdentity(input.before.recordId, 'terminal record id');
       const cursor = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT event_time AS eventTime
           FROM agent_graph_client_terminal_activity
           WHERE graph_id = ? AND record_id = ?
-        `)
+        `,
+        )
         .get(graphId, input.before.recordId) as { eventTime?: unknown } | undefined;
       if (cursor?.eventTime !== input.before.eventTime) {
         throw new AgentGraphClientTerminalCursorError(
@@ -2485,7 +2598,8 @@ export class SqliteSessionMetadataStore {
       }
     }
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           graph_id AS graphId,
           record_id AS recordId,
@@ -2503,7 +2617,8 @@ export class SqliteSessionMetadataStore {
           }
         ORDER BY event_time DESC, record_id DESC
         LIMIT ?
-      `)
+      `,
+      )
       .all(
         graphId,
         ...(input.before
@@ -2528,14 +2643,16 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertGraphLookupIdentity(graphId, 'graph id');
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           intent_id AS intentId,
           admission_status AS state
         FROM agent_graph_intent_claims
         WHERE graph_id = ?
         ORDER BY claimed_at ASC, intent_id ASC
-      `)
+      `,
+      )
       .all(graphId) as unknown as AgentGraphClientClaimAdmission[];
     return rows.map((row) => {
       if (row.state !== 'claimed' && row.state !== 'executing' && row.state !== 'cancelled') {
@@ -2589,14 +2706,16 @@ export class SqliteSessionMetadataStore {
             blockedReason: undefined,
             statusUpdatedAt: now,
           };
-    return this.transaction(() =>
-      identities.map(({ sessionId, expectedVersion }) =>
+    return this.transaction(() => {
+      const records = identities.map(({ sessionId, expectedVersion }) =>
         this.updateHeaderSync(sessionId, patch, {
           expectedVersion,
           skipNoop: true,
         }),
-      ),
-    );
+      );
+      if (state === 'archived') this.deleteGoalAuthorities(identities);
+      return records;
+    });
   }
 
   async removeVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
@@ -2633,7 +2752,8 @@ export class SqliteSessionMetadataStore {
           );
         }
         this.db
-          .prepare(`
+          .prepare(
+            `
             INSERT INTO session_metadata_tombstones(
               session_id,
               deleted_at,
@@ -2642,11 +2762,21 @@ export class SqliteSessionMetadataStore {
             )
             VALUES (?, ?, ?, 1)
             ON CONFLICT(session_id) DO NOTHING
-          `)
+          `,
+          )
           .run(sessionId, deletedAt, retirementUnitId);
       }
+      this.deleteGoalAuthorities(identities);
       return identities.map((identity) => identity.sessionId);
     });
+  }
+
+  private deleteGoalAuthorities(sessions: readonly VersionedSessionIdentity[]): void {
+    // Standalone metadata stores have no workflow schema. An operational lease
+    // guarantees that Goal authority shares this exact transaction boundary.
+    if (!this.databaseLease) return;
+    const remove = this.db.prepare('DELETE FROM workflow_goal_authority WHERE session_id = ?');
+    for (const { sessionId } of sessions) remove.run(sessionId);
   }
 
   async remove(sessionId: string): Promise<boolean> {
@@ -2658,7 +2788,8 @@ export class SqliteSessionMetadataStore {
         this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId)
           .changes === 1;
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO session_metadata_tombstones(
             session_id,
             deleted_at,
@@ -2667,7 +2798,8 @@ export class SqliteSessionMetadataStore {
           )
           VALUES (?, ?, ?, 1)
           ON CONFLICT(session_id) DO NOTHING
-        `)
+        `,
+        )
         .run(sessionId, this.now(), sessionId);
       return deleted;
     });
@@ -2700,7 +2832,8 @@ export class SqliteSessionMetadataStore {
     initialBoundary?: ExecutionBoundary,
   ): SessionMetadataRecord | undefined {
     const result = this.db
-      .prepare(`
+      .prepare(
+        `
         INSERT ${ignoreConflicts ? 'OR IGNORE' : ''} INTO session_metadata(
           session_id,
           payload_json,
@@ -2730,7 +2863,8 @@ export class SqliteSessionMetadataStore {
           metadata_version,
           committed_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
+      `,
+      )
       .run(
         header.id,
         JSON.stringify(header),
@@ -2783,7 +2917,8 @@ export class SqliteSessionMetadataStore {
       ? { ...decodeExecutionBoundary(initialBoundary), revision: 0 }
       : createGenesisExecutionBoundary(header.permissionMode);
     this.db
-      .prepare(`
+      .prepare(
+        `
         INSERT INTO sandbox_boundary_log(
           session_id,
           entry_id,
@@ -2794,20 +2929,23 @@ export class SqliteSessionMetadataStore {
           created_at,
           settled_at
         ) VALUES (?, 'genesis', 'genesis', 'applied', 0, ?, ?, ?)
-      `)
+      `,
+      )
       .run(header.id, JSON.stringify(boundary), header.createdAt, header.createdAt);
     this.options.failpoint?.('after_sandbox_boundary_write');
   }
 
   private readCurrentExecutionBoundarySync(sessionId: string): ExecutionBoundary {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT boundary_json AS boundaryJson
         FROM sandbox_boundary_log
         WHERE session_id = ? AND applied_revision IS NOT NULL
         ORDER BY applied_revision DESC
         LIMIT 1
-      `)
+      `,
+      )
       .get(sessionId) as { boundaryJson?: unknown } | undefined;
     if (!row || typeof row.boundaryJson !== 'string') {
       throw new SessionMetadataConflictError(`Session execution boundary is missing: ${sessionId}`);
@@ -2819,7 +2957,8 @@ export class SqliteSessionMetadataStore {
     sessionId: string,
   ): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT boundary_json AS boundaryJson
         FROM sandbox_boundary_log
         WHERE
@@ -2827,7 +2966,8 @@ export class SqliteSessionMetadataStore {
           AND applied_revision IS NOT NULL
           AND json_extract(boundary_json, '$.kind') = 'managed'
         ORDER BY applied_revision DESC
-      `)
+      `,
+      )
       .all(sessionId) as unknown as Array<{ boundaryJson?: unknown }>;
     for (const row of rows) {
       if (typeof row.boundaryJson !== 'string') {
@@ -2851,11 +2991,13 @@ export class SqliteSessionMetadataStore {
     requestId: string,
   ): SandboxBoundaryRequest | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
         FROM sandbox_boundary_log
         WHERE session_id = ? AND request_id = ?
-      `)
+      `,
+      )
       .get(sessionId, requestId) as SandboxBoundaryRequestRow | undefined;
     return row ? decodeSandboxBoundaryRequestRow(row) : undefined;
   }
@@ -2883,7 +3025,8 @@ export class SqliteSessionMetadataStore {
     outcomeReason?: string;
   }): void {
     const result = this.db
-      .prepare(`
+      .prepare(
+        `
         UPDATE sandbox_boundary_log
         SET
           status = ?,
@@ -2892,7 +3035,8 @@ export class SqliteSessionMetadataStore {
           outcome_reason = ?,
           settled_at = ?
         WHERE session_id = ? AND request_id = ? AND status = 'pending'
-      `)
+      `,
+      )
       .run(
         input.status,
         input.appliedRevision ?? null,
@@ -2947,7 +3091,8 @@ export class SqliteSessionMetadataStore {
     const metadataVersion = current.metadataVersion + 1;
     const committedAt = this.now();
     const updated = this.db
-      .prepare(`
+      .prepare(
+        `
         UPDATE session_metadata
         SET
           payload_json = ?,
@@ -2970,7 +3115,8 @@ export class SqliteSessionMetadataStore {
           metadata_version = ?,
           committed_at = ?
         WHERE session_id = ? AND metadata_version = ?
-      `)
+      `,
+      )
       .run(
         JSON.stringify(next),
         next.createdAt,
@@ -3006,11 +3152,13 @@ export class SqliteSessionMetadataStore {
     }
     if (options.catalogPreview) {
       const preview = this.db
-        .prepare(`
+        .prepare(
+          `
           UPDATE session_catalog_projection
           SET last_message_preview = ?
           WHERE session_id = ?
-        `)
+        `,
+        )
         .run(options.catalogPreview.value ?? null, sessionId);
       if (preview.changes !== 1) {
         throw new SessionMetadataConflictError(
@@ -3089,7 +3237,8 @@ export class SqliteSessionMetadataStore {
             };
       const committedAt = this.now();
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO sandbox_boundary_log(
             session_id,
             entry_id,
@@ -3100,7 +3249,8 @@ export class SqliteSessionMetadataStore {
             created_at,
             settled_at
           ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
-        `)
+        `,
+        )
         .run(
           sessionId,
           `change:${revision}`,
@@ -3140,11 +3290,13 @@ export class SqliteSessionMetadataStore {
 
   private readRecordSync(sessionId: string): SessionMetadataRecord | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT session_id, payload_json, metadata_version, committed_at
         FROM session_metadata
         WHERE session_id = ?
-      `)
+      `,
+      )
       .get(sessionId) as SessionMetadataRow | undefined;
     return row ? decodeRecord(row) : undefined;
   }
@@ -3157,12 +3309,14 @@ export class SqliteSessionMetadataStore {
     assertSafeSessionId(sessionId);
     if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
     const rows = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT record_json
         FROM session_messages
         WHERE session_id = ?
         ORDER BY sequence
-      `)
+      `,
+      )
       .all(sessionId) as Array<{ record_json?: unknown }>;
     return rows.map((row, index) => {
       if (typeof row.record_json !== 'string') {
@@ -3178,11 +3332,13 @@ export class SqliteSessionMetadataStore {
 
   private readCatalogPreviewSync(sessionId: string): string | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT last_message_preview
         FROM session_catalog_projection
         WHERE session_id = ?
-      `)
+      `,
+      )
       .get(sessionId) as { last_message_preview?: unknown } | undefined;
     if (!row) {
       throw new SessionMetadataConflictError(`Session catalog projection is missing: ${sessionId}`);
@@ -3223,11 +3379,13 @@ export class SqliteSessionMetadataStore {
 
   private finishCatalogProjectionWriteSync(): void {
     const result = this.db
-      .prepare(`
+      .prepare(
+        `
         UPDATE session_catalog_state
         SET pending_writes = pending_writes - 1
         WHERE scope = 'catalog' AND pending_writes > 0
-      `)
+      `,
+      )
       .run();
     if (result.changes !== 1) {
       throw new Error('Session catalog projection write was not pending');
@@ -3243,11 +3401,13 @@ export class SqliteSessionMetadataStore {
     readonly pendingWrites: number;
   } {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT epoch, generation, pending_writes
         FROM session_catalog_state
         WHERE scope = 'catalog'
-      `)
+      `,
+      )
       .get() as { epoch?: unknown; generation?: unknown; pending_writes?: unknown } | undefined;
     if (
       !row ||
@@ -3272,11 +3432,13 @@ export class SqliteSessionMetadataStore {
     requestFingerprint: string,
   ): StableSessionCreateProbe {
     const claim = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT request_fingerprint AS requestFingerprint
         FROM session_create_claims
         WHERE session_id = ?
-      `)
+      `,
+      )
       .get(sessionId) as { requestFingerprint?: unknown } | undefined;
     const record = this.readRecordSync(sessionId);
     if (!claim) {
@@ -3306,7 +3468,8 @@ export class SqliteSessionMetadataStore {
   ): SubagentSpawnClaim & { created: boolean } {
     const identity = requireSubagentSpawnIdentity(header);
     const result = this.db
-      .prepare(`
+      .prepare(
+        `
         INSERT OR IGNORE INTO subagent_spawns(
           parent_session_id,
           parent_run_id,
@@ -3319,7 +3482,8 @@ export class SqliteSessionMetadataStore {
           initial_run_id,
           claimed_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
+      `,
+      )
       .run(
         identity.parent.parentSessionId,
         identity.parent.spawnedBy.parentRunId,
@@ -3355,7 +3519,8 @@ export class SqliteSessionMetadataStore {
 
   private readSubagentSpawnClaim(parent: SubagentSessionParent): SubagentSpawnClaim | undefined {
     return this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           request_fingerprint AS requestFingerprint,
           child_session_id AS childSessionId,
@@ -3367,7 +3532,8 @@ export class SqliteSessionMetadataStore {
           AND tool_call_id = ?
           AND swarm_id = ?
           AND item_id = ?
-      `)
+      `,
+      )
       .get(
         parent.parentSessionId,
         parent.spawnedBy.parentRunId,
@@ -3382,11 +3548,13 @@ export class SqliteSessionMetadataStore {
     workId: string,
   ): AgentGraphOperatorProvision | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT payload_json AS payloadJson
         FROM agent_graph_operator_provisions
         WHERE graph_id = ? AND work_id = ?
-      `)
+      `,
+      )
       .get(graphId, workId) as AgentGraphOperatorProvisionRow | undefined;
     return row
       ? decodeAgentGraphOperatorProvision(JSON.parse(row.payloadJson) as unknown)
@@ -3430,7 +3598,8 @@ export class SqliteSessionMetadataStore {
     intentId: string,
   ): AgentGraphIntentClaim | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           schema_version AS schemaVersion,
           claim_id AS claimId,
@@ -3445,7 +3614,8 @@ export class SqliteSessionMetadataStore {
           claimed_at AS claimedAt
         FROM agent_graph_intent_claims
         WHERE graph_id = ? AND intent_id = ?
-      `)
+      `,
+      )
       .get(graphId, intentId) as AgentGraphIntentClaim | undefined;
     return row ? decodeAgentGraphIntentClaim(row) : undefined;
   }
@@ -3455,11 +3625,13 @@ export class SqliteSessionMetadataStore {
     intentId: string,
   ): AgentGraphIntentAdmissionState {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT admission_status AS admissionState
         FROM agent_graph_intent_claims
         WHERE graph_id = ? AND intent_id = ?
-      `)
+      `,
+      )
       .get(graphId, intentId) as { admissionState?: unknown } | undefined;
     if (
       row?.admissionState !== 'claimed' &&
@@ -3478,7 +3650,8 @@ export class SqliteSessionMetadataStore {
   ): AgentGraphIntentClaimResult {
     const claimedAt = this.now();
     const inserted = this.db
-      .prepare(`
+      .prepare(
+        `
         INSERT OR IGNORE INTO agent_graph_intent_claims(
           claim_id,
           schema_version,
@@ -3494,7 +3667,8 @@ export class SqliteSessionMetadataStore {
           admission_status,
           admission_updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?)
-      `)
+      `,
+      )
       .run(
         request.claimId,
         request.schemaVersion,
@@ -3536,11 +3710,13 @@ export class SqliteSessionMetadataStore {
     updateId: string,
   ): AgentGraphScheduleUpdate | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT payload_json AS payloadJson
         FROM agent_graph_schedule_updates
         WHERE update_id = ?
-      `)
+      `,
+      )
       .get(updateId) as AgentGraphScheduleUpdateRow | undefined;
     return row ? decodeAgentGraphScheduleUpdateRow(row) : undefined;
   }
@@ -3549,13 +3725,15 @@ export class SqliteSessionMetadataStore {
     source: AgentGraphScheduleUpdateRequest['source'],
   ): AgentGraphScheduleUpdate | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT payload_json AS payloadJson
         FROM agent_graph_schedule_updates
         WHERE source_session_id = ?
           AND source_run_id = ?
           AND source_tool_call_id = ?
-      `)
+      `,
+      )
       .get(source.sessionId, source.runId, source.toolCallId) as
       | AgentGraphScheduleUpdateRow
       | undefined;
@@ -3577,12 +3755,14 @@ export class SqliteSessionMetadataStore {
   private hasClosedAgentGraphSchedule(graphId: string): boolean {
     return (
       this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT 1 AS found
           FROM agent_graph_schedule_updates
           WHERE graph_id = ? AND closes_graph = 1
           LIMIT 1
-        `)
+        `,
+        )
         .get(graphId) !== undefined
     );
   }
@@ -3593,11 +3773,13 @@ export class SqliteSessionMetadataStore {
 
   private currentAgentGraphScheduleRevision(graphId: string): number {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT COALESCE(MAX(revision), 0) AS revision
         FROM agent_graph_schedule_updates
         WHERE graph_id = ?
-      `)
+      `,
+      )
       .get(graphId) as { revision?: unknown } | undefined;
     const revision = row?.revision;
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
@@ -3611,7 +3793,8 @@ export class SqliteSessionMetadataStore {
     wakeId: string,
   ): AgentGraphSupervisorWakeRecord | undefined {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           schema_version AS schemaVersion,
           graph_id AS graphId,
@@ -3627,7 +3810,8 @@ export class SqliteSessionMetadataStore {
           updated_at AS updatedAt
         FROM agent_graph_supervisor_wakes
         WHERE graph_id = ? AND wake_id = ?
-      `)
+      `,
+      )
       .get(graphId, wakeId) as AgentGraphSupervisorWakeRow | undefined;
     return row ? decodeAgentGraphSupervisorWakeRow(row) : undefined;
   }
@@ -3651,7 +3835,8 @@ export class SqliteSessionMetadataStore {
     attemptId: string,
   ): AgentGraphSupervisorWakeAttemptRecord {
     const row = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           graph_id AS graphId,
           wake_id AS wakeId,
@@ -3663,7 +3848,8 @@ export class SqliteSessionMetadataStore {
           completed_at AS completedAt
         FROM agent_graph_supervisor_wake_attempts
         WHERE graph_id = ? AND wake_id = ? AND attempt_id = ?
-      `)
+      `,
+      )
       .get(graphId, wakeId, attemptId) as AgentGraphSupervisorWakeAttemptRow | undefined;
     if (!row) {
       throw new SessionMetadataConflictError(
@@ -3686,11 +3872,13 @@ export class SqliteSessionMetadataStore {
     retirementSessionIds?: ReadonlySet<string>,
   ): void {
     const graphOwner = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT graph_id AS graphId, work_id AS workId, operator_id AS operatorId
         FROM agent_graph_operator_provisions
         WHERE target_session_id = ?
-      `)
+      `,
+      )
       .get(sessionId) as { graphId: string; workId: string; operatorId: string } | undefined;
     if (graphOwner) {
       const parent = this.readRecordSync(sessionId)?.header.subagentParent;
@@ -3706,7 +3894,8 @@ export class SqliteSessionMetadataStore {
       }
     }
     const ownedOperators = this.db
-      .prepare(`
+      .prepare(
+        `
         SELECT
           child.session_id,
           child.payload_json,
@@ -3720,7 +3909,8 @@ export class SqliteSessionMetadataStore {
           ON child.session_id = provision.target_session_id
         WHERE child.subagent_parent_session_id = ?
         ORDER BY child.session_id
-      `)
+      `,
+      )
       .all(sessionId) as unknown as OwnedAgentGraphOperatorRow[];
     for (const row of ownedOperators) {
       const parent = decodeRecord(row).header.subagentParent;
@@ -4450,6 +4640,8 @@ function decodeStoredMessageRow(
     const parsed = JSON.parse(value) as unknown;
     return recovery ? decodeStoredMessageForRecovery(parsed) : decodeStoredMessageForRead(parsed);
   } catch (error) {
-    throw new Error(`Invalid Session message row ${index} for ${sessionId}`, { cause: error });
+    throw new Error(`Invalid Session message row ${index} for ${sessionId}`, {
+      cause: error,
+    });
   }
 }

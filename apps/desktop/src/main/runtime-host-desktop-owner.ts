@@ -5,6 +5,7 @@ import {
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
 } from '@maka/runtime-host/client';
+import { RUNTIME_HOST_COMPATIBILITY_EPOCH } from '@maka/runtime-host/protocol';
 import {
   startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidate,
@@ -104,6 +105,11 @@ class RuntimeHostDesktopOwnerImpl implements RuntimeHostDesktopOwner {
     );
     if (result.kind === 'ready') return result.candidate;
     if (result.kind === 'incompatible') {
+      if (result.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+        throw new RuntimeHostPermanentReconnectError(
+          'An older Maka process is still running and is incompatible with this build. Fully quit the previous Maka Desktop process, then start Maka again.',
+        );
+      }
       throw new RuntimeHostPermanentReconnectError(
         `Runtime Host is incompatible (protocol ${result.handshake.protocolMin}-${result.handshake.protocolMax}; ${result.handshake.replacement})`,
       );

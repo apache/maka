@@ -8,7 +8,6 @@ import {
 } from "@maka/core/session";
 import type { Task } from "@maka/core/task-ledger";
 import type {
-  ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,

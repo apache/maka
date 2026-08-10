@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -38,7 +39,7 @@ test('two Clients share one revision-pinned Automation authority', async () => {
   const host = await RuntimeHostKernel.start({
     owner,
     idleGraceMs: 10_000,
-    compositionFactory: async (context) => {
+    composition: defineInteractiveRuntimeHostComposition(async (context) => {
       const writer = await openInteractiveAutomationAuthorityForWrite(context.owner.lease);
       const coordinator = new HostAutomationCoordinator({
         store: writer,
@@ -61,12 +62,19 @@ test('two Clients share one revision-pinned Automation authority', async () => {
           },
         } as unknown as Pick<SessionManager, 'sendMessage'>,
         root: {
-          executeRoot: async () => assert.fail('No Automation fire is expected in this test'),
+          admit: async () => assert.fail('No Automation fire is expected in this test'),
+          reconcile: async () => assert.fail('No Automation fire is expected in this test'),
+          subscribe: () => () => undefined,
         },
         runtimePolicy: runtimePolicyStores(),
+        clientCapabilities: {
+          requirementsForAutomation: async () => ({ ok: true, requirements: [] }),
+          checkAutomationRequirements: async () => ({ ok: true }),
+          bindAutomationSession: async () => ({ ok: true }),
+        },
         isSessionActive: () => false,
         sessionAdmission: new SessionAdmissionGate(),
-        acquireResidency: context.acquireResidency,
+        acquireResidency: () => context.acquireResidency('automation'),
         requestDrain: context.requestDrain,
         now: () => 1_000,
         random: () => 0,
@@ -87,7 +95,7 @@ test('two Clients share one revision-pinned Automation authority', async () => {
           writer.close();
         },
       };
-    },
+    }),
   });
   let desktop: RuntimeHostConnection | undefined;
   let tui: RuntimeHostConnection | undefined;

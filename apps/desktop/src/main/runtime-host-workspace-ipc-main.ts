@@ -1,15 +1,18 @@
 import { stat } from 'node:fs/promises';
-import type { IpcMain } from 'electron';
 import type { GitReviewMutationAction, GitReviewSource } from '@maka/core';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { mutateGitReview, readGitReview } from './git-review-main.js';
+import {
+  handleReconnectableRead,
+  type ReconnectableReadIpcMain,
+} from './ipc-reconnect-policy.js';
 
 type WorkspaceClient = Pick<DesktopRuntimeHostClient, 'getSession'>;
 
 export function registerRuntimeHostWorkspaceIpc(
-  input: { readonly ipcMain: Pick<IpcMain, 'handle'>; readonly client: WorkspaceClient },
+  input: { readonly ipcMain: ReconnectableReadIpcMain; readonly client: WorkspaceClient },
 ): void {
-  input.ipcMain.handle('git-review:read', async (_event, raw: unknown) => {
+  handleReconnectableRead(input.ipcMain, 'git-review:read', async (_event, raw: unknown) => {
     const request = readRequest(raw);
     const cwd = await sessionWorkspace(input.client, request.sessionId);
     if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };

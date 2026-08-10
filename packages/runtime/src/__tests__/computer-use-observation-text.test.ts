@@ -120,6 +120,74 @@ test('an element that is its own parent is a root, not a hang', () => {
   assert.deepEqual(lines(text).slice(1), ['5 AXGroup']);
 });
 
+test('a post-action no-change observation says so without repeating the tree', () => {
+  const text = renderObservationForModel({
+    ...observation([{ elementId: '0', role: 'AXWindow', label: 'Main' }]),
+    renderDifference: true,
+    difference: {
+      baseObservationId: 'obs_0',
+      presentation: 'no-change',
+      changes: [],
+      removedStableIdRanges: [],
+    },
+  });
+
+  assert.deepEqual(lines(text).slice(1), [
+    'no_change=true(the window has no effective accessibility changes since obs_0)',
+  ]);
+});
+
+test('a post-action difference renders removed ranges and changed elements only', () => {
+  const text = renderObservationForModel({
+    ...observation([
+      { elementId: '10', role: 'AXWindow', label: 'Main' },
+      { elementId: '12', role: 'AXButton', label: 'Inserted', parentElementId: '10' },
+      { elementId: '13', role: 'AXStaticText', value: 'Updated', parentElementId: '10' },
+      { elementId: '99', role: 'AXButton', label: 'Unchanged', parentElementId: '10' },
+    ]),
+    renderDifference: true,
+    difference: {
+      baseObservationId: 'obs_0',
+      presentation: 'difference',
+      changes: [
+        { kind: 'remove', path: [0, 0], stableId: 7 },
+        { kind: 'insert', path: [0, 1], stableId: 12, elementId: '12' },
+        { kind: 'update', path: [0, 2], stableId: 13, elementId: '13' },
+      ],
+      removedStableIdRanges: [
+        { start: 4, end: 6 },
+        { start: 7, end: 7 },
+      ],
+    },
+  });
+
+  assert.deepEqual(lines(text).slice(1), [
+    'removed_element_ids=4-6,7',
+    '\tchange=insert 12 AXButton "Inserted"',
+    '\tchange=update 13 AXStaticText ="Updated"',
+  ]);
+  assert.doesNotMatch(text, /Unchanged/);
+});
+
+test('a full difference presentation falls back to the complete tree', () => {
+  const text = renderObservationForModel({
+    ...observation([
+      { elementId: '10', role: 'AXWindow', label: 'Main' },
+      { elementId: '11', role: 'AXButton', label: 'Save', parentElementId: '10' },
+    ]),
+    renderDifference: true,
+    difference: {
+      baseObservationId: 'obs_0',
+      presentation: 'full',
+      changes: [],
+      removedStableIdRanges: [{ start: 4, end: 9 }],
+    },
+  });
+
+  assert.deepEqual(lines(text).slice(1), ['10 AXWindow "Main"', '\t11 AXButton "Save"']);
+  assert.doesNotMatch(text, /removed_element_ids/);
+});
+
 test('every element appears exactly once regardless of report order', () => {
   // The driver reports in its own order; children can precede parents.
   const elements: CuObservedElement[] = [

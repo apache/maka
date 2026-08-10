@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import {
@@ -47,9 +48,9 @@ import {
 import {
   RuntimeHostKernel,
   RuntimeHostProcessTerminationRequiredError,
-  startRuntimeHostCandidate,
-  type RuntimeHostCandidateOptions,
-  type RuntimeHostCandidateResult,
+  startInteractiveRuntimeHostCandidate,
+  type InteractiveRuntimeHostCandidateOptions,
+  type InteractiveRuntimeHostCandidateResult,
   type RuntimeHostComposition,
   type RuntimeHostCompositionContext,
 } from '../server/index.js';
@@ -66,16 +67,61 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
+import { bindStateRootComposition } from '@maka/storage/state-root-composition';
 
 const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const LEGACY_PROTOCOL = { min: 1, max: 1 } as const;
+const KERNEL_CANDIDATE_ENTRYPOINT = new URL('./fixtures/kernel-candidate.js', import.meta.url);
+const KERNEL_COMPOSITION = defineInteractiveRuntimeHostComposition(async () => ({
+  handlers: createUnavailableDomainOperationHandlers(),
+  beginDrain() {},
+  async recover() {},
+  async close() {},
+}));
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
+  test('rejects a bound composition mismatch without launching a Candidate', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      await bindStateRootComposition(owner.lease, 'maka.other');
+      await owner.close();
+
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          surface: 'inspect',
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 100,
+        },
+        {
+          random: () => 0.5,
+          launchCandidate: () => {
+            launches += 1;
+            return { spawned: Promise.resolve({ pid: process.pid }) };
+          },
+        },
+      );
+
+      assert.deepEqual(result, {
+        kind: 'failed',
+        reason: 'composition_mismatch',
+        requiredCompositionId: 'maka.other',
+      });
+      assert.equal(launches, 0);
+    });
+  });
+
   test('service lifecycle remains ready until explicitly closed', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
@@ -84,6 +130,7 @@ describe('non-serving Runtime Host kernel', () => {
       const host = await RuntimeHostKernel.start({
         owner,
         lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
       });
 
       await sleep(25);
@@ -95,6 +142,8 @@ describe('non-serving Runtime Host kernel', () => {
         rootPath: paths.root,
         surface: 'tui',
         protocol: LEGACY_PROTOCOL,
+        compositionId: KERNEL_COMPOSITION.descriptor.id,
+        candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
         electionDeadlineMs: 500,
       });
       assert.equal(incompatible.kind, 'incompatible');
@@ -184,7 +233,7 @@ describe('non-serving Runtime Host kernel', () => {
       const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        compositionFactory: async () => {
+        composition: defineInteractiveRuntimeHostComposition(async () => {
           markFactoryEntered();
           await factoryReleased;
           return {
@@ -205,7 +254,7 @@ describe('non-serving Runtime Host kernel', () => {
             async recover() {},
             async close() {},
           };
-        },
+        }),
       });
       let host: RuntimeHostKernel | undefined;
       let transport: FramedTransport | undefined;
@@ -222,6 +271,7 @@ describe('non-serving Runtime Host kernel', () => {
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
           compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+          compositionId: 'maka.interactive',
         });
         const handshake = decodeHostFrame(await transport.read(1_000));
         assert.ok('kind' in handshake && handshake.kind === 'accepted');
@@ -266,14 +316,14 @@ describe('non-serving Runtime Host kernel', () => {
       const host = await RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        compositionFactory: async (value) => {
+        composition: defineInteractiveRuntimeHostComposition(async (value) => {
           context = value;
           return testComposition({
             beginDrain: () => {
               drainCalls += 1;
             },
           });
-        },
+        }),
       });
 
       context?.requestDrain();
@@ -293,12 +343,12 @@ describe('non-serving Runtime Host kernel', () => {
         owner,
         idleGraceMs: 10_000,
         shutdownGraceMs: 50,
-        compositionFactory: async (context) => {
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
           context.retainUntilProcessExit();
           context.retainUntilProcessExit();
           context.requestDrain();
           return testComposition();
-        },
+        }),
       });
 
       try {
@@ -341,7 +391,7 @@ describe('non-serving Runtime Host kernel', () => {
       const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        compositionFactory: async (context) => {
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
           context.requestDrain();
           markFactorySuspended();
           await factoryReleased;
@@ -355,7 +405,7 @@ describe('non-serving Runtime Host kernel', () => {
               lifecycle.push('close');
             },
           });
-        },
+        }),
       });
       void hostTask.then(
         () => {
@@ -397,7 +447,7 @@ describe('non-serving Runtime Host kernel', () => {
         owner,
         idleGraceMs: 10_000,
         shutdownGraceMs: 100,
-        compositionFactory: async (context) => {
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
           context.requestDrain();
           return testComposition({
             beginDrain: () => lifecycle.push('begin-drain'),
@@ -411,7 +461,7 @@ describe('non-serving Runtime Host kernel', () => {
               await closeReleased;
             },
           });
-        },
+        }),
       });
       const startupFailure = hostTask.then(
         () => assert.fail('Runtime Host startup unexpectedly succeeded'),
@@ -464,6 +514,8 @@ describe('non-serving Runtime Host kernel', () => {
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: KERNEL_COMPOSITION.descriptor.revision,
         state: 'ready',
         replacement: 'blocked_by_residency',
       });
@@ -475,6 +527,8 @@ describe('non-serving Runtime Host kernel', () => {
         rootPath: paths.root,
         surface: 'tui',
         protocol: LEGACY_PROTOCOL,
+        compositionId: KERNEL_COMPOSITION.descriptor.id,
+        candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
         electionDeadlineMs: 2_000,
       });
       assert.equal(blocked.kind, 'incompatible');
@@ -632,6 +686,8 @@ describe('non-serving Runtime Host kernel', () => {
               rootPath: paths.root,
               surface: 'inspect',
               protocol: CURRENT_PROTOCOL,
+              compositionId: KERNEL_COMPOSITION.descriptor.id,
+              candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
               electionDeadlineMs: 100,
             },
             {
@@ -650,6 +706,8 @@ describe('non-serving Runtime Host kernel', () => {
               rootPath: paths.root,
               surface: 'inspect',
               protocol: CURRENT_PROTOCOL,
+              compositionId: KERNEL_COMPOSITION.descriptor.id,
+              candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
               electionDeadlineMs: 5_000,
             },
             {
@@ -824,7 +882,7 @@ describe('non-serving Runtime Host kernel', () => {
         await RuntimeHostKernel.start({
           owner,
           idleGraceMs: 10_000,
-          compositionFactory: async () => ({
+          composition: defineInteractiveRuntimeHostComposition(async () => ({
             ...testComposition(),
             handlers: {
               ...createUnavailableDomainOperationHandlers(),
@@ -846,7 +904,7 @@ describe('non-serving Runtime Host kernel', () => {
                 return { ok: true, result: { sessionId, goal: null } };
               },
             },
-          }),
+          })),
         }),
       );
       // Injected liveness cadence: the admitted request below must stay
@@ -1019,6 +1077,8 @@ describe('non-serving Runtime Host kernel', () => {
         rootPath: paths.root,
         surface: 'tui',
         protocol: CURRENT_PROTOCOL,
+        compositionId: KERNEL_COMPOSITION.descriptor.id,
+        candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
         electionDeadlineMs: 100,
       });
       assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
@@ -1047,7 +1107,7 @@ describe('non-serving Runtime Host kernel', () => {
       };
 
       await assert.rejects(
-        () => RuntimeHostKernel.start({ owner: copiedOwner }),
+        () => RuntimeHostKernel.start({ owner: copiedOwner, composition: KERNEL_COMPOSITION }),
         (error: unknown) =>
           error instanceof StorageRootAuthorityError && error.code === 'invalid_owner',
       );
@@ -1074,7 +1134,7 @@ describe('non-serving Runtime Host kernel', () => {
       await rename(paths.root, movedRoot);
       await mkdir(paths.root);
       await assert.rejects(
-        () => RuntimeHostKernel.start({ owner }),
+        () => RuntimeHostKernel.start({ owner, composition: KERNEL_COMPOSITION }),
         (error: unknown) =>
           error instanceof StorageRootAuthorityError && error.code === 'root_identity_changed',
       );
@@ -1113,6 +1173,8 @@ describe('non-serving Runtime Host kernel', () => {
               rootPath: paths.root,
               surface: 'tui',
               protocol: CURRENT_PROTOCOL,
+              compositionId: KERNEL_COMPOSITION.descriptor.id,
+              candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
               electionDeadlineMs: 50,
               handshakeTimeoutMs: 5_000,
             },
@@ -1156,9 +1218,15 @@ describe('non-serving Runtime Host kernel', () => {
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
       });
       const response = decodeHostFrame(await transport.read(2_000));
-      assert.deepEqual(response, { kind: 'draining', hostEpoch: candidate.host.hostEpoch });
+      assert.deepEqual(response, {
+        kind: 'draining',
+        hostEpoch: candidate.host.hostEpoch,
+        compositionId: 'maka.interactive',
+        compositionRevision: KERNEL_COMPOSITION.descriptor.revision,
+      });
       transport.abort();
       await transport.closed;
       await closing;
@@ -1188,7 +1256,7 @@ describe('non-serving Runtime Host kernel', () => {
       const host = await RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        compositionFactory: async () => ({
+        composition: defineInteractiveRuntimeHostComposition(async () => ({
           handlers: {
             ...createUnavailableDomainOperationHandlers(),
             'memory.mutate': async (_input, context) => {
@@ -1207,7 +1275,7 @@ describe('non-serving Runtime Host kernel', () => {
           beginDrain() {},
           async recover() {},
           async close() {},
-        }),
+        })),
       });
       const transport = new FramedTransport(await openSocket(host.endpoint));
       try {
@@ -1218,6 +1286,7 @@ describe('non-serving Runtime Host kernel', () => {
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
           compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+          compositionId: 'maka.interactive',
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake && handshake.kind === 'accepted');
@@ -1270,7 +1339,7 @@ describe('non-serving Runtime Host kernel', () => {
       const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        compositionFactory: async () => {
+        composition: defineInteractiveRuntimeHostComposition(async () => {
           markFactoryEntered();
           await factoryReleased;
           return {
@@ -1281,7 +1350,7 @@ describe('non-serving Runtime Host kernel', () => {
             async recover() {},
             async close() {},
           };
-        },
+        }),
       });
       let host: RuntimeHostKernel | undefined;
       let connection: RuntimeHostConnection | undefined;
@@ -1346,6 +1415,7 @@ describe('non-serving Runtime Host kernel', () => {
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
           compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+          compositionId: 'maka.interactive',
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake);
@@ -1476,6 +1546,7 @@ describe('non-serving Runtime Host kernel', () => {
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
           compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+          compositionId: 'maka.interactive',
         });
         const handshake = decodeHostFrame(await transport.read(2_000));
         assert.ok('kind' in handshake);
@@ -1519,10 +1590,13 @@ describe('non-serving Runtime Host kernel', () => {
             protocolMin: CURRENT_PROTOCOL.min,
             protocolMax: CURRENT_PROTOCOL.max,
             compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+            compositionId: 'maka.interactive',
           });
           assert.deepEqual(decodeHostFrame(await rejectedHandshakeTransport.read(1_000)), {
             kind: 'draining',
             hostEpoch: ready.hostEpoch,
+            compositionId: 'maka.interactive',
+            compositionRevision: KERNEL_COMPOSITION.descriptor.revision,
           });
         } finally {
           rejectedHandshakeTransport.abort();
@@ -1590,7 +1664,12 @@ describe('non-serving Runtime Host kernel', () => {
       assert.ok(owner);
       if (!owner) return;
       await assert.rejects(
-        () => RuntimeHostKernel.start({ owner, shutdownGraceMs: 0 }),
+        () =>
+          RuntimeHostKernel.start({
+            owner,
+            shutdownGraceMs: 0,
+            composition: KERNEL_COMPOSITION,
+          }),
         RangeError,
       );
       const retry = await startTestRuntimeHostCandidate(paths, {
@@ -1634,6 +1713,17 @@ describe('non-serving Runtime Host kernel', () => {
           }),
         RuntimeHostProtocolError,
       );
+      await assert.rejects(
+        () =>
+          connectOrSpawnRuntimeHost({
+            rootPath: paths.root,
+            surface: 'tui',
+            protocol: CURRENT_PROTOCOL,
+            compositionId: 'Invalid Composition',
+            candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          }),
+        RuntimeHostProtocolError,
+      );
       await assertPathMissing(paths.root);
 
       const candidate = await startTestRuntimeHostCandidate(paths, {
@@ -1648,6 +1738,8 @@ describe('non-serving Runtime Host kernel', () => {
             rootPath: paths.root,
             surface: 'tui',
             protocol: CURRENT_PROTOCOL,
+            compositionId: KERNEL_COMPOSITION.descriptor.id,
+            candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
             clientInstanceId: 'x'.repeat(129),
             electionDeadlineMs: 100,
           }),
@@ -1667,6 +1759,7 @@ describe('non-serving Runtime Host kernel', () => {
             rootPath: paths.root,
             expectedRootId: capability.rootId,
             executable: join(paths.root, 'missing-node'),
+            entrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
           }).spawned,
         (error: unknown) =>
           error instanceof Error &&
@@ -1980,24 +2073,36 @@ async function retryOwner(capability: StorageRootCapability<'interactive'>, path
 
 async function startTestRuntimeHostCandidate(
   paths: HostPaths,
-  options: Omit<RuntimeHostCandidateOptions, 'expectedRootId'> & { expectedRootId?: string },
-): Promise<RuntimeHostCandidateResult> {
+  options: Omit<InteractiveRuntimeHostCandidateOptions, 'expectedRootId'> & {
+    expectedRootId?: string;
+  },
+): Promise<InteractiveRuntimeHostCandidateResult> {
   const expectedRootId =
     options.expectedRootId ??
     (await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' })).rootId;
-  const result = await startRuntimeHostCandidate({ ...options, expectedRootId });
+  const result = await startInteractiveRuntimeHostCandidate(
+    { ...options, expectedRootId },
+    KERNEL_COMPOSITION,
+  );
   if (result.kind === 'winner') paths.resources.trackCloseable(result.host);
   return result;
 }
 
 async function spawnTestRuntimeHostCandidate(
   paths: HostPaths,
-  input: Omit<DetachedCandidateInput, 'expectedRootId'> & { expectedRootId?: string },
+  input: Omit<DetachedCandidateInput, 'expectedRootId' | 'entrypoint'> & {
+    expectedRootId?: string;
+    entrypoint?: string | URL;
+  },
 ): Promise<DetachedCandidateAttempt> {
   const expectedRootId =
     input.expectedRootId ??
     (await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' })).rootId;
-  return launchTestRuntimeHostCandidate(paths, { ...input, expectedRootId }).spawned;
+  return launchTestRuntimeHostCandidate(paths, {
+    ...input,
+    expectedRootId,
+    entrypoint: input.entrypoint ?? KERNEL_CANDIDATE_ENTRYPOINT,
+  }).spawned;
 }
 
 function launchTestRuntimeHostCandidate(
@@ -2321,6 +2426,7 @@ async function openNonReadingStatusSocket(path: string): Promise<Socket> {
         protocolMin: CURRENT_PROTOCOL.min,
         protocolMax: CURRENT_PROTOCOL.max,
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
       })}\n`,
     );
   });

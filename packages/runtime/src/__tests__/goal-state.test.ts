@@ -11,7 +11,7 @@ function createManager(startTime = 1_700_000_000_000) {
   const mgr = new GoalManager({
     generateId: () => `goal-${++id}`,
     now: () => time,
-    onChange: (goal, previous) => {
+    onChange: (goal, _controlLease, previous) => {
       events.push({ goal, previous });
     },
   });
@@ -183,6 +183,21 @@ describe('GoalManager creation and lifecycle', () => {
     });
     assert.equal(paused?.status, 'paused');
     assert.equal(paused?.lastReason, 'Continuation host is unavailable');
+  });
+
+  test('restored control authority uses durable value identity and rejects an older generation', () => {
+    const { mgr: source } = createManager();
+    const goal = createGoal(source, 'survive restart');
+    const durableLease = source.getControlLease(SESSION);
+    assert.ok(durableLease);
+
+    const { mgr: restored } = createManager();
+    restored.restore(goal, durableLease);
+    assert.notStrictEqual(restored.getControlLease(SESSION), durableLease);
+    assert.equal(restored.matchesControlLease(SESSION, durableLease), true);
+
+    assert.ok(restored.pause(SESSION));
+    assert.equal(restored.matchesControlLease(SESSION, durableLease), false);
   });
 });
 

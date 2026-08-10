@@ -33,6 +33,7 @@ export interface McpClientManagerOptions {
   clientVersion?: string;
   timeouts?: Partial<McpTimeouts>;
   now?: () => number;
+  excludedStdioEnvironmentKeys?: readonly string[];
 }
 
 export type McpManagerChangeListener = (status: McpServerStatus) => void;
@@ -72,6 +73,7 @@ export class McpClientManager {
   private readonly now: () => number;
   private readonly clientName: string;
   private readonly clientVersion: string;
+  private readonly excludedStdioEnvironmentKeys: readonly string[];
   private toolSnapshotRevisionValue = 0;
 
   constructor(options: McpClientManagerOptions = {}) {
@@ -79,6 +81,7 @@ export class McpClientManager {
     this.now = options.now ?? Date.now;
     this.clientName = options.clientName ?? 'maka';
     this.clientVersion = options.clientVersion ?? '0.1.0';
+    this.excludedStdioEnvironmentKeys = [...(options.excludedStdioEnvironmentKeys ?? [])];
   }
 
   onChange(listener: McpManagerChangeListener): () => void {
@@ -376,7 +379,11 @@ export class McpClientManager {
         command: entry.config.command,
         args: entry.config.args,
         cwd: entry.config.cwd,
-        env: buildStdioEnvironment(entry.config.env),
+        env: buildStdioEnvironment(
+          entry.config.env,
+          process.env,
+          this.excludedStdioEnvironmentKeys,
+        ),
         stderr: 'pipe',
       });
       attachStderrTail(transport, entry, () => {
@@ -563,6 +570,7 @@ function summarizeErrorContent(content: unknown[]): string {
 export function buildStdioEnvironment(
   explicit: Record<string, string> = {},
   source = process.env,
+  excludedKeys: readonly string[] = [],
 ): Record<string, string> {
   const result: Record<string, string> = {};
   const exact = new Set([
@@ -586,7 +594,12 @@ export function buildStdioEnvironment(
     if (value !== undefined && (exact.has(key) || key.startsWith('LC_') || key.startsWith('XDG_')))
       result[key] = value;
   }
-  return { ...result, ...explicit };
+  const environment = { ...result, ...explicit };
+  const excluded = new Set(excludedKeys.map((key) => key.toLowerCase()));
+  for (const key of Object.keys(environment)) {
+    if (excluded.has(key.toLowerCase())) delete environment[key];
+  }
+  return environment;
 }
 
 function attachStderrTail(

@@ -1,3 +1,4 @@
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -48,7 +49,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      compositionFactory: async (context) => {
+      composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const writer = await openInteractiveShellRunStoreForWrite(context.owner.lease);
         let coordinator: HostRuntimeResourceCoordinator;
         const manager = new ShellRunProcessManager({
@@ -68,7 +69,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
             readHeader: async () => ({ cwd: base, status: 'idle', isArchived: false }),
           },
           sessionAdmission: new SessionAdmissionGate(),
-          acquireResidency: context.acquireResidency,
+          acquireResidency: () => context.acquireResidency('runtime-resource'),
           requestDrain: context.requestDrain,
         });
         resources = coordinator;
@@ -85,7 +86,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
             writer.close();
           },
         };
-      },
+      }),
     });
     owner = undefined;
     assert.ok(resources);

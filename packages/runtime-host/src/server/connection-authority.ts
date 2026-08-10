@@ -1,12 +1,14 @@
 import {
   HOST_OPERATION_SPECS,
+  operationUsesHostPaths,
+  type AccessCredentialPrincipalKind,
   type ClientCapabilityClientFrame,
   type OperationKey,
   type RequestFrame,
 } from '../protocol/index.js';
 
 export interface RuntimeHostConnectionAuthority {
-  readonly principalKind: 'local_owner' | 'access_credential';
+  readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly credentialId?: string;
   readonly operationGrants: 'all' | readonly OperationKey[];
@@ -29,7 +31,7 @@ export function createRuntimeHostConnectionAuthority(
     throw new Error('Runtime Host connection principal is invalid');
   }
   if (
-    input.principalKind === 'access_credential' &&
+    input.principalKind !== 'local_owner' &&
     !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.credentialId ?? '')
   ) {
     throw new Error('Runtime Host access credential identity is invalid');
@@ -69,7 +71,7 @@ export function authorizeRuntimeHostOperation(
   ) {
     return false;
   }
-  return authority.canUseHostPaths || !operationUsesHostPath(frame);
+  return authority.canUseHostPaths || !operationUsesHostPaths(frame);
 }
 
 export function hasRuntimeHostOperationGrant(
@@ -84,23 +86,4 @@ export function authorizeClientCapabilityFrame(
   _frame: ClientCapabilityClientFrame,
 ): boolean {
   return authority.canPublishClientCapabilities;
-}
-
-function operationUsesHostPath(frame: RequestFrame): boolean {
-  switch (frame.operation) {
-    case 'session.create':
-    case 'session.cwd.relocate':
-    case 'skill.catalog.query':
-    case 'skill.catalog.mutate':
-    case 'skill.catalog.preview-update':
-    case 'project.catalog.query':
-    case 'project.catalog.mutate':
-      return true;
-    case 'skill.catalog.invocable.query':
-      return frame.input.target.kind === 'new_session';
-    case 'external-session.catalog.query':
-      return frame.input.cwd !== undefined;
-    default:
-      return false;
-  }
 }

@@ -10,6 +10,7 @@ import {
 } from '../goal-tools.js';
 import {
   GoalContinuationCoordinator,
+  volatileGoalDurability,
   type GoalContinuationDeps,
   type GoalContinuationScheduler,
   type GoalTurnAdmission,
@@ -100,6 +101,7 @@ function prepareAdmission(
   return {
     kind: 'prepared',
     turnId,
+    execution: { sessionId, turnId, runId: `run-${turnId}` },
     start: () => {
       admitted.push({ sessionId, prompt, turnId, completion });
       return completion.promise;
@@ -149,6 +151,7 @@ function setup(opts?: {
       close: async () => {},
     },
     getRecentContext: async () => 'recent context',
+    durability: volatileGoalDurability,
     getTokenCount: opts?.tokenCount !== undefined ? () => opts.tokenCount! : undefined,
     admitTurn: (sessionId, prompt) => {
       attemptedPrompts.push(prompt);

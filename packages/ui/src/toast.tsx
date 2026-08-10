@@ -44,12 +44,13 @@ export interface ToastAction {
 
 export interface ToastErrorAction {
   label: string;
-  onClick(input: Pick<ToastInput, 'title' | 'description'>): void;
+  onClick(input: Pick<ToastInput, 'title' | 'description' | 'diagnosticDetails'>): void;
 }
 
 export interface ToastInput {
   title: string;
   description?: string;
+  diagnosticDetails?: string;
   variant?: ToastVariant;
   /** Auto-dismiss after this many ms. 0 disables the timer. Default 4000. */
   duration?: number;
@@ -67,7 +68,7 @@ export interface ConfirmInput {
 export interface ToastApi {
   toast(input: ToastInput): string;
   success(title: string, description?: string): string;
-  error(title: string, description?: string): string;
+  error(title: string, description?: string, diagnosticDetails?: string): string;
   info(title: string, description?: string): string;
   warning(title: string, description?: string): string;
   confirm(input: ConfirmInput): Promise<boolean>;
@@ -229,7 +230,8 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
     () => ({
       toast: push,
       success: (title, description) => push({ title, description, variant: 'success' }),
-      error: (title, description) => push({ title, description, variant: 'error', duration: 6000 }),
+      error: (title, description, diagnosticDetails) =>
+        push({ title, description, diagnosticDetails, variant: 'error', duration: 6000 }),
       info: (title, description) => push({ title, description, variant: 'info' }),
       warning: (title, description) => push({ title, description, variant: 'warning' }),
       confirm,

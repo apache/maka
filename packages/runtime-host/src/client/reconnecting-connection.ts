@@ -68,6 +68,8 @@ export async function createRuntimeHostReconnectingConnection(input: {
 }): Promise<RuntimeHostReconnectingConnection> {
   const expectedRootId = input.initialConnection.rootId;
   const expectedProtocol = input.initialConnection.selectedProtocol;
+  const expectedCompositionId = input.initialConnection.compositionId;
+  const expectedCompositionRevision = input.initialConnection.compositionRevision;
   const connect = async (signal: AbortSignal): Promise<RuntimeHostConnection> => {
     const connection = await input.connect(signal);
     if (connection.rootId !== expectedRootId) {
@@ -80,6 +82,15 @@ export async function createRuntimeHostReconnectingConnection(input: {
       await connection.close().catch(() => undefined);
       throw new RuntimeHostPermanentReconnectError(
         `Runtime Host protocol changed from ${expectedProtocol} to ${connection.selectedProtocol}`,
+      );
+    }
+    if (
+      connection.compositionId !== expectedCompositionId ||
+      connection.compositionRevision !== expectedCompositionRevision
+    ) {
+      await connection.close().catch(() => undefined);
+      throw new RuntimeHostPermanentReconnectError(
+        `Runtime Host composition changed from ${expectedCompositionId}@${expectedCompositionRevision} to ${connection.compositionId}@${connection.compositionRevision}`,
       );
     }
     return connection;
@@ -139,6 +150,14 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   get selectedProtocol(): number {
     return this.#lastConnection.selectedProtocol;
+  }
+
+  get compositionId(): string {
+    return this.#lastConnection.compositionId;
+  }
+
+  get compositionRevision(): string {
+    return this.#lastConnection.compositionRevision;
   }
 
   request<K extends DirectRequestOperationKey>(

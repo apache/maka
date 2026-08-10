@@ -833,7 +833,7 @@ function decodeUsageSummary(value: unknown): UsageSummaryV2 {
 /**
  * What qualifies the numbers in a usage result (#1679): how the canonical
  * records behind it were classified, how many rows still come from the frozen
- * pre-cutover table, and how many stored records could not be read. A total
+ * legacy table, and how many stored records could not be read. A total
  * crossing the wire without this cannot be presented honestly.
  */
 function decodeUsageProvenance(value: unknown): UsageProvenance {

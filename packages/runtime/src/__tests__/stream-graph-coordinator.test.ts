@@ -325,6 +325,20 @@ describe('host-managed agent graph coordinator', () => {
         coordinator.toolsForSession(childSessions[0]!.id),
         /only to root Sessions/,
       );
+      let childStopEntered = false;
+      await assert.rejects(
+        coordinator.stopExecution(childSessions[0]!.id, {
+          stopSupervisor: async () => {
+            childStopEntered = true;
+          },
+          withSupervisorWakesSuppressed: async (operation) => {
+            childStopEntered = true;
+            await operation();
+          },
+        }),
+        /only to root Sessions/,
+      );
+      assert.equal(childStopEntered, false);
 
       const canonicalProjection = await controlStore.readAgentGraphClientProjection(graphId);
       assert.ok(canonicalProjection);
@@ -430,7 +444,16 @@ describe('host-managed agent graph coordinator', () => {
       );
       await gate.started;
       try {
-        await recovered.stop(rootSession.id);
+        const supervisorStopFailure = new Error('supervisor stop failed');
+        await assert.rejects(
+          recovered.stopExecution(rootSession.id, {
+            stopSupervisor: async () => {
+              throw supervisorStopFailure;
+            },
+            withSupervisorWakesSuppressed: (operation) => operation(),
+          }),
+          (error: unknown) => error === supervisorStopFailure,
+        );
       } finally {
         gate.release();
       }
