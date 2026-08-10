@@ -5,6 +5,7 @@ import {
   type JsonObject,
 } from './experiment.js';
 import {
+  decodeEvalResult,
   selectCellResult,
   type CellAttempt,
   type EvalResult,
@@ -52,15 +53,15 @@ export interface ExecutorVerification {
 
 export interface ExperimentExecutor {
   readonly kind: string;
-  runAttempt<T>(
+  runAttempt(
     input: { readonly cell: ExperimentCell; readonly signal?: AbortSignal },
     operation: (attempt: {
       readonly context: SubjectExecutionContext;
       verify(subject: SubjectExecutionResult): Promise<ExecutorVerification>;
-    }) => Promise<T>,
+    }) => Promise<EvalResult>,
   ): Promise<
-    | { readonly kind: 'settled'; readonly value: T }
-    | { readonly kind: 'indeterminate'; readonly value?: T }
+    | { readonly kind: 'settled'; readonly value: EvalResult }
+    | { readonly kind: 'indeterminate'; readonly value?: EvalResult }
   >;
 }
 
@@ -157,9 +158,15 @@ async function executeCell(
         }
       },
     );
-    return attempt.kind === 'settled'
-      ? attempt.value
-      : (attempt.value ?? failure('indeterminate', 'executor cleanup did not settle'));
+    if (attempt.kind === 'settled') return decodeEvalResult(attempt.value);
+    if (!attempt.value) return failure('indeterminate', 'executor cleanup did not settle');
+    const partial = decodeEvalResult(attempt.value);
+    return {
+      ...partial,
+      score: null,
+      status: 'indeterminate',
+      failureReason: 'executor cleanup did not settle',
+    };
   } catch {
     return failure('infra_failed', 'executor preparation failed');
   }

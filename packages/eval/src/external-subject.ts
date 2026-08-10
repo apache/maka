@@ -83,7 +83,14 @@ function decodeResult(stdout: string): {
     throw new Error('external result schema is invalid');
   if (result.output !== undefined && typeof result.output !== 'string')
     throw new Error('external result output is invalid');
-  if (!Array.isArray(result.artifacts)) throw new Error('external result artifacts are invalid');
+  if (
+    !Array.isArray(result.artifacts) ||
+    !result.artifacts.every(
+      (artifact) => artifact && typeof artifact === 'object' && !Array.isArray(artifact),
+    )
+  ) {
+    throw new Error('external result artifacts are invalid');
+  }
   return {
     ...(result.output === undefined ? {} : { output: result.output }),
     usage: result.usage === null ? null : decodeUsage(result.usage),

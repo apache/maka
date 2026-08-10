@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -36,4 +36,26 @@ test('owned hosted execution closes its fresh Host after configuration fails', a
   });
 
   assert.equal(result.kind, 'indeterminate');
+});
+
+test('pre-cancelled hosted execution does not start a Runtime Host', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-hosted-execution-'));
+  const abort = new AbortController();
+  abort.abort();
+
+  const result = await runHostedExecution({
+    rootPath,
+    execution: {
+      executionId: '00000000-0000-4000-8000-000000000003',
+      session: {
+        cwd: rootPath,
+        modelTarget: { kind: 'default' },
+      },
+      content: { text: 'This request must not start a Runtime Host.' },
+    },
+    signal: abort.signal,
+  });
+
+  assert.equal(result.kind, 'indeterminate');
+  assert.deepEqual(await readdir(rootPath), []);
 });

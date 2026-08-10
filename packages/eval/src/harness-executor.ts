@@ -13,6 +13,7 @@ import type {
   SubjectExecutionContext,
   SubjectExecutionResult,
 } from './runner.js';
+import type { EvalResult } from './result.js';
 
 type Framework = 'harbor' | 'pier';
 
@@ -52,7 +53,7 @@ function createHarnessExecutor(
   return executor;
 }
 
-async function runHarnessAttempt<T>(
+async function runHarnessAttempt(
   framework: Framework,
   options: HarnessOptions,
   specPath: string,
@@ -60,15 +61,15 @@ async function runHarnessAttempt<T>(
   operation: (attempt: {
     readonly context: SubjectExecutionContext;
     verify(subject: SubjectExecutionResult): Promise<ExecutorVerification>;
-  }) => Promise<T>,
+  }) => Promise<EvalResult>,
 ): Promise<
-  | { readonly kind: 'settled'; readonly value: T }
-  | { readonly kind: 'indeterminate'; readonly value?: T }
+  | { readonly kind: 'settled'; readonly value: EvalResult }
+  | { readonly kind: 'indeterminate'; readonly value?: EvalResult }
 > {
   if (signal?.aborted) return { kind: 'indeterminate' };
   const state = await startTrial(framework, options, specPath, cell, signal);
   let decision = false;
-  let value: T | undefined;
+  let value: EvalResult | undefined;
   let hasValue = false;
   let clean = true;
   const decide = (kind: 'verify' | 'abort') => {
@@ -78,7 +79,7 @@ async function runHarnessAttempt<T>(
     state.socket.end();
   };
   try {
-    value = (await operation({
+    value = await operation({
       context: relayContext(state, cell, signal),
       verify: async (subject) => {
         decide('verify');
@@ -86,7 +87,7 @@ async function runHarnessAttempt<T>(
         if (!clean) throw new Error('Trial did not finalize cleanly');
         return readVerification(state, cell, subject);
       },
-    })) as T;
+    });
     hasValue = true;
   } finally {
     if (!decision) {
@@ -101,7 +102,7 @@ async function runHarnessAttempt<T>(
     return hasValue ? { kind: 'indeterminate', value } : { kind: 'indeterminate' };
   }
   if (!hasValue) throw new Error('executor operation did not settle');
-  return { kind: 'settled', value: value as T };
+  return { kind: 'settled', value };
 }
 
 function relayContext(

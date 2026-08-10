@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,7 +110,46 @@ test('competitor wrapper installs declared containment and provider policy', asy
     await readFile(join(root, 'tmp/maka-reasonix/config.toml'), 'utf8'),
     /bash = "off"/u,
   );
-  assert.equal((await stat(join(root, 'tmp/maka-reasonix/.env'))).mode & 0o777, 0o600);
+  await assert.rejects(stat(join(root, 'tmp/maka-reasonix/.env')), { code: 'ENOENT' });
+});
+
+test('Reasonix wrapper removes its credential before cancellation settles', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-reasonix-cancel-'));
+  const credential = join(root, 'tmp/maka-reasonix/.env');
+  const wrapper = new URL('../harbor-external-subject.js', import.meta.url);
+  const child = spawn(
+    process.execPath,
+    [
+      wrapper.pathname,
+      'reasonix',
+      'https://provider.test',
+      root,
+      '/bin/sh',
+      '-c',
+      'trap "exit 0" TERM; while :; do sleep 1; done',
+      '--model',
+      'maka-proxy/model',
+      '--effort',
+      'max',
+    ],
+    { env: { ...process.env, OPENAI_API_KEY: 'test-only-secret' }, stdio: 'ignore' },
+  );
+  while (
+    await stat(credential).then(
+      () => false,
+      () => true,
+    )
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  child.kill('SIGTERM');
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', () => resolve());
+  });
+
+  await assert.rejects(stat(credential), { code: 'ENOENT' });
 });
 
 test('checked-in cohort is one fully expanded four-arm experiment', async () => {

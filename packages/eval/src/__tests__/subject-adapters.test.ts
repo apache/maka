@@ -62,7 +62,12 @@ test('Maka subject delegates one Hosted execution without owning Runtime lifecyc
       execute: async (input) => {
         request = input;
         const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
-          execution: { session: { cwd: string }; content: { text: string }; maxSteps: number };
+          execution: {
+            executionId: string;
+            session: { cwd: string };
+            content: { text: string };
+            maxSteps: number;
+          };
         };
         assert.equal(payload.execution.session.cwd, '/app');
         assert.equal(payload.execution.content.text, 'official instruction');
@@ -70,7 +75,7 @@ test('Maka subject delegates one Hosted execution without owning Runtime lifecyc
         return {
           exitCode: 0,
           stdout: JSON.stringify({
-            executionId: 'owned-by-runtime-host',
+            executionId: payload.execution.executionId,
             kind: 'settled',
             status: 'completed',
             usage: zeroUsage(),

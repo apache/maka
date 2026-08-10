@@ -21,6 +21,7 @@ export class HostHostedExecutionCoordinator {
       readonly task: Promise<HostedExecutionProjection>;
     }
   >();
+  readonly #cancelled = new Set<string>();
   #accepting = true;
 
   constructor(
@@ -44,6 +45,13 @@ export class HostHostedExecutionCoordinator {
   async #start(
     input: HostedExecutionStartInput,
   ): Promise<OperationOutcome<'hosted.execution.start'>> {
+    if (this.#cancelled.has(input.executionId)) {
+      this.requestDrain();
+      return {
+        ok: true,
+        result: indeterminate(input.executionId, 'Hosted execution was cancelled before admission'),
+      };
+    }
     const existing = this.#executions.get(input.executionId);
     if (existing) {
       if (!isDeepStrictEqual(existing.input, input)) return conflict();
@@ -66,6 +74,7 @@ export class HostHostedExecutionCoordinator {
   async #cancel(
     input: HostedExecutionReferenceInput,
   ): Promise<OperationOutcome<'hosted.execution.cancel'>> {
+    this.#cancelled.add(input.executionId);
     const execution = this.#executions.get(input.executionId);
     if (!execution) {
       return {

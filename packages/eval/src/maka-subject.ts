@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  HostedExecutionProjection,
-  HostedExecutionStartInput,
-} from '@maka/runtime-host/protocol';
+import type { HostedExecutionStartInput } from '@maka/runtime-host/protocol';
+import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
 import type { JsonObject } from './experiment.js';
 import type { SubjectAdapter } from './runner.js';
 
@@ -44,7 +42,10 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
           args: [config.shimPath, payload],
           credentialNames: cell.subject.credentials,
         });
-        const projection = JSON.parse(process.stdout) as HostedExecutionProjection;
+        const projection = decodeHostedExecutionProjection(JSON.parse(process.stdout));
+        if (projection.executionId !== executionId) {
+          throw new Error('Runtime Host returned a different execution identity');
+        }
         if (projection.kind === 'indeterminate') {
           return {
             usage: null,

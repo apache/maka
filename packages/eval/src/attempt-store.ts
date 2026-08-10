@@ -1,8 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { JsonObject } from './experiment.js';
-import type { CellAttempt } from './result.js';
+import { decodeEvalResult, type CellAttempt } from './result.js';
 import type { AttemptStore } from './runner.js';
 
 export class FileAttemptStore implements AttemptStore {
@@ -86,58 +85,13 @@ function decodeAttempt(value: unknown): CellAttempt {
     'completedAt',
     'result',
   ]);
-  const result = exact(attempt.result, 'attempt.result', [
-    'score',
-    'usage',
-    'costUsd',
-    'durationMs',
-    'status',
-    'failureReason',
-    'artifacts',
-  ]);
-  if (
-    !['completed', 'subject_failed', 'infra_failed', 'indeterminate'].includes(
-      String(result.status),
-    )
-  ) {
-    throw new Error('attempt.result.status is invalid');
-  }
-  if (result.failureReason !== null && typeof result.failureReason !== 'string') {
-    throw new Error('attempt.result.failureReason is invalid');
-  }
-  if (!Array.isArray(result.artifacts) || !result.artifacts.every(isJsonObject)) {
-    throw new Error('attempt.result.artifacts is invalid');
-  }
-  const usage = result.usage === null ? null : decodeUsage(result.usage);
   return {
     cellId: nonempty(attempt.cellId, 'attempt.cellId'),
     sequence: positiveInteger(attempt.sequence, 'attempt.sequence'),
     startedAt: nonnegative(attempt.startedAt, 'attempt.startedAt'),
     completedAt: nonnegative(attempt.completedAt, 'attempt.completedAt'),
-    result: {
-      score: nullableNumber(result.score, 'attempt.result.score'),
-      usage,
-      costUsd: nullableNonnegative(result.costUsd, 'attempt.result.costUsd'),
-      durationMs: nonnegative(result.durationMs, 'attempt.result.durationMs'),
-      status: result.status as CellAttempt['result']['status'],
-      failureReason: result.failureReason as string | null,
-      artifacts: structuredClone(result.artifacts) as JsonObject[],
-    },
+    result: decodeEvalResult(attempt.result, 'attempt.result'),
   };
-}
-
-function decodeUsage(value: unknown) {
-  const usage = exact(value, 'attempt.result.usage', [
-    'inputTokens',
-    'outputTokens',
-    'cacheReadTokens',
-    'cacheWriteTokens',
-    'reasoningTokens',
-    'totalTokens',
-  ]);
-  return Object.fromEntries(
-    Object.entries(usage).map(([key, item]) => [key, nonnegative(item, `usage.${key}`)]),
-  ) as unknown as NonNullable<CellAttempt['result']['usage']>;
 }
 
 function exact(value: unknown, where: string, fields: readonly string[]): Record<string, unknown> {
@@ -167,18 +121,4 @@ function nonnegative(value: unknown, where: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
     throw new Error(`${where} is invalid`);
   return value;
-}
-
-function nullableNumber(value: unknown, where: string): number | null {
-  if (value === null) return null;
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${where} is invalid`);
-  return value;
-}
-
-function nullableNonnegative(value: unknown, where: string): number | null {
-  return value === null ? null : nonnegative(value, where);
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

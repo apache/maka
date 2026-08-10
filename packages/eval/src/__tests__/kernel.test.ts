@@ -111,6 +111,74 @@ test('infra failure skips verification and the next run appends one replacement'
   assert.equal(verifications, 1);
 });
 
+test('executor cleanup uncertainty cannot publish a completed result', async () => {
+  const store = new MemoryStore();
+  const completed = attempt(1, 'completed').result;
+  const executor: ExperimentExecutor = {
+    kind: 'executor',
+    runAttempt: async () => ({ kind: 'indeterminate', value: completed }),
+  };
+
+  const oneArm = { ...spec(), subjects: [spec().subjects[0]!], repetitions: 1 };
+  const results = await runExperiment({
+    spec: oneArm,
+    store,
+    executor,
+    subjects: [{ kind: 'maka', execute: async () => assert.fail('subject must not run') }],
+  });
+
+  assert.equal(results.size, 0);
+  assert.equal(store.attempts[0]?.result.status, 'indeterminate');
+});
+
+test('malformed subject output is recorded as replaceable infrastructure failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-eval-malformed-subject-'));
+  try {
+    const store = new FileAttemptStore(root);
+    const executor: ExperimentExecutor = {
+      kind: 'executor',
+      runAttempt: async (_input, operation) => ({
+        kind: 'settled',
+        value: await operation({
+          context: {
+            cwd: '/workspace',
+            taskInput: 'solve',
+            metadata: {},
+            execute: async () => ({ exitCode: 0, stdout: '' }),
+          },
+          verify: async () => ({
+            status: 'completed',
+            score: 1,
+            failureReason: null,
+            artifacts: [],
+          }),
+        }),
+      }),
+    };
+    const subject = {
+      kind: 'maka' as const,
+      execute: async () => ({
+        usage: null,
+        costUsd: null,
+        durationMs: 1,
+        status: 'completed' as const,
+        failureReason: null,
+        artifacts: ['invalid'],
+      }),
+    } as unknown as SubjectAdapter;
+    const oneArm = { ...spec(), subjects: [spec().subjects[0]!], repetitions: 1 };
+
+    const results = await runExperiment({ spec: oneArm, store, executor, subjects: [subject] });
+    const recorded = await store.list('task::1::a');
+
+    assert.equal(results.size, 0);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]?.result.status, 'infra_failed');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function worker(root: string): Promise<{ stdout: string; code: number | null }> {
   const child = spawn(
     process.execPath,

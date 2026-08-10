@@ -19,6 +19,9 @@ export interface RunHostedExecutionInput {
 export async function runHostedExecution(
   input: RunHostedExecutionInput,
 ): Promise<HostedExecutionProjection> {
+  if (input.signal?.aborted) {
+    return indeterminate(input.execution.executionId, 'Hosted execution was cancelled');
+  }
   const connected = await connectOwnedRuntimeHost({
     rootPath: input.rootPath,
     surface: 'run',
