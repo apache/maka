@@ -6,7 +6,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import type { ExperimentCell, JsonObject } from './experiment.js';
+import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
 import type {
   ExperimentExecutor,
   ExecutorVerification,
@@ -240,8 +240,10 @@ async function startTrial(
       used: false,
     };
   } catch (error) {
-    child?.kill('SIGTERM');
-    if (child) await waitForTrial(child);
+    if (child?.pid !== undefined) {
+      child.kill('SIGTERM');
+      await waitForTrial(child);
+    }
     connectedSocket?.destroy();
     await closeServer(server);
     throw error;
@@ -311,7 +313,7 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
     pythonPathEnv: machinePathEnv(options.pythonPathEnv, 'pythonPathEnv'),
     trialsRootEnv: machinePathEnv(options.trialsRootEnv, 'trialsRootEnv'),
     containerCwd: absolute(options.containerCwd, 'containerCwd'),
-    environment: jsonObject(options.environment, 'environment'),
+    environment: decodeJsonObject(options.environment, 'environment'),
     mounts: array(options.mounts, 'mounts').map((mount, index) => decodeMount(mount, index)),
     ...(framework === 'pier'
       ? { tasksRootEnv: machinePathEnv(options.tasksRootEnv, 'tasksRootEnv') }
@@ -464,12 +466,6 @@ function positive(value: unknown, where: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
     throw new Error(`${where} must be positive`);
   return value;
-}
-
-function jsonObject(value: unknown, where: string): JsonObject {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new Error(`${where} must be an object`);
-  return structuredClone(value) as JsonObject;
 }
 
 function safeName(value: string): string {

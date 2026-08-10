@@ -163,7 +163,7 @@ test('malformed subject output is recorded as replaceable infrastructure failure
         durationMs: 1,
         status: 'completed' as const,
         failureReason: null,
-        artifacts: ['invalid'],
+        artifacts: [{ detail: 1n }],
       }),
     } as unknown as SubjectAdapter;
     const oneArm = { ...spec(), subjects: [spec().subjects[0]!], repetitions: 1 };

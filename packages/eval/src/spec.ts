@@ -1,4 +1,4 @@
-import type { ExperimentSpec, JsonObject, JsonValue } from './experiment.js';
+import { decodeJsonObject, type ExperimentSpec } from './experiment.js';
 
 export function parseExperimentSpec(value: unknown): ExperimentSpec {
   const root = exact(value, 'experiment', [
@@ -25,7 +25,7 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
         id: identifier(subject.id, `subjects[${index}].id`),
         kind: subject.kind === 'maka' ? 'maka' : 'external',
         credentials: uniqueStrings(subject.credentials, `subjects[${index}].credentials`),
-        config: jsonObject(subject.config, `subjects[${index}].config`),
+        config: decodeJsonObject(subject.config, `subjects[${index}].config`),
       };
     },
   );
@@ -34,7 +34,7 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
     return {
       id: identifier(task.id, `tasks[${index}].id`),
       input: nonempty(task.input, `tasks[${index}].input`),
-      config: jsonObject(task.config, `tasks[${index}].config`),
+      config: decodeJsonObject(task.config, `tasks[${index}].config`),
     };
   });
   if (subjects.length === 0 || tasks.length === 0) throw new Error('experiment arms are empty');
@@ -46,17 +46,17 @@ export function parseExperimentSpec(value: unknown): ExperimentSpec {
     benchmark: {
       id: identifier(benchmark.id, 'benchmark.id'),
       version: nonempty(benchmark.version, 'benchmark.version'),
-      config: jsonObject(benchmark.config, 'benchmark.config'),
+      config: decodeJsonObject(benchmark.config, 'benchmark.config'),
     },
     executor: {
       kind: identifier(executor.kind, 'executor.kind'),
-      config: jsonObject(executor.config, 'executor.config'),
+      config: decodeJsonObject(executor.config, 'executor.config'),
     },
     subjects,
     tasks,
     repetitions: positiveInteger(root.repetitions, 'repetitions'),
-    budget: jsonObject(root.budget, 'budget'),
-    verifier: jsonObject(root.verifier, 'verifier'),
+    budget: decodeJsonObject(root.budget, 'budget'),
+    verifier: decodeJsonObject(root.verifier, 'verifier'),
   });
 }
 
@@ -97,23 +97,6 @@ function positiveInteger(value: unknown, where: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1)
     throw new Error(`${where} must be positive`);
   return value as number;
-}
-
-function jsonObject(value: unknown, where: string): JsonObject {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new Error(`${where} must be an object`);
-  return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, jsonValue(child, `${where}.${key}`)]),
-  );
-}
-
-function jsonValue(value: unknown, where: string): JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value))
-    return value.map((child, index) => jsonValue(child, `${where}[${index}]`));
-  if (value && typeof value === 'object') return jsonObject(value, where);
-  throw new Error(`${where} must be JSON`);
 }
 
 function uniqueIds(values: readonly { id: string }[], label: string): void {

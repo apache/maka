@@ -5,6 +5,25 @@ export type JsonValue =
   | { readonly [key: string]: JsonValue };
 export type JsonObject = { readonly [key: string]: JsonValue };
 
+export function decodeJsonObject(value: unknown, where: string): JsonObject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${where} must be an object`);
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, decodeJsonValue(child, `${where}.${key}`)]),
+  );
+}
+
+function decodeJsonValue(value: unknown, where: string): JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) {
+    return value.map((child, index) => decodeJsonValue(child, `${where}[${index}]`));
+  }
+  if (value && typeof value === 'object') return decodeJsonObject(value, where);
+  throw new Error(`${where} must be JSON`);
+}
+
 export interface ExperimentSpec {
   readonly schemaVersion: 'maka.eval.v1';
   readonly id: string;

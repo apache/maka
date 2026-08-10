@@ -1,9 +1,12 @@
 import importlib
+import asyncio
+import json
 import os
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class BaseAgent:
@@ -33,6 +36,45 @@ class FakeEnvironment:
         self.source = Path(source)
         self.uploaded = self.source.read_bytes()
 
+    async def exec(self, command, cwd):
+        return types.SimpleNamespace(return_code=0, stdout="result")
+
+
+class RaceReader:
+    def __init__(self, execute):
+        self.lines = asyncio.Queue()
+        self.lines.put_nowait(json.dumps(execute).encode() + b"\n")
+        self.calls = 0
+
+    async def readline(self):
+        self.calls += 1
+        if self.calls > 2:
+            return b""
+        return await self.lines.get()
+
+
+class RaceWriter:
+    def __init__(self, reader, token):
+        self.reader = reader
+        self.token = token
+        self.last = None
+
+    def write(self, value):
+        self.last = json.loads(value)
+
+    async def drain(self):
+        if self.last["kind"] == "executed":
+            await self.reader.lines.put(
+                json.dumps({"token": self.token, "kind": "verify"}).encode() + b"\n"
+            )
+            await asyncio.sleep(0)
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
 
 class RelayAgentTest(unittest.IsolatedAsyncioTestCase):
     async def test_credential_is_staged_without_entering_the_command_line(self):
@@ -59,6 +101,30 @@ class RelayAgentTest(unittest.IsolatedAsyncioTestCase):
         pier = load_relay("pier")
         self.assertTrue(issubclass(harbor.RelayAgent, BaseAgent))
         self.assertTrue(issubclass(pier.RelayAgent, BaseAgent))
+
+    async def test_verify_consumed_while_reporting_execution_is_not_lost(self):
+        relay = load_relay("harbor")
+        token = "token"
+        reader = RaceReader(
+            {
+                "token": token,
+                "kind": "execute",
+                "command": "/opt/agent",
+                "args": [],
+                "cwd": "/app",
+                "credentials": {},
+            }
+        )
+        writer = RaceWriter(reader, token)
+
+        async def open_connection(_host, _port):
+            return reader, writer
+
+        agent = relay.RelayAgent(relay_host="127.0.0.1", relay_port=1, relay_token=token)
+        with patch.object(relay.asyncio, "open_connection", open_connection):
+            await agent.run("solve", FakeEnvironment(), None)
+
+        self.assertEqual(reader.calls, 2)
 
 
 if __name__ == "__main__":

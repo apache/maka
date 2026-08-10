@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 
-test('harness preparation failure releases its relay listener', async () => {
+test('harness spawn failure releases its relay listener and process', async () => {
   const child = spawn(
     process.execPath,
     [new URL('./fixtures/harness-preparation-worker.js', import.meta.url).pathname],

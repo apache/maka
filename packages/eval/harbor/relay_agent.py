@@ -64,7 +64,7 @@ class RelayAgent(BaseAgent):
                     "stdout": result.stdout or "",
                 },
             )
-            decision = json.loads(await (reader.readline() if control.done() else control))
+            decision = json.loads(await (reader.readline() if cancelled else control))
             if decision.get("token") != self._token or decision.get("kind") != "verify":
                 raise RuntimeError("Maka Eval aborted the Trial before verification")
         except asyncio.CancelledError:

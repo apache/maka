@@ -76,6 +76,35 @@ test('hosted execution cancellation drains the Host and waits for canonical stop
   assert.equal(drains, 1);
 });
 
+test('hosted execution cancellation before Turn admission starts no Turn', async () => {
+  const abort = new AbortController();
+  const creating = deferred();
+  const releaseCreate = deferred();
+  let turnStarts = 0;
+  const runner = new HostHostedExecutionRunner({
+    handlers: handlers({
+      create: async () => {
+        creating.resolve();
+        await releaseCreate.promise;
+      },
+      start: () => {
+        turnStarts += 1;
+      },
+    }),
+    context: context(),
+    requestDrain: () => {},
+    waitForResidencies: async () => {},
+  });
+
+  const execution = runner.run(input(), abort.signal);
+  await creating.promise;
+  abort.abort();
+  releaseCreate.resolve();
+
+  assert.equal((await execution).kind, 'indeterminate');
+  assert.equal(turnStarts, 0);
+});
+
 const ID = '00000000-0000-4000-8000-000000000001';
 
 function input() {
@@ -90,14 +119,26 @@ function input() {
 }
 
 function handlers(
-  overrides: { query?: () => unknown; stop?: () => unknown; usage?: () => unknown } = {},
+  overrides: {
+    create?: () => unknown;
+    start?: () => unknown;
+    query?: () => unknown;
+    stop?: () => unknown;
+    usage?: () => unknown;
+  } = {},
 ) {
   return {
-    'session.create': async () => ({ ok: true, result: { kind: 'created', session: {} } }),
-    'turn.start': async () => ({
-      ok: true,
-      result: { kind: 'started', turn: runningTurn(), skillInvocation: emptySkillInvocation() },
-    }),
+    'session.create': async () => {
+      await overrides.create?.();
+      return { ok: true, result: { kind: 'created', session: {} } };
+    },
+    'turn.start': async () => {
+      await overrides.start?.();
+      return {
+        ok: true,
+        result: { kind: 'started', turn: runningTurn(), skillInvocation: emptySkillInvocation() },
+      };
+    },
     'turn.query': async () => ({
       ok: true,
       result: (await overrides.query?.()) ?? terminalTurn('completed'),

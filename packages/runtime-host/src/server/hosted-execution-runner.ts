@@ -29,12 +29,14 @@ export class HostHostedExecutionRunner {
   ): Promise<HostedExecutionProjection> {
     const startedAt = (this.input.now ?? Date.now)();
     try {
+      signal.throwIfAborted();
       await requireSuccess(
         this.input.handlers['session.create'](
           { sessionId: input.executionId, ...input.session },
           this.input.context,
         ),
       );
+      signal.throwIfAborted();
       const started = await requireSuccess(
         this.input.handlers['turn.start'](
           {

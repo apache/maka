@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createHarborExecutor } from '../../harness-executor.js';
 
 const root = await mkdtemp(join(tmpdir(), 'maka-eval-harness-preparation-'));
-process.env.MAKA_TEST_PYTHON = process.execPath;
+process.env.MAKA_TEST_PYTHON = join(root, 'missing-python');
 process.env.MAKA_TEST_TRIALS = root;
 const executor = createHarborExecutor(
   {
@@ -27,7 +27,7 @@ await executor
         benchmark: { id: 'benchmark', version: 'version', config: { repository: 'repo' } },
         executor: { kind: 'harbor', config: {} },
         subject: { id: 'subject', kind: 'external', credentials: [], config: {} },
-        task: { id: 'task', input: 'solve', config: {} },
+        task: { id: 'task', input: 'solve', config: { harbor: { path: 'task' } } },
         repetition: 1,
         budget: { timeoutMultiplier: 1 },
         verifier: {},

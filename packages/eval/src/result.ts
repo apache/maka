@@ -1,4 +1,4 @@
-import type { JsonObject } from './experiment.js';
+import { decodeJsonObject, type JsonObject } from './experiment.js';
 
 export interface NormalizedUsage {
   readonly inputTokens: number;
@@ -49,7 +49,7 @@ export function decodeEvalResult(value: unknown, where = 'result'): EvalResult {
   if (result.failureReason !== null && typeof result.failureReason !== 'string') {
     throw new Error(`${where}.failureReason is invalid`);
   }
-  if (!Array.isArray(result.artifacts) || !result.artifacts.every(isJsonObject)) {
+  if (!Array.isArray(result.artifacts)) {
     throw new Error(`${where}.artifacts is invalid`);
   }
   return {
@@ -59,7 +59,9 @@ export function decodeEvalResult(value: unknown, where = 'result'): EvalResult {
     durationMs: nonnegative(result.durationMs, `${where}.durationMs`),
     status: result.status as EvalResultStatus,
     failureReason: result.failureReason as string | null,
-    artifacts: structuredClone(result.artifacts) as JsonObject[],
+    artifacts: result.artifacts.map((artifact, index) =>
+      decodeJsonObject(artifact, `${where}.artifacts[${index}]`),
+    ),
   };
 }
 
@@ -116,8 +118,4 @@ function nullableNumber(value: unknown, where: string): number | null {
 
 function nullableNonnegative(value: unknown, where: string): number | null {
   return value === null ? null : nonnegative(value, where);
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
