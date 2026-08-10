@@ -50,6 +50,10 @@ export {
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
 } from './connect-or-spawn.js';
+export {
+  configureHostedExecutionTarget,
+  type HostedExecutionTargetInput,
+} from './hosted-execution-target.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   startRuntimeHostCapabilityProviderService,
