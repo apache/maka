@@ -141,6 +141,7 @@ export function MarkdownBody(props: {
         density={density}
         components={components}
         isStreaming={props.streaming}
+        streamingSpeed={props.streaming ? 'instant' : undefined}
       >
         {budgetedText}
       </AstryxMarkdown>

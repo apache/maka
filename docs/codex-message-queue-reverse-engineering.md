@@ -143,3 +143,25 @@ These Codex capabilities are not yet reproduced:
 - cross-process send locks for Embedded Runtime. Runtime Host mutations and
   successor admission are already serialized by the Session admission gate and
   durable receipts.
+
+## Streaming performance follow-up
+
+Real Desktop profiling against `gpt-5.6-sol` found that provider delivery was
+not the source of visible stutter. A representative 8,892-character answer
+arrived as 282 provider deltas over 37.4 seconds, but Astryx's Markdown display
+cursor split each already-streamed delta into additional 10-character animation
+ticks. That produced 1,041 DOM mutation batches and 3,003 mutation records:
+about 3.69 React commits and 10.65 DOM mutations per provider delta.
+
+Maka now keeps Astryx's streaming-safe incremental parser, incomplete-Markdown
+handling, and streaming component set, while selecting an instant display
+cursor for buffers that already arrive incrementally from Runtime Host. A
+second real-provider run produced 316 provider deltas and 367 DOM mutation
+batches with 370 mutation records: about 1.16 commits and 1.17 DOM mutations
+per provider delta. Long tasks above 50 ms fell from four to two in the
+instrumented runs.
+
+The Astryx patch adds a `streamingSpeed` seam rather than disabling streaming
+mode. Remove it when the published Markdown component exposes an equivalent
+way to retain incremental parsing without replaying the received stream as a
+second character animation.

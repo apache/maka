@@ -258,20 +258,20 @@ it('keeps incomplete syntax literal after the stream settles', () => {
   assert.match(markup, /Hello \*\*world/);
 });
 
-it('does not reveal the unreached tail on the first streaming render', () => {
+it('renders the complete arrived buffer without a second character reveal', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'visible start and unreached tail',
+    text: 'visible start and arrived tail',
     streaming: true,
   }));
 
-  assert.doesNotMatch(markup, /unreached tail/);
+  assert.match(markup, /visible start and arrived tail/);
 });
 
-it('keeps the lazy fallback behind the streaming display cursor', () => {
+it('keeps the lazy wrapper on the same instant arrived-buffer path', () => {
   const markup = renderToStaticMarkup(createElement(Markdown, {
-    text: 'visible start and lazy unreached tail',
+    text: 'visible start and lazy arrived tail',
     streaming: true,
   }));
 
-  assert.doesNotMatch(markup, /lazy unreached tail/);
+  assert.match(markup, /visible start and lazy arrived tail/);
 });

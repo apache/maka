@@ -1,5 +1,5 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-index ff34874..0a15599 100644
+index ff34874..9ec8d7a 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 @@ -69,6 +69,11 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
@@ -15,7 +15,7 @@ index ff34874..0a15599 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ea27cd5..856556c 100644
+index ea27cd5..790ae68 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -57,7 +57,7 @@ index ea27cd5..856556c 100644
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
-index 791909e..9d4aa32 100644
+index 791909e..5c6199e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 @@ -114,6 +114,7 @@ function CallRow({
@@ -69,7 +69,7 @@ index 791909e..9d4aa32 100644
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-index 8c509bc..e86d673 100644
+index 8c509bc..4b09993 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
 @@ -49,6 +49,8 @@ export function useChatNewMessages({
@@ -96,8 +96,9 @@ index 8c509bc..e86d673 100644
      contentRef
    };
  }
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
-index 33ed78d..44c6ad0 100644
+index 33ed78d..0ecbce6 100644
 --- a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 +++ b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 @@ -111,7 +111,10 @@ function detectMac() {
@@ -113,7 +114,7 @@ index 33ed78d..44c6ad0 100644
    // Fallback: navigator.platform (deprecated but still shipped everywhere)
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
-index 08b5f7d..5fc3c63 100644
+index 08b5f7d..94c623b 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
 +++ b/node_modules/@astryxdesign/core/dist/List/List.js
 @@ -89,6 +89,7 @@ export function List({
@@ -132,8 +133,63 @@ index 08b5f7d..5fc3c63 100644
      "aria-labelledby": header != null ? headerId : undefined,
      ...(isOrdered && start != null && start !== 1 ? {
        start
+diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
+index 084703a..9e7c25d 100644
+--- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
+@@ -82,6 +82,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+      */
+     headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
+     isStreaming?: boolean;
++    streamingSpeed?: 'natural' | 'fast' | 'instant';
+     onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void | false;
+     /**
+      * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
+@@ -147,7 +148,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+  * </Markdown>
+  * ```
+  */
+-export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, }: MarkdownProps): React.ReactElement;
++export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, streamingSpeed, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, }: MarkdownProps): React.ReactElement;
+ export declare namespace Markdown {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
+index 867ed5a..6682347 100644
+--- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
++++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
+@@ -1041,6 +1041,7 @@ export function Markdown({
+   density = 'default',
+   headingLevelStart = 1,
+   isStreaming = false,
++  streamingSpeed = 'natural',
+   onLinkClick,
+   sources,
+   citationStyle = 'label',
+@@ -1065,7 +1066,9 @@ export function Markdown({
+-
++
+   // Smooth bursty streamed chunks into a steady character-by-character reveal.
+   // When not streaming, the hook returns children unchanged (no-op).
+-  const smoothedText = useStreamingText(children, isStreaming);
++  const smoothedText = useStreamingText(children, isStreaming, {
++    speed: streamingSpeed
++  });
+   const incrementalStateRef = useRef(createIncrementalState());
+   // Reset incremental cache when the autolink option toggles — cached
+   // settled blocks were parsed with the previous setting.
+@@ -1125,7 +1128,7 @@ export function Markdown({
+   const cursor = {
+     offset: 0,
+     boundaries,
+-    active: isStreaming
++    active: isStreaming && streamingSpeed !== 'instant'
+   };
+-
++
+   // Build citation context — numbers are assigned in encounter order during rendering.
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
-index 65f9278..56f6021 100644
+index 65f9278..f7515e2 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 +++ b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 @@ -54,7 +54,10 @@ function isApplePlatform() {
@@ -160,3 +216,44 @@ index 234a2e4..e3f1842 100644
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
+diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
+index a6f850b..ad3ad05 100644
+--- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
++++ b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
+@@ -134,6 +134,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+    */
+   headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
+   isStreaming?: boolean;
++  streamingSpeed?: 'natural' | 'fast' | 'instant';
+   onLinkClick?: (
+     href: string,
+     event: React.MouseEvent<HTMLAnchorElement>,
+@@ -1592,6 +1593,7 @@ export function Markdown({
+   density = 'default',
+   headingLevelStart = 1,
+   isStreaming = false,
++  streamingSpeed = 'natural',
+   onLinkClick,
+   sources,
+   citationStyle = 'label',
+@@ -1620,7 +1622,7 @@ export function Markdown({
+-
++
+   // Smooth bursty streamed chunks into a steady character-by-character reveal.
+   // When not streaming, the hook returns children unchanged (no-op).
+-  const smoothedText = useStreamingText(children, isStreaming);
++  const smoothedText = useStreamingText(children, isStreaming, {speed: streamingSpeed});
+-
++
+   const incrementalStateRef = useRef<IncrementalState>(
+     createIncrementalState(),
+@@ -1692,7 +1694,7 @@ export function Markdown({
+   const cursor: StreamingCursor = {
+     offset: 0,
+     boundaries,
+-    active: isStreaming,
++    active: isStreaming && streamingSpeed !== 'instant',
+   };
+-
++
+   // Build citation context — numbers are assigned in encounter order during rendering.
