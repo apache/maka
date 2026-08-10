@@ -8,9 +8,11 @@
 
 import type {
   AutomationDefinition,
+  AutomationClientCapabilityRequirement,
   AutomationExecutionTemplate,
   AutomationKind,
   AutomationSchedule,
+  AutomationWaitingState,
 } from '@maka/core/automation';
 import { AUTOMATION_LAST_ERROR_LIMIT, truncateAutomationText } from '@maka/core/automation';
 import { compileCronExpression } from '@maka/core/cron-expression';
@@ -83,6 +85,7 @@ export class AutomationManager {
     expiresAt?: number;
     durable?: boolean;
     execution?: AutomationExecutionTemplate;
+    capabilityRequirements?: readonly AutomationClientCapabilityRequirement[];
   }): AutomationDefinition | { error: string } {
     // Only count active/paused automations toward the limit (not completed/expired).
     const activeCount = this.listForSession(input.sessionId).filter(
@@ -142,6 +145,9 @@ export class AutomationManager {
       lastError: null,
       consecutiveFailures: 0,
       ...(durable ? { durable: true } : {}),
+      ...(input.capabilityRequirements && input.capabilityRequirements.length > 0
+        ? { capabilityRequirements: structuredClone(input.capabilityRequirements) }
+        : {}),
       ...(input.kind === 'cron' && input.execution ? { execution: input.execution } : {}),
     };
 
@@ -168,6 +174,7 @@ export class AutomationManager {
     if (automation.status !== 'active') return undefined;
     automation.status = 'paused';
     automation.updatedAt = this.deps.now();
+    automation.waiting = undefined;
     return automation;
   }
 
@@ -190,6 +197,7 @@ export class AutomationManager {
     // count toward re-pausing it after a single fresh failure.
     automation.consecutiveFailures = 0;
     automation.lastError = null;
+    automation.waiting = undefined;
     automation.nextFireAt = this.computeNextFire(automation.schedule, this.deps.now());
     return automation;
   }
@@ -232,6 +240,7 @@ export class AutomationManager {
       automation.status = 'expired';
       automation.nextFireAt = null;
       automation.updatedAt = now;
+      automation.waiting = undefined;
       return true;
     }
     return false;
@@ -247,6 +256,7 @@ export class AutomationManager {
     if (!automation || automation.status !== 'active') return undefined;
 
     const now = this.deps.now();
+    automation.waiting = undefined;
     // Check expiry BEFORE firing — don't execute expired automations.
     if (automation.expiresAt && now >= automation.expiresAt) {
       automation.status = 'expired';
@@ -278,21 +288,34 @@ export class AutomationManager {
     return automation;
   }
 
-  /**
-   * Record a fire attempt deferred by the idle-gate (target busy). Pure
-   * observability — surfaced in the model-facing list output.
-   */
+  /** Record a transient scheduler deferral. */
   recordDeferredFire(id: string): void {
     const automation = this.automations.get(id);
     if (!automation || automation.status !== 'active') return;
     automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+    automation.waiting = undefined;
+    automation.updatedAt = this.deps.now();
   }
 
-  /** Record a retry for a fire that was admitted while the definition was active. */
+  /** Record a transient retry for a fire that was admitted while the definition was active. */
   recordAdmittedFireDeferred(id: string): void {
     const automation = this.automations.get(id);
     if (!automation) return;
     automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+    automation.waiting = undefined;
+    automation.updatedAt = this.deps.now();
+  }
+
+  /** Persist a missing execution prerequisite without consuming the transient retry window. */
+  recordPrerequisiteWaiting(id: string, waiting: AutomationWaitingState): boolean {
+    const automation = this.automations.get(id);
+    if (!automation || automation.status !== 'active') return false;
+    const current = automation.waiting;
+    if (current?.reason === waiting.reason && current.message === waiting.message) return false;
+    automation.deferredFireCount = (automation.deferredFireCount ?? 0) + 1;
+    automation.waiting = mergeWaitingState(current, waiting);
+    automation.updatedAt = this.deps.now();
+    return true;
   }
 
   /**
@@ -313,7 +336,9 @@ export class AutomationManager {
     if (automation.schedule.type === 'once') {
       automation.nextFireAt = null;
       automation.status = 'expired';
-      automation.lastError = 'Fire window skipped (session busy or privacy mode)';
+      automation.lastError =
+        automation.waiting?.message ?? 'Fire window skipped (session busy or privacy mode)';
+      automation.waiting = undefined;
       return;
     }
     automation.nextFireAt = this.computeNextFire(automation.schedule, now);
@@ -338,6 +363,11 @@ export class AutomationManager {
     const automation = this.automations.get(id);
     if (!automation) return;
     settleAutomationAttempt(automation, { status: 'failed', error }, this.deps.now());
+  }
+
+  clearWaiting(id: string): void {
+    const automation = this.automations.get(id);
+    if (automation) automation.waiting = undefined;
   }
 
   removeAllForSession(sessionId: string): number {
@@ -459,6 +489,7 @@ export function settleAutomationAttempt(
   if (automation.status === 'completed' || automation.status === 'expired') return;
   if (outcome.runId) automation.lastRunId = outcome.runId;
   automation.updatedAt = now;
+  automation.waiting = undefined;
   if (outcome.status === 'completed') {
     automation.consecutiveFailures = 0;
     automation.lastError = null;
@@ -481,6 +512,15 @@ export function settleAutomationAttempt(
   ) {
     automation.status = 'paused';
   }
+}
+
+function mergeWaitingState(
+  current: AutomationWaitingState | undefined,
+  next: AutomationWaitingState,
+): AutomationWaitingState {
+  return current?.reason === next.reason
+    ? { ...next, since: current.since }
+    : structuredClone(next);
 }
 
 /**

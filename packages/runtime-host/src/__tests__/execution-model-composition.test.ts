@@ -395,6 +395,7 @@ test('production backend creation continues after a Session Client Capability is
           offerId: 'browser',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Browser',
           tools: [
             {
@@ -482,6 +483,7 @@ test('production backend preserves coordinator Client Capability semantics acros
             offerId: 'hosted-browser',
             version: '0',
             affinity: 'session',
+            hostPathAccess: 'cwd',
             label: 'Hosted Browser',
             tools: [
               {

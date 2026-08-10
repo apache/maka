@@ -2839,6 +2839,7 @@ test('Client Capability ambiguity fails before durable root admission', async ()
               offerId: 'opaque',
               version: '0',
               affinity: 'session',
+              hostPathAccess: 'cwd',
               label: 'Opaque',
               tools: [
                 {
@@ -2921,6 +2922,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
               offerId: 'browser',
               version: '0',
               affinity: 'turn',
+              hostPathAccess: 'cwd',
               label: 'Browser',
               tools: [
                 {
@@ -3015,6 +3017,7 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
               offerId: 'browser',
               version: '0',
               affinity: 'turn',
+              hostPathAccess: 'cwd',
               label: 'Browser',
               tools: [
                 {
@@ -3188,6 +3191,7 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
             offerId: 'session-browser',
             version: '0',
             affinity: 'session',
+            hostPathAccess: 'cwd',
             label: 'Session browser',
             tools: [
               {
@@ -3214,6 +3218,7 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
               offerId: 'ephemeral-browser',
               version: '0',
               affinity,
+              hostPathAccess: 'cwd',
               label: 'Ephemeral browser',
               tools: [
                 {
@@ -3335,6 +3340,7 @@ test('an exact terminal retry does not require a live Client Capability binding'
             offerId: 'opaque',
             version: '0',
             affinity: 'session',
+            hostPathAccess: 'cwd',
             label: 'Opaque',
             tools: [
               {
@@ -4411,6 +4417,7 @@ async function registerSessionCapability(
           offerId: 'resume_fixture',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Resume fixture',
           tools: toolNames.map((name) => ({
             serverId: 'resume_fixture',

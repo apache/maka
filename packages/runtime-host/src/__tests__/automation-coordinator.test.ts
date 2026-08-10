@@ -28,6 +28,7 @@ import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-sto
 import {
   HostAutomationCoordinator,
   HostAutomationSessionBusyError,
+  type HostAutomationCoordinatorInput,
 } from '../server/automation-coordinator.js';
 import { HostAutomationFireCoordinator } from '../server/automation-fire-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -246,7 +247,8 @@ describe('Host Automation coordinator', () => {
     await withHarness(
       async (harness) => {
         const automation = startedDefinition();
-        const fire = pendingFire();
+        const pending = pendingFire();
+        const fire = { ...pending, transientDeferredSince: pending.admittedAt };
         await harness.store.commit({
           expectedRevision: 0,
           automations: [automation],
@@ -291,7 +293,8 @@ describe('Host Automation coordinator', () => {
     await withHarness(
       async (harness) => {
         const automation = startedDefinition();
-        const fire = pendingFire();
+        const pending = pendingFire();
+        const fire = { ...pending, transientDeferredSince: pending.admittedAt };
         await harness.store.commit({
           expectedRevision: 0,
           automations: [automation],
@@ -331,7 +334,10 @@ describe('Host Automation coordinator', () => {
         await harness.coordinator.prepareRecovery();
         await harness.coordinator.recover();
         assert.equal(harness.rootInputs.length, 1);
-        assert.deepEqual((await harness.store.read()).pendingFires, [fire]);
+        const deferred = (await harness.store.read()).pendingFires[0];
+        assert.equal(deferred?.id, fire.id);
+        assert.equal(deferred?.runId, fire.runId);
+        assert.equal(deferred?.turnId, fire.turnId);
 
         harness.coordinator.start();
         harness.fireTimer();
@@ -448,6 +454,152 @@ describe('Host Automation coordinator', () => {
         assert.equal(harness.rootInputs.length, 0);
       },
       { readIncognito: async () => true },
+    );
+  });
+
+  test('persists provider waiting state and resumes with the frozen capability contract', async () => {
+    const requirement = {
+      principalId: 'automation-provider',
+      clientInstanceId: 'provider-instance',
+      contractId: 'provider-contract',
+    } as const;
+    let available = false;
+    await withHarness(
+      async (harness) => {
+        await harness.coordinator.prepareRecovery();
+        await harness.coordinator.recover();
+        harness.coordinator.start();
+        const created = await harness.coordinator.create({
+          kind: 'heartbeat',
+          name: 'provider task',
+          prompt: 'Use the provider.',
+          sessionId: 'creator-session',
+          schedule: { type: 'once', delaySeconds: 5 },
+          requiredCapabilityGroups: ['provider-contract'],
+        });
+        assert.ok(!('error' in created));
+        if ('error' in created) return;
+        assert.deepEqual(created.capabilityRequirements, [requirement]);
+        harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
+
+        harness.fireTimer();
+        await waitFor('provider waiting state', async () => {
+          const automation = (await harness.store.read()).automations[0];
+          return automation?.waiting?.reason === 'client_capability_provider_unavailable';
+        });
+        assert.equal(harness.rootInputs.length, 0);
+
+        harness.now += DEFER_WINDOW_MS + 1;
+        harness.fireTimer();
+        await waitFor('persistent provider waiting state', async () => {
+          const automation = (await harness.store.read()).automations[0];
+          return automation?.status === 'active' && automation.waiting !== undefined;
+        });
+
+        available = true;
+        harness.fireTimer();
+        await waitFor(
+          'provider-backed Automation admission',
+          () => harness.rootInputs.length === 1,
+        );
+        harness.finishRun();
+        await waitFor('provider-backed Automation settlement', async () => {
+          const automation = (await harness.store.read()).automations[0];
+          return automation?.status === 'completed' && automation.waiting === undefined;
+        });
+      },
+      {
+        clientCapabilities: {
+          requirementsForAutomation: async (_sessionId, groups) => {
+            assert.deepEqual(groups, ['provider-contract']);
+            return { ok: true, requirements: [requirement] };
+          },
+          checkAutomationRequirements: async (requirements) => {
+            assert.deepEqual(requirements, [requirement]);
+            return available
+              ? { ok: true }
+              : { ok: false, message: 'Capability provider is offline' };
+          },
+          bindAutomationSession: async (_sessionId, requirements) => {
+            assert.deepEqual(requirements, [requirement]);
+            return available
+              ? { ok: true }
+              : { ok: false, message: 'Capability provider is offline' };
+          },
+        },
+      },
+    );
+  });
+
+  test('keeps an admitted fire pending beyond the retry window while its provider is offline', async () => {
+    const requirement = {
+      principalId: 'automation-provider',
+      clientInstanceId: 'provider-instance',
+      contractId: 'provider-contract',
+    } as const;
+    let available = false;
+    await withHarness(
+      async (harness) => {
+        await harness.coordinator.prepareRecovery();
+        await harness.coordinator.recover();
+        harness.coordinator.start();
+        const created = await harness.coordinator.create({
+          kind: 'heartbeat',
+          name: 'provider task',
+          prompt: 'Use the provider.',
+          sessionId: 'creator-session',
+          schedule: { type: 'once', delaySeconds: 5 },
+          requiredCapabilityGroups: ['provider-contract'],
+        });
+        assert.ok(!('error' in created));
+        if ('error' in created) return;
+        harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
+
+        harness.fireTimer();
+        await waitFor('admitted provider waiting state', async () => {
+          const snapshot = await harness.store.read();
+          return (
+            snapshot.pendingFires.length === 1 &&
+            snapshot.automations[0]?.waiting?.reason === 'client_capability_provider_unavailable'
+          );
+        });
+        harness.now += DEFER_WINDOW_MS + 1;
+        harness.fireTimer();
+        await waitFor('durable admitted provider waiting state', async () => {
+          const snapshot = await harness.store.read();
+          return snapshot.pendingFires.length === 1 && snapshot.automations[0]?.status === 'active';
+        });
+
+        available = true;
+        harness.rootMode = 'busy';
+        harness.fireTimer();
+        await waitFor('post-provider transient deferral', async () => {
+          const snapshot = await harness.store.read();
+          return (
+            harness.rootInputs.length === 1 &&
+            snapshot.pendingFires[0]?.transientDeferredSince === harness.now
+          );
+        });
+        assert.equal((await harness.store.read()).automations[0]?.status, 'active');
+
+        harness.rootMode = 'run';
+        harness.fireTimer();
+        await waitFor('provider-backed admitted fire', () => harness.rootInputs.length === 2);
+        harness.finishRun();
+        await waitFor(
+          'provider-backed admitted fire settlement',
+          async () => (await harness.store.read()).automations[0]?.status === 'completed',
+        );
+        assert.equal((await harness.store.read()).automations[0]?.fireCount, 1);
+      },
+      {
+        clientCapabilities: {
+          requirementsForAutomation: async () => ({ ok: true, requirements: [requirement] }),
+          checkAutomationRequirements: async () => ({ ok: true }),
+          bindAutomationSession: async () =>
+            available ? { ok: true } : { ok: false, message: 'Capability provider is offline' },
+        },
+      },
     );
   });
 
@@ -650,6 +802,7 @@ describe('Host Automation coordinator', () => {
         listPendingFires: async () => [],
         listDueAutomations: async () => [due],
         recordDeferredFire: async () => false,
+        recordPrerequisiteWaiting: async () => false,
         admitFire: async () => {
           admitEntered.resolve();
           await releaseAdmission.promise;
@@ -657,6 +810,7 @@ describe('Host Automation coordinator', () => {
         },
         assertPendingFire: async () => undefined,
         recordFireDeferred: async () => undefined,
+        recordFirePrerequisiteWaiting: async () => undefined,
         failFire: async () => undefined,
         markFireRunning: async () => undefined,
         settleFire: async () => undefined,
@@ -683,6 +837,7 @@ describe('Host Automation coordinator', () => {
         },
       },
       runtimePolicy: runtimePolicyStores(),
+      clientCapabilities: availableClientCapabilities(),
       isSessionActive: () => false,
       acquireResidency: () => ({ release() {} }),
       requestDrain: () => undefined,
@@ -895,6 +1050,7 @@ async function withHarness(
     rootMode?: Harness['rootMode'];
     readIncognito?: () => Promise<boolean>;
     creatorHeader?: Partial<SessionHeader>;
+    clientCapabilities?: HostAutomationCoordinatorInput['clientCapabilities'];
   } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-automation-'));
@@ -1011,6 +1167,7 @@ async function withHarness(
     runtime,
     root,
     runtimePolicy: runtimePolicyStores(options.readIncognito),
+    clientCapabilities: options.clientCapabilities ?? availableClientCapabilities(),
     isSessionActive: () => false,
     sessionAdmission: new SessionAdmissionGate(),
     acquireResidency: () => {
@@ -1050,6 +1207,14 @@ async function withHarness(
     if (!owner.closed) await owner.close();
     await rm(base, { recursive: true, force: true });
   }
+}
+
+function availableClientCapabilities() {
+  return {
+    requirementsForAutomation: async () => ({ ok: true as const, requirements: [] }),
+    checkAutomationRequirements: async () => ({ ok: true as const }),
+    bindAutomationSession: async () => ({ ok: true as const }),
+  };
 }
 
 function sessionHeader(id: string, input: Partial<SessionHeader> = {}): SessionHeader {

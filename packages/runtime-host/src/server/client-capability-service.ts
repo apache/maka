@@ -8,6 +8,7 @@ export interface ClientCapabilityConnectionIdentity {
   readonly connectionId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
+  readonly unattended: boolean;
 }
 
 export interface ClientCapabilityConnection {

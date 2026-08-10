@@ -5,6 +5,7 @@ import {
 import {
   isOperationKey,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type AccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
 
@@ -15,6 +16,7 @@ const PROTOCOL = {
 
 export interface RuntimeHostAccessIssueOptions {
   readonly rootPath: string;
+  readonly principalKind: AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
@@ -33,6 +35,7 @@ export async function runRuntimeHostAccessIssueCli(
   const connection = await connectLocalOwner(options.rootPath);
   try {
     const result = await connection.request('access.credential.issue', {
+      principalKind: options.principalKind,
       principalId: options.principalId,
       operationGrants,
       canPublishClientCapabilities: options.canPublishClientCapabilities,

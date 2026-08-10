@@ -64,6 +64,11 @@ test('two Clients share one revision-pinned Automation authority', async () => {
           executeRoot: async () => assert.fail('No Automation fire is expected in this test'),
         },
         runtimePolicy: runtimePolicyStores(),
+        clientCapabilities: {
+          requirementsForAutomation: async () => ({ ok: true, requirements: [] }),
+          checkAutomationRequirements: async () => ({ ok: true }),
+          bindAutomationSession: async () => ({ ok: true }),
+        },
         isSessionActive: () => false,
         sessionAdmission: new SessionAdmissionGate(),
         acquireResidency: context.acquireResidency,

@@ -22,6 +22,7 @@ test('WebSocket admission, health, Origin, and message policy fail closed', {
   const directory = await mkdtemp(join(tmpdir(), 'maka-websocket-listener-'));
   const authority = await openRuntimeHostAccessAuthority(directory);
   const issued = await authority.issue({
+    principalKind: 'remote_owner',
     principalId: 'native-client',
     operationGrants: ['session.catalog.query'],
     canPublishClientCapabilities: false,

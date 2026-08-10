@@ -13,6 +13,7 @@ import {
   AUTOMATION_CRON_EXPRESSION_MAX_CODE_UNITS,
   AUTOMATION_NAME_LIMIT,
   AUTOMATION_NAME_MAX_CODE_UNITS,
+  AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS,
   AUTOMATION_PROMPT_LIMIT,
   AUTOMATION_PROMPT_MAX_CODE_UNITS,
   isAutomationTextWithinLimit,
@@ -33,6 +34,7 @@ export interface AutomationToolAuthority {
     schedule: AutomationDefinition['schedule'];
     maxFires?: number;
     durable?: boolean;
+    requiredCapabilityGroups?: readonly string[];
   }): AutomationDefinition | { error: string } | Promise<AutomationDefinition | { error: string }>;
   delete(id: string, sessionId: string): boolean | Promise<boolean>;
   pause(
@@ -144,6 +146,16 @@ function makeAutomationSchema(kindSchema: z.ZodType) {
       .optional()
       .describe(
         '[create] When true, persists across app restarts. Cron defaults to true (standalone scheduled task); heartbeat defaults to false (bound to this session).',
+      ),
+    required_capability_groups: z
+      .array(z.string().regex(/^[A-Za-z0-9_-]{1,128}$/))
+      .max(AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS)
+      .refine((values) => new Set(values).size === values.length, {
+        message: 'Capability group ids must be unique.',
+      })
+      .optional()
+      .describe(
+        '[create] Client Capability group ids returned by load_tools that every fire requires. Omit for Host-native automations.',
       ),
     id: z.string().min(1).max(64).optional().describe('[delete/pause/resume] Automation id.'),
   });
@@ -330,6 +342,7 @@ async function handleCreate(
     schedule,
     maxFires: input.max_fires,
     durable: input.durable,
+    requiredCapabilityGroups: input.required_capability_groups,
   });
 
   if ('error' in result) {
@@ -375,6 +388,7 @@ function formatAutomation(a: AutomationDefinition): string {
   if (a.nextFireAt) lines.push(`  Next: ${new Date(a.nextFireAt).toLocaleString()}`);
   if (a.lastFireAt) lines.push(`  Last: ${new Date(a.lastFireAt).toLocaleString()}`);
   if (a.lastError) lines.push(`  Error: ${a.lastError}`);
+  if (a.waiting) lines.push(`  Waiting: ${a.waiting.message}`);
   if (a.consecutiveFailures > 0) lines.push(`  Consecutive failures: ${a.consecutiveFailures}`);
   return lines.join('\n');
 }

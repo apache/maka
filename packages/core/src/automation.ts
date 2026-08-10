@@ -16,6 +16,7 @@ export const AUTOMATION_CRON_EXPRESSION_MAX_CODE_UNITS = 100;
 export const AUTOMATION_CRON_EXPRESSION_MAX_BYTES = 300;
 export const AUTOMATION_LAST_ERROR_MAX_CODE_UNITS = 2_000;
 export const AUTOMATION_LAST_ERROR_MAX_BYTES = 6_000;
+export const AUTOMATION_MAX_CLIENT_CAPABILITY_REQUIREMENTS = 32;
 
 export interface AutomationTextLimit {
   readonly maxCodeUnits: number;
@@ -93,6 +94,18 @@ export interface AutomationExecutionTemplate {
   readonly orchestrationMode: OrchestrationMode;
 }
 
+export interface AutomationClientCapabilityRequirement {
+  readonly principalId: string;
+  readonly clientInstanceId: string;
+  readonly contractId: string;
+}
+
+export interface AutomationWaitingState {
+  readonly reason: 'client_capability_provider_unavailable';
+  readonly since: number;
+  readonly message: string;
+}
+
 export interface AutomationDefinition {
   id: string;
   kind: AutomationKind;
@@ -114,6 +127,10 @@ export interface AutomationDefinition {
   /** Cron definitions are globally visible and survive the creating Client. */
   durable?: boolean;
   deferredFireCount?: number;
+  /** Session-affine Client Capability contracts frozen when the Automation is created. */
+  capabilityRequirements?: readonly AutomationClientCapabilityRequirement[];
+  /** A transient prerequisite that must recover before the next fire can enter Runtime. */
+  waiting?: AutomationWaitingState;
   /** Present for Host-created cron definitions; legacy definitions acquire it before firing. */
   execution?: AutomationExecutionTemplate;
 }
@@ -133,7 +150,9 @@ export interface AutomationPendingFire {
   readonly status: 'admitted' | 'running';
   readonly admittedAt: number;
   readonly updatedAt: number;
+  readonly transientDeferredSince?: number;
   readonly startedAt?: number;
+  readonly capabilityRequirements?: readonly AutomationClientCapabilityRequirement[];
   readonly execution?: AutomationExecutionTemplate;
 }
 

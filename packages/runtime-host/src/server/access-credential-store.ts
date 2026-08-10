@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { HOST_OPERATION_SPECS, type OperationKey } from '../protocol/index.js';
+import {
+  type AccessCredentialPrincipalKind,
+  HOST_OPERATION_SPECS,
+  type OperationKey,
+} from '../protocol/index.js';
 
 const ACCESS_FILE_SCHEMA_VERSION = 1;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
@@ -12,6 +16,7 @@ export interface StoredAccessCredential {
   readonly credentialId: string;
   readonly credentialHash: string;
   readonly principalId: string;
+  readonly principalKind: AccessCredentialPrincipalKind;
   readonly status: 'active' | 'revoked';
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -138,6 +143,10 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   if (!/^[a-f0-9]{64}$/u.test(credentialHash)) throw new Error('Invalid credentialHash');
   const principalId = requireStoredString(value.principalId, 'principalId');
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) throw new Error('Invalid principalId');
+  const principalKind = value.principalKind === undefined ? 'remote_owner' : value.principalKind;
+  if (principalKind !== 'remote_owner' && principalKind !== 'capability_provider') {
+    throw new Error('Invalid principalKind');
+  }
   if (value.status !== 'active' && value.status !== 'revoked') throw new Error('Invalid status');
   if (!Array.isArray(value.operationGrants)) throw new Error('Invalid operationGrants');
   const rawOperationGrants = value.operationGrants.map((grant) =>
@@ -165,6 +174,7 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     credentialId,
     credentialHash,
     principalId,
+    principalKind,
     status: value.status,
     operationGrants,
     canPublishClientCapabilities: value.canPublishClientCapabilities,

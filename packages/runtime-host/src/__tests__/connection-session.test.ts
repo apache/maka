@@ -485,6 +485,7 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         connectionId: 'stable-provider-connection',
         principalId: 'local_os_user',
         clientInstanceId: 'test-client',
+        unattended: false,
       },
     ]);
   } finally {

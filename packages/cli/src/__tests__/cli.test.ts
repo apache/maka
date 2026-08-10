@@ -22,8 +22,24 @@ describe('Maka CLI args', () => {
         ['runtime-host'],
         {
           kind: 'error',
-          message: 'runtime-host requires the serve or access command',
+          message: 'runtime-host requires the serve, access, or capability-provider command',
           exitCode: 2,
+        },
+      ],
+      [
+        [
+          'runtime-host',
+          'capability-provider',
+          'serve',
+          '--url',
+          'ws://127.0.0.1:43120',
+          '--mcp-config',
+          '/srv/maka/mcp.json',
+        ],
+        {
+          kind: 'runtime-host-capability-provider-serve',
+          url: 'ws://127.0.0.1:43120',
+          mcpConfigPath: '/srv/maka/mcp.json',
         },
       ],
       [
@@ -51,9 +67,29 @@ describe('Maka CLI args', () => {
         ],
         {
           kind: 'runtime-host-access-issue',
+          principalKind: 'remote_owner',
           principalId: 'device-1',
           operationGrants: ['session.catalog.query', 'subscription.open'],
           canPublishClientCapabilities: false,
+          canUseHostPaths: false,
+        },
+      ],
+      [
+        [
+          'runtime-host',
+          'access',
+          'issue',
+          '--kind',
+          'capability-provider',
+          '--principal',
+          'automation-provider',
+        ],
+        {
+          kind: 'runtime-host-access-issue',
+          principalKind: 'capability_provider',
+          principalId: 'automation-provider',
+          operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+          canPublishClientCapabilities: true,
           canUseHostPaths: false,
         },
       ],

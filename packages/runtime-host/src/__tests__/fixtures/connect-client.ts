@@ -59,5 +59,5 @@ process.on('message', (message) => {
 process.once('disconnect', close);
 
 function isClientSurface(value: string | undefined): value is ClientSurface {
-  return value === 'desktop' || value === 'tui';
+  return value === 'desktop' || value === 'tui' || value === 'capability-provider';
 }

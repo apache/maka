@@ -268,6 +268,7 @@ export class RuntimeHostConnectionSession {
           connectionId: this.#options.connection.connectionId,
           principalId: this.#options.connection.authority.principalId,
           clientInstanceId: this.#options.connection.clientInstanceId,
+          unattended: this.#options.connection.authority.principalKind === 'capability_provider',
         },
         {
           send: (frame) => {

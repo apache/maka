@@ -29,6 +29,11 @@ import {
 } from './access-credential-store.js';
 
 const ACCESS_CREDENTIAL_PREFIX = 'maka_rh_';
+const CAPABILITY_PROVIDER_GRANTS = new Set([
+  'host.status',
+  'client.capability.replace',
+  'client.capability.unregister',
+]);
 
 export interface RuntimeHostAccessAuthority {
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined;
@@ -73,7 +78,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     }
     return match
       ? createRuntimeHostConnectionAuthority({
-          principalKind: 'access_credential',
+          principalKind: match.principalKind,
           principalId: match.principalId,
           credentialId: match.credentialId,
           operationGrants: match.operationGrants,
@@ -86,25 +91,22 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   issue(input: AccessCredentialIssueInput): Promise<AccessCredentialIssueResult> {
     return this.#mutate(async () => {
       const operationGrants = issuedAccessGrants(input.operationGrants);
+      assertCredentialAuthority(input, operationGrants);
       const credentialId = randomUUID();
       createRuntimeHostConnectionAuthority({
-        principalKind: 'access_credential',
+        principalKind: input.principalKind,
         principalId: input.principalId,
         credentialId,
         operationGrants,
         canPublishClientCapabilities: input.canPublishClientCapabilities,
         canUseHostPaths: input.canUseHostPaths,
       });
-      if (input.canPublishClientCapabilities && !input.canUseHostPaths) {
-        throw new RuntimeHostAccessInputError(
-          'Client Capability publication requires Host path authority until path-independent offers are declared',
-        );
-      }
       const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
       const stored: StoredAccessCredential = {
         credentialId,
         credentialHash: hashCredential(credential).toString('hex'),
         principalId: input.principalId,
+        principalKind: input.principalKind,
         status: 'active',
         operationGrants,
         canPublishClientCapabilities: input.canPublishClientCapabilities,
@@ -128,6 +130,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         credentialId,
         deliveryId,
         principalId: stored.principalId,
+        principalKind: stored.principalKind,
         operationGrants,
         canPublishClientCapabilities: stored.canPublishClientCapabilities,
         canUseHostPaths: stored.canUseHostPaths,
@@ -178,6 +181,26 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   async #commit(file: AccessCredentialFile): Promise<void> {
     await writeAccessCredentialFile(this.#path, file);
     this.#file = file;
+  }
+}
+
+function assertCredentialAuthority(
+  input: AccessCredentialIssueInput,
+  operationGrants: readonly string[],
+): void {
+  if (input.principalKind !== 'capability_provider') return;
+  if (!input.canPublishClientCapabilities || input.canUseHostPaths) {
+    throw new RuntimeHostAccessInputError(
+      'A capability provider must publish Client Capabilities without Host path authority',
+    );
+  }
+  if (
+    operationGrants.length !== CAPABILITY_PROVIDER_GRANTS.size ||
+    operationGrants.some((grant) => !CAPABILITY_PROVIDER_GRANTS.has(grant))
+  ) {
+    throw new RuntimeHostAccessInputError(
+      'A capability provider credential may grant only Client Capability publication operations',
+    );
   }
 }
 

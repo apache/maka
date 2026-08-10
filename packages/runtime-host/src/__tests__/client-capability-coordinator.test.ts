@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { createManagedExecutionBoundary, createWorkspaceWritePermissionProfile } from '@maka/core';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type { McpCallResult } from '@maka/core/mcp';
 import type { ClientCapabilityReplaceInput } from '../protocol/index.js';
@@ -72,6 +73,147 @@ describe('Host Client Capability coordinator', () => {
     assert.equal(unregistered.ok, true);
     assert.equal(coordinator.snapshotForSession('session-a'), undefined);
     connection.close();
+    await coordinator.close();
+  });
+
+  test('does not trust a self-declared provider or disclose Host cwd', async () => {
+    const coordinator = createCoordinator();
+    let observedCall: unknown;
+    let connection!: ClientCapabilityConnection;
+    connection = coordinator.attachConnection(clientCapabilityConnectionIdentity('connection-a'), {
+      send: async (frame) => {
+        if (frame.kind !== 'client.capability.call') return;
+        observedCall = frame;
+        connection.accept({
+          kind: 'client.capability.accepted',
+          invocationId: frame.invocationId,
+        });
+        connection.accept({
+          kind: 'client.capability.result',
+          invocationId: frame.invocationId,
+          result: textResult('path independent'),
+        });
+      },
+    });
+    const replaced = await coordinator.handlers['client.capability.replace'](
+      {
+        registrationId: 'registration-a',
+        offers: [
+          {
+            offerId: 'path-independent',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'none',
+            label: 'Path independent',
+            tools: [
+              {
+                serverId: 'remote',
+                name: 'inspect',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      },
+      { ...connectionContext('connection-a'), surface: 'capability-provider' },
+    );
+    assert.equal(replaced.ok, true);
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.ok(snapshot);
+    assert.equal(snapshot.tools[0]?.categoryHint, 'client_capability');
+    await invoke(snapshot.tools[0]);
+    assert.ok(isRecord(observedCall));
+    assert.equal(Object.hasOwn(observedCall, 'cwd'), false);
+    snapshot.release();
+    await connection.close();
+    await coordinator.close();
+  });
+
+  test('trusted provider tools execute remotely without inheriting Host authority', async () => {
+    const coordinator = createCoordinator();
+    let observedCall: unknown;
+    let connection!: ClientCapabilityConnection;
+    connection = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity('connection-a', 'connection-a', 'test-principal', true),
+      {
+        send: async (frame) => {
+          if (frame.kind !== 'client.capability.call') return;
+          observedCall = frame;
+          connection.accept({
+            kind: 'client.capability.accepted',
+            invocationId: frame.invocationId,
+          });
+          connection.accept({
+            kind: 'client.capability.result',
+            invocationId: frame.invocationId,
+            result: textResult('remote result'),
+          });
+        },
+      },
+    );
+    const input: ClientCapabilityReplaceInput = {
+      registrationId: 'registration-a',
+      offers: [
+        {
+          offerId: 'remote-provider',
+          version: '0',
+          affinity: 'session',
+          hostPathAccess: 'none',
+          label: 'Remote provider',
+          tools: [
+            {
+              serverId: 'remote',
+              name: 'inspect',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        },
+      ],
+    };
+    const providerContext = {
+      ...connectionContext('connection-a'),
+      surface: 'capability-provider' as const,
+    };
+    assert.equal(
+      (await coordinator.handlers['client.capability.replace'](input, providerContext)).ok,
+      true,
+    );
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.ok(snapshot);
+    const tool = snapshot.tools[0] ?? assert.fail('Expected trusted provider tool');
+    assert.equal(tool.categoryHint, 'custom_tool');
+    const result = await tool.impl(
+      {},
+      {
+        sessionId: 'session-a',
+        turnId: 'turn-a',
+        cwd: '/host/workspace',
+        toolCallId: 'tool-call-a',
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+      },
+    );
+    assert.deepEqual(result, textResult('remote result'));
+    assert.ok(isRecord(observedCall));
+    assert.equal(Object.hasOwn(observedCall, 'cwd'), false);
+
+    const rejected = await coordinator.handlers['client.capability.replace'](
+      {
+        ...input,
+        registrationId: 'registration-b',
+        offers: input.offers.map((offer) => ({ ...offer, affinity: 'call' as const })),
+      },
+      providerContext,
+    );
+    assert.equal(rejected.ok, false);
+    snapshot.release();
+    await connection.close();
     await coordinator.close();
   });
 
@@ -918,6 +1060,53 @@ describe('Host Client Capability coordinator', () => {
       }
     }
   });
+
+  test('restores frozen Automation requirements only from the same provider contract', async () => {
+    const coordinator = createCoordinator();
+    const identity = (connectionId: string) =>
+      clientCapabilityConnectionIdentity(connectionId, 'stable-provider');
+    const first = coordinator.attachConnection(identity('connection-a'), { send: async () => {} });
+    await replace(coordinator, 'connection-a', 'registration-a', 'inspect');
+    assert.deepEqual(await coordinator.bindSession('creator-session', 'connection-a'), {
+      ok: true,
+    });
+    const creatorSnapshot = coordinator.snapshotForSession('creator-session');
+    assert.ok(creatorSnapshot);
+    const contractId = creatorSnapshot?.groups[0]?.id ?? assert.fail('Expected capability group');
+    creatorSnapshot.release();
+    const resolved = await coordinator.requirementsForAutomation('creator-session', [contractId]);
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) return;
+    const requirements = resolved.requirements;
+    assert.equal(requirements.length, 1);
+    assert.equal(requirements[0]?.clientInstanceId, 'stable-provider');
+    assert.deepEqual(await coordinator.requirementsForAutomation('creator-session', []), {
+      ok: true,
+      requirements: [],
+    });
+    assert.equal(
+      (await coordinator.requirementsForAutomation('creator-session', ['client_missing'])).ok,
+      false,
+    );
+
+    await first.close();
+    assert.equal((await coordinator.checkAutomationRequirements(requirements)).ok, false);
+
+    const second = coordinator.attachConnection(identity('connection-b'), { send: async () => {} });
+    await replace(coordinator, 'connection-b', 'registration-b', 'inspect');
+    assert.deepEqual(await coordinator.checkAutomationRequirements(requirements), { ok: true });
+    assert.deepEqual(await coordinator.bindAutomationSession('automation-session', requirements), {
+      ok: true,
+    });
+    const restored = coordinator.snapshotForSession('automation-session');
+    assert.deepEqual(restored?.registrationIds, ['registration-b']);
+    restored?.release();
+
+    await replace(coordinator, 'connection-b', 'registration-c', 'inspect', '1');
+    assert.equal((await coordinator.checkAutomationRequirements(requirements)).ok, false);
+    await second.close();
+    await coordinator.close();
+  });
 });
 
 async function assertLossClassification(
@@ -994,6 +1183,7 @@ function replacementInput(
         offerId,
         version,
         affinity,
+        hostPathAccess: 'cwd',
         label: 'Opaque capability',
         description: 'Known only to the provider.',
         tools: [

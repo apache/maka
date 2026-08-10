@@ -447,6 +447,7 @@ function resumeFixtureProvider(
         offerId: 'resume_fixture',
         version: '0',
         affinity: 'session',
+        hostPathAccess: 'cwd',
         label: 'Resume fixture',
         tools: toolNames.map((name) => ({
           serverId,

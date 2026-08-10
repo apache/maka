@@ -1015,6 +1015,7 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       root: { executeRoot: (input) => coordinator.executeRoot(input) },
       runtimePolicy: runtimePolicyStores,
+      clientCapabilities,
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       sessionAdmission,
       acquireResidency: context.acquireResidency,

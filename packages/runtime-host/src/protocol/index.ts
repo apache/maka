@@ -35,6 +35,7 @@ import {
 } from './operations.js';
 
 export { RuntimeHostProtocolError } from './errors.js';
+export * from './access-authority.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './automation.js';
@@ -61,8 +62,8 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // The wire version remains v0 before the first release. This independent epoch
 // lets a new Client retire a stale same-version Host whose closed schema is no
 // longer safe to use.
-// 12: Host-owned Project Catalog operations and invalidation changed the closed schema.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 12 as const;
+// 13: trusted capability-provider Clients and Automation waiting state changed the closed schema.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 13 as const;
 // A legal sandbox-boundary expansion can consume 64 KiB before its Interaction
 // envelope and independently bounded justification are added. Keep transport
 // capacity large enough to represent that domain value; narrower surfaces such
@@ -76,7 +77,14 @@ export type EncodedProtocolMessage = Buffer & {
   readonly [encodedProtocolMessageBrand]: true;
 };
 
-export type ClientSurface = 'desktop' | 'tui' | 'run' | 'activation' | 'bot' | 'inspect';
+export type ClientSurface =
+  | 'desktop'
+  | 'tui'
+  | 'run'
+  | 'activation'
+  | 'bot'
+  | 'inspect'
+  | 'capability-provider';
 
 export interface ProtocolRange {
   min: number;
@@ -301,7 +309,8 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'run' ||
     value === 'activation' ||
     value === 'bot' ||
-    value === 'inspect'
+    value === 'inspect' ||
+    value === 'capability-provider'
   )
     return value;
   throw invalidProtocolFrame('Invalid surface');

@@ -91,6 +91,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
             offerId: 'bypassed',
             version: '0',
             affinity: 'call',
+            hostPathAccess: 'cwd',
             label: 'Bypassed',
             tools: [
               {
@@ -114,6 +115,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
           offerId: 'fixture_unknown',
           version: '0',
           affinity: 'session',
+          hostPathAccess: 'cwd',
           label: 'Unknown fixture',
           description: 'A capability the Host source does not enumerate.',
           tools: [
