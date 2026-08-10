@@ -23,6 +23,9 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
     owner.addEventListener('lostpointercapture', () => {
       owner.dataset.e2eLostPointerCapture = 'true';
     });
+    document.addEventListener('selectionchange', () => {
+      owner.dataset.e2eSelectionChanged = 'true';
+    });
   });
 
   const bounds = await reply.evaluate((element) => {
@@ -47,6 +50,10 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
   await expect
     .poll(() => page.evaluate(() => window.getSelection()?.isCollapsed === false))
     .toBe(true);
+  // Reading Selection state can observe Chromium's new Range before the
+  // selectionchange task reaches the hook. Wait for that event so releasing
+  // capture cannot race the gesture's changedDuringPointer flag.
+  await expect(turn).toHaveAttribute('data-e2e-selection-changed', 'true');
   await turn.evaluate((element) => {
     const owner = element as HTMLElement;
     owner.releasePointerCapture(Number(owner.dataset.e2eCapturedPointer));
@@ -62,6 +69,7 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
     delete owner.dataset.e2eCapturedPointer;
     delete owner.dataset.e2eCapturedPointerUp;
     delete owner.dataset.e2eLostPointerCapture;
+    delete owner.dataset.e2eSelectionChanged;
   });
 
   // Pointer capture must route the physical release back to the owning Turn
@@ -73,6 +81,7 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
   await expect
     .poll(() => page.evaluate(() => window.getSelection()?.isCollapsed === false))
     .toBe(true);
+  await expect(turn).toHaveAttribute('data-e2e-selection-changed', 'true');
   await page.mouse.move(-20, y, { steps: 5 });
   await page.mouse.up();
 
