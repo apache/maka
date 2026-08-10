@@ -14,9 +14,9 @@ test('follow-up behavior defaults to Queue and normalizes as a closed setting', 
   expect(isFollowUpMode('queue')).toBe(true);
   expect(isFollowUpMode('steer')).toBe(true);
   expect(isFollowUpMode('interrupt')).toBe(false);
-  expect(normalizeSettings({ chatDefaults: { followUpMode: 'steer' } }).chatDefaults.followUpMode).toBe(
-    'steer',
-  );
+  expect(
+    normalizeSettings({ chatDefaults: { followUpMode: 'steer' } }).chatDefaults.followUpMode,
+  ).toBe('steer');
   expect(
     normalizeSettings({ chatDefaults: { followUpMode: 'unknown' } }).chatDefaults.followUpMode,
   ).toBe('queue');

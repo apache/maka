@@ -106,7 +106,7 @@ test('offers commands only for the first token and keeps explicit Skill queries 
   await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
 });
 
-test('dispatches a staged slash command instead of steering it into a running turn', async ({
+test('dispatches a staged slash command instead of queueing it during a running turn', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -117,7 +117,7 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
 
   await composer.fill('/compact explain');
-  await expect(page.getByRole('button', { name: '插入消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '排队' })).toBeVisible();
   await composer.press('Enter');
 
   await composer.fill('/');
@@ -133,6 +133,6 @@ test('dispatches a staged slash command instead of steering it into a running tu
   await composer.press('Enter');
 
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
-  await expect(page.getByText(/Acknowledged steering: \/compact explain/)).toBeVisible();
+  await expect(page.getByText('Fake backend received: /compact explain')).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
 });

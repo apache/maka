@@ -1509,10 +1509,7 @@ function mutateQueueProjection(
     return {
       ...current,
       queueRevision: nextRevision,
-      steering: [
-        ...current.steering,
-        { ...entry, placement: 'current_turn', state: 'queued' },
-      ],
+      steering: [...current.steering, { ...entry, placement: 'current_turn', state: 'queued' }],
       followup: current.followup.filter((candidate) => candidate.entryId !== mutation.entryId),
     };
   }

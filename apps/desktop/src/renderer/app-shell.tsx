@@ -1945,7 +1945,7 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
-    if (metadata?.followUpMode && activeIdRef.current) {
+    if (metadata?.followUpMode && activeIdRef.current && !slashCommand) {
       const sessionId = activeIdRef.current;
       try {
         const attachments =

@@ -15814,9 +15814,7 @@ describe('SessionManager steering and followup queues', () => {
     const first = initial[0]!;
     const second = initial[1]!;
 
-    expect(
-      manager.updateQueuedMessage(session.id, first.entryId, 'first edited'),
-    ).toBe(true);
+    expect(manager.updateQueuedMessage(session.id, first.entryId, 'first edited')).toBe(true);
     expect(
       manager.reorderQueuedMessages(session.id, 'next_turn', [second.entryId, first.entryId]),
     ).toBe(true);

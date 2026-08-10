@@ -210,11 +210,13 @@ test('steering becomes durable and ordered followups automatically start the nex
         placement,
         disposition,
       })),
-      [{
-        ...followupSources[0],
-        placement: 'next_turn',
-        disposition: 'followup',
-      }],
+      [
+        {
+          ...followupSources[0],
+          placement: 'next_turn',
+          disposition: 'followup',
+        },
+      ],
     );
     assert.deepEqual(chain[1]?.normalizedInput, followupSources[0]?.content);
     assert.equal(chain[2]?.previousRootTurnId, chain[1]?.turnId);
@@ -225,11 +227,13 @@ test('steering becomes durable and ordered followups automatically start the nex
         placement,
         disposition,
       })),
-      [{
-        ...followupSources[1],
-        placement: 'next_turn',
-        disposition: 'followup',
-      }],
+      [
+        {
+          ...followupSources[1],
+          placement: 'next_turn',
+          disposition: 'followup',
+        },
+      ],
     );
     assert.deepEqual(chain[2]?.normalizedInput, followupSources[1]?.content);
     for (let index = 0; index < followupSources.length; index += 1) {
@@ -239,7 +243,10 @@ test('steering becomes durable and ordered followups automatically start the nex
       const expectedQuotes = followupSources[index]?.content.quotes ?? [];
       assert.equal(followupLedger.userMessages.length, 1);
       assert.deepEqual(followupLedger.userMessages[0]?.quotes ?? [], expectedQuotes);
-      assert.deepEqual(userRuntimeContent(followupLedger.runtimeEvents)?.quotes ?? [], expectedQuotes);
+      assert.deepEqual(
+        userRuntimeContent(followupLedger.runtimeEvents)?.quotes ?? [],
+        expectedQuotes,
+      );
     }
   });
 });

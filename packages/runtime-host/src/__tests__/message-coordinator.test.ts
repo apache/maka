@@ -1019,7 +1019,10 @@ test('release folds unpulled steering ahead of follow-up without changing source
     turnId: 'turn-2',
     runId: 'run-2',
   });
-  assert.deepEqual(secondBatch.sources.map((source) => source.messageId), ['steer-2']);
+  assert.deepEqual(
+    secondBatch.sources.map((source) => source.messageId),
+    ['steer-2'],
+  );
   fixture.coordinator.commitNextRoot(secondBatch, {
     sessionId: ROOT.sessionId,
     turnId: 'turn-3',
@@ -1037,7 +1040,10 @@ test('release folds unpulled steering ahead of follow-up without changing source
     turnId: 'turn-3',
     runId: 'run-3',
   });
-  assert.deepEqual(thirdBatch.sources.map((source) => source.messageId), ['follow-1']);
+  assert.deepEqual(
+    thirdBatch.sources.map((source) => source.messageId),
+    ['follow-1'],
+  );
   fixture.coordinator.commitNextRoot(thirdBatch, {
     sessionId: ROOT.sessionId,
     turnId: 'turn-4',

@@ -296,10 +296,7 @@ function decodeQueueMutation(value: unknown): QueueMutation {
 }
 
 function decodeQueueMutateResult(value: unknown): QueueMutateResult {
-  const record = requireExactRecord(value, 'queue.mutate result', [
-    'queueRevision',
-    'disposition',
-  ]);
+  const record = requireExactRecord(value, 'queue.mutate result', ['queueRevision', 'disposition']);
   if (
     record.disposition !== 'updated' &&
     record.disposition !== 'removed' &&

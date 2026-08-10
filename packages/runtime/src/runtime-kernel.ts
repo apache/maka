@@ -1614,10 +1614,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // steering queue would strand the text ownerless. The followup
           // queue is its only safe home — the same direction a release-time
           // fold takes.
-          current.followup = [
-            ...returned.map(pendingFromLease),
-            ...current.followup,
-          ];
+          current.followup = [...returned.map(pendingFromLease), ...current.followup];
         }
         this.emitQueueUpdate(sessionId, current);
       };
@@ -2478,7 +2475,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     this.assertEmbeddedMessageQueue('updateQueuedMessage');
     const state = this.steeringBySession.get(sessionId);
     if (!state) return false;
-    const entry = [...state.steering, ...state.followup].find((candidate) => candidate.id === entryId);
+    const entry = [...state.steering, ...state.followup].find(
+      (candidate) => candidate.id === entryId,
+    );
     if (!entry) return false;
     entry.content = normalizeMessageContent({
       ...entry.content,
@@ -2674,11 +2673,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // migration is a queue change, so emit the final snapshot BEFORE the sink
     // is cleared; otherwise observers stay on the stale pre-fold snapshot.
     if (state.steering.length > 0 || own.length > 0) {
-      state.followup = [
-        ...own.map(pendingFromLease),
-        ...state.steering,
-        ...state.followup,
-      ];
+      state.followup = [...own.map(pendingFromLease), ...state.steering, ...state.followup];
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
       state.steering = [];
       this.emitQueueUpdate(sessionId, state);
