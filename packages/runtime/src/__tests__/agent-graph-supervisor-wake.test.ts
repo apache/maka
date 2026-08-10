@@ -703,6 +703,54 @@ describe('Agent Graph supervisor wake delivery', () => {
       store.close();
     }
   });
+
+  test('client stop aborts one Session wake without allowing an automatic retry', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const started = deferred();
+    let snapshotVersion = 'snapshot-1';
+    let turns = 0;
+    const coordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: new SessionActivityRegistry(),
+      wakeStore: store,
+      readSnapshot: async () => snapshot({ snapshotVersion }),
+      startTurn: async (_sessionId, input, _activity, abortSignal) => {
+        turns += 1;
+        if (turns === 1) {
+          started.resolve();
+          await new Promise<void>((resolve) => {
+            if (abortSignal.aborted) resolve();
+            else abortSignal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          return { kind: 'aborted', turnId: input.turnId };
+        }
+        return { kind: 'completed', turnId: input.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      newId: sequentialIds(),
+    });
+    try {
+      coordinator.notify('root-session', reconciliation());
+      await started.promise;
+      await coordinator.runWithSessionWakesSuppressed('root-session', async () => undefined);
+
+      const stopped = await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+      assert.equal(stopped?.status, 'superseded');
+      assert.equal(stopped?.attemptCount, 1);
+      assert.equal(turns, 1);
+
+      snapshotVersion = 'snapshot-2';
+      coordinator.notify('root-session', reconciliation());
+      await coordinator.waitForIdle();
+      assert.equal(turns, 2);
+      assert.equal(
+        (await store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-2'))?.status,
+        'delivered',
+      );
+    } finally {
+      await coordinator.close();
+      store.close();
+    }
+  });
 });
 
 async function createRunningAttempt(

@@ -32,21 +32,28 @@ describe('Host Agent Graph coordinator', () => {
     let listener: AgentGraphClientChangedListener | undefined;
     let unsubscribed = false;
     const invalidations: unknown[] = [];
+    const stopOrder: string[] = [];
+    const authority = {
+      getSnapshot: async () => snapshot,
+      inspectOperator: async () => inspection,
+      stop: async (rootSessionId: string) => {
+        stopOrder.push('graph');
+        stoppedRoot = rootSessionId;
+      },
+      subscribeAll: (candidate: AgentGraphClientChangedListener) => {
+        listener = candidate;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    } satisfies GraphAuthority;
     const coordinator = new HostAgentGraphCoordinator({
-      authority: {
-        getSnapshot: async () => snapshot,
-        inspectOperator: async () => inspection,
-        stop: async (rootSessionId) => {
-          stoppedRoot = rootSessionId;
-        },
-        subscribeAll: (candidate) => {
-          listener = candidate;
-          return () => {
-            unsubscribed = true;
-          };
-        },
-      } satisfies GraphAuthority,
+      authority,
       continuity: { enqueueAgentGraphChanged: (event) => invalidations.push(event) },
+      stopExecution: async (rootSessionId) => {
+        stopOrder.push('root');
+        await authority.stop(rootSessionId);
+      },
     });
 
     const queried = await coordinator.handlers['agent.graph.query'](
@@ -78,6 +85,7 @@ describe('Host Agent Graph coordinator', () => {
       result: { rootSessionId: 'root-1', graphId: snapshot.graphId },
     });
     assert.equal(stoppedRoot, 'root-1');
+    assert.deepEqual(stopOrder, ['root', 'graph']);
 
     await listener?.({
       schemaVersion: 1,
