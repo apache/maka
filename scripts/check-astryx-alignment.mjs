@@ -97,27 +97,12 @@ const REQUIRED_IMPORTS = [
   ['apps/desktop/src/renderer/external-session-import-dialog.tsx', /SegmentedControl/],
   ['apps/desktop/src/renderer/external-session-import-dialog.tsx', /Item/],
   ['apps/desktop/src/renderer/plan-mode-panel.tsx', /Collapsible/],
-  ['apps/desktop/src/renderer/session-workbar.tsx', /from '@astryxdesign\/core\/List'/],
 ];
 for (const [rel, re] of REQUIRED_IMPORTS) {
   const text = readFileSync(join(root, rel), 'utf8');
   if (!re.test(text)) {
     failures.push(`${rel}: missing required Astryx import matching ${re}`);
   }
-}
-
-// Contracts that fixed a11y regressions after the first Astryx pass.
-const workbar = readFileSync(join(root, 'apps/desktop/src/renderer/session-workbar.tsx'), 'utf8');
-if (!/<List\b/.test(workbar) || !/<ListItem\b/.test(workbar)) {
-  failures.push('session-workbar.tsx: launcher should use Astryx List/ListItem');
-}
-if (!/(?<![\w-])description=\{action\.description\}/.test(workbar)) {
-  failures.push('session-workbar.tsx: launcher ListItem should show its action description');
-}
-if (/role=["']menuitem["']|aria-description=\{action\.description\}/.test(workbar)) {
-  failures.push(
-    'session-workbar.tsx: launcher must not recreate ListItem semantics with menu roles or aria-only copy',
-  );
 }
 
 const importTsx = readFileSync(

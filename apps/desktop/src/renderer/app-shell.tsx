@@ -1596,17 +1596,17 @@ function AppShellContent({
   const toggleWorkbar = useCallback(() => {
     if (workbarCollapsed) {
       setWorkbarCollapsed(false);
-      if (workbarPanelsState.right.tabs.length === 0) {
-        openWorkbarLauncher('right');
+      if (workbarPanelsState.right.activeTabId) {
+        activateWorkbarTab('right', workbarPanelsState.right.activeTabId);
       }
       return;
     }
     setWorkbarCollapsed(true);
   }, [
-    openWorkbarLauncher,
+    activateWorkbarTab,
     setWorkbarCollapsed,
     workbarCollapsed,
-    workbarPanelsState.right.tabs.length,
+    workbarPanelsState.right.activeTabId,
   ]);
 
   // Side chats survive a panel collapse. They are cleaned up only when their
