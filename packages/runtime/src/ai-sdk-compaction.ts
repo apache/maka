@@ -1087,51 +1087,62 @@ export class AiSdkCompaction {
       return summaryTracker;
     };
     return async (options) => {
-      const auxiliaryLease = await this.acquireAuxiliaryLease(
-        'semantic_compact',
+      const activeToolsForStep = options.activeTools;
+      const dryRun = policy.mode === 'validate_only' || policy.mode === 'prepare_step_dry_run';
+      const incomingMessages = options.messages;
+      const projectedMessages = dryRun
+        ? undefined
+        : projectAcceptedActiveFullCompactMessages(incomingMessages, acceptedProjection);
+      const messagesForRewrite = projectedMessages ?? incomingMessages;
+      const rewritten = await rewriteSemanticCompactInMessages({
+        sessionId: this.sessionId,
         turnId,
-        origin.runId,
-        abortSignal,
-      );
-      let auxiliaryOutcome: ProviderCredentialOutcome | undefined;
-      try {
-        const activeToolsForStep = options.activeTools;
-        const dryRun = policy.mode === 'validate_only' || policy.mode === 'prepare_step_dry_run';
-        const incomingMessages = options.messages;
-        const projectedMessages = dryRun
-          ? undefined
-          : projectAcceptedActiveFullCompactMessages(incomingMessages, acceptedProjection);
-        const messagesForRewrite = projectedMessages ?? incomingMessages;
-        const summarizerModel = policy.summarizerModel
-          ? this.input.modelFactory({
-              connection: this.input.connection,
-              apiKey: auxiliaryLease?.apiKey ?? this.input.apiKey,
-              modelId: policy.summarizerModel,
-            })
-          : model;
-        const rewritten = await rewriteSemanticCompactInMessages({
-          sessionId: this.sessionId,
-          turnId,
-          messages: messagesForRewrite,
-          policy,
-          controllerState,
-          runtimeEvents: runtimeEvents?.filter((event) => event.turnId === turnId),
-          stepNumber: options.stepNumber,
-          now: this.now(),
-          charsPerToken: this.input.contextBudget?.charsPerToken,
-          requestShapeHashForMessages: (messages) =>
-            requestShapeHashForMessages(messages, activeToolsForStep),
-          headAnchor,
-          ...(acceptedProjection?.semanticBlock
-            ? { predecessorBlock: acceptedProjection.semanticBlock }
-            : {}),
-          abortSignal: abortSignal,
-          summarizer: async (request) => {
-            // The tracker settles this call itself, on the success, failure, and
-            // abort paths alike, so the summarization is metered as the physical
-            // provider request it is instead of a hand-built row (#1679).
-            const tracker = resolveSummaryTracker();
-            tracker?.setStep(options.stepNumber);
+        messages: messagesForRewrite,
+        policy,
+        controllerState,
+        runtimeEvents: runtimeEvents?.filter((event) => event.turnId === turnId),
+        stepNumber: options.stepNumber,
+        now: this.now(),
+        charsPerToken: this.input.contextBudget?.charsPerToken ?? 4,
+        requestShapeHashForMessages: (messages) =>
+          requestShapeHashForMessages(messages, activeToolsForStep),
+        headAnchor,
+        ...(acceptedProjection?.semanticBlock
+          ? { predecessorBlock: acceptedProjection.semanticBlock }
+          : {}),
+        abortSignal: abortSignal,
+        summarizer: async (request) => {
+          // The auxiliary credential lease is acquired ONLY here, immediately
+          // before a real Provider dispatch is about to happen. Projection
+          // early-returns (brake, no compressible span, validation failure)
+          // never acquire and never settle, so a half-open probe is never
+          // closed by a request that did not happen. The lease is keyed by the
+          // model that will actually dispatch (`summarizerModelId`), and the
+          // model is re-materialized with the leased key even when no separate
+          // summarizer model is configured — the main call's model/key must
+          // never be reused for the summarizer's accounting and health.
+          const auxiliaryLease = await this.acquireAuxiliaryLease(
+            'semantic_compact',
+            turnId,
+            origin.runId,
+            summarizerModelId,
+            request.abortSignal,
+          );
+          const tracker = resolveSummaryTracker();
+          tracker?.setStep(options.stepNumber);
+          if (tracker && auxiliaryLease) {
+            tracker.setCredentialAttribution(auxiliaryLease);
+          }
+          const summarizerModel =
+            auxiliaryLease || policy.summarizerModel
+              ? this.input.modelFactory({
+                  connection: this.input.connection,
+                  apiKey: auxiliaryLease?.apiKey ?? this.input.apiKey,
+                  modelId: summarizerModelId,
+                })
+              : model;
+          let auxiliaryOutcome: ProviderCredentialOutcome = { kind: 'success' };
+          try {
             return await this.modelAdapter.generateCompactSummary({
               model: summarizerModel,
               system: request.system,
@@ -1140,46 +1151,48 @@ export class AiSdkCompaction {
               abortSignal: request.abortSignal,
               ...(tracker ? { providerRequestTracker: tracker } : {}),
             });
-          },
-        });
-        onDiagnosticPatch?.({
-          semanticCompactEnabled: true,
-          semanticCompactMode: policy.mode ?? 'replace',
-          ...rewritten.diagnosticPatch,
-        });
-        if (!dryRun && rewritten.decision === 'replaced') {
-          if (rewritten.block) this.recordSemanticCompactBlock(rewritten.block);
-          acceptedProjection = {
-            sourceSignatures: incomingMessages.map(projectionSourceMessageSignature),
-            sourceSignatureMode: 'active_prune_lineage',
-            projectedMessages: rewritten.messages,
-            ...(rewritten.block ? { semanticBlock: rewritten.block } : {}),
-          };
-          return {
-            messages: rewritten.messages,
-            makaSemanticCompactStatus: 'replaced',
-          } as ActiveCompactionProjectionResult;
-        }
-        return !dryRun && projectedMessages
-          ? ({
-              messages: projectedMessages,
-              makaSemanticCompactStatus: 'projected',
-            } as ActiveCompactionProjectionResult)
-          : undefined;
-      } catch (error) {
-        auxiliaryOutcome = {
-          kind: 'failure',
-          failure: { kind: 'unknown', retryable: false },
-          routingHint: { kind: 'unknown', scope: 'unknown', evidence: 'provider_adapter' },
+          } catch (error) {
+            auxiliaryOutcome = request.abortSignal?.aborted
+              ? { kind: 'aborted' }
+              : {
+                  kind: 'failure',
+                  failure: { kind: 'unknown', retryable: false },
+                  routingHint: { kind: 'unknown', scope: 'unknown', evidence: 'provider_adapter' },
+                };
+            throw error;
+          } finally {
+            await this.settleAuxiliaryLease(
+              auxiliaryLease,
+              auxiliaryOutcome,
+              `aux:semantic_compact:${turnId}`,
+            );
+          }
+        },
+      });
+      onDiagnosticPatch?.({
+        semanticCompactEnabled: true,
+        semanticCompactMode: policy.mode ?? 'replace',
+        ...rewritten.diagnosticPatch,
+      });
+      if (!dryRun && rewritten.decision === 'replaced') {
+        if (rewritten.block) this.recordSemanticCompactBlock(rewritten.block);
+        acceptedProjection = {
+          sourceSignatures: incomingMessages.map(projectionSourceMessageSignature),
+          sourceSignatureMode: 'active_prune_lineage',
+          projectedMessages: rewritten.messages,
+          ...(rewritten.block ? { semanticBlock: rewritten.block } : {}),
         };
-        throw error;
-      } finally {
-        await this.settleAuxiliaryLease(
-          auxiliaryLease,
-          auxiliaryOutcome ?? (abortSignal?.aborted ? { kind: 'aborted' } : { kind: 'success' }),
-          `aux:semantic_compact:${turnId}`,
-        );
+        return {
+          messages: rewritten.messages,
+          makaSemanticCompactStatus: 'replaced',
+        } as ActiveCompactionProjectionResult;
       }
+      return !dryRun && projectedMessages
+        ? ({
+            messages: projectedMessages,
+            makaSemanticCompactStatus: 'projected',
+          } as ActiveCompactionProjectionResult)
+        : undefined;
     };
   }
 
@@ -1246,6 +1259,7 @@ export class AiSdkCompaction {
     callKind: ModelCallKind,
     turnId: string,
     runId: string | undefined,
+    modelId: string,
     signal?: AbortSignal,
   ): Promise<ProviderCredentialLease | undefined> {
     const routing = this.input.credentialRouting;
@@ -1254,7 +1268,10 @@ export class AiSdkCompaction {
       connectionId: routing.connectionId,
       connectionSlug: this.input.connection.slug,
       providerId: routing.providerId,
-      modelId: this.input.modelId,
+      // The model that will actually dispatch — NOT the main call's model.
+      // Eligibility/verification/health must be checked for the summarizer's
+      // model when a separate summarizer model is configured.
+      modelId,
       sessionId: '',
       turnId: `aux:${callKind}:${turnId}`,
       logicalCallId: `aux:${callKind}:${turnId}:${runId ?? 'run'}`,

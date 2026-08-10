@@ -67,6 +67,8 @@ interface MidTurnFixture {
   /** JSON of each summarizer call's folded runtime events (coverage evidence). */
   summarizedSources: string[];
   auxiliaryLeaseEvents: Array<{ kind: 'acquire' | 'settle' | 'release'; detail?: string }>;
+  /** Every apiKey the modelFactory was materialized with, in call order. */
+  modelFactoryKeys: string[];
   persist: (event: SessionEvent) => void;
 }
 
@@ -91,6 +93,26 @@ interface MidTurnFixtureOptions {
   activeToolResultPrune?: boolean;
   /** Enable semantic compaction so it competes with the capacity hook. */
   semanticCompact?: boolean;
+  /** Disable the hand-built mid-turn capacity hook so semantic compaction runs. */
+  midTurnOff?: boolean;
+  /** Give the fixture model a doGenerate so the semantic summarizer can dispatch. */
+  semanticSummarizerCapable?: boolean;
+  /**
+   * Override the semantic-compact policy (defaults to a tiny window that only
+   * competes with the capacity hook). A dispatchable policy lets a test drive
+   * the summarizer lease lifecycle end-to-end.
+   */
+  semanticPolicy?: {
+    enabled: boolean;
+    mode: 'validate_only' | 'prepare_step_dry_run' | 'replace';
+    minStepNumber: number;
+    maxActiveEstimatedTokens: number;
+    minNewPrefixEstimatedTokens?: number;
+    minSafePrefixEstimatedTokens?: number;
+    maxAcceptedProjectionEstimatedTokens?: number;
+    minSavingsTokens?: number;
+    minSavingsRatio?: number;
+  };
   /**
    * Summarize through the real `buildLlmHistorySummarizer` against a mock
    * provider, so the compaction settles a canonical record instead of the
@@ -152,7 +174,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
   }> = [];
   const summarizedSources: string[] = [];
   let recordedAtThirdRequest = false;
-  const fixture = { summarizerCalls: 0, ledgerReads: 0 };
+  const fixture = { summarizerCalls: 0, ledgerReads: 0, modelFactoryKeys: [] as string[] };
   const usage = (input: number, output: number) => ({
     inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: output, text: output, reasoning: 0 },
@@ -205,6 +227,29 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     return doneChunks();
   };
   const model = new MockLanguageModelV4({
+    ...(options.semanticSummarizerCapable
+      ? {
+          doGenerate: {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  finding: 'summarized',
+                  actionInProgress: 'continue',
+                  partialWorkProduct: ['semantic'],
+                }),
+              },
+            ],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 5, text: 5, reasoning: 0 },
+              raw: { input_tokens: 10, output_tokens: 5 },
+            },
+            warnings: [],
+          },
+        }
+      : {}),
     doStream: async (streamOptions: { abortSignal?: AbortSignal }) => {
       // A real transport rejects immediately on an already-aborted signal; the
       // mock must mirror that so an exhausted turn never streams the
@@ -332,7 +377,10 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    modelFactory: () => model,
+    modelFactory: (factoryInput) => {
+      fixture.modelFactoryKeys.push(factoryInput.apiKey);
+      return model;
+    },
     tools: [
       {
         name: 'Read',
@@ -398,17 +446,19 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           name: 'mid-turn-test',
           maxHistoryEstimatedTokens: 100_000,
           minRecentTurns: 1,
-          historyCompact: {
-            enabled: true,
-            mode: 'read_write',
-            midTurn: { enabled: true, reserveTokens },
-          },
+          historyCompact: options.midTurnOff
+            ? { enabled: false, mode: 'read_write' }
+            : {
+                enabled: true,
+                mode: 'read_write',
+                midTurn: { enabled: true, reserveTokens },
+              },
           ...(options.activeToolResultPrune
             ? { activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 30 } }
             : {}),
           ...(options.semanticCompact
             ? {
-                semanticCompact: {
+                semanticCompact: options.semanticPolicy ?? {
                   enabled: true,
                   mode: 'replace' as const,
                   minStepNumber: 2,
@@ -433,12 +483,13 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       const summary = options.summarize ? await options.summarize() : 'MID_TURN_SUMMARY_SENTINEL';
       return summary;
     },
+    recordModelCallAttempt: (attempt: ModelCallAttempt) => {
+      modelCalls.push(attempt);
+    },
+    ...(options.credentialRouting ? { credentialRouting: options.credentialRouting } : {}),
     ...(options.meteredSummarizer
       ? {
           recordProviderRequestCapture: async () => ({ artifactId: 'artifact-mid-turn-capture' }),
-          recordModelCallAttempt: (attempt: ModelCallAttempt) => {
-            modelCalls.push(attempt);
-          },
         }
       : {}),
     recordHistoryCompactCheckpoint: (checkpoint) => {
@@ -484,6 +535,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     anchor,
     ledger,
     modelCalls,
+    modelFactoryKeys: fixture.modelFactoryKeys,
     events,
     messages,
     llmCalls,
@@ -679,18 +731,32 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     const settled: Array<{ profileId: string; outcomeKind: string }> = [];
     let released = 0;
     const resolver: ProviderCredentialResolver = {
-      acquireAttempt: async () => ({
-        leaseId: 'aux-lease-1',
-        bindingId: 'aux-binding-1',
-        profileId: 'profile-aux',
-        credentialId: 'cred-aux',
-        credentialRevision: 1,
-        selectionReason: 'single_eligible',
-        apiKey: 'sk-aux',
-        modelId: 'mock-model-id',
-      }),
+      acquireAttempt: async (context) =>
+        context.turnId.startsWith('aux:')
+          ? {
+              leaseId: 'aux-lease-1',
+              bindingId: 'aux-binding-1',
+              profileId: 'profile-aux',
+              credentialId: 'cred-aux',
+              credentialRevision: 1,
+              selectionReason: 'single_eligible',
+              apiKey: 'sk-aux',
+              modelId: 'mock-model-id',
+            }
+          : {
+              leaseId: 'main-lease-1',
+              bindingId: 'main-binding-1',
+              profileId: 'profile-main',
+              credentialId: 'cred-main',
+              credentialRevision: 1,
+              selectionReason: 'single_eligible',
+              apiKey: 'sk-main',
+              modelId: 'mock-model-id',
+            },
       settle: async (lease, outcome) => {
-        settled.push({ profileId: lease.profileId, outcomeKind: outcome.kind });
+        if (lease.profileId === 'profile-aux') {
+          settled.push({ profileId: lease.profileId, outcomeKind: outcome.kind });
+        }
       },
       releaseTurn: () => {
         released += 1;
@@ -724,7 +790,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
     assert.equal(settled.length, 1);
     assert.equal(settled[0]!.outcomeKind, 'success');
-    assert.equal(released, 1);
+    assert.ok(released >= 1, 'the auxiliary lease was released');
   });
 
   test('recovery re-projection with ctx.branch replays the checkpoint without the raw span', async () => {
@@ -956,6 +1022,133 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       fixture.events.some((event) => event.type === 'error'),
       false,
     );
+  });
+
+  test('semantic compaction acquires an auxiliary lease, rematerializes with its key, attributes and settles', async () => {
+    const settled: string[] = [];
+    let semanticAcquired = 0;
+    let released = 0;
+    const resolver: ProviderCredentialResolver = {
+      acquireAttempt: async (context) => {
+        if (context.turnId.startsWith('aux:semantic_compact')) {
+          semanticAcquired += 1;
+          return {
+            leaseId: 'semantic-lease-1',
+            bindingId: 'semantic-binding-1',
+            profileId: 'profile-semantic',
+            credentialId: 'cred-semantic',
+            credentialRevision: 1,
+            selectionReason: 'single_eligible',
+            apiKey: 'sk-semantic',
+            modelId: context.modelId,
+          };
+        }
+        return {
+          leaseId: 'main-lease-1',
+          bindingId: 'main-binding-1',
+          profileId: 'profile-main',
+          credentialId: 'cred-main',
+          credentialRevision: 1,
+          selectionReason: 'single_eligible',
+          apiKey: 'sk-main',
+          modelId: context.modelId,
+        };
+      },
+      settle: async (_lease, outcome) => {
+        settled.push(outcome.kind);
+      },
+      releaseTurn: () => {
+        released += 1;
+      },
+    };
+    const fixture = buildFixture({
+      semanticCompact: true,
+      historyCompactOff: true,
+      midTurnOff: true,
+      semanticSummarizerCapable: true,
+      semanticPolicy: {
+        enabled: true,
+        mode: 'replace',
+        minStepNumber: 2,
+        maxActiveEstimatedTokens: 1,
+        minNewPrefixEstimatedTokens: 1,
+        minSafePrefixEstimatedTokens: 1,
+        maxAcceptedProjectionEstimatedTokens: 2048,
+        minSavingsTokens: 1,
+        minSavingsRatio: 0,
+      },
+      credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'anthropic' },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.ok(semanticAcquired >= 1, 'the semantic summarizer acquired an auxiliary lease');
+    const attempts = fixture.modelCalls.map((attempt) => decodeModelCallAttempt(attempt));
+    const semantic = attempts.filter((attempt) => attempt.callKind === 'semantic_compact');
+    assert.ok(semantic.length >= 1, 'semantic compaction actually dispatched');
+    assert.equal(
+      semantic[0]!.credentialProfileId,
+      'profile-semantic',
+      'the auxiliary ModelCallAttempt carries the leased profile id',
+    );
+    assert.equal(
+      semantic[0]!.credentialSelectionReason,
+      'single_eligible',
+      'the auxiliary ModelCallAttempt carries the selection reason',
+    );
+    // The summarizer model was re-materialized with the leased key, not the
+    // main call's construct-time key (RFC 9.1).
+    assert.ok(
+      fixture.modelFactoryKeys.includes('sk-semantic'),
+      'the model factory was called with the leased api key',
+    );
+    assert.ok(settled.includes('success'), 'the auxiliary lease settled success');
+    assert.ok(released >= semanticAcquired, 'every auxiliary lease was released');
+  });
+
+  test('a compaction run that never dispatches a provider request never settles a lease', async () => {
+    const settled: string[] = [];
+    let acquired = 0;
+    const resolver: ProviderCredentialResolver = {
+      acquireAttempt: async (context) => {
+        if (context.turnId.startsWith('aux:')) {
+          acquired += 1;
+          return {
+            leaseId: 'x',
+            bindingId: 'x',
+            profileId: 'profile-aux',
+            credentialId: 'cred-x',
+            credentialRevision: 1,
+            selectionReason: 'single_eligible',
+            apiKey: 'sk-x',
+            modelId: 'mock-model-id',
+          };
+        }
+        return {
+          leaseId: 'x',
+          bindingId: 'x',
+          profileId: 'profile-main',
+          credentialId: 'cred-x',
+          credentialRevision: 1,
+          selectionReason: 'single_eligible',
+          apiKey: 'sk-x',
+          modelId: 'mock-model-id',
+        };
+      },
+      settle: async (lease, outcome) => {
+        if (lease.profileId === 'profile-aux') settled.push(outcome.kind);
+      },
+      releaseTurn: () => {},
+    };
+    // No semantic-compact policy and no history mid-turn capacity: the turn
+    // runs to completion without any auxiliary summarizer, so the resolver is
+    // never touched — no acquire, no settle, no fabricated success.
+    const fixture = buildFixture({
+      historyCompactOff: true,
+      credentialRouting: { resolver, connectionId: 'connection-1', providerId: 'anthropic' },
+    });
+    await runFixtureTurn(fixture, consumer);
+    assert.equal(acquired, 0, 'no auxiliary lease was acquired without dispatch');
+    assert.deepEqual(settled, [], 'no lease was settled without dispatch');
   });
 
   test('a rolling second compaction that still exceeds the window ends explicitly (review finding A)', async () => {

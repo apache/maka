@@ -78,6 +78,11 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       input.newlyFoldedRuntimeEvents ?? input.source.foldedRuntimeEvents;
     if (newlyFoldedRuntimeEvents.length === 0) return input.previousCheckpoint?.summary;
     const credential = options.acquireCredential ? await options.acquireCredential() : undefined;
+    // The lease is settled exactly once, in the finally, with the outcome
+    // decided here: an output-length result counts as failure (the response
+    // is unusable), a provider error counts as failure, an abort as aborted,
+    // and anything else as success. It must never be settled twice.
+    let outcome: 'success' | 'failure' | 'aborted' = 'success';
     try {
       try {
         const plan = buildRuntimeEventModelReplayPlan(newlyFoldedRuntimeEvents);
@@ -116,18 +121,23 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
             : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
-        await credential?.settle('success');
         if (rawFinishReasonString(result.finishReason) === 'length') {
+          outcome = 'failure';
           throw new HistoryCompactSummarizerError('output_length');
         }
         return result.text;
       } catch (error) {
-        await credential?.settle(input.abortSignal?.aborted ? 'aborted' : 'failure');
+        if (input.abortSignal?.aborted) outcome = 'aborted';
+        else if (!(error instanceof HistoryCompactSummarizerError)) outcome = 'failure';
         if (error instanceof HistoryCompactSummarizerError) throw error;
         throw new HistoryCompactSummarizerError('provider_error', { cause: error });
       }
     } finally {
-      credential?.release();
+      try {
+        await credential?.settle(outcome);
+      } finally {
+        credential?.release();
+      }
     }
   };
 }

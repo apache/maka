@@ -4,6 +4,7 @@ import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import { effectiveBaseUrl, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import type { ProviderCredentialResolver } from '@maka/core/provider-credential-routing';
+import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { PermissionMode } from '@maka/core/permission';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
@@ -111,15 +112,26 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     // a throw inside leaves nothing to dispose, so just propagate.
     throw error;
   }
-  const pricingSnapshot = await readDuringBackendCreation(
-    () => input.usage.pricing.snapshot(),
-    input.context.abortSignal,
-  );
-  const pricing = buildPricingLookup(pricingSnapshot.overrides);
-  const runtimePolicySnapshot = await readDuringBackendCreation(
-    () => input.runtimePolicy.runtimePolicy.getSnapshot(),
-    input.context.abortSignal,
-  );
+  // The resolver holds an operational DB lease from the moment it is
+  // created until the backend takes ownership: any failure before that
+  // point must dispose it, or the lease leaks.
+  let pricingSnapshot: Awaited<ReturnType<HostAiSdkBackendInput['usage']['pricing']['snapshot']>>;
+  let runtimePolicySnapshot: RuntimePolicySnapshot;
+  let pricing: ReturnType<typeof buildPricingLookup>;
+  try {
+    pricingSnapshot = await readDuringBackendCreation(
+      () => input.usage.pricing.snapshot(),
+      input.context.abortSignal,
+    );
+    pricing = buildPricingLookup(pricingSnapshot.overrides);
+    runtimePolicySnapshot = await readDuringBackendCreation(
+      () => input.runtimePolicy.runtimePolicy.getSnapshot(),
+      input.context.abortSignal,
+    );
+  } catch (error) {
+    credentialResolver?.dispose();
+    throw error;
+  }
   const transport = createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
   );
@@ -143,6 +155,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         fetchFn: transport.fetch,
       });
     } catch (error) {
+      credentialResolver?.dispose();
       await transport.close();
       throw error;
     }

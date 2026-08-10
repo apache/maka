@@ -193,6 +193,35 @@ describe('buildLlmHistorySummarizer', () => {
     );
   });
 
+  test('an output-length result settles the credential lease exactly once as failure', async () => {
+    const settled: string[] = [];
+    let released = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => ({ text: '', finishReason: 'length' }),
+      acquireCredential: async () => ({
+        apiKey: 'sk-aux',
+        settle: async (outcome) => {
+          settled.push(outcome);
+        },
+        release: () => {
+          released += 1;
+        },
+      }),
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      /output_length/,
+    );
+    // The lease must be settled exactly once (as failure for an unusable
+    // output-length response), never success-then-failure.
+    assert.deepEqual(settled, ['failure']);
+    assert.equal(released, 1);
+  });
+
   test('rejects non-empty partial text when the provider exhausted its output budget', async () => {
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
