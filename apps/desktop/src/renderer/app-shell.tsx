@@ -112,6 +112,10 @@ import {
   addOptimisticQueuedMessage,
   removeOptimisticQueuedMessage,
 } from './optimistic-message-queue';
+import {
+  hasActiveTurnAtSubmit,
+  resolveFollowUpModeAtSubmit,
+} from './follow-up-submit-routing';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import {
@@ -1949,10 +1953,22 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
-    if (metadata?.followUpMode && activeIdRef.current && !slashCommand) {
-      const sessionId = activeIdRef.current;
+    const activeSessionId = activeIdRef.current;
+    const activeProjection = activeSessionId
+      ? liveTurnBySessionRef.current[activeSessionId]
+      : undefined;
+    const effectiveFollowUpMode = resolveFollowUpModeAtSubmit({
+      requestedMode: metadata?.followUpMode,
+      defaultMode: followUpMode,
+      hasActiveTurn: hasActiveTurnAtSubmit({
+        liveTurn: activeProjection,
+        runningTurnIds: activeSessionForView?.runningTurnIds,
+      }),
+    });
+    if (effectiveFollowUpMode && activeSessionId && !slashCommand) {
+      const sessionId = activeSessionId;
       const placement =
-        metadata.followUpMode === 'queue' ? 'next_turn' as const : 'current_turn' as const;
+        effectiveFollowUpMode === 'queue' ? 'next_turn' as const : 'current_turn' as const;
       const optimisticEntryId = `optimistic-${crypto.randomUUID()}`;
       try {
         const attachments =
@@ -1979,7 +1995,7 @@ function AppShellContent({
               ? { attachmentItems: toRendererIngestItems(attachments) }
               : {}),
             ...(quotes ? { quotes } : {}),
-            ...(metadata.workspaceFileReferences?.length
+            ...(metadata?.workspaceFileReferences?.length
               ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
               : {}),
           },

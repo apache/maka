@@ -35,6 +35,7 @@ export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
 export function ChatSurfaceLayout({
   className,
   density = 'balanced',
+  streamFollowBehavior = 'instant',
   conversationKey,
   ...props
 }: ChatSurfaceLayoutProps) {
@@ -43,6 +44,7 @@ export function ChatSurfaceLayout({
       {...props}
       conversationKey={conversationKey}
       density={density}
+      streamFollowBehavior={streamFollowBehavior}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"
     />

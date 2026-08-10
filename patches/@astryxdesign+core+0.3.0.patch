@@ -1,21 +1,29 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-index ff34874..9ec8d7a 100644
+index ff34874..952bcde 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-@@ -69,6 +69,11 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+@@ -69,8 +69,18 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
       * @default 'balanced'
       */
      density?: Density;
++    /**
++     * How locked content growth follows the bottom edge.
++     * @default 'spring'
++     */
++    streamFollowBehavior?: 'instant' | 'spring';
 +    /**
 +     * Per-conversation identity for hosts that switch conversations in place.
 +     * Resets scroll and unread state without remounting composer content.
 +     */
 +    conversationKey?: string | number;
  }
- export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
+-export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
++export declare function ChatLayout({ children, composer, density, streamFollowBehavior, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
+     var displayName: string;
+ }
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ea27cd5..790ae68 100644
+index ea27cd5..6f1c412 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -27,7 +35,15 @@ index ea27cd5..790ae68 100644
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
  import { spacingVars } from "../theme/tokens.stylex.js";
-@@ -195,6 +195,7 @@ export function ChatLayout({
+@@ -188,6 +188,7 @@ export function ChatLayout({
+   children,
+   composer,
+   density = 'balanced',
++  streamFollowBehavior = 'spring',
+   emptyState,
+   scrollButton,
+   scrollRef: externalScrollRef,
+@@ -195,6 +196,7 @@ export function ChatLayout({
    className,
    style,
    'data-testid': testId,
@@ -35,7 +51,15 @@ index ea27cd5..790ae68 100644
    ref,
    ...rest
  }) {
-@@ -211,6 +212,20 @@ export function ChatLayout({
+@@ -205,12 +207,27 @@ export function ChatLayout({
+
+   // --- Default scroll behavior ---
+   const scroll = useChatStreamScroll({
+-    scrollRef: scrollContainerRef
++    scrollRef: scrollContainerRef,
++    followBehavior: streamFollowBehavior
+   });
+   const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked
    });
@@ -97,6 +121,56 @@ index 8c509bc..4b09993 100644
    };
  }
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
+index d279277..0719fb4 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
+@@ -20,6 +20,12 @@ export interface UseChatStreamScrollOptions {
+      * @default true
+      */
+     enabled?: boolean;
++    /**
++     * How locked content growth follows the moving bottom target.
++     * User-triggered scrollToBottom remains spring-based.
++     * @default 'spring'
++     */
++    followBehavior?: 'instant' | 'spring';
+     /**
+      * Distance from bottom (in px) within which scrollend re-locks.
+      * Keep small so users aren't yanked back from a slight scroll.
+@@ -66,5 +72,5 @@ export interface UseChatStreamScrollReturn {
+     /** Scroll to the last message in the container. */
+     scrollToLastMessage: () => void;
+ }
+-export declare function useChatStreamScroll({ scrollRef, enabled, lockThreshold, buttonThreshold, damping, stiffness, mass, }: UseChatStreamScrollOptions): UseChatStreamScrollReturn;
++export declare function useChatStreamScroll({ scrollRef, enabled, followBehavior, lockThreshold, buttonThreshold, damping, stiffness, mass, }: UseChatStreamScrollOptions): UseChatStreamScrollReturn;
+ //# sourceMappingURL=useChatStreamScroll.d.ts.map
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
+index d9f2bed..853114f 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
+@@ -41,6 +41,7 @@ const SIXTY_FPS_MS = 1000 / 60;
+ export function useChatStreamScroll({
+   scrollRef,
+   enabled = true,
++  followBehavior = 'spring',
+   lockThreshold = 10,
+   buttonThreshold = 100,
+   damping = 0.7,
+@@ -195,8 +196,12 @@ export function useChatStreamScroll({
+       jumpToBottom();
+       return;
+     }
++    if (followBehavior === 'instant') {
++      jumpToBottom();
++      return;
++    }
+     startAnimation();
+-  }, [enabled, startAnimation, jumpToBottom, scrollRef]);
++  }, [enabled, followBehavior, startAnimation, jumpToBottom, scrollRef]);
+
+   // --- Event listeners ---
+
 diff --git a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 index 33ed78d..0ecbce6 100644
 --- a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
@@ -167,8 +241,7 @@ index 867ed5a..6682347 100644
    sources,
    citationStyle = 'label',
 @@ -1065,7 +1066,9 @@ export function Markdown({
--
-+
+
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
 -  const smoothedText = useStreamingText(children, isStreaming);
@@ -185,8 +258,7 @@ index 867ed5a..6682347 100644
 -    active: isStreaming
 +    active: isStreaming && streamingSpeed !== 'instant'
    };
--
-+
+
    // Build citation context — numbers are assigned in encounter order during rendering.
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js b/node_modules/@astryxdesign/core/dist/hooks/useHotkeys.js
 index 65f9278..f7515e2 100644
@@ -204,6 +276,43 @@ index 65f9278..f7515e2 100644
    }
    return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
  }
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
+index b58707d..8856b79 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
+@@ -95,6 +95,12 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+    * @default 'balanced'
+    */
+   density?: Density;
++
++  /**
++   * How locked content growth follows the bottom edge.
++   * @default 'spring'
++   */
++  streamFollowBehavior?: 'instant' | 'spring';
+ }
+
+ // =============================================================================
+@@ -271,6 +277,7 @@ export function ChatLayout({
+   children,
+   composer,
+   density = 'balanced',
++  streamFollowBehavior = 'spring',
+   emptyState,
+   scrollButton,
+   scrollRef: externalScrollRef,
+@@ -288,7 +295,10 @@ export function ChatLayout({
+   const isSelfScrolling = !externalScrollRef;
+
+   // --- Default scroll behavior ---
+-  const scroll = useChatStreamScroll({scrollRef: scrollContainerRef});
++  const scroll = useChatStreamScroll({
++    scrollRef: scrollContainerRef,
++    followBehavior: streamFollowBehavior,
++  });
+   const newMsgs = useChatNewMessages({
+     isLocked: scroll.isLocked,
+     onResize: scroll.scrollIfLocked,
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index 234a2e4..e3f1842 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -216,6 +325,46 @@ index 234a2e4..e3f1842 100644
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
+diff --git a/node_modules/@astryxdesign/core/src/Chat/useChatStreamScroll.ts b/node_modules/@astryxdesign/core/src/Chat/useChatStreamScroll.ts
+index cc9a9f6..bee0331 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/useChatStreamScroll.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/useChatStreamScroll.ts
+@@ -59,6 +59,13 @@ export interface UseChatStreamScrollOptions {
+    */
+   enabled?: boolean;
+
++  /**
++   * How locked content growth follows the moving bottom target.
++   * User-triggered scrollToBottom remains spring-based.
++   * @default 'spring'
++   */
++  followBehavior?: 'instant' | 'spring';
++
+   /**
+    * Distance from bottom (in px) within which scrollend re-locks.
+    * Keep small so users aren't yanked back from a slight scroll.
+@@ -127,6 +134,7 @@ const SIXTY_FPS_MS = 1000 / 60;
+ export function useChatStreamScroll({
+   scrollRef,
+   enabled = true,
++  followBehavior = 'spring',
+   lockThreshold = 10,
+   buttonThreshold = 100,
+   damping = 0.7,
+@@ -306,8 +314,12 @@ export function useChatStreamScroll({
+       jumpToBottom();
+       return;
+     }
++    if (followBehavior === 'instant') {
++      jumpToBottom();
++      return;
++    }
+     startAnimation();
+-  }, [enabled, startAnimation, jumpToBottom, scrollRef]);
++  }, [enabled, followBehavior, startAnimation, jumpToBottom, scrollRef]);
+
+   // --- Event listeners ---
+
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 index a6f850b..ad3ad05 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
@@ -237,14 +386,12 @@ index a6f850b..ad3ad05 100644
    sources,
    citationStyle = 'label',
 @@ -1620,7 +1622,7 @@ export function Markdown({
--
-+
+
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
 -  const smoothedText = useStreamingText(children, isStreaming);
 +  const smoothedText = useStreamingText(children, isStreaming, {speed: streamingSpeed});
--
-+
+
    const incrementalStateRef = useRef<IncrementalState>(
      createIncrementalState(),
 @@ -1692,7 +1694,7 @@ export function Markdown({
@@ -254,6 +401,5 @@ index a6f850b..ad3ad05 100644
 -    active: isStreaming,
 +    active: isStreaming && streamingSpeed !== 'instant',
    };
--
-+
+
    // Build citation context — numbers are assigned in encounter order during rendering.

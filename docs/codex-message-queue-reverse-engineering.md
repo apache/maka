@@ -187,3 +187,27 @@ Authority replaces the whole projection; a rejected enqueue or a race that
 starts a turn rolls back only the matching pending row. In a real Electron run,
 the pending DOM row appeared 13.4 ms after the click event and the authoritative
 entry replaced it at 153.2 ms.
+
+## Burst submission and scroll stability
+
+A burst of follow-up submissions exposed a routing race after the first send:
+the Composer released its local pending gate when IPC returned, while its
+`streaming` prop still needed another React commit to reflect the synchronous
+live-turn arm. A follow-up entered during that window called `sessions:send`
+again, and Runtime Host correctly rejected `turn.start` with `session_busy`.
+Each rejection created a separate identical error toast.
+
+Desktop submission routing now checks `liveTurnBySessionRef` at the moment of
+submission. A non-terminal local arm, or an authoritative running turn, routes
+through the configured Queue/Steer mode even when the Composer prop is one
+frame behind. Identical active toast content also overwrites in place instead
+of stacking.
+
+The visible output twitch had a separate cause. Astryx's locked chat scroller
+used a spring for every content resize. With instant provider-buffer rendering,
+11 transcript height changes produced 99 scroll events, including 85 movement
+frames below 3 px, and the viewport lagged the bottom by as much as 156 px.
+Maka now selects instant following for automatic content growth while retaining
+the spring for the user-triggered scroll-to-bottom action. A repeat run produced
+18 height changes and 16 scroll events, with zero sub-3px movement frames and
+zero observed distance from the bottom.

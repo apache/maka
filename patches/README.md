@@ -18,10 +18,13 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.3.0`
 
-Three published component seams drop host-owned state or semantics:
+Published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
+- `ChatLayout` needs an instant content-growth follow mode so an already
+  incremental provider stream does not turn each resize into a multi-frame
+  spring animation. User-triggered scroll-to-bottom remains spring-based.
 - `ChatToolCalls` needs a stable row slot for product styling and E2E geometry.
 - `List` must forward its published `aria-label` to the rendered list element.
 - `Markdown` needs a streaming-speed override so hosts with an already
