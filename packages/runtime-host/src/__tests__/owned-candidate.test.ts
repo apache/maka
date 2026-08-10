@@ -19,6 +19,22 @@ test('owned candidate settlement requires a clean process exit', async () => {
   assert.equal(await candidate.settle(2_000), false);
 });
 
+test('owned candidate can be released to the enclosing environment without termination', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-candidate-'));
+  const launch = launchOwnedRuntimeHostCandidate({
+    rootPath,
+    expectedRootId: '00000000-0000-4000-8000-000000000001',
+    entrypoint: new URL('./fixtures/owned-candidate-wait.js', import.meta.url),
+  });
+  const candidate = await launch.spawned;
+
+  candidate.releaseToEnvironment();
+  assert.doesNotThrow(() => process.kill(candidate.pid, 0));
+
+  process.kill(candidate.pid, 'SIGTERM');
+  assert.equal(await candidate.settle(2_000), false);
+});
+
 test('owned hosted execution closes its fresh Host after configuration fails', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-hosted-execution-'));
   const result = await runHostedExecution({

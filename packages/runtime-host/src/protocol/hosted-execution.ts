@@ -55,6 +55,15 @@ export type HostedExecutionProjection =
       readonly failureReason: string;
     };
 
+export function preservesHostedExecutionEnvironment(
+  projection: HostedExecutionProjection,
+): boolean {
+  return (
+    projection.kind === 'settled' &&
+    (projection.status === 'completed' || projection.status === 'failed')
+  );
+}
+
 export const HOSTED_EXECUTION_OPERATION_SPECS = {
   'hosted.execution.start': defineOperation<
     HostedExecutionStartInput,

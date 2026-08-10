@@ -18,6 +18,7 @@ export interface DetachedCandidateAttempt {
 }
 
 export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
+  releaseToEnvironment(): void;
   settle(timeoutMs: number): Promise<boolean>;
 }
 
@@ -48,6 +49,9 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
+      releaseToEnvironment(): void {
+        child.unref();
+      },
       async settle(timeoutMs: number): Promise<boolean> {
         const result = await within(exited, timeoutMs);
         if (result) return result.code === 0 && result.signal === null;

@@ -1,5 +1,6 @@
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  preservesHostedExecutionEnvironment,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostedExecutionProjection,
   type HostedExecutionStartInput,
@@ -36,6 +37,7 @@ export async function runHostedExecution(
   }
 
   let projection: HostedExecutionProjection;
+  let environmentResourcesRemain = false;
   try {
     const target = input.execution.session.modelTarget;
     if (target.kind === 'explicit') {
@@ -47,6 +49,17 @@ export async function runHostedExecution(
       });
     }
     projection = await executeHostedExecution(connected.connection, input.execution, input.signal);
+    if (preservesHostedExecutionEnvironment(projection) && input.signal?.aborted) {
+      projection = await connected.connection.request('hosted.execution.cancel', {
+        executionId: input.execution.executionId,
+      });
+    }
+    if (preservesHostedExecutionEnvironment(projection)) {
+      const diagnostics = await connected.connection.queryHostDiagnostics();
+      environmentResourcesRemain = diagnostics.residencies.some(
+        ({ label, count }) => label === 'runtime-resource' && count > 0,
+      );
+    }
   } catch {
     projection = indeterminate(
       input.execution.executionId,
@@ -56,6 +69,10 @@ export async function runHostedExecution(
     await connected.connection.close().catch(() => undefined);
   }
 
+  if (preservesHostedExecutionEnvironment(projection) && environmentResourcesRemain) {
+    connected.host.releaseToEnvironment();
+    return projection;
+  }
   const clean = await connected.host.settle(input.hostSettlementTimeoutMs ?? 15_000);
   return clean
     ? projection

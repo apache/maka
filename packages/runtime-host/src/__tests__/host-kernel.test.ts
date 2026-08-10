@@ -334,6 +334,40 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('execution settlement can exclude environment resources without releasing Host ownership', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      let accounting!: ReturnType<RuntimeHostCompositionContext['acquireResidency']>;
+      let environment!: ReturnType<RuntimeHostCompositionContext['acquireResidency']>;
+      let settlement!: Promise<void>;
+      const host = await RuntimeHostKernel.start({
+        owner,
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
+          accounting = context.acquireResidency('usage-accounting');
+          environment = context.acquireResidency('runtime-resource');
+          settlement = context.waitForResidenciesExcept!('runtime-resource');
+          return testComposition();
+        }),
+      });
+
+      let settled = false;
+      void settlement.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      assert.equal(settled, false);
+      accounting.release();
+      await settlement;
+      assert.equal(settled, true);
+
+      environment.release();
+      await host.close();
+    });
+  });
+
   test('process-exit retention closes admission before requiring termination without releasing ownership', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });

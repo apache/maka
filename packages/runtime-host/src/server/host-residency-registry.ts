@@ -9,7 +9,10 @@ export interface HostResidencySnapshot {
 
 export class HostResidencyRegistry {
   readonly #counts = new Map<string, number>();
-  readonly #drainWaiters = new Set<() => void>();
+  readonly #drainWaiters = new Set<{
+    readonly excludedLabel: string | undefined;
+    readonly resolve: () => void;
+  }>();
   #activeCount = 0;
 
   get activeCount(): number {
@@ -37,8 +40,12 @@ export class HostResidencyRegistry {
   }
 
   waitForEmpty(): Promise<void> {
-    if (this.#activeCount === 0) return Promise.resolve();
-    return new Promise((resolve) => this.#drainWaiters.add(resolve));
+    return this.#waitForEmptyExcept(undefined);
+  }
+
+  waitForEmptyExcept(excludedLabel: string): Promise<void> {
+    requireResidencyLabel(excludedLabel);
+    return this.#waitForEmptyExcept(excludedLabel);
   }
 
   #release(label: string): void {
@@ -49,9 +56,23 @@ export class HostResidencyRegistry {
     if (count === 1) this.#counts.delete(label);
     else this.#counts.set(label, count - 1);
     this.#activeCount -= 1;
-    if (this.#activeCount !== 0) return;
-    for (const resolve of this.#drainWaiters) resolve();
-    this.#drainWaiters.clear();
+    for (const waiter of this.#drainWaiters) {
+      if (!this.#isEmptyExcept(waiter.excludedLabel)) continue;
+      this.#drainWaiters.delete(waiter);
+      waiter.resolve();
+    }
+  }
+
+  #waitForEmptyExcept(excludedLabel: string | undefined): Promise<void> {
+    if (this.#isEmptyExcept(excludedLabel)) return Promise.resolve();
+    return new Promise((resolve) => this.#drainWaiters.add({ excludedLabel, resolve }));
+  }
+
+  #isEmptyExcept(excludedLabel: string | undefined): boolean {
+    for (const [label, count] of this.#counts) {
+      if (count > 0 && label !== excludedLabel) return false;
+    }
+    return true;
   }
 }
 

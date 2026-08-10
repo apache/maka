@@ -88,6 +88,7 @@ export interface RuntimeHostCompositionContext<K extends StorageRootKind = 'inte
   retainUntilProcessExit(): void;
   requestDrain(): void;
   waitForResidencies?(): Promise<void>;
+  waitForResidenciesExcept?(excludedLabel: string): Promise<void>;
 }
 
 export interface RuntimeHostComposition {
@@ -279,6 +280,8 @@ export class RuntimeHostKernel {
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
           waitForResidencies: () => this.#waitForResidencies(),
+          waitForResidenciesExcept: (excludedLabel) =>
+            this.#waitForResidenciesExcept(excludedLabel),
         });
         for (const session of this.#connectionSessions) session.attachGlobalChanges();
         if (this.#shutdownRequested) this.#beginCompositionDrain();
@@ -580,6 +583,10 @@ export class RuntimeHostKernel {
 
   #waitForResidencies(): Promise<void> {
     return this.#residencies.waitForEmpty();
+  }
+
+  #waitForResidenciesExcept(excludedLabel: string): Promise<void> {
+    return this.#residencies.waitForEmptyExcept(excludedLabel);
   }
 
   #scheduleIdleIfNeeded(): void {

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { preservesHostedExecutionEnvironment } from '../protocol/index.js';
 import type {
   HostedExecutionProjection,
   HostedExecutionReferenceInput,
@@ -63,9 +64,12 @@ export class HostHostedExecutionCoordinator {
     const abort = new AbortController();
     const task = this.run(input, abort.signal)
       .catch(() => indeterminate(input.executionId, 'Runtime Host could not settle execution'))
+      .then((result) => {
+        if (!preservesHostedExecutionEnvironment(result)) this.requestDrain();
+        return result;
+      })
       .finally(() => {
         this.#executions.delete(input.executionId);
-        this.requestDrain();
       });
     this.#executions.set(input.executionId, { input: structuredClone(input), abort, task });
     return { ok: true, result: structuredClone(await task) };
@@ -77,6 +81,7 @@ export class HostHostedExecutionCoordinator {
     this.#cancelled.add(input.executionId);
     const execution = this.#executions.get(input.executionId);
     if (!execution) {
+      this.requestDrain();
       return {
         ok: true,
         result: indeterminate(input.executionId, 'Hosted execution is not active'),

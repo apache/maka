@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { OperationHandlerMap } from '../server/operation-dispatcher.js';
 import { HostHostedExecutionRunner } from '../server/hosted-execution-runner.js';
 
-test('hosted execution reads usage only after Runtime Host residencies settle', async () => {
+test('hosted execution reads usage only after execution residencies settle', async () => {
   const residency = deferred();
   let usageRead = false;
   const runner = new HostHostedExecutionRunner({
@@ -15,7 +15,8 @@ test('hosted execution reads usage only after Runtime Host residencies settle', 
     }),
     context: context(),
     requestDrain: () => {},
-    waitForResidencies: () => residency.promise,
+    waitForExecutionResidencies: () => residency.promise,
+    waitForAllResidencies: () => residency.promise,
     now: sequence(100, 200),
   });
 
@@ -61,7 +62,8 @@ test('hosted execution cancellation drains the Host and waits for canonical stop
     requestDrain: () => {
       drains += 1;
     },
-    waitForResidencies: async () => {},
+    waitForExecutionResidencies: async () => {},
+    waitForAllResidencies: async () => {},
     now: sequence(100, 200),
   });
 
@@ -93,7 +95,8 @@ test('hosted execution cancellation before Turn admission starts no Turn', async
     }),
     context: context(),
     requestDrain: () => {},
-    waitForResidencies: async () => {},
+    waitForExecutionResidencies: async () => {},
+    waitForAllResidencies: async () => {},
   });
 
   const execution = runner.run(input(), abort.signal);
@@ -109,22 +112,32 @@ test('hosted execution cancellation remains active while Runtime continuations s
   const abort = new AbortController();
   const residency = deferred();
   const settling = deferred();
+  const started = deferred();
   let drains = 0;
   const runner = new HostHostedExecutionRunner({
-    handlers: handlers(),
+    handlers: handlers({
+      query: async () => {
+        started.resolve();
+        return runningTurn();
+      },
+    }),
     context: context(),
     requestDrain: () => {
       drains += 1;
     },
-    waitForResidencies: () => {
+    waitForExecutionResidencies: () => {
+      throw new Error('cancelled execution must wait for all residencies');
+    },
+    waitForAllResidencies: () => {
       settling.resolve();
       return residency.promise;
     },
   });
 
   const execution = runner.run(input(), abort.signal);
-  await settling.promise;
+  await started.promise;
   abort.abort();
+  await settling.promise;
   residency.resolve();
 
   const result = await execution;

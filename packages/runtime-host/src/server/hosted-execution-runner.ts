@@ -16,7 +16,8 @@ export interface HostHostedExecutionRunnerInput {
   >;
   readonly context: ConnectionContext;
   readonly requestDrain: () => void;
-  readonly waitForResidencies: () => Promise<void>;
+  readonly waitForExecutionResidencies: () => Promise<void>;
+  readonly waitForAllResidencies: () => Promise<void>;
   readonly now?: () => number;
 }
 
@@ -59,7 +60,9 @@ export class HostHostedExecutionRunner {
       );
       if (started.kind !== 'started') throw new Error('Hosted root Turn was not started');
       const terminal = await this.#waitForTerminal(started.turn, signal);
-      await this.input.waitForResidencies();
+      await (signal.aborted
+        ? this.input.waitForAllResidencies()
+        : this.input.waitForExecutionResidencies());
       const usage = await this.#readUsage(startedAt, (this.input.now ?? Date.now)());
       if (!usageComplete(usage)) {
         return indeterminate(input.executionId, 'Runtime Host usage did not settle completely');
@@ -86,7 +89,7 @@ export class HostHostedExecutionRunner {
       };
     } catch {
       requestDrain();
-      await this.input.waitForResidencies().catch(() => undefined);
+      await this.input.waitForAllResidencies().catch(() => undefined);
       return indeterminate(input.executionId, 'Runtime Host could not settle execution');
     } finally {
       signal.removeEventListener('abort', requestCancellation);

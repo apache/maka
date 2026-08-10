@@ -1236,7 +1236,18 @@ export async function createExecutionRuntimeHostComposition(
         acquireResidency: () => context.acquireResidency('hosted-execution'),
       },
       requestDrain: context.requestDrain,
-      waitForResidencies: () => context.waitForResidencies?.() ?? Promise.resolve(),
+      waitForExecutionResidencies: () => {
+        if (!context.waitForResidenciesExcept) {
+          throw new Error('Runtime Host execution settlement barrier is unavailable');
+        }
+        return context.waitForResidenciesExcept('runtime-resource');
+      },
+      waitForAllResidencies: () => {
+        if (!context.waitForResidencies) {
+          throw new Error('Runtime Host complete settlement barrier is unavailable');
+        }
+        return context.waitForResidencies();
+      },
     });
     const hostedExecutions = new HostHostedExecutionCoordinator(
       (input, signal) => hostedExecutionRunner.run(input, signal),
