@@ -11,6 +11,7 @@ test('a ready user submits work, sees validation, and reviews the real project c
   await composer.press('Enter');
 
   await expect(page.getByText('Created verified-result.txt. Validation passed (1/1).')).toBeVisible();
+  await page.getByRole('button', { name: /Validate verified result/ }).click();
   await expect(page.getByText(/validation: 1 passed, 0 failed/)).toBeVisible();
 
   await page.getByRole('button', { name: 'Open workbar tab' }).click();
@@ -23,7 +24,6 @@ test('a ready user submits work, sees validation, and reviews the real project c
   await expect(review.getByText(/1 file · \+1 · -0/)).toBeVisible();
 
   const elapsedMs = Date.now() - startedAt;
-  console.log(`[first-verified-result] elapsed_ms=${elapsedMs}`);
   testInfo.annotations.push({
     type: 'first-verified-result-ms',
     description: String(elapsedMs),

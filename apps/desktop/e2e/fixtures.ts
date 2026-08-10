@@ -200,7 +200,7 @@ async function seedFirstVerifiedResultProject(userDataDir: string): Promise<void
       "import assert from 'node:assert/strict';",
       "import { readFile } from 'node:fs/promises';",
       "assert.equal(await readFile('verified-result.txt', 'utf8'), 'Maka first verified result\\n');",
-      "console.log('validation: 1 passed, 0 failed');",
+      "process.stdout.write('validation: 1 passed, 0 failed\\n');",
       '',
     ].join('\n'),
     'utf8',
