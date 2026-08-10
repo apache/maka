@@ -162,6 +162,19 @@ export type SettingsPreferencesCopy = {
     keyboardShortcutsHelp: string;
     keyboardShortcutsOpen: string;
     reportIssueLabel: string;
+    updatesTitle: string;
+    checkForUpdates: string;
+    checkingForUpdates: string;
+    updateHelp: string;
+    updateDevBuildHelp: string;
+    updateIdle: string;
+    updateNotAvailable: string;
+    updateAvailable: (version: string) => string;
+    updateDownloading: (version: string, percent: number) => string;
+    updateDownloaded: (version: string) => string;
+    updateInstalling: (version: string) => string;
+    updateCheckFailed: string;
+    updateCheckFailedDetail: (message: string) => string;
   };
   password: {
     copyFailed: string;
@@ -216,6 +229,19 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     about: {
       loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制环境信息', pasteHint: '可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', subtitle: '本地优先的 AI 助手 · 桌面端运行环境', privacyLabel: '隐私与安全', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['所有会话、设置、凭据和 Skill 指令文件都保留在本机工作区。', '模型密钥保存在本机凭据文件内；订阅账号令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在对话内明示授权。', '每个会话都会在本机保留消息、工具调用、权限决策与模式变更记录。'], copying: '复制中…', copyEnvironment: '复制环境信息', copyHelp: '复制当前版本与平台信息以便定位问题；内容不包含工作区路径。', keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看', reportIssueLabel: '报告问题',
+      updatesTitle: '软件更新',
+      checkForUpdates: '检查更新',
+      checkingForUpdates: '检查中…',
+      updateHelp: '后台也会定期检查；需要重启安装时侧栏会提示。',
+      updateDevBuildHelp: '本地开发版不检查 GitHub 发布更新。请使用正式安装包。',
+      updateIdle: '尚未检查更新。',
+      updateNotAvailable: '已是最新版本。',
+      updateAvailable: (version) => `发现新版本 v${version}，正在准备下载…`,
+      updateDownloading: (version, percent) => `正在下载 v${version}（${percent}%）…`,
+      updateDownloaded: (version) => `v${version} 已下载，可在侧栏选择重启安装。`,
+      updateInstalling: (version) => `正在安装 v${version}…`,
+      updateCheckFailed: '检查更新失败',
+      updateCheckFailedDetail: (message) => message,
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
@@ -251,6 +277,19 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     about: {
       loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Environment info copied', pasteHint: 'Paste it directly into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Conversations, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the conversation.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each session.'], copying: 'Copying…', copyEnvironment: 'Copy environment info', copyHelp: 'Copy version and platform details to help diagnose an issue. The workspace path is excluded.', keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View', reportIssueLabel: 'Report an issue',
+      updatesTitle: 'Software updates',
+      checkForUpdates: 'Check for updates',
+      checkingForUpdates: 'Checking…',
+      updateHelp: 'Maka also checks in the background. When a restart is required, the sidebar will prompt you.',
+      updateDevBuildHelp: 'Development builds do not check GitHub releases. Use a packaged install.',
+      updateIdle: 'No update check has run yet.',
+      updateNotAvailable: 'You are on the latest version.',
+      updateAvailable: (version) => `Version v${version} is available and will download shortly…`,
+      updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)…`,
+      updateDownloaded: (version) => `v${version} is ready. Restart from the sidebar to install.`,
+      updateInstalling: (version) => `Installing v${version}…`,
+      updateCheckFailed: 'Could not check for updates',
+      updateCheckFailedDetail: (message) => message,
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   },

@@ -89,6 +89,7 @@ export function registerAppIpc(
     };
   });
   targetIpc.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  targetIpc.handle('app:checkForUpdates', () => updateService.checkForUpdatesNow());
   targetIpc.handle('app:retryUpdateDownload', () => updateService.retryUpdateDownload());
   targetIpc.handle('app:installUpdate', (_event, input: unknown) => {
     if (!isAppUpdateInstallRequest(input)) throw new TypeError('Invalid app update install request');

@@ -56,6 +56,11 @@ export interface AppUpdateService {
   installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
   /** Check because the window regained focus, subject to a shared throttle. */
   checkForUpdatesOnFocus(): Promise<void>;
+  /**
+   * User-initiated check from Settings → About. Skips the focus throttle so
+   * the button always runs a real check (or joins an in-flight one).
+   */
+  checkForUpdatesNow(): Promise<AppUpdateStatus>;
 }
 
 interface AppUpdateServiceDeps {
@@ -405,6 +410,13 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     await checkForUpdates();
   }
 
+  async function checkForUpdatesNow(): Promise<AppUpdateStatus> {
+    if (disposed) return currentStatus();
+    // Explicit user action: always attempt (or join) a check; do not apply the
+    // focus throttle. Still refuses to restart a mid-flight download.
+    return checkForUpdates();
+  }
+
   return {
     start,
     dispose,
@@ -412,5 +424,6 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     retryUpdateDownload,
     installUpdate,
     checkForUpdatesOnFocus,
+    checkForUpdatesNow,
   };
 }
