@@ -26,6 +26,12 @@ export interface SubjectExecutionContext {
   readonly taskInput: string;
   readonly metadata: JsonObject;
   readonly signal?: AbortSignal;
+  readonly execute: (input: {
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly credentialNames: readonly string[];
+    readonly cancel?: { readonly command: string; readonly args: readonly string[] };
+  }) => Promise<{ readonly exitCode: number; readonly stdout: string }>;
 }
 
 export interface SubjectAdapter {

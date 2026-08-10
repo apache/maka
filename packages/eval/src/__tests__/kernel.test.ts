@@ -81,7 +81,12 @@ test('infra failure skips verification and the next run appends one replacement'
     runAttempt: async (_input, operation) => ({
       kind: 'settled',
       value: await operation({
-        context: { cwd: '/workspace', taskInput: 'solve', metadata: {} },
+        context: {
+          cwd: '/workspace',
+          taskInput: 'solve',
+          metadata: {},
+          execute: async () => ({ exitCode: 0, stdout: '' }),
+        },
         verify: async () => {
           verifications += 1;
           return {
