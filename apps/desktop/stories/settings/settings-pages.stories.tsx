@@ -241,7 +241,14 @@ const usageStats: UsageStats = {
     reasoning: 0,
   },
   logs: usageLogs,
-  byProvider: [{ provider: 'zai-coding-plan', requests: 280, tokens: 124_000, costUsd: 1.5 }],
+  byProvider: [{
+    provider: 'zai-coding-plan',
+    requests: 280,
+    tokens: 124_000,
+    costUsd: 1.5,
+    tokensIncomplete: true,
+    costIncomplete: true,
+  }],
   byModel: [
     {
       model: 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking',

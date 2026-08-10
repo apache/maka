@@ -401,20 +401,60 @@ function projectUsageStats(
         status: row.status,
       })),
     ].sort((left, right) => right.ts - left.ts),
-    byProvider: providerBuckets.map((bucket) => ({
-      provider: bucket.label,
-      requests: bucket.requests,
-      tokens: bucket.totalTokens,
-      costUsd: bucket.costUsd,
-    })),
-    byModel: modelBuckets.map((bucket) => ({
-      model: bucket.label,
-      requests: bucket.requests,
-      tokens: bucket.totalTokens,
-      costUsd: bucket.costUsd,
-    })),
+    byProvider: projectProviderBuckets(providerBuckets, llmRows),
+    byModel: projectModelBuckets(modelBuckets, llmRows),
     byTool: projectToolBuckets(toolRows),
     pricing: [],
+  };
+}
+
+function projectProviderBuckets(
+  buckets: readonly UsageBucket[],
+  rows: readonly LlmUsageLogProjection[],
+): UsageStats["byProvider"] {
+  const incomplete = incompleteLlmBuckets(rows, "provider");
+  return buckets.map((bucket) => ({
+    provider: bucket.label,
+    ...projectLlmBucketValues(bucket, incomplete.get(bucket.key)),
+  }));
+}
+
+function projectModelBuckets(
+  buckets: readonly UsageBucket[],
+  rows: readonly LlmUsageLogProjection[],
+): UsageStats["byModel"] {
+  const incomplete = incompleteLlmBuckets(rows, "model");
+  return buckets.map((bucket) => ({
+    model: bucket.label,
+    ...projectLlmBucketValues(bucket, incomplete.get(bucket.key)),
+  }));
+}
+
+function incompleteLlmBuckets(
+  rows: readonly LlmUsageLogProjection[],
+  groupBy: "provider" | "model",
+): Map<string, { tokens: boolean; cost: boolean }> {
+  const incomplete = new Map<string, { tokens: boolean; cost: boolean }>();
+  for (const row of rows) {
+    const key = groupBy === "provider" ? row.providerId : `${row.providerId}:${row.modelId}`;
+    const current = incomplete.get(key) ?? { tokens: false, cost: false };
+    current.tokens ||= row.usageBasis === "partial" || row.usageBasis === "missing";
+    current.cost ||= row.costBasis === "unpriced";
+    incomplete.set(key, current);
+  }
+  return incomplete;
+}
+
+function projectLlmBucketValues(
+  bucket: UsageBucket,
+  qualifier: { readonly tokens: boolean; readonly cost: boolean } | undefined,
+) {
+  return {
+    requests: bucket.requests,
+    tokens: bucket.totalTokens,
+    costUsd: bucket.costUsd,
+    ...(qualifier?.tokens ? { tokensIncomplete: true } : {}),
+    ...(qualifier?.cost ? { costIncomplete: true } : {}),
   };
 }
 
