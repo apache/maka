@@ -82,14 +82,8 @@ const ALLOW = new Map([
     'packages/runtime/src/telemetry/record-tool-invocation.ts',
     'message routed through generalizedErrorMessage.',
   ],
-  [
-    'packages/headless/src/cli.ts',
-    'CLI entrypoint prints command progress, usage, and failures to stdout/stderr by design.',
-  ],
-  [
-    'packages/headless/src/harbor-cli.ts',
-    'Harbor CLI subcommand prints usage and command failures to stderr by design.',
-  ],
+  ['CLI entrypoint prints command progress, usage, and failures to stdout/stderr by design.'],
+  ['Harbor CLI subcommand prints usage and command failures to stderr by design.'],
   [
     'apps/desktop/src/main/shell-env.ts',
     'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',

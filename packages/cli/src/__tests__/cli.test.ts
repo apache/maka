@@ -8,11 +8,11 @@ describe('Maka CLI args', () => {
   test('parses canonical commands and rejects malformed input', () => {
     const cases: Array<[string[], unknown]> = [
       [[], { kind: 'tui' }],
+      [['eval', 'run', 'experiment.json'], { kind: 'eval', args: ['run', 'experiment.json'] }],
       [
-        ['eval', 'task-run', 'inspect', 'run-1'],
-        { kind: 'eval', args: ['task-run', 'inspect', 'run-1'] },
+        ['inspect', 'run-1', '--json'],
+        { kind: 'error', message: 'Unexpected argument: inspect', exitCode: 2 },
       ],
-      [['inspect', 'run-1', '--json'], { kind: 'inspect', args: ['run-1', '--json'] }],
       [['runtime-host', 'serve'], { kind: 'runtime-host-serve' }],
       [
         ['runtime-host', 'serve', '--root', '/srv/maka'],
@@ -147,6 +147,7 @@ describe('Maka CLI args', () => {
     assert.equal(help.kind, 'help');
     if (help.kind === 'help') assert.match(help.text, /Usage: maka/);
     if (help.kind === 'help') assert.match(help.text, /--resume <id> --cwd <path>/);
+    if (help.kind === 'help') assert.doesNotMatch(help.text, /inspect|autonomous|headless/i);
   });
 
   test('preserves an established process exit code', () => {

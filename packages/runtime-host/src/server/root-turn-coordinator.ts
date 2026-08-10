@@ -834,7 +834,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   stopRoot(
     identity: RuntimeMessageRunIdentity,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
@@ -866,7 +866,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   stopSession(
     sessionId: string,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
@@ -917,7 +917,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   async stopAgentGraphSupervisor(
     sessionId: string,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
@@ -1752,7 +1752,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     commitQueueFence: () => QueueFenceResult,
     admission: SessionAdmissionLease,
     stopInput: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<DeclaredStopFence | undefined> {
@@ -2292,7 +2292,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   private async deliverRuntimeStopIntent(
     sessionId: string,
     input: {
-      source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = { source: 'stop_button' },
   ): Promise<void> {

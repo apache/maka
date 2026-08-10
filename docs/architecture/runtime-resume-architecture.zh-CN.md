@@ -743,7 +743,7 @@ flowchart LR
 - `packages/runtime` 负责 T1/T2 时序、Resolver、plan、execution revalidation、新 Run lineage 和 startup repair；
 - Desktop main / CLI / runtime-host 负责真实 store、工具目录、后台任务、入口与生命周期；
 - renderer 和 TUI 只触发、展示，不拥有恢复判定；
-- Headless/Harbor 要在 Runtime high-water 之外额外提供 workspace checkpoint 和新 Attempt 语义，不能只复用聊天历史。
+- Eval 把 Runtime continuation 视为 Runtime Host 内部行为，不把它当作实验 retry。
 
 ## 当前 Host 入口
 
@@ -779,18 +779,9 @@ Resume 的 workspace plane 已经有一层 storage-owned 的执行准入地基�
 
 M1.2 在同一交付中完成 owner-bound storage worker bridge 与 runtime-host lifecycle composition：只允许 Read/Glob/Grep，把无 owner 校验的 inspect 降为显式 test support，拒绝 active callback 内 reentrant `owner.close()`，用不可混淆的 attached/managed typed profile 阻止 silent fallback，并固定 tool operations → managed owner → root owner 的关闭顺序。本切片不让 Desktop/CLI 默认开启 managed execution；Write/Edit/Format/Bash/未知工具必须 fail closed。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
-### Headless / Harbor
+### Eval
 
-当前 Runtime resume 可以提供 immutable history high-water 和 replay gate，但 timeout Attempt 的真正恢复还必须绑定：
-
-- Task/Attempt identity；
-- compaction summary ref；
-- Git-managed workspace ref；
-- workspace lease/worktree identity；
-- dirty/include policy；
-- durable budget。
-
-缺少这些事实时，应回退为新的 attempt-level retry，并明确记录 fallback reason；不能把它叫作同一 workspace 上的 resume。
+Eval 不恢复或重建 Runtime execution，只请求 Runtime Host 执行 Maka subject。基础设施替换会向同一个 experiment cell 追加新 attempt；Runtime continuation 留在该 subject 内部，不成为 repetition 或 retry。
 
 ## 一个完整的运行流程应该怎样走
 
@@ -975,7 +966,6 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 - [RecoveryResolver ADR](./runtime-recovery-resolver-adr.zh-CN.md)
 - [Runtime Resume Phase 3–4 实施路线](./runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
 - [Runtime Resume 拆分与提取账本](./runtime-resume-extraction-ledger.zh-CN.md)
-- [Runtime Resume 与 Tool Journal 设计草案](../runtime-resume-tool-journal-design-draft.zh-CN.md)
 - [第一章：Log Is the Runtime](./runtime-core-architecture-draft.zh-CN.md)
 
 ## 小结

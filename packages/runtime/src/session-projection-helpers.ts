@@ -76,13 +76,11 @@ export function turnHasRetainedOutput(messages: readonly StoredMessage[], turnId
 }
 
 export function normalizeStopSessionSource(
-  source: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor' | undefined,
+  source: 'stop_button' | 'graph_supervisor' | undefined,
 ): string | undefined {
   switch (source) {
     case 'stop_button':
       return 'renderer.stop_button';
-    case 'benchmark_deadline':
-      return 'benchmark.deadline';
     case 'graph_supervisor':
       return 'graph.supervisor';
     case undefined:

@@ -4,10 +4,8 @@
 // read-modify-write (read -> replace -> write back) and silently lose an update.
 // withFileWriteLock(key, fn) runs work sharing a key strictly one-at-a-time, in
 // submission order; distinct keys run concurrently. Callers pass a key that
-// uniquely identifies the target file within their tool surface (the builtin
-// tools key on the resolved absolute path; the headless tools key on a
-// JSON [cwd, path] pair, since the executor boundary hides — and may relocate —
-// the filesystem). A failed task never wedges its key, and keys are reclaimed
+// uniquely identifies the target file within their tool surface. Runtime tools
+// key on the resolved absolute path. A failed task never wedges its key, and keys are reclaimed
 // once their chain drains, so the map stays bounded.
 //
 // Keying is lexical, so one file reached under two names — via a symlinked parent
@@ -23,10 +21,8 @@ const tails = new Map<string, Promise<void>>();
  * settles, then runs, then releases the key for the next waiter. Distinct keys
  * never block each other.
  *
- * @internal Low-level primitive shared with the headless tools via the
- * `@maka/runtime/file-write-lock` subpath. Not part of the public runtime API —
- * file tools own the keying, so an external caller would only be sharing this
- * one process-global queue by accident.
+ * @internal File tools own the keying, so an external caller would only share
+ * this process-global queue by accident.
  */
 export function withFileWriteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = tails.get(key) ?? Promise.resolve();

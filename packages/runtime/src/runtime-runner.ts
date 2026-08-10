@@ -841,8 +841,8 @@ function failureFromTerminalEvent(event: RuntimeEvent): InvocationFailure | unde
   // the provider or backend. Prefer that precise class over the bare status.
   // A failed terminal with NO error content (e.g. complete(stopReason=error)
   // with no preceding error event) classifies as 'runtime_error' — not the
-  // bare 'failed' — so benchmark scoring can distinguish it from other
-  // failure modes and the run ledger stays consistent with the invocation.
+  // bare 'failed' — so callers can distinguish it from other failure modes
+  // and the run ledger stays consistent with the invocation.
   if (status === 'failed') {
     const message = content?.kind === 'error' ? content.message : undefined;
     const classFromContent =

@@ -270,8 +270,7 @@ export function isValidShellRunState(value: {
  * Store-independent ShellRun invariants.
  *
  * Every ShellRunStore has to enforce the same shape, patch, and transition
- * rules — the SQLite store persists across processes, the headless in-memory
- * store lives for one benchmark task — and ShellRunProcessManager reads those
+ * rules — regardless of storage medium — and ShellRunProcessManager reads those
  * rules back as behaviour (monotonic revisions, immutable terminal outcomes).
  * They live here so a second store is a storage-medium change, not a second
  * copy of the state machine.

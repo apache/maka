@@ -397,9 +397,8 @@ export function buildSubagentListTool(): MakaTool<
     categoryHint: 'read',
     nesting: 'direct_only',
     impl: async (input, ctx) => {
-      // Runtime Host supplies this capability to production clients.
-      // A headless embedder can still construct ToolRuntime without it, so
-      // keep the failure explicit at the embedding boundary.
+      // Runtime Host supplies this capability to production clients. Keep the
+      // failure explicit at the embedding boundary.
       if (!ctx.listChildAgents) {
         throw new Error(
           'agent_list is not available in this session, so no agent catalog could be read. ' +

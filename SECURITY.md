@@ -94,7 +94,7 @@ supply their own boundary. See
    file mode 0o600, atomic writes, and no symlink/traversal escape.
    Subscription OAuth tokens (Claude, Codex, GitHub Copilot, xAI, and the
    Antigravity preview) live in the same store: `credentials.json`
-   is the single authority every surface — Desktop, TUI, headless —
+   is the single authority every Runtime Host surface — Desktop, TUI, CLI —
    reads and writes, under the same OS-account and 0o700/0o600 boundary
    as other runtime credentials. Electron safeStorage is not part of
    this boundary anymore. Pre-existing safeStorage-encrypted credential

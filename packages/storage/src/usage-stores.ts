@@ -196,7 +196,6 @@ function rootAuthorityFailureNeedsDrain(code: StorageRootAuthorityErrorCode): bo
   switch (code) {
     case 'root_unmarked':
     case 'invalid_marker':
-    case 'root_kind_mismatch':
     case 'root_identity_collision':
     case 'root_identity_changed':
       return true;

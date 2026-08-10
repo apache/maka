@@ -318,15 +318,6 @@ panel-lifecycle changes, direct `gzip -9` measurement reported 22,237 bytes for
 the `session-workbar` chunk and 75,703 bytes for the main `index` chunk, both
 slightly below the previous 22,260-byte and 75,801-byte snapshots.
 
-`npm run measure:session-bundle` currently cannot provide its separate
-workspace/session archive benchmark. Its smoke exporter now emits the canonical
-SQLite-only state (`runtime.sqlite` plus artifacts), while the measurement
-reader still requires the removed legacy
-`sessions/<id>/session.jsonl` authority. The renderer bundle numbers above do
-not use that broken path. Follow-up work should teach the measurement reader to
-derive the session identity from the exported SQLite database instead of
-reintroducing a compatibility JSONL file.
-
 It does not yet have general durable route restoration or retained side-chat
 recovery after leaving the owning session. Terminal launch remains local and
 deliberately narrow: the renderer can request a login shell for the current

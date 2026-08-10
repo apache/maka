@@ -152,8 +152,7 @@ export function buildManagedBashTool(
      * Whether this host has a sandbox boundary the model can be asked to declare.
      * False drops `required_boundary` from the schema entirely rather than
      * accepting and ignoring it: a parameter no host enforces is pure noise in
-     * the model's tool selection. Headless runs inside an external isolation
-     * boundary with no in-process sandbox manager, so it passes false.
+     * the model's tool selection.
      */
     declareSandboxBoundary?: boolean;
     /**

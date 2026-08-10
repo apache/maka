@@ -47,7 +47,7 @@ const config: ToolAvailabilityConfig = {
 
 const agentConfig: ToolAvailabilityConfig = {
   economy: true,
-  groups: buildDeferredToolGroupsFromCatalog('headless', AGENT_TOOL_NAMES),
+  groups: buildDeferredToolGroupsFromCatalog('cli', AGENT_TOOL_NAMES),
 };
 
 function tools(implCalls: string[]): MakaTool[] {

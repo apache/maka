@@ -374,7 +374,6 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'runtime_workspace_epochs',
         'runtime_workspace_versions',
         'runtime_workspace_heads',
-        'headless_task_run_events',
         'session_metadata_schema',
         'session_metadata',
         'session_metadata_labels',

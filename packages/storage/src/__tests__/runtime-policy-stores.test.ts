@@ -28,7 +28,6 @@ import {
 } from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
-  createHeadlessRootLease,
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
@@ -2744,23 +2743,12 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('rejects headless leases, forged facades, and operations after interactive lease close', async () => {
-    await withTempDir(async (base) => {
-      const headlessRoot = join(base, 'headless');
-      const headless = await resolveStorageRoot({ path: headlessRoot, kind: 'headless' });
-      const before = await snapshotRoot(headlessRoot);
-      await assert.rejects(
-        () =>
-          openInteractiveRuntimePolicyStoresForWrite(
-            createHeadlessRootLease(headless, 'write') as unknown as StorageRootLease<
-              'interactive',
-              'write'
-            >,
-          ),
-        isInvalidLease,
-      );
-      assert.deepEqual(await snapshotRoot(headlessRoot), before);
-    });
+  test('rejects forged leases, forged facades, and operations after interactive lease close', async () => {
+    await assert.rejects(
+      () =>
+        openInteractiveRuntimePolicyStoresForWrite({} as StorageRootLease<'interactive', 'write'>),
+      isInvalidLease,
+    );
 
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

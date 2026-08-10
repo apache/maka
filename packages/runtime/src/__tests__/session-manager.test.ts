@@ -12549,7 +12549,7 @@ describe('SessionManager permission mode updates', () => {
     let stopSettled = false;
     const stop = manager
       .stopSession(session.id, {
-        source: 'benchmark_deadline',
+        source: 'graph_supervisor',
         mode: 'after_step',
       })
       .finally(() => {

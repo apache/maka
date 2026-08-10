@@ -58,7 +58,6 @@ describe('SqliteRuntimeStore', () => {
         DROP TABLE runtime_workspace_heads;
         DROP TABLE runtime_workspace_versions;
         DROP TABLE runtime_workspace_epochs;
-        DROP TABLE headless_task_run_events;
         DELETE FROM runtime_capabilities
           WHERE capability = 'runtime_workspace_version_authority';
         PRAGMA user_version = 6;
@@ -90,40 +89,35 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('upgrades a populated mainline schema 8 database without losing headless task events', async () => {
+  it('drops the retired TaskRun event table during migration', async () => {
     await withStore(async (store, dbPath) => {
       store.close();
 
-      const mainline = new DatabaseSync(dbPath);
-      mainline
-        .prepare(`
-          INSERT INTO headless_task_run_events(task_run_id, sequence, event_id, record_json)
-          VALUES (?, ?, ?, ?)
-        `)
-        .run('task-run-1', 0, 'headless-event-1', '{"kind":"started"}');
-      mainline.close();
+      const legacy = new DatabaseSync(dbPath);
+      legacy.exec(`
+        CREATE TABLE headless_task_run_events (
+          task_run_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL,
+          event_id TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          PRIMARY KEY (task_run_id, sequence)
+        );
+        PRAGMA user_version = 11;
+      `);
+      legacy.close();
 
       const upgraded = createSqliteRuntimeStore(dbPath);
       try {
         assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
         const inspect = new DatabaseSync(dbPath);
         try {
-          assert.deepEqual(
+          assert.equal(
             inspect
-              .prepare(`
-                SELECT task_run_id, sequence, event_id, record_json
-                FROM headless_task_run_events
-              `)
-              .all()
-              .map((row) => ({ ...row })),
-            [
-              {
-                task_run_id: 'task-run-1',
-                sequence: 0,
-                event_id: 'headless-event-1',
-                record_json: '{"kind":"started"}',
-              },
-            ],
+              .prepare(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'headless_task_run_events'",
+              )
+              .get()?.count,
+            0,
           );
           assert.deepEqual(
             inspect

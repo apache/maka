@@ -116,12 +116,14 @@ Full production-surface smoke verification on 2026-08-04 then ran:
 
 - `maka run` through a persisted DeepSeek Responses connection;
 - `maka run` through a persisted DeepSeek Anthropic-compatible connection;
-- Headless Harbor with Responses and `MAKA_WEB_SEARCH_ENABLED=true`;
-- Headless Harbor with Anthropic Messages and the same explicit opt-in.
+- the former Headless Harbor path with Responses and explicit WebSearch opt-in;
+- the former Headless Harbor path with Anthropic Messages and the same opt-in.
 
 All four runs completed with provider-executed WebSearch call/result pairs,
 final model text, no local ToolRuntime execution of `WebSearch`, and durable
-runtime events. Both headless runs also persisted token summaries. The
+runtime events. Both historical Headless runs also persisted token summaries;
+that deleted path is evidence for the provider capability, not evidence for the
+new Runtime Host Eval subject. The
 Responses CLI turn emitted search plus page-open actions; the Anthropic CLI
 turn returned ten structured source rows.
 

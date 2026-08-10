@@ -8,7 +8,7 @@
 
 **一个为真实工作而生的本地优先 Agent 工作台。**
 
-Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息、工具调用和长程任务进度保存为可恢复的运行事实。桌面应用、终端 TUI 和非交互 CLI 共享每个工作区唯一的 Runtime Host；Headless 使用独立的任务 Runtime 承载持久评测和自动化工作负载。
+Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息和工具调用保存为可恢复的运行事实。桌面应用、终端 TUI、非交互 CLI 和 Maka 评测 subject 都通过 Runtime Host 执行。
 
 > [!IMPORTANT]
 > Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
@@ -18,8 +18,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 - **本地优先，而不是云端托管优先**：会话、设置和运行记录默认保存在本机；模型连接由你配置，可以使用云 API、本地模型或兼容网关。
 - **Log is the Runtime**：模型消息、Tool Call、Tool Result 和终止事实进入 Runtime Event Log，Session、UI、模型上下文和恢复逻辑从日志生成投影。
 - **上下文不是历史本身**：Tool Result prune 和 LLM Compaction 只改变下一次推理看到什么，不把已记录的证据当作上下文垃圾删除。
-- **任务可以长于一个 Turn**：Headless 使用 TaskRun、Task Event Log、预算和 continuation 机制推进可中断、可检查的长程任务。
-- **反馈不等于事实 authority**：Self-check 可以产生证据和一次受限修复机会，但不能把“我检查过了”变成系统事实。
+- **唯一执行 authority**：Runtime Host 拥有 Session、Turn、agent lifecycle、continuation、tools 和 events；Eval 只拥有实验语义与结果。
 
 完整设计见 [Maka Backend Architecture](./ARCHITECTURE.zh-CN.md)。
 
@@ -29,7 +28,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 |---|---|---|
 | **Desktop** | 日常交互、文件与 Artifact 工作流、模型和权限配置 | Electron + React，支持流式会话、工具时间线、分支、搜索和恢复 |
 | **TUI / CLI** | 在当前工程目录中使用 Maka，或执行单次非交互 Turn | `maka`、`maka run`，复用 Desktop 的 workspace 和模型连接 |
-| **Headless** | 长程任务、可恢复 TaskRun、实验和评估 | `maka eval`，支持任务日志、导出、恢复和对比 |
+| **Eval** | Maka 与外部 subject 的可复现实验 | `maka eval run <spec> --out <directory>` |
 
 ## 当前能力
 
@@ -47,12 +46,12 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 - 本地记忆、联网搜索和机器人入口；
 - 不同集成需要单独配置，并非所有实验入口默认可用。
 
-### Durable Tasks and Evolution
+### Evaluation
 
-- Append-only Task Event Log 与 TaskRun projection；
-- 预算、权限暂停、continuation、结果导出和失败任务重试；
-- 有计划、source-guarded、次数受限的 Heavy-task Self-check；
-- AHE target protocol 与 evidence export；完整自动自迭代仍属于外部/实验流程。
+- 声明式多臂 Experiment 展开为 task × repetition × subject cell；
+- 每个 cell 使用 immutable attempt，基础设施失败只替换该 cell，并选择最早有效 attempt；
+- 通用结果只包含 score、normalized usage、可归因 cost、duration、status/failure reason 与 artifacts；
+- Maka subject 只通过 Runtime Host 执行，外部竞品使用 generic external subject adapter。
 
 ## 快速开始
 
@@ -128,7 +127,7 @@ TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
 Graph 的 implementation operator 使用隔离的 Git worktree，因此源项目必须是干净的
 Git worktree。
 
-CLI 读取 Desktop 写入的同一份模型连接和 workspace 配置。Headless 的完整命令与 trust posture 见 [`packages/headless/README.md`](./packages/headless/README.md)。
+CLI 读取 Desktop 写入的同一份模型连接和 workspace 配置。评测 spec 和 adapter 位于 [`packages/eval`](./packages/eval)。
 
 ## 架构
 
@@ -141,7 +140,9 @@ Desktop / TUI / CLI → Runtime Host → SessionManager → AgentRun
                                              ↓
                               Context / Session / UI projections
 
-Headless / Eval → Task Event Log → TaskRun → Self-check / AHE evidence
+Experiment → Cells → Attempts → Results
+                    ↓
+       Runtime Host 执行 Maka subjects
 ```
 
 从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及六篇中英双语深度文章。
@@ -154,7 +155,7 @@ apps/desktop/       Electron main / preload / React renderer
 packages/core/      Session、Event、Permission、Connection 等纯 contracts
 packages/storage/   File-backed stores 与 run ledgers
 packages/runtime/   AgentRun、模型适配、工具、上下文和恢复
-packages/headless/  TaskRun、Autonomous Loop、Self-check、eval 与 AHE
+packages/eval/      Experiment cell、attempt、result 与 executor/subject adapter
 packages/cli/       TUI 和非交互 CLI
 packages/ui/        共享对话、Markdown、Artifact 与 UI primitives
 
@@ -178,9 +179,9 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
 
 - 会话和连接元数据保存在本地文件系统；
 - API key、bot token、proxy password 等运行凭据当前保存在本地 plaintext `credentials.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
-- 订阅 OAuth token（Claude、Codex、GitHub Copilot、xAI 以及 Antigravity preview）统一存放在同一份 `credentials.json`，它是 desktop、TUI、headless 的唯一凭据权威；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
+- 订阅 OAuth token（Claude、Codex、GitHub Copilot、xAI 以及 Antigravity preview）统一存放在同一份 `credentials.json`，它是 Runtime Host client 的唯一凭据权威；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
 - Renderer 不接收明文凭据；文件写入、Shell 和危险工具调用需要经过 permission engine；
-- Headless real-model eval 默认 fail closed，要求调用方显式提供外部隔离边界。
+- Eval 不构造 Runtime，也不读取 Runtime storage；Maka subject 连接已有 Runtime Host。
 
 安全问题请阅读 [SECURITY.md](./SECURITY.md)，当前隐私和 sandbox contract 见 [docs/README.md](./docs/README.md)。
 
@@ -215,7 +216,7 @@ npm run check:release
 
 ```sh
 npm --workspace @maka/runtime test
-npm --workspace @maka/headless test
+npm --workspace @maka/eval test
 npm --workspace @maka/desktop test
 ```
 

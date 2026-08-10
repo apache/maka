@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 /**
  * Pure-Node credential store. Shared by the desktop app and any
- * headless consumer (CLI / eval harness / third party) that runs the
+ * non-desktop consumer (CLI / third party) that runs the
  * runtime outside Electron.
  *
  * At rest this is plaintext JSON behind 0600 file perms (file-first;

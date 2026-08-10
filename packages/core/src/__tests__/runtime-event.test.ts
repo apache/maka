@@ -66,11 +66,8 @@ const runtimeEventValidationCorpus = JSON.parse(
 ) as RuntimeEventValidationCorpus;
 
 test('the shared validation corpus exercises every envelope key', () => {
-  // The corpus is what the Python exporter in `packages/headless/harbor`
-  // validates against, and it is the only thing tying that re-implementation to
-  // this one. A key no case ever sets is a key the exporter can silently not
-  // know about — which is exactly how `origin` and `modelVisibility` came to
-  // fail every event of an 89-cell benchmark run.
+  // A key no case ever sets is a key an external protocol implementation can
+  // silently miss.
   // Only cases the corpus expects to be accepted count. A rejected case carries
   // a value both sides refuse, so it passes just as well against an exporter
   // that never learned the key at all — which is the one thing this is here to

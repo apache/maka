@@ -201,9 +201,6 @@ test('stress and specialized script checks run only for their owning surfaces', 
     assert.equal(plan.full, false, path);
     assert.equal(plan.scriptMode, 'fast', path);
   }
-  const measurement = planTests(['scripts/measure-session-bundle.mjs'], { graph });
-  assert.equal(measurement.scriptMode, 'extended');
-  assert.deepEqual(measurement.workspaces, []);
 });
 
 test('release tooling and the release config select the checks that cover them', () => {
@@ -236,7 +233,7 @@ test('sandbox is flagged whenever the cli workspace runs in the closure', () => 
     'packages/cli/src/__tests__/runtime-host-session-driver.test.ts',
     'packages/runtime/src/shell-tools.ts',
     'packages/storage/src/session-store.ts',
-    'packages/headless/src/cell-output.ts',
+    'packages/eval/src/runner.ts',
   ]) {
     assert.equal(planTests([path], { graph }).runtimeSandbox, true, path);
   }
@@ -245,14 +242,17 @@ test('sandbox is flagged whenever the cli workspace runs in the closure', () => 
 test('heavy workspaces are projected onto dedicated CI lanes', () => {
   const runtimeHost = planTests(['packages/runtime-host/src/server/index.ts'], { graph });
   assert.equal(runtimeHost.runtimeHost, true);
-  assert.equal(runtimeHost.headless, false);
-  assert.deepEqual(runtimeHost.standardWorkspaces, ['packages/cli', 'apps/desktop']);
+  assert.deepEqual(runtimeHost.standardWorkspaces, [
+    'packages/eval',
+    'packages/cli',
+    'apps/desktop',
+  ]);
 
   const runtime = planTests(['packages/runtime/src/index.ts'], { graph });
   assert.equal(runtime.runtimeHost, true);
-  assert.equal(runtime.headless, true);
   assert.deepEqual(runtime.standardWorkspaces, [
     'packages/runtime',
+    'packages/eval',
     'packages/computer-use',
     'packages/cli',
     'apps/desktop',
@@ -260,16 +260,14 @@ test('heavy workspaces are projected onto dedicated CI lanes', () => {
 
   const full = planTests([], { graph, forceFull: true });
   assert.equal(full.runtimeHost, true);
-  assert.equal(full.headless, true);
   assert.deepEqual(
     full.standardWorkspaces,
-    graph.dirs.filter((dir) => dir !== 'packages/runtime-host' && dir !== 'packages/headless'),
+    graph.dirs.filter((dir) => dir !== 'packages/runtime-host'),
   );
 
   const outputs = formatGitHubOutputs(runtimeHost).split('\n');
   assert.ok(outputs.includes('runtime_host=true'));
-  assert.ok(outputs.includes('headless=false'));
-  assert.ok(outputs.includes('standard_workspaces=packages/cli,apps/desktop'));
+  assert.ok(outputs.includes('standard_workspaces=packages/eval,packages/cli,apps/desktop'));
   assert.ok(outputs.includes('windows=true'));
   assert.ok(outputs.includes('windows_runtime=false'));
   assert.ok(outputs.includes('windows_storage=false'));

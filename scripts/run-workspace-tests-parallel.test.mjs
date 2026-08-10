@@ -40,11 +40,11 @@ function makeSpawn(plan) {
 
 test('parallel mode aggregates every failed workspace name', async () => {
   const repoRoot = '/repo';
-  const workspaceDirs = ['packages/core', 'packages/ui', 'packages/headless'];
+  const workspaceDirs = ['packages/core', 'packages/ui', 'packages/eval'];
   const { spawn, calls } = makeSpawn({
     'packages/core': { close: 1 },
     'packages/ui': { close: 2 },
-    'packages/headless': { close: 0 },
+    'packages/eval': { close: 0 },
   });
 
   await assert.rejects(
@@ -62,10 +62,7 @@ test('parallel mode aggregates every failed workspace name', async () => {
     },
   );
 
-  // The serial workspace runs even though the parallel batch failed — the
-  // regression that had headless silently not running whenever anything else
-  // did.
-  assert.ok(calls.some((call) => call.cwd.replaceAll('\\', '/').endsWith('packages/headless')));
+  assert.ok(calls.some((call) => call.cwd.replaceAll('\\', '/').endsWith('packages/eval')));
 });
 
 test('each workspace runs in its own temp namespace, removed however it ends', async () => {

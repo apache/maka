@@ -225,32 +225,12 @@ export {
   workspaceAuthorityIdentity,
 } from './workspace-version-authority.js';
 
-// execution-evidence.ts — shared cross-ledger identity and source coverage.
-// This contract references canonical facts; it does not create another fact
-// authority. Subpath `@maka/core/execution-evidence` is preferred.
 export type {
-  ExecutionIdentityRef,
-  TaskIdentityRef,
   ExecutionLogCursor,
   ExecutionLogCoverage,
-  WorkspaceRevisionRef,
-  TargetSnapshotRef,
-  ExecutionEvidenceRef,
   ExecutionLogLedger,
-  ExecutionLogCursorComparison,
-  WorkspaceRevisionKind,
-  ExecutionEvidenceValidationIssue,
-  ExecutionEvidenceValidationResult,
-} from './execution-evidence.js';
-export {
-  EXECUTION_EVIDENCE_REF_SCHEMA_VERSION,
-  EXECUTION_LOG_LEDGERS,
-  WORKSPACE_REVISION_KINDS,
-  executionLogCursorsShareStream,
-  compareExecutionLogCursors,
-  validateExecutionEvidenceRef,
-  isExecutionEvidenceRef,
-} from './execution-evidence.js';
+} from './execution-log-coverage.js';
+export { EXECUTION_LOG_LEDGERS } from './execution-log-coverage.js';
 
 // runtime-event-store.ts
 export type { RuntimeEventStore } from './runtime-event-store.js';

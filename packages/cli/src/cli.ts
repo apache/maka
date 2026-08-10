@@ -11,7 +11,6 @@ export type MakaCliCommand =
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
-  | { kind: 'inspect'; args: string[] }
   | RuntimeHostCliCommand
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
@@ -44,7 +43,6 @@ export function parseMakaCliArgs(argv: string[], version: string): MakaCliComman
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
-  if (first === 'inspect') return { kind: 'inspect', args: argv.slice(1) };
   if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
   return {
     kind: 'error',
@@ -97,8 +95,7 @@ function helpText(): string {
     '  maka run ...      Run one non-interactive model turn',
     '  maka activate ... Run one Cloud Session activation and emit JSONL',
     '  maka -p ...       Alias for maka run',
-    '  maka eval ...     Run evaluation and autonomous task commands',
-    '  maka inspect ...  Inspect Session, AgentRun, or TaskRun evidence',
+    '  maka eval ...     Run one declarative multi-arm experiment',
     '  maka runtime-host serve [options]  Run a Runtime Host service',
     '  maka runtime-host access issue --principal <id> --grant <operation>',
     '  maka runtime-host access issue --kind capability-provider --principal <id>',
@@ -155,12 +152,8 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
       return runMakaActivationCli(command.args);
     }
     case 'eval': {
-      const { runMakaEvalCli } = await import('@maka/headless/eval-router');
+      const { runMakaEvalCli } = await import('@maka/eval');
       return runMakaEvalCli(command.args);
-    }
-    case 'inspect': {
-      const { runMakaInspectCli } = await import('./inspect-command.js');
-      return runMakaInspectCli(command.args);
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');

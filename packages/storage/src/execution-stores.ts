@@ -136,11 +136,8 @@ export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterB
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
 }
 
-export type HeadlessExecutionStoresWriter = ExecutionStoresWriterBase<'headless'>;
-
 interface ExecutionStoresWriters {
   readonly interactive: InteractiveExecutionStoresWriter;
-  readonly headless: HeadlessExecutionStoresWriter;
 }
 
 export type ExecutionStoresWriter<K extends StorageRootKind> = ExecutionStoresWriters[K];
@@ -204,11 +201,8 @@ export interface InteractiveExecutionStoresReader extends ExecutionStoresReaderB
   readonly interactionStore: InteractiveInteractionStoreReaderFacade;
 }
 
-export type HeadlessExecutionStoresReader = ExecutionStoresReaderBase<'headless'>;
-
 interface ExecutionStoresReaders {
   readonly interactive: InteractiveExecutionStoresReader;
-  readonly headless: HeadlessExecutionStoresReader;
 }
 
 export type ExecutionStoresReader<K extends StorageRootKind> = ExecutionStoresReaders[K];
@@ -238,12 +232,6 @@ export async function openInteractiveExecutionStoresForWrite(
 ): Promise<ExecutionStoresWriter<'interactive'>> {
   const interactionStore = await openSqliteInteractiveInteractionStoreForWrite(lease);
   return openExecutionStoresForWrite(lease, 'interactive', { interactionStore });
-}
-
-export async function openHeadlessExecutionStoresForWrite(
-  lease: StorageRootLease<'headless', 'write'>,
-): Promise<ExecutionStoresWriter<'headless'>> {
-  return openExecutionStoresForWrite(lease, 'headless', {});
 }
 
 async function openExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
@@ -520,12 +508,6 @@ export async function openInteractiveExecutionStoresForRead(
 ): Promise<ExecutionStoresReader<'interactive'>> {
   const interactionStore = await openSqliteInteractiveInteractionStoreForRead(lease);
   return openExecutionStoresForRead(lease, 'interactive', { interactionStore });
-}
-
-export async function openHeadlessExecutionStoresForRead(
-  lease: StorageRootLease<'headless', 'read'>,
-): Promise<ExecutionStoresReader<'headless'>> {
-  return openExecutionStoresForRead(lease, 'headless', {});
 }
 
 async function openExecutionStoresForRead<K extends StorageRootKind, E extends object>(

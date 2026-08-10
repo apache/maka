@@ -1,7 +1,7 @@
 # Maka Computer Use Foundation Contract
 
 状态：Accepted
-适用范围：Desktop foundation；CLI 仅实验性 opt-in；`@maka/headless` 暂不纳入
+适用范围：Desktop foundation；CLI 仅实验性 opt-in；Eval subject 通过 Runtime Host 继承同一边界
 目的：定义 stacked PR 不可破坏的合同与验证门。
 
 外部证据参考（不属于本仓库）：

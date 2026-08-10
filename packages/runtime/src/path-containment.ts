@@ -13,8 +13,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 
 /**
  * Shared filesystem-containment and identifier guards. This is the single
- * authority for path-containment checks across the runtime, the desktop main
- * process, and headless: both the pure-Node runtime and the desktop main (which
+ * authority for path-containment checks across Runtime and the desktop main:
+ * both the pure-Node runtime and the desktop main (which
  * already depends on `@maka/runtime`) reach it here without reverse
  * dependencies. {@link isPathInside} itself is a pure `node:path` predicate; the
  * canonicalisation and contained-I/O helpers around it touch the filesystem.

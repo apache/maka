@@ -21,7 +21,7 @@ function tool(name: string): MakaTool {
 describe('projectEffectiveProductToolSurface', () => {
   it('removes a disabled surface before deriving the effective binding', () => {
     const surface = projectEffectiveProductToolSurface({
-      host: 'headless',
+      host: 'cli',
       tools: [
         tool('Bash'),
         tool('Read'),
@@ -144,7 +144,7 @@ describe('projectEffectiveProductToolSurface', () => {
 
   it('removes a catalog surface that is unsupported on the selected host', () => {
     const surface = projectEffectiveProductToolSurface({
-      host: 'headless',
+      host: 'cli',
       tools: [tool('Read'), tool('browser_navigate'), tool('mcp__server__tool')],
       policy: { economy: true },
     });
@@ -157,7 +157,7 @@ describe('projectEffectiveProductToolSurface', () => {
 
   it('does not let a historical load call revive a disabled surface', () => {
     const surface = projectEffectiveProductToolSurface({
-      host: 'headless',
+      host: 'cli',
       tools: [tool('Read'), tool('agent_spawn'), tool('agent_list'), tool('agent_output')],
       policy: {
         economy: true,
@@ -209,7 +209,7 @@ describe('projectEffectiveProductToolSurface', () => {
     assert.throws(
       () =>
         projectEffectiveProductToolSurface({
-          host: 'headless',
+          host: 'cli',
           tools: [tool('Read')],
           policy: {
             economy: true,
@@ -220,7 +220,7 @@ describe('projectEffectiveProductToolSurface', () => {
     );
   });
 
-  it('applies catalog affinity consistently across Desktop, CLI, and Headless', () => {
+  it('applies catalog affinity consistently across Desktop and CLI', () => {
     const tools = [
       tool('Read'),
       tool('browser_navigate'),
@@ -237,13 +237,9 @@ describe('projectEffectiveProductToolSurface', () => {
         productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn'],
         groupIds: ['agent'],
       },
-      headless: {
-        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn'],
-        groupIds: ['agent'],
-      },
     } as const;
 
-    for (const host of ['desktop', 'cli', 'headless'] as const) {
+    for (const host of ['desktop', 'cli'] as const) {
       const surface = projectEffectiveProductToolSurface({
         host,
         tools,
@@ -328,7 +324,7 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
     assert.deepEqual(agent?.toolNames, ['agent_spawn', 'agent_list']);
   });
 
-  it('never advertises desktop-only packs on cli or headless', () => {
+  it('never advertises desktop-only packs on cli', () => {
     const bound = [
       'browser_navigate',
       'maka_computer',
@@ -337,17 +333,15 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
       'agent_list',
       'agent_output',
     ];
-    for (const host of ['cli', 'headless'] as const) {
-      const groups = buildDeferredToolGroupsFromCatalog(host, bound);
-      assert.deepEqual(
-        groups.map((group) => group.id),
-        ['agent'],
-      );
-      assert.equal(
-        groups.some((group) => ['browser', 'computer_use', 'rive'].includes(group.id)),
-        false,
-      );
-    }
+    const groups = buildDeferredToolGroupsFromCatalog('cli', bound);
+    assert.deepEqual(
+      groups.map((group) => group.id),
+      ['agent'],
+    );
+    assert.equal(
+      groups.some((group) => ['browser', 'computer_use', 'rive'].includes(group.id)),
+      false,
+    );
   });
 
   it('returns no group when a supported surface has zero bound members', () => {
