@@ -1,4 +1,5 @@
 export * from './attempt-store.js';
+export * from './cli.js';
 export * from './experiment-directory.js';
 export * from './experiment.js';
 export * from './external-subject.js';
