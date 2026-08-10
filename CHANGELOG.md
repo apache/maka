@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## 0.1.10 - 2026-08-10
+
+### Highlights
+
+- Rebuilt the Runtime Host around durable ownership and recovery: clients now
+  reconnect across host restarts, incompatible host epochs retire cleanly, and
+  evicted session streams recover without losing the active conversation
+  (#2613, #2618, #2630, #2633).
+- Added remote capability provider mode and stopped agent graph supervisors
+  from generating unnecessary wake-ups (#2625, #2626).
+- Made the changes panel Git-authoritative, restored slash command discovery,
+  exposed archived conversations, and added an About-page update check
+  (#2610, #2612, #2573, #2629).
+- Added managed dependency artifact authority to storage and routed DeepSeek V4
+  Flash edits through ApplyPatch (#2485, #2606).
+
+### Reliability and developer experience
+
+- Recovered stuck xAI login attempts and stale connection deletion, kept
+  settings-controlled session chrome hidden, rendered subagents as compact
+  rows, and aligned the workbar picker with Astryx (#2615, #2617, #2619,
+  #2632).
+- Removed obsolete Runtime Host transition residue and preserved the storage
+  hydration crash fixture (#2635, #2576).
+- Reduced Windows CI work by scoping the baseline to affected surfaces and
+  gating expensive storage coverage, while retrying transient Electron
+  downloads (#2599, #2637, #2594).
+- Updated bundled Computer Use and WebContent dependency pins, including the
+  frame reflow fix (#2627, #2631, #2638).
+
+### Distribution
+
+- Ships for Apple Silicon macOS as a signed and notarized DMG and ZIP, and for
+  Windows x64 as an unsigned NSIS installer and ZIP, built and verified in the
+  same release run.
+- The bundled Computer Use skill ships with the app, but the Computer Use
+  executor remains excluded from this release.
+
 ## 0.1.9 - 2026-08-09
 
 ### Highlights
