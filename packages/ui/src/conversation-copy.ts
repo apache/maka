@@ -356,7 +356,7 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
-      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', queueInputLabel: '加入队列', steerLabel: '引导', queuedInputs: '待发送队列', queuedInputHint: '尚未发送给 Maka', queuedInputActions: '队列消息操作', editQueuedInput: '编辑', editQueuedInputAriaLabel: '编辑队列消息', saveQueuedInput: '保存', cancelEditQueuedInput: '取消', moveQueuedInputUp: '上移', moveQueuedInputDown: '下移', removeQueuedInput: '删除', stopLabel: '停止', stopping: '停止中…',
+      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', queueInputLabel: '加入队列', steerLabel: '插入消息', queuedInputs: '待发送队列', queuedInputHint: '尚未发送给 Maka', queuedInputActions: '队列消息操作', editQueuedInput: '编辑', editQueuedInputAriaLabel: '编辑队列消息', saveQueuedInput: '保存', cancelEditQueuedInput: '取消', moveQueuedInputUp: '上移', moveQueuedInputDown: '下移', removeQueuedInput: '删除', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',

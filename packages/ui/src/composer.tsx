@@ -233,6 +233,8 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
+    /** Return true when this draft must bypass the local mid-turn queue. */
+    shouldSubmitWhileStreaming?(text: string): boolean;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
@@ -1201,22 +1203,32 @@ export const Composer = forwardRef<
       || sendPendingRef.current
       || importActionOwnerRef.current?.pending
     ) return;
-    if (props.streaming) {
-      queueCurrentInput();
-      return;
-    }
     // There is one authoritative draft: staged Skills and files serialize into
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
     const input = currentInput();
     if (!input) return;
     const { text, metadata } = input;
+    if (
+      props.streaming
+      && !(
+        props.onStreamingSubmit
+        && props.shouldSubmitWhileStreaming?.(text)
+      )
+    ) {
+      queueCurrentInput();
+      return;
+    }
+    const submitCurrent = props.streaming
+      ? props.onStreamingSubmit
+      : props.onSend;
+    if (!submitCurrent) return;
     const submittedDraftKey = activeDraftKey();
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(
+      sent = await submitCurrent(
         text,
         metadata,
       );
@@ -1382,6 +1394,11 @@ export const Composer = forwardRef<
 
   const importActionBusy = pendingImportAction !== null;
   const noModelConnection = props.noModelConnection === true;
+  const submitsCurrentStreamingInput = Boolean(
+    props.streaming
+    && props.onStreamingSubmit
+    && props.shouldSubmitWhileStreaming?.(composerWireText(text)),
+  );
   const sendDisabled =
     props.disabled ||
     props.sendBlocked ||
@@ -2058,13 +2075,13 @@ export const Composer = forwardRef<
               />
               <IconButton
                 variant="primary"
-                type="button"
+                type={submitsCurrentStreamingInput ? "submit" : "button"}
                 isDisabled={sendDisabled}
-                label={copy.queueInputLabel}
+                label={submitsCurrentStreamingInput ? copy.steerLabel : copy.queueInputLabel}
                 aria-busy={sendPending ? 'true' : undefined}
                 data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.queueInputLabel}
-                onClick={queueCurrentInput}
+                tooltip={submitsCurrentStreamingInput ? copy.steerLabel : copy.queueInputLabel}
+                onClick={submitsCurrentStreamingInput ? undefined : queueCurrentInput}
                 icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
               />
             </div>

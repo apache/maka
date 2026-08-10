@@ -2144,6 +2144,13 @@ function AppShellContent({
       : steerWithText(text);
   }
 
+  function shouldSubmitWhileStreaming(text: string): boolean {
+    // Slash-leading drafts must reach the Desktop router immediately: valid
+    // commands are dispatched there, while command-like text that does not
+    // parse remains eligible for the Host's steering path.
+    return text.trimStart().startsWith('/');
+  }
+
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
@@ -2792,6 +2799,7 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendWithAttachments}
                   onStreamingSubmit={submitWhileStreaming}
+                  shouldSubmitWhileStreaming={shouldSubmitWhileStreaming}
                   onStop={stop}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
