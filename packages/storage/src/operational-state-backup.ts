@@ -24,6 +24,7 @@ import {
 } from './operational-state-store.js';
 import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
 import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
+import { SQLITE_PROVIDER_ROUTING_SCHEMA_VERSION } from './sqlite-provider-routing-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 import {
   SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
@@ -350,6 +351,7 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
         ['usage', SQLITE_USAGE_SCHEMA_VERSION],
         ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
+        ['provider_routing', SQLITE_PROVIDER_ROUTING_SCHEMA_VERSION],
         ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
       ]);
       const rows = database
@@ -430,6 +432,8 @@ function validateSqlite(path: string, files: readonly OperationalBackupFile[]): 
         'usage_pricing_authority',
         'usage_pricing_overrides',
         'artifact_records',
+        'provider_credential_verification',
+        'provider_credential_health',
       ];
       const tableExists = database.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",

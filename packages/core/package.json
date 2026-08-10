@@ -77,6 +77,7 @@
     "./codex-model-compatibility": "./dist/codex-model-compatibility.js",
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
+    "./provider-credential-routing": "./dist/provider-credential-routing.js",
     "./provider-contract-matrix": "./dist/provider-contract-matrix.js",
     "./model-catalog": "./dist/model-catalog.js",
     "./model-metadata": "./dist/model-metadata.js",

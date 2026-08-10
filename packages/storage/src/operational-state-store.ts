@@ -27,6 +27,10 @@ import {
   migrateSqliteArtifactDatabase,
   SQLITE_ARTIFACT_SCHEMA_VERSION,
 } from './sqlite-artifact-schema.js';
+import {
+  migrateSqliteProviderRoutingDatabase,
+  SQLITE_PROVIDER_ROUTING_SCHEMA_VERSION,
+} from './sqlite-provider-routing-schema.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const OPERATIONAL_STATE_SCHEMA_VERSION = 2;
@@ -43,6 +47,7 @@ const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
   ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
   ['usage', SQLITE_USAGE_SCHEMA_VERSION],
   ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
+  ['provider_routing', SQLITE_PROVIDER_ROUTING_SCHEMA_VERSION],
   ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
 ] as const);
 const REMOVED_OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
@@ -111,6 +116,7 @@ class OperationalStateDatabaseOwner {
       migrateSqliteWorkflowDatabase(this.database);
       migrateSqliteUsageDatabase(this.database);
       migrateSqliteArtifactDatabase(this.database);
+      migrateSqliteProviderRoutingDatabase(this.database);
       migrateOperationalStateDatabase(this.database, options.now ?? Date.now);
     } catch (error) {
       this.database.close();

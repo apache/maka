@@ -1,0 +1,397 @@
+import type { ConnectionCredentialRouting } from '@maka/core/runtime-policy';
+import type {
+  ProviderCredentialLease,
+  ProviderCredentialOutcome,
+  ProviderCredentialResolver,
+  ProviderCredentialRouteContext,
+  ProviderCredentialSelectionReason,
+  ProviderProfileBinding,
+} from '@maka/core/provider-credential-routing';
+
+/**
+ * Credential material resolved for one Profile at acquire time. The Router
+ * never persists or retains it beyond the produced lease.
+ */
+export interface RouterCredentialMaterial {
+  readonly credentialId: string;
+  readonly credentialRevision: number;
+  readonly apiKey: string;
+  readonly requestHeaders?: Readonly<Record<string, string>>;
+  readonly fetch?: typeof fetch;
+}
+
+/**
+ * The Host-facing world view the Router composes: routing declaration,
+ * eligibility (health + verification), and per-profile credential material.
+ * PR 2 keeps this as an injected seam; PR 3 wires Catalog/Vault/Health into
+ * it.
+ */
+export interface RouterProfileProvider {
+  /** Read the Connection's credentialRouting; null means legacy single. */
+  getRouting(connectionId: string): Promise<ConnectionCredentialRouting | null>;
+  /**
+   * Filter candidate profileIds down to those eligible for `modelId`
+   * (enabled + configured + verified + health-allowed). An empty result
+   * means the pool is exhausted for this model.
+   */
+  getEligibleProfileIds(
+    connectionId: string,
+    profileIds: readonly string[],
+    modelId: string,
+  ): Promise<ReadonlySet<string>>;
+  /** Resolve the current credential for a Profile (null when unconfigured). */
+  resolveCredential(
+    connectionId: string,
+    profileId: string,
+  ): Promise<RouterCredentialMaterial | null>;
+  /** Persist the outcome into the routing Health authority. */
+  settleHealth(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void>;
+}
+
+export interface CreateProviderCredentialRouterOptions {
+  /** Maximum turn bindings retained before LRU eviction. */
+  maxTurnBindings?: number;
+  now?: () => number;
+}
+
+const DEFAULT_MAX_TURN_BINDINGS = 1_024;
+const DEFAULT_NOW = () => Date.now();
+
+interface SwrrEntry {
+  readonly weight: number;
+  currentWeight: number;
+}
+
+interface SwrrAccumulator {
+  readonly totalWeight: number;
+  readonly entries: Map<string, SwrrEntry>;
+}
+
+interface TurnBindingRecord extends ProviderProfileBinding {
+  readonly connectionId: string;
+  readonly sessionId: string;
+  readonly turnId: string;
+  lastUsedAt: number;
+}
+
+/**
+ * Turn-granular smooth weighted round-robin Router (RFC sections 6 and 7).
+ *
+ * - `acquireAttempt` revalidates Connection/Profile/model/credential health
+ *   on every physical attempt and resolves the newest credential, so a stale
+ *   turn binding never reuses an old secret.
+ * - `releaseTurn` frees bindings; an LRU backstop reclaims leaked ones.
+ * - SWRR accumulators are process-local and reset safely across restarts.
+ * - Legacy single / `legacy_primary` connections use a fast path that never
+ *   touches weighted state and never fabricates failover (RFC 7.3).
+ */
+export class ProviderCredentialRouter implements ProviderCredentialResolver {
+  readonly #provider: RouterProfileProvider;
+  readonly #maxTurnBindings: number;
+  readonly #now: () => number;
+  readonly #swrr = new Map<string, SwrrAccumulator>();
+  readonly #turnBindings = new Map<string, TurnBindingRecord>();
+
+  constructor(
+    provider: RouterProfileProvider,
+    options: CreateProviderCredentialRouterOptions = {},
+  ) {
+    this.#provider = provider;
+    this.#maxTurnBindings = options.maxTurnBindings ?? DEFAULT_MAX_TURN_BINDINGS;
+    this.#now = options.now ?? DEFAULT_NOW;
+  }
+
+  async acquireAttempt(context: ProviderCredentialRouteContext): Promise<ProviderCredentialLease> {
+    if (context.signal.aborted) {
+      throw new RouterAbortedError('Router acquire aborted before dispatch');
+    }
+    const routing = await this.#provider.getRouting(context.connectionId);
+    if (!routing || routing.mode === 'legacy_primary') {
+      return this.#acquireLegacy(context, routing);
+    }
+    if (routing.mode !== 'balanced') {
+      throw new RouterConfigurationError(`Unsupported routing mode: ${routing.mode}`);
+    }
+    const candidates = await this.#balancedCandidates(context, routing);
+    if (candidates.length === 0) {
+      throw new RouterPoolExhaustedError(
+        `no eligible credential profile for model ${context.modelId}`,
+        {},
+      );
+    }
+    const binding = this.#selectBinding(context, routing, candidates);
+    const material = await this.#provider.resolveCredential(
+      context.connectionId,
+      binding.profileId,
+    );
+    if (!material) {
+      // The Profile became unconfigured between eligibility and resolution.
+      // Fail closed instead of falling back to a stale secret; re-select once
+      // without counting as an account failover (nothing was dispatched).
+      const remaining = candidates.filter((profileId) => profileId !== binding.profileId);
+      if (remaining.length === 0) {
+        throw new RouterPoolExhaustedError(
+          'eligible profile lost its credential during selection',
+          {},
+        );
+      }
+      const reselected = this.#selectCandidate(context, routing, remaining, 'binding_reselect');
+      const fresh = await this.#provider.resolveCredential(
+        context.connectionId,
+        reselected.profileId,
+      );
+      if (!fresh) {
+        throw new RouterPoolExhaustedError(
+          'no eligible profile retained a configured credential',
+          {},
+        );
+      }
+      return this.#leaseFromMaterial(context, reselected, fresh);
+    }
+    return this.#leaseFromMaterial(context, binding, material);
+  }
+
+  async settle(lease: ProviderCredentialLease, outcome: ProviderCredentialOutcome): Promise<void> {
+    await this.#provider.settleHealth(lease, outcome);
+  }
+
+  releaseTurn(sessionId: string, turnId: string): void {
+    this.#turnBindings.delete(turnKey(sessionId, turnId));
+  }
+
+  /** LRU/TTL backstop for leaked turn bindings. */
+  reclaimStaleBindings(now: number = this.#now()): number {
+    let reclaimed = 0;
+    for (const [key, binding] of this.#turnBindings) {
+      if (binding.lastUsedAt < now) {
+        this.#turnBindings.delete(key);
+        reclaimed += 1;
+      }
+    }
+    return reclaimed;
+  }
+
+  async #acquireLegacy(
+    context: ProviderCredentialRouteContext,
+    routing: ConnectionCredentialRouting | null,
+  ): Promise<ProviderCredentialLease> {
+    const profileId =
+      routing?.mode === 'legacy_primary' ? routing.profiles[0]?.profileId : context.connectionId;
+    if (!profileId) {
+      throw new RouterPoolExhaustedError('primary profile is missing', {});
+    }
+    const material = await this.#provider.resolveCredential(context.connectionId, profileId);
+    if (!material) {
+      throw new RouterPoolExhaustedError('primary credential is not configured', {});
+    }
+    return this.#leaseFromMaterial(
+      context,
+      { profileId, selectionReason: 'legacy_single' },
+      material,
+    );
+  }
+
+  async #balancedCandidates(
+    context: ProviderCredentialRouteContext,
+    routing: ConnectionCredentialRouting,
+  ): Promise<string[]> {
+    const allProfileIds = routing.profiles.map((profile) => profile.profileId);
+    const eligible = await this.#provider.getEligibleProfileIds(
+      context.connectionId,
+      allProfileIds,
+      context.modelId,
+    );
+    const excluded = new Set(context.excludedProfileIds);
+    if (context.reason === 'half_open_probe') {
+      // A half-open probe targets the previously failing Profile even though
+      // it was excluded by the failover; it is the only candidate admitted.
+      const failing = routing.profiles.find((profile) => excluded.has(profile.profileId));
+      if (failing && eligible.has(failing.profileId)) {
+        return [failing.profileId];
+      }
+      return [];
+    }
+    return allProfileIds.filter((profileId) => eligible.has(profileId) && !excluded.has(profileId));
+  }
+
+  #selectBinding(
+    context: ProviderCredentialRouteContext,
+    routing: ConnectionCredentialRouting,
+    candidates: readonly string[],
+  ): TurnBindingRecord {
+    if (context.reason === 'account_failover' || context.reason === 'half_open_probe') {
+      return this.#selectCandidate(
+        context,
+        routing,
+        candidates,
+        context.reason === 'half_open_probe' ? 'half_open_probe' : 'account_failover',
+      );
+    }
+    if (context.reason === 'binding_invalidated') {
+      return this.#selectCandidate(context, routing, candidates, 'binding_reselect');
+    }
+    // initial: turn-granular stickiness.
+    const existing = this.#turnBindings.get(turnKey(context.sessionId, context.turnId));
+    if (
+      existing &&
+      existing.connectionId === context.connectionId &&
+      candidates.includes(existing.profileId)
+    ) {
+      existing.lastUsedAt = this.#now();
+      return existing;
+    }
+    if (candidates.length === 1) {
+      return this.#bind(context, candidates[0]!, 'single_eligible');
+    }
+    return this.#selectCandidate(context, routing, candidates, 'weighted');
+  }
+
+  #selectCandidate(
+    context: ProviderCredentialRouteContext,
+    routing: ConnectionCredentialRouting,
+    candidates: readonly string[],
+    reason: ProviderCredentialSelectionReason,
+  ): TurnBindingRecord {
+    const selected = this.#swrrSelect(context.connectionId, routing, candidates);
+    return this.#bind(context, selected, reason);
+  }
+
+  #bind(
+    context: ProviderCredentialRouteContext,
+    profileId: string,
+    selectionReason: ProviderCredentialSelectionReason,
+  ): TurnBindingRecord {
+    const now = this.#now();
+    const binding: TurnBindingRecord = {
+      bindingId: createId('binding'),
+      connectionId: context.connectionId,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      profileId,
+      selectionReason,
+      lastUsedAt: now,
+    };
+    this.#turnBindings.set(turnKey(context.sessionId, context.turnId), binding);
+    this.#pruneTurnBindings();
+    return binding;
+  }
+
+  /**
+   * Smooth weighted round-robin (RFC 7.1): every round each candidate's
+   * currentWeight += weight, the maximum is selected (first-max wins over the
+   * stable candidate order for a deterministic tie-break), then the selected
+   * entry's currentWeight -= totalWeight. State is re-normalized whenever the
+   * eligible set or weights change: a recovered Profile joins with
+   * currentWeight 0 instead of inheriting a stale burst.
+   */
+  #swrrSelect(
+    connectionId: string,
+    routing: ConnectionCredentialRouting,
+    candidates: readonly string[],
+  ): string {
+    const current = this.#swrr.get(connectionId);
+    const accumulator =
+      current && sameWeightShape(current, routing, candidates)
+        ? current
+        : normalizeSwrr(routing, candidates);
+    this.#swrr.set(connectionId, accumulator);
+    let best: string | undefined;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const candidate of candidates) {
+      const entry = accumulator.entries.get(candidate);
+      if (!entry) continue;
+      entry.currentWeight += entry.weight;
+      if (entry.currentWeight > bestScore) {
+        best = candidate;
+        bestScore = entry.currentWeight;
+      }
+    }
+    const selected = best ?? candidates[0]!;
+    accumulator.entries.get(selected)!.currentWeight -= accumulator.totalWeight;
+    return selected;
+  }
+
+  #pruneTurnBindings(): void {
+    if (this.#turnBindings.size <= this.#maxTurnBindings) return;
+    const entries = [...this.#turnBindings.entries()].sort(
+      (left, right) => left[1].lastUsedAt - right[1].lastUsedAt,
+    );
+    const overflow = this.#turnBindings.size - this.#maxTurnBindings;
+    for (let index = 0; index < overflow; index += 1) {
+      this.#turnBindings.delete(entries[index]![0]);
+    }
+  }
+
+  #leaseFromMaterial(
+    context: ProviderCredentialRouteContext,
+    binding: Pick<ProviderProfileBinding, 'profileId' | 'selectionReason'>,
+    material: RouterCredentialMaterial,
+  ): ProviderCredentialLease {
+    return {
+      leaseId: createId('lease'),
+      bindingId: createId('binding'),
+      profileId: binding.profileId,
+      credentialId: material.credentialId,
+      credentialRevision: material.credentialRevision,
+      selectionReason: binding.selectionReason,
+      apiKey: material.apiKey,
+      ...(material.requestHeaders ? { requestHeaders: material.requestHeaders } : {}),
+      ...(material.fetch ? { fetch: material.fetch } : {}),
+    };
+  }
+}
+
+export class RouterError extends Error {}
+export class RouterAbortedError extends RouterError {}
+export class RouterConfigurationError extends RouterError {}
+export class RouterPoolExhaustedError extends RouterError {
+  constructor(
+    message: string,
+    readonly countsByReadiness: Readonly<Record<string, number>>,
+    readonly lastFailure?: string,
+    readonly nextRetryAt?: number,
+  ) {
+    super(message);
+  }
+}
+
+function turnKey(sessionId: string, turnId: string): string {
+  return `${sessionId}:${turnId}`;
+}
+
+let idCounter = 0;
+function createId(kind: 'binding' | 'lease'): string {
+  idCounter += 1;
+  return `${kind}-${Date.now().toString(36)}-${idCounter.toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+function sameWeightShape(
+  accumulator: SwrrAccumulator,
+  routing: ConnectionCredentialRouting,
+  candidates: readonly string[],
+): boolean {
+  if (accumulator.entries.size !== candidates.length) return false;
+  for (const candidate of candidates) {
+    const configured = routing.profiles.find((profile) => profile.profileId === candidate);
+    const entry = accumulator.entries.get(candidate);
+    if (!entry || !configured || entry.weight !== configured.weight) return false;
+  }
+  return true;
+}
+
+function normalizeSwrr(
+  routing: ConnectionCredentialRouting,
+  candidates: readonly string[],
+): SwrrAccumulator {
+  const entries = new Map<string, SwrrEntry>();
+  let totalWeight = 0;
+  for (const candidate of candidates) {
+    const configured = routing.profiles.find((profile) => profile.profileId === candidate);
+    if (!configured) continue;
+    entries.set(candidate, { weight: configured.weight, currentWeight: 0 });
+    totalWeight += configured.weight;
+  }
+  return { totalWeight, entries };
+}
