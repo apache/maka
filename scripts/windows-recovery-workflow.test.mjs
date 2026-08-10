@@ -3,10 +3,6 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const workflowUrl = new URL('../.github/workflows/windows-recovery.yml', import.meta.url);
-const runtimeCrashHarnessUrls = [
-  new URL('../packages/runtime/src/__tests__/runtime-resume-crash.test.ts', import.meta.url),
-  new URL('../packages/runtime/src/__tests__/runtime-continuation-crash.test.ts', import.meta.url),
-];
 
 test('Windows recovery workflow is a bounded release-blocking evidence gate', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
@@ -37,15 +33,16 @@ test('Windows recovery workflow is a bounded release-blocking evidence gate', as
   assert.match(workflow, /\$env:MAKA_STORAGE_STRESS = '1'/u);
   assert.match(workflow, /owner death\|a killed Host is recovered exactly once/u);
   assert.match(workflow, /real process crash\|real crash\|real-process crash/u);
-});
-
-test('Runtime crash harnesses widen only the Windows process budget', async () => {
-  for (const harnessUrl of runtimeCrashHarnessUrls) {
-    const harness = await readFile(harnessUrl, 'utf8');
-    assert.match(
-      harness,
-      /const CRASH_HARNESS_TIMEOUT_MS = process\.platform === 'win32' \? 120_000 : 60_000;/u,
-    );
-    assert.match(harness, /timeout: CRASH_HARNESS_TIMEOUT_MS/u);
+  assert.equal(workflow.match(/--test-reporter=tap/gu)?.length, 2);
+  for (const evidence of [
+    '# tests 2',
+    '# pass 2',
+    '# tests 12',
+    '# pass 12',
+    '# skipped 0',
+    'Runtime Host recovery gate did not run exactly two passing tests',
+    'Managed workspace recovery gate did not run exactly twelve passing tests',
+  ]) {
+    assert.ok(workflow.includes(evidence), evidence);
   }
 });

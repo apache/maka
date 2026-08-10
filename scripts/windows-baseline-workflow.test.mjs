@@ -79,7 +79,6 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'smoke',
     'runtime_pty_input',
     'storage',
-    'managed_workspace_crash',
     'storage_full',
     'processes',
   ]);
@@ -100,14 +99,13 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'packages/storage/dist/__tests__/sqlite-recovery-concurrency.test.js',
     'packages/storage/dist/__tests__/managed-workspace-owner.test.js',
     'node.exe --test --test-force-exit --test-timeout=15000 --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js',
-    'node.exe --test --test-concurrency=1 --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" packages/storage/dist/__tests__/managed-workspace-baseline.test.js packages/storage/dist/__tests__/git-workspace-service.test.js',
     // Full suite only via storage_full (nightly / manual), not the PR storage step.
     'node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage',
   ]) {
     assert.ok(workflow.includes(command), command);
   }
   assert.match(workflow, /needs\.changes\.outputs\.windows_storage_full == 'true'/u);
-  assert.equal(workflow.match(/needs\.changes\.outputs\.windows_storage == 'true'/gu)?.length, 2);
+  assert.equal(workflow.match(/needs\.changes\.outputs\.windows_storage == 'true'/gu)?.length, 1);
   assert.equal(workflow.match(/needs\.changes\.outputs\.windows_runtime == 'true'/gu)?.length, 1);
   assert.match(workflow, /Runtime PTY input gate did not run exactly two passing tests/u);
   assert.match(workflow, /name: Capture full storage suite baseline/u);
@@ -130,8 +128,14 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   assert.match(workflow, /\$exitCode = \$LASTEXITCODE/u);
   assert.match(workflow, /Tee-Object -FilePath "\$env:WINDOWS_BASELINE_LOG_DIR\/storage\.log"/u);
   assert.match(workflow, /name: Run Windows storage path and lock gates/u);
-  assert.match(workflow, /\$env:MAKA_STORAGE_STRESS = '1'/u);
-  assert.match(workflow, /managed-workspace-crash\.log/u);
+  for (const blockingRecoveryArtifact of [
+    'sqlite-runtime-crash.test.js',
+    'sqlite-long-term-memory-crash.test.js',
+    'managed-workspace-baseline.test.js',
+    'git-workspace-service.test.js',
+  ]) {
+    assert.ok(!workflow.includes(blockingRecoveryArtifact), blockingRecoveryArtifact);
+  }
   // Pin-short-comment contract: the workflow must pin upload-artifact to a
   // full SHA and annotate it with the exact version it resolves to. The major
   // is intentionally not asserted — dependabot may bump it — but the
