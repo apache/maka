@@ -83,7 +83,8 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
   assert.equal(backend.windowsRuntime, true);
-  assert.equal(backend.windowsStorage, true);
+  // session-store is Linux-covered SQLite catalog work — not a Windows gate trigger.
+  assert.equal(backend.windowsStorage, false);
   assert.equal(backend.e2e, false);
   assert.equal(backend.storybook, false);
   for (const workspace of ['packages/storage', 'packages/runtime', 'apps/desktop']) {
@@ -105,6 +106,27 @@ test('Windows planning runs workflow changes fully and helper changes narrowly',
     const plan = planTests([path], { graph });
     assert.equal(plan.windows, true, path);
     assert.equal(plan.windowsRuntime, false, path);
+    assert.equal(plan.windowsStorage, false, path);
+  }
+});
+
+test('Windows storage gates open only for path/lock/crash-sensitive storage files', () => {
+  for (const path of [
+    'packages/storage/src/root-authority.ts',
+    'packages/storage/src/managed-dependency-environment.ts',
+    'packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts',
+    'packages/storage/src/__tests__/managed-workspace-baseline.test.ts',
+    'packages/storage/package.json',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.windowsStorage, true, path);
+  }
+  for (const path of [
+    'packages/storage/src/session-store.ts',
+    'packages/storage/src/connection-store.ts',
+    'packages/storage/src/__tests__/session-store.test.ts',
+  ]) {
+    const plan = planTests([path], { graph });
     assert.equal(plan.windowsStorage, false, path);
   }
 });
@@ -131,7 +153,8 @@ test('cross-surface renames retain both paths for impact planning', () => {
 
   const plan = planTests(files, { graph });
   assert.equal(plan.windows, true);
-  assert.equal(plan.windowsStorage, true);
+  // legacy.ts is not a Windows-sensitive storage path.
+  assert.equal(plan.windowsStorage, false);
 });
 
 test('stress and specialized script checks run only for their owning surfaces', () => {

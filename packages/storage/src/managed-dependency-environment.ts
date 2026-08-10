@@ -961,49 +961,88 @@ async function hashDirectory(
   if (durable) await syncDirectory(directory);
 }
 
+/**
+ * Reject NTFS alternate data streams under a dependency tree.
+ *
+ * Previously this shellled out to a recursive PowerShell `Get-ChildItem -Recurse`
+ * + `Get-Item -Stream *` walk. On GitHub-hosted Windows runners that path
+ * routinely hung until the 30s `execFile` timeout, which misreported every
+ * timeout as "contains an alternate data stream" and burned ~5 minutes across
+ * managed-dependency crash recovery tests. Walk the tree in Node (no reparse
+ * follow) and query streams per file with `fsutil`, which is bounded and
+ * does not recurse through junctions.
+ */
 async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
   const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
   if (!systemRoot) {
     throw new Error('Cannot verify Windows alternate streams without SystemRoot');
   }
-  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = [
-    '$ErrorActionPreference = "Stop"',
-    '$root = $env:MAKA_ADS_ROOT',
-    '$items = @((Get-Item -LiteralPath $root -Force)) + @(Get-ChildItem -LiteralPath $root -Force -Recurse)',
-    'foreach ($item in $items) {',
-    '  $streams = @(Get-Item -LiteralPath $item.FullName -Stream * -ErrorAction SilentlyContinue)',
-    '  foreach ($stream in $streams) {',
-    "    if ($stream.Stream -ne ':$DATA') { throw 'alternate data stream detected' }",
-    '  }',
-    '}',
-  ].join('; ');
-  await new Promise<void>((resolvePromise, rejectPromise) => {
+  const fsutil = join(systemRoot, 'System32', 'fsutil.exe');
+  const stack = [root];
+  while (stack.length > 0) {
+    const directory = stack.pop()!;
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolutePath = join(directory, entry.name);
+      // Dirent for a reparse point reports as directory/file without following.
+      // Do not recurse into reparse points; hashDirectory already rejects them
+      // on win32, and following junctions can hang or leave the tree.
+      if (entry.isSymbolicLink()) {
+        throw new Error('Managed dependency environment contains a Windows reparse point');
+      }
+      if (entry.isDirectory()) {
+        stack.push(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      await assertWindowsFileHasOnlyDefaultStream(fsutil, absolutePath);
+    }
+  }
+}
+
+async function assertWindowsFileHasOnlyDefaultStream(
+  fsutil: string,
+  filePath: string,
+): Promise<void> {
+  const stdout = await new Promise<string>((resolvePromise, rejectPromise) => {
     execFile(
-      powershell,
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      fsutil,
+      ['file', 'queryStreams', filePath],
       {
         windowsHide: true,
-        timeout: 30_000,
-        env: {
-          SystemRoot: systemRoot,
-          WINDIR: systemRoot,
-          MAKA_ADS_ROOT: root,
-        },
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
       },
-      (error) => {
+      (error, out) => {
         if (error) {
+          const execError = error as Error & { killed?: boolean; code?: string | number | null };
+          const timedOut =
+            execError.killed === true ||
+            execError.code === 'ETIMEDOUT' ||
+            /ETIMEDOUT|timeout/i.test(execError.message);
           rejectPromise(
-            new Error('Managed dependency environment contains an alternate data stream', {
-              cause: error,
-            }),
+            new Error(
+              timedOut
+                ? `Timed out querying alternate data streams for ${filePath}`
+                : `Unable to query alternate data streams for ${filePath}`,
+              { cause: error },
+            ),
           );
-        } else {
-          resolvePromise();
+          return;
         }
+        resolvePromise(typeof out === 'string' ? out : String(out ?? ''));
       },
     );
   });
+  for (const line of stdout.split(/\r?\n/u)) {
+    const nameMatch = /^\s*Name\s*:\s*(.+?)\s*$/iu.exec(line);
+    if (!nameMatch) continue;
+    const name = nameMatch[1]!.trim();
+    // Default unnamed data stream only. Named streams (e.g. Zone.Identifier,
+    // or the test's `:unhashed`) are rejected.
+    if (name === ':$DATA' || name === '::$DATA') continue;
+    throw new Error('Managed dependency environment contains an alternate data stream');
+  }
 }
 
 function isPathWithin(candidate: string, root: string): boolean {

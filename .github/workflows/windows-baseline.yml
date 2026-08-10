@@ -5,7 +5,15 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Nightly full storage suite (PR/push keep curated OS-sensitive gates only).
+  schedule:
+    - cron: '17 6 * * *'
   workflow_dispatch:
+    inputs:
+      full_storage:
+        description: 'Run full packages/storage suite on Windows (slow, evidence lane)'
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-baseline-${{ github.ref }}
@@ -21,6 +29,8 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       windows_runtime: ${{ steps.plan.outputs.windows_runtime }}
       windows_storage: ${{ steps.plan.outputs.windows_storage }}
+      # Full suite is never selected by path plan — only schedule / dispatch.
+      windows_storage_full: ${{ steps.full.outputs.windows_storage_full }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,10 +41,24 @@ jobs:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
         run: |
-          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+          # schedule / manual dispatch have no meaningful PR base; use full
+          # surface selection so the job still runs install+smoke+gates.
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
+          elif [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
+      - id: full
+        name: Decide full storage suite
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "windows_storage_full=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_storage }}" == "true" ]]; then
+            echo "windows_storage_full=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "windows_storage_full=false" >> "$GITHUB_OUTPUT"
           fi
 
   windows_baseline:
@@ -196,6 +220,21 @@ jobs:
           Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/managed-workspace-crash.log"
           exit $exitCode
 
+      # Full suite is evidence-only: nightly + manual dispatch. Do not run on
+      # ordinary PRs — Linux unit already covers the package, and the full
+      # Windows wall clock is ~10 minutes.
+      - id: storage_full
+        name: Capture full storage suite baseline
+        if: always() && steps.build.outcome == 'success' && needs.changes.outputs.windows_storage_full == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage *> "$env:WINDOWS_BASELINE_LOG_DIR/storage-full.log"
+          $exitCode = $LASTEXITCODE
+          Get-Content "$env:WINDOWS_BASELINE_LOG_DIR/storage-full.log"
+          exit $exitCode
+
       - id: processes
         name: Audit residual job processes
         if: always()
@@ -300,6 +339,7 @@ jobs:
           | Storage path/lock gates | ${{ steps.storage.outcome }} |
           | Runtime PTY input | ${{ steps.runtime_pty_input.outcome }} |
           | Managed workspace crash recovery | ${{ steps.managed_workspace_crash.outcome }} |
+          | Full storage suite (nightly/manual) | ${{ steps.storage_full.outcome }} |
           | Residual processes | ${{ steps.processes.outcome }} |
 
           Download the `windows-baseline` artifact for complete logs.

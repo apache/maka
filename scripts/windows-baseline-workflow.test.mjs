@@ -61,10 +61,13 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
   assert.match(workflow, /if: needs\.changes\.outputs\.windows == 'true'/u);
   assert.match(workflow, /windows_runtime: \$\{\{ steps\.plan\.outputs\.windows_runtime \}\}/u);
   assert.match(workflow, /windows_storage: \$\{\{ steps\.plan\.outputs\.windows_storage \}\}/u);
+  assert.match(workflow, /windows_storage_full: \$\{\{ steps\.full\.outputs\.windows_storage_full \}\}/u);
+  assert.match(workflow, /schedule:\n\s+- cron:/u);
+  assert.match(workflow, /full_storage:/u);
 
   const stepIds = [...workflow.matchAll(/^\s+- id: ([a-z_]+)$/gmu)]
     .map((match) => match[1])
-    .filter((stepId) => stepId !== 'plan');
+    .filter((stepId) => stepId !== 'plan' && stepId !== 'full');
   assert.deepEqual(stepIds, [
     'install',
     'build',
@@ -74,6 +77,7 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'runtime_pty_input',
     'storage',
     'managed_workspace_crash',
+    'storage_full',
     'processes',
   ]);
   for (const stepId of stepIds) {
@@ -87,25 +91,27 @@ test('Windows baseline workflow keeps its non-blocking evidence contract', async
     'npm.cmd run test:scripts',
     'npm.cmd --workspace @maka/desktop run build:smoke',
     'npm.cmd run smoke:windows:dist',
-    // Full packages/storage test:dist was ~10m on windows-latest and mostly
-    // duplicated Linux unit coverage; keep a curated OS-sensitive gate set.
+    // Curated OS-sensitive gate set for PR/push.
     'node.exe --test --test-concurrency=2 --test-force-exit --test-timeout=60000',
     'packages/storage/dist/__tests__/root-authority.test.js',
     'packages/storage/dist/__tests__/sqlite-recovery-concurrency.test.js',
     'packages/storage/dist/__tests__/managed-workspace-owner.test.js',
     'node.exe --test --test-force-exit --test-timeout=15000 --test-reporter=tap --test-concurrency=1 --test-name-pattern="semantic text and Enter actions|terminal mode parsed before the control cut" packages/runtime/dist/__tests__/shell-run-manager.test.js',
     'node.exe --test --test-concurrency=1 --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" packages/storage/dist/__tests__/managed-workspace-baseline.test.js packages/storage/dist/__tests__/git-workspace-service.test.js',
+    // Full suite only via storage_full (nightly / manual), not the PR storage step.
+    'node.exe scripts/run-workspace-tests-parallel.mjs --concurrency=1 --workspaces=packages/storage',
   ]) {
     assert.ok(workflow.includes(command), command);
   }
-  assert.doesNotMatch(
+  assert.match(
     workflow,
-    /run-workspace-tests-parallel\.mjs --concurrency=1 --workspaces=packages\/storage/u,
-    'must not reintroduce the full Windows storage suite',
+    /needs\.changes\.outputs\.windows_storage_full == 'true'/u,
   );
   assert.equal(workflow.match(/needs\.changes\.outputs\.windows_storage == 'true'/gu)?.length, 2);
   assert.equal(workflow.match(/needs\.changes\.outputs\.windows_runtime == 'true'/gu)?.length, 1);
   assert.match(workflow, /Runtime PTY input gate did not run exactly two passing tests/u);
+  assert.match(workflow, /name: Capture full storage suite baseline/u);
+  assert.match(workflow, /storage-full\.log/u);
 
   assert.match(workflow, /Get-CimInstance Win32_Process/u);
   assert.match(workflow, /name: Capture process baseline/u);
