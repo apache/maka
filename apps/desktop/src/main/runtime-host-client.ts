@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
-import type { ProjectRecord } from "@maka/core";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
   decodeStoredMessageForRead,
@@ -67,6 +66,7 @@ import {
   type PricingQueryResult,
   type ProjectCatalogMutateInput,
   type ProjectCatalogMutateResult,
+  type ProjectCatalogLocationQueryResult,
   type ProjectCatalogProject,
   type QueueRetractInput,
   type QueueRetractResult,
@@ -83,7 +83,7 @@ import {
   type SessionLifecycleState,
   type SessionMetadataPatch,
   type SessionUpdateResult,
-  type SkillCatalogLocalContext,
+  type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
   type SkillCatalogInvocableTarget,
   type SkillCatalogMutateInput,
@@ -363,7 +363,7 @@ export class DesktopRuntimeHostClient {
   }
 
   async loadSkillCatalog(
-    context: SkillCatalogLocalContext,
+    context: SkillCatalogWorkspaceContext,
     view: SkillCatalogView,
   ): Promise<DesktopSkillCatalogSnapshot> {
     this.#assertOpen();
@@ -491,10 +491,10 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async listProjects(): Promise<ProjectRecord[]> {
+  async listProjects(): Promise<ProjectCatalogProject[]> {
     this.#assertOpen();
     try {
-      return (await readRuntimeHostProjects(this.connection)).map(toProjectRecord);
+      return await readRuntimeHostProjects(this.connection);
     } catch (error) {
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
       throw new DesktopRuntimeHostClientError(
@@ -504,42 +504,34 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async registerProject(path: string): Promise<ProjectRecord> {
+  async registerProject(path: string): Promise<ProjectCatalogProject> {
     const result = await this.#mutateProject({ kind: "register", path });
     return this.#projectForMutation(result);
   }
 
-  async selectProject(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
-    const result = await this.#mutateProject({ kind: "select", projectId });
-    if (result.kind !== "selection") throw invalidProjection("Project selection");
-    return { project: await this.#projectById(result.projectId), path: result.path };
+  projectLocations(projectId: string): Promise<ProjectCatalogLocationQueryResult> {
+    return this.#request("project.catalog.location.query", { projectId });
   }
 
-  async touchProject(projectId: string, path?: string): Promise<ProjectRecord> {
-    return this.#projectForMutation(
-      await this.#mutateProject({ kind: "touch", projectId, path: path ?? null }),
-    );
-  }
-
-  async relinkProject(projectId: string, path: string): Promise<ProjectRecord> {
+  async relinkProject(projectId: string, path: string): Promise<ProjectCatalogProject> {
     return this.#projectForMutation(
       await this.#mutateProject({ kind: "relink", projectId, path }),
     );
   }
 
-  async renameProject(projectId: string, name: string): Promise<ProjectRecord> {
+  async renameProject(projectId: string, name: string): Promise<ProjectCatalogProject> {
     return this.#projectForMutation(
       await this.#mutateProject({ kind: "rename", projectId, name }),
     );
   }
 
-  async archiveProject(projectId: string): Promise<ProjectRecord> {
+  async archiveProject(projectId: string): Promise<ProjectCatalogProject> {
     return this.#projectForMutation(
       await this.#mutateProject({ kind: "archive", projectId }),
     );
   }
 
-  async restoreProject(projectId: string): Promise<ProjectRecord> {
+  async restoreProject(projectId: string): Promise<ProjectCatalogProject> {
     return this.#projectForMutation(
       await this.#mutateProject({ kind: "restore", projectId }),
     );
@@ -550,17 +542,9 @@ export class DesktopRuntimeHostClient {
     return this.#request("project.catalog.mutate", input);
   }
 
-  async #projectForMutation(result: ProjectCatalogMutateResult): Promise<ProjectRecord> {
+  #projectForMutation(result: ProjectCatalogMutateResult): ProjectCatalogProject {
     if (result.kind !== "project") throw invalidProjection("Project mutation");
-    return this.#projectById(result.projectId);
-  }
-
-  async #projectById(projectId: string): Promise<ProjectRecord> {
-    const project = (await this.listProjects()).find(
-      (candidate) => candidate.id === projectId || candidate.aliases?.includes(projectId),
-    );
-    if (!project) throw invalidProjection("Project mutation");
-    return project;
+    return result.project;
   }
 
   async listArtifacts(sessionId: string): Promise<ArtifactProjection[]> {
@@ -780,21 +764,6 @@ export class DesktopRuntimeHostClient {
           orchestrationMode: current.orchestrationMode,
           ...definedPatch,
         },
-      }),
-    );
-  }
-
-  relocateSessionCwd(
-    sessionId: string,
-    cwd: string,
-    projectId?: string | null,
-  ): Promise<SessionCatalogProjection> {
-    return this.#updateSession(sessionId, (current) =>
-      this.#request("session.cwd.relocate", {
-        sessionId,
-        expectedRevision: current.revision,
-        cwd,
-        ...(projectId === undefined ? {} : { projectId }),
       }),
     );
   }
@@ -1535,18 +1504,6 @@ function requireSessionProjection(
     "unsupported_session",
     `Runtime Host Session is not representable by this Desktop Client: ${item.id}`,
   );
-}
-
-function toProjectRecord(project: ProjectCatalogProject): ProjectRecord {
-  return {
-    id: project.id,
-    ...(project.aliases.length === 0 ? {} : { aliases: [...project.aliases] }),
-    name: project.name,
-    locations: project.locations.map((location) => ({ ...location })),
-    ...(project.archivedAt === null ? {} : { archivedAt: project.archivedAt }),
-    available: project.available,
-    ...(project.preferredPath === null ? {} : { preferredPath: project.preferredPath }),
-  };
 }
 
 function clientClosed(): DesktopRuntimeHostClientError {

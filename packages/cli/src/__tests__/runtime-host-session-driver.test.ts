@@ -36,8 +36,12 @@ describe('Runtime Host Maka Session driver', () => {
         new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
       ]);
       connection.sessionQueries.push(
-        sessionProjection({ cwd: oldCwd }),
-        sessionProjection({ cwd: oldCwd }),
+        sessionProjection({
+          workspace: { target: { kind: 'host_path', path: oldCwd }, hostCwd: oldCwd },
+        }),
+        sessionProjection({
+          workspace: { target: { kind: 'host_path', path: oldCwd }, hostCwd: oldCwd },
+        }),
       );
       const inspected: string[] = [];
       const driver = createRuntimeHostMakaSessionDriver({
@@ -70,13 +74,13 @@ describe('Runtime Host Maka Session driver', () => {
           'session.catalog.query',
           'session.execution_boundary.query',
           'session.catalog.query',
-          'session.cwd.relocate',
+          'session.workspace.relocate',
         ],
       );
       assert.deepEqual(connection.requests.at(-1)?.input, {
         sessionId: 'session-1',
         expectedRevision: 1,
-        cwd: canonicalTarget,
+        workspace: { kind: 'host_path', path: canonicalTarget },
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -98,7 +102,7 @@ describe('Runtime Host Maka Session driver', () => {
       /Cannot resume externally isolated session/,
     );
     assert.equal(
-      connection.requests.some(({ operation }) => operation === 'session.cwd.relocate'),
+      connection.requests.some(({ operation }) => operation === 'session.workspace.relocate'),
       false,
     );
   });
@@ -1028,12 +1032,14 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
-    if (operation === 'session.cwd.relocate') {
+    if (operation === 'session.workspace.relocate') {
+      const workspace = (input as OperationInput<'session.workspace.relocate'>).workspace;
+      if (workspace.kind !== 'host_path') throw new Error('Expected Host-path workspace');
       return {
         kind: 'committed',
         session: sessionProjection({
           revision: 2,
-          cwd: (input as OperationInput<'session.cwd.relocate'>).cwd,
+          workspace: { target: workspace, hostCwd: workspace.path },
         }),
       } as OperationOutput<K>;
     }
@@ -1205,7 +1211,10 @@ function sessionProjection(
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/tmp',
+    workspace: {
+      target: { kind: 'host_path', path: '/tmp' },
+      hostCwd: '/tmp',
+    },
     createdAt: 1,
     lastUsedAt: 2,
     name: 'Session',

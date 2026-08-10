@@ -56,7 +56,7 @@ import {
   type SessionCatalogChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
-  type SessionCwdRelocateInput,
+  type SessionWorkspaceRelocateInput,
   type SessionRecapGenerateInput,
   type SessionRecapGenerateResult,
   type SessionUpdateResult,
@@ -214,8 +214,8 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<ContextDiagnosticsResult>;
   compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
-  relocateSessionCwd(
-    input: SessionCwdRelocateInput,
+  relocateSessionWorkspace(
+    input: SessionWorkspaceRelocateInput,
     timeoutMs?: number,
   ): Promise<SessionUpdateResult>;
   generateSessionRecap(
@@ -547,11 +547,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.request('context.compact', input, timeoutMs);
   }
 
-  relocateSessionCwd(
-    input: SessionCwdRelocateInput,
+  relocateSessionWorkspace(
+    input: SessionWorkspaceRelocateInput,
     timeoutMs?: number,
   ): Promise<SessionUpdateResult> {
-    return this.request('session.cwd.relocate', input, timeoutMs);
+    return this.request('session.workspace.relocate', input, timeoutMs);
   }
 
   generateSessionRecap(

@@ -24,20 +24,26 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineHostPathOperation, defineOperation } from './operation-spec.js';
+import {
+  decodeWorkspaceProjection,
+  decodeWorkspaceTarget,
+  type WorkspaceProjection,
+  type WorkspaceTarget,
+  WORKSPACE_HOST_PATH_MAX_BYTES,
+} from './workspace.js';
 
 export type { SessionSubagentProjection } from '@maka/core/session';
 
 export const SESSION_CATALOG_PAGE_MAX_ITEMS = 32;
 export const SESSION_CATALOG_RESULT_MAX_BYTES = 48 * 1024;
 export const SESSION_CATALOG_CURSOR_MAX_BYTES = 512;
-export const SESSION_CATALOG_CWD_MAX_BYTES = 4 * 1024;
+export const SESSION_CATALOG_CWD_MAX_BYTES = WORKSPACE_HOST_PATH_MAX_BYTES;
 export const SESSION_CATALOG_NAME_MAX_BYTES = 320;
 export const SESSION_CATALOG_LABEL_MAX_ITEMS = 32;
 export const SESSION_CATALOG_LABEL_MAX_BYTES = 128;
 export const SESSION_CATALOG_PREVIEW_MAX_BYTES = 4 * 1024;
 export const SESSION_CATALOG_MODEL_MAX_BYTES = 512;
 export const SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES = 256;
-export const SESSION_CATALOG_PROJECT_ID_MAX_BYTES = 256;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -60,7 +66,7 @@ const EXECUTION_BOUNDARY_QUERY_ERRORS = [...QUERY_ERRORS, 'not_found'] as const;
 const PROJECTION_REQUIRED_FIELDS = [
   'id',
   'revision',
-  'cwd',
+  'workspace',
   'createdAt',
   'lastUsedAt',
   'name',
@@ -80,7 +86,6 @@ const PROJECTION_REQUIRED_FIELDS = [
 ] as const;
 const PROJECTION_FIELDS = [
   ...PROJECTION_REQUIRED_FIELDS,
-  'projectId',
   'lastMessageAt',
   'lastMessagePreview',
   'blockedReason',
@@ -125,9 +130,8 @@ export type SessionModelTarget =
 
 export interface SessionCreateInput {
   readonly sessionId: string;
-  readonly cwd: string;
+  readonly workspace: WorkspaceTarget;
   readonly mode?: SessionStartMode;
-  readonly projectId?: string | null;
   readonly name?: string;
   readonly labels?: readonly string[];
   readonly modelTarget: SessionModelTarget;
@@ -141,7 +145,6 @@ export interface SessionMetadataPatch {
   readonly name?: string;
   readonly labels?: readonly string[];
   readonly isFlagged?: boolean;
-  readonly projectId?: string | null;
 }
 
 export interface SessionMetadataUpdateInput {
@@ -164,11 +167,10 @@ export interface SessionConfigurationUpdateInput {
   readonly configuration: SessionConfiguration;
 }
 
-export interface SessionCwdRelocateInput {
+export interface SessionWorkspaceRelocateInput {
   readonly sessionId: string;
   readonly expectedRevision: number;
-  readonly cwd: string;
-  readonly projectId?: string | null;
+  readonly workspace: WorkspaceTarget;
 }
 
 export interface SessionReadMarkerSetInput {
@@ -183,8 +185,7 @@ export interface SessionExecutionBoundaryQueryInput {
 export interface SessionCatalogProjection {
   readonly id: string;
   readonly revision: number;
-  readonly cwd: string;
-  readonly projectId?: string | null;
+  readonly workspace: WorkspaceProjection;
   readonly createdAt: number;
   readonly lastUsedAt: number;
   readonly name: string;
@@ -267,14 +268,17 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     SessionCreateInput,
     SessionCatalogItem,
     (typeof CREATE_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: CREATE_ERRORS,
-    decodeInput: decodeSessionCreateInput,
-    decodeOutput: decodeSessionCatalogItem,
-    assertOutputForInput: (input, output) => assertSessionIdentity(input.sessionId, output),
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: CREATE_ERRORS,
+      decodeInput: decodeSessionCreateInput,
+      decodeOutput: decodeSessionCatalogItem,
+      assertOutputForInput: (input, output) => assertSessionIdentity(input.sessionId, output),
+    },
+    (input) => input.workspace.kind === 'host_path',
+  ),
   'session.metadata.update': defineOperation<
     SessionMetadataUpdateInput,
     SessionUpdateResult,
@@ -299,18 +303,21 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     decodeOutput: decodeSessionUpdateResult,
     assertOutputForInput: assertUpdateOutputIdentity,
   }),
-  'session.cwd.relocate': defineHostPathOperation<
-    SessionCwdRelocateInput,
+  'session.workspace.relocate': defineHostPathOperation<
+    SessionWorkspaceRelocateInput,
     SessionUpdateResult,
     (typeof CONFIGURATION_UPDATE_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: CONFIGURATION_UPDATE_ERRORS,
-    decodeInput: decodeSessionCwdRelocateInput,
-    decodeOutput: decodeSessionUpdateResult,
-    assertOutputForInput: assertUpdateOutputIdentity,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: CONFIGURATION_UPDATE_ERRORS,
+      decodeInput: decodeSessionWorkspaceRelocateInput,
+      decodeOutput: decodeSessionUpdateResult,
+      assertOutputForInput: assertUpdateOutputIdentity,
+    },
+    (input) => input.workspace.kind === 'host_path',
+  ),
   'session.read_marker.set': defineOperation<
     SessionReadMarkerSetInput,
     SessionCatalogItem,
@@ -413,10 +420,9 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   const input = requireShapedRecord(
     value,
     'Session create input',
-    ['sessionId', 'cwd', 'modelTarget'],
+    ['sessionId', 'workspace', 'modelTarget'],
     [
       'mode',
-      'projectId',
       'name',
       'labels',
       'thinkingLevel',
@@ -427,20 +433,8 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   );
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
-    cwd: requireUtf8String(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
+    workspace: decodeWorkspaceTarget(input.workspace),
     ...(Object.hasOwn(input, 'mode') ? { mode: sessionStartMode(input.mode) } : {}),
-    ...(Object.hasOwn(input, 'projectId')
-      ? {
-          projectId:
-            input.projectId === null
-              ? null
-              : boundedText(
-                  input.projectId,
-                  'Session project id',
-                  SESSION_CATALOG_PROJECT_ID_MAX_BYTES,
-                ),
-        }
-      : {}),
     ...(Object.hasOwn(input, 'name') ? { name: sessionName(input.name) } : {}),
     ...(Object.hasOwn(input, 'labels') ? { labels: labels(input.labels) } : {}),
     modelTarget: modelTarget(input.modelTarget),
@@ -474,7 +468,7 @@ export function decodeSessionMetadataUpdateInput(value: unknown): SessionMetadat
     input.patch,
     'Session metadata patch',
     [],
-    ['name', 'labels', 'isFlagged', 'projectId'],
+    ['name', 'labels', 'isFlagged'],
   );
   if (Object.keys(patch).length === 0) {
     throw invalidProtocolFrame('Session metadata patch is empty');
@@ -487,18 +481,6 @@ export function decodeSessionMetadataUpdateInput(value: unknown): SessionMetadat
       ...(Object.hasOwn(patch, 'labels') ? { labels: labels(patch.labels) } : {}),
       ...(Object.hasOwn(patch, 'isFlagged')
         ? { isFlagged: boolean(patch.isFlagged, 'Session flagged state') }
-        : {}),
-      ...(Object.hasOwn(patch, 'projectId')
-        ? {
-            projectId:
-              patch.projectId === null
-                ? null
-                : boundedText(
-                    patch.projectId,
-                    'Session project id',
-                    SESSION_CATALOG_PROJECT_ID_MAX_BYTES,
-                  ),
-          }
         : {}),
     },
   };
@@ -533,29 +515,16 @@ export function decodeSessionConfigurationUpdateInput(
   };
 }
 
-export function decodeSessionCwdRelocateInput(value: unknown): SessionCwdRelocateInput {
-  const input = requireShapedRecord(
-    value,
-    'Session cwd relocate input',
-    ['sessionId', 'expectedRevision', 'cwd'],
-    ['projectId'],
-  );
+export function decodeSessionWorkspaceRelocateInput(value: unknown): SessionWorkspaceRelocateInput {
+  const input = requireExactRecord(value, 'Session workspace relocate input', [
+    'sessionId',
+    'expectedRevision',
+    'workspace',
+  ]);
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     expectedRevision: positiveRevision(input.expectedRevision, 'expected Session revision'),
-    cwd: requireUtf8String(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
-    ...(Object.hasOwn(input, 'projectId')
-      ? {
-          projectId:
-            input.projectId === null
-              ? null
-              : boundedText(
-                  input.projectId,
-                  'Session project id',
-                  SESSION_CATALOG_PROJECT_ID_MAX_BYTES,
-                ),
-        }
-      : {}),
+    workspace: decodeWorkspaceTarget(input.workspace),
   };
 }
 
@@ -651,8 +620,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   const projection: SessionCatalogProjection = {
     id: requireEntityId(record.id, 'Session id'),
     revision: positiveRevision(record.revision, 'Session revision'),
-    cwd: requireUtf8String(record.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
-    ...optionalProjectId(record),
+    workspace: decodeWorkspaceProjection(record.workspace),
     createdAt: timestamp(record.createdAt, 'Session createdAt'),
     lastUsedAt: timestamp(record.lastUsedAt, 'Session lastUsedAt'),
     name: sessionName(record.name),
@@ -780,18 +748,6 @@ function labels(value: unknown): readonly string[] {
     throw invalidProtocolFrame('Duplicate Session label');
   }
   return decoded;
-}
-
-function optionalProjectId(
-  record: Record<string, unknown>,
-): Pick<SessionCatalogProjection, 'projectId'> | Record<string, never> {
-  if (!Object.hasOwn(record, 'projectId')) return {};
-  return {
-    projectId:
-      record.projectId === null
-        ? null
-        : boundedText(record.projectId, 'Session project id', SESSION_CATALOG_PROJECT_ID_MAX_BYTES),
-  };
 }
 
 function optionalTimestamp<Field extends 'lastMessageAt' | 'statusUpdatedAt'>(
@@ -971,7 +927,10 @@ function boolean(value: unknown, label: string): boolean {
 }
 
 function assertUpdateOutputIdentity(
-  input: SessionMetadataUpdateInput | SessionConfigurationUpdateInput | SessionCwdRelocateInput,
+  input:
+    | SessionMetadataUpdateInput
+    | SessionConfigurationUpdateInput
+    | SessionWorkspaceRelocateInput,
   output: SessionUpdateResult,
 ): void {
   if (output.kind === 'committed') assertSessionIdentity(input.sessionId, output.session);

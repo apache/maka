@@ -1,4 +1,3 @@
-import type { ExternalSessionSummary } from '@maka/core/external-session';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -10,6 +9,7 @@ import {
 import { invalidProtocolFrame } from './errors.js';
 import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-catalog.js';
+import { decodeWorkspaceTarget, type WorkspaceTarget } from './workspace.js';
 
 export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
 export const EXTERNAL_SESSION_RESULT_MAX_BYTES = 72 * 1024;
@@ -43,13 +43,22 @@ export interface ExternalSessionSourceQueryResult {
 export interface ExternalSessionCatalogQueryInput {
   readonly adapterId: string;
   readonly includeArchived?: boolean;
-  readonly cwd?: string;
+  readonly workspace?: WorkspaceTarget;
   readonly cursor?: string;
 }
 
 export interface ExternalSessionCatalogQueryResult {
-  readonly sessions: readonly ExternalSessionSummary[];
+  readonly sessions: readonly ExternalSessionCatalogItem[];
   readonly nextCursor: string | null;
+}
+
+export interface ExternalSessionCatalogItem {
+  readonly id: string;
+  readonly name: string;
+  readonly hostCwd: string;
+  readonly createdAt?: number;
+  readonly updatedAt?: number;
+  readonly archived?: boolean;
 }
 
 export interface ExternalSessionImportInput {
@@ -85,7 +94,7 @@ export const EXTERNAL_SESSION_OPERATION_SPECS = {
       decodeInput: decodeExternalSessionCatalogQueryInput,
       decodeOutput: decodeExternalSessionCatalogQueryResult,
     },
-    (input) => input.cwd !== undefined,
+    (input) => input.workspace?.kind === 'host_path',
   ),
   'external-session.import': defineOperation<
     ExternalSessionImportInput,
@@ -133,17 +142,15 @@ export function decodeExternalSessionCatalogQueryInput(
     value,
     'external Session catalog query input',
     ['adapterId'],
-    ['includeArchived', 'cwd', 'cursor'],
+    ['includeArchived', 'workspace', 'cursor'],
   );
   return {
     adapterId: adapterId(input.adapterId),
     ...(Object.hasOwn(input, 'includeArchived')
       ? { includeArchived: boolean(input.includeArchived, 'includeArchived') }
       : {}),
-    ...(Object.hasOwn(input, 'cwd')
-      ? {
-          cwd: requireUtf8String(input.cwd, 'external Session cwd', EXTERNAL_SESSION_CWD_MAX_BYTES),
-        }
+    ...(Object.hasOwn(input, 'workspace')
+      ? { workspace: decodeWorkspaceTarget(input.workspace) }
       : {}),
     ...(Object.hasOwn(input, 'cursor') ? { cursor: cursor(input.cursor) } : {}),
   };
@@ -198,11 +205,11 @@ export function decodeExternalSessionImportResult(value: unknown): ExternalSessi
   return decoded;
 }
 
-function decodeExternalSessionSummary(value: unknown): ExternalSessionSummary {
+function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogItem {
   const summary = requireShapedRecord(
     value,
     'external Session summary',
-    ['id', 'name', 'cwd'],
+    ['id', 'name', 'hostCwd'],
     ['createdAt', 'updatedAt', 'archived'],
   );
   const id = requireUtf8String(
@@ -215,9 +222,9 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionSummary {
   return {
     id,
     name: requireUtf8String(summary.name, 'external Session name', EXTERNAL_SESSION_NAME_MAX_BYTES),
-    cwd: boundedPossiblyEmptyText(
-      summary.cwd,
-      'external Session cwd',
+    hostCwd: boundedPossiblyEmptyText(
+      summary.hostCwd,
+      'external Session Host cwd',
       EXTERNAL_SESSION_CWD_MAX_BYTES,
     ),
     ...(Object.hasOwn(summary, 'createdAt')

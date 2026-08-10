@@ -56,9 +56,7 @@ import {
   type SkillCatalogBundledItem,
   type SkillCatalogGovernanceItem,
   type SkillCatalogInvocableItem,
-  type SkillCatalogInvocableQueryInput,
   type SkillCatalogInvocableQueryResult,
-  type SkillCatalogLocalContext,
   type SkillCatalogManagedSourceItem,
   type SkillCatalogMutateInput,
   type SkillCatalogMutateResult,
@@ -67,12 +65,38 @@ import {
   type SkillCatalogPageItem,
   type SkillCatalogPreviewUpdateInput,
   type SkillCatalogPreviewUpdateResult,
-  type SkillCatalogQueryInput,
   type SkillCatalogQueryResult,
   type SkillCatalogRevision,
   type SkillCatalogValidationCode,
   type SkillCatalogView,
 } from '../protocol/index.js';
+
+export interface SkillCatalogLocalContext {
+  readonly projectRoot: string;
+}
+
+export type SkillCatalogRepositoryQueryInput =
+  | { readonly kind: 'start'; readonly view: SkillCatalogView }
+  | {
+      readonly kind: 'continue';
+      readonly view: SkillCatalogView;
+      readonly revision: SkillCatalogRevision;
+      readonly cursor: string;
+    };
+
+export type SkillCatalogRepositoryInvocableQueryInput =
+  | { readonly kind: 'start' }
+  | {
+      readonly kind: 'continue';
+      readonly revision: SkillCatalogRevision;
+      readonly cursor: string;
+    };
+
+export type SkillCatalogRepositoryMutateInput = Omit<SkillCatalogMutateInput, 'context'>;
+export type SkillCatalogRepositoryPreviewUpdateInput = Omit<
+  SkillCatalogPreviewUpdateInput,
+  'context'
+>;
 import {
   SkillCatalogTransactionError,
   SkillCatalogTransactionWriter,
@@ -217,8 +241,11 @@ export class SkillCatalogRepository {
     }
   }
 
-  async query(input: SkillCatalogQueryInput): Promise<SkillCatalogQueryResult> {
-    const snapshot = await this.#freshSnapshot(input.context);
+  async query(
+    input: SkillCatalogRepositoryQueryInput,
+    context: SkillCatalogLocalContext,
+  ): Promise<SkillCatalogQueryResult> {
+    const snapshot = await this.#freshSnapshot(context);
     if (input.kind === 'continue' && input.revision !== snapshot.revision) {
       return {
         kind: 'revision_changed',
@@ -239,7 +266,7 @@ export class SkillCatalogRepository {
   }
 
   async queryInvocable(
-    input: SkillCatalogInvocableQueryInput,
+    input: SkillCatalogRepositoryInvocableQueryInput,
     context: SkillCatalogLocalContext,
     host: HostCapabilities,
   ): Promise<SkillCatalogInvocableQueryResult> {
@@ -271,8 +298,11 @@ export class SkillCatalogRepository {
     return createInvocablePage(revision, items, offset);
   }
 
-  async mutate(input: SkillCatalogMutateInput): Promise<SkillCatalogMutateResult> {
-    const current = await this.#freshSnapshot(input.context);
+  async mutate(
+    input: SkillCatalogRepositoryMutateInput,
+    context: SkillCatalogLocalContext,
+  ): Promise<SkillCatalogMutateResult> {
+    const current = await this.#freshSnapshot(context);
     if (current.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, current.revision);
     }
@@ -297,7 +327,7 @@ export class SkillCatalogRepository {
 
     let committed: RepositorySnapshot;
     try {
-      committed = await this.#freshSnapshot(input.context);
+      committed = await this.#freshSnapshot(context);
     } catch (error) {
       throw commitOutcomeUnknown(
         'Skill catalog committed but its new projection is unavailable',
@@ -315,9 +345,10 @@ export class SkillCatalogRepository {
   }
 
   async previewUpdate(
-    input: SkillCatalogPreviewUpdateInput,
+    input: SkillCatalogRepositoryPreviewUpdateInput,
+    context: SkillCatalogLocalContext,
   ): Promise<SkillCatalogPreviewUpdateResult> {
-    const snapshot = await this.#freshSnapshot(input.context);
+    const snapshot = await this.#freshSnapshot(context);
     if (snapshot.revision !== input.expectedRevision) {
       return revisionConflict(input.expectedRevision, snapshot.revision);
     }

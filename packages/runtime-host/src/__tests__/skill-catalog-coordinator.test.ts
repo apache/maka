@@ -11,6 +11,18 @@ import {
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
 const roots = new Set<string>();
+const workspaceResolver = {
+  async run<T>(
+    target: { readonly kind: 'host_path'; readonly path: string },
+    operation: (workspace: {
+      readonly target: typeof target;
+      readonly cwd: string;
+      readonly projectId: null;
+    }) => Promise<T>,
+  ) {
+    return operation({ target, cwd: target.path, projectId: null });
+  },
+};
 
 afterEach(async () => {
   await Promise.all([...roots].map((root) => rm(root, { recursive: true, force: true })));
@@ -59,10 +71,10 @@ test('multi-caller operations share one lane and drain waits for admitted work',
       }
     },
   });
-  const coordinator = new HostSkillCatalogCoordinator(repository);
+  const coordinator = new HostSkillCatalogCoordinator(repository, workspaceResolver);
   const input = {
     kind: 'start' as const,
-    context: { projectRoot: project },
+    context: { workspace: { kind: 'host_path' as const, path: project } },
     view: 'governance' as const,
   };
 
@@ -118,7 +130,7 @@ test('lifecycle recovery remains queued during drain and close waits for it', as
       return operation(root);
     },
   });
-  const coordinator = new HostSkillCatalogCoordinator(repository);
+  const coordinator = new HostSkillCatalogCoordinator(repository, workspaceResolver);
 
   coordinator.beginDrain();
   const recovery = coordinator.recover();
@@ -138,7 +150,7 @@ test('lifecycle recovery remains queued during drain and close waits for it', as
 
   const rejected = await coordinator.query({
     kind: 'start',
-    context: { projectRoot: project },
+    context: { workspace: { kind: 'host_path', path: project } },
     view: 'governance',
   });
   assert.deepEqual(rejected, {
@@ -166,12 +178,12 @@ test('canonical model inventory uses the same revision and is deeply immutable',
     managedSourcesRoot: join(home, '.maka', 'skill-sources'),
     runWithRoot: async (operation) => operation(root),
   });
-  const coordinator = new HostSkillCatalogCoordinator(repository);
+  const coordinator = new HostSkillCatalogCoordinator(repository, workspaceResolver);
 
   await coordinator.recover();
   const query = await coordinator.query({
     kind: 'start',
-    context: { projectRoot: project },
+    context: { workspace: { kind: 'host_path', path: project } },
     view: 'governance',
   });
   assert.equal(query.ok, true);
@@ -216,6 +228,7 @@ test('invocable pages use the authoritative Host tool surface and invalidate on 
       managedSourcesRoot: join(home, '.maka', 'skill-sources'),
       runWithRoot: async (operation) => operation(root),
     }),
+    workspaceResolver,
     async () => ({ projectRoot: project, host: { toolNames } }),
   );
   const context: ConnectionContext = {
@@ -231,7 +244,7 @@ test('invocable pages use the authoritative Host tool surface and invalidate on 
       kind: 'start',
       target: {
         kind: 'new_session',
-        context: { projectRoot: project },
+        context: { workspace: { kind: 'host_path', path: project } },
         collaborationMode: 'agent',
         permissionMode: 'ask',
       },
@@ -251,7 +264,7 @@ test('invocable pages use the authoritative Host tool surface and invalidate on 
       kind: 'continue',
       target: {
         kind: 'new_session',
-        context: { projectRoot: project },
+        context: { workspace: { kind: 'host_path', path: project } },
         collaborationMode: 'agent',
         permissionMode: 'ask',
       },

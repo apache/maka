@@ -9,6 +9,7 @@ import { HostProjectCatalogChangeService } from '../server/project-catalog-chang
 import { HostProjectCatalogCoordinator } from '../server/project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
 import { HostSessionCatalogChangeService } from '../server/session-catalog-change-service.js';
+import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 
 test('Host Project Catalog relink merges identities and reassigns every affected Session', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-project-catalog-'));
@@ -43,11 +44,13 @@ test('Host Project Catalog relink merges identities and reassigns every affected
       sessionFrames.push(frame);
     },
   });
+  const membership = new HostProjectMembershipGate();
   const coordinator = new HostProjectCatalogCoordinator(
     catalog,
     projectChanges,
     sessionChanges,
-    new HostProjectMembershipGate(),
+    membership,
+    new HostWorkspaceResolver(catalog, membership),
     () => assert.fail('ordinary project mutations must not drain the Host'),
   );
 
@@ -65,7 +68,7 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     );
     assert.equal(relinked.ok, true);
     if (!relinked.ok || relinked.result.kind !== 'project') return;
-    assert.equal(relinked.result.projectId, original.id);
+    assert.equal(relinked.result.project.id, original.id);
     const [project] = await catalog.list();
     assert.deepEqual(project?.aliases, [duplicate.id]);
     assert.equal(project?.preferredPath, destinationPath);
@@ -99,6 +102,19 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     assert.equal(listed.ok, true);
     assert.equal(listed.ok && listed.result.kind, 'page');
     assert.equal(listed.ok && listed.result.kind === 'page' && listed.result.projectCount, 1);
+
+    const location = await coordinator.handlers['project.catalog.location.query'](
+      { projectId: duplicate.id },
+      connection(),
+    );
+    assert.deepEqual(location, {
+      ok: true,
+      result: {
+        projectId: original.id,
+        locations: [{ path: destinationPath, isWorktree: false }],
+        preferredPath: destinationPath,
+      },
+    });
   } finally {
     catalog.close();
     await sessions.close?.();

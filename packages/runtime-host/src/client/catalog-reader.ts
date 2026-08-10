@@ -7,7 +7,7 @@ import {
   type RelayModelProfiles,
   type SessionCatalogFilter,
   type SessionCatalogItem,
-  type SkillCatalogLocalContext,
+  type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
   type SkillCatalogInvocableTarget,
   type SkillCatalogPageItem,
@@ -82,7 +82,7 @@ export async function readRuntimeHostConnectionCatalog(
 
 export async function readRuntimeHostSkillCatalog(
   connection: RuntimeHostCatalogConnection,
-  context: SkillCatalogLocalContext,
+  context: SkillCatalogWorkspaceContext,
   view: SkillCatalogView,
 ): Promise<RuntimeHostSkillCatalogSnapshot> {
   const { first, pages } = await collectStablePages(
@@ -276,7 +276,6 @@ function assembleProjectCatalog(
     {
       header: Extract<ProjectCatalogPageItem, { kind: 'project' }>;
       aliases: Map<number, string>;
-      locations: Map<number, ProjectCatalogProject['locations'][number]>;
     }
   >();
   for (const item of items) {
@@ -284,38 +283,33 @@ function assembleProjectCatalog(
     if (projects.has(item.projectIndex)) {
       throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
     }
-    projects.set(item.projectIndex, { header: item, aliases: new Map(), locations: new Map() });
+    projects.set(item.projectIndex, { header: item, aliases: new Map() });
   }
   for (const item of items) {
     if (item.kind === 'project') continue;
     const project = projects.get(item.projectIndex);
     if (!project) throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
-    const values = item.kind === 'alias' ? project.aliases : project.locations;
-    const expectedCount =
-      item.kind === 'alias' ? project.header.aliasCount : project.header.locationCount;
-    if (item.itemIndex >= expectedCount || values.has(item.itemIndex)) {
+    if (item.itemIndex >= project.header.aliasCount || project.aliases.has(item.itemIndex)) {
       throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
     }
-    if (item.kind === 'alias') project.aliases.set(item.itemIndex, item.alias);
-    else project.locations.set(item.itemIndex, item.location);
+    project.aliases.set(item.itemIndex, item.alias);
   }
   if (projects.size !== first.projectCount) {
     throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
   }
   return [...projects.entries()]
     .sort(([left], [right]) => left - right)
-    .map(([, { header, aliases, locations }]) => {
-      if (aliases.size !== header.aliasCount || locations.size !== header.locationCount) {
+    .map(([, { header, aliases }]) => {
+      if (aliases.size !== header.aliasCount) {
         throw new RuntimeHostCatalogReadError('project', 'invalid_projection');
       }
       return decodeProjectCatalogProject({
         id: header.id,
         aliases: orderedValues(aliases),
         name: header.name,
-        locations: orderedValues(locations),
+        locationCount: header.locationCount,
         archivedAt: header.archivedAt,
         available: header.available,
-        preferredPath: header.preferredPath,
       });
     });
 }

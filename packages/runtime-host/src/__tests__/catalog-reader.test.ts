@@ -55,7 +55,12 @@ test('rejects a repeated Skill catalog cursor instead of looping forever', async
   });
 
   await assert.rejects(
-    () => readRuntimeHostSkillCatalog(connection, { projectRoot: '/repo' }, 'governance'),
+    () =>
+      readRuntimeHostSkillCatalog(
+        connection,
+        { workspace: { kind: 'host_path', path: '/repo' } },
+        'governance',
+      ),
     (error) =>
       error instanceof RuntimeHostCatalogReadError &&
       error.catalog === 'skill' &&
@@ -102,13 +107,9 @@ test('reassembles per-item relay profiles into the connection profile table', as
   ]);
 });
 
-test('reassembles Project aliases and locations across bounded pages without truncation', async () => {
+test('reassembles Project aliases without exposing Host locations', async () => {
   const aliases = Array.from({ length: 300 }, (_, index) => `project-alias-${index}`);
-  const root = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';
-  const locations = Array.from({ length: 70 }, (_, index) => ({
-    path: `${root}${process.platform === 'win32' ? '\\' : '/'}location-${index}`,
-    isWorktree: index > 0,
-  }));
+  const locationCount = 70;
   const items = [
     {
       kind: 'project' as const,
@@ -116,22 +117,15 @@ test('reassembles Project aliases and locations across bounded pages without tru
       id: 'project-1',
       name: 'Project',
       aliasCount: aliases.length,
-      locationCount: locations.length,
+      locationCount,
       archivedAt: null,
       available: true,
-      preferredPath: locations[0]!.path,
     },
     ...aliases.map((alias, itemIndex) => ({
       kind: 'alias' as const,
       projectIndex: 0,
       itemIndex,
       alias,
-    })),
-    ...locations.map((location, itemIndex) => ({
-      kind: 'location' as const,
-      projectIndex: 0,
-      itemIndex,
-      location,
     })),
   ];
   const connection = fakeConnection(async (_operation, input) => {
@@ -152,10 +146,9 @@ test('reassembles Project aliases and locations across bounded pages without tru
       id: 'project-1',
       aliases,
       name: 'Project',
-      locations,
+      locationCount,
       archivedAt: null,
       available: true,
-      preferredPath: locations[0]!.path,
     },
   ]);
 });

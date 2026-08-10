@@ -12,6 +12,7 @@ import {
   type SessionHeader,
 } from '@maka/core';
 import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
+import type { ProjectCatalog } from '@maka/storage';
 import {
   SessionMetadataVersionConflictError,
   type SessionCatalogRecord,
@@ -22,6 +23,7 @@ import {
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
+import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 import {
   HostSessionCatalogCoordinator,
   type HostSessionCatalogCoordinatorOptions,
@@ -224,7 +226,7 @@ test('creation rejects reserved execution labels before claiming a Session ident
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       labels: [DEEP_RESEARCH_SESSION_LABEL],
       modelTarget: { kind: 'default' },
     },
@@ -269,7 +271,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
       thinkingLevel: 'low',
     },
@@ -303,7 +305,7 @@ test('creation on a relay connection without declarations still fails closed on 
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
       thinkingLevel: 'low',
     },
@@ -334,7 +336,7 @@ test('creation rejects explore permission without a declared mode', async () => 
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       modelTarget: { kind: 'default' },
       permissionMode: 'explore',
     },
@@ -369,7 +371,7 @@ test('creation materializes Deep Research semantics inside the Host transaction'
   const outcome = await fixture.coordinator.handlers['session.create'](
     {
       sessionId: fixture.sessionId,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
       mode: 'deep_research',
       name: 'Caller override',
       labels: ['customer-label'],
@@ -442,7 +444,7 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
       const outcome = await fixture.coordinator.handlers['session.create'](
         {
           sessionId: fixture.sessionId,
-          cwd,
+          workspace: { kind: 'host_path', path: cwd },
           modelTarget: { kind: 'default' },
         },
         context,
@@ -459,13 +461,13 @@ test('creation fingerprints and persists the canonical cwd behind a symlink', as
   }
 });
 
-test('creation resolves a stale Client project path from current Host membership', async () => {
+test('creation resolves a Project alias and records Host-owned usage', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-create-project-'));
-  const stalePath = join(root, 'stale');
   const currentPath = join(root, 'current');
   await mkdir(currentPath);
   try {
     let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+    const touches: Array<{ projectId: string; path?: string }> = [];
     const fixture = createFixture({
       projectCatalog: {
         list: async () => [
@@ -478,6 +480,10 @@ test('creation resolves a stale Client project path from current Host membership
             preferredPath: currentPath,
           },
         ],
+        touch: async (projectId: string, path?: string) => {
+          touches.push({ projectId, path });
+          return {} as never;
+        },
       } as never,
       stores: {
         createStableSession: async (request) => {
@@ -500,8 +506,7 @@ test('creation resolves a stale Client project path from current Host membership
     const outcome = await fixture.coordinator.handlers['session.create'](
       {
         sessionId: fixture.sessionId,
-        cwd: stalePath,
-        projectId: 'project-stale',
+        workspace: { kind: 'project', projectId: 'project-stale' },
         modelTarget: { kind: 'default' },
       },
       context,
@@ -510,12 +515,13 @@ test('creation resolves a stale Client project path from current Host membership
     assert.equal(outcome.ok, true);
     assert.equal(created?.input.cwd, currentPath);
     assert.equal(created?.input.projectId, 'project-current');
+    assert.deepEqual(touches, [{ projectId: 'project-current', path: currentPath }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('cwd relocation canonicalizes once and commits through Runtime authority', async () => {
+test('Host-path relocation canonicalizes once and commits through Runtime authority', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-relocate-cwd-'));
   const target = join(root, 'target');
   const link = join(root, 'link');
@@ -524,12 +530,11 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
   try {
     const fixture = createFixture();
     const expectedRevision = fixture.revision();
-    const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+    const outcome = await fixture.coordinator.handlers['session.workspace.relocate'](
       {
         sessionId: fixture.sessionId,
         expectedRevision,
-        cwd: link,
-        projectId: 'project-2',
+        workspace: { kind: 'host_path', path: link },
       },
       context,
     );
@@ -539,9 +544,9 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
     if ('kind' in outcome.result.session) {
       assert.fail('Relocated Session must remain wire-representable');
     }
-    assert.equal(outcome.result.session.cwd, await realpath(target));
+    assert.equal(outcome.result.session.workspace.hostCwd, await realpath(target));
     assert.equal(fixture.header().cwd, await realpath(target));
-    assert.equal(fixture.header().projectId, 'project-2');
+    assert.equal(fixture.header().projectId, null);
     assert.equal(fixture.revision(), expectedRevision + 1);
     assert.equal(fixture.drainRequests(), 0);
   } finally {
@@ -549,7 +554,7 @@ test('cwd relocation canonicalizes once and commits through Runtime authority', 
   }
 });
 
-test('cwd relocation reports a stale Session revision without mutating Runtime state', async () => {
+test('workspace relocation reports a stale Session revision without mutating Runtime state', async () => {
   let relocationAttempts = 0;
   const fixture = createFixture({
     manager: {
@@ -559,11 +564,11 @@ test('cwd relocation reports a stale Session revision without mutating Runtime s
       },
     },
   });
-  const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+  const outcome = await fixture.coordinator.handlers['session.workspace.relocate'](
     {
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision() - 1,
-      cwd: process.cwd(),
+      workspace: { kind: 'host_path', path: process.cwd() },
     },
     context,
   );
@@ -580,7 +585,7 @@ test('cwd relocation reports a stale Session revision without mutating Runtime s
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('same-cwd relocation still enters Runtime eligibility authority', async () => {
+test('same-workspace relocation still enters Runtime eligibility authority', async () => {
   let relocationAttempts = 0;
   const cwd = await realpath(process.cwd());
   const fixture = createFixture({
@@ -596,11 +601,11 @@ test('same-cwd relocation still enters Runtime eligibility authority', async () 
     },
   });
 
-  const outcome = await fixture.coordinator.handlers['session.cwd.relocate'](
+  const outcome = await fixture.coordinator.handlers['session.workspace.relocate'](
     {
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
-      cwd,
+      workspace: { kind: 'host_path', path: cwd },
     },
     context,
   );
@@ -662,7 +667,7 @@ function createFixture(
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
-    readonly projectCatalog?: HostSessionCatalogCoordinatorOptions['projectCatalog'];
+    readonly projectCatalog?: ProjectCatalog;
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -728,8 +733,10 @@ function createFixture(
     manager,
     admission: new SessionAdmissionGate(),
     continuity,
-    projectCatalog: options.projectCatalog ?? ({ list: async () => [] } as never),
-    projectMembership: new HostProjectMembershipGate(),
+    workspaceResolver: new HostWorkspaceResolver(
+      options.projectCatalog ?? ({ list: async () => [] } as never),
+      new HostProjectMembershipGate(),
+    ),
     requestDrain: () => {
       drains += 1;
     },

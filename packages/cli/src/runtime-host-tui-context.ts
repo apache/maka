@@ -117,7 +117,7 @@ async function listStablePresentedSkills(
   return [
     ...(await readRuntimeHostInvocableSkills(connection, {
       kind: 'new_session',
-      context: { projectRoot },
+      context: { workspace: { kind: 'host_path', path: projectRoot } },
       collaborationMode: 'agent',
       permissionMode,
     })),

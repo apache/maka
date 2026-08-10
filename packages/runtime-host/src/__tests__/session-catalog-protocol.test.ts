@@ -21,7 +21,7 @@ describe('Session catalog protocol', () => {
             'session.create',
             'session.metadata.update',
             'session.configuration.update',
-            'session.cwd.relocate',
+            'session.workspace.relocate',
             'session.read_marker.set',
             'session.execution_boundary.query',
           ] as const
@@ -38,10 +38,26 @@ describe('Session catalog protocol', () => {
         'session.create': { mode: 'command', availability: 'ready' },
         'session.metadata.update': { mode: 'command', availability: 'ready' },
         'session.configuration.update': { mode: 'command', availability: 'ready' },
-        'session.cwd.relocate': { mode: 'command', availability: 'ready' },
+        'session.workspace.relocate': { mode: 'command', availability: 'ready' },
         'session.read_marker.set': { mode: 'command', availability: 'ready' },
         'session.execution_boundary.query': { mode: 'query', availability: 'ready' },
       },
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['session.create'].usesHostPaths?.({
+        sessionId: 'project-session',
+        workspace: { kind: 'project', projectId: 'project-1' },
+        modelTarget: { kind: 'default' },
+      }),
+      false,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['session.create'].usesHostPaths?.({
+        sessionId: 'path-session',
+        workspace: { kind: 'host_path', path: '/workspace' },
+        modelTarget: { kind: 'default' },
+      }),
+      true,
     );
   });
 
@@ -111,8 +127,7 @@ describe('Session catalog protocol', () => {
         operation: 'session.create',
         input: {
           sessionId: 'session-1',
-          cwd: '/workspace',
-          projectId: null,
+          workspace: { kind: 'project', projectId: 'project-1' },
           name: 'Session',
           labels: ['catalog'],
           modelTarget: {
@@ -131,8 +146,7 @@ describe('Session catalog protocol', () => {
         operation: 'session.create',
         input: {
           sessionId: 'session-1',
-          cwd: '/workspace',
-          projectId: null,
+          workspace: { kind: 'project', projectId: 'project-1' },
           name: 'Session',
           labels: ['catalog'],
           modelTarget: {
@@ -151,22 +165,20 @@ describe('Session catalog protocol', () => {
     assert.deepEqual(
       decodeClientFrame({
         requestId: 'request-3',
-        operation: 'session.cwd.relocate',
+        operation: 'session.workspace.relocate',
         input: {
           sessionId: 'session-1',
           expectedRevision: 2,
-          cwd: '/workspace/next',
-          projectId: 'project-2',
+          workspace: { kind: 'host_path', path: '/workspace/next' },
         },
       }),
       {
         requestId: 'request-3',
-        operation: 'session.cwd.relocate',
+        operation: 'session.workspace.relocate',
         input: {
           sessionId: 'session-1',
           expectedRevision: 2,
-          cwd: '/workspace/next',
-          projectId: 'project-2',
+          workspace: { kind: 'host_path', path: '/workspace/next' },
         },
       },
     );
@@ -259,7 +271,7 @@ describe('Session catalog protocol', () => {
       operation: 'session.create',
       input: {
         sessionId: 'session-name',
-        cwd: '/workspace',
+        workspace: { kind: 'host_path', path: '/workspace' },
         name,
         modelTarget: { kind: 'default' },
       },
@@ -275,7 +287,7 @@ describe('Session catalog protocol', () => {
           operation: 'session.create',
           input: {
             sessionId: 'session-name-overflow',
-            cwd: '/workspace',
+            workspace: { kind: 'host_path', path: '/workspace' },
             name: '🦊'.repeat(81),
             modelTarget: { kind: 'default' },
           },
@@ -290,7 +302,7 @@ describe('Session catalog protocol', () => {
       operation: 'session.create',
       input: {
         sessionId: 'session-mode',
-        cwd: '/workspace',
+        workspace: { kind: 'host_path', path: '/workspace' },
         mode: 'deep_research',
         modelTarget: { kind: 'default' },
       },
@@ -306,7 +318,7 @@ describe('Session catalog protocol', () => {
           operation: 'session.create',
           input: {
             sessionId: 'session-invalid-mode',
-            cwd: '/workspace',
+            workspace: { kind: 'host_path', path: '/workspace' },
             mode: 'unknown',
             modelTarget: { kind: 'default' },
           },
@@ -416,7 +428,10 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
   return {
     id: 'session-1',
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 2,
     name: 'Session',

@@ -10,6 +10,7 @@ import {
   SKILL_CATALOG_PAGE_MAX_BYTES,
   SKILL_CATALOG_PAGE_MAX_ITEMS,
   SKILL_CATALOG_PREVIEW_RESULT_MAX_BYTES,
+  WORKSPACE_HOST_PATH_MAX_BYTES,
   type SkillCatalogBundledItem,
   type SkillCatalogGovernanceItem,
   type SkillCatalogMutation,
@@ -22,7 +23,10 @@ import { SkillCatalogRepository } from '../server/skill-catalog-repository.js';
 const REVISION = `sha256:${'a'.repeat(64)}` as SkillCatalogRevision;
 const NEXT_REVISION = `sha256:${'b'.repeat(64)}` as SkillCatalogRevision;
 const CONTEXT = {
-  projectRoot: process.platform === 'win32' ? 'C:\\workspace\\project' : '/workspace/project',
+  workspace: {
+    kind: 'host_path' as const,
+    path: process.platform === 'win32' ? 'C:\\workspace\\project' : '/workspace/project',
+  },
 };
 
 type IsAssignable<From, To> = [From] extends [To] ? true : false;
@@ -107,6 +111,22 @@ describe('Runtime Host Skill catalog protocol', () => {
         errors: [...queryErrors, 'commit_outcome_unknown'],
       },
     );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
+        kind: 'start',
+        context: { workspace: { kind: 'project', projectId: 'project-1' } },
+        view: 'governance',
+      }),
+      false,
+    );
+    assert.equal(
+      SKILL_CATALOG_OPERATION_SPECS['skill.catalog.query'].usesHostPaths?.({
+        kind: 'start',
+        context: CONTEXT,
+        view: 'governance',
+      }),
+      true,
+    );
   });
 
   test('decodes bounded Session and new-Session invocable queries and pages', () => {
@@ -178,7 +198,7 @@ describe('Runtime Host Skill catalog protocol', () => {
     });
   });
 
-  test('decodes start and continuation queries with bounded typed local context', () => {
+  test('decodes start and continuation queries with bounded workspace context', () => {
     for (const input of [
       { kind: 'start', context: CONTEXT, view: 'governance' },
       { kind: 'start', context: CONTEXT, view: 'bundled' },
@@ -202,39 +222,40 @@ describe('Runtime Host Skill catalog protocol', () => {
     });
     assertInvalidRequest('skill.catalog.query', {
       kind: 'start',
-      context: { projectRoot: '界'.repeat(1366) },
+      context: {
+        workspace: {
+          kind: 'host_path',
+          path: '界'.repeat(Math.floor(WORKSPACE_HOST_PATH_MAX_BYTES / 3) + 1),
+        },
+      },
       view: 'governance',
     });
     for (const projectRoot of ['.', 'project', 'workspace/project']) {
       assertInvalidRequest('skill.catalog.query', {
         kind: 'start',
-        context: { projectRoot },
+        context: { workspace: { kind: 'host_path', path: projectRoot } },
         view: 'governance',
       });
     }
-    for (const [projectRoot, acceptedPlatform] of [
-      ['/workspace/project', 'posix'],
-      ['C:\\workspace\\project', 'win32'],
-      ['\\\\server\\share\\project', 'win32'],
-    ] as const) {
-      const input = { kind: 'start', context: { projectRoot }, view: 'governance' };
-      if (
-        process.platform === 'win32' ? acceptedPlatform === 'win32' : acceptedPlatform === 'posix'
-      ) {
-        const frame = request('skill.catalog.query', input);
-        assert.deepEqual(decodeClientFrame(frame), frame);
-      } else {
-        assertInvalidRequest('skill.catalog.query', input);
-      }
+    for (const projectRoot of [
+      '/workspace/project',
+      'C:\\workspace\\project',
+      '\\\\server\\share\\project',
+    ]) {
+      const input = {
+        kind: 'start',
+        context: { workspace: { kind: 'host_path', path: projectRoot } },
+        view: 'governance',
+      };
+      const frame = request('skill.catalog.query', input);
+      assert.deepEqual(decodeClientFrame(frame), frame);
     }
-    if (process.platform === 'win32') {
-      for (const projectRoot of ['\\workspace\\project', 'C:workspace\\project']) {
-        assertInvalidRequest('skill.catalog.query', {
-          kind: 'start',
-          context: { projectRoot },
-          view: 'governance',
-        });
-      }
+    for (const projectRoot of ['\\workspace\\project', 'C:workspace\\project']) {
+      assertInvalidRequest('skill.catalog.query', {
+        kind: 'start',
+        context: { workspace: { kind: 'host_path', path: projectRoot } },
+        view: 'governance',
+      });
     }
     assertInvalidRequest('skill.catalog.query', {
       kind: 'continue',
@@ -352,11 +373,13 @@ describe('Runtime Host Skill catalog protocol', () => {
         homeDirectory,
         managedSourcesRoot,
       });
-      const result = await repository.query({
-        kind: 'start',
-        context: { projectRoot },
-        view: 'bundled',
-      });
+      const result = await repository.query(
+        {
+          kind: 'start',
+          view: 'bundled',
+        },
+        { projectRoot },
+      );
       assert.equal(result.kind, 'page');
       if (result.kind !== 'page') return;
 

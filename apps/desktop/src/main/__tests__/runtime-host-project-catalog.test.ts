@@ -1,24 +1,42 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
-import { isProjectPathMismatchError } from '@maka/storage';
 import { createRuntimeHostProjectCatalog } from '../runtime-host-project-catalog.js';
 
-test('Host touch conflicts retain the Project path mismatch contract', async () => {
+test('adds Host-authorized paths only in the Desktop adapter', async () => {
+  const project = {
+    id: 'project-1',
+    aliases: [],
+    name: 'Project',
+    locationCount: 2,
+    archivedAt: null,
+    available: true,
+  } as const;
   const catalog = createRuntimeHostProjectCatalog(() =>
     ({
-      touchProject: async () => {
-        throw new RuntimeHostOperationError(
-          'project.catalog.mutate',
-          'operation_conflict',
-          'Path does not belong to project project-1',
-        );
-      },
+      listProjects: async () => [project],
+      registerProject: async () => project,
+      projectLocations: async () => ({
+        projectId: 'project-1',
+        locations: [
+          { path: '/workspace/project', isWorktree: false },
+          { path: '/workspace/worktree', isWorktree: true },
+        ],
+        preferredPath: '/workspace/project',
+      }),
     }) as never,
   );
 
-  await assert.rejects(
-    () => catalog.touch('project-1', '/workspace/other'),
-    (error: unknown) => isProjectPathMismatchError(error),
-  );
+  assert.deepEqual(await catalog.list(), [
+    {
+      id: 'project-1',
+      name: 'Project',
+      locations: [
+        { path: '/workspace/project', isWorktree: false },
+        { path: '/workspace/worktree', isWorktree: true },
+      ],
+      preferredPath: '/workspace/project',
+      available: true,
+    },
+  ]);
+  assert.deepEqual(await catalog.register('/workspace/project'), (await catalog.list())[0]);
 });

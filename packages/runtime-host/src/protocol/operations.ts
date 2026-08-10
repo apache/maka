@@ -143,6 +143,7 @@ export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
 export * from './web-search.js';
+export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,

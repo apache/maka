@@ -2,6 +2,7 @@ import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
 import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineHostPathOperation } from './operation-spec.js';
+import { decodeWorkspaceTarget, type WorkspaceTarget } from './workspace.js';
 
 export const SKILL_CATALOG_PAGE_MAX_ITEMS = 128;
 export const SKILL_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
@@ -9,7 +10,6 @@ export const SKILL_CATALOG_PREVIEW_RESULT_MAX_BYTES = 48 * 1024;
 export const SKILL_CATALOG_REF_MAX_BYTES = 512;
 export const SKILL_CATALOG_DISPLAY_ID_MAX_BYTES = 256;
 
-const PROJECT_ROOT_MAX_BYTES = 4096;
 const CURSOR_MAX_BYTES = 1024;
 const ID_MAX_BYTES = 81;
 export const SKILL_CATALOG_NAME_MAX_BYTES = 256;
@@ -86,15 +86,15 @@ export type SkillCatalogValidationCode =
   | 'read_failed'
   | 'projection_truncated';
 
-export interface SkillCatalogLocalContext {
-  readonly projectRoot: string;
+export interface SkillCatalogWorkspaceContext {
+  readonly workspace: WorkspaceTarget;
 }
 
 export type SkillCatalogInvocableTarget =
   | { readonly kind: 'session'; readonly sessionId: string }
   | {
       readonly kind: 'new_session';
-      readonly context: SkillCatalogLocalContext;
+      readonly context: SkillCatalogWorkspaceContext;
       readonly collaborationMode: 'agent' | 'plan';
       readonly permissionMode: PermissionMode;
     };
@@ -161,12 +161,12 @@ export type SkillCatalogPageItem =
 export type SkillCatalogQueryInput =
   | {
       readonly kind: 'start';
-      readonly context: SkillCatalogLocalContext;
+      readonly context: SkillCatalogWorkspaceContext;
       readonly view: SkillCatalogView;
     }
   | {
       readonly kind: 'continue';
-      readonly context: SkillCatalogLocalContext;
+      readonly context: SkillCatalogWorkspaceContext;
       readonly view: SkillCatalogView;
       readonly revision: SkillCatalogRevision;
       readonly cursor: string;
@@ -240,7 +240,7 @@ export type SkillCatalogManagedUpdateMutation =
     };
 
 export interface SkillCatalogMutateInput {
-  readonly context: SkillCatalogLocalContext;
+  readonly context: SkillCatalogWorkspaceContext;
   readonly expectedRevision: SkillCatalogRevision;
   readonly mutation: SkillCatalogMutation;
 }
@@ -269,7 +269,7 @@ export type SkillCatalogMutateResult =
   | { readonly kind: 'rejected'; readonly reason: SkillCatalogMutationRejectedReason };
 
 export interface SkillCatalogPreviewUpdateInput {
-  readonly context: SkillCatalogLocalContext;
+  readonly context: SkillCatalogWorkspaceContext;
   readonly expectedRevision: SkillCatalogRevision;
   readonly ref: string;
 }
@@ -314,13 +314,16 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
     SkillCatalogQueryInput,
     SkillCatalogQueryResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodeQueryInput,
-    decodeOutput: decodeQueryResult,
-  }),
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodeQueryInput,
+      decodeOutput: decodeQueryResult,
+    },
+    (input) => input.context.workspace.kind === 'host_path',
+  ),
   'skill.catalog.invocable.query': defineHostPathOperation<
     SkillCatalogInvocableQueryInput,
     SkillCatalogInvocableQueryResult,
@@ -333,30 +336,37 @@ export const SKILL_CATALOG_OPERATION_SPECS = {
       decodeInput: decodeInvocableQueryInput,
       decodeOutput: decodeInvocableQueryResult,
     },
-    (input) => input.target.kind === 'new_session',
+    (input) =>
+      input.target.kind === 'new_session' && input.target.context.workspace.kind === 'host_path',
   ),
   'skill.catalog.mutate': defineHostPathOperation<
     SkillCatalogMutateInput,
     SkillCatalogMutateResult,
     (typeof MUTATION_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: MUTATION_ERRORS,
-    decodeInput: decodeMutateInput,
-    decodeOutput: decodeMutateResult,
-  }),
+  >(
+    {
+      mode: 'command',
+      availability: 'ready',
+      errors: MUTATION_ERRORS,
+      decodeInput: decodeMutateInput,
+      decodeOutput: decodeMutateResult,
+    },
+    (input) => input.context.workspace.kind === 'host_path',
+  ),
   'skill.catalog.preview-update': defineHostPathOperation<
     SkillCatalogPreviewUpdateInput,
     SkillCatalogPreviewUpdateResult,
     (typeof QUERY_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: QUERY_ERRORS,
-    decodeInput: decodePreviewInput,
-    decodeOutput: decodePreviewResult,
-  }),
+  >(
+    {
+      mode: 'query',
+      availability: 'ready',
+      errors: QUERY_ERRORS,
+      decodeInput: decodePreviewInput,
+      decodeOutput: decodePreviewResult,
+    },
+    (input) => input.context.workspace.kind === 'host_path',
+  ),
 } as const;
 
 function decodeInvocableQueryInput(value: unknown): SkillCatalogInvocableQueryInput {
@@ -794,19 +804,9 @@ function decodePreviewResult(value: unknown): SkillCatalogPreviewUpdateResult {
   return decoded;
 }
 
-function localContext(value: unknown): SkillCatalogLocalContext {
-  const record = requireExactRecord(value, 'skill catalog local context', ['projectRoot']);
-  const projectRoot = utf8String(
-    record.projectRoot,
-    'skill catalog project root',
-    PROJECT_ROOT_MAX_BYTES,
-  );
-  if (!isSkillCatalogProjectRootLexicallyAbsolute(projectRoot)) {
-    throw invalidProtocolFrame('Skill catalog project root must be absolute');
-  }
-  return {
-    projectRoot,
-  };
+function localContext(value: unknown): SkillCatalogWorkspaceContext {
+  const record = requireExactRecord(value, 'skill catalog workspace context', ['workspace']);
+  return { workspace: decodeWorkspaceTarget(record.workspace) };
 }
 
 function invocableTarget(value: unknown): SkillCatalogInvocableTarget {

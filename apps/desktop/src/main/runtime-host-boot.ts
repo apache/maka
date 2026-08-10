@@ -20,12 +20,14 @@ import {
   type BotIncomingMessage,
 } from "@maka/runtime";
 import { loadOrCreateRuntimeHostClientInstanceId } from "@maka/runtime-host/client";
+import type { WorkspaceProjection } from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
   createSqlitePlanReminderStore,
 } from "@maka/storage";
+import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
@@ -56,8 +58,7 @@ import {
 import { createMainWindowController } from "./main-window.js";
 import { mainProcessLogBuffer } from "./main-process-diagnostics.js";
 import {
-  resolveDesktopSessionSelection,
-  resolveNewSessionProjectInput,
+  resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
 import { registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
@@ -152,17 +153,19 @@ if (e2eFixture) {
     `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
   );
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture });
-} else {
-  const storageRoot = await startupStep(
+}
+const storageRoot = e2eFixture
+  ? await resolveStorageRoot({ path: workspaceRoot, kind: "interactive" })
+  : await startupStep(
     "storage root",
     resolveDesktopStorageRoot(workspaceRoot, {
       confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
     }),
   );
-  if (!storageRoot) {
-    app.exit(0);
-    await new Promise<never>(() => {});
-  }
+if (!storageRoot) {
+  app.exit(0);
+  await new Promise<never>(() => {});
+  throw new Error("Desktop storage root resolution did not complete");
 }
 const settingsStore = createSettingsStore(workspaceRoot);
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
@@ -231,7 +234,9 @@ onMainWindowClose = () => {
   native.computerUsePip.destroyAll();
 };
 const projectRoot = createProjectRootController({
-  lastProjectPathFile: join(workspaceRoot, "last-project-path.json"),
+  rootId: storageRoot.rootId,
+  preferenceFile: join(workspaceRoot, "project-preferences.json"),
+  legacySelectionFile: join(workspaceRoot, "last-project-path.json"),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
 const attachmentApprovals = createAttachmentApprovalRegistry();
@@ -257,6 +262,16 @@ const projectManagement: ProjectManagementService = createProjectManagementServi
   },
   selection: projectRoot,
 });
+const currentDesktopWorkspace = async (): Promise<WorkspaceProjection> => {
+  const current = await projectManagement.current();
+  return {
+    target:
+      typeof current.projectId === "string"
+        ? { kind: "project", projectId: current.projectId }
+        : { kind: "host_path", path: current.path },
+    hostCwd: current.path,
+  };
+};
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshotRevision(),
 );
@@ -429,14 +444,19 @@ owner = await startRuntimeHostDesktopOwner(
       releaseComputerUseSession,
     },
     botRegistry,
-    resolveBotCreateTarget: async () => ({ cwd: await projectRoot.current() }),
+    resolveBotCreateTarget: async () => ({
+      workspace: (await currentDesktopWorkspace()).target,
+    }),
     resolveSessionCreateProject: async (input) => {
-      const selected = await resolveDesktopSessionSelection(input, {
-        ...projectManagement,
-        defaultProjectId: async () =>
-          (await settingsStore.get()).projects.defaultProjectId,
-      });
-      return resolveNewSessionProjectInput(selected, projectCatalog);
+      return resolveDesktopSessionWorkspace(
+        input,
+        {
+          ...projectManagement,
+          defaultProjectId: async () =>
+            (await settingsStore.get()).projects.defaultProjectId,
+        },
+        projectCatalog,
+      );
     },
     emitSessionsChanged,
     emitModeChanged: (sessionId) =>
@@ -644,7 +664,7 @@ function registerHostClientIpc(
     client,
     workspaceRoot,
     mainWindowController,
-    getCurrentProjectRoot: () => projectRoot.current(),
+    getCurrentWorkspace: currentDesktopWorkspace,
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),
@@ -674,7 +694,7 @@ function registerHostClientIpc(
       readSessionCwd: async (id) => {
         const session = await client.getSession(id);
         if (!session) throw new Error(`No such Session: ${id}`);
-        return session.cwd;
+        return session.workspace.hostCwd;
       },
     });
   registerAppIpc(

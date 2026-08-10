@@ -779,7 +779,10 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
   return {
     id: "session-1",
     revision: 1,
-    cwd,
+    workspace: {
+      target: { kind: 'host_path', path: cwd },
+      hostCwd: cwd,
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: "Session",

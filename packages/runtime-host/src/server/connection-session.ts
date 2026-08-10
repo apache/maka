@@ -329,7 +329,6 @@ export class RuntimeHostConnectionSession {
 
   #attachProjectCatalogChanges(): void {
     if (
-      !this.#options.connection.authority.canUseHostPaths ||
       !hasRuntimeHostOperationGrant(this.#options.connection.authority, 'project.catalog.query')
     ) {
       return;

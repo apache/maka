@@ -137,6 +137,7 @@ import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
@@ -404,12 +405,15 @@ export async function createExecutionRuntimeHostComposition(
           initiatingConnectionId: string,
         ) => Promise<string[]>)
       | undefined;
+    const projectMembership = new HostProjectMembershipGate();
+    const workspaceResolver = new HostWorkspaceResolver(openedProjectCatalog, projectMembership);
     const skills = new HostSkillCatalogCoordinator(
       new SkillCatalogRepository({
         runWithRoot: (operation) =>
           runWithStorageRootLease(context.owner.lease, 'interactive', 'write', operation),
         ...(options.skillHomeDirectory ? { homeDirectory: options.skillHomeDirectory } : {}),
       }),
+      workspaceResolver,
       async (input, connection) => {
         if (input.target.kind === 'session') {
           const sessionId = input.target.sessionId;
@@ -427,7 +431,7 @@ export async function createExecutionRuntimeHostComposition(
         }
         const previewSessionId = `skill-catalog-preview:${connection.connectionId}`;
         return {
-          projectRoot: input.target.context.projectRoot,
+          projectRoot: (await workspaceResolver.resolve(input.target.context.workspace)).cwd,
           host: buildHostCapabilitiesFromBinding(
             await requireNewSessionToolNameResolver(resolveNewSessionToolNames)(
               previewSessionId,
@@ -442,12 +446,12 @@ export async function createExecutionRuntimeHostComposition(
     const configurationChanges = new HostConfigurationChangeService();
     const sessionCatalogChanges = new HostSessionCatalogChangeService();
     const projectCatalogChanges = new HostProjectCatalogChangeService();
-    const projectMembership = new HostProjectMembershipGate();
     const projects = new HostProjectCatalogCoordinator(
       openedProjectCatalog,
       projectCatalogChanges,
       sessionCatalogChanges,
       projectMembership,
+      workspaceResolver,
       context.requestDrain,
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
@@ -1119,14 +1123,14 @@ export async function createExecutionRuntimeHostComposition(
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
-      projectCatalog: openedProjectCatalog,
-      projectMembership,
+      workspaceResolver,
       requestDrain: context.requestDrain,
     });
     const externalSessions = new HostExternalSessionCoordinator({
       adapters: createExternalSessionAdapterRegistry(),
       admission: sessionAdmission,
       sessions: stores.sessionStore,
+      workspaceResolver,
       resolveTarget: () => sessionCatalog.resolveExternalSessionImportTarget(),
       prepareImportedSessionHistory: (sessionId) =>
         requireSessionManager(manager).prepareImportedSessionHistory(sessionId),

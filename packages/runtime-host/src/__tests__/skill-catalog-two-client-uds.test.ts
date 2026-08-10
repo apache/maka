@@ -82,7 +82,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
 
     const query = {
       kind: 'start',
-      context: { projectRoot },
+      context: { workspace: { kind: 'host_path', path: projectRoot } },
       view: 'governance',
     } as const;
     const [desktopInitial, tuiInitial] = await Promise.all([
@@ -116,7 +116,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
 
     const expectedRevision = desktopPage.revision;
     const mutation = {
-      context: { projectRoot },
+      context: { workspace: { kind: 'host_path', path: projectRoot } },
       expectedRevision,
       mutation: { kind: 'create_starter' },
     } as const;
@@ -155,7 +155,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
     const blockedDelete = await desktop.request(
       'skill.catalog.mutate',
       {
-        context: { projectRoot },
+        context: { workspace: { kind: 'host_path', path: projectRoot } },
         expectedRevision: finalPage.revision,
         mutation: { kind: 'delete', ref: 'project:maka:private-project-skill' },
       },

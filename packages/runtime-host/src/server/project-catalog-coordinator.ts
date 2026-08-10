@@ -15,6 +15,7 @@ import {
   type OperationOutcome,
   type ProjectCatalogMutateInput,
   type ProjectCatalogMutateResult,
+  type ProjectCatalogLocationQueryInput,
   type ProjectCatalogPageItem,
   type ProjectCatalogProject,
   type ProjectCatalogQueryInput,
@@ -25,10 +26,12 @@ import type { ProjectCatalogOperationHandlerMap } from './operation-dispatcher.j
 import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
 import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
+import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
     'project.catalog.query': (input) => this.#query(input),
+    'project.catalog.location.query': (input) => this.#queryLocation(input),
     'project.catalog.mutate': (input) => this.#mutate(input),
   };
 
@@ -37,6 +40,7 @@ export class HostProjectCatalogCoordinator {
     private readonly projectChanges: HostProjectCatalogChangeService,
     private readonly sessionChanges: HostSessionCatalogChangeService,
     private readonly membership: HostProjectMembershipGate,
+    private readonly workspaceResolver: Pick<HostWorkspaceResolver, 'run'>,
     private readonly requestDrain: () => void,
   ) {}
 
@@ -98,40 +102,61 @@ export class HostProjectCatalogCoordinator {
     }
   }
 
+  async #queryLocation(
+    input: ProjectCatalogLocationQueryInput,
+  ): Promise<OperationOutcome<'project.catalog.location.query'>> {
+    try {
+      return await this.workspaceResolver.run(
+        { kind: 'project', projectId: input.projectId },
+        async (workspace) => {
+          if (workspace.projectId === null) {
+            throw new Error('Project workspace resolution returned a Host path');
+          }
+          return {
+            ok: true,
+            result: {
+              projectId: workspace.projectId,
+              locations: workspace.project.locations.map(({ path, isWorktree }) => ({
+                path,
+                isWorktree,
+              })),
+              preferredPath: workspace.cwd,
+            },
+          };
+        },
+      );
+    } catch (error) {
+      if (error instanceof WorkspaceResolutionError) {
+        return locationFailure(
+          error.code === 'not_found' ? 'not_found' : 'operation_conflict',
+          error.message,
+        );
+      }
+      return locationFailure('persistence_failed', 'Project catalog is unavailable');
+    }
+  }
+
   async #applyMutation(input: ProjectCatalogMutateInput): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult((await this.catalog.register(input.path)).id);
-      case 'select': {
-        const selected = await this.catalog.select(input.projectId);
-        return {
-          kind: 'selection',
-          projectId: selected.project.id,
-          path: selected.path,
-        };
-      }
-      case 'touch':
-        return projectResult(
-          (await this.catalog.touch(input.projectId, input.path === null ? undefined : input.path))
-            .id,
-        );
+        return projectResult(await this.catalog.register(input.path));
       case 'relink': {
         const result = await this.catalog.relinkWithSessions(input.projectId, input.path);
         for (const sessionId of result.updatedSessionIds) this.sessionChanges.publish(sessionId);
-        return projectResult(result.project.id);
+        return projectResult(result.project);
       }
       case 'rename':
-        return projectResult((await this.catalog.rename(input.projectId, input.name)).id);
+        return projectResult(await this.catalog.rename(input.projectId, input.name));
       case 'archive':
-        return projectResult((await this.catalog.archive(input.projectId)).id);
+        return projectResult(await this.catalog.archive(input.projectId));
       case 'restore':
-        return projectResult((await this.catalog.restore(input.projectId)).id);
+        return projectResult(await this.catalog.restore(input.projectId));
     }
   }
 }
 
-function projectResult(projectId: string): ProjectCatalogMutateResult {
-  return { kind: 'project', projectId };
+function projectResult(project: ProjectRecord): ProjectCatalogMutateResult {
+  return { kind: 'project', project: projectProject(project) };
 }
 
 function projectProject(project: ProjectRecord): ProjectCatalogProject {
@@ -139,10 +164,9 @@ function projectProject(project: ProjectRecord): ProjectCatalogProject {
     id: project.id,
     aliases: [...(project.aliases ?? [])],
     name: project.name,
-    locations: project.locations.map((location) => ({ ...location })),
+    locationCount: project.locations.length,
     archivedAt: project.archivedAt ?? null,
     available: project.available,
-    preferredPath: project.preferredPath ?? null,
   });
 }
 
@@ -154,22 +178,15 @@ function projectCatalogItems(projects: readonly ProjectCatalogProject[]): Projec
       id: project.id,
       name: project.name,
       aliasCount: project.aliases.length,
-      locationCount: project.locations.length,
+      locationCount: project.locationCount,
       archivedAt: project.archivedAt,
       available: project.available,
-      preferredPath: project.preferredPath,
     },
     ...project.aliases.map((alias, itemIndex) => ({
       kind: 'alias' as const,
       projectIndex,
       itemIndex,
       alias,
-    })),
-    ...project.locations.map((location, itemIndex) => ({
-      kind: 'location' as const,
-      projectIndex,
-      itemIndex,
-      location,
     })),
   ]);
 }
@@ -248,6 +265,13 @@ function queryFailure(
   code: 'invalid_request' | 'persistence_failed',
   message: string,
 ): OperationOutcome<'project.catalog.query'> {
+  return { ok: false, error: { code, message } };
+}
+
+function locationFailure(
+  code: 'not_found' | 'operation_conflict' | 'persistence_failed',
+  message: string,
+): OperationOutcome<'project.catalog.location.query'> {
   return { ok: false, error: { code, message } };
 }
 

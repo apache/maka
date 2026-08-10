@@ -4,9 +4,9 @@ import { registerRuntimeHostSkillsIpc } from '../runtime-host-skills-ipc-main.js
 
 test('keeps a resolved Skill mutation on one project root', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const catalogContexts: string[] = [];
-  const mutationContexts: string[] = [];
-  let rootReads = 0;
+  const catalogContexts: unknown[] = [];
+  const mutationContexts: unknown[] = [];
+  let workspaceReads = 0;
   let mutationAttempts = 0;
   registerRuntimeHostSkillsIpc({
     ipcMain: {
@@ -15,16 +15,16 @@ test('keeps a resolved Skill mutation on one project root', async () => {
       },
     },
     client: {
-      loadSkillCatalog: async ({ projectRoot }: { projectRoot: string }) => {
-        catalogContexts.push(projectRoot);
+      loadSkillCatalog: async ({ workspace }: { workspace: unknown }) => {
+        catalogContexts.push(workspace);
         return {
           revision: `sha256:${'a'.repeat(64)}`,
           view: 'governance',
           items: [{ kind: 'skill', id: 'writer', ref: 'project:writer' }],
         };
       },
-      mutateSkillCatalog: async ({ context }: { context: { projectRoot: string } }) => {
-        mutationContexts.push(context.projectRoot);
+      mutateSkillCatalog: async ({ context }: { context: { workspace: unknown } }) => {
+        mutationContexts.push(context.workspace);
         mutationAttempts += 1;
         if (mutationAttempts === 1) return { kind: 'revision_conflict' };
         return { kind: 'rejected', reason: 'not_found' };
@@ -32,9 +32,13 @@ test('keeps a resolved Skill mutation on one project root', async () => {
     } as never,
     workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
     mainWindowController: {} as never,
-    getCurrentProjectRoot: async () => {
-      rootReads += 1;
-      return rootReads === 1 ? '/tmp/project-a' : '/tmp/project-b';
+    getCurrentWorkspace: async () => {
+      workspaceReads += 1;
+      const suffix = workspaceReads === 1 ? 'a' : 'b';
+      return {
+        target: { kind: 'project', projectId: `project-${suffix}` },
+        hostCwd: `/tmp/project-${suffix}`,
+      };
     },
     getDefaultPermissionMode: async () => 'ask',
     openPath: async () => '',
@@ -42,9 +46,12 @@ test('keeps a resolved Skill mutation on one project root', async () => {
 
   await handlers.get('skills:setEnabled')?.({}, 'writer', true);
 
-  assert.equal(rootReads, 1);
-  assert.deepEqual(catalogContexts, ['/tmp/project-a', '/tmp/project-a']);
-  assert.deepEqual(mutationContexts, ['/tmp/project-a', '/tmp/project-a']);
+  assert.equal(workspaceReads, 1);
+  assert.deepEqual(catalogContexts, [
+    { kind: 'project', projectId: 'project-a' },
+    { kind: 'project', projectId: 'project-a' },
+  ]);
+  assert.deepEqual(mutationContexts, catalogContexts);
 });
 
 test('requests the Host-owned invocable projection for existing and new Sessions', async () => {
@@ -64,7 +71,10 @@ test('requests the Host-owned invocable projection for existing and new Sessions
     } as never,
     workspaceRoot: '/tmp/maka-runtime-host-skills-workspace',
     mainWindowController: {} as never,
-    getCurrentProjectRoot: async () => '/tmp/project-a',
+    getCurrentWorkspace: async () => ({
+      target: { kind: 'project', projectId: 'project-a' },
+      hostCwd: '/tmp/project-a',
+    }),
     getDefaultPermissionMode: async () => 'bypass',
     openPath: async () => '',
   });
@@ -79,7 +89,7 @@ test('requests the Host-owned invocable projection for existing and new Sessions
     { kind: 'session', sessionId: 'session-1' },
     {
       kind: 'new_session',
-      context: { projectRoot: '/tmp/project-a' },
+      context: { workspace: { kind: 'project', projectId: 'project-a' } },
       collaborationMode: 'plan',
       permissionMode: 'bypass',
     },
