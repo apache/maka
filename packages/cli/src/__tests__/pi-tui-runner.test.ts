@@ -48,7 +48,11 @@ import type {
   OnboardingVerifyResult,
 } from '../pi-tui-contracts.js';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
-import { runMakaPiTui as runMakaPiTuiImpl, type MakaPiTuiInput } from '../pi-tui-runner.js';
+import {
+  resolveTaskbarProgress,
+  runMakaPiTui as runMakaPiTuiImpl,
+  type MakaPiTuiInput,
+} from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
@@ -84,6 +88,7 @@ function runMakaPiTui(input: TestMakaPiTuiInput): Promise<void> {
   return runMakaPiTuiImpl({
     ...rest,
     driver,
+    taskbarProgress: input.taskbarProgress ?? true,
     turnActivity: turnActivity ?? createTestTurnActivity(),
   });
 }
@@ -158,6 +163,72 @@ function fakeOnboardingSurface(opts: FakeOnboardingOpts = {}): MakaOnboardingSur
 }
 
 describe('Maka Pi TUI runner', () => {
+  test('disables taskbar progress on Windows and Windows Terminal by default', () => {
+    assert.equal(resolveTaskbarProgress(undefined, { platform: 'win32' }), false);
+    assert.equal(
+      resolveTaskbarProgress(undefined, {
+        platform: 'linux',
+        windowsTerminalSession: 'session-id',
+      }),
+      false,
+    );
+    assert.equal(resolveTaskbarProgress(undefined, { platform: 'linux' }), true);
+    assert.equal(resolveTaskbarProgress(undefined, { platform: 'darwin' }), true);
+  });
+
+  test('allows environment and explicit taskbar progress overrides', () => {
+    assert.equal(
+      resolveTaskbarProgress(undefined, { platform: 'win32', override: ' true ' }),
+      true,
+    );
+    assert.equal(resolveTaskbarProgress(undefined, { platform: 'linux', override: '0' }), false);
+    assert.equal(
+      resolveTaskbarProgress(undefined, { platform: 'win32', override: 'invalid' }),
+      false,
+    );
+    assert.equal(
+      resolveTaskbarProgress(false, {
+        platform: 'linux',
+        override: '1',
+      }),
+      false,
+    );
+    assert.equal(
+      resolveTaskbarProgress(true, {
+        platform: 'win32',
+        override: '0',
+      }),
+      true,
+    );
+  });
+
+  test('does not publish taskbar progress when the policy disables it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new InterruptibleTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      taskbarProgress: false,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => driver.stopCalls === 1);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+
+    assert.deepEqual(terminal.progressStates, []);
+  });
+
   test('restores the terminal before exiting on SIGTERM', async () => {
     const { code, signal, stdout } = await runSignalExitProbe('SIGTERM');
 
@@ -6727,6 +6798,7 @@ class UserQuestionPromptDriver implements MakaSessionDriver {
 
 class InterruptibleTurnDriver implements MakaSessionDriver {
   stopCalls = 0;
+  readonly prompts: string[] = [];
   private releaseTurn: (() => void) | null = null;
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -6734,6 +6806,7 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
   }
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    this.prompts.push(prompt);
     return prepareTestPrompt(this, prompt);
   }
 
