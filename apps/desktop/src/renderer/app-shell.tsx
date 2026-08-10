@@ -135,6 +135,7 @@ import {
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-chrome-actions';
+import { planTitlebarChrome } from './app-shell-titlebar-chrome';
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
@@ -222,14 +223,6 @@ type ComposerImportOwner = {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
-/**
- * Module surfaces that own their whole column and render no workspace toolbar.
- * This used to be a `display: none` rule keyed on the detail panel's
- * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
- * a descendant of the detail panel, so the condition belongs here.
- */
-const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
-
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -2479,6 +2472,16 @@ function AppShellContent({
         ? navSelection.module
         : 'im_hub';
 
+  // Titlebar paint is frame-level; interactive chrome follows the front surface.
+  // See planTitlebarChrome — Settings must not leak session workbar tools.
+  const titlebarChrome = planTitlebarChrome({
+    settingsOpen,
+    agentsView,
+    onSessionsSurface: navSelection.section === 'sessions',
+    hasSessionIdentity: Boolean(activeSessionForView),
+    hasWorkbarSession: Boolean(activeId),
+  });
+
   return (
     <div
       className="appFrame agents-layout-root"
@@ -2523,55 +2526,51 @@ function AppShellContent({
         aria-hidden={shellObscured ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
       >
-        {/* Settings owns the full window chrome. Keep this empty header mounted
-            as the frameless window's drag authority, but remove every control
-            and identity belonging to the obscured session shell. */}
-        {!settingsOpen && (
-          <>
-            <AppShellTopbarActions
-              sidebarCollapsed={sessionListCollapsed}
-              onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
-              onOpenSearchModal={() => setSearchModalOpen(true)}
-            />
-            {/* Only a session has an identity to state. The other views name
-                themselves in the nav column they are selected from, and the
-                new-task surface still shows its project in the composer's
-                WorkspacePicker — which stops rendering at the exact moment this
-                takes over, when the first message creates the session. */}
-            {/* `activeSessionForView`, not `activeSession`: opening or creating a
-                session runs a few hundred ms on a placeholder record while the real
-                summary loads, and the name this replaced (the context layer's) was
-                showing through that window. Hung on the real record alone, 新任务
-                was named nowhere for the length of it. */}
-            {navSelection.section === 'sessions' && activeSessionForView && (
-              <TitlebarSessionIdentity
-                /* Keyed by session: the open rename is local state and the field is
-                   uncontrolled, so a switch that left the instance mounted would
-                   carry one session's half-typed name — and its commit — onto the
-                   next one. A remount ties the edit to the session it belongs to. */
-                key={activeSessionForView.id}
-                sessionName={activeSessionForView.name}
-                onRenameSession={(name) => {
-                  void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
-                }}
-                project={
-                  titlebarProjectName
-                    ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
-                    : undefined
-                }
-                parentSession={titlebarParentSession}
-              />
-            )}
-            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-              <AppShellWorkspaceTopActions
-                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-                workbarCollapsed={workbarCollapsed}
-                onOpenWorkbarLauncher={revealWorkbarLauncher}
-                onToggleWorkbar={toggleWorkbar}
-              />
-            )}
-          </>
+        {/* Titlebar strip stays mounted as the frameless window's drag authority
+            (Settings stacks under it). Interactive chrome follows
+            planTitlebarChrome — only the front surface's tools. */}
+        {titlebarChrome.showShellRail && (
+          <AppShellTopbarActions
+            sidebarCollapsed={sessionListCollapsed}
+            onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
+            onOpenSearchModal={() => setSearchModalOpen(true)}
+          />
         )}
+        {/* Only a session has an identity to state. The other views name
+            themselves in the nav column they are selected from, and the
+            new-task surface still shows its project in the composer's
+            WorkspacePicker — which stops rendering at the exact moment this
+            takes over, when the first message creates the session. */}
+        {/* `activeSessionForView`, not `activeSession`: opening or creating a
+            session runs a few hundred ms on a placeholder record while the real
+            summary loads, and the name this replaced (the context layer's) was
+            showing through that window. Hung on the real record alone, 新任务
+            was named nowhere for the length of it. */}
+        {titlebarChrome.showSessionIdentity && activeSessionForView && (
+          <TitlebarSessionIdentity
+            /* Keyed by session: the open rename is local state and the field is
+               uncontrolled, so a switch that left the instance mounted would
+               carry one session's half-typed name — and its commit — onto the
+               next one. A remount ties the edit to the session it belongs to. */
+            key={activeSessionForView.id}
+            sessionName={activeSessionForView.name}
+            onRenameSession={(name) => {
+              void sessionRowActionHandlers.renameSession(activeSessionForView.id, name);
+            }}
+            project={
+              titlebarProjectName
+                ? { name: titlebarProjectName, onOpenFolder: () => void openProjectFolder() }
+                : undefined
+            }
+            parentSession={titlebarParentSession}
+          />
+        )}
+        <AppShellWorkspaceTopActions
+          workbarAvailable={titlebarChrome.showWorkbarActions}
+          workbarCollapsed={workbarCollapsed}
+          onOpenWorkbarLauncher={revealWorkbarLauncher}
+          onToggleWorkbar={toggleWorkbar}
+        />
       </header>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"

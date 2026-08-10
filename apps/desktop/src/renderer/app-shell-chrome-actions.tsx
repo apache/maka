@@ -62,6 +62,13 @@ function ChromeColumnToggle(props: {
   );
 }
 
+/**
+ * Left titlebar rail: conversation search + session sidebar toggle.
+ *
+ * Mount only when `planTitlebarChrome(...).showShellRail` is true. Settings
+ * (and any future full-window surface) owns its own nav — do not half-hide a
+ * single button while leaving other shell tools visible.
+ */
 export function AppShellTopbarActions(props: {
   sidebarCollapsed: boolean;
   onToggleSidebar(): void;
@@ -98,25 +105,13 @@ export function AppShellTopbarActions(props: {
 }
 
 /**
- * The titlebar's right edge.
+ * The titlebar's right edge: workbar launcher + workbar column toggle.
  *
- * It used to also carry a `…` menu holding 问题反馈 / 打开命令面板 / 打开帮助 /
- * 打开健康中心 — a drawer of four things that each belong somewhere else.
- * 健康中心 was a duplicate of the Settings nav entry, 问题反馈 only opened
- * Settings → 关于, and the other two now have real homes: the keyboard sheet is
- * a row on 关于, and the palette keeps ⌘K, which that sheet documents.
- *
- * What is left is the workbar toggle — the right-hand mirror of the sidebar
- * toggle above, down to the component: one control that stays put across its
- * own state change. It used to hand itself off to a second button inside the
- * workbar's tab row while the workbar was open, so the single control a user
- * clicks twice moved ~30px down and left between those two clicks.
- *
- * The titlebar is also the only row in the app that already knows where the
- * platform's native window controls are: `.maka-window-titlebar` reserves
- * `env(titlebar-area-*)` on both sides, so this button clears the macOS traffic
- * lights and the Windows caption strip without either platform being named
- * here. A toggle parked anywhere else would have to restate that.
+ * Mount only when `planTitlebarChrome(...).showWorkbarActions` is true. The
+ * titlebar is the only row that already clears `env(titlebar-area-*)` for OS
+ * caption buttons; a toggle parked elsewhere would restate that. Outside an
+ * active session workspace (or under Settings), there is nothing to toggle —
+ * leave the drag surface alone rather than paint an empty no-drag rect.
  */
 export function AppShellWorkspaceTopActions(props: {
   workbarAvailable: boolean;
@@ -126,8 +121,6 @@ export function AppShellWorkspaceTopActions(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
-  // Nothing to toggle outside a session; an empty no-drag rectangle in the
-  // titlebar would only subtract from the window's drag surface.
   if (!props.workbarAvailable) return null;
 
   return (
