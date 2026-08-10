@@ -92,6 +92,12 @@ export function ToolCallDetail({
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = isInFlightToolStatus(item.status);
+  const outputActionIdentity = [
+    computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
+    item.intent ? formatToolIntent(item.intent) : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
   const ownsPanel = resultOwnsOwnPanel(item);
   // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
@@ -146,6 +152,7 @@ export function ToolCallDetail({
             toolName={item.toolName}
             args={item.args}
             shellRunSource={item.shellRunSource}
+            actionIdentity={outputActionIdentity}
           />
         )
       )}
@@ -157,6 +164,7 @@ export function ToolCallDetail({
         <ToolOutputSurface
           kind="live_stream"
           heading={showInvocation ? invocationLine : undefined}
+          actionIdentity={outputActionIdentity}
         >
           <ToolOutputStream
             chunks={item.outputChunks!}
@@ -192,6 +200,7 @@ export function ToolCallDetail({
                 <ToolResultPreview
                   content={displayResult}
                   toolName={item.toolName}
+                  actionIdentity={outputActionIdentity}
                 />
               );
             }

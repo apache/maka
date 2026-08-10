@@ -128,4 +128,25 @@ describe('tool activity presentation', () => {
     const panels = markup.match(/data-slot="tool-output"/g) ?? [];
     assert.equal(panels.length, 1);
   });
+
+  it('keeps provider call ids out of output action names', () => {
+    const render = (toolUseId: string) =>
+      renderToStaticMarkup(createElement(ToolCallDetail, {
+        item: {
+          toolUseId,
+          toolName: 'Bash',
+          status: 'running',
+          args: { command: 'npm test' },
+          outputChunks: [
+            { seq: 1, stream: 'stdout', text: 'running\n', redacted: false, createdAt: 1 },
+          ],
+        } satisfies ToolActivityItem,
+      }));
+    const firstId = 'provider-call-first-12345678';
+    const secondId = 'provider-call-second-12345678';
+
+    assert.doesNotMatch(render(firstId), new RegExp(firstId));
+    assert.doesNotMatch(render(secondId), new RegExp(secondId));
+    assert.match(render(firstId), /Bash/);
+  });
 });

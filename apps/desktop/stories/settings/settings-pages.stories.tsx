@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
+import { expect, userEvent, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
@@ -1300,6 +1300,19 @@ export const UsageNarrow: Story = {
 export const MemoryPopulated: Story = {
   decorators: [withMemoryPopulatedBridge],
   render: () => <SettingsStory section="memory" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const archiveButtons = await canvas.findAllByRole('button', { name: /^归档 .* · [12]$/ });
+    expect(archiveButtons).toHaveLength(2);
+    for (const button of archiveButtons) {
+      expect(button).toHaveTextContent(/^归档$/);
+    }
+    const restoreButton = await canvas.findByRole('button', { name: /^恢复 .* · 1$/ });
+    expect(restoreButton).toHaveTextContent(/^恢复$/);
+    expect(
+      canvas.getByRole('group', { name: /^部署流程要走灰度队列.* · 1 记忆操作$/ }),
+    ).toBeInTheDocument();
+  },
 };
 // Real path: 设置 → 联网搜索.
 export const WebSearch: Story = {

@@ -20,6 +20,7 @@ const originalGlobals = {
   matchMedia: globalThis.matchMedia,
   HTMLElement: globalThis.HTMLElement,
   HTMLIFrameElement: globalThis.HTMLIFrameElement,
+  getComputedStyle: globalThis.getComputedStyle,
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
   IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -636,6 +637,9 @@ async function renderPage(options: {
     matchMedia,
     HTMLElement: window.HTMLElement,
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    getComputedStyle: (element: Element) => ({
+      color: (element as HTMLElement).style?.color || 'currentColor',
+    }) as CSSStyleDeclaration,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,

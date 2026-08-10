@@ -535,7 +535,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   );
 
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="mcp" data-maka-contract="module-main" aria-label={props.hubHeader?.title ?? 'MCP'}>
+    <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="mcp" data-maka-contract="module-main" aria-label={props.hubHeader?.title ?? 'MCP'}>
       <ModulePage
         title={props.hubHeader?.title ?? 'MCP'}
         meta={[
@@ -666,7 +666,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           onImport={importJson}
         />
       )}
-    </main>
+    </section>
   );
 }
 

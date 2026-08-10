@@ -92,6 +92,11 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.selector.clearLabel': form.clear,
       '@astryx.numberInput.clearLabel': form.clear,
 
+      // App shell — the skip link is always the first focusable control, so an
+      // untranslated fallback pollutes every Chinese Computer Use observation.
+      '@astryx.appShell.mobileNavigation': astryx.appShell.mobileNavigation,
+      '@astryx.appShell.skipToContent': astryx.appShell.skipToContent,
+
       // Chat — the transcript, composer and scroll affordances Astryx owns
       // since #1795 moved the chat surfaces onto ChatLayout.
       '@astryx.chat.composer.placeholder': astryx.chat.composerPlaceholder,

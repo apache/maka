@@ -31,6 +31,7 @@ type DirectoryError = {
 
 export function RemoteProjectDirectoryDialog(props: {
   host?: DirectoryHost;
+  returnFocusTo?: HTMLElement | null;
   onClose(): void;
   onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
 }) {
@@ -46,6 +47,25 @@ export function RemoteProjectDirectoryDialog(props: {
   const [error, setError] = useState<DirectoryError>();
   const request = useRef(0);
   const lastLoad = useRef<DirectoryLoad | undefined>(undefined);
+  const previousHostRef = useRef<DirectoryHost | undefined>(undefined);
+  const returnFocusFrameRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const previousHost = previousHostRef.current;
+    previousHostRef.current = props.host;
+    if (props.host || !previousHost || !props.returnFocusTo) return;
+    const target = props.returnFocusTo;
+    returnFocusFrameRef.current = window.requestAnimationFrame(() => {
+      returnFocusFrameRef.current = undefined;
+      if (!previousHostRef.current && target.isConnected) target.focus();
+    });
+    return () => {
+      if (returnFocusFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(returnFocusFrameRef.current);
+        returnFocusFrameRef.current = undefined;
+      }
+    };
+  }, [props.host, props.returnFocusTo]);
 
   useEffect(() => {
     const host = props.host;

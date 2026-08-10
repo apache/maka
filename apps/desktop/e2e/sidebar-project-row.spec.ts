@@ -102,7 +102,7 @@ test('task row action menu accepts pointer selection', async ({
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
   const taskRow = sessionRow(sidebar, `${LONG_SIDEBAR_SESSION_PREFIX}00`);
   await taskRow.hover();
-  await taskRow.getByRole('button', { name: '任务操作', exact: true }).click();
+  await taskRow.getByRole('button', { name: /任务操作$/ }).click();
 
   const rename = page.getByRole('menuitem', { name: '重命名', exact: true });
   await expect(rename).toBeVisible();

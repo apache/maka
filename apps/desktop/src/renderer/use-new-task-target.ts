@@ -34,6 +34,7 @@ export function useNewTaskTarget(options: {
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
   const [directoryHost, setDirectoryHost] = useState<ReadyHost>();
+  const directoryOpenerRef = useRef<HTMLElement | null>(null);
   const refreshSequence = useRef(0);
 
   async function refresh(): Promise<DesktopNewTaskCatalog> {
@@ -117,6 +118,8 @@ export function useNewTaskTarget(options: {
   async function addProject(host: ReadyHost): Promise<void> {
     if (pending) return;
     if (host.capabilities.chooseHostDirectory) {
+      directoryOpenerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setDirectoryHost(host);
       return;
     }
@@ -212,6 +215,7 @@ export function useNewTaskTarget(options: {
     refreshing,
     error,
     directoryHost,
+    directoryOpener: directoryOpenerRef.current,
     refresh,
     selectProject,
     selectNoProject,

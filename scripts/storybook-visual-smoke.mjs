@@ -3,12 +3,46 @@ import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { auditAxTree } from './ax-tree-audit.mjs';
 
 const RENDER_VIEWPORT = Object.freeze({ width: 1280, height: 900 });
+const NARROW_RENDER_VIEWPORT = Object.freeze({ width: 720, height: 900 });
+const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
+  'product-accessibility-dialogs--create-scheduled-task',
+  'product-accessibility-dialogs--mermaid-fullscreen',
+  'product-accessibility-dialogs--rename-conversation',
+  'product-accessibility-overlays--bot-onboarding-qr',
+  'product-accessibility-overlays--side-chat-close',
+  'product-accessibility-overlays--wechat-login-qr',
+  'product-accessibility-runtime-surfaces--active-terminal',
+  'product-accessibility-runtime-surfaces--browser-loaded',
+  'product-accessibility-runtime-surfaces--html-artifact',
+  'product-accessibility-runtime-surfaces--remote-project-directory',
+  'product-accessibility-runtime-surfaces--runtime-host-ssh-terminal',
+  'product-module-hubs--extensions-mcp-editor',
+  'product-module-hubs--extensions-mcp-inspector',
+  'product-module-hubs--extensions-mcp-narrow',
+  'product-module-hubs--extensions-skills-narrow',
+  'product-module-hubs--scheduled-daily-review-report',
+  'product-module-hubs--scheduled-tasks-narrow',
+  'product-module-hubs--scheduled-tasks-inspector',
+  'product-onboarding--narrow-window',
+  'product-settings-pages--memory-populated',
+  'product-settings-pages--permission-center-diagnostics-expanded',
+  'product-settings-pages--subagent-editor',
+  'product-settings-pages--daily-review-narrow',
+  'product-settings-pages--usage-narrow',
+  'product-settings-providers--add-provider',
+  'product-settings-providers--connection-detail-page',
+  'product-sidebar-session-list--long-titles-and-narrow',
+  'product-shell-official-appshell--native-conversation',
+  'product-shell-official-appshell--waiting-for-permission',
+]);
 
-// This is intentionally a catalog health check, not a visual or product gate.
-// Embedded Storybook disables every `play` function, so desktop interactions,
-// geometry and responsive behaviour stay in their owning test harnesses.
+// This is a catalog render and accessibility-tree health check.
+// Story `play` functions do run: many stories reach their named final state
+// only by opening an inspector, dialog, selector, or disclosure. The smoke
+// waits for Storybook's completion event before reading the AX tree.
 
 function describeBrowserValue(value) {
   if (value instanceof Error) return value.message;
@@ -82,9 +116,12 @@ export function storyUrl(baseUrl, storyId) {
   const url = new URL('/iframe.html', baseUrl);
   url.searchParams.set('id', storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('embed', 'true');
   url.searchParams.set('globals', 'colorScheme:light');
   return url.href;
+}
+
+export function storyViewport(storyId) {
+  return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 
 async function smokeStory(page, baseUrl, job, options = {}) {
@@ -101,7 +138,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
 
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
-    await page.setViewportSize(RENDER_VIEWPORT);
+    await page.setViewportSize(storyViewport(job.storyId));
     await page.goto(storyUrl(baseUrl, job.storyId), { waitUntil: 'load' });
 
     try {
@@ -125,9 +162,50 @@ async function smokeStory(page, baseUrl, job, options = {}) {
       if (!(root instanceof HTMLElement) || root.innerHTML.trim().length === 0) {
         failures.push('storybook root is empty after render');
       }
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        (active.closest('[aria-hidden="true"]') || active.closest('[inert]'))
+      ) {
+        failures.push('focus is inside an aria-hidden or inert surface');
+      }
+      const dialogs = [
+        ...document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog'),
+      ].filter((dialog) => {
+        if (!(dialog instanceof HTMLElement)) return false;
+        if (dialog instanceof HTMLDialogElement) return dialog.open;
+        if (dialog.getAttribute('aria-modal') !== 'true') return false;
+        const style = getComputedStyle(dialog);
+        return (
+          !dialog.hidden &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          dialog.getClientRects().length > 0
+        );
+      });
+      if (
+        dialogs.length > 0 &&
+        active instanceof HTMLElement &&
+        !dialogs.some((dialog) => dialog.contains(active))
+      ) {
+        failures.push('visible dialog does not own focus after rendering');
+      }
+      if (dialogs.length > 1) {
+        failures.push(`multiple visible modal dialogs remain open (${dialogs.length})`);
+      }
       return { failures };
     });
     browserFailures.push(...result.failures);
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      const axTree = await cdp.send('Accessibility.getFullAXTree');
+      const audit = auditAxTree(axTree.nodes);
+      if (audit.problems.length > 0) {
+        browserFailures.push(`AX audit failed: ${JSON.stringify(audit.problems)}`);
+      }
+    } finally {
+      await cdp.detach();
+    }
     if (browserFailures.length > 0) {
       throw new Error(`${prefix} ${browserFailures.join('; ')}`);
     }
@@ -216,6 +294,15 @@ async function runCli() {
   const staticDir = resolve(process.argv[2] ?? join(repoRoot, 'apps/desktop/storybook-static'));
   const storyIndex = await readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse);
   const jobs = catalogJobs(storyIndex);
+  const storyIds = new Set(jobs.map((job) => job.storyId));
+  const missingRequiredStories = [...REQUIRED_COMPUTER_USE_STORY_IDS].filter(
+    (storyId) => !storyIds.has(storyId),
+  );
+  if (missingRequiredStories.length > 0) {
+    throw new Error(
+      `Computer Use story inventory is missing: ${missingRequiredStories.join(', ')}`,
+    );
+  }
   const { chromium } = await import('@playwright/test');
   const browser = await chromium.launch({ headless: true });
   const server = await startStaticServer(staticDir);

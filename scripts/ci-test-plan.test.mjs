@@ -63,6 +63,12 @@ test('Storybook catalog changes avoid real-window E2E and workspace tests', () =
   assert.deepEqual(plan.workspaces, []);
 });
 
+test('AX audit contract test edits avoid the Storybook browser pipeline', () => {
+  const plan = planTests(['scripts/ax-tree-audit.test.mjs'], { graph });
+  assert.equal(plan.storybook, false);
+  assert.equal(plan.e2e, false);
+});
+
 test('runtime changes retain the dedicated Runtime Host lane', () => {
   const plan = planTests(['packages/runtime/src/runtime.ts'], { graph });
 

@@ -601,7 +601,16 @@ function SessionItemActions(props: {
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const trailingRef = useRef<HTMLSpanElement>(null);
-  const copy = getConversationCopy(useUiLocale()).sessions;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).sessions;
+  const actionContext = [
+    props.session.name,
+    props.session.lastMessageAt
+      ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
+      : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
   const mountedRef = useMountedRef();
@@ -640,7 +649,7 @@ function SessionItemActions(props: {
     >
       <MoreMenu
         size="sm"
-        label={copy.actionsAriaLabel}
+        label={copy.actionsAriaLabel(actionContext)}
         isDisabled={pendingAction !== null}
         isMenuOpen={menuOpen}
         onOpenChange={(open) => {

@@ -572,7 +572,7 @@ export function SkillsModuleMain(props: {
   );
 
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="skills" aria-label={props.hubHeader?.title ?? copy.page.title}>
+    <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="skills" aria-label={props.hubHeader?.title ?? copy.page.title}>
       <ModulePage
         title={props.hubHeader?.title ?? copy.page.title}
         // The page header said only how many skills are installed, which made
@@ -719,6 +719,6 @@ export function SkillsModuleMain(props: {
         {activeSkillTab === 'builtin' ? builtinPanel : null}
         {activeSkillTab === 'installed' ? installedPanel : null}
       </ModulePage>
-    </main>
+    </section>
   );
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnViewModel } from '../materialize.js';
@@ -29,7 +30,10 @@ test('renders steering where it arrived in the assistant timeline', () => {
   const markup = renderToStaticMarkup(
     createElement(LocaleProvider, {
       locale: 'en',
-      children: createElement(TurnView, { turn, failedReasonLabel: 'failure detail' }),
+      children: createElement(TurnView, {
+        turn,
+        failedReasonLabel: 'failure detail',
+      }),
     }),
   );
   const texts = [
@@ -39,7 +43,8 @@ test('renders steering where it arrived in the assistant timeline', () => {
   ];
   const [before, steering, after] = texts.map((text) => markup.indexOf(text));
   assert.equal(before < steering && steering < after, true);
+  const visibleText = parseHTML(`<html><body>${markup}</body></html>`).document.body.textContent;
   for (const text of [...texts, 'failure detail']) {
-    assert.equal(markup.split(text).length - 1, 1, `${text} should render exactly once`);
+    assert.equal(visibleText.split(text).length - 1, 1, `${text} should render exactly once`);
   }
 });

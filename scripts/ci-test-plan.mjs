@@ -105,13 +105,20 @@ const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
 // Scripts the Electron e2e job runs. Editing one of these changes what that
 // job verifies, so it has to re-run — a unit test on the runner is not
 // evidence that the run it drives still works.
-const E2E_DRIVING_SCRIPTS = new Set(['scripts/audit-alignment.mjs']);
+const E2E_DRIVING_SCRIPTS = new Set([
+  'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+  'scripts/audit-alignment.mjs',
+  'scripts/ax-tree-audit.mjs',
+]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
 // mount the UI package and desktop renderer, so runtime export/render changes
 // there belong to this surface even when no story file changes. Main-process
 // and e2e-only desktop changes stay outside it.
-const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']);
+const STORYBOOK_DRIVING_SCRIPTS = new Set([
+  'scripts/ax-tree-audit.mjs',
+  'scripts/storybook-visual-smoke.mjs',
+]);
 
 // .storybook/preview.tsx imports THEME_PALETTES from this module. Narrower
 // than "any packages/core change".

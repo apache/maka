@@ -30,11 +30,12 @@ export function MemoryEntryList(props: {
         />
       ) : (
         <ul className="settingsMemoryEntryList" aria-label={props.copy.listAria(props.title)}>
-          {props.entries.map((entry) => {
+          {props.entries.map((entry, index) => {
             const copyPending = props.pendingCopyIds?.has(`entry:${entry.id}:copy`) ?? false;
             const statusActionLabel = props.archived
               ? props.copy.text.restoreAction
               : props.copy.text.archiveAction;
+            const entryIdentity = `${entry.title.slice(0, 80)} · ${index + 1}`;
             return (
               <li key={entry.id}>
                 <article className="settingsMemoryEntryRow">
@@ -52,19 +53,21 @@ export function MemoryEntryList(props: {
                 </small>
                 <p>{entry.content}</p>
                 {(props.onCopyReference || props.onFocusDraft || props.onStatusChange) && (
-                  <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entry.title)}>
+                  <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entryIdentity)}>
                     {props.onStatusChange && (
                       <Button
                         variant="ghost"
                         size="sm"
                         isDisabled={props.busy}
                         onClick={() => void props.onStatusChange?.(entry, props.archived ? 'active' : 'archived')}
-                        label={statusActionLabel}
-                      />
+                        label={`${statusActionLabel} ${entryIdentity}`}
+                      >
+                        {statusActionLabel}
+                      </Button>
                     )}
                     {(props.onCopyReference || props.onFocusDraft) && (
                       <MoreMenu
-                        label={props.copy.entryActionsAria(entry.title)}
+                        label={props.copy.entryActionsAria(entryIdentity)}
                         size="sm"
                         items={[
                           ...(props.onCopyReference

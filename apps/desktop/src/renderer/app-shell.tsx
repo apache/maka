@@ -3124,6 +3124,9 @@ function AppShellContent({
                 // Reset conversation-owned scroll state without remounting the
                 // composer: its contenteditable DOM carries the live draft.
                 conversationKey={activeId}
+                scrollToBottomLabel={
+                  desktopConversationCopy.actions.scrollMainToBottom
+                }
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>
@@ -3622,6 +3625,7 @@ function AppShellContent({
           hostId: newTask.directoryHost.hostId,
           name: newTask.directoryHost.profile.name,
         } : undefined}
+        returnFocusTo={newTask.directoryOpener}
         onClose={newTask.closeDirectoryPicker}
         onRegistered={(project, host) => {
           void newTask.acceptRegisteredProject(project, host).catch((error) => {

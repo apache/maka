@@ -933,6 +933,13 @@ export const ScheduledTasksInspector: Story = {
   },
 };
 
+// Real path: narrow desktop → sidebar → 定时任务.
+// The inspector is intentionally hidden below the two-column breakpoint.
+export const ScheduledTasksNarrow: Story = {
+  render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
 // Real path: sidebar → 定时任务 → 定时任务, with user-authored content at storage limits.
 export const ScheduledTasksLongContent: Story = {
   render: () => <ScheduledTasksSurface tasks={LONG_CONTENT_TASKS} />,

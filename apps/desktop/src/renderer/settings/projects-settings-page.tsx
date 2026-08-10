@@ -70,6 +70,7 @@ export function ProjectsSettingsPage(props: {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
@@ -179,6 +180,7 @@ export function ProjectsSettingsPage(props: {
         }
         action={capabilities.chooseClientDirectory || capabilities.chooseHostDirectory ? (
           <Button
+            ref={directoryPickerTriggerRef}
             variant="secondary"
             size="sm"
             label={copy.addProject}
@@ -391,6 +393,7 @@ export function ProjectsSettingsPage(props: {
       </SettingsSection>
       <RemoteProjectDirectoryDialog
         host={directoryPickerOpen ? host : undefined}
+        returnFocusTo={directoryPickerTriggerRef.current}
         onClose={() => setDirectoryPickerOpen(false)}
         onRegistered={() => {
           setDirectoryPickerOpen(false);
