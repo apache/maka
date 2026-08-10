@@ -163,7 +163,9 @@ function makeUsageLog(input: {
   kind: 'model' | 'tool';
   model: string;
   toolName?: string;
-  status?: 'success' | 'error';
+  status?: 'success' | 'error' | 'aborted';
+  usageBasis?: 'reported' | 'partial' | 'missing';
+  costBasis?: 'priced' | 'unpriced';
   minutesAgo: number;
 }): UsageStats['logs'][number] {
   return {
@@ -177,7 +179,9 @@ function makeUsageLog(input: {
     toolName: input.toolName,
     inputTokens: 12_400,
     outputTokens: 3_800,
-    costUsd: input.kind === 'model' ? 0.0412 : undefined,
+    ...(input.kind === 'model' ? { usageBasis: input.usageBasis ?? 'reported' } : {}),
+    ...(input.kind === 'model' && input.costBasis !== 'unpriced' ? { costUsd: 0.0412 } : {}),
+    ...(input.kind === 'model' ? { costBasis: input.costBasis ?? 'priced' } : {}),
     latencyMs: input.kind === 'model' ? 2840 : 640,
     status: input.status ?? 'success',
   };
@@ -199,9 +203,31 @@ const usageLogs: UsageStats['logs'] = [
   }),
   makeUsageLog({ id: '3', kind: 'model', model: 'glm-4.7', status: 'error', minutesAgo: 16 }),
   makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', minutesAgo: 25 }),
+  makeUsageLog({
+    id: '5',
+    kind: 'model',
+    model: 'openai-compatible/no-token-usage',
+    usageBasis: 'missing',
+    costBasis: 'unpriced',
+    minutesAgo: 31,
+  }),
+  makeUsageLog({ id: '6', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', status: 'aborted', minutesAgo: 38 }),
 ];
 
 const usageStats: UsageStats = {
+  provenance: {
+    coverage: {
+      attempts: 420,
+      pricedAttempts: 419,
+      unpricedAttempts: 1,
+      usageReportedAttempts: 419,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 1,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
   summary: {
     totalRequests: 420,
     totalCostUsd: 2.34,
@@ -231,14 +257,28 @@ const usageStats: UsageStats = {
       calls: 12,
       success: 11,
       errors: 1,
+      aborted: 0,
       avgDurationMs: 1240,
     },
-    { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
+    { tool: 'Bash', calls: 120, success: 117, errors: 2, aborted: 1, avgDurationMs: 840 },
   ],
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
 };
 
 const emptyUsageStats: UsageStats = {
+  provenance: {
+    coverage: {
+      attempts: 0,
+      pricedAttempts: 0,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 0,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
   summary: {
     totalRequests: 0,
     totalCostUsd: 0,

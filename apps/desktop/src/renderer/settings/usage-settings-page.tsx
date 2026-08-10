@@ -87,6 +87,19 @@ export function UsageSettingsPage(props: {
     tools: stats?.byTool.length ?? 0,
     pricing: stats?.pricing.length ?? 0,
   };
+  const projectionIncomplete = stats
+    ? stats.provenance.unreadableRecords > 0 || stats.provenance.pendingRepairs > 0
+    : false;
+  const incompleteTokenRequests = stats
+    ? stats.provenance.coverage.usagePartialAttempts
+      + stats.provenance.coverage.usageMissingAttempts
+    : 0;
+  const incompleteCostRequests = stats
+    ? stats.provenance.coverage.unpricedAttempts
+    : 0;
+  const projectionDetail = stats && projectionIncomplete
+    ? copy.incompleteProjection(stats.provenance.unreadableRecords, stats.provenance.pendingRepairs)
+    : undefined;
 
   async function setRange(range: UsageRange) {
     const saved = await updateUsage({ range });
@@ -149,10 +162,39 @@ export function UsageSettingsPage(props: {
         </div>
 
         <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
-          <MetricCard title={copy.totalRequests} value={String(stats?.summary.totalRequests ?? 0)} />
-          <MetricCard title={copy.totalCost} value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`} detail={copy.costHelp} />
-          <MetricCard title={copy.totalTokens} value={String(stats?.summary.totalTokens ?? 0)} detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)} />
-          <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
+          <MetricCard
+            title={copy.totalRequests}
+            value={incompleteMetric(String(stats?.summary.totalRequests ?? 0), projectionIncomplete, copy)}
+            detail={projectionDetail}
+          />
+          <MetricCard
+            title={copy.totalCost}
+            value={incompleteMetric(`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`, incompleteCostRequests > 0 || projectionIncomplete, copy)}
+            detail={copy.joinDetails([
+              incompleteCostRequests > 0 ? copy.incompleteCost(incompleteCostRequests) : copy.costHelp,
+              ...(projectionDetail ? [projectionDetail] : []),
+            ])}
+          />
+          <MetricCard
+            title={copy.totalTokens}
+            value={incompleteMetric(String(stats?.summary.totalTokens ?? 0), incompleteTokenRequests > 0 || projectionIncomplete, copy)}
+            detail={copy.joinDetails([
+              incompleteTokenRequests > 0
+                ? copy.incompleteTokens(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0, incompleteTokenRequests)
+                : copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0),
+              ...(projectionDetail ? [projectionDetail] : []),
+            ])}
+          />
+          <MetricCard
+            title={copy.cacheTokens}
+            value={incompleteMetric(String(stats?.summary.cacheTokens ?? 0), incompleteTokenRequests > 0 || projectionIncomplete, copy)}
+            detail={copy.joinDetails([
+              incompleteTokenRequests > 0
+                ? copy.incompleteCache(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0, incompleteTokenRequests)
+                : copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0),
+              ...(projectionDetail ? [projectionDetail] : []),
+            ])}
+          />
         </div>
       </div>
 
@@ -276,6 +318,7 @@ function UsageRequestsPanel(props: {
             { value: 'all', label: props.copy.statuses[0] },
             { value: 'success', label: props.copy.statuses[1] },
             { value: 'error', label: props.copy.statuses[2] },
+            { value: 'aborted', label: props.copy.statuses[3] },
           ]}
           width={320}
           onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
@@ -318,9 +361,9 @@ function UsageRequestsPanel(props: {
           usageRequestKindLabel(row.kind, props.copy),
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
-          row.inputTokens + row.outputTokens,
-          row.kind === 'model' ? `$${(row.costUsd ?? 0).toFixed(2)}` : '-',
-          row.latencyMs ? `${row.latencyMs}ms` : '-',
+          usageRequestTokens(row, props.copy),
+          usageRequestCost(row, props.copy),
+          row.latencyMs === undefined ? '-' : `${row.latencyMs}ms`,
           usageRequestStatusLabel(row.status, props.copy),
         ])}
         empty={{
@@ -385,8 +428,9 @@ function UsageToolsPanel(props: { stats: UsageStats | null; copy: UsageSettingsC
         { header: props.copy.tables.toolHeaders[2], numeric: true },
         { header: props.copy.tables.toolHeaders[3], numeric: true },
         { header: props.copy.tables.toolHeaders[4], numeric: true },
+        { header: props.copy.tables.toolHeaders[5], numeric: true },
       ]}
-      rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, `${row.avgDurationMs}ms`])}
+      rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, row.aborted, `${row.avgDurationMs}ms`])}
       empty={{ Icon: Activity, title: props.copy.tables.toolEmptyTitle, body: props.copy.tables.toolEmptyBody }}
     />
   );
@@ -422,10 +466,12 @@ function usageRequestTarget(row: UsageStats['logs'][number]) {
 }
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
-  const label = shortUsageSessionId(row.sessionId);
+  if (!row.sessionId) return '-';
+  const sessionId = row.sessionId;
+  const label = shortUsageSessionId(sessionId);
   if (!onOpenSession) return label;
   return (
-    <Button variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)} label={copy.tables.openSession(label)} />
+    <Button variant="ghost" size="sm" onClick={() => onOpenSession(sessionId)} label={copy.tables.openSession(label)} />
   );
 }
 
@@ -437,7 +483,26 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   switch (status) {
     case 'success': return copy.tables.success;
     case 'error': return copy.tables.error;
+    case 'aborted': return copy.tables.aborted;
   }
+}
+
+function usageRequestTokens(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
+  if (row.kind === 'tool') return '-';
+  const total = row.inputTokens + row.outputTokens;
+  if (row.usageBasis === 'missing') return copy.tables.unknown;
+  if (row.usageBasis === 'partial') return copy.tables.partial(total);
+  return total;
+}
+
+function usageRequestCost(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
+  if (row.kind === 'tool') return '-';
+  if (row.costBasis === 'unpriced' || row.costUsd === undefined) return copy.tables.unknown;
+  return `$${row.costUsd.toFixed(2)}`;
+}
+
+function incompleteMetric(value: string, incomplete: boolean, copy: UsageSettingsCopy) {
+  return incomplete ? copy.incompleteValue(value) : value;
 }
 
 // ── Usage table mapping ─────────────────────────────────────────────────────

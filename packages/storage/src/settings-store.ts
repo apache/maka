@@ -4,13 +4,10 @@ import type {
   AppSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
-  UsageRange,
-  UsageStats,
 } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
-import { readUsageStats } from './usage-stats-store.js';
 
 export interface SettingsStore {
   get(): Promise<AppSettings>;
@@ -20,7 +17,6 @@ export interface SettingsStore {
     patch: UpdateAppSettingsInput,
   ): Promise<{ applied: boolean; settings: AppSettings }>;
   testNetworkProxy(): Promise<SettingsTestResult>;
-  usageStats(range?: UsageRange): Promise<UsageStats>;
   /**
    * PR110b: upsert a single onboarding milestone. Caller passes the
    * desired terminal status; the store stamps `Date.now()` so the
@@ -179,10 +175,6 @@ class FileSettingsStore implements SettingsStore {
       latencyMs: Date.now() - started,
       details: { bypassList: proxy.bypassList, autoBypassDomains: proxy.autoBypassDomains },
     };
-  }
-
-  async usageStats(range: UsageRange = '24h'): Promise<UsageStats> {
-    return readUsageStats(this.workspaceRoot, range);
   }
 
   private async write(settings: AppSettings): Promise<void> {
