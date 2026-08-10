@@ -81,7 +81,7 @@
 | WebContent / renderer target | PASS | actual PID + start time、coalition readiness、mirror 去重、10 轮 OOP `isTrusted=true` / 单 down-up | 扩到真实 Electron/Chromium app matrix |
 | Semantic identity refetch | PASS | unique replacement 成功；missing=`element_released`；ambiguous=`element_changed`；全部零误点 | 保留跨 toolkit 录制回归 |
 | Stable AX revision / post-action diff | PASS | DFS stable ID、跨 fresh token 继承、ordered changes、removed ranges、no-change/full fallback；host 显式 observe 保持 full | 增加真实长树 token-saving trajectory 样本 |
-| Modal / multi-window routing | PARTIAL | app→frontmost sheet、exact secondary window、direct AXWindow→AXSheet/AXDrawer frame matching | 解锁后完成 open/close/button/scroll oracle 矩阵 |
+| Modal / multi-window routing | PARTIAL | app→sheet、exact secondary、button/scroll/close 功能矩阵 5/5；精确 pin 的高频 sentinel 捕获 1,738 个 target-frontmost 样本，后台安全未通过 | 修复原生 AX press 的瞬时前台抢占，再重跑同一聚合矩阵 |
 | Occlusion、no foreground/pixel fallback | PASS | coordinate/semantic occlusion 与 fail-closed tests | real-window safety sentinel |
 | Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；slider 业务值/readback=42；scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
 | Per-session queue、generation lease | PARTIAL | session queue/frame claim；lease 修复尚在本地 | concurrent-session 与 intervention-before-dispatch tests |

@@ -11,6 +11,7 @@ import {
 } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientSurface,
 } from '@maka/runtime-host/protocol';
@@ -63,6 +64,11 @@ export async function connectRuntimeHostCli(
   const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
     const connected = await deps.connectOrSpawn({ ...connectInput, ...(signal ? { signal } : {}) });
     if (connected.kind === 'incompatible') {
+      if (connected.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+        throw new RuntimeHostPermanentReconnectError(
+          'An older Maka Runtime Host is still running and is incompatible with this build. Stop the previous Maka Desktop or CLI process, then try again.',
+        );
+      }
       throw new RuntimeHostPermanentReconnectError(
         `Runtime Host protocol is incompatible (Host ${connected.handshake.protocolMin}-${connected.handshake.protocolMax}, CLI ${RUNTIME_HOST_PROTOCOL_VERSION})`,
       );

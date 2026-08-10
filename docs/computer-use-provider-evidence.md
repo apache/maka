@@ -125,8 +125,8 @@ without focusing it or using an always-on-top overlay layer.
 ## Native WebContent Qualification
 
 The executor pinned by `apps/desktop/bundled-tools.json` now carries source
-commit `058ee57604cf40b021bfb8642ac9bd884e71cd3f`, the merge commit of
-`maka-agent/maka-cu#2` on `maka/base`.
+commit `97ca3c3994da578d246c442f2583b1bb50f1fd12`, including
+`maka-agent/maka-cu#2` and the window-transition follow-up in #3.
 
 The shared synthetic CUA Lab was run ten consecutive times before integration:
 
@@ -153,12 +153,32 @@ locked-screen state correctly reported permissions granted, all required native
 SPIs available, an ad-hoc non-hardened signature, and
 `metadataObservation / screenshotObservation / trustedWebContentClick = false`.
 
-Modal routing now has deterministic contract evidence: app targets select the
-frontmost sheet inventory entry, exact window targets retain the requested
-secondary window ID, and AX frame matching prefers a direct `AXWindow` before
-looking through `AXSheet` / `AXDrawer` children. The screen remained locked, so
-open/close/button/scroll oracle qualification is still pending and is not
-classified as a real-runtime pass.
+Modal and secondary-window routing now have deterministic and live native
+functional evidence. Five consecutive CUA Lab runs against the exact pinned
+binary completed:
+
+- modal open, app observation routed to the sheet, close, and return to main;
+- secondary open, app routing to the frontmost secondary window, exact-window
+  button click, semantic scroll, close, and return to main;
+- all 30 dispatch paths were `ax_action`;
+- button count was 1 and scroll offset reached 140;
+- the five per-run records are retained in one aggregate fixture.
+
+The high-frequency foreground sentinel does not pass: across ten modal/secondary
+sampling spans it recorded 1,738 target-frontmost samples, with at least 189
+samples per span and a maximum 96 ms sample gap. The stage-level before/after
+reads had hidden this transient focus theft. Modal/multi-window routing is
+therefore functionally qualified but does not yet satisfy the background-focus
+contract.
+
+The source includes bounded handling for two measured AppKit races: a newly
+listed CGWindow may publish its AXWindow later, and a press may return
+`cannotComplete` while creating or closing a window. This five-run fixture did
+not exercise the topology-recovery verification arm
+(`topologyRecoveryEvidenceCount: 0`), so that behavior remains implementation
+and unit-test evidence rather than a live claim.
+
+This is native executor qualification, not a provider-model matrix cell.
 
 The same pin now carries stable AX observation revisions:
 
@@ -170,6 +190,6 @@ The same pin now carries stable AX observation revisions:
 - explicit observe continues to render the complete tree.
 
 This is hermetic protocol/static contract evidence, not a provider-model
-qualification cell. The native source suite passed 320 tests with 26 explicit
+qualification cell. The native source suite passed 323 tests with 26 explicit
 live-test skips, and the host Computer Use suite passed 124 tests. The
-screen was locked, so no modal or long-trajectory live claim was added.
+modal/secondary evidence above was run after unlock.

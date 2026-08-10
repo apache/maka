@@ -1,7 +1,6 @@
 import {
   PanelLeftClose,
   PanelLeftOpen,
-  ListFilter,
   PanelRightClose,
   PanelRightOpen,
   Search,
@@ -121,7 +120,6 @@ export function AppShellTopbarActions(props: {
 export function AppShellWorkspaceTopActions(props: {
   workbarAvailable: boolean;
   workbarCollapsed: boolean;
-  onOpenWorkbarLauncher(): void;
   onToggleWorkbar(): void;
 }) {
   const locale = useUiLocale();
@@ -132,16 +130,6 @@ export function AppShellWorkspaceTopActions(props: {
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <Tooltip content={copy.openWorkbarLauncher}>
-        <IconButton
-          label={copy.openWorkbarLauncher}
-          icon={<ChromeIcon icon={ListFilter} />}
-          variant="ghost"
-          size="md"
-          className="maka-titlebar-action"
-          onClick={props.onOpenWorkbarLauncher}
-        />
-      </Tooltip>
       <ChromeColumnToggle
         collapsed={props.workbarCollapsed}
         expandLabel={copy.expandWorkbar}

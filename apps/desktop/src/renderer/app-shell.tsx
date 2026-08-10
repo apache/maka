@@ -1328,11 +1328,6 @@ function AppShellContent({
     pinWorkbarTab,
     openWorkbarLauncher,
   } = useShellLayout();
-  const revealWorkbarLauncher = useCallback(() => {
-    setWorkbarCollapsed(false);
-    openWorkbarLauncher('right');
-  }, [openWorkbarLauncher, setWorkbarCollapsed]);
-
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeIdRef.current;
@@ -1601,17 +1596,17 @@ function AppShellContent({
   const toggleWorkbar = useCallback(() => {
     if (workbarCollapsed) {
       setWorkbarCollapsed(false);
-      if (workbarPanelsState.right.tabs.length === 0) {
-        openWorkbarLauncher('right');
+      if (workbarPanelsState.right.activeTabId) {
+        activateWorkbarTab('right', workbarPanelsState.right.activeTabId);
       }
       return;
     }
     setWorkbarCollapsed(true);
   }, [
-    openWorkbarLauncher,
+    activateWorkbarTab,
     setWorkbarCollapsed,
     workbarCollapsed,
-    workbarPanelsState.right.tabs.length,
+    workbarPanelsState.right.activeTabId,
   ]);
 
   // Side chats survive a panel collapse. They are cleaned up only when their
@@ -2566,7 +2561,6 @@ function AppShellContent({
               <AppShellWorkspaceTopActions
                 workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
                 workbarCollapsed={workbarCollapsed}
-                onOpenWorkbarLauncher={revealWorkbarLauncher}
                 onToggleWorkbar={toggleWorkbar}
               />
             )}

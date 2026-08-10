@@ -54,9 +54,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner, Spinner | aligned — uses Astryx (Banner, Spinner) | aligned |
 | `apps/desktop/src/renderer/reference-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput, ToggleButton, Tooltip, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput) | aligned |
-| `apps/desktop/src/renderer/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Section, SegmentedControl, SegmentedControlItem, Toolbar | aligned — uses Astryx (Banner, Button, EmptyState, Section, SegmentedControl, SegmentedControlItem, Toolbar) | aligned |
+| `apps/desktop/src/renderer/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, EmptyState, HStack, Section, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, EmptyState, HStack, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |
-| `apps/desktop/src/renderer/session-workbar.tsx` | shell-chrome-or-panel | Badge, Button, Card, ContextMenu, IconButton, Item, Section, Spinner, Toolbar, Tooltip | aligned — uses Astryx (Badge, Button, Card, ContextMenu, IconButton, Item, Section, Spinner) | aligned |
+| `apps/desktop/src/renderer/session-workbar.tsx` | shell-chrome-or-panel | Badge, Button, Card, ContextMenu, Heading, IconButton, List, ListItem, Section, Spinner, Toolbar, Tooltip | aligned — uses Astryx (Badge, Button, Card, ContextMenu, Heading, IconButton, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | HStack, Text, VStack | aligned — uses Astryx (HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Text, VStack | aligned — uses Astryx (Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Text) | aligned |
@@ -201,7 +201,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/task-ledger-panel.tsx` | shell-chrome-or-panel | Banner, Collapsible, EmptyState, IconButton, Spinner | aligned — uses Astryx (Banner, Collapsible, EmptyState, IconButton, Spinner) | aligned |
 | `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | BreadcrumbItem, Breadcrumbs | aligned — uses Astryx (BreadcrumbItem, Breadcrumbs) | aligned |
 | `packages/ui/src/toast.tsx` | ui-composition | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
-| `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls | aligned — uses Astryx (Banner, Button, ChatToolCalls) | aligned |
+| `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls, List, ListItem, Text | aligned — uses Astryx (Banner, Button, ChatToolCalls, List, ListItem, Text) | aligned |
 | `packages/ui/src/tool-activity/agent-preview.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-code-block.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |

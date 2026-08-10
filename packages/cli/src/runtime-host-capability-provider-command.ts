@@ -18,6 +18,7 @@ import {
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
   decodeClientCapabilityReplaceInput,
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type ClientCapabilityCallResult,
   type ClientCapabilityOffer,
@@ -145,6 +146,11 @@ async function connectRemoteCapabilityProvider(input: {
   }
   if (connected.kind === 'connected') return connected.connection;
   if (connected.kind === 'incompatible') {
+    if (connected.handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
+      throw new RuntimeHostPermanentReconnectError(
+        'The remote Runtime Host is older than this capability provider. Upgrade or restart the Runtime Host, then reconnect.',
+      );
+    }
     throw new RuntimeHostPermanentReconnectError(
       `Runtime Host protocol is incompatible (Host ${connected.handshake.protocolMin}-${connected.handshake.protocolMax})`,
     );

@@ -46,7 +46,7 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 | App shell / session list | SideNav | intentional raw siblings where nested button forbidden |
 | Composer | Raw hint/cancel buttons | **fixed → Button** |
 | Workbar tabs | Raw `role=tab` + dnd-kit | intentional (dnd + tablist; close is IconButton) |
-| Workbar launcher menu | Raw menuitem buttons | **fixed → Item** |
+| Workbar tool picker | Product-authored menu semantics and row chrome | **fixed → List + ListItem** |
 | Inspector failed filter | Raw toggle | **fixed → ToggleButton** |
 | Plan execution panel | Raw expand toggle | **fixed → Collapsible** |
 | Titlebar identity | BreadcrumbItem | already aligned |
@@ -64,12 +64,12 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 | Quote / prompt rail chips | Raw expand/remove | polish (chip hit geometry) |
 
 ## Fixed in this pass
-- Control-height rhythm: task ledger rows/triggers, module list skeleton rows, workbar launcher rows.
+- Control-height rhythm: task ledger rows/triggers and module list skeleton rows.
 - Composer no-model / revision cancel → Astryx `Button`.
 - Inspector failed-only filter → Astryx `ToggleButton`.
 - External import source + session pick → `SegmentedControl` / `Item`.
 - Plan execution expand → Astryx `Collapsible`.
-- Workbar launcher rows → Astryx `Item` (`role=menuitem`).
+- Workbar tool picker → Astryx `List` + `ListItem`; visible descriptions and native row interaction.
 - `scripts/check-astryx-alignment.mjs` + unit test gate.
 
 ## Remaining polish (non-blocker)

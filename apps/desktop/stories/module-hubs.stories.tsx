@@ -591,7 +591,6 @@ function ModuleSurface(props: {
         <AppShellWorkspaceTopActions
           workbarAvailable={false}
           workbarCollapsed
-          onOpenWorkbarLauncher={noop}
           onToggleWorkbar={noop}
         />
         <ToastProvider>{props.children}</ToastProvider>
