@@ -22,6 +22,7 @@ export interface MessageQueueUiState {
   paused: boolean;
   steering: MessageQueueEntryProjection[];
   followup: MessageQueueEntryProjection[];
+  pendingEntryIds?: ReadonlySet<string>;
 }
 
 type AppShellSessionUiStateMapKey = keyof AppShellSessionUiState;

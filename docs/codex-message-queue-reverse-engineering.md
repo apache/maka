@@ -165,3 +165,25 @@ The Astryx patch adds a `streamingSpeed` seam rather than disabling streaming
 mode. Remove it when the published Markdown component exposes an equivalent
 way to retain incremental parsing without replaying the received stream as a
 second character animation.
+
+## Queue interaction performance
+
+The first sortable implementation kept dnd-kit in the eager Composer graph.
+That meant every Desktop launch preloaded the drag runtime even when no message
+was queued. The queue is now a lazy, memoized UI boundary: its edit state,
+mutation gate, retract state, sensors, and sortable rows mount only when the
+session can use or is showing queued work. The small chunk is prefetched when a
+turn enters follow-up mode, after initial render but before a user normally
+submits the next message.
+
+A production renderer build reduced eager JavaScript from 505,660 to 491,823
+gzip bytes. The shared UI chunk fell from about 423 KB to 372 KB raw, while the
+queue and sortable chunks left the initial modulepreload graph.
+
+Queue submission also has a renderer-owned optimistic projection. The click
+adds a pending row immediately, but that row cannot be dragged, edited, or
+mutated until the Runtime Host publishes its authoritative `queue_update`.
+Authority replaces the whole projection; a rejected enqueue or a race that
+starts a turn rolls back only the matching pending row. In a real Electron run,
+the pending DOM row appeared 13.4 ms after the click event and the authoritative
+entry replaced it at 153.2 ms.

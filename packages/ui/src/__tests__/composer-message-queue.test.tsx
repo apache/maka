@@ -2,7 +2,12 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Composer, reorderQueueEntryIds } from '../composer.js';
+import { Composer } from '../composer.js';
+import {
+  ComposerMessageQueue,
+  reorderQueueEntryIds,
+} from '../composer-message-queue.js';
+import { getConversationCopy } from '../conversation-copy.js';
 import { LocaleProvider } from '../locale-context.js';
 
 function render(children: ReactNode): string {
@@ -10,6 +15,8 @@ function render(children: ReactNode): string {
 }
 
 describe('composer message queue', () => {
+  const copy = getConversationCopy('zh').composer;
+
   it('moves one stable queue identity onto the target position', () => {
     const entries = ['a', 'b', 'c'].map((entryId) => ({
       entryId,
@@ -25,33 +32,39 @@ describe('composer message queue', () => {
   });
 
   it('keeps Queue, Steer, Stop, and the pending workband visible during a run', () => {
+    const queuedMessages = {
+      steering: [{
+        entryId: 'steer-1',
+        messageId: 'message-1',
+        content: { text: 'adjust the current implementation' },
+        placement: 'current_turn' as const,
+        state: 'queued' as const,
+      }],
+      followup: [{
+        entryId: 'followup-1',
+        messageId: 'message-2',
+        content: { text: 'run the full test suite next' },
+        placement: 'next_turn' as const,
+        state: 'queued' as const,
+      }],
+    };
     const markup = render(
-      <Composer
-        streaming
-        followUpMode="queue"
-        queuedMessages={{
-          steering: [{
-            entryId: 'steer-1',
-            messageId: 'message-1',
-            content: { text: 'adjust the current implementation' },
-            placement: 'current_turn',
-            state: 'queued',
-          }],
-          followup: [{
-            entryId: 'followup-1',
-            messageId: 'message-2',
-            content: { text: 'run the full test suite next' },
-            placement: 'next_turn',
-            state: 'queued',
-          }],
-        }}
-        onFollowUpModeChange={() => {}}
-        onRetractQueued={() => {}}
-        onQueueMutation={() => true}
-        onSend={() => true}
-        onStop={() => {}}
-        modelLabel="demo"
-      />,
+      <>
+        <ComposerMessageQueue
+          queuedMessages={queuedMessages}
+          copy={copy}
+          onRetractQueued={() => {}}
+          onQueueMutation={() => true}
+        />
+        <Composer
+          streaming
+          followUpMode="queue"
+          onFollowUpModeChange={() => {}}
+          onSend={() => true}
+          onStop={() => {}}
+          modelLabel="demo"
+        />
+      </>,
     );
 
     assert.match(markup, /maka-composer-queue/);
@@ -72,7 +85,7 @@ describe('composer message queue', () => {
 
   it('shows an interrupted queue as paused with an explicit Resume action', () => {
     const markup = render(
-      <Composer
+      <ComposerMessageQueue
         queuedMessages={{
           paused: true,
           steering: [],
@@ -84,9 +97,8 @@ describe('composer message queue', () => {
             state: 'queued',
           }],
         }}
+        copy={copy}
         onQueueMutation={() => true}
-        onSend={() => true}
-        onStop={() => {}}
       />,
     );
 

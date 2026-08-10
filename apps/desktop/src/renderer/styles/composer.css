@@ -459,6 +459,10 @@
   animation: maka-composer-queue-enter 160ms var(--ease-out-strong);
 }
 
+.maka-composer-queue-loading {
+  min-height: calc(var(--h-control-sm) + (2 * var(--space-1)));
+}
+
 .maka-composer-queue-list {
   min-width: 0;
   flex: 1 1 auto;

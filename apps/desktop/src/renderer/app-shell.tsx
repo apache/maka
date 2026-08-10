@@ -108,6 +108,10 @@ import {
 } from './app-update-install';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
+import {
+  addOptimisticQueuedMessage,
+  removeOptimisticQueuedMessage,
+} from './optimistic-message-queue';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import {
@@ -1947,13 +1951,28 @@ function AppShellContent({
     const slashCommand = parseDesktopSlashCommand(text);
     if (metadata?.followUpMode && activeIdRef.current && !slashCommand) {
       const sessionId = activeIdRef.current;
+      const placement =
+        metadata.followUpMode === 'queue' ? 'next_turn' as const : 'current_turn' as const;
+      const optimisticEntryId = `optimistic-${crypto.randomUUID()}`;
       try {
         const attachments =
           pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
         const quotes = pendingQuotes.length > 0 ? [...pendingQuotes] : undefined;
+        setMessageQueueBySession((current) =>
+          addOptimisticQueuedMessage(current, sessionId, {
+            entryId: optimisticEntryId,
+            messageId: optimisticEntryId,
+            content: {
+              text,
+              ...(quotes ? { quotes } : {}),
+            },
+            placement,
+            state: 'queued',
+          }),
+        );
         const outcome = await window.maka.sessions.enqueue(
           sessionId,
-          metadata.followUpMode === 'queue' ? 'next_turn' : 'current_turn',
+          placement,
           {
             text,
             ...(attachments
@@ -1968,11 +1987,17 @@ function AppShellContent({
         if (attachments) clearSubmittedAttachments(attachments);
         if (quotes) clearQuotes();
         if (outcome.kind === 'started') {
+          setMessageQueueBySession((current) =>
+            removeOptimisticQueuedMessage(current, sessionId, optimisticEntryId),
+          );
           await refreshMessages(sessionId);
           await refreshSessions();
         }
         return true;
       } catch (error) {
+        setMessageQueueBySession((current) =>
+          removeOptimisticQueuedMessage(current, sessionId, optimisticEntryId),
+        );
         if (activeIdRef.current !== sessionId) return false;
         toastApi.error(
           getShellCopy(uiLocale).chatActions.sendFailedTitle,

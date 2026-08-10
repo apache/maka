@@ -1,53 +1,32 @@
 import {
   forwardRef,
+  lazy,
+  Suspense,
   useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent,
-  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import {
-  closestCenter,
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
-  Check,
   CornerDownRight,
   FileText,
-  GripVertical,
   ListTodo,
   ListEnd,
   Network,
-  Paperclip,
   Pencil,
   Plus,
   Sparkles,
   SquareStop,
-  Trash2,
-  TextQuote,
-  Undo2,
   Upload,
   Workflow,
   X,
@@ -83,9 +62,7 @@ import type {
   AttachmentRef,
   FollowUpMode,
   MessageQueueEntryProjection,
-  MessageQueueEntryState,
   MessageQueueMutation,
-  MessageQueuePlacement,
   PermissionMode,
   ProviderType,
   QuoteRef,
@@ -124,6 +101,13 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
+
+const loadComposerMessageQueue = () => import('./composer-message-queue.js');
+const ComposerMessageQueue = lazy(() =>
+  loadComposerMessageQueue().then((module) => ({
+    default: module.ComposerMessageQueue,
+  })),
+);
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -254,6 +238,7 @@ export const Composer = forwardRef<
       paused?: boolean;
       steering: readonly MessageQueueEntryProjection[];
       followup: readonly MessageQueueEntryProjection[];
+      pendingEntryIds?: ReadonlySet<string>;
     };
     onFollowUpModeChange?(mode: FollowUpMode): void;
     onRetractQueued?(): void | Promise<void>;
@@ -415,10 +400,6 @@ export const Composer = forwardRef<
   }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
-  const [retractPending, setRetractPending] = useState(false);
-  const [queueMutationPending, setQueueMutationPending] = useState(false);
-  const [editingQueueEntryId, setEditingQueueEntryId] = useState<string | null>(null);
-  const [editingQueueText, setEditingQueueText] = useState('');
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -1408,90 +1389,11 @@ export const Composer = forwardRef<
     (props.queuedMessages?.steering.length ?? 0) +
     (props.queuedMessages?.followup.length ?? 0);
   const selectedFollowUpMode = props.followUpMode ?? 'queue';
-  const queueSensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 4 },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
-  );
 
-  async function retractQueued() {
-    if (!props.onRetractQueued || retractPending) return;
-    setRetractPending(true);
-    try {
-      await props.onRetractQueued();
-    } finally {
-      if (composerMountedRef.current) setRetractPending(false);
-    }
-  }
-
-  async function mutateQueue(mutation: MessageQueueMutation): Promise<boolean> {
-    if (!props.onQueueMutation || queueMutationPending) return false;
-    setQueueMutationPending(true);
-    try {
-      return (await props.onQueueMutation(mutation)) !== false;
-    } finally {
-      if (composerMountedRef.current) setQueueMutationPending(false);
-    }
-  }
-
-  function beginQueueEdit(entry: MessageQueueEntryProjection) {
-    if (entry.state !== 'queued') return;
-    setEditingQueueEntryId(entry.entryId);
-    setEditingQueueText(entry.content.text);
-  }
-
-  async function commitQueueEdit(entry: MessageQueueEntryProjection) {
-    const text = editingQueueText.trim();
-    if (!text) return;
-    if (
-      await mutateQueue({
-        kind: 'update',
-        entryId: entry.entryId,
-        text,
-      })
-    ) {
-      setEditingQueueEntryId(null);
-      setEditingQueueText('');
-    }
-  }
-
-  function reorderQueue(
-    entries: readonly MessageQueueEntryProjection[],
-    placement: 'current_turn' | 'next_turn',
-    draggedEntryId: string,
-    targetEntryId: string,
-  ) {
-    if (draggedEntryId === targetEntryId) return;
-    const queued = entries.filter((entry) => entry.state === 'queued');
-    const entryIds = reorderQueueEntryIds(queued, draggedEntryId, targetEntryId);
-    if (!entryIds) return;
-    void mutateQueue({
-      kind: 'reorder',
-      placement,
-      entryIds,
-    });
-  }
-
-  function handleQueueDragEnd(event: DragEndEvent) {
-    const draggedEntryId = String(event.active.id);
-    const targetEntryId = event.over ? String(event.over.id) : null;
-    if (!targetEntryId || targetEntryId === draggedEntryId) return;
-    for (const [placement, entries] of [
-      ['current_turn', props.queuedMessages?.steering ?? []],
-      ['next_turn', props.queuedMessages?.followup ?? []],
-    ] as const) {
-      if (
-        entries.some((entry) => entry.entryId === draggedEntryId && entry.state === 'queued') &&
-        entries.some((entry) => entry.entryId === targetEntryId && entry.state === 'queued')
-      ) {
-        reorderQueue(entries, placement, draggedEntryId, targetEntryId);
-        return;
-      }
-    }
-  }
+  useEffect(() => {
+    if (!props.streaming || props.followUpMode === undefined) return;
+    void loadComposerMessageQueue();
+  }, [props.followUpMode, props.streaming]);
 
   return (
     <>
@@ -1527,202 +1429,23 @@ export const Composer = forwardRef<
         </div>
       )}
       {!props.hidden && queueCount > 0 && (
-        <div
-          className="maka-composer-queue"
-          role="region"
-          aria-label={copy.queuedMessagesAriaLabel(queueCount)}
-        >
-          <div className="maka-composer-queue-list">
-            {props.queuedMessages?.paused ? (
-              <div className="maka-composer-queue-paused">
-                <span>{copy.queuePaused}</span>
-                {props.onQueueMutation ? (
-                  <UiButton
-                    variant="ghost"
-                    size="sm"
-                    className="maka-composer-queue-resume"
-                    label={copy.resumeQueue}
-                    isDisabled={queueMutationPending}
-                    onClick={() => {
-                      void mutateQueue({ kind: 'resume' });
-                    }}
-                  />
-                ) : null}
-              </div>
-            ) : null}
-            <DndContext
-              sensors={queueSensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleQueueDragEnd}
-            >
-              {([
-                ['current_turn', props.queuedMessages?.steering ?? []],
-                ['next_turn', props.queuedMessages?.followup ?? []],
-              ] as const).map(([placement, entries]) => (
-                <SortableContext
-                  key={placement}
-                  items={entries
-                    .filter((entry) => entry.state === 'queued')
-                    .map((entry) => entry.entryId)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {entries.map((entry) => {
-                    const editing = editingQueueEntryId === entry.entryId;
-                    const canMutate =
-                      entry.state === 'queued' &&
-                      props.onQueueMutation !== undefined &&
-                      !queueMutationPending;
-                    return (
-                      <SortableQueueRow
-                        key={entry.entryId}
-                        entryId={entry.entryId}
-                        placement={placement}
-                        state={entry.state}
-                        dragDisabled={!canMutate || editing}
-                        dragLabel={copy.reorderQueuedMessage}
-                      >
-                    {placement === 'current_turn' ? (
-                      <CornerDownRight size={14} aria-hidden="true" />
-                    ) : (
-                      <ListEnd size={14} aria-hidden="true" />
-                    )}
-                    <span className="maka-composer-queue-kind">
-                      {placement === 'current_turn'
-                        ? entry.state === 'in_flight'
-                          ? copy.steerDeliveringLabel
-                          : copy.steerQueuedLabel
-                        : copy.followUpQueuedLabel}
-                    </span>
-                    {editing ? (
-                      <input
-                        autoFocus
-                        className="maka-composer-queue-edit"
-                        value={editingQueueText}
-                        aria-label={copy.editQueuedMessage}
-                        onChange={(event) => setEditingQueueText(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            void commitQueueEdit(entry);
-                          } else if (event.key === 'Escape') {
-                            event.preventDefault();
-                            setEditingQueueEntryId(null);
-                          }
-                        }}
-                      />
-                    ) : (
-                      <span className="maka-composer-queue-content">
-                        <span className="maka-composer-queue-text">{entry.content.text}</span>
-                        {(entry.content.attachments?.length ?? 0) > 0 ? (
-                          <span
-                            className="maka-composer-queue-context"
-                            title={copy.queuedAttachmentCount(entry.content.attachments!.length)}
-                          >
-                            <Paperclip size={11} aria-hidden="true" />
-                            {entry.content.attachments!.length}
-                          </span>
-                        ) : null}
-                        {(entry.content.quotes?.length ?? 0) > 0 ? (
-                          <span
-                            className="maka-composer-queue-context"
-                            title={copy.queuedQuoteCount(entry.content.quotes!.length)}
-                          >
-                            <TextQuote size={11} aria-hidden="true" />
-                            {entry.content.quotes!.length}
-                          </span>
-                        ) : null}
-                      </span>
-                    )}
-                    <span className="maka-composer-queue-actions">
-                      {editing ? (
-                        <>
-                          <IconButton
-                            variant="ghost"
-                            type="button"
-                            size="sm"
-                            label={copy.saveQueuedMessage}
-                            tooltip={copy.saveQueuedMessage}
-                            isDisabled={queueMutationPending || editingQueueText.trim().length === 0}
-                            onClick={() => {
-                              void commitQueueEdit(entry);
-                            }}
-                            icon={<Check size={13} aria-hidden="true" />}
-                          />
-                          <IconButton
-                            variant="ghost"
-                            type="button"
-                            size="sm"
-                            label={copy.cancelQueuedEdit}
-                            tooltip={copy.cancelQueuedEdit}
-                            onClick={() => setEditingQueueEntryId(null)}
-                            icon={<X size={13} aria-hidden="true" />}
-                          />
-                        </>
-                      ) : (
-                        <>
-                          {placement === 'next_turn' ? (
-                            <IconButton
-                              variant="ghost"
-                              type="button"
-                              size="sm"
-                              label={copy.sendQueuedNow}
-                              tooltip={copy.sendQueuedNowTooltip}
-                              isDisabled={!canMutate}
-                              onClick={() => {
-                                void mutateQueue({ kind: 'promote', entryId: entry.entryId });
-                              }}
-                              icon={<CornerDownRight size={13} aria-hidden="true" />}
-                            />
-                          ) : null}
-                          <IconButton
-                            variant="ghost"
-                            type="button"
-                            size="sm"
-                            label={copy.editQueuedMessage}
-                            tooltip={copy.editQueuedMessage}
-                            isDisabled={!canMutate}
-                            onClick={() => beginQueueEdit(entry)}
-                            icon={<Pencil size={13} aria-hidden="true" />}
-                          />
-                          <IconButton
-                            variant="ghost"
-                            type="button"
-                            size="sm"
-                            label={copy.deleteQueuedMessage}
-                            tooltip={copy.deleteQueuedMessage}
-                            isDisabled={!canMutate}
-                            onClick={() => {
-                              void mutateQueue({ kind: 'remove', entryId: entry.entryId });
-                            }}
-                            icon={<Trash2 size={13} aria-hidden="true" />}
-                          />
-                        </>
-                      )}
-                    </span>
-                      </SortableQueueRow>
-                    );
-                  })}
-                </SortableContext>
-              ))}
-            </DndContext>
-          </div>
-          {props.onRetractQueued ? (
-            <IconButton
-              variant="ghost"
-              type="button"
-              size="sm"
-              className="maka-composer-queue-retract"
-              isDisabled={retractPending}
-              aria-busy={retractPending ? 'true' : undefined}
-              label={copy.retractQueued}
-              tooltip={copy.retractQueued}
-              onClick={() => {
-                void retractQueued();
-              }}
-              icon={<Undo2 size={14} aria-hidden="true" />}
+        <Suspense
+          fallback={(
+            <div
+              className="maka-composer-queue maka-composer-queue-loading"
+              role="region"
+              aria-label={copy.queuedMessagesAriaLabel(queueCount)}
+              aria-busy="true"
             />
-          ) : null}
-        </div>
+          )}
+        >
+          <ComposerMessageQueue
+            queuedMessages={props.queuedMessages!}
+            copy={copy}
+            onRetractQueued={props.onRetractQueued}
+            onQueueMutation={props.onQueueMutation}
+          />
+        </Suspense>
       )}
       <form
         ref={formRef}
@@ -2247,68 +1970,3 @@ export const Composer = forwardRef<
     </>
   );
 });
-
-export function reorderQueueEntryIds(
-  entries: readonly MessageQueueEntryProjection[],
-  draggedEntryId: string,
-  targetEntryId: string,
-): string[] | undefined {
-  const from = entries.findIndex((entry) => entry.entryId === draggedEntryId);
-  const to = entries.findIndex((entry) => entry.entryId === targetEntryId);
-  if (from < 0 || to < 0 || from === to) return undefined;
-  const reordered = [...entries];
-  const [moved] = reordered.splice(from, 1);
-  reordered.splice(to, 0, moved);
-  return reordered.map((entry) => entry.entryId);
-}
-
-function SortableQueueRow(props: {
-  entryId: string;
-  placement: MessageQueuePlacement;
-  state: MessageQueueEntryState;
-  dragDisabled: boolean;
-  dragLabel: string;
-  children: ReactNode;
-}) {
-  const {
-    attributes,
-    isDragging,
-    listeners,
-    setActivatorNodeRef,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({
-    id: props.entryId,
-    disabled: props.dragDisabled,
-  });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    zIndex: isDragging ? 1 : undefined,
-  } satisfies CSSProperties;
-
-  return (
-    <div
-      ref={setNodeRef}
-      className="maka-composer-queue-row"
-      data-placement={props.placement === 'current_turn' ? 'current' : 'next'}
-      data-state={props.state}
-      data-dragging={isDragging || undefined}
-      style={style}
-    >
-      <IconButton
-        ref={setActivatorNodeRef}
-        variant="ghost"
-        size="sm"
-        className="maka-composer-queue-grip"
-        label={props.dragLabel}
-        icon={<GripVertical size={14} aria-hidden="true" />}
-        isDisabled={props.dragDisabled}
-        {...attributes}
-        {...listeners}
-      />
-      {props.children}
-    </div>
-  );
-}
