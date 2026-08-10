@@ -1,6 +1,7 @@
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   type ModelCallAttempt,
+  type ModelCallAttemptCredentialSelectionReason,
   type ModelCallKind,
   type ModelCallUsageBasis,
 } from '@maka/core/model-call-attempt';
@@ -150,6 +151,13 @@ export interface ModelCallAccountingInput {
   providerId?: string;
   callKind: ModelCallKind;
   record: (attempt: ModelCallAttempt) => void | Promise<void>;
+  /**
+   * Credential Profile attribution for this call's physical attempts (RFC
+   * 12.1, ModelCallAttempt v2). Injected by the dispatcher from the actual
+   * lease before dispatch; never a secret or a mutable label.
+   */
+  credentialProfileId?: string;
+  credentialSelectionReason?: ModelCallAttemptCredentialSelectionReason;
   /** Resolves cost at settlement time; absent means the price is unknown. */
   resolveCost?: (usage: ProviderRequestUsage) => ResolvedModelCallCost | undefined;
   /**
@@ -551,6 +559,12 @@ export class ProviderRequestTracker {
       ...(context.contextWindow !== undefined ? { contextWindow: context.contextWindow } : {}),
       ...(record.captureArtifactId !== undefined
         ? { captureArtifactId: record.captureArtifactId }
+        : {}),
+      ...(accounting.credentialProfileId !== undefined
+        ? {
+            credentialProfileId: accounting.credentialProfileId,
+            credentialSelectionReason: accounting.credentialSelectionReason,
+          }
         : {}),
       startedAt: record.startedAt,
       completedAt: record.completedAt,

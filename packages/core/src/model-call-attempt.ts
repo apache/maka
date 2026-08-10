@@ -27,7 +27,18 @@ export { MODEL_CALL_KINDS, type ModelCallKind } from './usage-stats/types.js';
  *   detect the omission, so no consumer may treat a set of attempts as proof of
  *   completeness. See {@link ModelCallCoverage}.
  */
-export const MODEL_CALL_ATTEMPT_SCHEMA_VERSION = 1 as const;
+export const MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1 = 1 as const;
+export const MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2 = 2 as const;
+export type ModelCallAttemptSchemaVersion =
+  | typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1
+  | typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2;
+
+/**
+ * Current canonical schema version (RFC credential-profiles, section 12.1).
+ * v2 adds per-attempt Credential Profile attribution; v1 records read back as
+ * legacy/unknown without a fabricated profile id.
+ */
+export const MODEL_CALL_ATTEMPT_SCHEMA_VERSION = MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2;
 
 /** AgentRun event type carrying a {@link ModelCallAttempt} in `data`. */
 export const MODEL_CALL_ATTEMPT_EVENT_TYPE = 'model_call_attempt_recorded' as const;
@@ -54,7 +65,7 @@ export const MODEL_CALL_COST_BASES = ['priced', 'unpriced'] as const;
 export type ModelCallCostBasis = (typeof MODEL_CALL_COST_BASES)[number];
 
 export interface ModelCallAttempt {
-  schemaVersion: typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION;
+  schemaVersion: ModelCallAttemptSchemaVersion;
 
   /**
    * One logical model call. Every attempt of the same call — first try and each
@@ -91,6 +102,15 @@ export interface ModelCallAttempt {
   /** Join key for request-shape diagnostics; absent when capture is disabled. */
   captureArtifactId?: string;
 
+  /**
+   * Credential Profile that actually served this physical attempt (RFC
+   * section 12.1). v2-only; absent (or schema v1) means legacy single-profile /
+   * unknown attribution. Never a secret, never a mutable label.
+   */
+  credentialProfileId?: string;
+  /** How this attempt's Profile was selected. v2-only, see above. */
+  credentialSelectionReason?: ModelCallAttemptCredentialSelectionReason;
+
   startedAt: number;
   completedAt: number;
   latencyMs: number;
@@ -116,6 +136,28 @@ export interface ModelCallAttempt {
   /** Rates actually applied, so a recorded amount stays auditable. */
   pricingRates?: PricingConfig;
 }
+
+/**
+ * Wire-safe selection reasons for ModelCallAttempt attribution. These mirror
+ * the routing selection reasons without importing the router types into the
+ * canonical record codec.
+ */
+export type ModelCallAttemptCredentialSelectionReason =
+  | 'legacy_single'
+  | 'single_eligible'
+  | 'weighted'
+  | 'binding_reselect'
+  | 'account_failover'
+  | 'half_open_probe';
+
+const MODEL_CALL_ATTEMPT_CREDENTIAL_SELECTION_REASONS = [
+  'legacy_single',
+  'single_eligible',
+  'weighted',
+  'binding_reselect',
+  'account_failover',
+  'half_open_probe',
+] as const;
 
 const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
   [
@@ -154,6 +196,8 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
     'costUsd',
     'pricingRevision',
     'pricingRates',
+    'credentialProfileId',
+    'credentialSelectionReason',
   ],
 );
 
@@ -215,8 +259,20 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
   if (!isRecord(value) || !hasExactShape(value, MODEL_CALL_ATTEMPT_SHAPE)) {
     throw new Error('Invalid ModelCallAttempt schema');
   }
+  const schemaVersion = value.schemaVersion;
   const valid =
-    value.schemaVersion === MODEL_CALL_ATTEMPT_SCHEMA_VERSION &&
+    (schemaVersion === MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1 ||
+      schemaVersion === MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2) &&
+    // v1 has no credential attribution; v2 may carry it. A v2 record without
+    // attribution is legal (legacy fast path wrote it), and a v1 record with
+    // the v2 fields is rejected so mixed shapes cannot drift.
+    (schemaVersion === MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1 ||
+      (value.credentialProfileId === undefined && value.credentialSelectionReason === undefined) ||
+      (typeof value.credentialProfileId === 'string' &&
+        value.credentialProfileId.length > 0 &&
+        (MODEL_CALL_ATTEMPT_CREDENTIAL_SELECTION_REASONS as readonly unknown[]).includes(
+          value.credentialSelectionReason,
+        ))) &&
     isNonEmptyString(value.logicalCallId) &&
     isNonEmptyString(value.attemptId) &&
     isNonEmptyString(value.traceId) &&

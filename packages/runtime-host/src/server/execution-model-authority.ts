@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { ConnectionCredentialRouting } from '@maka/core/runtime-policy';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -698,7 +699,7 @@ class AuxiliaryModelCallConfigurationError extends Error {
   }
 }
 
-interface ResolvedExecutionTarget {
+export interface ResolvedExecutionTarget {
   readonly connection: RuntimeExecutionConnection;
   readonly model: string;
   readonly apiKey: string;
@@ -706,6 +707,10 @@ interface ResolvedExecutionTarget {
   readonly oauthBinding?: HostOAuthExecutionBinding;
   readonly networkProxy: RuntimePolicy['networkProxy'];
   readonly proxySecret?: string;
+  /** Catalog identity + Credential Profile routing declaration, when the
+   *  connection carries one (RFC section 4.1). Absent = legacy single. */
+  readonly connectionId?: string;
+  readonly credentialRouting?: ConnectionCredentialRouting;
 }
 
 async function resolveDailyReviewHeader(
@@ -832,6 +837,10 @@ export async function resolveExecutionTarget(
         createRefreshTransport: () => createFetchTransport(refreshProxy),
       }),
       networkProxy: resolved.networkProxy,
+      connectionId: resolved.connection.connectionId,
+      ...(resolved.connection.credentialRouting
+        ? { credentialRouting: resolved.connection.credentialRouting }
+        : {}),
       ...(resolved.secretMaterial.networkProxy
         ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
         : {}),
@@ -844,6 +853,10 @@ export async function resolveExecutionTarget(
     apiKey: resolved.secretMaterial.connection?.secret ?? '',
     requestHeaders,
     networkProxy: resolved.networkProxy,
+    connectionId: resolved.connection.connectionId,
+    ...(resolved.connection.credentialRouting
+      ? { credentialRouting: resolved.connection.credentialRouting }
+      : {}),
     ...(resolved.secretMaterial.networkProxy
       ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
       : {}),

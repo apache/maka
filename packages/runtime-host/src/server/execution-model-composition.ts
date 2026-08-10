@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
+import { effectiveBaseUrl, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import type { ProviderCredentialResolver } from '@maka/core/provider-credential-routing';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { PermissionMode } from '@maka/core/permission';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
@@ -36,7 +38,12 @@ import {
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
 import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
-import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
+import {
+  readDuringBackendCreation,
+  resolveExecutionTarget,
+  type ResolvedExecutionTarget,
+} from './execution-model-authority.js';
+import { createHostCredentialResolver } from './provider-credential-resolver-composition.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
 
@@ -88,6 +95,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ),
     input.context.abortSignal,
   );
+  // Credential Profile routing (PR 3 baseline): when the resolved connection
+  // declares balanced routing and the provider uses API keys, compose the
+  // resolver from the Router (PR 2) + Catalog/Vault/Health. OAuth providers
+  // stay on the legacy path until PR 5, and legacy_primary/missing routing
+  // keeps the fixed-key fast path byte-for-byte identical.
+  const credentialResolver = buildCredentialResolver(input, target);
   const pricingSnapshot = await readDuringBackendCreation(
     () => input.usage.pricing.snapshot(),
     input.context.abortSignal,
@@ -323,6 +336,15 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
+        ...(credentialResolver && target.credentialRouting?.mode === 'balanced'
+          ? {
+              credentialRouting: {
+                resolver: credentialResolver,
+                connectionId: target.connectionId ?? '',
+                providerId: target.connection.providerType,
+              },
+            }
+          : {}),
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
@@ -438,4 +460,35 @@ export function resolveCollaborationPermissionMode(input: {
   return input.collaborationMode === 'plan' && input.permissionMode !== 'bypass'
     ? 'explore'
     : input.permissionMode;
+}
+/**
+ * Build the Credential Profile resolver for a resolved execution target when
+ * the connection is in balanced API-key routing mode; otherwise undefined
+ * (legacy fast path). OAuth providers stay legacy until PR 5.
+ */
+function buildCredentialResolver(
+  input: HostAiSdkBackendInput,
+  target: ResolvedExecutionTarget,
+): ProviderCredentialResolver | undefined {
+  const routing = target.credentialRouting;
+  if (!routing || routing.mode !== 'balanced' || !target.connectionId) return undefined;
+  const provider = PROVIDER_DEFAULTS[target.connection.providerType];
+  if (provider.authKind !== 'api_key' && provider.authKind !== 'optional_api_key') {
+    return undefined;
+  }
+  const model = target.connection.models?.find((candidate) => candidate.id === target.model);
+  return createHostCredentialResolver({
+    runtimePolicy: input.runtimePolicy,
+    workspaceRoot: input.context.workspaceRoot,
+    connectionId: target.connectionId,
+    connectionSlug: target.connection.slug,
+    providerType: target.connection.providerType,
+    endpoint: effectiveBaseUrl(target.connection),
+    apiProtocol: model?.apiProtocol,
+    requestBodyOverlayJson: target.connection.requestBodyOverlay
+      ? JSON.stringify(target.connection.requestBodyOverlay)
+      : null,
+    authKind: provider.authKind,
+    routing,
+  });
 }

@@ -185,7 +185,11 @@ import {
   toolSchemaCharsForDiagnostics,
   type RequestShapeDiagnostic,
 } from './request-shape.js';
-import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
+import type {
+  ModelCallAttempt,
+  ModelCallAttemptCredentialSelectionReason,
+  ModelCallKind,
+} from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
   type ModelCallAccountingInput,
@@ -194,6 +198,10 @@ import {
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
+import type {
+  ProviderCredentialLease,
+  ProviderCredentialResolver,
+} from '@maka/core/provider-credential-routing';
 import {
   ToolAvailabilityRuntime,
   type ToolAvailabilityConfig,
@@ -742,6 +750,20 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
+  /**
+   * Optional Credential Profile routing (RFC sections 6/9, PR 3 baseline).
+   * When present, each `send()` acquires a per-turn attempt lease from the
+   * resolver, materializes the provider model with the leased Profile's API
+   * key, attributes every `ModelCallAttempt` to that Profile, and settles /
+   * releases the turn binding when the turn ends. Absent keeps the legacy
+   * fixed-apiKey fast path byte-for-byte identical. Account failover inside
+   * the retry loop stays gated on the PR 0 failure-routing hint contract.
+   */
+  credentialRouting?: {
+    resolver: ProviderCredentialResolver;
+    connectionId: string;
+    providerId: string;
+  };
   /** Optional fire-and-forget telemetry hook. Tool implementations remain unaware. */
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
@@ -996,6 +1018,13 @@ class TurnScope {
   memorySourceActiveTools: readonly string[] | undefined;
   finalAssistantText: string | undefined;
   codeModeTools: ReadonlyMap<string, MakaTool> | undefined;
+  /**
+   * Active Credential Profile lease for this turn when routing is enabled.
+   * Acquired before the first model materialization and settled/released in
+   * cleanupAfterTurn. Held on the scope because a backend serves several
+   * concurrent runs and per-turn state must never live on the instance.
+   */
+  credentialLease: ProviderCredentialLease | undefined;
 
   constructor(
     readonly turnId: string,
@@ -1501,18 +1530,28 @@ export class AiSdkBackend implements AgentBackend {
         toSandboxRunTraceProjection(this.input.sandboxDiagnosticsSnapshot),
       );
     }
+    const credentialLease = await this.acquireCredentialLease(scope);
+    scope.credentialLease = credentialLease;
     const providerRequestTracker = this.createProviderRequestTracker({
       turnId,
       callKind: 'main',
       modelId: this.input.modelId,
       runId: scope.runId,
+      ...(credentialLease
+        ? {
+            credentialProfileId: credentialLease.profileId,
+            credentialSelectionReason: credentialLease.selectionReason,
+          }
+        : {}),
     });
     const providerRequestTraceId = providerRequestTracker?.traceId;
 
-    // --- Resolve model (API key already attached at construct time) ---
+    // --- Resolve model. With Credential Profile routing the lease's API key
+    // materializes this turn's model; otherwise the construct-time key is used
+    // (legacy fast path, byte-for-byte identical). ---
     let model: unknown;
     try {
-      model = this.modelAdapter.resolveModel();
+      model = this.resolveSendModel(credentialLease);
       trace.modelResolved();
     } catch (err) {
       trace.modelResolveFailed(err);
@@ -3140,6 +3179,63 @@ export class AiSdkBackend implements AgentBackend {
    * canonical sink. Metering deliberately does not depend on capture — capture
    * is a diagnostic, and a deployment that turns it off must still be billed.
    */
+  /**
+   * Acquire the turn's Credential Profile attempt lease when routing is
+   * enabled (RFC section 6.2). Returns undefined on the legacy fast path.
+   * A routing acquisition failure fails the send closed rather than falling
+   * back to a possibly stale construct-time key.
+   */
+  private async acquireCredentialLease(
+    scope: TurnScope,
+  ): Promise<ProviderCredentialLease | undefined> {
+    const routing = this.input.credentialRouting;
+    if (!routing) return undefined;
+    const lease = await routing.resolver.acquireAttempt({
+      connectionId: routing.connectionId,
+      connectionSlug: this.input.connection.slug,
+      providerId: routing.providerId,
+      modelId: this.input.modelId,
+      sessionId: this.sessionId,
+      turnId: scope.turnId,
+      logicalCallId: scope.runId ?? scope.turnId,
+      callKind: 'main',
+      excludedProfileIds: new Set(),
+      reason: 'initial',
+      signal: scope.abortController.signal,
+    });
+    return lease;
+  }
+
+  /**
+   * Materialize the send's provider model. With a lease the model is built
+   * from the leased Profile's API key (dynamic attempt material, RFC 9.1);
+   * without one the construct-time key is used, keeping the legacy path
+   * byte-for-byte identical.
+   */
+  private resolveSendModel(lease: ProviderCredentialLease | undefined): unknown {
+    return lease ? this.modelAdapter.resolveModel(lease.apiKey) : this.modelAdapter.resolveModel();
+  }
+
+  /**
+   * Settle the turn's lease when routing is enabled. The PR 3 baseline settles
+   * a completed turn as success and an aborted/errored turn as aborted; the
+   * outcome-driven failure mapping arrives with the PR 0 routing-hint
+   * contract that gates account failover.
+   */
+  private async settleCredentialLease(scope: TurnScope): Promise<void> {
+    const lease = scope.credentialLease;
+    const routing = this.input.credentialRouting;
+    if (!lease || !routing) return;
+    try {
+      await routing.resolver.settle(
+        lease,
+        scope.aborted ? { kind: 'aborted' } : { kind: 'success' },
+      );
+    } finally {
+      routing.resolver.releaseTurn(this.sessionId, scope.turnId);
+    }
+  }
+
   private createProviderRequestTracker(input: {
     turnId: string;
     callKind: ModelCallKind;
@@ -3150,11 +3246,20 @@ export class AiSdkBackend implements AgentBackend {
      * thing that catches a missing run id (#1990).
      */
     runId: string | undefined;
+    /** Credential Profile attribution for the dispatched attempts (v2). */
+    credentialProfileId?: string;
+    credentialSelectionReason?: ModelCallAttemptCredentialSelectionReason;
   }): ProviderRequestTracker | undefined {
     const persistCapture = this.input.recordProviderRequestCapture;
     const accounting = this.modelCallAccounting(input.callKind, {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.credentialProfileId !== undefined
+        ? {
+            credentialProfileId: input.credentialProfileId,
+            credentialSelectionReason: input.credentialSelectionReason,
+          }
+        : {}),
     });
     const runId = input.runId;
     const beforeRunProviderDispatch = this.input.beforeRunProviderDispatch;
@@ -3198,6 +3303,9 @@ export class AiSdkBackend implements AgentBackend {
       runId?: string;
       /** The model this call actually runs against; priced as that model. */
       modelId?: string;
+      /** Credential Profile attribution for the physical attempts (v2). */
+      credentialProfileId?: string;
+      credentialSelectionReason?: ModelCallAttemptCredentialSelectionReason;
     },
   ): ModelCallAccountingInput | undefined {
     const record = this.input.recordModelCallAttempt;
@@ -3211,6 +3319,12 @@ export class AiSdkBackend implements AgentBackend {
       callKind,
       record,
       resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage, modelId),
+      ...(identity?.credentialProfileId !== undefined
+        ? {
+            credentialProfileId: identity.credentialProfileId,
+            credentialSelectionReason: identity.credentialSelectionReason,
+          }
+        : {}),
       ...(this.input.assertModelCallAccountingReady
         ? { assertReady: this.input.assertModelCallAccountingReady }
         : {}),
@@ -4385,6 +4499,7 @@ export class AiSdkBackend implements AgentBackend {
   private async cleanupAfterTurn(scope: TurnScope): Promise<void> {
     this.activeTurns.delete(scope);
     this.modelAdapter.endContinuation(scope.turnId);
+    await this.settleCredentialLease(scope);
     await scope.toolRuntime.endTurn(scope.aborted ? 'aborted' : 'completed');
   }
 

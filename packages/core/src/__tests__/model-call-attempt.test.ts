@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1,
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2,
   decodeModelCallAttempt,
   groupModelCallAttempts,
   settledAttempt,
@@ -71,10 +73,47 @@ describe('ModelCallAttempt codec', () => {
 
   test('rejects unknown fields, wrong schema version, and bad enums', () => {
     assert.throws(() => decodeModelCallAttempt({ ...attempt(), unexpected: true } as unknown));
-    assert.throws(() => decodeModelCallAttempt(attempt({ schemaVersion: 2 as never })));
+    assert.throws(() => decodeModelCallAttempt(attempt({ schemaVersion: 3 as never })));
     assert.throws(() => decodeModelCallAttempt(attempt({ callKind: 'tool' as never })));
     assert.throws(() => decodeModelCallAttempt(attempt({ usageBasis: 'guessed' as never })));
     assert.throws(() => decodeModelCallAttempt(attempt({ costBasis: 'free' as never })));
+  });
+
+  test('accepts v1 legacy records and v2 credential attribution', () => {
+    const v1 = attempt({ schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1 });
+    const decodedV1 = decodeModelCallAttempt(v1);
+    assert.equal(decodedV1.schemaVersion, MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V1);
+    assert.equal(decodedV1.credentialProfileId, undefined, 'v1 must not fabricate a profile id');
+
+    const v2 = attempt({
+      schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2,
+      credentialProfileId: 'profile-1',
+      credentialSelectionReason: 'weighted',
+    });
+    const decodedV2 = decodeModelCallAttempt(v2);
+    assert.equal(decodedV2.credentialProfileId, 'profile-1');
+    assert.equal(decodedV2.credentialSelectionReason, 'weighted');
+  });
+
+  test('rejects malformed credential attribution', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt(
+        attempt({
+          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2,
+          credentialProfileId: '',
+          credentialSelectionReason: 'weighted',
+        }),
+      ),
+    );
+    assert.throws(() =>
+      decodeModelCallAttempt(
+        attempt({
+          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION_V2,
+          credentialProfileId: 'profile-1',
+          credentialSelectionReason: 'random' as never,
+        }),
+      ),
+    );
   });
 
   test('rejects empty identity and non-integer ordinals', () => {

@@ -180,13 +180,14 @@ export class ModelAdapter {
     };
   }
 
-  resolveModel(): unknown {
-    if (providerAuthRequiresSecret(this.input.connection.providerType) && !this.input.apiKey) {
+  resolveModel(apiKeyOverride?: string): unknown {
+    const apiKey = apiKeyOverride ?? this.input.apiKey;
+    if (providerAuthRequiresSecret(this.input.connection.providerType) && !apiKey) {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);
     }
     return this.input.modelFactory({
       connection: this.input.connection,
-      apiKey: this.input.apiKey,
+      apiKey,
       modelId: this.input.modelId,
       resolvedRuntime: this.runtime,
       ...(this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
