@@ -26,7 +26,7 @@ test('owned hosted execution closes its fresh Host after configuration fails', a
     execution: {
       executionId: '00000000-0000-4000-8000-000000000002',
       session: {
-        cwd: rootPath,
+        workspace: { kind: 'host_path', path: rootPath },
         modelTarget: { kind: 'explicit', connectionSlug: 'missing', model: 'missing' },
       },
       content: { text: 'This request must not reach a provider.' },
@@ -48,7 +48,7 @@ test('pre-cancelled hosted execution does not start a Runtime Host', async () =>
     execution: {
       executionId: '00000000-0000-4000-8000-000000000003',
       session: {
-        cwd: rootPath,
+        workspace: { kind: 'host_path', path: rootPath },
         modelTarget: { kind: 'default' },
       },
       content: { text: 'This request must not start a Runtime Host.' },

@@ -64,12 +64,12 @@ test('Maka subject delegates one Hosted execution without owning Runtime lifecyc
         const payload = JSON.parse(Buffer.from(input.args[1] ?? '', 'base64url').toString()) as {
           execution: {
             executionId: string;
-            session: { cwd: string };
+            session: { workspace: { kind: string; path: string } };
             content: { text: string };
             maxSteps: number;
           };
         };
-        assert.equal(payload.execution.session.cwd, '/app');
+        assert.deepEqual(payload.execution.session.workspace, { kind: 'host_path', path: '/app' });
         assert.equal(payload.execution.content.text, 'official instruction');
         assert.equal(payload.execution.maxSteps, 100);
         return {

@@ -14,7 +14,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
       const input: HostedExecutionStartInput = {
         executionId,
         session: {
-          cwd: context.cwd,
+          workspace: { kind: 'host_path', path: context.cwd },
           modelTarget: {
             kind: 'explicit',
             connectionSlug: config.connectionSlug,

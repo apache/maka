@@ -12,10 +12,10 @@ async function readManifest(path) {
   return JSON.parse(await readFile(new URL(path, repoRoot), 'utf8'));
 }
 
-test('CLI pretest builds direct workspace dependencies and orders Headless', async () => {
+test('CLI pretest builds direct workspace dependencies and orders Eval', async () => {
   const root = await readManifest('package.json');
   const cli = await readManifest('packages/cli/package.json');
-  const headless = await readManifest('packages/headless/package.json');
+  const evalPackage = await readManifest('packages/eval/package.json');
   const workspaceNames = new Set();
 
   for (const workspacePath of root.workspaces) {
@@ -36,20 +36,20 @@ test('CLI pretest builds direct workspace dependencies and orders Headless', asy
     );
   }
 
-  const headlessIndex = pretest.indexOf(workspaceBuild(headless.name));
-  const headlessWorkspaceDependencies = Object.keys(headless.dependencies ?? {}).filter((name) =>
+  const evalIndex = pretest.indexOf(workspaceBuild(evalPackage.name));
+  const evalWorkspaceDependencies = Object.keys(evalPackage.dependencies ?? {}).filter((name) =>
     workspaceNames.has(name),
   );
-  for (const dependency of headlessWorkspaceDependencies) {
+  for (const dependency of evalWorkspaceDependencies) {
     const dependencyIndex = pretest.indexOf(workspaceBuild(dependency));
     assert.notEqual(
       dependencyIndex,
       -1,
-      `CLI pretest must build ${dependency} before ${headless.name}`,
+      `CLI pretest must build ${dependency} before ${evalPackage.name}`,
     );
     assert.ok(
-      dependencyIndex < headlessIndex,
-      `CLI pretest must build ${dependency} before ${headless.name}`,
+      dependencyIndex < evalIndex,
+      `CLI pretest must build ${dependency} before ${evalPackage.name}`,
     );
   }
 });
