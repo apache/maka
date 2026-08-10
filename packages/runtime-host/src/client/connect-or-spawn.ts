@@ -18,7 +18,13 @@ import {
   type ConnectRuntimeHostResult,
   type RuntimeHostConnection,
 } from './connection.js';
-import { launchDetachedRuntimeHostCandidate, type CandidateLauncher } from './launcher.js';
+import {
+  launchDetachedRuntimeHostCandidate,
+  launchOwnedRuntimeHostCandidate,
+  type CandidateLauncher,
+  type OwnedCandidateAttempt,
+} from './launcher.js';
+import { waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
@@ -63,6 +69,54 @@ export async function connectOrSpawnRuntimeHost(
   input: ConnectOrSpawnRuntimeHostInput,
 ): Promise<ConnectOrSpawnRuntimeHostResult> {
   return connectOrSpawnRuntimeHostWithDependencies(input, defaultDependencies);
+}
+
+export type ConnectOwnedRuntimeHostResult =
+  | { kind: 'connected'; connection: RuntimeHostConnection; host: OwnedCandidateAttempt }
+  | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: 'connected' }>
+  | { kind: 'failed'; reason: 'existing_host' };
+
+export async function connectOwnedRuntimeHost(
+  input: Omit<ConnectOrSpawnRuntimeHostInput, 'candidateEntrypoint'>,
+): Promise<ConnectOwnedRuntimeHostResult> {
+  let launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined;
+  let connection: RuntimeHostConnection | undefined;
+  try {
+    const result = await connectOrSpawnRuntimeHostWithDependencies(
+      {
+        ...input,
+        candidateEntrypoint: new URL('../execution-candidate-main.js', import.meta.url),
+      },
+      {
+        launchCandidate(candidate) {
+          launch ??= launchOwnedRuntimeHostCandidate({ ...candidate, idleGraceMs: 0 });
+          return launch;
+        },
+        random: Math.random,
+      },
+    );
+    const host = await launch?.spawned;
+    if (result.kind !== 'connected' || !host) {
+      if (result.kind === 'connected') await result.connection.close();
+      await host?.settle(1_000);
+      return result.kind === 'connected' ? { kind: 'failed', reason: 'existing_host' } : result;
+    }
+    connection = result.connection;
+    const diagnostics = await connection.queryHostDiagnostics();
+    if (diagnostics.pid !== host.pid) {
+      await connection.close();
+      connection = undefined;
+      await host.settle(1_000);
+      return { kind: 'failed', reason: 'existing_host' };
+    }
+    await waitForRuntimeHostReady(connection, input.electionDeadlineMs);
+    return { kind: 'connected', connection, host };
+  } catch {
+    await connection?.close().catch(() => undefined);
+    const host = await launch?.spawned.catch(() => undefined);
+    await host?.settle(1_000);
+    return { kind: 'failed', reason: 'host_unresponsive' };
+  }
 }
 
 export async function connectOrSpawnRuntimeHostWithDependencies(

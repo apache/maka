@@ -43,6 +43,7 @@ export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './configuration-change.js';
 export * from './goal.js';
+export * from './hosted-execution.js';
 export * from './plan.js';
 export * from './project-catalog.js';
 export * from './project-catalog-change.js';

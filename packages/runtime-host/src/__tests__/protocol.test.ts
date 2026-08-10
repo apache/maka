@@ -90,6 +90,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'goal.query',
       'host.diagnostics.query',
       'host.status',
+      'hosted.execution.cancel',
+      'hosted.execution.start',
       'interaction.answer',
       'interaction.query',
       'memory.mutate',

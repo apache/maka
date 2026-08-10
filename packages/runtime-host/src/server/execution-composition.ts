@@ -106,6 +106,8 @@ import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
+import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
+import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
 import { executeHostedExecutionToSettlement } from './hosted-execution-wait.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import {
@@ -1218,6 +1220,28 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
       memoryExtractionLane,
     });
+    const hostedExecutionRunner = new HostHostedExecutionRunner({
+      handlers: {
+        'session.create': sessionCatalog.handlers['session.create'],
+        'turn.start': interactiveTurns.handlers['turn.start'],
+        'turn.query': turnControl.handlers['turn.query'],
+        'turn.stop': turnControl.handlers['turn.stop'],
+        'usage.query': usagePricing.handlers['usage.query'],
+      },
+      context: {
+        hostEpoch: context.hostEpoch,
+        connectionId: 'hosted-execution',
+        surface: 'run',
+        principal: 'runtime_host',
+        acquireResidency: () => context.acquireResidency('hosted-execution'),
+      },
+      requestDrain: context.requestDrain,
+      waitForResidencies: () => context.waitForResidencies?.() ?? Promise.resolve(),
+    });
+    const hostedExecutions = new HostHostedExecutionCoordinator(
+      (input, signal) => hostedExecutionRunner.run(input, signal),
+      context.requestDrain,
+    );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     domainModules = [
       createRuntimeHostDomainModule({
@@ -1436,6 +1460,12 @@ export async function createExecutionRuntimeHostComposition(
           state: () => sessionRetirement.recover(),
         },
         close: [() => sessionRetirement.close()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'eval-execution',
+        handlers: [hostedExecutions.handlers],
+        drain: [() => hostedExecutions.beginDrain()],
+        close: [() => hostedExecutions.close()],
       }),
     ];
     if (draining) beginDrain();

@@ -70,6 +70,7 @@ export type MessageOperationKey = Extract<
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
 export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
+export type HostedExecutionOperationKey = Extract<OperationKey, `hosted.execution.${string}`>;
 export type ExternalSessionOperationKey = Extract<OperationKey, `external-session.${string}`>;
 export type AgentGraphOperationKey = Extract<OperationKey, `agent.graph.${string}`>;
 export type SessionContinuityOperationKey = Extract<
@@ -122,6 +123,10 @@ export type GoalOperationHandlerMap = Pick<OperationHandlerMap, GoalOperationKey
 export type ExecutionInspectOperationHandlerMap = Pick<
   OperationHandlerMap,
   ExecutionInspectOperationKey
+>;
+export type HostedExecutionOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  HostedExecutionOperationKey
 >;
 export type ExternalSessionOperationHandlerMap = Pick<
   OperationHandlerMap,

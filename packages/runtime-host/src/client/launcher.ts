@@ -17,6 +17,10 @@ export interface DetachedCandidateAttempt {
   pid: number;
 }
 
+export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
+  settle(timeoutMs: number): Promise<boolean>;
+}
+
 export interface DetachedCandidateLaunch {
   spawned: Promise<DetachedCandidateAttempt>;
 }
@@ -26,6 +30,36 @@ export type CandidateLauncher = (input: DetachedCandidateInput) => DetachedCandi
 export function launchDetachedRuntimeHostCandidate(
   input: DetachedCandidateInput,
 ): DetachedCandidateLaunch {
+  const child = spawnCandidate(input, true);
+  const spawned = spawnedPid(child).then(({ pid }) => {
+    child.unref();
+    return { pid };
+  });
+  return { spawned };
+}
+
+export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): {
+  readonly spawned: Promise<OwnedCandidateAttempt>;
+} {
+  const child = spawnCandidate(input, false);
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  return {
+    spawned: spawnedPid(child).then(({ pid }) => ({
+      pid,
+      async settle(timeoutMs: number): Promise<boolean> {
+        const result = await within(exited, timeoutMs);
+        if (result) return result.code === 0 && result.signal === null;
+        child.kill('SIGKILL');
+        await exited;
+        return false;
+      },
+    })),
+  };
+}
+
+function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
   const executable = input.executable ?? process.execPath;
   const args = [
     typeof input.entrypoint === 'string' ? input.entrypoint : fileURLToPath(input.entrypoint),
@@ -41,7 +75,7 @@ export function launchDetachedRuntimeHostCandidate(
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {
     cwd: dirname(isAbsolute(executable) ? executable : process.execPath),
-    detached: true,
+    detached,
     stdio: 'ignore',
     windowsHide: true,
     env: {
@@ -50,7 +84,11 @@ export function launchDetachedRuntimeHostCandidate(
       ...input.env,
     },
   });
-  const spawned = new Promise<DetachedCandidateAttempt>((resolve, reject) => {
+  return child;
+}
+
+function spawnedPid(child: ReturnType<typeof spawn>): Promise<DetachedCandidateAttempt> {
+  return new Promise<DetachedCandidateAttempt>((resolve, reject) => {
     const onSpawn = () => {
       child.off('error', onError);
       const pid = child.pid;
@@ -58,7 +96,6 @@ export function launchDetachedRuntimeHostCandidate(
         reject(new Error('Runtime Host candidate did not receive a process id'));
         return;
       }
-      child.unref();
       resolve({ pid });
     };
     const onError = (error: Error) => {
@@ -68,7 +105,20 @@ export function launchDetachedRuntimeHostCandidate(
     child.once('spawn', onSpawn);
     child.once('error', onError);
   });
-  return { spawned };
+}
+
+async function within<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function appendArgument(args: string[], key: string, value: string | number | undefined): void {

@@ -47,7 +47,9 @@ export interface HostedExecutionObservation extends HostedExecutionRef {
   readonly descriptor: RootExecutionDescriptor;
 }
 
-export type HostedExecutionCompletionObserver = (completion: HostedExecutionCompletion) => void;
+export type HostedExecutionCompletionObserver = (
+  completion: HostedExecutionCompletion,
+) => void | Promise<void>;
 
 export interface HostedExecutionAdmissionResult {
   readonly snapshot: HostedExecutionSnapshot;

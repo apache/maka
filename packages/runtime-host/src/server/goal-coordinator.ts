@@ -203,12 +203,11 @@ export class HostGoalCoordinator {
     }
     const registration = this.continuation.beginObservedTurn(input.sessionId, input.turnId);
     if (registration.kind !== 'registered') return undefined;
-    return (completion) => {
-      void registration.settle(goalOutcomeFromCompletion(completion)).catch((error) => {
+    return (completion) =>
+      registration.settle(goalOutcomeFromCompletion(completion)).catch((error) => {
         this.#persistenceFailure ??= error;
         this.#requestDrain();
       });
-    };
   }
 
   matchesActive(

@@ -87,6 +87,7 @@ export interface RuntimeHostCompositionContext<K extends StorageRootKind = 'inte
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
   retainUntilProcessExit(): void;
   requestDrain(): void;
+  waitForResidencies?(): Promise<void>;
 }
 
 export interface RuntimeHostComposition {
@@ -277,6 +278,7 @@ export class RuntimeHostKernel {
           acquireResidency: (label) => this.#acquireResidency(label),
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
+          waitForResidencies: () => this.#waitForResidencies(),
         });
         for (const session of this.#connectionSessions) session.attachGlobalChanges();
         if (this.#shutdownRequested) this.#beginCompositionDrain();

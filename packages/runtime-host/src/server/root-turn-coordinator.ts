@@ -126,6 +126,7 @@ interface ActiveRootTurn {
   completionObserver?: HostedExecutionCompletionObserver;
   completion: ValueDeferred<HostedExecutionCompletion>;
   observedCompletion?: HostedExecutionCompletion;
+  observationSettled?: Promise<void>;
   startSettled: Deferred;
   done: Promise<void>;
   residency: RuntimeHostResidency;
@@ -2139,6 +2140,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       this.requestHostDrain();
       throw commandFailure;
     } finally {
+      this.observeExecutionCompletion(active, {
+        kind: 'authority_error',
+        execution: active,
+        reason: 'Runtime root Turn ended without a canonical completion.',
+      });
+      await active.observationSettled?.catch(() => this.requestHostDrain());
       let releaseRootOwnership = active.messageTransitionCommitted;
       if (!active.messageTransitionCommitted) {
         try {
@@ -2156,11 +2163,6 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         this.#executions.release(active);
         active.residency.release();
       }
-      this.observeExecutionCompletion(active, {
-        kind: 'authority_error',
-        execution: active,
-        reason: 'Runtime root Turn ended without a canonical completion.',
-      });
       active.completion.resolve(active.observedCompletion!);
       this.#executions.publish(active);
     }
@@ -2172,7 +2174,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   ): void {
     if (active.observedCompletion) return;
     active.observedCompletion = completion;
-    active.completionObserver?.(completion);
+    const settlement = active.completionObserver?.(completion);
+    if (settlement) active.observationSettled = Promise.resolve(settlement);
   }
 
   private async interruptPlanAfterUnsuccessfulTurn(

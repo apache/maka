@@ -13,6 +13,7 @@ import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
+import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
@@ -147,6 +148,7 @@ export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOSTED_EXECUTION_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
