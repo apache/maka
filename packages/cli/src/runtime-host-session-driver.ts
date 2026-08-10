@@ -47,6 +47,7 @@ import type {
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
+  MakaTranscriptReplacementReason,
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
@@ -87,7 +88,12 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
     listener: (sessionId: string, requestId: string) => void,
   ): () => void;
   subscribeTranscriptReplacements(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void;
   listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]>;
   subscribeShellRunUpdates(listener: (update: ShellRunUpdate) => void): () => void;
@@ -125,7 +131,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     (sessionId: string, requestId: string) => void
   >();
   readonly #transcriptListeners = new Set<
-    (sessionId: string, turnId: string, messages: StoredMessage[]) => void
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
   >();
 
   constructor(input: RuntimeHostMakaSessionDriverInput) {
@@ -531,7 +542,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   subscribeTranscriptReplacements(
-    listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
   ): () => void {
     this.#transcriptListeners.add(listener);
     return () => this.#transcriptListeners.delete(listener);
@@ -829,6 +845,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
+      onTranscriptReplaced: (turnId, messages) =>
+        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+      onRecovered: () => this.#refreshRuntimeResources(sessionId),
     });
   }
 
@@ -866,12 +885,34 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     void loadCurrentMessages(this.#connection, turn.sessionId)
       .then((messages) => {
         if (this.#sessionId !== turn.sessionId) return;
-        for (const listener of this.#transcriptListeners) {
-          listener(
-            turn.sessionId,
-            turn.turnId,
-            messages.map((message) => structuredClone(message)),
-          );
+        this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
+      })
+      .catch(() => undefined);
+  }
+
+  #publishTranscriptReplacement(
+    sessionId: string,
+    turnId: string,
+    messages: readonly StoredMessage[],
+    reason: MakaTranscriptReplacementReason,
+  ): void {
+    if (this.#sessionId !== sessionId) return;
+    for (const listener of this.#transcriptListeners) {
+      listener(
+        sessionId,
+        turnId,
+        messages.map((message) => structuredClone(message)),
+        reason,
+      );
+    }
+  }
+
+  #refreshRuntimeResources(sessionId: string): void {
+    void readRuntimeHostResources(this.#connection, sessionId)
+      .then((resources) => {
+        if (this.#sessionId !== sessionId) return;
+        for (const resource of resources) {
+          for (const listener of this.#shellRunListeners) listener(resource);
         }
       })
       .catch(() => undefined);

@@ -300,8 +300,9 @@ function mergeLiveOverPersisted(
  *   pre-merged with `\n\n`). Rendered as a collapsed "深度思考" disclosure.
  * - `text`: one assistant answer segment (a step's text). `ts` is the source
  *   step's wall-clock for hover meta.
- * - `tools`: one contiguous group of tool activity, rendered as a single
- *   Astryx tool group. Adjacent groups are pre-merged.
+ * - `tools`: one contiguous group of tool activity. Adjacent groups are
+ *   pre-merged; presentation may split ordinary evidence and linked-session
+ *   navigation into adjacent native Astryx segments without reordering them.
  *
  * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,

@@ -952,15 +952,22 @@ function ipcHarness() {
 }
 
 function registerExecutionIpc(
-  deps: Omit<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'> &
+  deps: Omit<
+    RuntimeHostSessionExecutionIpcDeps,
+    'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+  > &
     Partial<
-      Pick<RuntimeHostSessionExecutionIpcDeps, 'sessionCopyCleanup' | 'onBackgroundError'>
+      Pick<
+        RuntimeHostSessionExecutionIpcDeps,
+        'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
+      >
     >,
   ipcMain: Pick<IpcMain, 'handle'>,
 ): (sessionId: string) => Promise<void> {
   return registerRuntimeHostSessionExecutionIpc(
     {
       ...deps,
+      observations: deps.observations ?? deps.observer,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
       onBackgroundError: deps.onBackgroundError ?? (() => undefined),
     },

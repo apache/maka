@@ -237,6 +237,12 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Restore Electron artifact cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
       - run: npm ci
       - name: Ensure xvfb
         run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }

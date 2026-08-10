@@ -274,12 +274,14 @@ describe('subagent tools', () => {
       supportedWriteBack: [AGENT_WRITE_BACK_PATCH],
     });
     expect(IMPLEMENTATION_AGENT_DEFINITION.permissionMode).toBe('execute');
+    expect(IMPLEMENTATION_AGENT_DEFINITION.toolGroups).toEqual(['file_edit']);
     expect([...IMPLEMENTATION_AGENT_DEFINITION.tools]).toEqual([
       'Read',
       'Glob',
       'Grep',
       'Write',
       'Edit',
+      'apply_patch',
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',
@@ -381,6 +383,30 @@ describe('subagent tools', () => {
     });
   });
 
+  test('implementation remains available with the Write and Edit fallback', () => {
+    const tools = implementationCatalogTools().filter((tool) => tool.name !== 'apply_patch');
+    expect(
+      evaluateAgentDefinitionAvailability({
+        definition: IMPLEMENTATION_AGENT_DEFINITION,
+        tools,
+        worktreeChildExecutorAvailable: true,
+      }),
+    ).toEqual({ status: 'available' });
+  });
+
+  test('implementation remains available with the ApplyPatch alternative', () => {
+    const tools = implementationCatalogTools().filter(
+      (tool) => tool.name !== 'Write' && tool.name !== 'Edit',
+    );
+    expect(
+      evaluateAgentDefinitionAvailability({
+        definition: IMPLEMENTATION_AGENT_DEFINITION,
+        tools,
+        worktreeChildExecutorAvailable: true,
+      }),
+    ).toEqual({ status: 'available' });
+  });
+
   test('legacy parent mode does not override the authoritative child boundary and tool surface', () => {
     assertAgentDefinitionRunnable({
       definition: {
@@ -431,6 +457,7 @@ describe('subagent tools', () => {
       'WebSearch',
       'Write',
       'Edit',
+      'apply_patch',
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',
@@ -442,6 +469,7 @@ describe('subagent tools', () => {
       'WebSearch',
       'Write',
       'Edit',
+      'apply_patch',
       'Bash',
       'WriteStdin',
       'StopBackgroundTask',

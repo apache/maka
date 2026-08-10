@@ -1,5 +1,15 @@
 import type { PlanReminder } from '@maka/core';
-import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer, Upload } from './icons.js';
+import {
+  AlertCircle,
+  Archive,
+  Blocks,
+  Download,
+  MessageSquare,
+  Settings,
+  SquarePen,
+  Timer,
+  Upload,
+} from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -20,6 +30,8 @@ export function SessionSidebarNav(props: {
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
+  const activeSessionFilter =
+    props.selection.section === 'sessions' ? props.selection.filter : undefined;
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'plan-reminders' };
   const activePlanReminderCount = (props.planReminders ?? []).filter(
     (reminder) => reminder.status !== 'completed',
@@ -48,6 +60,20 @@ export function SessionSidebarNav(props: {
       {props.onImport && (
         <SideNavItem label={copy.importSession} icon={Upload} size="md" onClick={props.onImport} />
       )}
+      <SideNavItem
+        label={copy.conversations}
+        icon={MessageSquare}
+        size="md"
+        isSelected={activeSessionFilter === 'chats'}
+        onClick={() => props.onSelect({ section: 'sessions', filter: 'chats' })}
+      />
+      <SideNavItem
+        label={copy.archivedConversations}
+        icon={Archive}
+        size="md"
+        isSelected={activeSessionFilter === 'archived'}
+        onClick={() => props.onSelect({ section: 'sessions', filter: 'archived' })}
+      />
       <SideNavItem
         label={copy.extensions}
         icon={Blocks}

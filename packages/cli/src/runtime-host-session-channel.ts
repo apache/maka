@@ -4,9 +4,12 @@ import {
   isRuntimeHostTerminalTurn as isTerminalTurn,
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
 } from '@maka/runtime-host/adapter';
-import type {
-  RuntimeHostConnection,
-  RuntimeHostSessionSubscription,
+import {
+  isRuntimeHostReconnectingConnection,
+  RuntimeHostRequestInterruptedError,
+  RuntimeHostSubscriptionError,
+  type RuntimeHostConnection,
+  type RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
 import type {
   InteractionAnsweredSnapshot,
@@ -35,37 +38,46 @@ export interface RuntimeHostSessionChannelOptions {
   onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
+  onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
+  onRecovered: () => void;
 }
 
 export class RuntimeHostSessionChannel {
   readonly sessionId: string;
   readonly messages: StoredMessage[];
   snapshot: SessionContinuitySnapshot;
-  readonly #subscription: RuntimeHostSessionSubscription;
+  readonly #connection: Pick<RuntimeHostConnection, 'openSessionSubscription'>;
+  #subscription: RuntimeHostSessionSubscription;
   readonly #now: () => number;
   readonly #onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
   readonly #onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
   readonly #onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   readonly #onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   readonly #onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
+  readonly #onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
+  readonly #onRecovered: () => void;
   readonly #turns = new Map<string, SessionEventQueue>();
   readonly #pendingFrames: SubscriptionFrame[] = [];
   readonly #pendingStartedTurns = new Map<string, MakaPreparedSessionTurn>();
   readonly #pendingOpenedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingResolvedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingTerminalTurns: TerminalTurnSnapshot[] = [];
+  readonly #failedSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
   #projector: RuntimeHostSessionProjector | undefined;
   #ready = false;
   #activated = false;
   #startedTurnBarrier: string | undefined;
   #closing = false;
   #failure: Error | undefined;
+  #recoveryTask: Promise<void> | undefined;
 
   private constructor(
     subscription: RuntimeHostSessionSubscription,
     messages: StoredMessage[],
     options: Omit<RuntimeHostSessionChannelOptions, 'connection' | 'sessionId'>,
+    connection: Pick<RuntimeHostConnection, 'openSessionSubscription'>,
   ) {
+    this.#connection = connection;
     this.#subscription = subscription;
     this.sessionId = subscription.snapshot.session.sessionId;
     this.snapshot = structuredClone(subscription.snapshot);
@@ -76,6 +88,8 @@ export class RuntimeHostSessionChannel {
     this.#onInteractionPending = options.onInteractionPending;
     this.#onInteractionResolved = options.onInteractionResolved;
     this.#onTurnTerminal = options.onTurnTerminal;
+    this.#onTranscriptReplaced = options.onTranscriptReplaced;
+    this.#onRecovered = options.onRecovered;
   }
 
   static async open(
@@ -85,31 +99,44 @@ export class RuntimeHostSessionChannel {
       sessionId: options.sessionId,
     });
     const initialRoot = structuredClone(subscription.snapshot.rootTurn);
-    const channel = new RuntimeHostSessionChannel(subscription, [], options);
-    void channel.#pump();
+    const channel = new RuntimeHostSessionChannel(subscription, [], options, options.connection);
+    void channel.#pump(subscription);
     try {
-      const messages = await subscription.loadTranscript(decodeStoredMessageForRead);
-      channel.messages.push(...messages.map((message) => structuredClone(message)));
-      channel.#projector = new RuntimeHostSessionProjector(
-        channel.snapshot,
-        channel.messages,
-        options.now,
-      );
-      for (const event of channel.#projector.seedActive(false)) channel.#emit(event);
-      channel.#ready = true;
-      for (const frame of channel.#pendingFrames.splice(0)) channel.#accept(frame);
+      const recovered = await channel.#hydrateInitial(subscription);
+      const root = recovered ? structuredClone(channel.snapshot.rootTurn) : initialRoot;
       return {
         channel,
         messages: channel.messages.map((message) => structuredClone(message)),
-        ...(initialRoot && !isTerminalTurn(initialRoot)
-          ? { attachedTurnId: initialRoot.turnId }
-          : {}),
-        ...(initialRoot && isTerminalTurn(initialRoot) ? { terminalTurn: initialRoot } : {}),
+        ...(root && !isTerminalTurn(root) ? { attachedTurnId: root.turnId } : {}),
+        ...(root && isTerminalTurn(root) ? { terminalTurn: root } : {}),
       };
     } catch (error) {
       await channel.close().catch(() => undefined);
       throw error;
     }
+  }
+
+  async #hydrateInitial(subscription: RuntimeHostSessionSubscription): Promise<boolean> {
+    let messages: StoredMessage[] | undefined;
+    try {
+      messages = await subscription.loadTranscript(decodeStoredMessageForRead);
+    } catch (error) {
+      if (!this.#canRecover(error)) throw error;
+      this.#failedSubscriptions.add(subscription);
+    }
+    if (this.#failedSubscriptions.has(subscription)) {
+      await this.#recover(subscription);
+      if (!this.#ready) {
+        throw this.#failure ?? new Error('Runtime Host Session recovery ended before hydration');
+      }
+      return true;
+    }
+    this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
+    this.#projector = new RuntimeHostSessionProjector(this.snapshot, this.messages, this.#now);
+    for (const event of this.#projector.seedActive(false)) this.#emit(event);
+    this.#ready = true;
+    for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+    return false;
   }
 
   async *eventsForTurn(turnId: string): AsyncIterable<SessionEvent> {
@@ -208,13 +235,16 @@ export class RuntimeHostSessionChannel {
     await this.#subscription.close();
   }
 
-  async #pump(): Promise<void> {
+  async #pump(subscription: RuntimeHostSessionSubscription): Promise<void> {
     try {
-      for await (const frame of this.#subscription) {
-        if (this.#closing) return;
+      for await (const frame of subscription) {
+        if (this.#closing || this.#subscription !== subscription) return;
         if (!this.#ready) {
           if (this.#pendingFrames.length >= MAX_PENDING_FRAMES) {
-            throw new Error('Runtime Host transcript could not keep up with live Session events');
+            throw new RuntimeHostSubscriptionError(
+              'slow_consumer',
+              'Runtime Host transcript could not keep up with live Session events',
+            );
           }
           this.#pendingFrames.push(frame);
         } else {
@@ -223,9 +253,174 @@ export class RuntimeHostSessionChannel {
       }
       if (!this.#closing) throw new Error('Runtime Host Session subscription ended unexpectedly');
     } catch (error) {
-      if (this.#closing) return;
+      if (this.#closing || this.#subscription !== subscription) return;
+      if (this.#canRecover(error)) {
+        this.#failedSubscriptions.add(subscription);
+        if (!this.#ready) return;
+        if (this.#recoveryTask) {
+          const schedule = () => {
+            if (this.#subscription === subscription && !this.#closing) {
+              this.#scheduleRecovery(subscription);
+            }
+          };
+          void this.#recoveryTask.then(schedule, schedule);
+        } else {
+          this.#scheduleRecovery(subscription);
+        }
+        return;
+      }
       this.#fail(error);
     }
+  }
+
+  #scheduleRecovery(failed: RuntimeHostSessionSubscription): void {
+    if (this.#closing || this.#failure || this.#subscription !== failed || this.#recoveryTask)
+      return;
+    const task = this.#recover(failed);
+    this.#recoveryTask = task;
+    void task
+      .catch((error: unknown) => {
+        if (!this.#closing) this.#fail(error);
+      })
+      .finally(() => {
+        if (this.#recoveryTask === task) this.#recoveryTask = undefined;
+      });
+  }
+
+  async #recover(failed: RuntimeHostSessionSubscription): Promise<void> {
+    let previous = failed;
+    while (!this.#closing && !this.#failure && this.#subscription === previous) {
+      await previous.close().catch(() => undefined);
+      let replacement: RuntimeHostSessionSubscription;
+      try {
+        replacement = await this.#connection.openSessionSubscription({ sessionId: this.sessionId });
+      } catch (error) {
+        if (this.#canRecover(error)) continue;
+        throw error;
+      }
+      if (this.#closing || this.#failure || this.#subscription !== previous) {
+        await replacement.close().catch(() => undefined);
+        return;
+      }
+      this.#subscription = replacement;
+      this.#ready = false;
+      this.#pendingFrames.length = 0;
+      void this.#pump(replacement);
+      try {
+        const messages = await replacement.loadTranscript(decodeStoredMessageForRead);
+        if (this.#failedSubscriptions.has(replacement)) {
+          throw new RuntimeHostSubscriptionError(
+            'connection_closed',
+            'Runtime Host Session subscription closed during catch-up',
+          );
+        }
+        if (this.#closing || this.#failure || this.#subscription !== replacement) return;
+        const replacedLiveState = this.#acceptCanonicalReplacement(messages);
+        this.#ready = true;
+        for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
+        if (replacedLiveState) this.#onRecovered();
+        return;
+      } catch (error) {
+        if (!this.#canRecover(error)) throw error;
+        previous = replacement;
+      }
+    }
+  }
+
+  #acceptCanonicalReplacement(messages: StoredMessage[]): boolean {
+    const replacedLiveState = this.#projector !== undefined;
+    const previousSnapshot = this.snapshot;
+    const nextSnapshot = structuredClone(this.#subscription.snapshot);
+    this.messages.splice(
+      0,
+      this.messages.length,
+      ...messages.map((message) => structuredClone(message)),
+    );
+    this.snapshot = nextSnapshot;
+    this.#projector = new RuntimeHostSessionProjector(nextSnapshot, this.messages, this.#now);
+    if (!replacedLiveState) {
+      for (const event of this.#projector.seedActive(false)) this.#emit(event);
+      return false;
+    }
+
+    const previousRoot = previousSnapshot.rootTurn;
+    const root = nextSnapshot.rootTurn;
+    const transcriptTurnId = root?.turnId ?? previousRoot?.turnId;
+    if (transcriptTurnId) {
+      this.#onTranscriptReplaced(
+        transcriptTurnId,
+        this.messages.map((message) => structuredClone(message)),
+      );
+    }
+
+    const previousPending = new Map(
+      previousSnapshot.interactions.pending.map((pending) => [pending.interactionId, pending]),
+    );
+    const nextPendingIds = new Set(
+      nextSnapshot.interactions.pending.map((pending) => pending.interactionId),
+    );
+    for (const pending of previousPending.values()) {
+      if (nextPendingIds.has(pending.interactionId)) continue;
+      if (this.#activated) this.#onInteractionResolved(structuredClone(pending));
+      else this.#pendingResolvedInteractions.push(structuredClone(pending));
+    }
+    for (const pending of nextSnapshot.interactions.pending) {
+      if (previousPending.has(pending.interactionId)) continue;
+      const copy = structuredClone(pending);
+      if (this.#activated) this.#onInteractionPending(copy);
+      else this.#pendingOpenedInteractions.push(copy);
+    }
+
+    if (
+      previousRoot &&
+      !isTerminalTurn(previousRoot) &&
+      (!root || root.runId !== previousRoot.runId)
+    ) {
+      const terminalEvents = this.#projector.seedStoredTerminal(previousRoot.turnId, this.messages);
+      if (terminalEvents.length === 0) {
+        throw new RuntimeHostSubscriptionError(
+          'projection_revision_invalid',
+          `Runtime Host replacement omitted the terminal record for Turn ${previousRoot.turnId}`,
+        );
+      }
+      for (const event of terminalEvents) this.#emit(event);
+      this.#queue(previousRoot.turnId).finish();
+    }
+
+    if (root && !isTerminalTurn(root)) {
+      for (const event of this.#projector.seedActive(false)) this.#emit(event);
+      if (!previousRoot || previousRoot.runId !== root.runId) {
+        const turn = {
+          sessionId: this.sessionId,
+          turnId: root.turnId,
+          runId: root.runId,
+          events: this.eventsForTurn(root.turnId),
+        } satisfies MakaPreparedSessionTurn;
+        if (this.#activated && !this.#startedTurnBarrier) this.#onTurnStarted(turn);
+        else this.#pendingStartedTurns.set(turn.turnId, turn);
+      }
+    } else if (root && isTerminalTurn(root) && !sameTerminalTurn(previousRoot, root)) {
+      for (const event of this.#projector.seedTerminal(root)) this.#emit(event);
+      this.#queue(root.turnId).finish();
+      if (this.#activated) this.#onTurnTerminal(root);
+      else this.#pendingTerminalTurns.push(root);
+    }
+    return true;
+  }
+
+  #canRecover(error: unknown): boolean {
+    if (!isRuntimeHostReconnectingConnection(this.#connection)) return false;
+    if (error instanceof RuntimeHostRequestInterruptedError) {
+      return error.reason === 'connection_lost';
+    }
+    return (
+      error instanceof RuntimeHostSubscriptionError &&
+      (error.reason === 'connection_closed' ||
+        error.reason === 'sequence_gap' ||
+        error.reason === 'projection_revision_invalid' ||
+        error.reason === 'slow_consumer' ||
+        error.reason === 'transcript_expired')
+    );
   }
 
   #accept(frame: SubscriptionFrame): void {
@@ -238,6 +433,12 @@ export class RuntimeHostSessionChannel {
       return;
     }
     if (frame.kind === 'subscription.closed') {
+      if (frame.reason === 'slow_consumer') {
+        throw new RuntimeHostSubscriptionError(
+          'slow_consumer',
+          'Runtime Host Session subscription consumer fell behind',
+        );
+      }
       this.#fail(new Error(`Runtime Host Session subscription closed: ${frame.reason}`));
       return;
     }
@@ -356,4 +557,16 @@ class SessionEventQueue implements AsyncIterable<SessionEvent>, AsyncIterator<Se
     this.#waiting?.reject(error);
     this.#waiting = undefined;
   }
+}
+
+function sameTerminalTurn(
+  previous: SessionContinuitySnapshot['rootTurn'],
+  next: TerminalTurnSnapshot,
+): boolean {
+  return (
+    previous !== null &&
+    isTerminalTurn(previous) &&
+    previous.runId === next.runId &&
+    previous.terminalEventId === next.terminalEventId
+  );
 }

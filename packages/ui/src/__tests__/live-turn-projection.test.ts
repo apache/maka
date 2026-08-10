@@ -914,6 +914,21 @@ describe('reconcileTerminalLiveTurn', () => {
     assert.equal(reconcileTerminalLiveTurn(toolOnly, []), toolOnly);
   });
 
+  it('keeps terminal steering visible until durable history covers it', () => {
+    const steeringOnly: LiveTurnProjection = {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      terminal: true,
+      steps: [],
+      steering: [{ id: 'steer-1', text: 'guide this turn', ts: 2 }],
+    };
+
+    assert.equal(reconcileTerminalLiveTurn(steeringOnly, []), steeringOnly);
+    assert.equal(reconcileTerminalLiveTurn(steeringOnly, [
+      { type: 'user', id: 'steer-1', turnId: 'turn-1', ts: 2, text: 'guide this turn', steeringEventId: 'event-steer' },
+    ]), undefined);
+  });
+
   it('retains interrupted live output until a persisted result covers it', () => {
     const withOutput: LiveTurnProjection = {
       ...toolOnly,

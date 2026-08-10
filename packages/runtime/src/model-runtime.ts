@@ -6,6 +6,7 @@ import {
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
 export type ModelRuntimeWire =
   | 'anthropic-messages'
@@ -30,6 +31,8 @@ export interface ResolvedModelRuntime {
   wire: ModelRuntimeWire;
   /** Durable reasoning replay semantics carried by that wire. */
   reasoningReplay: ReasoningReplayContract;
+  /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
+  applyPatchProfile: ApplyPatchProfile | null;
 }
 
 export interface ModelRuntimeConnection {
@@ -63,7 +66,7 @@ export function resolveModelRuntime(
       `Kimi Coding Plan protocol must be openai-chat or anthropic-messages, received ${apiProtocol}`,
     );
   }
-  const adapter =
+  const adapter: ProviderRuntimeAdapter =
     connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
       ? ({
           kind: 'openai-compatible',
@@ -87,6 +90,10 @@ export function resolveModelRuntime(
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
     reasoningReplay: reasoningReplayContract(adapter, wire),
+    applyPatchProfile: resolveApplyPatchProfile(
+      { wire, applyPatchProtocol: adapter.applyPatchProtocol },
+      modelId,
+    ),
   };
 }
 

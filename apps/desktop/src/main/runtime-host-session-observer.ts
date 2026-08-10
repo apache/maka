@@ -24,6 +24,7 @@ import type {
   DesktopRuntimeHostClient,
   DesktopRuntimeHostSession,
 } from "./runtime-host-client.js";
+import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 
 const MAX_PENDING_FRAMES = 512;
 
@@ -51,6 +52,7 @@ export interface RuntimeHostSessionObserverDeps {
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
   onSubscriptionFailure?: (sessionId: string, error: unknown) => void;
+  recoverConnectionClosed?: boolean;
   now?: () => number;
 }
 
@@ -106,6 +108,7 @@ export class RuntimeHostSessionObserver {
     outcome: "completed" | "abandoned",
   ) => void | Promise<void>;
   readonly #onSubscriptionFailure: (sessionId: string, error: unknown) => void;
+  readonly #recoverConnectionClosed: boolean;
   readonly #now: () => number;
   #closed = false;
 
@@ -122,6 +125,7 @@ export class RuntimeHostSessionObserver {
       deps.onWatchedTurnFinished ?? (() => undefined);
     this.#onSubscriptionFailure =
       deps.onSubscriptionFailure ?? (() => undefined);
+    this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
     this.#now = deps.now ?? Date.now;
   }
 
@@ -376,7 +380,16 @@ export class RuntimeHostSessionObserver {
         );
       }
     } catch (error) {
-      if (!state.closing) this.#publishSubscriptionFailure(state, error);
+      if (state.closing) return;
+      if (
+        this.#recoverConnectionClosed &&
+        error instanceof RuntimeHostSubscriptionError &&
+        error.reason === "connection_closed"
+      ) {
+        void this.#closeState(state);
+        return;
+      }
+      this.#publishSubscriptionFailure(state, error);
     }
   }
 

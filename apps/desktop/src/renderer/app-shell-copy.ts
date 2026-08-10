@@ -4,10 +4,6 @@ import { getShellCopy } from './locales/shell-copy.js';
 
 const SESSION_READ_MESSAGES_ERROR_MARKER = 'MAKA_SESSION_READ_MESSAGES_ERROR:';
 
-export function messageReadErrorMessage(error: unknown, locale: UiLocale): string {
-  return sessionMessageErrorMessage(error, getShellCopy(locale).errors.messageRead, locale);
-}
-
 export function messageRefreshErrorMessage(error: unknown, locale: UiLocale): string {
   return sessionMessageErrorMessage(error, getShellCopy(locale).errors.messageRefresh, locale);
 }

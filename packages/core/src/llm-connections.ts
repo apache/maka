@@ -22,6 +22,7 @@ import {
   RECOMMENDED_PROVIDER_TYPES,
   isWiredOAuthProvider,
   normalizeProviderType,
+  type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
   type ProviderDefaults,
@@ -42,6 +43,7 @@ export {
   normalizeProviderType,
 };
 export type {
+  ApplyPatchProtocol,
   ProviderCatalogGroup,
   ProviderCategory,
   ProviderDefaults,

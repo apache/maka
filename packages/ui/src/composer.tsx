@@ -49,6 +49,7 @@ import {
   fileTransferContainsFiles,
   isChatInputComposing,
   mentionQueryMatches,
+  slashCommandQuery,
   skillMentionQuery,
   type ChatInputActionOwner,
   type ComposerTextPort,
@@ -105,12 +106,11 @@ export interface ComposerSlashCommandOption {
   description?: string;
   keywords?: readonly string[];
   Icon?: LucideIcon;
-  onSelect(): void;
 }
 
 type ComposerSlashSuggestion =
-  | { kind: 'command'; command: ComposerSlashCommandOption }
-  | { kind: 'skill'; skill: ComposerSkillOption };
+  | { kind: 'command'; command: ComposerSlashCommandOption; group: string }
+  | { kind: 'skill'; skill: ComposerSkillOption; group: string };
 
 /**
  * The draft text a chosen Skill becomes. This is the product-wide invocation
@@ -228,11 +228,13 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
-    /** Insert a text-only instruction into the active turn at its next step boundary. */
-    onSteer?(
+    /** Submit while a turn is active; the host owns control-command versus steering semantics. */
+    onStreamingSubmit?(
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
+    /** Return true when this draft must bypass the local mid-turn queue. */
+    shouldSubmitWhileStreaming?(text: string): boolean;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
@@ -710,14 +712,16 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    commandsGroup: mentionCopy.commandsGroup,
+    skillsGroup: mentionCopy.skillsGroup,
   });
-  useEffect(() => {
-    mentionSourceRef.current = {
-      mentionSkills: props.mentionSkills,
-      slashCommands: props.slashCommands,
-      onSearchMentionFiles: props.onSearchMentionFiles,
-    };
-  });
+  mentionSourceRef.current = {
+    mentionSkills: props.mentionSkills,
+    slashCommands: props.slashCommands,
+    onSearchMentionFiles: props.onSearchMentionFiles,
+    commandsGroup: mentionCopy.commandsGroup,
+    skillsGroup: mentionCopy.skillsGroup,
+  };
 
   const searchSourcesRef = useRef<{ files: SearchSource; skills: SearchSource }>(null);
   if (!searchSourcesRef.current) {
@@ -732,21 +736,45 @@ export const Composer = forwardRef<
     };
     const files = createTriggerSearchSource<SearchableItem>(runFileSearch);
     const listSlashSuggestions = (rawQuery: string): SearchableItem[] => {
-      const skills = mentionSourceRef.current.mentionSkills ?? [];
-      const commands = mentionSourceRef.current.slashCommands ?? [];
+      const source = mentionSourceRef.current;
+      const skills = source.mentionSkills ?? [];
+      const editable = editableNode();
+      const selection = document.getSelection();
+      let textBeforeCaret = textPort.getValue();
+      let textAfterCaret = '';
+      if (
+        editable &&
+        selection?.focusNode &&
+        editable.contains(selection.focusNode)
+      ) {
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        range.setEnd(selection.focusNode, selection.focusOffset);
+        textBeforeCaret = range.toString();
+        range.selectNodeContents(editable);
+        range.setStart(selection.focusNode, selection.focusOffset);
+        textAfterCaret = range.toString();
+      }
+      const commandQuery = slashCommandQuery(textBeforeCaret, textAfterCaret, rawQuery);
       const query = skillMentionQuery(rawQuery);
-      const commandItems = commands
-        .filter((command) =>
-          mentionQueryMatches(
-            query,
-            `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
-          ),
-        )
-        .map((command) => ({
-          id: `command:${command.id}`,
-          label: command.name,
-          auxiliaryData: { kind: 'command', command } satisfies ComposerSlashSuggestion,
-        }));
+      const commandItems = commandQuery === null
+        ? []
+        : (source.slashCommands ?? [])
+            .filter((command) =>
+              mentionQueryMatches(
+                commandQuery,
+                `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
+              ),
+            )
+            .map((command) => ({
+              id: `command:${command.id}`,
+              label: command.name,
+              auxiliaryData: {
+                kind: 'command',
+                command,
+                group: source.commandsGroup,
+              } satisfies ComposerSlashSuggestion,
+            }));
       const skillItems = skills
         .filter((skill) =>
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
@@ -754,7 +782,11 @@ export const Composer = forwardRef<
         .map((skill) => ({
           id: `skill:${skill.id}`,
           label: skill.name,
-          auxiliaryData: { kind: 'skill', skill } satisfies ComposerSlashSuggestion,
+          auxiliaryData: {
+            kind: 'skill',
+            skill,
+            group: source.skillsGroup,
+          } satisfies ComposerSlashSuggestion,
         }));
       return [...commandItems, ...skillItems].slice(0, 50);
     };
@@ -847,7 +879,10 @@ export const Composer = forwardRef<
                   />
                 ) : null}
                 <span className="maka-composer-mention-text">
-                  <span className="maka-composer-mention-name">{command.name}</span>
+                  <span className="maka-composer-mention-name">
+                    {command.name}
+                    <span className="maka-composer-command-token">/{command.id}</span>
+                  </span>
                   <span className="maka-composer-mention-secondary">
                     {command.description}
                   </span>
@@ -884,8 +919,7 @@ export const Composer = forwardRef<
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
           if (suggestion.kind === 'command') {
-            suggestion.command.onSelect();
-            return '';
+            return `/${suggestion.command.id} `;
           }
           return inlineReferenceToken({
             kind: 'skill',
@@ -916,7 +950,7 @@ export const Composer = forwardRef<
     const editable = editableNode();
     if (editable?.getAttribute('aria-expanded') !== 'true') return;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }, [props.mentionSkills, props.slashCommands]);
+  }, [locale, props.mentionSkills, props.slashCommands]);
 
   /**
    * An open menu must follow the caret, not just the text. `useTriggerMenu`
@@ -1109,7 +1143,9 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      const submit = props.streaming && props.onSteer ? props.onSteer : props.onSend;
+      const submit = props.streaming && props.onStreamingSubmit
+        ? props.onStreamingSubmit
+        : props.onSend;
       sent = await submit(entry.text, entry.metadata);
     } finally {
       sendPendingRef.current = false;
@@ -1167,22 +1203,32 @@ export const Composer = forwardRef<
       || sendPendingRef.current
       || importActionOwnerRef.current?.pending
     ) return;
-    if (props.streaming) {
-      queueCurrentInput();
-      return;
-    }
     // There is one authoritative draft: staged Skills and files serialize into
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
     const input = currentInput();
     if (!input) return;
     const { text, metadata } = input;
+    if (
+      props.streaming
+      && !(
+        props.onStreamingSubmit
+        && props.shouldSubmitWhileStreaming?.(text)
+      )
+    ) {
+      queueCurrentInput();
+      return;
+    }
+    const submitCurrent = props.streaming
+      ? props.onStreamingSubmit
+      : props.onSend;
+    if (!submitCurrent) return;
     const submittedDraftKey = activeDraftKey();
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(
+      sent = await submitCurrent(
         text,
         metadata,
       );
@@ -1348,6 +1394,11 @@ export const Composer = forwardRef<
 
   const importActionBusy = pendingImportAction !== null;
   const noModelConnection = props.noModelConnection === true;
+  const submitsCurrentStreamingInput = Boolean(
+    props.streaming
+    && props.onStreamingSubmit
+    && props.shouldSubmitWhileStreaming?.(composerWireText(text)),
+  );
   const sendDisabled =
     props.disabled ||
     props.sendBlocked ||
@@ -1608,7 +1659,7 @@ export const Composer = forwardRef<
                   <UiButton
                     variant="ghost"
                     isDisabled={props.disabled || props.sendBlocked || sendPending || editingQueuedInputId !== null}
-                    label={props.streaming && props.onSteer ? copy.steerLabel : copy.sendLabel}
+                    label={props.streaming && props.onStreamingSubmit ? copy.steerLabel : copy.sendLabel}
                     onClick={() => { void submitQueuedInput(entry); }}
                   />
                   <IconButton
@@ -2006,7 +2057,7 @@ export const Composer = forwardRef<
           sendActions={(
             <div className="maka-composer-right-controls" />
           )}
-          sendButton={props.streaming && props.onSteer ? (
+          sendButton={props.streaming && props.onStreamingSubmit ? (
             <div className="maka-composer-running-actions">
               <IconButton
                 variant="ghost"
@@ -2023,13 +2074,13 @@ export const Composer = forwardRef<
               />
               <IconButton
                 variant="primary"
-                type="button"
+                type={submitsCurrentStreamingInput ? "submit" : "button"}
                 isDisabled={sendDisabled}
-                label={copy.queueInputLabel}
+                label={submitsCurrentStreamingInput ? copy.steerLabel : copy.queueInputLabel}
                 aria-busy={sendPending ? 'true' : undefined}
                 data-pending={sendPending ? 'true' : undefined}
-                tooltip={copy.queueInputLabel}
-                onClick={queueCurrentInput}
+                tooltip={submitsCurrentStreamingInput ? copy.steerLabel : copy.queueInputLabel}
+                onClick={submitsCurrentStreamingInput ? undefined : queueCurrentInput}
                 icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
               />
             </div>

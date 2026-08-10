@@ -226,7 +226,7 @@ export function QuoteCompanionPanel(props: {
                 return accepted;
               }}
               onStop={() => void companion.stop()}
-              onSteer={(text: string) => companion.steer(text)}
+              onStreamingSubmit={(text: string) => companion.steer(text)}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}

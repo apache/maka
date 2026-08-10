@@ -28,6 +28,7 @@ import {
 } from "./permission-response-guard.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,
   type RuntimeHostSessionObserverTarget,
@@ -57,6 +58,10 @@ type RuntimeHostSessionExecutionClient = Pick<
 export interface RuntimeHostSessionExecutionIpcDeps {
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
+  observations: Pick<
+    RuntimeHostSessionObservationRegistry,
+    "observe" | "unobserve"
+  >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -114,7 +119,7 @@ export function registerRuntimeHostSessionExecutionIpc(
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, "Session");
       const normalizedObserverId = requiredId(observerId, "Session observer");
-      await deps.observer.observe(
+      await deps.observations.observe(
         normalizedSessionId,
         normalizedObserverId,
         event.sender as RuntimeHostSessionObserverTarget,
@@ -122,7 +127,9 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
   ipcMain.handle("sessions:unobserve", async (_event, observerId: unknown) => {
-    await deps.observer.unobserve(requiredId(observerId, "Session observer"));
+    await deps.observations.unobserve(
+      requiredId(observerId, "Session observer"),
+    );
   });
   ipcMain.handle("sessions:readMessages", async (_event, sessionId: string) => {
     const messages = await deps.observer.readMessages(sessionId);

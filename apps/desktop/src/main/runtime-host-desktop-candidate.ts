@@ -7,6 +7,7 @@ import type {
 import type { BotRegistry } from "@maka/runtime";
 import {
   connectOrSpawnRuntimeHost,
+  waitForRuntimeHostReady,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
@@ -39,9 +40,11 @@ import {
   registerRuntimeHostSessionExecutionIpc,
   type RuntimeHostSessionExecutionIpcDeps,
 } from "./runtime-host-session-execution-ipc-main.js";
+import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
+import type { IpcHandler, ReconnectableReadIpcMain } from "./ipc-reconnect-policy.js";
 
-type CandidateIpcMain = Pick<IpcMain, "handle" | "removeHandler">;
+type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
   readonly ipcMain: CandidateIpcMain;
@@ -99,6 +102,7 @@ export interface DesktopRuntimeHostCandidateStartInput extends DesktopRuntimeHos
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly candidateEntrypoint?: string | URL;
+  readonly signal?: AbortSignal;
 }
 
 export type DesktopRuntimeHostCandidateStartResult =
@@ -127,6 +131,8 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly #closeNativeCapabilities: () => Promise<void>;
   readonly #closeSessionDomains: () => Promise<void>;
   readonly #disposeClientIpc: (() => void | Promise<void>) | undefined;
+  readonly #detachSessionObservations: () => void;
+  readonly #closeSessionObservations: () => Promise<void>;
   readonly #hasRegisteredCapabilities: () => boolean;
   readonly #stopSession: (sessionId: string) => Promise<void>;
   #closeTask: Promise<void> | undefined;
@@ -139,6 +145,8 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     closeNativeCapabilities: () => Promise<void>;
     closeSessionDomains: () => Promise<void>;
     disposeClientIpc: (() => void | Promise<void>) | undefined;
+    detachSessionObservations: () => void;
+    closeSessionObservations: () => Promise<void>;
     connectionClosed: Promise<void>;
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
@@ -151,6 +159,8 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     this.#closeNativeCapabilities = input.closeNativeCapabilities;
     this.#closeSessionDomains = input.closeSessionDomains;
     this.#disposeClientIpc = input.disposeClientIpc;
+    this.#detachSessionObservations = input.detachSessionObservations;
+    this.#closeSessionObservations = input.closeSessionObservations;
     this.#hasRegisteredCapabilities = input.hasRegisteredCapabilities;
     this.#stopSession = input.stopSession;
     this.botIncoming = input.botIncoming;
@@ -167,6 +177,8 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   }
 
   async #close(): Promise<void> {
+    this.#ipc.close();
+    this.#detachSessionObservations();
     const domainResults = await Promise.allSettled([this.#closeSessionDomains()]);
     const results = await Promise.allSettled([
       this.#botIncoming.close(),
@@ -181,8 +193,8 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   }
 
   async #closeConnection(): Promise<void> {
-    this.#ipc.close();
     await this.#observer.close().catch(() => undefined);
+    await this.#closeSessionObservations().catch(() => undefined);
     if (this.#hasRegisteredCapabilities()) {
       await this.#client.unregisterClientCapabilities().catch(() => undefined);
     }
@@ -192,6 +204,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
 
 export async function startDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
   const connection = await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
@@ -199,12 +212,14 @@ export async function startDesktopRuntimeHostCandidate(
     await waitForRuntimeHostReady(
       connection.connection,
       input.electionDeadlineMs ?? 45_000,
+      input.signal,
     );
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
         connection.connection,
         input,
+        observationRegistry,
       ),
     };
   } catch (error) {
@@ -213,31 +228,17 @@ export async function startDesktopRuntimeHostCandidate(
   }
 }
 
-async function waitForRuntimeHostReady(
-  connection: RuntimeHostConnection,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (true) {
-    const status = await connection.status(Math.max(1, deadline - Date.now()));
-    if (status.state === "ready") return;
-    if (status.state === "draining")
-      throw new Error("Runtime Host drained before becoming ready");
-    const remaining = deadline - Date.now();
-    if (remaining <= 0)
-      throw new Error("Runtime Host did not become ready before the deadline");
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(25, remaining)),
-    );
-  }
-}
-
 export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
+  observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidate> {
   const client = new DesktopRuntimeHostClient(connection);
   const ipc = new ScopedIpcMain(deps.ipcMain);
+  const sessionObservations =
+    observationRegistry ??
+    new RuntimeHostSessionObservationRegistry((error) => deps.onError?.(error));
+  const ownsSessionObservations = observationRegistry === undefined;
   const providers = new Set<DesktopNativeCapabilityProvider>();
   const nativeSessionIds = new Set<string>();
   const releaseNativeResources = async (
@@ -292,6 +293,7 @@ export async function createDesktopRuntimeHostCandidate(
   let observer: RuntimeHostSessionObserver | undefined;
   let closeSessionDomains: (() => Promise<void>) | undefined;
   let disposeClientIpc: (() => void | Promise<void>) | undefined;
+  let observationsAttached = false;
   let capabilitiesRegistered = false;
   try {
     let domains: RuntimeHostSessionDomainsIpcHandle | undefined;
@@ -318,6 +320,7 @@ export async function createDesktopRuntimeHostCandidate(
               ),
           }
         : {}),
+      recoverConnectionClosed: observationRegistry !== undefined,
       ...(deps.now ? { now: deps.now } : {}),
     });
     observer = sessionObserver;
@@ -334,6 +337,11 @@ export async function createDesktopRuntimeHostCandidate(
       ipc,
     );
     closeSessionDomains = domains.close;
+    const restoredSessionIds = await sessionObservations.attach(sessionObserver);
+    observationsAttached = true;
+    for (const sessionId of restoredSessionIds) {
+      deps.emitSessionsChanged("message-appended", sessionId);
+    }
     const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
       void sessionObserver
         .watchTurn(sessionId, turnId)
@@ -422,6 +430,7 @@ export async function createDesktopRuntimeHostCandidate(
       {
         client,
         observer: sessionObserver,
+        observations: sessionObservations,
         attachmentApprovals: deps.attachmentApprovals,
         emitSessionsChanged: deps.emitSessionsChanged,
         stat: deps.stat,
@@ -453,15 +462,25 @@ export async function createDesktopRuntimeHostCandidate(
       closeNativeCapabilities,
       closeSessionDomains: domains.close,
       disposeClientIpc,
+      detachSessionObservations: () =>
+        sessionObservations.detach(sessionObserver),
+      closeSessionObservations: () =>
+        ownsSessionObservations
+          ? sessionObservations.close()
+          : Promise.resolve(),
       connectionClosed: connection.closed,
       hasRegisteredCapabilities: () => capabilitiesRegistered,
       stopSession,
     });
   } catch (error) {
     ipc.close();
+    if (observationsAttached && observer) sessionObservations.detach(observer);
     await Promise.resolve(disposeClientIpc?.()).catch(() => undefined);
     await closeSessionDomains?.().catch(() => undefined);
     await observer?.close().catch(() => undefined);
+    if (ownsSessionObservations) {
+      await sessionObservations.close().catch(() => undefined);
+    }
     await client.close().catch(() => undefined);
     await closeNativeCapabilities().catch(() => undefined);
     throw error;
@@ -493,10 +512,11 @@ function connectInput(
     ...(input.candidateEntrypoint === undefined
       ? {}
       : { candidateEntrypoint: input.candidateEntrypoint }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
 }
 
-class ScopedIpcMain implements Pick<IpcMain, "handle"> {
+class ScopedIpcMain implements ReconnectableReadIpcMain {
   readonly #ipcMain: CandidateIpcMain;
   readonly #channels = new Set<string>();
   #closed = false;
@@ -506,6 +526,14 @@ class ScopedIpcMain implements Pick<IpcMain, "handle"> {
   }
 
   handle(channel: string, listener: Parameters<IpcMain["handle"]>[1]): void {
+    this.#handle(channel, listener, false);
+  }
+
+  handleReconnectableRead(channel: string, listener: IpcHandler): void {
+    this.#handle(channel, listener, true);
+  }
+
+  #handle(channel: string, listener: IpcHandler, reconnectableRead: boolean): void {
     if (this.#closed)
       throw new Error("Desktop Runtime Host candidate IPC is closed");
     if (this.#channels.has(channel)) {
@@ -513,7 +541,11 @@ class ScopedIpcMain implements Pick<IpcMain, "handle"> {
         `Desktop Runtime Host candidate registered duplicate IPC: ${channel}`,
       );
     }
-    this.#ipcMain.handle(channel, listener);
+    if (reconnectableRead && this.#ipcMain.handleReconnectableRead) {
+      this.#ipcMain.handleReconnectableRead(channel, listener);
+    } else {
+      this.#ipcMain.handle(channel, listener);
+    }
     this.#channels.add(channel);
   }
 

@@ -33,6 +33,22 @@ test('drains clean half-open input before reporting typed read EOF', async () =>
   });
 });
 
+test('normalizes a native socket failure as a typed transport interruption', async () => {
+  await withSocketPair(async (transport) => {
+    const failure = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+    const pending = transport.read(1_000);
+    transport.socket.destroy(failure);
+    await assert.rejects(
+      pending,
+      (error: unknown) =>
+        error instanceof RuntimeHostTransportError &&
+        error.code === 'closed' &&
+        error.cause === failure,
+    );
+    await transport.closed;
+  });
+});
+
 test('drains a paused frame burst before reporting a terminal partial frame', async () => {
   await withSocketPair(async (transport, peer) => {
     const frames = Array.from({ length: 96 }, (_, index) => ({ index }));

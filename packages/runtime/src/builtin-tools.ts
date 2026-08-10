@@ -28,6 +28,8 @@ import {
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
 import { openAiApplyPatchInputSchema } from './openai-apply-patch.js';
+import { parseCodexV4aPatch } from './codex-v4a-patch.js';
+import { executeApplyPatchOperations } from './apply-patch-batch.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -304,12 +306,23 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     name: 'apply_patch',
     activityKind: 'edit',
     categoryHint: 'file_write',
-    description: 'Apply one OpenAI V4A file operation.',
+    description: 'Apply one or more file changes using the selected provider patch protocol.',
     parameters: openAiApplyPatchInputSchema,
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
-    impl: async ({ operation }, ctx) =>
-      await filesystem.applyPatch({ operation, ...filesystemCall(ctx) }),
+    impl: async (input, ctx) => {
+      if (typeof input !== 'string') {
+        return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
+      }
+      const operations = parseCodexV4aPatch(input);
+      return await executeApplyPatchOperations(
+        operations,
+        async (operation) => {
+          await filesystem.applyPatch({ operation, ...filesystemCall(ctx) });
+        },
+        ctx.abortSignal,
+      );
+    },
   } satisfies MakaTool;
   const tools: MakaTool[] = [
     ...bashTools,

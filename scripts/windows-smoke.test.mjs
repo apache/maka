@@ -29,6 +29,23 @@ test('Windows smoke refuses to claim evidence on another platform', () => {
   assert.throws(() => runWindowsSmoke({ platform: 'linux' }), /must run on Windows/u);
 });
 
+test('Windows smoke requires renderer and runtime resource artifacts', () => {
+  for (const missingSuffix of [
+    'apps/desktop/dist-renderer/index.html',
+    'apps/desktop/resources/workers/filesystem-worker.js',
+  ]) {
+    assert.throws(
+      () =>
+        runWindowsSmoke({
+          platform: 'win32',
+          existsSync: (path) => !path.replaceAll('\\', '/').endsWith(missingSuffix),
+        }),
+      new RegExp(`Missing build artifact: .*${missingSuffix.replaceAll('/', '.*')}`, 'u'),
+      missingSuffix,
+    );
+  }
+});
+
 test('Windows smoke rejects an Electron command that exits without exercising a window', () => {
   assert.throws(
     () =>

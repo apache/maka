@@ -33,6 +33,7 @@ import type {
 } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
+import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
   openInteractiveExecutionStoresForWrite,
   type RootTurnAdmission,
@@ -181,7 +182,10 @@ test('a failed exact Capability retry does not poison the parked continuation bi
     },
     registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
   });
-  const seedConnection = capabilities.attachConnection('provider-seed', { send: async () => {} });
+  const seedConnection = capabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-seed'),
+    { send: async () => {} },
+  );
   let wrongConnection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
   let correctConnection:
     | ReturnType<HostClientCapabilityCoordinator['attachConnection']>
@@ -202,7 +206,10 @@ test('a failed exact Capability retry does not poison the parked continuation bi
     );
 
     await seedConnection.close();
-    wrongConnection = capabilities.attachConnection('provider-wrong', { send: async () => {} });
+    wrongConnection = capabilities.attachConnection(
+      clientCapabilityConnectionIdentity('provider-wrong'),
+      { send: async () => {} },
+    );
     await registerSessionCapability(fixture, capabilities, 'provider-wrong', 'registration-wrong', [
       'inspect',
       'unexpected',
@@ -237,7 +244,10 @@ test('a failed exact Capability retry does not poison the parked continuation bi
 
     await wrongConnection.close();
     wrongConnection = undefined;
-    correctConnection = capabilities.attachConnection('provider-correct', { send: async () => {} });
+    correctConnection = capabilities.attachConnection(
+      clientCapabilityConnectionIdentity('provider-correct'),
+      { send: async () => {} },
+    );
     await registerSessionCapability(
       fixture,
       capabilities,
@@ -313,9 +323,12 @@ test('resume query preserves Session-before-activation lock ordering', async () 
     },
     registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
   });
-  const connection = capabilities.attachConnection('provider-lock-order', {
-    send: async () => {},
-  });
+  const connection = capabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-lock-order'),
+    {
+      send: async () => {},
+    },
+  );
   const laneEntered = deferred<void>();
   const releaseLane = deferred<void>();
   let blocker: Promise<void> | undefined;
@@ -426,7 +439,10 @@ test('turn.start resolves explicit Skills once before durable admission and repl
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
-  const connection = capabilities.attachConnection('skill-provider', { send: async () => {} });
+  const connection = capabilities.attachConnection(
+    clientCapabilityConnectionIdentity('skill-provider'),
+    { send: async () => {} },
+  );
   const fixture = await createFailureFixture({
     registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
     clientCapabilities: capabilities,
@@ -2797,12 +2813,18 @@ test('Client Capability ambiguity fails before durable root admission', async ()
       backends.register('fake', (context) => new FakeBackend(context));
     },
   });
-  const first = clientCapabilities.attachConnection('provider-a', {
-    send: async () => {},
-  });
-  const second = clientCapabilities.attachConnection('provider-b', {
-    send: async () => {},
-  });
+  const first = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    {
+      send: async () => {},
+    },
+  );
+  const second = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-b'),
+    {
+      send: async () => {},
+    },
+  );
 
   try {
     for (const [connectionId, registrationId] of [
@@ -2873,12 +2895,18 @@ test('an exact active retry preserves the Client Capability admission binding', 
       });
     },
   });
-  const first = clientCapabilities.attachConnection('provider-a', {
-    send: async () => {},
-  });
-  const second = clientCapabilities.attachConnection('provider-b', {
-    send: async () => {},
-  });
+  const first = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    {
+      send: async () => {},
+    },
+  );
+  const second = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-b'),
+    {
+      send: async () => {},
+    },
+  );
 
   try {
     for (const [connectionId, registrationId] of [
@@ -2961,12 +2989,18 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
       });
     },
   });
-  const first = clientCapabilities.attachConnection('provider-a', {
-    send: async () => {},
-  });
-  const second = clientCapabilities.attachConnection('provider-b', {
-    send: async () => {},
-  });
+  const first = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    {
+      send: async () => {},
+    },
+  );
+  const second = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-b'),
+    {
+      send: async () => {},
+    },
+  );
 
   try {
     for (const [connectionId, registrationId] of [
@@ -3099,42 +3133,51 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
       });
     },
   });
-  const sessionProvider = clientCapabilities.attachConnection('provider-session', {
-    send: async () => {},
-  });
+  const sessionProvider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-session'),
+    {
+      send: async () => {},
+    },
+  );
   const calls: string[] = [];
   let previousProvider!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
-  previousProvider = clientCapabilities.attachConnection('provider-previous', {
-    send: async (frame) => {
-      if (frame.kind !== 'client.capability.call') return;
-      calls.push('provider-previous');
-      previousProvider.accept({
-        kind: 'client.capability.accepted',
-        invocationId: frame.invocationId,
-      });
-      previousProvider.accept({
-        kind: 'client.capability.result',
-        invocationId: frame.invocationId,
-        result: { content: [{ type: 'text', text: 'previous' }] },
-      });
+  previousProvider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-previous'),
+    {
+      send: async (frame) => {
+        if (frame.kind !== 'client.capability.call') return;
+        calls.push('provider-previous');
+        previousProvider.accept({
+          kind: 'client.capability.accepted',
+          invocationId: frame.invocationId,
+        });
+        previousProvider.accept({
+          kind: 'client.capability.result',
+          invocationId: frame.invocationId,
+          result: { content: [{ type: 'text', text: 'previous' }] },
+        });
+      },
     },
-  });
+  );
   let followupProvider!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
-  followupProvider = clientCapabilities.attachConnection('provider-followup', {
-    send: async (frame) => {
-      if (frame.kind !== 'client.capability.call') return;
-      calls.push('provider-followup');
-      followupProvider.accept({
-        kind: 'client.capability.accepted',
-        invocationId: frame.invocationId,
-      });
-      followupProvider.accept({
-        kind: 'client.capability.result',
-        invocationId: frame.invocationId,
-        result: { content: [{ type: 'text', text: 'followup' }] },
-      });
+  followupProvider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-followup'),
+    {
+      send: async (frame) => {
+        if (frame.kind !== 'client.capability.call') return;
+        calls.push('provider-followup');
+        followupProvider.accept({
+          kind: 'client.capability.accepted',
+          invocationId: frame.invocationId,
+        });
+        followupProvider.accept({
+          kind: 'client.capability.result',
+          invocationId: frame.invocationId,
+          result: { content: [{ type: 'text', text: 'followup' }] },
+        });
+      },
     },
-  });
+  );
 
   try {
     const sessionReplaced = await clientCapabilities.handlers['client.capability.replace'](
@@ -3276,9 +3319,12 @@ test('an exact terminal retry does not require a live Client Capability binding'
       backends.register('fake', (context) => new FakeBackend(context));
     },
   });
-  const provider = clientCapabilities.attachConnection('provider-a', {
-    send: async () => {},
-  });
+  const provider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    {
+      send: async () => {},
+    },
+  );
 
   try {
     const replaced = await clientCapabilities.handlers['client.capability.replace'](

@@ -208,8 +208,14 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses } from './model-runtime.js';
-import { openAiModelSupportsApplyPatch } from './openai-apply-patch.js';
+import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import {
+  applyPatchReplayFactText,
+  freeformApplyPatchResultText,
+  normalizeApplyPatchReplayInput,
+  routeApplyPatchTools,
+  type ApplyPatchProfile,
+} from './apply-patch-profile.js';
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
@@ -844,6 +850,16 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
   };
 }
 
+function freeformApplyPatchOutput(output: ToolResultOutput): ToolResultOutput {
+  if (output.type === 'text' || output.type === 'error-text') return output;
+  const value = output.type === 'json' || output.type === 'error-json' ? output.value : undefined;
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+  const text = record ? freeformApplyPatchResultText(record) : freeformApplyPatchResultText(value);
+  return output.type === 'error-json'
+    ? { type: 'error-text', value: text }
+    : { type: 'text', value: text };
+}
+
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
@@ -992,6 +1008,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly applyPatchProfile: ApplyPatchProfile | null;
 
   /**
    * Every `send()` currently in flight on this backend.
@@ -1074,11 +1091,9 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
-    const modelTools =
-      modelUsesNativeOpenAiResponses(input.connection, input.modelId) &&
-      openAiModelSupportsApplyPatch(input.modelId)
-        ? input.tools
-        : input.tools.filter((tool) => tool.providerTool?.kind !== 'openai-apply-patch');
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
+    this.applyPatchProfile = runtime.applyPatchProfile;
+    const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
       // this session's placeholders name it, so this session advertises it.
@@ -3655,6 +3670,11 @@ export class AiSdkBackend implements AgentBackend {
     };
     let bufferedCalls: ToolCallItem[] = [];
     const results = new Map<string, ToolResultItem>();
+    const downgradedApplyPatchCalls = new Map<string, ToolCallItem>();
+    const replayFactsByStep = new Map<
+      string,
+      Array<{ readonly text: string; readonly eventIds: readonly string[] }>
+    >();
     const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, TextItem>();
 
@@ -3726,9 +3746,11 @@ export class AiSdkBackend implements AgentBackend {
           result.isError,
           `runtime-event:${result.eventId}:tool-result`,
         ));
-      return toolName === 'apply_patch' && result.isError
-        ? nativeApplyPatchFailureOutput(output)
-        : output;
+      if (toolName !== 'apply_patch') return output;
+      if (this.applyPatchProfile?.kind === 'codex-v4a-freeform') {
+        return freeformApplyPatchOutput(output);
+      }
+      return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
     const pushClientToolResults = async (calls: readonly ToolCallItem[]) => {
       for (const call of calls) {
@@ -3763,6 +3785,9 @@ export class AiSdkBackend implements AgentBackend {
         ...(reasoning ?? []).map((item) => item.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
+        ...(text?.stepId
+          ? (replayFactsByStep.get(text.stepId)?.flatMap((fact) => fact.eventIds) ?? [])
+          : []),
       ];
       const replayReasoning = reasoning
         ?.map(reasoningReplay)
@@ -3801,6 +3826,13 @@ export class AiSdkBackend implements AgentBackend {
           text: text.content,
           ...(text.providerOptions !== undefined ? { providerOptions: text.providerOptions } : {}),
         });
+      }
+      const replayFacts = text?.stepId ? replayFactsByStep.get(text.stepId) : undefined;
+      if (replayFacts) {
+        for (const replayFact of replayFacts) {
+          content.push({ type: 'text', text: replayFact.text });
+        }
+        replayFactsByStep.delete(text!.stepId!);
       }
       for (const call of calls) {
         if (call.providerExecuted === true) continue;
@@ -3880,11 +3912,68 @@ export class AiSdkBackend implements AgentBackend {
     for (const item of plan.items) {
       switch (item.kind) {
         case 'tool_call':
-          bufferedCalls.push(item);
+          if (item.toolName !== 'apply_patch') {
+            bufferedCalls.push(item);
+            break;
+          }
+          {
+            const replayInput = normalizeApplyPatchReplayInput(
+              this.applyPatchProfile,
+              item.toolCallId,
+              item.input,
+            );
+            if (replayInput !== null) {
+              bufferedCalls.push({
+                ...item,
+                input: replayInput,
+                ...(replayInput !== item.input ? { providerOptions: undefined } : {}),
+              });
+            } else {
+              downgradedApplyPatchCalls.set(item.toolCallId, item);
+            }
+          }
           break;
-        case 'tool_result':
-          results.set(item.toolCallId, item);
+        case 'tool_result': {
+          const downgradedCall = downgradedApplyPatchCalls.get(item.toolCallId);
+          if (!downgradedCall) {
+            results.set(item.toolCallId, item);
+            break;
+          }
+          downgradedApplyPatchCalls.delete(item.toolCallId);
+          const replayFact = applyPatchReplayFactText(
+            downgradedCall.input,
+            item.output,
+            item.isError,
+          );
+          if (!replayFact) break;
+          if (downgradedCall.stepId) {
+            const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
+            replayFactsByStep.set(downgradedCall.stepId, [
+              ...stepFacts,
+              {
+                text: replayFact,
+                eventIds: [downgradedCall.eventId, item.eventId],
+              },
+            ]);
+            if (!textByStep.has(downgradedCall.stepId)) {
+              textByStep.set(downgradedCall.stepId, {
+                kind: 'text',
+                role: 'assistant',
+                content: '',
+                stepId: downgradedCall.stepId,
+                eventId: downgradedCall.eventId,
+                ts: downgradedCall.ts,
+              });
+            }
+          } else {
+            await flushPendingSteps();
+            push({ role: 'assistant', content: [{ type: 'text', text: replayFact }] }, [
+              downgradedCall.eventId,
+              item.eventId,
+            ]);
+          }
           break;
+        }
         case 'thinking':
           if (item.stepId !== undefined) {
             const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
