@@ -19,7 +19,11 @@ test('a ready user submits work, sees validation, and reviews the real project c
   await expect(page.getByText(/validation: 1 passed, 0 failed/)).toBeVisible();
 
   await page.getByRole('button', { name: 'Open workbar tools' }).click();
-  await page.getByRole('menuitem', { name: /Review/ }).click();
+  const visibleReviewLauncher = page
+    .locator('.maka-session-workbar:not([data-collapsed]) .maka-workbar-launcher-row')
+    .filter({ hasText: 'Review' });
+  await expect(visibleReviewLauncher).toHaveCount(1);
+  await visibleReviewLauncher.click();
 
   const review = page.getByRole('region', { name: 'Conversation review' });
   await expect(review).toBeVisible();
