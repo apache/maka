@@ -6,11 +6,28 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
@@ -66,7 +83,9 @@ import type {
   AttachmentRef,
   FollowUpMode,
   MessageQueueEntryProjection,
+  MessageQueueEntryState,
   MessageQueueMutation,
+  MessageQueuePlacement,
   PermissionMode,
   ProviderType,
   QuoteRef,
@@ -400,7 +419,6 @@ export const Composer = forwardRef<
   const [queueMutationPending, setQueueMutationPending] = useState(false);
   const [editingQueueEntryId, setEditingQueueEntryId] = useState<string | null>(null);
   const [editingQueueText, setEditingQueueText] = useState('');
-  const [draggedQueueEntryId, setDraggedQueueEntryId] = useState<string | null>(null);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -1390,6 +1408,14 @@ export const Composer = forwardRef<
     (props.queuedMessages?.steering.length ?? 0) +
     (props.queuedMessages?.followup.length ?? 0);
   const selectedFollowUpMode = props.followUpMode ?? 'queue';
+  const queueSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 4 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
 
   async function retractQueued() {
     if (!props.onRetractQueued || retractPending) return;
@@ -1435,22 +1461,36 @@ export const Composer = forwardRef<
   function reorderQueue(
     entries: readonly MessageQueueEntryProjection[],
     placement: 'current_turn' | 'next_turn',
+    draggedEntryId: string,
     targetEntryId: string,
   ) {
-    if (!draggedQueueEntryId || draggedQueueEntryId === targetEntryId) return;
+    if (draggedEntryId === targetEntryId) return;
     const queued = entries.filter((entry) => entry.state === 'queued');
-    const from = queued.findIndex((entry) => entry.entryId === draggedQueueEntryId);
-    const to = queued.findIndex((entry) => entry.entryId === targetEntryId);
-    if (from < 0 || to < 0) return;
-    const reordered = [...queued];
-    const [moved] = reordered.splice(from, 1);
-    reordered.splice(to, 0, moved);
+    const entryIds = reorderQueueEntryIds(queued, draggedEntryId, targetEntryId);
+    if (!entryIds) return;
     void mutateQueue({
       kind: 'reorder',
       placement,
-      entryIds: reordered.map((entry) => entry.entryId),
+      entryIds,
     });
-    setDraggedQueueEntryId(null);
+  }
+
+  function handleQueueDragEnd(event: DragEndEvent) {
+    const draggedEntryId = String(event.active.id);
+    const targetEntryId = event.over ? String(event.over.id) : null;
+    if (!targetEntryId || targetEntryId === draggedEntryId) return;
+    for (const [placement, entries] of [
+      ['current_turn', props.queuedMessages?.steering ?? []],
+      ['next_turn', props.queuedMessages?.followup ?? []],
+    ] as const) {
+      if (
+        entries.some((entry) => entry.entryId === draggedEntryId && entry.state === 'queued') &&
+        entries.some((entry) => entry.entryId === targetEntryId && entry.state === 'queued')
+      ) {
+        reorderQueue(entries, placement, draggedEntryId, targetEntryId);
+        return;
+      }
+    }
   }
 
   return (
@@ -1510,38 +1550,37 @@ export const Composer = forwardRef<
                 ) : null}
               </div>
             ) : null}
-            {([
-              ['current_turn', props.queuedMessages?.steering ?? []],
-              ['next_turn', props.queuedMessages?.followup ?? []],
-            ] as const).flatMap(([placement, entries]) =>
-              entries.map((entry) => {
-                const editing = editingQueueEntryId === entry.entryId;
-                const canMutate =
-                  entry.state === 'queued' &&
-                  props.onQueueMutation !== undefined &&
-                  !queueMutationPending;
-                return (
-                  <div
-                    className="maka-composer-queue-row"
-                    data-placement={placement === 'current_turn' ? 'current' : 'next'}
-                    data-state={entry.state}
-                    key={entry.entryId}
-                    draggable={canMutate && !editing}
-                    onDragStart={() => setDraggedQueueEntryId(entry.entryId)}
-                    onDragEnd={() => setDraggedQueueEntryId(null)}
-                    onDragOver={(event) => {
-                      if (canMutate) event.preventDefault();
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      reorderQueue(entries, placement, entry.entryId);
-                    }}
-                  >
-                    <GripVertical
-                      size={14}
-                      aria-hidden="true"
-                      className="maka-composer-queue-grip"
-                    />
+            <DndContext
+              sensors={queueSensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleQueueDragEnd}
+            >
+              {([
+                ['current_turn', props.queuedMessages?.steering ?? []],
+                ['next_turn', props.queuedMessages?.followup ?? []],
+              ] as const).map(([placement, entries]) => (
+                <SortableContext
+                  key={placement}
+                  items={entries
+                    .filter((entry) => entry.state === 'queued')
+                    .map((entry) => entry.entryId)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {entries.map((entry) => {
+                    const editing = editingQueueEntryId === entry.entryId;
+                    const canMutate =
+                      entry.state === 'queued' &&
+                      props.onQueueMutation !== undefined &&
+                      !queueMutationPending;
+                    return (
+                      <SortableQueueRow
+                        key={entry.entryId}
+                        entryId={entry.entryId}
+                        placement={placement}
+                        state={entry.state}
+                        dragDisabled={!canMutate || editing}
+                        dragLabel={copy.reorderQueuedMessage}
+                      >
                     {placement === 'current_turn' ? (
                       <CornerDownRight size={14} aria-hidden="true" />
                     ) : (
@@ -1660,10 +1699,12 @@ export const Composer = forwardRef<
                         </>
                       )}
                     </span>
-                  </div>
-                );
-              }),
-            )}
+                      </SortableQueueRow>
+                    );
+                  })}
+                </SortableContext>
+              ))}
+            </DndContext>
           </div>
           {props.onRetractQueued ? (
             <IconButton
@@ -2206,3 +2247,68 @@ export const Composer = forwardRef<
     </>
   );
 });
+
+export function reorderQueueEntryIds(
+  entries: readonly MessageQueueEntryProjection[],
+  draggedEntryId: string,
+  targetEntryId: string,
+): string[] | undefined {
+  const from = entries.findIndex((entry) => entry.entryId === draggedEntryId);
+  const to = entries.findIndex((entry) => entry.entryId === targetEntryId);
+  if (from < 0 || to < 0 || from === to) return undefined;
+  const reordered = [...entries];
+  const [moved] = reordered.splice(from, 1);
+  reordered.splice(to, 0, moved);
+  return reordered.map((entry) => entry.entryId);
+}
+
+function SortableQueueRow(props: {
+  entryId: string;
+  placement: MessageQueuePlacement;
+  state: MessageQueueEntryState;
+  dragDisabled: boolean;
+  dragLabel: string;
+  children: ReactNode;
+}) {
+  const {
+    attributes,
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+  } = useSortable({
+    id: props.entryId,
+    disabled: props.dragDisabled,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 1 : undefined,
+  } satisfies CSSProperties;
+
+  return (
+    <div
+      ref={setNodeRef}
+      className="maka-composer-queue-row"
+      data-placement={props.placement === 'current_turn' ? 'current' : 'next'}
+      data-state={props.state}
+      data-dragging={isDragging || undefined}
+      style={style}
+    >
+      <button
+        ref={setActivatorNodeRef}
+        type="button"
+        className="maka-composer-queue-grip"
+        aria-label={props.dragLabel}
+        disabled={props.dragDisabled}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical size={14} aria-hidden="true" />
+      </button>
+      {props.children}
+    </div>
+  );
+}

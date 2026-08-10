@@ -82,6 +82,7 @@ export interface ConversationCopy {
     saveQueuedMessage: string;
     cancelQueuedEdit: string;
     deleteQueuedMessage: string;
+    reorderQueuedMessage: string;
     sendQueuedNow: string;
     sendQueuedNowTooltip: string;
     queuePaused: string;
@@ -372,7 +373,7 @@ const CONVERSATION_COPY = {
       queuedMessagesAriaLabel: (count) => `待处理消息 ${count} 条`,
       steerQueuedLabel: '本轮', steerDeliveringLabel: '提交中', followUpQueuedLabel: '下一轮', retractQueued: '取回队列并继续编辑',
       editQueuedMessage: '编辑排队消息', saveQueuedMessage: '保存排队消息', cancelQueuedEdit: '取消编辑',
-      deleteQueuedMessage: '删除排队消息', sendQueuedNow: '立即引导', sendQueuedNowTooltip: '不中断模型，把这条消息提交到当前运行',
+      deleteQueuedMessage: '删除排队消息', reorderQueuedMessage: '拖动排队消息', sendQueuedNow: '立即引导', sendQueuedNowTooltip: '不中断模型，把这条消息提交到当前运行',
       queuePaused: '由于你中断了当前响应，队列已暂停', resumeQueue: '继续',
       queuedAttachmentCount: (count) => `附件 ${count} 个`,
       queuedQuoteCount: (count) => `引用 ${count} 条`,
@@ -522,7 +523,7 @@ const CONVERSATION_COPY = {
       queuedMessagesAriaLabel: (count) => `${count} queued ${count === 1 ? 'message' : 'messages'}`,
       steerQueuedLabel: 'Current', steerDeliveringLabel: 'Sending', followUpQueuedLabel: 'Next', retractQueued: 'Take queued messages back to edit',
       editQueuedMessage: 'Edit queued message', saveQueuedMessage: 'Save queued message', cancelQueuedEdit: 'Cancel edit',
-      deleteQueuedMessage: 'Delete queued message', sendQueuedNow: 'Steer now', sendQueuedNowTooltip: 'Submit this message to the current run without interrupting it',
+      deleteQueuedMessage: 'Delete queued message', reorderQueuedMessage: 'Reorder queued message', sendQueuedNow: 'Steer now', sendQueuedNowTooltip: 'Submit this message to the current run without interrupting it',
       queuePaused: 'Queue paused because you interrupted the current response', resumeQueue: 'Resume',
       queuedAttachmentCount: (count) => `${count} ${count === 1 ? 'attachment' : 'attachments'}`,
       queuedQuoteCount: (count) => `${count} ${count === 1 ? 'quote' : 'quotes'}`,

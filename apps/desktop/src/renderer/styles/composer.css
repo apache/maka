@@ -524,17 +524,33 @@
   color: var(--foreground-secondary);
 }
 
-.maka-composer-queue-row[draggable="true"] {
+.maka-composer-queue-grip {
+  width: 14px;
+  height: var(--h-control-sm);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0.45;
   cursor: grab;
+  touch-action: none;
 }
 
-.maka-composer-queue-row[draggable="true"]:active {
+.maka-composer-queue-grip:active {
   cursor: grabbing;
 }
 
-.maka-composer-queue-grip {
-  color: var(--muted-foreground);
-  opacity: 0.45;
+.maka-composer-queue-grip:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-composer-queue-row[data-dragging="true"] {
+  background: var(--state-hover-bg);
+  box-shadow: var(--shadow-low);
+  opacity: 0.8;
 }
 
 .maka-composer-queue-row[data-state="in_flight"] .maka-composer-queue-grip {
