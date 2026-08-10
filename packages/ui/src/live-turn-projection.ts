@@ -511,8 +511,15 @@ export function reconcileTerminalLiveTurn(
 ): LiveTurnProjection | undefined {
   const turnMessages = messages.filter((message) => message.turnId === current.turnId);
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
+  const userIds = new Set(turnMessages.flatMap((message) => message.type === 'user' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
+  // Keep an acknowledged steering row live until the same user message is
+  // visible in durable history. A terminal refresh can race the steering
+  // persistence write; dropping the projection in that gap makes the row
+  // flash and disappear before the next refresh restores it.
+  const steering = current.steering?.filter((message) => !userIds.has(message.id));
+  const steeringChanged = steering?.length !== current.steering?.length;
   const steps = current.steps.filter((step) => {
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
@@ -528,7 +535,13 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
-  if (steps.length === current.steps.length) return current;
-  if (steps.length === 0 && current.terminal) return undefined;
-  return { ...current, steps };
+  if (steps.length === current.steps.length && !steeringChanged) return current;
+  if (steps.length === 0 && current.terminal && (steering?.length ?? 0) === 0) return undefined;
+  if (!steeringChanged) return { ...current, steps };
+  const { steering: _coveredSteering, ...withoutCoveredSteering } = current;
+  return {
+    ...withoutCoveredSteering,
+    steps,
+    ...(steering && steering.length > 0 ? { steering } : {}),
+  };
 }
