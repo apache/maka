@@ -578,17 +578,20 @@
   display: inline-flex;
   align-items: center;
   gap: 1px;
-  opacity: 0.45;
+  opacity: 0;
+  pointer-events: none;
   transition: opacity var(--duration-fast) var(--ease-out-strong);
 }
 
 .maka-composer-queue-row:focus-within .maka-composer-queue-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 @media (hover: hover) {
   .maka-composer-queue-row:hover .maka-composer-queue-actions {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 
