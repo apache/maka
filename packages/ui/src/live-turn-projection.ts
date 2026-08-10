@@ -49,6 +49,16 @@ export interface LiveTurnProjection {
   terminal?: true;
   steering?: LiveSteeringProjection[];
   /**
+   * Assistant steps already handed off to the persisted transcript.
+   *
+   * Runtime Host emits full thinking/text completion snapshots for every
+   * accumulated assistant message when a turn becomes terminal. Without this
+   * tombstone, an older thinking-only step removed after persistence catches
+   * up is mistaken for a brand-new live step and appended after the currently
+   * streaming guided response.
+   */
+  settledAssistantStepIds?: string[];
+  /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
    * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
    *
@@ -226,6 +236,9 @@ export function applyLiveTurnEvent(
     : event.type === 'tool_start'
       ? event.stepId ?? existingToolStep?.stepId ?? `tool:${event.toolUseId}`
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
+  if (messageEvent && prior.settledAssistantStepIds?.includes(stepId)) {
+    return priorWithoutRetry;
+  }
   const stepIndex = prior.steps.findIndex((step) => step.stepId === stepId);
   const step = stepIndex >= 0 ? prior.steps[stepIndex]! : { stepId, tools: [] };
   let nextStep: LiveTurnStepProjection;
@@ -466,7 +479,10 @@ export function settleLiveTurnStep(
     : current.steps.filter((candidate) => candidate.stepId !== stepId);
   if (steps.length === current.steps.length && retainedTools.length === 0) return current;
   if (steps.length === 0 && current.terminal) return undefined;
-  return { ...current, steps };
+  const settledAssistantStepIds = current.settledAssistantStepIds?.includes(stepId)
+    ? current.settledAssistantStepIds
+    : [...(current.settledAssistantStepIds ?? []), stepId];
+  return { ...current, settledAssistantStepIds, steps };
 }
 
 /**
@@ -530,5 +546,14 @@ export function reconcileTerminalLiveTurn(
   });
   if (steps.length === current.steps.length) return current;
   if (steps.length === 0 && current.terminal) return undefined;
-  return { ...current, steps };
+  const retainedStepIds = new Set(steps.map((step) => step.stepId));
+  const settledAssistantStepIds = new Set(current.settledAssistantStepIds ?? []);
+  for (const step of current.steps) {
+    if (!retainedStepIds.has(step.stepId) && assistantIds.has(step.stepId)) {
+      settledAssistantStepIds.add(step.stepId);
+    }
+  }
+  return settledAssistantStepIds.size > 0
+    ? { ...current, settledAssistantStepIds: [...settledAssistantStepIds], steps }
+    : { ...current, steps };
 }

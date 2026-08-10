@@ -1577,7 +1577,6 @@ export const Composer = forwardRef<
                 ) : (
                   <div className="maka-composer-pending-copy">
                     <span className="maka-composer-pending-text">{entry.text}</span>
-                    <span className="maka-composer-pending-hint">{copy.queuedInputHint}</span>
                   </div>
                 )}
                 <ButtonGroup

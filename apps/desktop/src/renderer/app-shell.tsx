@@ -2091,14 +2091,21 @@ function AppShellContent({
 
   async function steerWithText(text: string): Promise<boolean> {
     const sessionId = activeIdRef.current;
-    if (!sessionId || !text.trim()) return false;
+    const trimmedText = text.trim();
+    if (!sessionId || !trimmedText) return false;
     const messageId = crypto.randomUUID();
     const dispositions = pendingSteeringDispositionRef.current;
     registerPendingSteering(dispositions, messageId, sessionId);
+    projectOptimisticSteering(sessionId, messageId, trimmedText);
     try {
-      const outcome = await window.maka.sessions.steer(sessionId, text.trim(), messageId);
+      const outcome = await window.maka.sessions.steer(sessionId, trimmedText, messageId);
       if (outcome.kind !== 'queued') {
         abandonPendingSteering(dispositions, messageId);
+        rollbackOptimisticSteering(sessionId, messageId);
+        if (activeIdRef.current === sessionId) {
+          const copy = getSteeringDeferredCopy(uiLocale);
+          toastApi.info(copy.title, copy.description);
+        }
         return false;
       }
       if (admitPendingSteering(dispositions, messageId)) {
@@ -2108,6 +2115,7 @@ function AppShellContent({
       return outcome.kind === 'queued';
     } catch (error) {
       abandonPendingSteering(dispositions, messageId);
+      rollbackOptimisticSteering(sessionId, messageId);
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
         toastApi.error(
@@ -2129,7 +2137,13 @@ function AppShellContent({
     toastApi,
   });
 
-  const { handleEvent, reconcilePersistedMessages, settleAssistantStreaming } = useStableActions(createAppShellSessionEventHandlers, {
+  const {
+    handleEvent,
+    projectOptimisticSteering,
+    rollbackOptimisticSteering,
+    reconcilePersistedMessages,
+    settleAssistantStreaming,
+  } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
     liveTurnBySessionRef,

@@ -9,6 +9,7 @@ import {
   SIDE_CONVERSATION_SESSION_LABEL,
   type AttachmentRef,
 } from "@maka/core";
+import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type { SessionCatalogProjection } from "@maka/runtime-host/protocol";
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
@@ -797,6 +798,35 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     },
   ]);
   await observer.close();
+});
+
+test("keeps a late steer queued for auto-drain when final-answer admission has closed", async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        submitMessage: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.message.submit",
+            "session_busy",
+            "Message admission is closed for the active generation",
+          );
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:steer", "session-1", "用中文来回答我", "late-steer-1"),
+    { kind: "fallback" },
+  );
 });
 
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];

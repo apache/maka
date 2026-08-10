@@ -8,7 +8,7 @@ import {
   settleLiveTurnStep,
   type LiveTurnProjection,
 } from '../live-turn-projection.js';
-import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
+import { materializeTurns, overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
@@ -697,11 +697,17 @@ describe('settleLiveTurnStep', () => {
     assert.deepEqual(settleLiveTurnStep(projection, 'step-1'), {
       turnId: 'turn-1',
       phase: 'streamed',
+      settledAssistantStepIds: ['step-1'],
       steps: [{ stepId: 'step-2', tools: [] }],
     });
     assert.deepEqual(
       settleLiveTurnStep({ turnId: 'turn-1', phase: 'streamed', steps: [{ stepId: 'step-1', tools: [] }] }, 'step-1'),
-      { turnId: 'turn-1', phase: 'streamed', steps: [] },
+      {
+        turnId: 'turn-1',
+        phase: 'streamed',
+        settledAssistantStepIds: ['step-1'],
+        steps: [],
+      },
     );
   });
 
@@ -781,6 +787,127 @@ describe('reconcileTerminalLiveTurn', () => {
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 1, toolName: 'Bash', args: {} },
       { type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 2, toolUseId: 'tool-1', isError: false, content: { kind: 'text', text: 'ok' } },
     ]), { turnId: 'turn-1', phase: 'streamed', steps: [] });
+  });
+
+  it('does not tombstone a tool step while its assistant row can still arrive', () => {
+    const inFlight: LiveTurnProjection = {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      steps: toolOnly.steps,
+    };
+    const handedOff = reconcileTerminalLiveTurn(inFlight, [
+      { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 1, toolName: 'Bash', args: {} },
+      { type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 2, toolUseId: 'tool-1', isError: false, content: { kind: 'text', text: 'ok' } },
+    ]);
+    assert.equal(handedOff?.settledAssistantStepIds, undefined);
+
+    const withLateThinking = applyLiveTurnEvent(handedOff, {
+      type: 'thinking_complete',
+      id: 'late-thinking',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 3,
+      text: 'reasoning arrived after the tool row',
+    });
+    assert.equal(withLateThinking.steps[0]?.thinking?.text, 'reasoning arrived after the tool row');
+  });
+
+  it('does not append a persisted earlier step after the guided response during terminal replay', () => {
+    const persisted = [
+      { type: 'user' as const, id: 'question', turnId: 'turn-1', ts: 1, text: 'inspect the project' },
+      {
+        type: 'assistant' as const,
+        id: 'before-steering',
+        turnId: 'turn-1',
+        ts: 2,
+        text: '',
+        thinking: { text: '先读取架构文档。' },
+        modelId: 'fixture',
+      },
+      {
+        type: 'tool_call' as const,
+        id: 'read-before',
+        turnId: 'turn-1',
+        stepId: 'before-steering',
+        ts: 3,
+        toolName: 'Read',
+        args: {},
+      },
+      {
+        type: 'tool_result' as const,
+        id: 'read-before-result',
+        turnId: 'turn-1',
+        ts: 4,
+        toolUseId: 'read-before',
+        isError: false,
+        content: { kind: 'text' as const, text: 'done' },
+      },
+      {
+        type: 'user' as const,
+        id: 'steer-1',
+        turnId: 'turn-1',
+        ts: 5,
+        text: '用英文来回答我',
+        steeringEventId: 'steer-event-1',
+      },
+    ];
+    const live: LiveTurnProjection = {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      steering: [{
+        id: 'steer-1',
+        text: '用英文来回答我',
+        ts: 5,
+        beforeStepIds: ['before-steering'],
+      }],
+      steps: [
+        {
+          stepId: 'before-steering',
+          thinking: { text: '先读取架构文档。', truncated: false, complete: false },
+          tools: [{
+            toolUseId: 'read-before',
+            toolName: 'Read',
+            status: 'completed',
+            args: {},
+          }],
+        },
+        {
+          stepId: 'after-steering',
+          thinking: {
+            text: 'Got it — I will answer in English.',
+            truncated: false,
+            complete: false,
+          },
+          tools: [],
+        },
+      ],
+    };
+
+    const handedOff = reconcileTerminalLiveTurn(live, persisted);
+    assert.deepEqual(handedOff?.steps.map((step) => step.stepId), ['after-steering']);
+    assert.deepEqual(handedOff?.settledAssistantStepIds, ['before-steering']);
+
+    const replayed = applyLiveTurnEvent(handedOff, {
+      type: 'thinking_complete',
+      id: 'terminal-before-steering',
+      turnId: 'turn-1',
+      messageId: 'before-steering',
+      ts: 10,
+      text: '先读取架构文档。',
+    });
+    assert.deepEqual(replayed, handedOff);
+
+    const [turn] = overlayLiveTurn(materializeTurns(persisted), replayed);
+    assert.deepEqual(
+      turn?.timeline.map((item) => item.kind === 'steering'
+        ? item.message.text
+        : item.kind === 'thinking'
+          ? item.text
+          : item.kind === 'tools'
+            ? item.items.map((tool) => tool.toolUseId).join(',')
+            : item.kind),
+      ['先读取架构文档。', 'read-before', '用英文来回答我', 'Got it — I will answer in English.'],
+    );
   });
 
   it('retains terminal evidence while persisted history does not cover it', () => {

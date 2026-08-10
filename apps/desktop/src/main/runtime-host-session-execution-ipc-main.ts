@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import {
   deriveTurnRecords,
   SIDE_CONVERSATION_SESSION_LABEL,
@@ -282,16 +283,25 @@ export function registerRuntimeHostSessionExecutionIpc(
     "sessions:steer",
     async (_event, sessionId: string, text: unknown, clientMessageId?: unknown) => {
       const content = steeringContent(text);
-      await deps.client.submitMessage({
-        sessionId,
-        messageId:
-          clientMessageId === undefined
-            ? newId()
-            : requiredId(clientMessageId, "Steering message"),
-        content: { text: content },
-        placement: "current_turn",
-      });
-      return { kind: "queued" as const };
+      try {
+        await deps.client.submitMessage({
+          sessionId,
+          messageId:
+            clientMessageId === undefined
+              ? newId()
+              : requiredId(clientMessageId, "Steering message"),
+          content: { text: content },
+          placement: "current_turn",
+        });
+        return { kind: "queued" as const };
+      } catch (error) {
+        // The final text can finish between the renderer deciding this is a
+        // steering send and Host admission. This rejection means no message
+        // effect was committed, so keep the composer row for its existing
+        // busy -> idle auto-drain instead of reporting a conversation error.
+        if (isClosedSteeringAdmission(error)) return { kind: "fallback" as const };
+        throw error;
+      }
     },
   );
   ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
@@ -456,6 +466,15 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
   return stopSession;
+}
+
+function isClosedSteeringAdmission(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostOperationError &&
+    error.operation === "turn.message.submit" &&
+    error.code === "session_busy" &&
+    error.message === "Message admission is closed for the active generation"
+  );
 }
 
 function createRuntimeHostSessionStop(

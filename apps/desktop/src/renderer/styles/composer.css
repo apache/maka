@@ -68,11 +68,6 @@
   white-space: nowrap;
 }
 
-.maka-composer-pending-hint {
-  color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
-}
-
 .maka-composer-pending-actions {
   display: inline-flex;
   flex: 0 0 auto;

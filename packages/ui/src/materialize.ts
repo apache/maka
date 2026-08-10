@@ -504,11 +504,6 @@ export function overlayLiveTurn(
       }
     }
   }
-  const liveContentKeys = new Set(
-    liveTimeline.flatMap((item) => item.kind === "tools"
-      ? []
-      : [`${item.kind}\0${item.messageId}`]),
-  );
   const liveItemMatches = (persisted: TurnTimelineItem, live: TurnTimelineItem): boolean => {
     if (persisted.kind === "tools" && live.kind === "tools") {
       const persistedIds = new Set(persisted.items.map((tool) => tool.toolUseId));
@@ -520,14 +515,33 @@ export function overlayLiveTurn(
       && persisted.messageId === live.messageId;
   };
   const timeline: TurnTimelineItem[] = [];
-  let liveCursor = 0;
+  const consumedLiveIndexes = new Set<number>();
   for (const item of current.timeline) {
+    // A live assistant row can precede its durable assistant message while its
+    // tool call is already queryable. The tool's persisted stepId is still an
+    // authoritative anchor, so keep that live reasoning/text immediately
+    // before the tool rather than moving it to the transcript tail.
+    if (item.kind === "tools") {
+      const stepIds = new Set(item.items.flatMap((tool) => tool.stepId ? [tool.stepId] : []));
+      for (let index = 0; index < liveTimeline.length; index += 1) {
+        if (consumedLiveIndexes.has(index)) continue;
+        const candidate = liveTimeline[index]!;
+        if (
+          candidate.kind !== "tools"
+          && candidate.kind !== "steering"
+          && stepIds.has(candidate.messageId)
+        ) {
+          timeline.push(candidate);
+          consumedLiveIndexes.add(index);
+        }
+      }
+    }
     const liveIndex = liveTimeline.findIndex(
-      (candidate, index) => index >= liveCursor && liveItemMatches(item, candidate),
+      (candidate, index) => !consumedLiveIndexes.has(index) && liveItemMatches(item, candidate),
     );
     if (liveIndex >= 0) {
-      timeline.push(...liveTimeline.slice(liveCursor, liveIndex + 1));
-      liveCursor = liveIndex + 1;
+      timeline.push(liveTimeline[liveIndex]!);
+      consumedLiveIndexes.add(liveIndex);
       if (item.kind === "tools") {
         const persistedOnly = item.items.filter((tool) => !liveToolIds.has(tool.toolUseId));
         if (persistedOnly.length > 0) timeline.push({ kind: "tools", items: persistedOnly });
@@ -539,8 +553,7 @@ export function overlayLiveTurn(
       if (items.length > 0) timeline.push({ kind: "tools", items });
       continue;
     }
-    const key = `${item.kind}\0${item.messageId}`;
-    if (!liveContentKeys.has(key)) timeline.push(item);
+    timeline.push(item);
   }
   // A live-only steering row has not entered the transcript yet, therefore
   // every persisted item in `current.timeline` is an authoritative prefix
@@ -549,7 +562,7 @@ export function overlayLiveTurn(
   // persistence. `beforeStepIds` then separates any remaining live-only
   // prefix from the newly guided response.
   const persistedTail = timeline.at(-1);
-  timeline.push(...liveTimeline.slice(liveCursor));
+  timeline.push(...liveTimeline.filter((_item, index) => !consumedLiveIndexes.has(index)));
   let previousLiveSteering: TurnTimelineItem | undefined;
   for (const message of liveOnlySteering) {
     let insertionIndex = persistedTail ? timeline.indexOf(persistedTail) + 1 : 0;

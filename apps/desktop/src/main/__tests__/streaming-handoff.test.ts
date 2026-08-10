@@ -484,4 +484,68 @@ describe('single live-turn handoff', () => {
     assert.deepEqual(refreshes, ['session-1']);
     assert.deepEqual(consumed, [{ sessionId: 'session-1', messageId: 'user-steer-1' }]);
   });
+
+  it('projects steering immediately, deduplicates the runtime echo, and can roll back failure', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': {
+        turnId: 'turn-1',
+        phase: 'streamed',
+        steps: [{
+          stepId: 'assistant-before',
+          text: { text: '正在回答', truncated: false, complete: false },
+          tools: [],
+        }],
+      },
+    });
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const consumed: string[] = [];
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        ref.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      onSteeringConsumed: (_sessionId, messageId) => consumed.push(messageId),
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+
+    assert.equal(
+      handlers.projectOptimisticSteering('session-1', 'steer-1', '用英文回答', 2),
+      true,
+    );
+    assert.deepEqual(liveTurns.get()['session-1']?.steering, [{
+      id: 'steer-1',
+      text: '用英文回答',
+      ts: 2,
+      beforeStepIds: ['assistant-before'],
+    }]);
+
+    handlers.handleEvent('session-1', {
+      type: 'steering_message',
+      id: 'runtime-steer-1',
+      turnId: 'turn-1',
+      ts: 3,
+      messageId: 'steer-1',
+      content: { text: '用英文回答' },
+    });
+    assert.equal(liveTurns.get()['session-1']?.steering?.length, 1);
+    assert.deepEqual(consumed, ['steer-1']);
+    handlers.rollbackOptimisticSteering('session-1', 'steer-1');
+    assert.equal(liveTurns.get()['session-1']?.steering?.length, 1);
+
+    handlers.projectOptimisticSteering('session-1', 'steer-failed', '这条会失败', 4);
+    assert.equal(liveTurns.get()['session-1']?.steering?.length, 2);
+    handlers.rollbackOptimisticSteering('session-1', 'steer-failed');
+    assert.deepEqual(
+      liveTurns.get()['session-1']?.steering?.map((message) => message.id),
+      ['steer-1'],
+    );
+  });
 });

@@ -9,7 +9,11 @@ import {
   overlayLiveTurn,
   type TurnTimelineItem,
 } from "../materialize.js";
-import { applyLiveTurnEvent, armLiveTurn } from "../live-turn-projection.js";
+import {
+  applyLiveTurnEvent,
+  armLiveTurn,
+  type LiveTurnProjection,
+} from "../live-turn-projection.js";
 
 const imageAttachment: AttachmentRef = {
   kind: "image",
@@ -349,6 +353,67 @@ describe("materializeChat attachments", () => {
           ? item.text
           : item.kind),
       ["live before", "inserted instruction", "live after"],
+    );
+  });
+
+  test("keeps database order when stale live steps surround a guided response", () => {
+    const settled = materializeTurns([
+      { type: "user", id: "original", turnId: "t1", ts: 1, text: "original request" },
+      {
+        type: "assistant",
+        id: "before-1",
+        turnId: "t1",
+        ts: 2,
+        text: "persisted before 1",
+        modelId: "fixture",
+      },
+      {
+        type: "assistant",
+        id: "before-2",
+        turnId: "t1",
+        ts: 3,
+        text: "persisted before 2",
+        modelId: "fixture",
+      },
+      {
+        type: "user",
+        id: "steer-1",
+        turnId: "t1",
+        ts: 4,
+        text: "inserted instruction",
+        steeringEventId: "event-steer",
+      },
+    ]);
+    const live: LiveTurnProjection = {
+      turnId: "t1",
+      phase: "streamed",
+      steps: [
+        {
+          stepId: "after",
+          text: { text: "live after", truncated: false, complete: false },
+          tools: [],
+        },
+        {
+          stepId: "before-1",
+          text: { text: "live before 1", truncated: false, complete: true },
+          tools: [],
+        },
+        {
+          stepId: "before-2",
+          text: { text: "live before 2", truncated: false, complete: true },
+          tools: [],
+        },
+      ],
+    };
+
+    const [overlaid] = overlayLiveTurn(settled, live);
+    assert.deepEqual(
+      overlaid?.timeline.map((item) => item.kind === "steering"
+        ? item.message.text
+        : item.kind === "text"
+          ? item.text
+          : item.kind),
+      ["live before 1", "live before 2", "inserted instruction", "live after"],
     );
   });
 

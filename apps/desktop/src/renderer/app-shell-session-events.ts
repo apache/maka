@@ -28,6 +28,8 @@ type ToastApi = {
 
 export interface AppShellSessionEventHandlers {
   handleEvent(sessionId: string, event: SessionEvent): void;
+  projectOptimisticSteering(sessionId: string, messageId: string, text: string, ts?: number): boolean;
+  rollbackOptimisticSteering(sessionId: string, messageId: string): void;
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
 }
@@ -70,6 +72,11 @@ export function createAppShellSessionEventHandlers(options: {
     toastApi,
     notifyRunEnded,
   } = options;
+  const optimisticSteeringIds = new Set<string>();
+
+  function optimisticSteeringKey(sessionId: string, messageId: string): string {
+    return `${sessionId}:${messageId}`;
+  }
 
   function updateLiveTurn(sessionId: string, event: SessionEvent): void {
     setLiveTurnBySession((current) => {
@@ -92,6 +99,39 @@ export function createAppShellSessionEventHandlers(options: {
       if (settled) next[sessionId] = settled;
       else delete next[sessionId];
       return next;
+    });
+  }
+
+  function projectOptimisticSteering(
+    sessionId: string,
+    messageId: string,
+    text: string,
+    ts = Date.now(),
+  ): boolean {
+    const projection = liveTurnBySessionRef.current[sessionId];
+    if (!projection) return false;
+    optimisticSteeringIds.add(optimisticSteeringKey(sessionId, messageId));
+    updateLiveTurn(sessionId, {
+      type: 'steering_message',
+      id: `optimistic-steering:${messageId}`,
+      turnId: projection.turnId,
+      ts,
+      messageId,
+      content: { text, displayText: text },
+    });
+    return true;
+  }
+
+  function rollbackOptimisticSteering(sessionId: string, messageId: string): void {
+    if (!optimisticSteeringIds.delete(optimisticSteeringKey(sessionId, messageId))) return;
+    setLiveTurnBySession((current) => {
+      const projection = current[sessionId];
+      if (!projection?.steering?.some((message) => message.id === messageId)) return current;
+      const steering = projection.steering.filter((message) => message.id !== messageId);
+      const nextProjection = { ...projection };
+      if (steering.length > 0) nextProjection.steering = steering;
+      else delete nextProjection.steering;
+      return { ...current, [sessionId]: nextProjection };
     });
   }
 
@@ -161,6 +201,7 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId);
         break;
       case 'steering_message':
+        optimisticSteeringIds.delete(optimisticSteeringKey(sessionId, event.messageId));
         onSteeringConsumed?.(sessionId, event.messageId);
         // #1954: the runtime persisted a mid-turn steering message as a user
         // RuntimeEvent; re-read so the injected text appears in the transcript
@@ -209,5 +250,11 @@ export function createAppShellSessionEventHandlers(options: {
     }
   }
 
-  return { handleEvent, reconcilePersistedMessages, settleAssistantStreaming };
+  return {
+    handleEvent,
+    projectOptimisticSteering,
+    rollbackOptimisticSteering,
+    reconcilePersistedMessages,
+    settleAssistantStreaming,
+  };
 }
