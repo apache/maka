@@ -1057,6 +1057,58 @@ describe('canonical model-call accounting', () => {
     assert.equal(settledRecord?.costUsd, 0.003);
   });
 
+  test('late reported usage waits for provisional accounting and remains authoritative', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const controller = new AbortController();
+    let releaseProvisional!: () => void;
+    const provisionalReleased = new Promise<void>((resolve) => {
+      releaseProvisional = resolve;
+    });
+    let provisionalStarted!: () => void;
+    const provisionalStart = new Promise<void>((resolve) => {
+      provisionalStarted = resolve;
+    });
+    let writes = 0;
+    const tracker = accountingTracker({
+      record: async (attempt) => {
+        const write = writes;
+        writes += 1;
+        if (write === 0) {
+          provisionalStarted();
+          await provisionalReleased;
+        }
+        recorded.push(attempt);
+      },
+      resolveCost: () => ({ costUsd: 0.003 }),
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      abortSignal: controller.signal,
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    controller.abort();
+    await provisionalStart;
+    const settlement = drain(result.stream);
+
+    assert.equal(
+      await Promise.race([
+        settlement.then(() => 'settled'),
+        new Promise<'pending'>((resolve) => setImmediate(() => resolve('pending'))),
+      ]),
+      'pending',
+    );
+    releaseProvisional();
+    await settlement;
+
+    assert.equal(recorded.length, 2);
+    const final = decodeModelCallAttempt(recorded.at(-1));
+    assert.equal(final.usageBasis, 'reported');
+    assert.equal(final.costUsd, 0.003);
+  });
+
   test('no canonical record is emitted without a resolvable run', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({

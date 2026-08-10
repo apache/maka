@@ -428,6 +428,7 @@ export class ProviderRequestTracker {
     // frozen as a permanently token-less, cost-less record.
     let settled = false;
     let provisionallyRecorded = false;
+    let accountingSettlement = Promise.resolve();
     let abortListener: (() => void) | undefined;
     const finalize = async (
       status: ProviderRequestAttemptStatus,
@@ -470,16 +471,19 @@ export class ProviderRequestTracker {
         ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
         ...(usage ?? {}),
       };
-      try {
-        await this.input.recordAttempt(record);
-      } catch {
-        // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
-      }
-      await this.emitModelCallAttempt(record, {
-        logicalCallId,
-        usage,
-        contextWindow,
+      accountingSettlement = accountingSettlement.then(async () => {
+        try {
+          await this.input.recordAttempt(record);
+        } catch {
+          // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
+        }
+        await this.emitModelCallAttempt(record, {
+          logicalCallId,
+          usage,
+          contextWindow,
+        });
       });
+      await accountingSettlement;
     };
     const observeOutput = () => {
       if (timeToFirstTokenMs === undefined) {
