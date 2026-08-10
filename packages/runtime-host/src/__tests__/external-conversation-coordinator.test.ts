@@ -245,7 +245,7 @@ function resolveInput() {
     kind: 'resolve' as const,
     conversationId: 'telegram:chat-1',
     session: {
-      cwd: '/workspace',
+      workspace: { kind: 'host_path' as const, path: '/workspace' },
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' as const },
@@ -258,7 +258,10 @@ function session(id: string, archived: boolean): SessionCatalogProjection {
   return {
     id,
     revision: 1,
-    cwd: '/workspace',
+    workspace: {
+      target: { kind: 'host_path', path: '/workspace' },
+      hostCwd: '/workspace',
+    },
     createdAt: 1,
     lastUsedAt: 1,
     name: 'Bot conversation',
