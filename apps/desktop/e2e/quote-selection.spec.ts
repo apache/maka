@@ -43,6 +43,11 @@ test('a transcript drag settles when its Turn loses capture or releases outside 
 
   // Exercise the fallback itself with a browser-generated
   // lostpointercapture event while the selection pointer is still down.
+  // Ignore any collapsed selectionchange left by the Composer focus change;
+  // the marker below must come from this drag while capture is active.
+  await turn.evaluate((element) => {
+    delete (element as HTMLElement).dataset.e2eSelectionChanged;
+  });
   await page.mouse.move(startX, y);
   await page.mouse.down();
   await page.mouse.move(selectedX, y, { steps: 5 });
