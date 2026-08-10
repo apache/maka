@@ -636,7 +636,9 @@ describe('McpClientManager stdio E2E', () => {
     managers.push(manager);
     try {
       await manager.sync(fixtureConfig(['--environment']));
-      const result = await manager.callTool('fixture', 'environment', { names: [key] });
+      const result = await manager.callTool(bindingFor(manager, 'fixture', 'environment'), {
+        names: [key],
+      });
       assert.deepEqual(
         JSON.parse(result.content[0]?.type === 'text' ? result.content[0].text : ''),
         { [key]: null },
